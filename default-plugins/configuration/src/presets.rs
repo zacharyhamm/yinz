@@ -75,6 +75,10 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             }};
             SwitchToMode "{exit_mode}"
         }}
+        bind "o" {{
+            MessagePlugin {{ name "agent_strip_reposition"; }};
+            SwitchToMode "{exit_mode}"
+        }}
     }}
 "#
     )
@@ -1716,7 +1720,14 @@ mod tests {
                         }]
                     );
                 }
-                for key in ["n", "d", "a", "c"] {
+                // `o` asks a running hocus to move the panel: a message that names no plugin,
+                // so it reaches the plugins already running and launches none.
+                assert!(matches!(
+                    &agent[&"o".parse().unwrap()][0],
+                    Action::KeybindPipe { name: Some(name), plugin: None, launch_new: false, .. }
+                        if name == "agent_strip_reposition"
+                ));
+                for key in ["n", "d", "a", "c", "o"] {
                     let key: KeyWithModifier = key.parse().unwrap();
                     let actions = &agent[&key];
                     assert_eq!(actions.len(), 2);

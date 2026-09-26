@@ -668,7 +668,8 @@ pub fn provider_from_options(
     timeout_secs: Option<zellij_types::units::ElapsedSeconds>,
 ) -> Result<Provider> {
     let path = path.context(
-        "Firecracker is not configured; set firecracker_provider to an absolute executable path",
+        "Firecracker is not configured: set firecracker_provider in your Zellij config to the \
+         absolute path of a provider executable to use VMs",
     )?;
     Provider::new(
         path.to_path_buf(),

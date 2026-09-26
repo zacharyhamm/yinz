@@ -48,7 +48,8 @@ const DEFAULT_SETUP_IMAGE: &str = "zellij-dev";
 const DEFAULT_SETUP_DISK_GIB: u64 = 64;
 const INSTALLED_PROVIDER: &str = "/usr/local/bin/zellij-firecracker";
 const GITIGNORE_FILTER: &str = ":- .gitignore";
-const RECOVERY_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const RECOVERY_RETENTION: Duration =
+    Duration::from_secs(zellij_types::firecracker::RECOVERY_RETENTION_SECS);
 /// Beside the disk in a VM's directory: the per-path content hashes of the host worktree as
 /// it was last known to match the guest. See `merge_worktrees`.
 const BASELINE_FILE: &str = "baseline.json";

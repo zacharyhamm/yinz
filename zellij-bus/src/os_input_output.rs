@@ -661,8 +661,11 @@ impl ServerOsInputOutput {
         if self.firecracker_stopping.load(Ordering::Acquire) {
             return Err(anyhow!("the Firecracker session is shutting down"));
         }
+        // Worded as `zellij_process::firecracker::provider_from_options` words it, which is what
+        // the VMs tab shows for the same missing setting: one fix, told one way.
         let (provider, session) = firecracker.as_ref().context(
-            "Firecracker is not configured; set firecracker_provider in the session config",
+            "Firecracker is not configured: set firecracker_provider in your Zellij config to \
+             the absolute path of a provider executable to use VMs",
         )?;
         let ensured = match report_progress {
             Some(report_progress) => provider.ensure_with_progress(

@@ -795,8 +795,8 @@ fn a_tab_with_a_job_counting_down_is_live() {
 }
 
 /// A job that asked to be seen and fires off-screen brings its tab to the
-/// front first, so the prompt — and any confirmation the run raises — is
-/// where the keyboard is.
+/// front first, so the chat on screen is the one it is writing into - when
+/// nobody is typing into the box, as nobody is here.
 #[test]
 fn a_showing_job_that_fires_in_a_parked_tab_switches_to_it() {
     let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3","show":true}"#);
@@ -821,6 +821,24 @@ fn a_quiet_job_that_fires_in_a_parked_tab_stays_there() {
     assert_eq!(state.chat_tab, 1, "still on the new chat");
     assert!(state.messages.is_empty());
     assert!(state.parked[0].stream.is_some());
+}
+
+/// Nor does one that asked, while someone is typing into the box: the switch
+/// would swap their draft out mid-word, and the rest of it would land in the
+/// job's chat. The job runs in its own tab regardless.
+#[test]
+fn a_showing_job_in_a_parked_tab_leaves_a_chat_being_typed_into_on_screen() {
+    let mut state = job_in_a_parked_tab(r#"{"seconds":60,"prompt":"check pane 3","show":true}"#);
+    state.own_is_focused = Some(true);
+    state.input.set_text("rotate the".to_owned());
+
+    assert!(state.on_timer(60.0));
+    assert_eq!(state.chat_tab, 1, "still on the chat being typed into");
+    assert_eq!(state.input.get_text(), "rotate the", "and its draft");
+    assert!(
+        state.parked[0].stream.is_some(),
+        "the job ran in its own tab"
+    );
 }
 
 // -- hiding -----------------------------------------------------------------

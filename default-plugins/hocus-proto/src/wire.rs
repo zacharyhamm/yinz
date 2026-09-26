@@ -98,26 +98,41 @@ pub const AGENT_STRIP_REPOSITION: &str = "agent_strip_reposition";
 /// the other half.
 ///
 /// Sent without a `plugin_url`: an Esc must never launch a hocus in order to hide one.
+///
+/// The New agent modal sends it too, once the agent it launched has the keys: see
+/// [`PANEL_TAB`], which it carries and the list's Esc does not.
 pub const AGENT_STRIP_HIDE: &str = "agent_strip_hide";
+/// The argument on [`AGENT_STRIP_HIDE`] naming the sender's tab, by position (`TabPosition`,
+/// in decimal).
+///
+/// The modal carries no url and no destination, so its hide reaches a panel whichever tab that
+/// panel is on. A panel on another tab ignores it: the launch was another client's, over a tab
+/// this panel is not drawn on, and the agent it started is not under it. A hide without the
+/// argument - the list's Esc - puts the panel away wherever it is, as it always did.
+pub const PANEL_TAB: &str = "tab";
 /// hocus-agents → hocus: "the ring stepped out of the list; take the keyboard".
 ///
-/// The panel is one focus ring - the list half, the history half, the conversation's tab bar
-/// and its input box, walked end to end by Tab and Shift+Tab. Two of those stops are in this
+/// The panel is one focus ring of five stops, walked end to end by Tab and Shift+Tab: the
+/// panel's own tab bar (Agents, Todos, VMs, Swamp), that tab's list, its history or details
+/// half, the conversation's chat tab bar, and its input box. Three of those stops are in this
 /// pane and two are in the other, so a step that crosses the seam has to be asked for: the
 /// list knows only its own plugin id, exactly as it does for [`AGENT_STRIP_HIDE`] and
 /// [`AGENT_STRIP_REPOSITION`], and hocus is the half that can focus either one.
 ///
 /// [`PANEL_STOP`] names which of the conversation's two stops to land on - [`STOP_TABS`]
-/// stepping forward off the history half, [`STOP_INPUT`] stepping backward off the list half.
+/// stepping forward off the last stop of this pane (the history or details half, or the list
+/// where there is none), [`STOP_INPUT`] stepping backward off the panel's tab bar. Shift+Tab
+/// from the list reaches that bar first; it does not leave the pane.
 ///
 /// Sent without a `plugin_url`: a Tab must never launch a conversation in order to focus one.
 pub const AGENT_STRIP_YIELD: &str = "agent_strip_yield";
 /// hocus → hocus-agents: "land on this stop" - the mirror of [`AGENT_STRIP_YIELD`].
 ///
 /// Only the internal stop, not the focus: hocus holds the list's plugin id and moves the
-/// keyboard itself with `focus_pane_with_id`, so all this message carries is which of the
-/// list's two halves the arriving keys belong to. [`PANEL_STOP`] names it - [`STOP_LIST`]
-/// wrapping forward off the input box, [`STOP_HISTORY`] stepping backward off the tab bar.
+/// keyboard itself with `focus_pane_with_id`, so all this message carries is which of this
+/// pane's stops the arriving keys belong to. [`PANEL_STOP`] names it - [`crate::vms::STOP_TABS`],
+/// the panel's own tab bar, wrapping forward off the input box, and [`STOP_HISTORY`] stepping
+/// backward off the chat tab bar. [`STOP_LIST`], or no stop at all, lands on the list.
 ///
 /// Sent without a `plugin_url`, for the reason [`AGENT_STRIP_YIELD`] is: a focus step never
 /// grows the panel a half it is missing. Revealing does that; walking the ring does not.
@@ -128,22 +143,45 @@ pub const PANEL_STOP: &str = "stop";
 pub const STOP_LIST: &str = "list";
 /// [`PANEL_STOP`]: the agent list's history half.
 pub const STOP_HISTORY: &str = "history";
-/// [`PANEL_STOP`]: the conversation's tab bar.
+/// [`PANEL_STOP`]: the conversation's chat tab bar. The panel's own tab bar is
+/// [`crate::vms::STOP_TABS`].
 pub const STOP_TABS: &str = "tabs";
 /// [`PANEL_STOP`]: the conversation's input box.
 pub const STOP_INPUT: &str = "input";
 /// hocus → hocus-agents: the full history of the selected run.
+///
+/// The payload is the run, as an `agents::AgentRun`. A `revision` arg echoes the one the
+/// selection asked for - a search hit's, whose detail is the page around the match - and the
+/// panel drops a reply whose revision is not its selection's.
+///
+/// Answered even when there is no run to send, since an unanswered request leaves the history
+/// half saying it is loading for good: then there is no payload, and the args carry `error`,
+/// what went wrong in words, and `run_id`, the run asked for, so the panel can tell an answer
+/// about the row under its cursor from one about a row it has since walked off. A failure is
+/// sent again on each snapshot while the run stays selected, like the request behind it, so a
+/// store that recovers replaces it with the run.
 pub const AGENT_RUN_DETAIL: &str = "agent_run_detail";
 /// hocus-agents → hocus: fetch the next page of completed run headers.
 pub const AGENT_ARCHIVE_MORE: &str = "agent_archive_more";
 /// hocus-agents → hocus: resolve an active run and read its recorded predecessors.
 pub const AGENT_PREDECESSORS: &str = "agent_predecessors";
 /// hocus → hocus-agents: the anchored chain and any incomplete-chain diagnostic.
+///
+/// A list hocus has not yet seen named in the session's plugin list - freshly loaded, before
+/// the `SessionUpdate` that names it - is answered too, with no runs and a
+/// [`PredecessorsResult::diagnostic`] saying to try again, rather than not at all: a request
+/// that is dropped looks exactly like one still loading. Only a sender known to be something
+/// other than the builtin list is ignored.
 pub const AGENT_PREDECESSORS_RESULT: &str = "agent_predecessors_result";
 
 /// hocus-agents → hocus: search recorded run entries.
 pub const AGENT_SEARCH: &str = "agent_search";
 /// hocus → hocus-agents: one search page.
+///
+/// Every search is answered, a failure with [`SearchResult::error`] set and no runs - a list
+/// hocus has not yet seen named in the session's plugin list included, which is told to try
+/// again - because a search that is never answered looks exactly like one still running. Only
+/// a sender known to be something other than the builtin list is ignored.
 pub const AGENT_SEARCH_RESULT: &str = "agent_search_result";
 /// hocus-agents → agentd: "describe this agent now".
 ///

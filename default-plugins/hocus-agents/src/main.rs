@@ -22,19 +22,26 @@
 //! it. The history used to be a framed box pinned to the foot of the pane and drawn
 //! only when there was something to put in it, which meant the list's height — and so
 //! which row a click landed on — moved with what the selected agent happened to have
-//! said. The halves are fixed now, and an empty history says it is empty. `Tab` moves
-//! the keyboard between them and so does a click; the divider is where the focus shows,
-//! because the list's own dim-against-colour already means something else.
+//! said. The halves are fixed now, and an empty history says it is empty - and says *why*,
+//! since loading, a run with no events and a pane too narrow to wrap into are three different
+//! things to do about it. `Tab` moves the keyboard between them and so does a click; the
+//! divider is where the focus shows, coloured and marked `▸`, because the list's own
+//! dim-against-colour already means something else. Only while the keys are really here: the
+//! host giving them to another pane, or the panel's tab bar taking them, draws every marker
+//! unfocused, while the stop itself is kept for the keys to come back to.
 //!
-//! **The two halves are the front of a ring that goes on into the conversation.** `Tab` and
-//! `Shift+Tab` walk four stops, not two: this pane's list and history halves, then the
-//! conversation's tab bar and its input box, wrapping back round. The two crossings that leave
-//! this pane are requests - `wire::AGENT_STRIP_YIELD`, the same shape as the Esc and Ctrl-o
-//! ones, because hocus holds this pane's plugin id and this pane holds none of hocus's - and
-//! the two that arrive land through `wire::AGENT_STRIP_TAKE`, which names the half but does not
-//! move the keyboard; hocus has already done that. The history half is a stop only when it
-//! exists: an empty list, or a pane too short to split, has no second half, and forward from
-//! the list goes straight on to the conversation.
+//! **The two halves sit in a ring that goes on into the conversation.** `Tab` and `Shift+Tab`
+//! walk five stops, not two: the panel's own tab bar (Agents, Todos, VMs, Swamp), this pane's
+//! list and history halves, then the conversation's tab bar and its input box, and forward
+//! from the box wraps back round onto the panel's tab bar. That bar is the one keyboard route
+//! between the four tabs - `←`/`→` switch, `Enter`, `↓`, `j`, `Tab` and `Esc` drop into the
+//! tab's list, and any other key goes to the list too, doing there what it always does. The
+//! two crossings that leave this pane are requests - `wire::AGENT_STRIP_YIELD`, the same shape
+//! as the Esc and Ctrl-o ones, because hocus holds this pane's plugin id and this pane holds
+//! none of hocus's - and the ones that arrive land through `wire::AGENT_STRIP_TAKE`, which
+//! names the stop but does not move the keyboard; hocus has already done that. The history
+//! half is a stop only when it exists: an empty list, or a pane too short to split, has no
+//! second half, and forward from the list goes straight on to the conversation.
 //!
 //! **A summary is one more event.** The run's own is the timeline's newest row and the
 //! ones somebody asked for sit where they were asked for; nothing is held above the timeline,
@@ -46,10 +53,12 @@
 //! the half on its own and push whatever happened either side of it out of view, which is the
 //! opposite of what a timeline is for; the fourth row of a long one now says how many were left
 //! out (`agents::MAX_ENTRY_ROWS`). That is only honest because the rest is a keystroke away:
-//! with the keys in this half, `j`/`k` walk an event at a time rather than a line at a time, and
-//! `Enter` gives the event the whole pane and a scroll of its own until `Esc`. The wheel and the
-//! page keys still move by lines, which is what reading in place wants. The idle summary hocus
-//! pushes is not capped — there is one of it and nothing beside it competing for the room.
+//! with the keys in this half, `j`/`k` and the arrows walk an event at a time rather than a line
+//! at a time, and `Enter` gives the event the whole pane and a scroll of its own until `Esc`. The
+//! wheel and the page keys still move by lines, which is what reading in place wants, and the
+//! cursor comes along with the window rather than the window snapping back to the cursor. Off
+//! the tail, both hold their event while a working agent adds more below them. The idle summary
+//! hocus pushes is not capped — there is one of it and nothing beside it competing for the room.
 //!
 //! **A prompt is not always something a person typed.** Claude Code wakes an agent whose
 //! background task has finished by submitting a `<task-notification>` on its behalf, staples a
@@ -59,9 +68,12 @@
 //! id, summary, and a row saying what is folded away — while the entry itself keeps the prompt
 //! byte for byte. In the reader those parts become folds: `j`/`k` walk them the way they walk
 //! events in the half below, `Enter` opens the one under the cursor, `o` opens the file it
-//! names, `y` copies it, and `r` swaps the lot for the source. `o` works in the history half
-//! too, on the event under the cursor, because a collapsed row has a cursor on an event and
-//! none within one.
+//! names, `y` copies it, and `v` swaps the lot for the source - not `r`, which one `Esc` later
+//! arms a resume on the same run, with `y` a keystroke from answering it. `o` works in the
+//! history half too, on the event under the cursor, because a collapsed row has a cursor on an
+//! event and none within one. It puts the panel away and opens the file focused in the floating
+//! layer, since an editor left under an overlay is an editor nobody can see; where there is no
+//! file to open, it says so rather than doing nothing.
 //!
 //! **The history is drawn as markdown**, by the same renderer the conversation uses
 //! (`hocus_proto::markdown`) — everything in the half is markdown by the time it arrives, a
@@ -74,8 +86,9 @@
 //! it: walking into an agent by any route — the pane keys, a tab switch, a tool
 //! — selects its row here, so the list shows where you are and not only where
 //! you last pointed. Walking onto anything else leaves the row selected and
-//! draws it dim, which is the difference between "you are here" and "here is
-//! where you were".
+//! draws it dim, marked `·` rather than `>`, which is the difference between
+//! "you are here" and "here is where you were" - in a glyph as well as a colour,
+//! for a terminal that draws neither dim nor colour.
 //!
 //! **`s` asks for a summary of the row under the cursor.** It is the only summary anybody
 //! asks for: the daemon buys exactly one of its own accord, when a run closes, and reads no
@@ -86,7 +99,9 @@
 //! nothing else (`wire::AGENT_SUMMARIZE`): which of the two kinds of work that means is the
 //! daemon's to know, the same way the rows themselves are hocus's to compute.
 //!
-//! **`r` resumes the archived run under the cursor**, behind a `y`/`n` on the divider. A run
+//! **`r` resumes the archived run under the cursor**, behind a `y`/`n` the footer asks - the
+//! footer rather than only the divider, because a divider cut to a narrow half loses its tail,
+//! and a question's tail is its answer keys. A run
 //! in the archive is named for the agent's own session id — `AgentRun.id` is
 //! `"{kind}:{session id}"` — which is exactly what `claude --resume` and `codex resume` take,
 //! so the one thing missing was a key. It asks first because it is the only key here that
@@ -96,23 +111,40 @@
 //! more (`wire::AGENT_RESUME`) — which agent, which folder and which machine are hocus's to
 //! know. Unlike everything else it is told when it is refused
 //! (`wire::AGENT_RESUME_RESULT`), because an answered confirmation that does nothing at all
-//! is worse than never having asked. A resumed agent keeps its session id and its hooks, so
-//! the daemon adopts the same run back: the row leaves the archive rather than a second one
-//! appearing beside it.
+//! is worse than never having asked. One that works puts the panel away, the way `Enter` on an
+//! agent does: hocus has walked the keyboard into the resumed pane, and an overlay left up over
+//! it would take the next keys meant for the panel into the agent underneath. A resumed agent
+//! keeps its session id and its hooks, so the daemon adopts the same run back: the row leaves
+//! the archive rather than a second one appearing beside it.
+//!
+//! **`?` opens the key sheet** - every key the surface is answering right now, one to a row,
+//! over the surface it describes. Each hint line is fitted to its row by dropping whole keys
+//! from the end, and ends in `? keys` where the sheet has the rest of them: the Agents footer
+//! gives up a trailing key or two to make room for it, but never its first key or the row's
+//! own verb, and a line where `?` would type a question mark or shut the sheet carries no
+//! marker at all. `Esc`, `?` or `q` shut it; `Tab`, `Shift+Tab` and Ctrl-o work through it;
+//! any other key shuts it and then does what it always does. Not while a box is being typed
+//! in, where `?` is a character. Every armed question stays armed under the sheet, which lists
+//! its answer keys - the VMs tab's close or sync question too, whose list goes on waiting for
+//! the answer under it exactly as it would without the sheet.
 //!
 //! **The two panes are separate plugins with one visibility.** The panel is one
-//! thing to the user, so Esc and Enter here put the whole of it away: this pane
-//! hides itself and hocus is asked for the other half
+//! thing to the user, so Esc and Enter here put the whole of it away. Esc steps back
+//! out of whatever it is in first - the reader, a question, a search, the
+//! previous-agents or waiting view, the tab bar, the key sheet - and only then does
+//! it hide the panel: this pane hides itself and hocus is asked for the other half
 //! (`wire::AGENT_STRIP_HIDE`), being the only one that knows both plugin ids.
 //! `Ctrl e a` brings the whole panel back with the keyboard here, `Ctrl e c`
 //! with the keyboard in the conversation; neither ever leaves one half alone.
-//! Ctrl-o cycles the panel - both halves, split intact - one corner
-//! clockwise; hocus does the arithmetic, since it places both overlays, so
-//! that key is a request (`wire::AGENT_STRIP_REPOSITION`) rather than a move.
+//! Ctrl-o - `Ctrl e o` in the default keymap, which spends a bare Ctrl-o on
+//! Session mode before any plugin hears it - cycles the panel, both halves and
+//! the split intact, one corner clockwise; hocus does the arithmetic, since it
+//! places both overlays, so that key is a request (`wire::AGENT_STRIP_REPOSITION`)
+//! rather than a move.
 //! Enter walks you to the selected agent, and puts the panel away on the way:
 //! the panel is an overlay drawn over the pane you asked for, so leaving it up
-//! would hand you the keyboard in a pane you cannot see. Esc is the same
-//! dismissal without the walk. `say_hello_to_hocus` carries hocus's url,
+//! would hand you the keyboard in a pane you cannot see. Esc at the top level is
+//! the same dismissal without the walk. `say_hello_to_hocus` carries hocus's url,
 //! because this pane is a
 //! view over rows only hocus can compute and a list with no hocus to ask has
 //! nothing to draw; the hocus it launches appears beside us but does **not**
@@ -172,11 +204,29 @@ struct State {
     /// Which event the history half's cursor is on, counted back from the newest - `0` is the
     /// newest event, the end the half is anchored to.
     ///
-    /// Counted from the newest for the same reason `history_scroll` is: an entry arriving must
-    /// not drag the cursor off what the user was pointing at. Only drawn while
-    /// `focus == Focus::History` - the half has no cursor when the keys are not in it, the way
-    /// the list's own selection is a band whether or not it has them.
+    /// Counted from the newest so that at the tail the cursor follows new events, which is what
+    /// the tail is for. Anywhere else a count from the newest moves as the run grows, so the
+    /// cursor also holds the event itself (`history_cursor_anchor`) and is put back on it when
+    /// the run is drawn again. Drawn while the keys are in the half, and dimly beside a search
+    /// hit, so the list can show which event matched.
     history_cursor: usize,
+    /// The event under `history_cursor`, by `HistoryEvent::revision`, while the cursor is off
+    /// the newest one: what a run growing under it must not move it off. `None` at the tail,
+    /// which follows new events instead.
+    history_cursor_anchor: Option<Option<u64>>,
+    /// The event the bottom row of a wound-back window belongs to, and how far into it that row
+    /// is. `history_scroll` counts from the newest end, so a run growing under a window the user
+    /// wound back used to slide the text being read up by however much arrived; the window is
+    /// put back on this row instead. `None` at the tail, which follows.
+    history_bottom_anchor: Option<(Option<u64>, usize)>,
+    /// The page keys or the wheel moved the history window since a key last moved the cursor.
+    ///
+    /// Which of the two gives way when they part: after a scroll the cursor comes to the window,
+    /// and after anything else - a key on the cursor, a resize, a run growing - the window goes
+    /// to the cursor. A window wound back to the cursor on every frame used to undo the page
+    /// keys and the wheel before they were drawn, which is what made them look dead there.
+    /// Settled in `render_history` for `Reading::reveal`'s reason: only it knows the width.
+    history_scrolled: bool,
     /// The event being read in full, if any - the whole pane becomes it.
     ///
     /// Holds what the event *said* rather than a pointer into the timeline: the run behind it
@@ -194,7 +244,7 @@ struct State {
     reader_cache: Option<((u64, u64, usize), envelope::ReaderLines)>,
     /// The parse behind `reader_cache` for prose or raw source, keyed on the opening it was
     /// made for. Held apart because it depends on nothing but `Reading::text`, which an opening
-    /// never changes: a resize, a fold or `r` with the reader open re-wraps an event rather
+    /// never changes: a resize, a fold or `v` with the reader open re-wraps an event rather
     /// than parsing it again.
     ///
     /// Shared: an event the timeline parsed whole arrives with the timeline's parse
@@ -215,8 +265,27 @@ struct State {
     /// event is not compared character by character on the way to every frame.
     reading_id: u64,
     /// Which half the keys work. Not reset by anything hocus pushes: a strip arriving while
-    /// the user is reading the history must not throw them back into the list.
+    /// the user is reading the history must not throw them back into the list. Put back on the
+    /// list when the panel is put away (`end_visit`), and by nothing short of that.
     focus: Focus,
+    /// Whether the host last reported this pane as the one with the keyboard
+    /// (`PaneInfo::is_focused`), or `None` before any manifest has named it.
+    ///
+    /// `None` is read as "yes": a pane that has been told nothing either way draws its focus
+    /// markers as it always did, and the first manifest to arrive is not worth a redraw on its
+    /// own (see `own_pane_changed`). Only what is *drawn* reads this - `focus` and
+    /// `tabs_focused` stay where they are when the keyboard leaves, so that coming back lands
+    /// where the user left - which is what [`State::keys_here`] is for.
+    has_keyboard: Option<bool>,
+    /// Whether the host last reported this pane shown, which is the edge `own_pane_changed`
+    /// ends a visit on. `hide_the_panel` clears it too, having ended the visit itself.
+    pane_shown: bool,
+    /// How many rows the last Agents render gave the label naming a filtered view, above the
+    /// list: `1` in a search, the previous-agents view or the waiting view, `0` otherwise - and
+    /// a row more for each line of a failed search's reason under its box
+    /// (`search_failure_lines`). A click is mapped through it onto the list, the same way
+    /// `last_window_start` maps it onto a row.
+    last_label_rows: usize,
     /// Every ring step that left this pane, as the stop the conversation was sent to.
     ///
     /// Test-only: `pipe_message_to_plugin` is a no-op off wasm, so nothing else can tell a
@@ -241,6 +310,36 @@ struct State {
     /// wasm, so nothing else can tell an Enter that dismissed the panel from one that did not.
     #[cfg(test)]
     panel_hides: usize,
+    /// Every file `o` has opened, in order. Test-only: the host call waits on a reply, which a
+    /// native test cannot give it.
+    #[cfg(test)]
+    opened_files: Vec<String>,
+    /// How many times this pane has asked hocus for older runs. Test-only, for `ring_yields`'
+    /// reason.
+    #[cfg(test)]
+    archive_requests: usize,
+    /// Every New agent modal this pane has launched, as the configuration it was launched with.
+    /// Test-only, for `ring_yields`' reason.
+    #[cfg(test)]
+    new_agent_launches: Vec<BTreeMap<String, String>>,
+    /// What the last `o` or `y` had to say, until the next key: why `o` opened nothing, or
+    /// what `y` put on the clipboard. A key that silently does nothing reads as a key that is
+    /// not bound, and a copy that says nothing leaves the user to guess which of two things it
+    /// took.
+    open_note: Option<String>,
+    /// Whether any strip has arrived from hocus yet. Before one has, the list is empty because
+    /// nobody has said what is in it - which is not the same thing as a session with no agents,
+    /// and must not be drawn as one.
+    strip_seen: bool,
+    /// Why hocus could not fetch the history of the row it names, as a `selection_key`.
+    run_error: Option<(String, String)>,
+    /// The key sheet `?` opened over the surface, as how far it is scrolled, or `None` while it
+    /// is shut.
+    key_sheet_scroll: Option<usize>,
+    /// How many rows the last key-sheet render had to show it in, and the furthest it could be
+    /// scrolled - only `render` knows the pane's height.
+    last_sheet_rows: usize,
+    last_sheet_max_scroll: usize,
     /// Index into `rows`. Always on an `Agent` row when one exists.
     selected: usize,
     /// The last pane hocus reported focused, agent or not.
@@ -278,6 +377,11 @@ struct State {
     /// still answers the two questions it always did, whether there is a history half at all
     /// and where a click lands.
     last_history_body_rows: usize,
+    /// Where the last history render's window began, as an index into its entries, and how
+    /// many rows under the divider it gave to what does not scroll - the pinned header and a
+    /// refusal - before the window. What maps a click in the half back onto an event.
+    last_history_window_start: usize,
+    last_history_body_top: usize,
     /// The largest `history_scroll` the last render could actually honour.
     ///
     /// Kept for the same reason `last_window_start` is: how many lines the history has
@@ -300,16 +404,17 @@ struct State {
     /// The last `history_lines`, and what it was computed from. See `cached_history_lines`.
     /// A miss on a run is rebuilt from `LoadedRun::parsed`, which only re-wraps.
     history_cache: Option<(HistoryKey, agents::HistoryLines)>,
-    /// The row an `s` has asked the daemon about and not yet had an answer for, as a
-    /// `selection_key`.
+    /// The row an `s` has asked the daemon about and not yet had an answer for.
     ///
     /// A hint on the divider rather than state anything is decided from. The round trip is a
     /// model's, so it is seconds long, and a key that reaches the network and shows nothing in
-    /// the meantime reads as a key that did nothing. Held as the key rather than a flag so
-    /// that walking off the row takes it with you: nothing here ever hears that a request
-    /// failed - a refusal in the daemon is silent by design - so the only honest lifetime is
-    /// one the user can end themselves.
-    summarizing: Option<String>,
+    /// the meantime reads as a key that did nothing. Held as the row's key rather than a flag
+    /// so that walking off the row takes it with you. Nothing here ever hears that a request
+    /// was refused - a refusal in the daemon is silent - so it ends on a summary stamped after
+    /// the press, the only thing that answers it, and says so once it has waited longer than
+    /// the daemon ever takes: a hint that ended on any change to the run read as "done" when
+    /// the run had only moved on.
+    summarizing: Option<SummaryAsk>,
     /// The row an `r` has armed a resume confirmation on, as a `selection_key`.
     ///
     /// A confirmation because this is the one key here that starts a process. Everything
@@ -334,8 +439,19 @@ struct State {
     predecessor_request: u64,
     search_editing: bool,
     search_pending: bool,
+    /// When a search sent and not yet answered stops being worth waiting for. hocus answers
+    /// synchronously, so a search still out long after it was sent was dropped - or went to a
+    /// hocus that is not there - and a box that goes on looking the same says neither.
+    search_deadline_ms: i64,
     search_query: String,
+    /// What was typed in the search box when `Tab` or `Shift+Tab` took the keys out of it, for
+    /// the next `/` to bring back. The box cannot stay open behind the keys the way the Todos
+    /// box does: it takes every key ahead of the tab bar, so the ring would never get past it.
+    search_draft: Option<String>,
     applied_search_query: Option<String>,
+    /// When the applied search ran. Its hits are not run again, so after a long hide the view
+    /// says how old it is rather than passing for a list of what matches now.
+    searched_at_ms: Option<i64>,
     search_request: u64,
     search_error: Option<String>,
     search_truncated: bool,
@@ -441,7 +557,7 @@ struct Reading {
     /// every row of every run on every history render, and this is work only for the events
     /// somebody actually presses Enter on.
     sections: Vec<envelope::Section>,
-    /// Show the event exactly as it arrived, tags and all — what `r` toggles. The folds are the
+    /// Show the event exactly as it arrived, tags and all — what `v` toggles. The folds are the
     /// reading; this is the record, and a reader that could not get back to it would be asking
     /// to be trusted.
     raw: bool,
@@ -460,6 +576,36 @@ struct Reading {
     /// and for an envelope nobody registered, the tag is the only name it has.
     envelope: Option<String>,
 }
+
+/// An `s` waiting on its answer. See `State::summarizing`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SummaryAsk {
+    /// The row asked about, as a `selection_key`.
+    row: String,
+    /// When `s` was pressed: a summary stamped at or after this is the answer. The daemon
+    /// stamps with the same clock, on the same machine.
+    asked_at_ms: i64,
+    /// Waited longer than the daemon ever takes: nothing is coming, or what came said what the
+    /// last summary said.
+    stale: bool,
+}
+
+/// How long an `s` is worth waiting on before the divider stops saying it is being worked on.
+/// A little over the daemon's own in-flight window (twelve heartbeats, about a minute), so a
+/// retry it offers is never one the daemon would still refuse as already asked.
+const SUMMARY_WAIT_MS: i64 = 70_000;
+
+/// The foot of every key sheet: the keys the whole panel answers, whichever tab or stop has
+/// them, and which no tab's own sheet lists. The move is named as the default keymap spells
+/// it - a bare Ctrl-o is Session mode there, and reaches the panel only while Locked.
+const PANEL_KEYS: &[(&str, &str)] = &[
+    ("Ctrl e o", "move the panel (Ctrl-o when locked)"),
+    ("?", "shut this sheet"),
+];
+
+/// How long a search is worth waiting on. hocus answers from its store synchronously, so this
+/// is long enough for a slow store and short enough that a dropped request is noticed.
+const SEARCH_TIMEOUT_MS: i64 = 15_000;
 
 /// Which half of the pane the keys work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -505,6 +651,10 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::Key,
             EventType::Mouse,
+            // A bracketed paste never reaches us as keys: the host buffers the bytes between the
+            // markers and hands them over whole, and drops them entirely if we are not
+            // subscribed here - which used to make every paste into the panel's boxes vanish.
+            EventType::PastedText,
             EventType::PluginDataChanged,
             EventType::PermissionRequestResult,
             EventType::Timer,
@@ -541,12 +691,22 @@ impl ZellijPlugin for State {
             },
             Event::PermissionRequestResult(status) => self.swamp_permission(status),
             Event::Visible(visible) => self.swamp_visibility(visible),
-            Event::PaneUpdate(manifest) => self.swamp_panes(&manifest),
+            Event::PaneUpdate(manifest) => {
+                // Read here rather than in `swamp_panes`, which looks the pane up for its own
+                // polling: whether this pane is shown and has the keys is the whole panel's
+                // business, not one tab's. First, so a hide ends the visit before Swamp
+                // reacts to it.
+                let keys = own_pane(&manifest, self.own_plugin_id).is_some_and(|pane| {
+                    self.own_pane_changed(!pane.is_suppressed, pane.is_focused)
+                });
+                self.swamp_panes(&manifest) || keys
+            },
             Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
             Event::PluginDataChanged { watch_id, rows, .. } => {
                 self.todo_rows_changed(watch_id, rows)
             },
             Event::Key(key) => self.on_key(key),
+            Event::PastedText(text) => self.on_paste(&text),
             Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
             // The ages in the history half are drawn from the clock, so nothing the pane
             // receives can tell it they have moved on. Re-armed whatever the answer, so the
@@ -554,11 +714,22 @@ impl ZellijPlugin for State {
             // pane showing nothing time-dependent still costs nothing to leave open.
             Event::Timer(_) => {
                 set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
+                let now = now_ms();
                 let vm_changed = self.poll_vms();
-                let minute = now_ms() / 60_000;
+                // The other requests here with a deadline: a triage handed to hocus that was
+                // never acknowledged, a search nobody answered and a summary nobody wrote all
+                // stop claiming to be on their way.
+                let triage_expired = self.expire_swamp_triage(now);
+                let search_expired = self.expire_search(now);
+                let summary_expired = self.expire_summary_ask(now);
+                let minute = now / 60_000;
                 let changed = minute != self.age_minute;
                 self.age_minute = minute;
-                vm_changed || (changed && self.shows_an_age())
+                vm_changed
+                    || triage_expired
+                    || search_expired
+                    || summary_expired
+                    || (changed && self.shows_an_age())
             },
             _ => false,
         };
@@ -635,19 +806,27 @@ impl ZellijPlugin for State {
             else {
                 return false;
             };
-            // Named by the run rather than by the cursor, and dropped when the two disagree:
-            // the answer is about the row that was asked about, and a user who walked on
-            // while it was out has ended the question themselves - the same lifetime every
-            // other hint on this divider has. Keeping it would mean a stale refusal waiting
-            // to reappear the next time the cursor came back to the row.
+            // Empty detail is success, and success puts the panel away wherever the cursor
+            // is now. hocus has already walked the keyboard into the resumed pane, and an
+            // overlay left drawn over it is the "keyboard in a pane you cannot see" that
+            // `activate` hides for: the next `j`, `k` or `Esc` meant for the list would go to
+            // the agent underneath. The hide comes after the focus moved, which is safe - the
+            // overlay holds no keyboard by then to drop.
+            if result.detail.is_empty() {
+                self.resume_note = None;
+                self.hide_the_panel();
+                return true;
+            }
+            // A refusal is named by the run rather than by the cursor, and dropped when the two
+            // disagree: the answer is about the row that was asked about, and a user who walked
+            // on while it was out has ended the question themselves - the same lifetime every
+            // other hint on this divider has. Keeping it would mean a stale refusal waiting to
+            // reappear the next time the cursor came back to the row.
             let row = format!("run:{}", result.run_id);
             if self.selection_key() != Some(row.clone()) {
                 return false;
             }
-            // Empty detail is success. The pane has the focus by now and the next strip
-            // moves the row out of the archive, so there is nothing left for the divider to
-            // say - only a note from an earlier attempt to take down.
-            let note = (!result.detail.is_empty()).then_some((row, result.detail));
+            let note = Some((row, result.detail));
             let changed = self.resume_note != note;
             self.resume_note = note;
             return changed;
@@ -661,7 +840,26 @@ impl ZellijPlugin for State {
                 return false;
             }
             let Some(payload) = pipe_message.payload else {
-                return false;
+                // No run, and why: hocus could not fetch the selected archived run's history.
+                // Said in the half, which would otherwise go on saying it is loading.
+                let Some(error) = pipe_message.args.get("error") else {
+                    return false;
+                };
+                // Named by the run it is about, the way a resume refusal is, and dropped when
+                // that is not the row under the cursor: a reply to a selection the user has
+                // walked off must not say another run's history is unavailable. hocus sends it
+                // again on every snapshot, so only a changed reason is worth a redraw.
+                let row = pipe_message
+                    .args
+                    .get("run_id")
+                    .map(|run_id| format!("run:{run_id}"));
+                if row.is_none() || row != self.selection_key() {
+                    return false;
+                }
+                let note = row.map(|row| (row, error.clone()));
+                let changed = self.run_error != note;
+                self.run_error = note;
+                return changed;
             };
             let fingerprint = agents::run_payload_fingerprint(&payload);
             if self
@@ -690,32 +888,41 @@ impl ZellijPlugin for State {
         else {
             return false;
         };
+        // The first strip is news even when it is empty: the list stops saying it is waiting
+        // for hocus and starts saying what hocus said.
+        let first = !std::mem::replace(&mut self.strip_seen, true);
         // The same comparison, for the other thing that moves the selection: a
         // push whose focus walked onto another agent.
         let selection = self.selection_key();
         let rendered = self.set_rows(strip);
+        let answered = self.summary_in_the_strip();
         if self.follow_selection(selection) {
             self.send_selection();
         }
-        rendered
+        rendered || first || answered
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
         self.last_rows = rows;
         self.last_cols = cols;
         self.last_footer_row = None;
+        self.last_label_rows = 0;
+        // Settled before anything is drawn, because the surface's share of the pane - what is
+        // left under the tab bar and above the footer - is what the cursor is placed in.
+        let footer = self.footer_hint();
+        let body_rows = rows.saturating_sub(1 + usize::from(footer.is_some()));
         // Host commands must precede drawing; keep the dropdown output until
-        // after the issue list so it paints over the rows beneath it.
-        let swamp_form = if self.surface == Surface::Swamp {
-            self.swamp_filter_buffer(rows.saturating_sub(1), cols)
+        // after the issue list so it paints over the rows beneath it. Nothing of the
+        // surface's is drawn under the key sheet, so neither is its dropdown.
+        let swamp_form = if self.surface == Surface::Swamp && self.key_sheet_scroll.is_none() {
+            self.swamp_filter_buffer(body_rows, cols)
         } else {
             None
         };
-        show_cursor(
-            swamp_form
-                .as_ref()
-                .and_then(|buffer| buffer.cursor.flatten()),
-        );
+        let form_cursor = swamp_form
+            .as_ref()
+            .and_then(|buffer| buffer.cursor.flatten());
+        show_cursor(self.text_cursor(form_cursor, body_rows, cols));
         if rows <= 1 || cols == 0 {
             // Forget the hidden geometry, but keep selections and scrolls for when it returns.
             self.last_window_start = 0;
@@ -732,69 +939,49 @@ impl ZellijPlugin for State {
         if rows == 0 || cols == 0 {
             return;
         }
-        let label = if self.search_editing {
-            format!("Search: {}", self.search_query)
-        } else if let Some(previous) = &self.predecessors {
-            format!("Previous agents: {}", previous.title)
-        } else if self.search_base.is_some() {
-            let suffix = self
-                .search_error
-                .as_deref()
-                .map(|error| format!("  error: {error}"))
-                .unwrap_or_else(|| {
-                    if self.search_truncated {
-                        "  more matches omitted".to_owned()
+        // The tab bar is drawn on every surface and in every view. It used to give way to a
+        // "Search: …" or "Previous agents: …" label, which took the panel's only map - and its
+        // only click targets, and a ring stop - away from all four tabs over a state that
+        // belongs to one of them. That label is the Agents surface's own first row now.
+        let bar = self.bar_has_keys();
+        self.tab_cells = tabs::cells(
+            [
+                (
+                    "Agents".to_owned(),
+                    self.surface == Surface::Agents,
+                    bar && self.surface == Surface::Agents,
+                    Surface::Agents,
+                ),
+                (
+                    "Todos".to_owned(),
+                    self.surface == Surface::Todos,
+                    bar && self.surface == Surface::Todos,
+                    Surface::Todos,
+                ),
+                (
+                    if self.vms.has_error() { "VMs!" } else { "VMs" }.to_owned(),
+                    self.surface == Surface::Vms,
+                    bar && self.surface == Surface::Vms,
+                    Surface::Vms,
+                ),
+                (
+                    if self.swamp.has_error() {
+                        "Swamp!"
                     } else {
-                        String::new()
+                        "Swamp"
                     }
-                });
-            format!("Search: {}{}", self.search_query, suffix)
-        } else {
-            String::new()
-        };
-        self.tab_cells.clear();
-        if label.is_empty() {
-            self.tab_cells = tabs::cells(
-                [
-                    (
-                        "Agents".to_owned(),
-                        self.surface == Surface::Agents,
-                        self.tabs_focused && self.surface == Surface::Agents,
-                        Surface::Agents,
-                    ),
-                    (
-                        "Todos".to_owned(),
-                        self.surface == Surface::Todos,
-                        self.tabs_focused && self.surface == Surface::Todos,
-                        Surface::Todos,
-                    ),
-                    (
-                        if self.vms.has_error() { "VMs!" } else { "VMs" }.to_owned(),
-                        self.surface == Surface::Vms,
-                        self.tabs_focused && self.surface == Surface::Vms,
-                        Surface::Vms,
-                    ),
-                    (
-                        if self.swamp.has_error() {
-                            "Swamp!"
-                        } else {
-                            "Swamp"
-                        }
-                        .to_owned(),
-                        self.surface == Surface::Swamp,
-                        self.tabs_focused && self.surface == Surface::Swamp,
-                        Surface::Swamp,
-                    ),
-                ],
-                cols,
-            );
-            for cell in &self.tab_cells {
-                print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
-            }
-        } else {
-            print_text_with_coordinates(Text::new(label), 0, 0, Some(cols), None);
+                    .to_owned(),
+                    self.surface == Surface::Swamp,
+                    bar && self.surface == Surface::Swamp,
+                    Surface::Swamp,
+                ),
+            ],
+            cols,
+        );
+        for cell in &self.tab_cells {
+            print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
         }
-        if let Some(hint) = self.footer_hint() {
+        if let Some(hint) = footer {
             self.last_footer_row = Some(rows - 1);
             print_text_with_coordinates(
                 Text::new(hint).dim_range(..),
@@ -804,8 +991,14 @@ impl ZellijPlugin for State {
                 Some(1),
             );
         }
-        let rows = rows.saturating_sub(1 + usize::from(self.last_footer_row.is_some()));
+        let rows = body_rows;
         if rows == 0 {
+            return;
+        }
+        // Over the surface rather than beside it: it is about the surface, and a pane of these
+        // widths has no room to spare for both.
+        if self.key_sheet_scroll.is_some() {
+            self.render_key_sheet(rows, cols);
             return;
         }
         match self.surface {
@@ -833,6 +1026,42 @@ impl ZellijPlugin for State {
             self.render_reader(rows, cols);
             return;
         }
+        // A filtered view says so above the list it filters - on this surface only, since it
+        // is this surface's state - and the list, the divider and the history half all start a
+        // row lower for it. Plain rather than dim: it is what the list below *is*, not a hint.
+        let top = match self.view_label() {
+            Some(label) => {
+                paint(Text::new(label), 0, 0, Some(cols), None);
+                // Why the search just typed failed, whole, under the box it failed in: the
+                // footer is one row and would cut the reason to its first few words, and the
+                // reason is what decides between a retry and going back. At most three rows,
+                // and never so many that nothing is left of the list under them.
+                let failure = self.search_failure_lines(cols);
+                let shown = failure.len().min(3).min(rows.saturating_sub(2));
+                for (index, line) in failure.into_iter().take(shown).enumerate() {
+                    paint(
+                        Text::new(line).error_color_range(..),
+                        0,
+                        1 + index,
+                        Some(cols),
+                        None,
+                    );
+                }
+                1 + shown
+            },
+            None => 0,
+        };
+        self.last_label_rows = top;
+        let rows = rows - top;
+        if rows == 0 {
+            self.last_window_start = 0;
+            self.last_list_rows = 0;
+            self.last_history_rows = 0;
+            self.last_history_body_rows = 0;
+            self.last_history_max_scroll = 0;
+            self.focus = Focus::List;
+            return;
+        }
         if self.rows.is_empty() {
             // Nothing to select and so nothing to have a history: the pane says so once
             // rather than splitting an empty list off an empty history.
@@ -845,14 +1074,14 @@ impl ZellijPlugin for State {
             // too-short pane makes below, and what the Tab handler's ring relies on.
             self.focus = Focus::List;
             self.last_history_max_scroll = 0;
-            let message = if self.waiting_base.is_some() {
-                "no agents waiting for you"
-            } else if self.search_base.is_some() {
-                "no matches"
-            } else {
-                "no agents"
-            };
-            paint(Text::new(message).dim_range(..), 0, 0, Some(cols), None);
+            // What the emptiness is, and the key out of it on a row of its own: the two on one
+            // line are wider than the narrowest half, which would cut off the part that says
+            // what to do.
+            let (message, next) = self.empty_list_message();
+            paint(Text::new(message).dim_range(..), 0, top, Some(cols), None);
+            if let Some(next) = next.filter(|_| rows >= 2) {
+                paint(Text::new(next).dim_range(..), 0, top + 1, Some(cols), None);
+            }
             return;
         }
         let (list_rows, history_rows) = split(rows);
@@ -875,63 +1104,8 @@ impl ZellijPlugin for State {
         let now = now_ms();
         for (index, row) in self.rows.iter().skip(start).take(list_rows).enumerate() {
             let selected = start + index == self.selected;
-            let text = match row {
-                // A header takes no marker column: nothing can land on it, and
-                // the indentation it carries is what shows the nesting.
-                StripRow::Project(text) => Text::new(text).color_range(0, ..),
-                StripRow::Branch(text) => Text::new(text).color_range(3, ..),
-                StripRow::Agent { text, .. } => {
-                    let line = Text::new(format!("{} {}", if selected { ">" } else { " " }, text));
-                    match (selected, live) {
-                        // The selection is a band either way - `selected()` paints
-                        // the row's whole width - so it stays findable when the
-                        // user is somewhere else. Colour against dim is what says
-                        // which of those two it is.
-                        (true, true) => line.selected().color_range(2, ..),
-                        (true, false) => line.selected().dim_range(..),
-                        (false, _) => line.dim_range(..),
-                    }
-                },
-                StripRow::Run {
-                    kind,
-                    title,
-                    worktree,
-                    started_at_ms,
-                    continuation,
-                    ..
-                } => {
-                    let line = Text::new(format!(
-                        "{}   {}",
-                        if selected { ">" } else { " " },
-                        archive_row(
-                            &columns,
-                            now,
-                            kind,
-                            worktree,
-                            title,
-                            *continuation,
-                            *started_at_ms,
-                        )
-                    ));
-                    if selected {
-                        line.selected().color_range(4, ..)
-                    } else {
-                        line.dim_range(..)
-                    }
-                },
-                StripRow::MoreRuns => {
-                    let line = Text::new(format!(
-                        "{}   load older runs…",
-                        if selected { ">" } else { " " }
-                    ));
-                    if selected {
-                        line.selected()
-                    } else {
-                        line.dim_range(..)
-                    }
-                },
-            };
-            paint(text, 0, index, Some(cols), None);
+            let text = list_text(row, selected, live, &columns, now);
+            paint(text, 0, top + index, Some(cols), None);
         }
         self.last_history_rows = history_rows;
         if history_rows == 0 {
@@ -942,7 +1116,7 @@ impl ZellijPlugin for State {
             self.last_history_body_rows = 0;
             return;
         }
-        self.render_history(list_rows, history_rows, cols);
+        self.render_history(top + list_rows, history_rows, cols);
     }
 }
 
@@ -1057,6 +1231,70 @@ fn archive_row(
     row
 }
 
+/// One row of the list as it is drawn: `selected` is whether the cursor is on it, and `live`
+/// whether the selected row is the pane the user is in.
+fn list_text(row: &StripRow, selected: bool, live: bool, columns: &Columns, now: i64) -> Text {
+    let marker = if selected { ">" } else { " " };
+    match row {
+        // A header takes no marker column: nothing can land on it, and
+        // the indentation it carries is what shows the nesting.
+        StripRow::Project(text) => Text::new(text).color_range(0, ..),
+        StripRow::Branch(text) => Text::new(text).color_range(3, ..),
+        StripRow::Agent { text, .. } => {
+            // The selection is a band either way - `selected()` paints the row's whole
+            // width - so it stays findable when the user is somewhere else. Colour against
+            // dim says which of those two it is, and so does the marker: `>` for the pane the
+            // user is in, `·` for the one they were last in, since dim and colour are both
+            // things a terminal can decline to draw.
+            let marker = match (selected, live) {
+                (true, true) => ">",
+                (true, false) => "·",
+                (false, _) => " ",
+            };
+            let line = Text::new(format!("{marker} {text}"));
+            match (selected, live) {
+                (true, true) => line.selected().color_range(2, ..),
+                (true, false) => line.selected().dim_range(..),
+                (false, _) => line.dim_range(..),
+            }
+        },
+        StripRow::Run {
+            kind,
+            title,
+            worktree,
+            started_at_ms,
+            continuation,
+            ..
+        } => {
+            let line = Text::new(format!(
+                "{marker}   {}",
+                archive_row(
+                    columns,
+                    now,
+                    kind,
+                    worktree,
+                    title,
+                    *continuation,
+                    *started_at_ms,
+                )
+            ));
+            if selected {
+                line.selected().color_range(4, ..)
+            } else {
+                line.dim_range(..)
+            }
+        },
+        StripRow::MoreRuns => {
+            let line = Text::new(format!("{marker}   load older runs…"));
+            if selected {
+                line.selected()
+            } else {
+                line.dim_range(..)
+            }
+        },
+    }
+}
+
 // Every content coordinate is relative to the row below the permanent tab bar.
 fn paint(text: Text, x: usize, y: usize, width: Option<usize>, height: Option<usize>) {
     print_text_with_coordinates(text, x, y + 1, width, height);
@@ -1068,8 +1306,38 @@ fn paint(text: Text, x: usize, y: usize, width: Option<usize>, height: Option<us
 /// Where the focus shows. The list's own selection band is dim or coloured already, and that
 /// says whether the selected agent is the pane the user is *in* - overloading it with "and the
 /// keys are up here" would cost the pane the only thing it says about the agent.
+///
+/// `focused` is whether a key pressed now reaches what is below the rule, and callers pass
+/// exactly that - not merely which half the stop is on - so a rule left coloured after the
+/// keys went elsewhere cannot claim them.
 fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usize, cols: usize) {
-    let line = divider_line(label, above, below, cols);
+    paint(
+        divider_text(label, above, below, focused, cols),
+        0,
+        y,
+        Some(cols),
+        None,
+    );
+}
+
+/// The columns [`divider_text`] puts in front of a label to say whether the keys reach below
+/// the rule - `▸ `, or two spaces - which a caller fitting its label to the row by whole
+/// segments has to leave room for, or `divider_line` cuts the tail off mid-word.
+const FOCUS_MARK_COLS: usize = 2;
+
+/// [`render_divider`]'s row, styled: what a test can read the styles off.
+///
+/// The focus is a `▸` before the label as well as the rule's colour, since colour is a thing a
+/// terminal can decline to draw; an unfocused label keeps the two columns, so it does not jump
+/// sideways as the keys come and go.
+fn divider_text(label: &str, above: usize, below: usize, focused: bool, cols: usize) -> Text {
+    let label = match (focused, label.is_empty()) {
+        (true, true) => "▸".to_owned(),
+        (true, false) => format!("▸ {label}"),
+        (false, true) => String::new(),
+        (false, false) => format!("  {label}"),
+    };
+    let line = divider_line(&label, above, below, cols);
     // Found rather than counted: a label cut to fit may have lost the marker, and no kind can
     // contain one (`valid_kind` allows no punctuation).
     let marker = label
@@ -1077,15 +1345,18 @@ fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usi
         .then(|| line.chars().position(|c| c == '!'))
         .flatten();
     let text = Text::new(line);
-    let text = match focused {
-        true => text.color_range(2, ..),
-        false => text.dim_range(..),
+    // Dim wins over colour where both are asked for, so an unfocused rule is dimmed around
+    // the marker rather than under it: a waiting `!` painted red under a dim range was drawn
+    // dim, the one character on the row meant to stand out.
+    let text = match (focused, marker) {
+        (true, _) => text.color_range(2, ..),
+        (false, Some(at)) => text.dim_range(..at).dim_range(at + 1..),
+        (false, None) => text.dim_range(..),
     };
-    let text = match marker {
+    match marker {
         Some(at) => text.error_color_range(at..at + 1),
         None => text,
-    };
-    paint(text, 0, y, Some(cols), None);
+    }
 }
 
 /// What the divider has to say about the row under the cursor beyond naming it, and how much
@@ -1093,11 +1364,13 @@ fn render_divider(label: &str, above: usize, below: usize, focused: bool, y: usi
 ///
 /// The divider is one line, `fit_label` cuts it from the tail, and an agents pane is narrow -
 /// so what shares the row with the label and what takes the whole of it is a decision, not a
-/// detail. A hint about something still happening rides `Beside` the label; a refusal, which
-/// is longer than either and is the only one the user has not already seen, takes the row
-/// `Instead`.
+/// detail. A hint about something still happening rides `Beside` the label; a question comes
+/// `Before` it, because its tail is its answer keys and the tail is what a narrow row loses;
+/// a refusal, which is longer than any of them and is the only one the user has not already
+/// seen, takes the row `Instead`.
 enum Hint {
     Beside(String),
+    Before(String),
     Instead(String),
 }
 
@@ -1105,19 +1378,20 @@ enum Hint {
 ///
 /// Split out from the drawing because it is the one line in the pane that has to fit three
 /// things onto a row rather than one, and a string is what a test can measure.
+///
+/// A label is text from anywhere - a todo, a run's title, a refusal - and one carrying a line
+/// feed or an escape would move the terminal's cursor rather than print: a line feed on the
+/// pane's last row scrolls the whole pane up. So every control character is drawn as a space.
 fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String {
-    // Both ends of it, so a half wound back into the past says how far and how much is still
-    // ahead of it. No scrollbar: nothing in the tree draws one.
-    let position = match (above, below) {
-        (0, 0) => String::new(),
-        (above, 0) => format!(" ↑{above} "),
-        (0, below) => format!(" ↓{below} "),
-        (above, below) => format!(" ↑{above} ↓{below} "),
-    };
+    let label: String = label
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let position = scroll_readout(above, below);
     // The readout shares the row with the label, so it is taken out of the label's room rather
     // than out of the rule: how far back the history is wound is worth more than the last few
     // characters of a kind, and this is the only place that knows both.
-    let label = agents::fit_label(label.to_owned(), cols.saturating_sub(position.width()));
+    let label = agents::fit_label(label, cols.saturating_sub(position.width()));
     let mut line = match label.is_empty() {
         true => "──".to_owned(),
         false => format!("─ {label} "),
@@ -1128,6 +1402,21 @@ fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String 
     line.push_str(&"─".repeat(rule));
     line.push_str(&position);
     line
+}
+
+/// The scroll position [`divider_line`] draws at the right-hand end of the rule: both ends of
+/// it, so a half wound back into the past says how far and how much is still ahead of it. No
+/// scrollbar: nothing in the tree draws one.
+///
+/// One function for every surface that fits a label into what the readout leaves of the row,
+/// so the room they fit to and the readout drawn cannot disagree.
+fn scroll_readout(above: usize, below: usize) -> String {
+    match (above, below) {
+        (0, 0) => String::new(),
+        (above, 0) => format!(" ↑{above} "),
+        (0, below) => format!(" ↓{below} "),
+        (above, below) => format!(" ↑{above} ↓{below} "),
+    }
 }
 
 /// How the pane divides: `(list_rows, history_rows)`, with the divider on the row between
@@ -1191,35 +1480,517 @@ impl Predecessors {
 }
 
 impl State {
+    /// The key hints on the pane's bottom row, or `None` where there is no such row.
+    ///
+    /// Three owners. The key sheet, while it is up, says how to shut it, on every surface: it
+    /// is drawn over whatever hint row the surface has. Otherwise only Agents has one - the
+    /// other surfaces carry their hints on a row of their own, so a footer there would be the
+    /// same keys twice, and that row is where they say how to work the tab bar while it has the
+    /// keys, so their bodies keep the same number of rows either way - all but a quiet VMs
+    /// list, whose row comes only with the bar's keys (`render_vms`), and an open todo box,
+    /// whose keys spill onto a row under the list when the draft leaves its own row too little
+    /// room for them, the bar's as much as the box's (`input_row`). On Agents, while the
+    /// panel's own tab bar has the keys the row is the bar's: the bar answers nothing but its
+    /// own keys, so the list's hints would be advertising keys that are not what the next press
+    /// does.
+    ///
+    /// Built as segments and fitted by dropping whole ones from the end rather than cutting
+    /// mid-word - `Enter fo` names no key at all. The Agents footer gives up a trailing key or
+    /// two to end in `? keys`, which is what `?` opens, but never its first key or the row's own
+    /// verb (`agents::fit_hints_marked`). A line where `?` is typed into the search box, or
+    /// shuts the sheet, carries no marker (`agents::fit_keys`): there it opens nothing.
     fn footer_hint(&self) -> Option<String> {
-        if self.surface != Surface::Agents
-            || self.reading.is_some()
-            || self.last_rows < 3
-            || self.last_cols == 0
-        {
+        if self.last_rows < 3 || self.last_cols == 0 {
             return None;
         }
-        let waiting = self.rows.iter().filter(|row| waiting_row(row)).count();
-        let hint = if self.search_editing {
-            "Enter apply · Esc cancel".to_owned()
-        } else if self.waiting_base.is_some() {
-            let keys = match self.focus {
-                Focus::List => "Enter focus · Tab history",
-                Focus::History => "Enter read · Tab chat",
+        if self.key_sheet_scroll.is_some() {
+            // Measured against the rows the sheet is about to get - the pane less the tab bar
+            // and this row - since the footer is settled before the sheet is drawn, and in the
+            // screen rows its entries wrap to at this width, which is what it scrolls by.
+            let scrolls = self.key_sheet_display(self.last_cols).len() > self.last_rows - 2;
+            let segments: &[&str] = match scrolls {
+                true => &["Esc/? close", "j/k scroll"],
+                false => &["Esc/? close"],
             };
-            format!("w all · {waiting} waiting · {keys}")
-        } else if self.predecessors.is_some() {
-            "c clear · p previous · w waiting".to_owned()
-        } else if self.search_base.is_some() {
-            "c clear · / edit · r resume · w waiting".to_owned()
-        } else if self.focus == Focus::History {
-            "Enter read · Tab chat · s summary · p previous · w waiting".to_owned()
-        } else if matches!(self.rows.get(self.selected), Some(StripRow::Run { .. })) {
-            format!("r resume · / search · w waiting ({waiting}) · s summary")
-        } else {
-            format!("w waiting ({waiting}) · Enter focus · / search · s summary · p previous")
+            return Some(agents::fit_keys(segments, self.last_cols));
+        }
+        if self.surface != Surface::Agents {
+            return None;
+        }
+        // Not while the search box is being typed in, which takes the keys ahead of the bar
+        // (see `on_key`): the hint follows the keys rather than the highlight.
+        if self.bar_has_keys() && !self.box_ahead_of_the_bar() {
+            let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
+            return Some(agents::fit_hints(&segments, self.last_cols));
+        }
+        let (segments, keep) = self.agents_hints();
+        let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
+        Some(match self.typing() {
+            true => agents::fit_keys(&segments, self.last_cols),
+            false => agents::fit_hints_marked(&segments, self.last_cols, keep),
+        })
+    }
+
+    /// The Agents footer's keys for what the pane is doing now, most useful first.
+    ///
+    /// Read off the row under the cursor as well as the view, the way `on_key` reads them: a
+    /// hint offering `p` on a run, or `Enter focus` on an empty list, names keys that do
+    /// nothing there, and one that is the same everywhere leaves out the keys that work. A
+    /// question comes first and says its answer keys first, because the row is cut from the
+    /// tail and a question without its `y` is not one the user can see they are being asked.
+    ///
+    /// Beside the keys, how many of them lead - the ones `agents::fit_hints_marked` keeps
+    /// whatever it gives up to say `? keys`. On a row that is whatever stands ahead of the row's
+    /// verb - a refusal, the way out of the view, somebody waiting - and the verb itself; in the
+    /// history half, up to `Enter read`; in the reader, the way back. A question, the search box
+    /// and an empty list keep all of theirs, which is `fit_hints` exactly: they have few keys,
+    /// and each is the answer to something.
+    fn agents_hints(&self) -> (Vec<String>, usize) {
+        let owned =
+            |keys: &[&str]| -> Vec<String> { keys.iter().map(|key| (*key).to_owned()).collect() };
+        let all = |keys: Vec<String>| {
+            let keep = keys.len();
+            (keys, keep)
         };
-        Some(agents::cut_to_width(hint, self.last_cols))
+        if let Some(reading) = &self.reading {
+            let folding = !reading.sections.is_empty() && !reading.raw;
+            // The keys nobody would guess come first. The `▸`/`▾` on each fold and a click
+            // already suggest what `Enter` does to one; nothing on screen says that `y`, `o`
+            // and `v` do anything at all.
+            let mut keys = vec![
+                "Esc back",
+                if folding { "j/k fold" } else { "↑↓ scroll" },
+                "y copy",
+            ];
+            if self.open_target().is_some() {
+                keys.push("o file");
+            }
+            if !reading.sections.is_empty() {
+                keys.push(if reading.raw { "v folds" } else { "v source" });
+            }
+            if folding {
+                keys.push("Enter open");
+            }
+            keys.push("PgUp/PgDn page");
+            return (owned(&keys), 1);
+        }
+        if self.search_editing {
+            if self.search_pending {
+                return all(owned(&["searching…", "Esc cancel"]));
+            }
+            // What went wrong is drawn whole under the box (`search_failure_lines`), where it
+            // has rows to wrap into. It used to lead this row, where a narrow pane cut it to
+            // its first few words and the keys that go on from it with them.
+            if self.search_error.is_some() {
+                return all(owned(&["Enter retry", "Esc back"]));
+            }
+            // The way out before the way to start again, so a narrow pane keeps the way out.
+            let mut keys = owned(&["Enter apply", "Esc cancel"]);
+            if !self.search_query.is_empty() {
+                keys.push("Ctrl-u clear".to_owned());
+            }
+            return all(keys);
+        }
+        let selection = self.selection_key();
+        if selection.is_some() && self.confirming_resume == selection {
+            return all(owned(&["y resume", "n cancel"]));
+        }
+        let waiting = self.waiting_count();
+        let toggle = format!("w waiting ({waiting})");
+        let search = self.search_base.is_some();
+        let mut keys = Vec::new();
+        // A refusal is news, and its reason is what the user acts on. The divider says it too,
+        // but a pane too short for a history half has no divider.
+        if let Some((row, detail)) = &self.resume_note {
+            if Some(row) == selection.as_ref() {
+                keys.push(format!("resume failed: {detail}"));
+            }
+        }
+        // Then the way out of the view the list is in. A search's `/ edit` waits its turn with
+        // the other keys: straight after the way out it pushed the waiting count and the hit's
+        // own verb off every pane narrower than about fifty columns.
+        if self.waiting_base.is_some() {
+            keys.push("Esc/w all".to_owned());
+            keys.push(format!("{waiting} waiting"));
+        } else if self.predecessors.is_some() || search {
+            keys.push("Esc/c clear".to_owned());
+        }
+        if self.rows.is_empty() {
+            // Nothing to act on, so no row keys, no history half to Tab into, and the way on
+            // is a search or the conversation - or, from a search that found nothing, the
+            // agents that are waiting, if any are, and another search.
+            if search {
+                if waiting > 0 {
+                    keys.push(toggle);
+                }
+                keys.push("/ edit".to_owned());
+            } else if self.waiting_base.is_none() {
+                keys.push("/ search".to_owned());
+                // Only once hocus has said anything. Before its first strip there may be no
+                // conversation for a Tab to yield to, and a hint for a key that may land
+                // nowhere is worse than none; the first strip redraws, so the hint arrives
+                // with it. The key is the same either way.
+                if self.strip_seen {
+                    keys.push("Tab chat".to_owned());
+                }
+                keys.push("Esc hide".to_owned());
+            }
+            return all(keys);
+        }
+        let row = self.rows.get(self.selected);
+        // Somebody waiting on an answer outranks the row's own keys: it is what the list is
+        // opened for, more often than not, and the one thing here about every agent at once.
+        if waiting > 0 && self.waiting_base.is_none() {
+            keys.push(toggle.clone());
+        }
+        // The half's keys only while the keys are really in it: once another pane has them the
+        // divider is drawn unfocused, and the footer does not claim otherwise.
+        let history = self.focus == Focus::History && self.has_keyboard != Some(false);
+        let keep = if history {
+            keys.push("↑↓ event".to_owned());
+            if self.cursor_event().is_some() {
+                keys.push("Enter read".to_owned());
+            }
+            let keep = keys.len();
+            if self.open_target().is_some() {
+                keys.push("o file".to_owned());
+            }
+            keep
+        } else {
+            match row {
+                Some(StripRow::Agent { .. }) => keys.push("Enter focus".to_owned()),
+                Some(StripRow::Run { .. }) if self.last_history_rows > 0 => {
+                    keys.push("Enter history".to_owned())
+                },
+                Some(StripRow::MoreRuns) => keys.push("Enter load older runs".to_owned()),
+                _ => {},
+            }
+            keys.len()
+        };
+        match row {
+            Some(StripRow::Agent { .. }) => keys.extend(owned(&["s summary", "p previous"])),
+            Some(StripRow::Run { .. }) => keys.extend(owned(&["r resume", "s summary"])),
+            _ => {},
+        }
+        if self.waiting_base.is_none() && waiting == 0 {
+            keys.push(toggle);
+        }
+        keys.push(match search {
+            true => "/ edit".to_owned(),
+            false => "/ search".to_owned(),
+        });
+        if history {
+            keys.extend(owned(&["PgUp/PgDn scroll", "Tab chat"]));
+        } else if self.last_history_rows > 0 {
+            keys.push("Tab history".to_owned());
+        } else {
+            keys.push("Tab chat".to_owned());
+        }
+        (keys, keep)
+    }
+
+    /// What the key sheet lists: every key whatever has the keys now answers, as
+    /// `(keys, what they do)`, most useful first.
+    fn key_sheet(&self) -> Vec<(String, String)> {
+        // The panel's own tab bar is the panel's, whichever tab it is on.
+        if self.bar_has_keys() {
+            let mut rows = sheet(&[
+                ("←/→", "switch tab"),
+                ("Enter ↓ j", "into the tab's list"),
+                ("Tab/Esc", "into the tab's list"),
+                ("Shift+Tab", "to the conversation's box"),
+                ("other keys", "go to the list, and act there"),
+                ("click a tab", "switch to it"),
+            ]);
+            rows.extend(sheet(PANEL_KEYS));
+            return rows;
+        }
+        let mut rows = match self.surface {
+            Surface::Agents => return self.agents_key_sheet(),
+            Surface::Todos => self.todo_key_sheet(),
+            Surface::Vms => self.vm_key_sheet(),
+            Surface::Swamp => self.swamp_key_sheet(),
+        };
+        rows.extend(sheet(PANEL_KEYS));
+        rows
+    }
+
+    /// The Agents surface's key sheet, for the mode it is in: the reader, a question, or the
+    /// list and history halves - with the keys that act on a row only where the row under the
+    /// cursor is one they act on. Never the search box's: `?` typed there is a question mark
+    /// (`typing`), so the box's keys are its footer's to name.
+    fn agents_key_sheet(&self) -> Vec<(String, String)> {
+        let tail = PANEL_KEYS;
+        if let Some(reading) = &self.reading {
+            let mut rows: Vec<(&str, &str)> = match (reading.sections.is_empty(), reading.raw) {
+                (false, false) => vec![
+                    ("j/k", "the next or previous fold"),
+                    ("Enter", "open or shut the fold"),
+                    ("click", "point at a fold; again opens it"),
+                    ("↑/↓", "scroll a line"),
+                    ("PgUp/PgDn", "scroll a page"),
+                    ("y", "copy the fold"),
+                    ("o", "open the file the fold names"),
+                    ("v", "show the source"),
+                ],
+                (false, true) => vec![
+                    ("j/k ↑/↓", "scroll a line"),
+                    ("PgUp/PgDn", "scroll a page"),
+                    ("y", "copy the whole event"),
+                    ("o", "open the first file it names"),
+                    ("v", "back to the folds"),
+                ],
+                (true, _) => vec![
+                    ("j/k ↑/↓", "scroll a line"),
+                    ("PgUp/PgDn", "scroll a page"),
+                    ("y", "copy the event"),
+                ],
+            };
+            rows.extend([
+                ("wheel", "scroll"),
+                ("Esc", "back to the history"),
+                ("Tab", "to the conversation"),
+                ("Shift+Tab", "to the tab bar"),
+            ]);
+            rows.extend(tail);
+            return sheet(&rows);
+        }
+        let selection = self.selection_key();
+        if selection.is_some() && self.confirming_resume == selection {
+            let mut rows = vec![
+                ("y", "resume the run in a new pane"),
+                ("n/Esc", "cancel"),
+                ("other keys", "cancel, then act as usual"),
+            ];
+            rows.extend(tail);
+            return sheet(&rows);
+        }
+        let row = self.rows.get(self.selected);
+        let history = self.focus == Focus::History;
+        // An empty list has no row to walk, act on or click, and no history half to scroll:
+        // the sheet lists the keys that lead out of it, the way the empty list's footer does.
+        let empty = self.rows.is_empty();
+        let mut rows: Vec<(&str, &str)> = Vec::new();
+        if history {
+            rows.extend([
+                ("↑/↓ j/k", "the previous or next event"),
+                ("Enter", "read the event in full"),
+                ("o", "open the file the event names"),
+                ("click", "point at an event; again reads it"),
+                ("PgUp/PgDn", "scroll the history"),
+                ("wheel", "scroll the half under it"),
+            ]);
+        } else if !empty {
+            rows.push(("↑/↓ j/k", "choose an agent or a run"));
+            rows.push(match row {
+                Some(StripRow::Run { .. }) => ("Enter", "into the run's history"),
+                Some(StripRow::MoreRuns) => ("Enter", "load older runs"),
+                _ => ("Enter", "go to the agent; the panel goes"),
+            });
+            rows.push(match row {
+                Some(StripRow::Agent { .. }) => ("click", "select; again goes to the agent"),
+                Some(StripRow::MoreRuns) => ("click", "load older runs"),
+                _ => ("click", "select the row"),
+            });
+        }
+        match row {
+            Some(StripRow::Agent { .. }) => rows.extend([
+                ("s", "summarise the agent now"),
+                ("p", "the agent's previous runs"),
+                ("D / F", "duplicate / fork the agent"),
+            ]),
+            Some(StripRow::Run { .. }) => rows.extend([
+                ("r", "resume the run (asks y/n)"),
+                ("s", "summarise the run now"),
+            ]),
+            _ => {},
+        }
+        rows.push(match self.waiting_base.is_some() {
+            true => ("w", "every agent again"),
+            false => ("w", "only agents waiting for you"),
+        });
+        rows.push(match self.search_base.is_some() {
+            true => ("/", "edit the search"),
+            false => ("/", "search every run"),
+        });
+        if self.search_base.is_some() || self.predecessors.is_some() || self.waiting_base.is_some()
+        {
+            rows.push(("c", "back to the whole list"));
+        }
+        if !history && !empty {
+            rows.push(("PgUp/PgDn", "scroll the history"));
+            rows.push(("wheel", "scroll the half under it"));
+        }
+        // Not before hocus's first strip, for the reason the empty list's footer leaves out
+        // `Tab chat`: there may be no conversation yet for the key to reach. The tab bar is
+        // always there, so Shift+Tab stays.
+        if !(empty && !self.strip_seen) {
+            rows.push(match (history, self.last_history_rows > 0) {
+                (true, _) => ("Tab", "to the conversation"),
+                (false, true) => ("Tab", "into the history"),
+                (false, false) => ("Tab", "to the conversation"),
+            });
+        }
+        rows.push(match history {
+            true => ("Shift+Tab", "back to the list"),
+            false => ("Shift+Tab", "to the tab bar"),
+        });
+        rows.push(("Ctrl-r", "look at the branches again"));
+        let filtered = self.search_base.is_some()
+            || self.predecessors.is_some()
+            || self.waiting_base.is_some();
+        rows.push(match filtered {
+            true => ("Esc", "back to the whole list"),
+            false => ("Esc", "put the panel away"),
+        });
+        rows.extend(tail);
+        sheet(&rows)
+    }
+
+    /// The key sheet over the surface's share of the pane: keys in one column, what they do in
+    /// the next, scrolled where it is taller than the pane.
+    ///
+    /// Scrolled by screen row rather than by entry, since an entry wraps onto as many rows as
+    /// its description needs: counted in entries, the last few rows of a sheet whose entries
+    /// wrap could never be scrolled onto the screen.
+    fn render_key_sheet(&mut self, rows: usize, cols: usize) {
+        let lines = self.key_sheet_display(cols);
+        self.last_sheet_rows = rows;
+        let max_scroll = lines.len().saturating_sub(rows);
+        self.last_sheet_max_scroll = max_scroll;
+        let scroll = self.key_sheet_scroll.unwrap_or(0).min(max_scroll);
+        self.key_sheet_scroll = Some(scroll);
+        if lines.is_empty() {
+            paint(
+                Text::new(" no keys listed for this tab").dim_range(..),
+                0,
+                0,
+                Some(cols),
+                None,
+            );
+            return;
+        }
+        for (index, (line, key_chars)) in lines.into_iter().skip(scroll).take(rows).enumerate() {
+            paint(
+                Text::new(line).color_range(2, ..key_chars),
+                0,
+                index,
+                Some(cols),
+                None,
+            );
+        }
+    }
+
+    /// The key sheet as it is drawn `cols` columns wide: one `(line, key characters)` per
+    /// screen row, each entry wrapped onto as many rows as it needs (see `key_sheet_lines`).
+    fn key_sheet_display(&self, cols: usize) -> Vec<(String, usize)> {
+        let sheet = self.key_sheet();
+        // As wide as the widest keys, up to half the row: past that the descriptions would have
+        // nothing left to be read in.
+        let key_width = sheet
+            .iter()
+            .map(|(keys, _)| keys.width())
+            .max()
+            .unwrap_or(0)
+            .min(cols.saturating_sub(1) / 2);
+        sheet
+            .iter()
+            .flat_map(|(keys, what)| key_sheet_lines(keys, what, key_width, cols))
+            .collect()
+    }
+
+    /// What an empty Agents list says, and the key that leads on from it where there is one.
+    fn empty_list_message(&self) -> (&'static str, Option<&'static str>) {
+        if self.search_base.is_some() {
+            ("no matches", None)
+        } else if self.waiting_base.is_some() {
+            ("no agents waiting for you", Some("w shows every agent"))
+        } else if !self.strip_seen {
+            // Nothing has said the list is empty yet: hocus may still be loading, or not be
+            // there at all, and "no agents" would claim something nobody has reported.
+            ("waiting for hocus…", None)
+        } else {
+            ("no agents", Some("Ctrl e n starts one"))
+        }
+    }
+
+    /// How many agents are waiting on an answer - in the session, not the view. Counted in the
+    /// live strip a filtered view keeps behind it: a search or the previous-agents view shows
+    /// no live agents to count, and the waiting view may be holding on to one that has just
+    /// been answered.
+    fn waiting_count(&self) -> usize {
+        let live = self
+            .waiting_base
+            .as_ref()
+            .map(|strip| &strip.rows[..])
+            .or_else(|| {
+                self.predecessors
+                    .as_ref()
+                    .map(|previous| &previous.base.rows[..])
+            })
+            .or_else(|| self.search_base.as_ref().map(|(rows, _)| &rows[..]))
+            .unwrap_or(&self.rows);
+        live.iter().filter(|row| waiting_row(row)).count()
+    }
+
+    /// Whether a box that takes every key ahead of the tab bar is being typed in: an Agents
+    /// search, or one of Swamp's. See `on_key`.
+    fn box_ahead_of_the_bar(&self) -> bool {
+        self.search_editing || (self.surface == Surface::Swamp && self.swamp.is_editing())
+    }
+
+    /// Whether a key typed now is text for a box rather than a command - which is when `?` is
+    /// a question mark and not the key sheet.
+    ///
+    /// The todo box counts even under the tab bar: the bar hands a key it does not own to the
+    /// surface, so `?` typed there would have reached the draft. Asked of the mode rather than
+    /// of where the caret would go, which a pane too narrow to draw the box in has nowhere to
+    /// put - and a box too narrow to see is still the box the next key is typed into.
+    fn typing(&self) -> bool {
+        self.box_ahead_of_the_bar()
+            || (self.surface == Surface::Todos
+                && matches!(self.todos.mode, todos::Mode::Input { .. }))
+    }
+
+    /// The Agents search box as it is drawn in `cols` columns, and the column its caret is in.
+    ///
+    /// Scrolled sideways rather than cut from the tail, with the prompt pinned: a box that
+    /// loses its end loses the character being typed, and the caret with it.
+    fn search_box(&self, cols: usize) -> (String, usize) {
+        let prompt = "Search: ";
+        let cursor = self.search_query.chars().count();
+        zellij_tile::ui_components::forms::viewport(prompt, &self.search_query, cursor, cols)
+    }
+
+    /// What a filtered Agents view is called, drawn on the surface's first row above the list,
+    /// or `None` for the plain list. While a search is being typed it is the search box.
+    fn view_label(&self) -> Option<String> {
+        if self.search_editing {
+            return Some(self.search_box(self.last_cols).0);
+        }
+        if let Some(previous) = &self.predecessors {
+            return Some(format!("Previous agents: {}", previous.title));
+        }
+        if self.search_base.is_some() {
+            // Its age once it has one worth saying: the hits are not run again, so after a long
+            // hide they are an old answer, and runs that matched since are not among them.
+            let age = self
+                .searched_at_ms
+                .map(|at| (now_ms(), at))
+                .filter(|(now, at)| now - at >= 60_000)
+                .map(|(now, at)| format!(" · {} ago", agents::short_age(now, at)))
+                .unwrap_or_default();
+            let omitted = match self.search_truncated {
+                true => "  more matches omitted",
+                false => "",
+            };
+            return Some(format!("Search: {}{age}{omitted}", self.search_query));
+        }
+        // The one filtered view that used to have no label at all, only a dim footer: the tab
+        // still said "Agents" over a list quietly missing most of them.
+        self.waiting_base
+            .is_some()
+            .then(|| "Waiting for you".to_owned())
     }
 
     fn switch_surface(&mut self, surface: Surface) {
@@ -1227,6 +1998,17 @@ impl State {
             return;
         }
         self.swamp.cancel_filter();
+        // A search being typed takes every key ahead of the surface, so leaving one open would
+        // send the next tab's keys into a box on a tab no longer showing. Ended the way Esc
+        // ends it. An armed VM question is dropped for the reason `end_visit` drops it: it
+        // would otherwise take the first key of the next visit, and freeze the list's polling
+        // until then.
+        if self.search_editing {
+            self.cancel_search_edit();
+        }
+        if self.surface == Surface::Vms {
+            self.cancel_vm_confirmation();
+        }
         self.surface = surface;
         if surface == Surface::Vms {
             self.poll_vms();
@@ -1254,72 +2036,175 @@ impl State {
     /// Everything about the history half that belonged to the row the cursor has just left.
     ///
     /// One place rather than three, because the list of what a row owns has grown: where the
-    /// half was wound to, which event the cursor was on, whether a summary was asked for, and
-    /// the newest of them: whichever event was open in the reader, which is about an entry of a
-    /// run the cursor is no longer pointing at.
+    /// half was wound to, which event the cursor was on and the events both were holding,
+    /// whether a summary was asked for, what `o` or a fetch had to say about the row, and
+    /// whichever event was open in the reader, which is about an entry of a run the cursor is
+    /// no longer pointing at.
     ///
-    /// Nothing ever tells this pane that a summary request was refused, so the only honest
-    /// lifetime for that hint is one the user can end themselves by walking off the row.
+    /// A summary asked for and not yet answered goes too: it is about the row, and a hint left
+    /// on the next one would claim that row was being described.
     fn leave_row(&mut self) {
         self.pending_history_revision = None;
         self.list_scroll = None;
         self.history_scroll = 0;
         self.history_cursor = 0;
+        self.history_cursor_anchor = None;
+        self.history_bottom_anchor = None;
+        self.history_scrolled = false;
         self.summarizing = None;
         self.confirming_resume = None;
         self.resume_note = None;
+        self.open_note = None;
+        self.run_error = None;
         self.close_reader();
     }
 
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
+        // Cycle the whole panel one corner clockwise - the same gesture the conversation has.
+        // Taken before everything else, because where the keys are inside the panel changes
+        // nothing about what it means: not a box being typed in, not the tab bar, not the
+        // reader, not an armed question - which stays armed and on screen, since moving the
+        // panel answers nothing it asked - and not the key sheet, which stays up. hocus owns
+        // both overlays' geometry, so this asks rather than moves. Nothing to redraw: the move
+        // is the server's to paint.
+        if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
+            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_REPOSITION));
+            return false;
+        }
+        let sheet_was_up = self.key_sheet_scroll.is_some();
+        if let Some(answer) = self.sheet_key(&key) {
+            return answer;
+        }
+        // A key the sheet let through has shut it, unless it is one that works through it, and
+        // the sheet coming down is a redraw whatever the key goes on to do.
+        let shut = sheet_was_up && self.key_sheet_scroll.is_none();
+        self.dispatch_key(key) || shut
+    }
+
+    /// A key while the key sheet is up, or the `?` that puts it up. `Some` is the whole of the
+    /// answer; `None` hands the key on - having shut the sheet, unless it is one of the keys
+    /// that work through it.
+    ///
+    /// `?` is the sheet's only while nobody is typing, where it is a character (`typing`). Every
+    /// armed question stays armed under it, the VMs tab's close and sync among them: the sheet
+    /// says how to answer, and shutting it leaves the question where it was. A key the sheet
+    /// lets through then reaches the question as it would have without the sheet - `y`
+    /// answers it, and anything else cancels it and does its job.
+    fn sheet_key(&mut self, key: &KeyWithModifier) -> Option<bool> {
+        let plain = key.has_no_modifiers();
+        // A terminal that reports the Shift most layouts spend on `?` is still typing one.
+        let question = key.bare_key == BareKey::Char('?')
+            && (plain || key.has_modifiers(&[KeyModifier::Shift]));
+        if self.key_sheet_scroll.is_none() {
+            if question && !self.typing() {
+                self.key_sheet_scroll = Some(0);
+                return Some(true);
+            }
+            return None;
+        }
+        let shuts =
+            question || (plain && matches!(key.bare_key, BareKey::Esc | BareKey::Char('q')));
+        if shuts {
+            self.key_sheet_scroll = None;
+            return Some(true);
+        }
+        let page = self.last_sheet_rows.saturating_sub(1).max(1) as isize;
+        match key.bare_key {
+            BareKey::Down => Some(self.scroll_key_sheet(1)),
+            BareKey::Up => Some(self.scroll_key_sheet(-1)),
+            BareKey::Char('j') if plain => Some(self.scroll_key_sheet(1)),
+            BareKey::Char('k') if plain => Some(self.scroll_key_sheet(-1)),
+            BareKey::PageDown => Some(self.scroll_key_sheet(page)),
+            BareKey::PageUp => Some(self.scroll_key_sheet(-page)),
+            // The ring works through the sheet, which then says what the stop the keys went to
+            // answers - or stays up over a pane the keys have left, to be read from there.
+            BareKey::Tab => None,
+            _ => {
+                self.key_sheet_scroll = None;
+                None
+            },
+        }
+    }
+
+    /// Move the key sheet by `delta` rows, and say whether it moved.
+    fn scroll_key_sheet(&mut self, delta: isize) -> bool {
+        let Some(scroll) = self.key_sheet_scroll else {
+            return false;
+        };
+        let target = scroll
+            .saturating_add_signed(delta)
+            .min(self.last_sheet_max_scroll);
+        self.key_sheet_scroll = Some(target);
+        target != scroll
+    }
+
+    /// Hand a key to whatever in the panel is answering keys now.
+    fn dispatch_key(&mut self, key: KeyWithModifier) -> bool {
         if self.search_editing {
             return self.search_key(key);
         }
         if self.surface == Surface::Swamp && self.swamp.is_editing() {
             return self.swamp_key(key);
         }
+        // Whether this key took the keys off the bar, which is a redraw whatever the key goes on
+        // to do: the bar's highlight and its footer come down.
+        let mut left_bar = false;
         if self.tabs_focused {
-            if key.bare_key == BareKey::Tab {
-                if key.has_modifiers(&[KeyModifier::Shift]) {
-                    self.yield_to_chat(wire::STOP_INPUT);
-                } else {
+            // The bar answers its own keys. Anything else is not the bar's, so rather than
+            // being swallowed it hands the keys back to the surface and does its usual job
+            // there: the list it lands in is drawn right under the bar, so the user sees where
+            // the key went. The chat's bar swallows stray keys because its input box is hidden
+            // behind it; nothing is hidden behind this one.
+            let plain = key.has_no_modifiers();
+            match key.bare_key {
+                BareKey::Tab if key.has_modifiers(&[KeyModifier::Shift]) => {
+                    // Back off the front of the ring. The flag goes with the keys, so the bar
+                    // stops drawing itself focused while the conversation has them.
                     self.tabs_focused = false;
-                    if self.surface == Surface::Vms {
-                        self.vms.details = false;
-                    } else if self.surface == Surface::Agents {
-                        self.focus = Focus::List;
-                    }
-                }
-                return true;
+                    self.yield_to_chat(wire::STOP_INPUT);
+                    return true;
+                },
+                // Esc steps back to the list, as the chat's bar steps back to its box: it used
+                // to hide the whole panel, one level short of where every other Esc here stops.
+                BareKey::Tab | BareKey::Esc => {
+                    self.keys_to_the_list();
+                    return true;
+                },
+                BareKey::Left if plain => {
+                    self.switch_surface(self.surface.step(-1));
+                    return true;
+                },
+                BareKey::Right if plain => {
+                    self.switch_surface(self.surface.step(1));
+                    return true;
+                },
+                BareKey::Enter | BareKey::Down | BareKey::Char('j') if plain => {
+                    self.keys_to_the_list();
+                    return true;
+                },
+                _ => {
+                    self.tabs_focused = false;
+                    left_bar = true;
+                },
             }
-            if key.has_no_modifiers() {
-                match key.bare_key {
-                    BareKey::Left => {
-                        self.switch_surface(self.surface.step(-1));
-                        return true;
-                    },
-                    BareKey::Right => {
-                        self.switch_surface(self.surface.step(1));
-                        return true;
-                    },
-                    BareKey::Enter | BareKey::Down => {
-                        self.tabs_focused = false;
-                        return true;
-                    },
-                    _ => {},
-                }
-            }
-            if key.bare_key == BareKey::Esc {
-                self.hide_the_panel();
-            }
-            return false;
         }
-        match self.surface {
-            Surface::Swamp => return self.swamp_key(key),
-            Surface::Todos => return self.todo_key(key),
-            Surface::Vms => return self.vm_key(key),
-            Surface::Agents => {},
-        }
+        let answered = match self.surface {
+            Surface::Swamp => self.swamp_key(key),
+            Surface::Todos => self.todo_key(key),
+            Surface::Vms => self.vm_key(key),
+            Surface::Agents => {
+                // What the last `o` or `y` had to say is about that key, and the next one ends
+                // it - taken before the key is answered, so an `o` pressed again on the same
+                // nothing says so again.
+                let noted = self.open_note.take().is_some();
+                self.agents_key(key) || noted
+            },
+        };
+        answered || left_bar
+    }
+
+    /// A key on the Agents surface.
+    fn agents_key(&mut self, key: KeyWithModifier) -> bool {
         if self.reading.is_some() && key.bare_key == BareKey::Tab {
             if key.has_modifiers(&[KeyModifier::Shift]) {
                 self.tabs_focused = true;
@@ -1342,13 +2227,6 @@ impl State {
         if self.confirming_resume.is_some() {
             return self.answer_resume(key);
         }
-        if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            // Cycle the whole panel one corner clockwise - the same gesture the conversation has.
-            // hocus owns both overlays' geometry, so this asks rather than moves. Nothing to
-            // redraw: the move is the server's to paint.
-            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_REPOSITION));
-            return false;
-        }
         if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
             // the one part of a row no host event keeps fresh is the branch a
             // checkout is on; ask agentd to probe again
@@ -1356,14 +2234,15 @@ impl State {
             return false;
         }
         if key.bare_key == BareKey::Tab {
-            // The panel is one ring of four stops - this pane's two halves, then the
-            // conversation's tab bar and its input box - and Tab walks it end to end. Two of
-            // those crossings leave this pane, and the list knows only its own plugin id, so
-            // they are asked for: `wire::AGENT_STRIP_YIELD`, the same shape as the Esc and
-            // Ctrl-o requests below and above.
+            // This pane's two halves are two of the panel's five stops - the panel's own tab
+            // bar, the list, the history half, the conversation's tab bar and its input box -
+            // and Tab walks the ring end to end. The crossings that leave this pane are asked
+            // for, because the list knows only its own plugin id: `wire::AGENT_STRIP_YIELD`,
+            // the same shape as the Esc and Ctrl-o requests. Backward off the list is the
+            // panel's tab bar, which is this pane's to draw, so that one is a flag.
             //
             // Directional now, where this used to be modifier-agnostic: with two stops
-            // shift-tab had nowhere to go that tab did not, and with four it does. A terminal
+            // shift-tab had nowhere to go that tab did not, and with five it does. A terminal
             // that cannot report shift-tab, or spells it a way that does not reach us, lands in
             // the forward arm - which costs nothing, because the ring wraps: every stop is
             // reachable by pressing Tab alone.
@@ -1400,23 +2279,36 @@ impl State {
                 },
             }
         }
-        // The arrows always walk the list, whichever half has the keys: they are how the
-        // pane is steered, and a user reading the history still wants to point at the next
-        // agent without going back for the focus first.
+        // The arrows follow the focus, the way `j`/`k` do and the way they do on VMs: in the
+        // history half they walk its events. They used to steer the list from either half and
+        // take the keys back with them, which made the half's `>` a cursor the arrows every
+        // other list moves could not move - and dropped the user's place in it besides, since
+        // a new row is a new history. `Shift+Tab` or a click is the way back to the list.
         if let Some(motion) = arrow(&key) {
-            let focus_moved = self.focus != Focus::List;
-            self.focus = Focus::List;
-            // The keys moving is worth a redraw on its own - the divider draws them - even
-            // when the selection they came back for was already at the end of the list.
-            return self.step_selection(motion) || focus_moved;
+            return match (self.focus, motion) {
+                (Focus::History, Motion::Up) => self.step_history_cursor(1),
+                (Focus::History, Motion::Down) => self.step_history_cursor(-1),
+                (Focus::List, motion) => self.step_selection(motion),
+            };
+        }
+        // Duplicate or fork the agent under the cursor. Capitals, because `d` and `f` are
+        // delete and filter on the tabs beside this one, and a near-miss between two tabs is
+        // the kind nobody notices until it has happened.
+        if let BareKey::Char(letter @ ('D' | 'F')) = key.bare_key {
+            if key.has_no_modifiers() || key.has_modifiers(&[KeyModifier::Shift]) {
+                return self.act_on_the_agent(letter == 'F');
+            }
         }
         if key.has_no_modifiers() {
             match key.bare_key {
                 BareKey::Char('w') => return self.toggle_waiting(),
                 BareKey::Char('p') => return self.begin_predecessors(),
+                // `c` leaves whichever filtered view the list is in, the waiting one as much
+                // as the other two.
                 BareKey::Char('c') if self.predecessors.is_some() => {
                     return self.clear_predecessors()
                 },
+                BareKey::Char('c') if self.waiting_base.is_some() => return self.clear_waiting(),
                 BareKey::Char('/') => return self.begin_search(),
                 BareKey::Char('c') if self.search_base.is_some() => return self.clear_search(),
                 // `j`/`k` follow the focus - the vim spelling of whatever the focused half
@@ -1439,8 +2331,6 @@ impl State {
                         Focus::History => self.step_history_cursor(-1),
                     };
                 },
-                // Page keys always scroll history; arrows always steer the list.
-                // The wheel instead scrolls whichever surface is under the pointer.
                 // Ask the daemon to describe the selected row now. Not gated on the focus:
                 // it is about the row the cursor is on, which is the same row whichever
                 // half the keys are in, and the answer arrives in the half below either
@@ -1453,6 +2343,9 @@ impl State {
                 // on the event is the whole of what can be offered here — and a notification
                 // whose output file is what you actually want is the case this exists for.
                 BareKey::Char('o') if self.focus == Focus::History => return self.open_the_file(),
+                // The page keys are the history's from either half, since the list follows its
+                // selection and has no page of its own; the wheel scrolls whichever half is
+                // under the pointer.
                 BareKey::PageUp => return self.scroll_history(self.page() as isize),
                 BareKey::PageDown => return self.scroll_history(-(self.page() as isize)),
                 _ => {},
@@ -1460,6 +2353,16 @@ impl State {
         }
         match key.bare_key {
             BareKey::Esc => {
+                // One step back before the way out: a filtered view is a level the list went
+                // into, and Esc used to dismiss the panel from inside one - bringing it back
+                // with Ctrl e a still filtered. Guarded on a search that has results, so a plain
+                // dismissal does not throw away a history fetch the search bookkeeping holds.
+                if self.clear_predecessors()
+                    || self.clear_waiting()
+                    || (self.search_base.is_some() && self.clear_search())
+                {
+                    return true;
+                }
                 // The plain dismissal: the panel goes and the keyboard lands wherever the host
                 // puts it. Enter dismisses too, but hands the keyboard on deliberately.
                 self.hide_the_panel();
@@ -1468,27 +2371,70 @@ impl State {
             BareKey::Enter => {
                 // With the keys in the history half, Enter is about the event under the
                 // cursor rather than the row above: the half caps every event at four rows,
-                // and this is where the rest of one is. The list half's Enter is untouched -
-                // the two halves have separate cursors, and this is the key that says so.
+                // and this is where the rest of one is. The two halves have separate cursors,
+                // and this is the key that says so.
                 if self.focus == Focus::History {
                     return self.open_reader();
                 }
                 if matches!(self.rows.get(self.selected), Some(StripRow::MoreRuns)) {
-                    pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_ARCHIVE_MORE));
+                    self.ask_for_older_runs();
                     return false;
+                }
+                // A run has no pane to walk into, so Enter walks into its history instead -
+                // where a search has already put the cursor on the event that matched, and a
+                // second Enter reads it. The panel stays up: what Enter found is in it.
+                if matches!(self.rows.get(self.selected), Some(StripRow::Run { .. }))
+                    && self.last_history_rows > 0
+                {
+                    self.focus = Focus::History;
+                    return true;
                 }
                 if !matches!(self.rows.get(self.selected), Some(StripRow::Agent { .. })) {
                     return false;
                 }
-                // The only gesture in the pane that navigates: a click moves the cursor
-                // and no more, so walking the list with the pointer reads an agent's
-                // history without leaving for it. Walking in also puts the panel away -
-                // the agent is what the user asked to look at, and the panel covers it.
+                // The only key in the pane that navigates: a click moves the cursor and no
+                // more, so walking the list with the pointer reads an agent's history without
+                // leaving for it. Walking in also puts the panel away - the agent is what the
+                // user asked to look at, and the panel covers it.
                 self.activate();
                 false
             },
             _ => false,
         }
+    }
+
+    /// Ask hocus for the next page of the archive. The rows arrive with the next strip.
+    fn ask_for_older_runs(&mut self) {
+        #[cfg(test)]
+        {
+            self.archive_requests += 1;
+        }
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_ARCHIVE_MORE));
+    }
+
+    /// Open the New agent modal on the agent under the cursor: a duplicate of it, or a `fork`
+    /// of its conversation. Nothing on a run, whose `r` is the way back to it.
+    ///
+    /// `Ctrl e d` and `Ctrl e f` do the same from the agent's own pane, and from here used to
+    /// open a blank New agent instead: the pane with the keyboard is this one, a plugin, and
+    /// the modal had no agent to take. This names it.
+    ///
+    /// The panel stays up under the modal, as it does under the Todos tab's `n`. A modal that
+    /// closes hands the keyboard back to the pane it took it from, so one put away with Esc
+    /// hands the keys back to this list. One that starts an agent focuses the new pane, and the
+    /// `wire::AGENT_STRIP_HIDE` the modal sends as it hands the focus over (its
+    /// `hand_over_focus`) puts the panel away then. Hiding the panel before opening the modal,
+    /// as `activate` does before a focus, turned that Esc into a trip to whatever was under
+    /// the panel.
+    fn act_on_the_agent(&mut self, fork: bool) -> bool {
+        let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) else {
+            return false;
+        };
+        let configuration = pane_action_configuration(*pane_id, fork);
+        #[cfg(test)]
+        self.new_agent_launches.push(configuration.clone());
+        load_new_plugin("hocus-new-agent", configuration, false, false);
+        false
     }
 
     fn begin_predecessors(&mut self) -> bool {
@@ -1574,13 +2520,19 @@ impl State {
             return false;
         }
         self.search_pending = false;
-        self.search_editing = false;
         self.search_error = (!result.error.is_empty()).then_some(result.error);
-        self.search_truncated = result.truncated;
+        // A failure leaves the box open with the query as typed, so `Enter` retries it and
+        // `Esc` goes back to the search that produced the rows below - which are left alone,
+        // and so is whether that search had more matches than it showed.
+        // Closing the box put the new query's name over the old query's hits, and made a retry
+        // a retype.
         if self.search_error.is_some() {
             return true;
         }
+        self.search_truncated = result.truncated;
+        self.search_editing = false;
         self.applied_search_query = Some(self.search_query.clone());
+        self.searched_at_ms = Some(now_ms());
         let selection = self.selection_key();
         let revision = self.selected_revision();
         self.search_revisions = result
@@ -1588,20 +2540,28 @@ impl State {
             .iter()
             .map(|run| (run.run_id.clone(), run.revision))
             .collect();
+        let query = self.search_query.clone();
         self.rows = result
             .runs
             .into_iter()
-            .map(|run| StripRow::Run {
-                run_id: run.run_id,
-                kind: run.kind,
-                // The snippet is what the hit was: the title alone would leave a row saying
-                // nothing about why the search matched it.
-                title: format!("{} — {}", run.title, run.snippet),
-                worktree: run.worktree,
-                started_at_ms: Some(run.started_at_ms),
-                // A search result is a flat list of hits, not a chain: the run above it is
-                // whatever else matched, not the run it continues.
-                continuation: false,
+            .map(|run| {
+                // The snippet is what the hit was, and it goes first, from the word that
+                // matched: behind a title of up to forty characters it never reached a cell
+                // of this width, and every hit read as its title and nothing else.
+                let hit = hit_first(&run.snippet, &query);
+                StripRow::Run {
+                    run_id: run.run_id,
+                    kind: run.kind,
+                    title: match hit.is_empty() {
+                        true => run.title,
+                        false => format!("{hit} — {}", run.title),
+                    },
+                    worktree: run.worktree,
+                    started_at_ms: Some(run.started_at_ms),
+                    // A search result is a flat list of hits, not a chain: the run above it is
+                    // whatever else matched, not the run it continues.
+                    continuation: false,
+                }
             })
             .collect();
         self.selected = self.rows.iter().position(selectable).unwrap_or(0);
@@ -1617,6 +2577,9 @@ impl State {
         true
     }
 
+    /// Start typing a search. A fresh one starts empty; `/` over a search already made opens
+    /// that search's query to be refined, which is what "edit" says it does - `Ctrl-u` clears
+    /// it for a new one. Either way, what was being typed when `Tab` left the box comes back.
     fn begin_search(&mut self) -> bool {
         self.clear_waiting();
         self.clear_predecessors();
@@ -1624,8 +2587,11 @@ impl State {
         self.search_pending = false;
         if self.search_base.is_none() {
             self.search_base = Some((self.rows.clone(), self.summaries.clone()));
+            self.search_query.clear();
         }
-        self.search_query.clear();
+        if let Some(draft) = self.search_draft.take() {
+            self.search_query = draft;
+        }
         self.search_error = None;
         self.search_editing = true;
         true
@@ -1633,18 +2599,31 @@ impl State {
 
     fn search_key(&mut self, key: KeyWithModifier) -> bool {
         if key.bare_key == BareKey::Esc {
-            let Some(query) = self.applied_search_query.clone() else {
-                return self.clear_search();
-            };
-            self.search_request = self.search_request.wrapping_add(1);
-            self.search_pending = false;
-            self.search_editing = false;
-            self.search_query = query;
-            self.search_error = None;
+            return self.cancel_search_edit();
+        }
+        if key.bare_key == BareKey::Tab {
+            // The ring goes on from the box, which cannot stay open behind it: it takes every
+            // key ahead of the tab bar, so a Tab that left it open would be the last key the
+            // rest of the panel ever heard. So Tab ends the edit the way Esc does - back to the
+            // search last applied, or out of it - keeps what was typed for the next `/`, and
+            // then steps on from the list the box sits over: into the history half, on to the
+            // conversation, or with Shift back to the tab bar. A redraw whichever: the box is
+            // gone.
+            let draft = std::mem::take(&mut self.search_query);
+            self.cancel_search_edit();
+            self.search_draft = (!draft.is_empty()).then_some(draft);
+            self.focus = Focus::List;
+            self.agents_key(key);
             return true;
         }
         if key.bare_key == BareKey::Enter {
             if self.search_query.trim().is_empty() {
+                return true;
+            }
+            // Already out: hocus answers a search whole and in order, so a second one for the
+            // same query would only queue behind the first and throw its answer away. The
+            // footer says it is searching.
+            if self.search_pending {
                 return true;
             }
             self.search_request = self.search_request.wrapping_add(1);
@@ -1656,38 +2635,126 @@ impl State {
                 return false;
             };
             self.search_pending = true;
+            self.search_deadline_ms = now_ms() + SEARCH_TIMEOUT_MS;
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SEARCH).with_payload(payload));
             self.search_error = None;
             return true;
         }
-        if key.bare_key == BareKey::Backspace {
-            if self.search_query.pop().is_some() {
-                self.search_request = self.search_request.wrapping_add(1);
-                self.search_pending = false;
+        if key.bare_key == BareKey::Char('u') && key.has_modifiers(&[KeyModifier::Ctrl]) {
+            if !self.search_query.is_empty() {
+                self.search_query.clear();
+                self.query_edited();
             }
             return true;
         }
-        if key.has_no_modifiers() {
+        if key.bare_key == BareKey::Backspace {
+            if self.search_query.pop().is_some() {
+                self.query_edited();
+            }
+            return true;
+        }
+        if key.has_no_modifiers() || key.has_modifiers(&[KeyModifier::Shift]) {
             if let BareKey::Char(ch) = key.bare_key {
                 self.search_query.push(ch);
-                self.search_request = self.search_request.wrapping_add(1);
-                self.search_pending = false;
+                self.query_edited();
                 return true;
             }
         }
         false
     }
 
+    /// The query changed: no reply in flight is for it any more, and no failure is about it.
+    fn query_edited(&mut self) {
+        self.search_request = self.search_request.wrapping_add(1);
+        self.search_pending = false;
+        self.search_error = None;
+    }
+
+    /// Give up on a search hocus has not answered in `SEARCH_TIMEOUT_MS`, and say whether the
+    /// box changed. The query stays, so `Enter` asks again; a reply that turns up late is
+    /// ignored, the way any reply is once nothing is pending.
+    fn expire_search(&mut self, now: i64) -> bool {
+        if !self.search_editing || !self.search_pending || now < self.search_deadline_ms {
+            return false;
+        }
+        self.search_pending = false;
+        self.search_error = Some("hocus did not answer".to_owned());
+        true
+    }
+
+    /// Why the search in the box failed, wrapped to `cols`: the rows `render` draws under the
+    /// box while it is open on the failure, and nothing once it is not. The footer used to lead
+    /// with it, cut to the row, which lost both the end of the reason and the keys after it.
+    fn search_failure_lines(&self, cols: usize) -> Vec<String> {
+        match (&self.search_error, self.search_editing) {
+            (Some(error), true) => wrap_words(&format!("failed: {error}"), cols),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Stop typing a search, the way Esc in the box does: back to the query last applied and
+    /// its matches, or out of the search altogether when nothing was applied yet.
+    fn cancel_search_edit(&mut self) -> bool {
+        let Some(query) = self.applied_search_query.clone() else {
+            return self.clear_search();
+        };
+        self.search_request = self.search_request.wrapping_add(1);
+        self.search_pending = false;
+        self.search_editing = false;
+        self.search_query = query;
+        self.search_error = None;
+        true
+    }
+
+    /// A bracketed paste, delivered whole rather than key by key.
+    ///
+    /// Taken only by a box being typed in, routed the way `on_key` routes a key, so it lands
+    /// in whatever the next keystroke would have. Everywhere else the pane is a list of
+    /// single-letter commands, and a paste replayed as keys - or a paste that merely looked as
+    /// if it went somewhere - would fire them; so it goes nowhere, and says so by drawing
+    /// nothing new.
+    fn on_paste(&mut self, text: &str) -> bool {
+        if self.search_editing {
+            let line = single_line(text);
+            if line.is_empty() {
+                return false;
+            }
+            // The same bookkeeping a typed character does: the query is not the one any
+            // reply in flight was for any more.
+            self.search_query.push_str(&line);
+            self.query_edited();
+            return true;
+        }
+        if self.surface == Surface::Swamp && self.swamp.is_editing() {
+            return self.swamp_paste(text);
+        }
+        // A todo box stays open under the tab bar, and a key the bar does not own is typed
+        // into it (`typing`), so a paste is too - it is typing, and takes the keys down off
+        // the bar with it, as a typed letter does. `todo_paste` takes nothing but that box,
+        // so the bar still turns away every other paste.
+        if self.surface == Surface::Todos && self.todo_paste(text) {
+            self.tabs_focused = false;
+            return true;
+        }
+        false
+    }
+
+    /// Leave the search altogether, and say whether there was one to leave. A draft `Tab` kept
+    /// goes with a search that is put away - `c` and `Esc`, or `w` and `p` over one - but not
+    /// when there is no search: `w` and `p` call this only to leave whatever view the list is
+    /// in, and the draft is kept for the next `/` until a search is really put away.
     fn clear_search(&mut self) -> bool {
         self.search_revisions.clear();
         self.pending_history_revision = None;
         self.applied_search_query = None;
+        self.searched_at_ms = None;
         self.search_request = self.search_request.wrapping_add(1);
         self.search_pending = false;
         self.search_editing = false;
         let Some((rows, summaries)) = self.search_base.take() else {
             return false;
         };
+        self.search_draft = None;
         self.rows = rows;
         self.summaries = summaries;
         self.search_query.clear();
@@ -1710,7 +2777,9 @@ impl State {
                 summaries: self.summaries.clone(),
             };
             self.waiting_base = Some(strip.clone());
-            self.set_rows(strip);
+            // Nothing kept: the view opening is the queue as it stands, and an agent the
+            // cursor happened to be on is not in it unless it is waiting.
+            self.set_rows_keeping(strip, None);
         }
         true
     }
@@ -1750,6 +2819,18 @@ impl State {
                 return false;
             }
         }
+        // A click anywhere shuts the key sheet: whatever it landed on is under the sheet, so it
+        // does nothing else - except on a tab, which is drawn above the sheet and does what a
+        // tab click always does. The wheel scrolls it.
+        let sheet_up = self.key_sheet_scroll.is_some();
+        if sheet_up {
+            match mouse_event {
+                Mouse::LeftClick(..) | Mouse::RightClick(..) => self.key_sheet_scroll = None,
+                Mouse::ScrollUp(lines) => return self.scroll_key_sheet(-(lines.max(1) as isize)),
+                Mouse::ScrollDown(lines) => return self.scroll_key_sheet(lines.max(1) as isize),
+                _ => return false,
+            }
+        }
         if let Mouse::LeftClick(0, column) = mouse_event {
             if let Some(target) = self
                 .tab_cells
@@ -1757,11 +2838,18 @@ impl State {
                 .find(|cell| column >= cell.x && column < cell.x + cell.width)
                 .map(|cell| cell.target)
             {
+                // A click on a tab is a click on that tab's list: the keys go to the content,
+                // as they do for a tab click in the conversation. It used to leave them on the
+                // bar, where every key but the bar's own was dropped under a surface still
+                // advertising its keys.
                 self.swamp.cancel_filter();
-                self.tabs_focused = true;
                 self.switch_surface(target);
+                self.keys_to_the_list();
                 return true;
             }
+        }
+        if sheet_up {
+            return true;
         }
         if self.surface == Surface::Swamp && self.swamp.has_filter_editor() {
             return self.swamp_filter_mouse(mouse_event);
@@ -1769,32 +2857,62 @@ impl State {
         if self.last_rows <= 1 || self.mouse_position.is_some_and(|(line, _)| line == 0) {
             return false;
         }
+        // Where a key pressed just before this click would have gone. A click that brings the
+        // keys to what it lands on - off the tab bar, or into this pane from another - only
+        // points: its second half, the one that walks into an agent or opens an event, is for
+        // a click made where the keys already were, which is what makes a second click the
+        // Enter. Asked before the click moves anything.
+        let keys_were_here = self.keys_here();
+        // Whether the click took the keys off the tab bar, which is a redraw whatever it lands
+        // on: the bar's highlight and its footer come down. Only a press does - the wheel and
+        // a hover leave the bar with the keys.
+        let mut left_bar = false;
         let mouse_event = match mouse_event {
             Mouse::LeftClick(line, column) => {
-                self.tabs_focused = false;
+                left_bar = std::mem::take(&mut self.tabs_focused);
                 Mouse::LeftClick(line - 1, column)
             },
+            // The drag and the release that follow a press are shifted with it, so a surface
+            // sees all three in one set of coordinates and can tell a click - press and release
+            // on one cell - from a drag that only selects text.
+            Mouse::Hold(line, column) => Mouse::Hold(line - 1, column),
+            Mouse::Release(line, column) => Mouse::Release(line - 1, column),
             other => other,
         };
+        self.content_mouse(mouse_event, keys_were_here) || left_bar
+    }
+
+    /// A mouse event on the surface under the tab bar, in its own coordinates - content row `0`
+    /// is the pane's row `1`. `keys_were_here` is whether the keys were in the surface's content
+    /// before the event, which a click that lands on what is already chosen reads to tell a
+    /// second click from the one that brought the keys back.
+    fn content_mouse(&mut self, mouse_event: Mouse, keys_were_here: bool) -> bool {
         match self.surface {
             Surface::Swamp => return self.swamp_mouse(mouse_event),
             Surface::Todos => return self.todo_mouse(mouse_event),
-            Surface::Vms => return self.vm_mouse(mouse_event),
+            Surface::Vms => return self.vm_mouse(mouse_event, keys_were_here),
             Surface::Agents => {},
         }
-        // With the reader up there is one thing on screen and the wheel is its. A click is
-        // ignored rather than closing it: nothing under the pointer is a target, and a stray
-        // click losing the user's place in a long event is worse than a click that does
-        // nothing.
+        // With the reader up there is one thing on screen and the wheel is its. A click never
+        // closes it - a stray click losing the user's place in a long event is worse than a
+        // click that does nothing - and is taken only by a fold row, the one target the reader
+        // draws: it points the cursor there, and a second one opens or shuts the fold.
         if self.reading.is_some() {
             return match mouse_event {
                 Mouse::ScrollUp(lines) => self.scroll_reader(-(lines.max(1) as isize)),
                 Mouse::ScrollDown(lines) => self.scroll_reader(lines.max(1) as isize),
+                // Row 0 is the reader's divider; the body starts under it.
+                Mouse::LeftClick(line, _) if line >= 1 => {
+                    self.click_in_the_reader(line as usize - 1, keys_were_here)
+                },
                 _ => false,
             };
         }
         match mouse_event {
-            Mouse::LeftClick(line, _) if line >= 0 => self.on_click(line as usize),
+            // The view label above the list names the view, and nothing on it is a target.
+            Mouse::LeftClick(line, _) if line >= 0 => (line as usize)
+                .checked_sub(self.last_label_rows)
+                .is_some_and(|line| self.on_click(line, keys_were_here)),
             Mouse::ScrollUp(lines) => self.scroll_surface(-(lines.max(1) as isize)),
             Mouse::ScrollDown(lines) => self.scroll_surface(lines.max(1) as isize),
             _ => false,
@@ -1803,8 +2921,12 @@ impl State {
 
     /// The server sends Hover with the wheel's coordinates before each wheel event.
     fn scroll_surface(&mut self, delta: isize) -> bool {
-        // on_mouse has checked the pane bounds and excluded the tab header.
-        let target = match self.mouse_position.map(|(line, _)| line as usize - 1) {
+        // on_mouse has checked the pane bounds and excluded the tab header. A wheel over the
+        // view label scrolls the list it names.
+        let target = match self
+            .mouse_position
+            .map(|(line, _)| (line as usize - 1).saturating_sub(self.last_label_rows))
+        {
             Some(line) if line < self.last_list_rows => Focus::List,
             Some(line)
                 if self.last_history_rows > 0
@@ -1834,20 +2956,42 @@ impl State {
     /// A click on content line `line`, below the tab header.
     ///
     /// The half it lands in takes the keys - the pointer saying where the user is looking is
-    /// the whole reason for having two halves rather than one. In the list it also moves the
-    /// cursor onto the row it lands on, and that is the whole of it: a click is an arrow key
-    /// with a destination, so the history half fills with the agent it points at and nothing
-    /// is navigated to. `Enter` is what walks into the agent.
-    fn on_click(&mut self, line: usize) -> bool {
+    /// the whole reason for having two halves rather than one. The first click on something
+    /// points at it: in the list it moves the cursor onto the row, so the history half fills
+    /// with the agent it points at and nothing is navigated to; in the history half it moves
+    /// the cursor onto the event. A second click on what the cursor is already on, in the half
+    /// that already has the keys, does what `Enter` does there - walks into the agent, or reads
+    /// the event. Clicking only ever pointed, which left the mouse able to choose everything
+    /// and do nothing with it.
+    ///
+    /// "Already has the keys" is `keys_were_here`, not only the stop: a click that brings them
+    /// back from the tab bar, or from another pane, is saying where the user is looking, the
+    /// same as one that brings them over from the other half - and a user clicking to get the
+    /// keys back is clicking on whatever the cursor was left on, most often.
+    fn on_click(&mut self, line: usize, keys_were_here: bool) -> bool {
         if self.last_history_rows > 0 && line >= self.last_list_rows {
-            // The divider and everything under it. Nothing down there is selectable, so the
-            // focus is all the click does - and it is worth a redraw, because the divider
-            // draws it.
-            let moved = self.focus != Focus::History;
+            let was_history = self.focus == Focus::History && keys_were_here;
             self.focus = Focus::History;
-            return moved;
+            // Under the divider and whatever is pinned below it, the timeline's rows.
+            let event = line
+                .checked_sub(self.last_list_rows + 1 + self.last_history_body_top)
+                .filter(|row| *row < self.last_history_body_rows)
+                .and_then(|row| self.event_at_row(self.last_history_window_start + row));
+            let Some(event) = event else {
+                // The divider, the header or an empty row: the focus is all the click does -
+                // and it is worth a redraw, because the divider draws it.
+                return !was_history;
+            };
+            if was_history && event == self.history_cursor {
+                return self.open_reader();
+            }
+            let moved = event != self.history_cursor;
+            self.history_cursor = event;
+            self.history_cursor_anchor = self.cursor_anchor();
+            self.history_scrolled = false;
+            return moved || !was_history;
         }
-        let focus_moved = self.focus != Focus::List;
+        let was_list = self.focus == Focus::List && keys_were_here;
         self.focus = Focus::List;
         let Some(index) = click_target(
             &self.rows,
@@ -1855,12 +2999,58 @@ impl State {
             self.last_list_rows,
             line,
         ) else {
-            return focus_moved;
+            return !was_list;
         };
+        let again = index == self.selected && was_list;
         let moved = index != self.selected;
         let recentered = self.list_scroll.take().is_some();
         self.selected = index;
-        moved || focus_moved || recentered
+        match self.rows.get(index) {
+            // Nothing to preview on this row, so the first click is the Enter.
+            Some(StripRow::MoreRuns) => {
+                self.ask_for_older_runs();
+                true
+            },
+            // Only with the keys already in the list: the click that brings them back from the
+            // history half, the tab bar or another pane onto the selected row is a click saying
+            // where the user is looking, not one walking them out of the panel.
+            Some(StripRow::Agent { .. }) if again => {
+                self.activate();
+                false
+            },
+            _ => moved || !was_list || recentered,
+        }
+    }
+
+    /// A click on row `row` of the reader's body: onto a fold points the cursor at it, and a
+    /// second one opens or shuts it - a second click made with the keys already here, for the
+    /// reason `on_click` gives. Anything else is ignored - a prose or raw reader has nothing to
+    /// point at.
+    fn click_in_the_reader(&mut self, row: usize, keys_were_here: bool) -> bool {
+        if row >= self.last_reader_rows {
+            return false;
+        }
+        let Some(scroll) = self.reading.as_ref().map(|reading| reading.scroll) else {
+            return false;
+        };
+        let line = scroll + row;
+        if line >= self.reader_lines().len() {
+            return false;
+        }
+        let Some(fold) = self.fold_at(line) else {
+            return false;
+        };
+        let Some(reading) = self.reading.as_mut() else {
+            return false;
+        };
+        if reading.cursor == fold && keys_were_here {
+            return self.toggle_fold();
+        }
+        // No winding: the fold is on screen, since it was just clicked. A redraw even on the
+        // fold the cursor was already on: the keys came back with the click, and the reader's
+        // divider says so.
+        reading.cursor = fold;
+        true
     }
 
     /// Walk the selection one row, and say whether it went anywhere.
@@ -1881,8 +3071,9 @@ impl State {
     /// which is the same division of labour that has hocus computing the rows drawn here.
     ///
     /// Nothing is expected back on this message. The answer arrives the way every other
-    /// change to a run does, as a fresh `AGENT_RUN_DETAIL`, so a summary asked for here and
-    /// one that happened on its own reach the half by one road.
+    /// change to a run does, as a fresh `AGENT_RUN_DETAIL` - or, for a pane with no hooks,
+    /// with the next strip - so a summary asked for here and one that happened on its own
+    /// reach the half by one road. See `summarizing` for how the hint knows it has.
     fn request_summary(&mut self) -> bool {
         let request = match self.rows.get(self.selected) {
             Some(StripRow::Agent { pane_id, .. }) => wire::SummarizeRequest {
@@ -1900,15 +3091,56 @@ impl State {
             return false;
         };
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUMMARIZE).with_payload(payload));
-        let asked = self.selection_key();
+        let asked = self.selection_key().map(|row| SummaryAsk {
+            row,
+            asked_at_ms: now_ms(),
+            stale: false,
+        });
         // A refusal outranks `summarising…` on the divider and lives until the cursor leaves
         // the row, so leaving it up here would make `s` on a row that has just refused an `r`
         // look like a key that does nothing. The note is an account of a question that has
-        // been overtaken - `arm_resume` takes it down for the same reason.
-        let changed = self.summarizing != asked || self.resume_note.is_some();
+        // been overtaken - `arm_resume` takes it down for the same reason. A stale hint is
+        // replaced by the fresh one, which is a change too.
+        let changed = self.summarizing.as_ref().map(|ask| (&ask.row, ask.stale))
+            != asked.as_ref().map(|ask| (&ask.row, false))
+            || self.resume_note.is_some();
         self.resume_note = None;
         self.summarizing = asked;
         changed
+    }
+
+    /// Whether a strip just taken answered an `s` on a live agent, taking the hint down if so.
+    ///
+    /// A pane with no hooks is summarised from its screen, and that summary reaches this pane
+    /// with the strip rather than as a run - the one road `load_run` never sees.
+    fn summary_in_the_strip(&mut self) -> bool {
+        let Some(ask) = self.summarizing.as_ref() else {
+            return false;
+        };
+        let answered = self.summaries.iter().any(|(pane_id, summary)| {
+            ask.row == format!("pane:{pane_id}")
+                && summary
+                    .created_at_ms
+                    .is_some_and(|made| made >= ask.asked_at_ms)
+        });
+        if answered {
+            self.summarizing = None;
+        }
+        answered
+    }
+
+    /// Stop saying a summary is on its way once it has been asked for longer than the daemon
+    /// ever takes, and say whether the divider changed. Nothing is ever told of a refusal, so
+    /// this is the only ending a hint that nothing will answer can have - and the wording is
+    /// careful: a summary that came back saying what the last one said is not news either.
+    fn expire_summary_ask(&mut self, now: i64) -> bool {
+        match self.summarizing.as_mut() {
+            Some(ask) if !ask.stale && now - ask.asked_at_ms >= SUMMARY_WAIT_MS => {
+                ask.stale = true;
+                true
+            },
+            _ => false,
+        }
     }
 
     /// Ask whether to resume the archived run under the cursor, and say whether the divider
@@ -1959,9 +3191,9 @@ impl State {
 
     /// Name the archived run under the cursor to hocus, which knows what resuming one means.
     ///
-    /// Nothing is expected back except `wire::AGENT_RESUME_RESULT`, which is only ever read
-    /// for its refusal: a resume that worked shows up as a pane taking the focus, and then as
-    /// the row leaving the archive on the next strip.
+    /// Nothing is expected back except `wire::AGENT_RESUME_RESULT`. A refusal is drawn on the
+    /// row; a resume that worked puts the panel away, since hocus has by then walked the
+    /// keyboard into the new pane under it - and the row leaves the archive on the next strip.
     fn request_resume(&mut self) {
         let Some(StripRow::Run { run_id, .. }) = self.rows.get(self.selected) else {
             return;
@@ -1983,11 +3215,16 @@ impl State {
     /// knows both ids. Sent even when there may be no hocus listening: the message launches
     /// nobody, so it is free.
     ///
-    /// Both keys that dismiss come through here: `Esc`, which is the whole of what it does, and
-    /// `Enter`, which follows it with a focus.
+    /// Everything that dismisses comes through here: `Esc`, which is the whole of what it does,
+    /// and everything that follows it with a focus somewhere the panel would cover - `Enter` on
+    /// an agent, `o` on a file, and a resume that worked. Not `D` and `F`, whose modal is drawn
+    /// over the panel and hands the keys back to it when it is cancelled.
     fn hide_the_panel(&mut self) {
+        self.end_visit();
         self.swamp.cancel_filter();
         self.swamp.pane_visible = false;
+        // Ended just now, so the manifest that reports the pane suppressed is not a second end.
+        self.pane_shown = false;
         self.vms.visible = false;
         #[cfg(test)]
         {
@@ -1995,6 +3232,113 @@ impl State {
         }
         hide_self();
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_HIDE));
+    }
+
+    /// The panel has been put away, by whichever half: this pane's side of it.
+    ///
+    /// The list half's counterpart of hocus resetting its own ring stop on a hide. The keyboard
+    /// stop goes back to the list - `Ctrl e a` promises the panel back "with the keyboard on the
+    /// agent list", and used to bring it back on the tab bar, where `j` did nothing - and every
+    /// question left armed is dropped, so it cannot take the first keys of a visit that may be
+    /// an hour later. Those are questions the user started and can ask again with one key; a
+    /// draft being typed is kept, as the conversation keeps its own.
+    ///
+    /// What the user was looking at stays: the surface, each surface's selection and scroll,
+    /// an open reader and any filtered view. So does anything the keyboard leaving *without*
+    /// a hide would touch - that only changes how the markers are drawn (`keys_here`).
+    ///
+    /// Run from every panel-level hide: `hide_the_panel`, the manifest reporting this pane
+    /// suppressed (`own_pane_changed`), and hocus's `vms::VISIBILITY` going false. Never from
+    /// the tab-level `Event::Visible`, which fires in pairs when hocus carries the panel to
+    /// another Zellij tab without it ever leaving the screen.
+    fn end_visit(&mut self) {
+        self.tabs_focused = false;
+        self.focus = Focus::List;
+        self.vms.details = false;
+        self.confirming_resume = None;
+        // The key sheet is about the moment it was asked for, like the questions are.
+        self.key_sheet_scroll = None;
+        self.todos_end_visit();
+        self.cancel_vm_confirmation();
+    }
+
+    /// What the host last said about this pane: shown or not, and holding the keyboard or not.
+    /// Whether that is worth a redraw.
+    ///
+    /// The shown-to-hidden edge ends the visit (`end_visit`); nothing else resets a stop. In
+    /// particular the keyboard leaving does not - it would race `AGENT_STRIP_TAKE`, which can
+    /// arrive before the manifest reporting the focus change, and a yield into the conversation
+    /// has to come back to where it left - it only changes what `keys_here` says.
+    ///
+    /// A redraw only on a real edge of the keyboard while shown: the first manifest to name
+    /// this pane is not one, since the markers were drawn for "assume focused" and a pane
+    /// reported unfocused on its first manifest has nothing drawn focused yet; and a hidden
+    /// pane has nothing on screen to correct.
+    fn own_pane_changed(&mut self, visible: bool, focused: bool) -> bool {
+        let was_shown = std::mem::replace(&mut self.pane_shown, visible);
+        if was_shown && !visible {
+            self.end_visit();
+        }
+        let focused = visible && focused;
+        let was = self.has_keyboard.replace(focused);
+        visible && was.is_some_and(|was| was != focused)
+    }
+
+    /// Whether a key pressed now reaches this surface's own content - the list, its history or
+    /// details half, a box being typed in - which is what a focus marker drawn there claims.
+    ///
+    /// False when the host has given the keyboard to another pane, and while the panel's tab
+    /// bar has it: in both cases `focus` still names the half the keys will come back to, and
+    /// is drawn as unfocused until they do.
+    fn keys_here(&self) -> bool {
+        self.has_keyboard != Some(false) && !self.tabs_focused
+    }
+
+    /// Whether a key pressed now reaches the panel's tab bar: what the bar's highlight and its
+    /// hint line claim.
+    fn bar_has_keys(&self) -> bool {
+        self.has_keyboard != Some(false) && self.tabs_focused
+    }
+
+    /// Off the tab bar and onto the surface's list - not its history or details half. What
+    /// `Tab`, `Enter`, `↓`, `j` and `Esc` on the bar do, and what a click on a tab does.
+    fn keys_to_the_list(&mut self) {
+        self.tabs_focused = false;
+        match self.surface {
+            Surface::Agents => self.focus = Focus::List,
+            Surface::Vms => self.vms.details = false,
+            Surface::Todos | Surface::Swamp => {},
+        }
+    }
+
+    /// Where the terminal cursor goes this frame, in pane coordinates: in the box that takes
+    /// the next key, or nowhere. `rows` and `cols` are the surface's share of the pane - under
+    /// the tab bar, above any footer - which is what each surface lays its box out in.
+    ///
+    /// One answer per frame because the host has one cursor per pane, and before any drawing
+    /// because a host command has to be: whichever surface is up asks its own box, in the
+    /// order `on_key` hands the keys out. Nowhere while another pane has the keyboard, or with
+    /// the key sheet drawn over the box.
+    fn text_cursor(
+        &self,
+        form_cursor: Option<(usize, usize)>,
+        rows: usize,
+        cols: usize,
+    ) -> Option<(usize, usize)> {
+        if self.has_keyboard == Some(false) || self.key_sheet_scroll.is_some() {
+            return None;
+        }
+        match self.surface {
+            // Swamp's boxes take the keys ahead of the bar, so the bar does not hide them.
+            Surface::Swamp => form_cursor.or_else(|| self.swamp_query_cursor(rows, cols)),
+            Surface::Todos if self.keys_here() => self.todo_input_cursor(rows, cols),
+            // The search box is the Agents surface's first row - the pane's second, under the
+            // tab bar - and it too takes the keys ahead of the bar.
+            Surface::Agents if self.search_editing && self.reading.is_none() && rows > 0 => {
+                Some((self.search_box(cols).1, 1))
+            },
+            _ => None,
+        }
     }
 
     /// The whole of what `Enter` on a list row does: put the panel away and hand the keyboard
@@ -2009,7 +3353,9 @@ impl State {
     /// time it holds no keyboard to lose.
     ///
     /// The next `Ctrl e a` brings the panel back with the selection still on this agent, so
-    /// the history half is a keystroke away rather than gone.
+    /// the history half is a keystroke away rather than gone. That holds in the waiting view
+    /// too, answered or not: the queue keeps the row the cursor is on (see `waiting_rows`), and
+    /// an answered agent leaves it once the cursor moves on to the next.
     fn activate(&mut self) {
         let Some(StripRow::Agent { pane_id, .. }) = self.rows.get(self.selected) else {
             return;
@@ -2032,11 +3378,24 @@ impl State {
     /// anywhere else - a shell, an editor - moves nothing and only dims what is
     /// selected, because the answer to "which agent" has not changed, only
     /// whether you are in it.
-    fn set_rows(&mut self, mut strip: Strip) -> bool {
+    fn set_rows(&mut self, strip: Strip) -> bool {
+        let keep = self.selection_key();
+        self.set_rows_keeping(strip, keep.as_deref())
+    }
+
+    /// [`Self::set_rows`], with the waiting view keeping the row `keep` names whether or not
+    /// it is still waiting.
+    ///
+    /// The queue is re-filtered on every strip, and it used to drop the agent the cursor was on
+    /// the moment it was answered: the cursor jumped to the top of the queue, and the reader
+    /// and history the user had open on it closed under them. Kept until the cursor leaves it,
+    /// the row goes on the next strip after that - and a row that is gone altogether, its pane
+    /// closed, hands the cursor to its neighbour rather than to the top.
+    fn set_rows_keeping(&mut self, mut strip: Strip, keep: Option<&str>) -> bool {
         let filtered = self.predecessors.is_some() || self.waiting_base.is_some();
         if let Some(base) = &mut self.waiting_base {
             *base = strip.clone();
-            strip.rows = waiting_rows(&strip.rows);
+            strip.rows = waiting_rows(&strip.rows, keep);
         }
         if let Some(previous) = &mut self.predecessors {
             previous.base = strip.clone();
@@ -2047,11 +3406,17 @@ impl State {
             focused,
             summaries,
         } = strip;
-        if let Some(base) = self.search_base.as_mut() {
-            *base = (rows, summaries);
+        if self.search_base.is_some() {
+            // The search's rows stand still, but its footer counts the waiting agents in the
+            // strip kept behind it, so a strip that changes that count is worth a redraw. The
+            // once-a-second push that changes nothing is not.
+            let was_waiting = self.waiting_count();
             let was_live = self.live();
+            if let Some(base) = self.search_base.as_mut() {
+                *base = (rows, summaries);
+            }
             self.focused = focused.or(self.focused);
-            return self.live() != was_live;
+            return self.live() != was_live || self.waiting_count() != was_waiting;
         }
         let walked_to = focused
             .filter(|_| !filtered)
@@ -2060,6 +3425,19 @@ impl State {
         let was = self.rows.get(self.selected).and_then(row_key);
         let selected = walked_to
             .or_else(|| was.as_deref().and_then(|key| position_of_key(&rows, key)))
+            // `load older runs…` answered by the last page is replaced by the runs it asked
+            // for, and the cursor goes to the first of them rather than back to the top of the
+            // list, which is a page per row away from where the user was reading.
+            .or_else(|| {
+                (was.as_deref() == Some("more"))
+                    .then(|| self.first_run_loaded(&rows))
+                    .flatten()
+            })
+            .or_else(|| {
+                filtered
+                    .then(|| nearest_selectable(&rows, self.selected))
+                    .flatten()
+            })
             .or_else(|| rows.iter().position(selectable))
             .unwrap_or(0);
         // Only a real pane replaces the focus: see the field's doc.
@@ -2083,6 +3461,21 @@ impl State {
         self.summaries = summaries;
         self.focused = focused;
         changed
+    }
+
+    /// Where the cursor goes when `load older runs…` has gone from `rows`: the first run after
+    /// the last one it followed, which is the first of the page it loaded - or, if that run has
+    /// gone too, the last row that can be selected.
+    fn first_run_loaded(&self, rows: &[StripRow]) -> Option<usize> {
+        let last_run = self.rows[..self.selected.min(self.rows.len())]
+            .iter()
+            .rev()
+            .find(|row| matches!(row, StripRow::Run { .. }))
+            .and_then(row_key);
+        last_run
+            .and_then(|key| position_of_key(rows, &key))
+            .map(|at| step(rows, at, Motion::Down))
+            .or_else(|| rows.iter().rposition(selectable))
     }
 
     /// How many of the half's `rows` the pinned header takes - its lines plus the rule under
@@ -2109,7 +3502,8 @@ impl State {
     ///
     /// Drawn even when there is nothing to say. The half is permanent so the list's height
     /// never moves under the pointer, and an empty history is a sentence rather than an
-    /// absence.
+    /// absence - one that says which kind of empty it is (`history_placeholder`), wrapped over
+    /// as many of the half's rows as it needs, since the reason is its end.
     fn render_history(&mut self, top: usize, rows: usize, cols: usize) {
         self.fill_history_cache(cols);
         // `rows` is the body alone: `split` takes the divider off the list's share, and it is
@@ -2119,41 +3513,86 @@ impl State {
         // about anything it said: when it began, and its whole session id. A summary is *not*
         // one of them - it is a row of the timeline, where in time it was made - so the events
         // remain one scrolling window and a talkative model costs the events beside it nothing
-        // they cannot be scrolled back to.
+        // they cannot be scrolled back to. A note that has taken the divider's place is held
+        // there too while it stands, whole - a refused resume, a summary nobody wrote: the
+        // divider cuts it to a few words on a narrow half, and the rest is what to do about it.
         let header_rows = self.header_rows(rows);
-        let room = rows.saturating_sub(header_rows);
+        let refusal = self.refusal_lines(cols);
+        let refusal_rows = refusal
+            .len()
+            .min(rows.saturating_sub(header_rows).saturating_sub(1));
+        let room = rows.saturating_sub(header_rows + refusal_rows);
         let entries_len = self.history().entries.len();
+        let events_len = self.history().events.len();
+        // Nothing to measure against on a frame with no room or no events, so nothing is
+        // settled on one either: the positions and the events they hold wait for a frame that
+        // can show them.
+        let measurable = room > 0 && events_len > 0;
+        if measurable {
+            self.reanchor_history();
+        }
         // `history_scroll` counts backward from the newest entry, which is the end the half is
-        // anchored to: an entry arriving pushes the window along rather than leaving the user
-        // reading a stale top.
+        // anchored to while it is at the tail: an entry arriving pushes the window along rather
+        // than leaving the user reading a stale top. Wound back, it holds its event instead.
         let max_scroll = entries_len.saturating_sub(room);
         self.last_history_max_scroll = max_scroll;
         self.last_history_body_rows = room;
         self.history_scroll = self.history_scroll.min(max_scroll);
-        let focused = self.focus == Focus::History;
+        let stepped = self.focus == Focus::History;
         // The cursor is walked by `step_history_cursor`, which knows how many events there are
         // but not how many of their rows fit: how many lines the half has depends on the width,
-        // and only `render` is told the width. So the winding that keeps the cursor on screen
+        // and only `render` is told the width. So keeping the cursor and the window together
         // happens here, the same place and for the same reason `last_history_max_scroll` is
-        // recorded.
+        // recorded - and which of the two gives way depends on which one the user moved.
         let anchored = room > 0 && self.position_search_hit();
-        if focused || anchored {
-            self.history_cursor = self
-                .history_cursor
-                .min(self.history().events.len().saturating_sub(1));
-            if let Some(reveal) = self.reveal_cursor(room) {
-                self.history_scroll = reveal.min(max_scroll);
+        if measurable {
+            self.history_cursor = self.history_cursor.min(events_len - 1);
+            if stepped && self.history_scrolled && !anchored {
+                // The page keys or the wheel moved the window: the cursor comes to it, so what
+                // `Enter` and `o` act on is on screen. Winding the window back to the cursor
+                // instead was what made both do nothing here.
+                let end = entries_len - self.history_scroll;
+                if let Some(cursor) = self.cursor_into_window(end.saturating_sub(room), end) {
+                    self.history_cursor = cursor;
+                    self.history_cursor_anchor = self.cursor_anchor();
+                }
+            } else if stepped || anchored {
+                // A key moved the cursor, or a resize or a growing run moved the rows under it:
+                // the window goes to the cursor.
+                if let Some(reveal) = self.reveal_cursor(room) {
+                    self.history_scroll = reveal.min(max_scroll);
+                }
+            }
+            if stepped {
+                self.history_scrolled = false;
             }
         }
         let end = entries_len - self.history_scroll;
         let start = end.saturating_sub(room);
-        let cursor = focused
+        if measurable {
+            self.history_bottom_anchor = self.bottom_anchor(end);
+        }
+        self.last_history_window_start = start;
+        self.last_history_body_top = header_rows + refusal_rows;
+        // Drawn as holding the keys only while a key pressed now would reach it. The cursor is
+        // drawn then, and dimly on a search hit's row, so the list says which event matched.
+        let focused = stepped && self.keys_here();
+        let marked = focused || self.selected_revision().is_some();
+        let cursor = marked
             .then(|| self.cursor_event().map(|event| event.start))
             .flatten();
-        let placeholder = match self.selection_key() {
-            Some(_) => "  nothing to show yet",
-            None => "  select an agent",
+        let cursor_style = markdown::MdStyle {
+            dim: !focused,
+            ..Default::default()
         };
+        let placeholder = self.placeholder_lines(cols);
+        // A refused resume is drawn in the error colour. The other note that takes the
+        // divider's place, a summary nobody wrote, is news rather than a failure, and is dim
+        // like every other hint in the half.
+        let refused = self
+            .resume_note
+            .as_ref()
+            .is_some_and(|(row, _)| self.selection_key().as_ref() == Some(row));
         // Everything the half is drawn from is settled now, so the lines can be borrowed
         // rather than copied.
         // Built before `history` is borrowed below, because it borrows `self` too.
@@ -2183,14 +3622,27 @@ impl State {
             );
             body += header_rows;
         }
+        for (index, line) in refusal.iter().take(refusal_rows).enumerate() {
+            let text = Text::new(format!(" {line}"));
+            let text = match refused {
+                true => text.error_color_range(..),
+                false => text.dim_range(..),
+            };
+            paint(text, 0, body + index, Some(cols), None);
+        }
+        body += refusal_rows;
         if history.entries.is_empty() {
-            paint(
-                Text::new(placeholder).dim_range(..),
-                0,
-                body,
-                Some(cols),
-                None,
-            );
+            // Over the rows the timeline would have had, and at least one: the reason a
+            // history is unavailable is the end of its sentence, which one cut row loses.
+            for (index, line) in placeholder.iter().take(room.max(1)).enumerate() {
+                paint(
+                    Text::new(format!("  {line}")).dim_range(..),
+                    0,
+                    body + index,
+                    Some(cols),
+                    None,
+                );
+            }
             return;
         }
         for (index, line) in history.entries[start..end].iter().enumerate() {
@@ -2205,7 +3657,7 @@ impl State {
             // label is on: a marker in the column every other row leaves blank, the same
             // shape the list above uses to say where its own cursor is.
             let line = match cursor == Some(start + index) {
-                true => line.clone().prepend(">", markdown::MdStyle::default()),
+                true => line.clone().prepend(">", cursor_style),
                 false => line.clone().indent(1),
             };
             // Nothing is dimmed by where it sits: every event reads at the same weight, and a
@@ -2214,6 +3666,156 @@ impl State {
             let text = markdown::style_text(&line.text, &line.styles, false);
             paint(text, 0, body + index, Some(cols), None);
         }
+    }
+
+    /// What the history half says when it has no timeline to draw, which depends on why: a half
+    /// too narrow to wrap into, a row that has no history of its own, one whose history is on
+    /// its way or could not be fetched, and a run that recorded nothing are five different
+    /// things to do about it, and used to be one sentence.
+    fn history_placeholder(&self, cols: usize) -> String {
+        if cols.saturating_sub(2) < agents::HISTORY_MIN_COLS {
+            return "too narrow for history".to_owned();
+        }
+        match self.rows.get(self.selected) {
+            Some(StripRow::MoreRuns) => "Enter loads older runs".to_owned(),
+            Some(StripRow::Run { .. }) => {
+                let selection = self.selection_key();
+                if let Some((row, reason)) = self.run_error.as_ref() {
+                    if Some(row) == selection.as_ref() {
+                        return format!("history unavailable: {reason}");
+                    }
+                }
+                match self
+                    .run
+                    .as_ref()
+                    .is_some_and(|run| self.selected_run_matches(run))
+                {
+                    true => "no events recorded".to_owned(),
+                    false => "loading…".to_owned(),
+                }
+            },
+            Some(StripRow::Agent { .. }) => "nothing to show yet".to_owned(),
+            _ => "select an agent".to_owned(),
+        }
+    }
+
+    /// [`Self::history_placeholder`], wrapped to the half's margins: the rows the empty half
+    /// draws. Wrapped rather than cut, so a reason hocus gives for a history being unavailable
+    /// is read to its end however narrow the half, and needs no shortening to fit one.
+    fn placeholder_lines(&self, cols: usize) -> Vec<String> {
+        wrap_words(&self.history_placeholder(cols), cols.saturating_sub(2))
+    }
+
+    /// Whatever has taken the divider's place (`Hint::Instead`), wrapped to the half: what the
+    /// divider starts to say and a narrow half cuts off. That is a refused resume on the row
+    /// under the cursor, or a summary asked for that nobody wrote - whose tail is the key that
+    /// asks again.
+    fn refusal_lines(&self, cols: usize) -> Vec<String> {
+        match self.divider_hint() {
+            Some(Hint::Instead(note)) => wrap_words(&note, cols.saturating_sub(2)),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Put the window and the cursor back on the events they were holding (see
+    /// `history_bottom_anchor` and `history_cursor_anchor`), in a history that may have grown,
+    /// lost its oldest rows or been re-wrapped since they were placed. An event that has gone
+    /// lets its anchor go, and the position it was counted at stands.
+    fn reanchor_history(&mut self) {
+        let history = self.history();
+        let entries_len = history.entries.len();
+        let events = &history.events;
+        let cursor = self.history_cursor_anchor.map(|revision| {
+            events
+                .iter()
+                .rposition(|event| event.revision == revision)
+                .map(|index| events.len() - index - 1)
+        });
+        let scroll = self.history_bottom_anchor.map(|(revision, offset)| {
+            events
+                .iter()
+                .find(|event| event.revision == revision)
+                .map(|event| {
+                    let row = event.start + offset.min(event.len.saturating_sub(1));
+                    entries_len.saturating_sub(row + 1)
+                })
+        });
+        match cursor {
+            Some(Some(cursor)) => self.history_cursor = cursor,
+            Some(None) => self.history_cursor_anchor = None,
+            None => {},
+        }
+        match scroll {
+            Some(Some(scroll)) => self.history_scroll = scroll,
+            Some(None) => self.history_bottom_anchor = None,
+            None => {},
+        }
+    }
+
+    /// What the window holds on to while it is wound back from the tail: the event its bottom
+    /// row belongs to and how far into it that row is. Anchored at the bottom edge because that
+    /// is the edge a resize grows the window from, so the text being read stays put.
+    fn bottom_anchor(&self, end: usize) -> Option<(Option<u64>, usize)> {
+        if self.history_scroll == 0 || end == 0 {
+            return None;
+        }
+        let row = end - 1;
+        let events = &self.history().events;
+        let index = events.partition_point(|event| event.end() <= row);
+        let event = events.get(index).filter(|event| event.start <= row)?;
+        Some((event.revision, row - event.start))
+    }
+
+    /// What the cursor holds on to off the tail: its event. `None` on the newest, which follows
+    /// the tail.
+    fn cursor_anchor(&self) -> Option<Option<u64>> {
+        if self.history_cursor == 0 {
+            return None;
+        }
+        self.cursor_event().map(|event| event.revision)
+    }
+
+    /// The cursor, as a count back from the newest, moved onto an event wholly inside the rows
+    /// `start..end` if its own is not: the one nearest the edge it fell off, or where no event
+    /// fits whole, the one owning that edge row. `None` when it is on screen already.
+    fn cursor_into_window(&self, start: usize, end: usize) -> Option<usize> {
+        let events = &self.history().events;
+        let index = events.len().checked_sub(self.history_cursor + 1)?;
+        let event = events.get(index)?;
+        if event.start >= start && event.end() <= end {
+            return None;
+        }
+        // Events tile the rows oldest first, so the ones wholly inside are a run of them.
+        let first_inside = events.partition_point(|event| event.start < start);
+        let past_inside = events.partition_point(|event| event.end() <= end);
+        let owner = |row: usize| {
+            let at = events.partition_point(|event| event.end() <= row);
+            events
+                .get(at)
+                .filter(|event| event.start <= row)
+                .map(|_| at)
+        };
+        let target = if event.end() > end {
+            (first_inside < past_inside)
+                .then(|| past_inside - 1)
+                .or_else(|| owner(end.checked_sub(1)?))
+        } else {
+            (first_inside < past_inside)
+                .then_some(first_inside)
+                .or_else(|| owner(start))
+        }?;
+        Some(events.len() - target - 1)
+    }
+
+    /// The event a click on row `row` of the history's entries lands on, as a count back from
+    /// the newest, or `None` for a row no event owns.
+    fn event_at_row(&self, row: usize) -> Option<usize> {
+        let events = &self.history().events;
+        let at = events.partition_point(|event| event.end() <= row);
+        events
+            .get(at)
+            .filter(|event| event.start <= row)
+            .map(|_| events.len() - at - 1)
     }
 
     /// Where the history half has to be wound for the cursor's event to be on screen, or `None`
@@ -2233,9 +3835,18 @@ impl State {
         if entries_len.saturating_sub(scroll) < event.end() {
             scroll = entries_len.saturating_sub(event.end());
         }
-        // Above the top edge: wind back until its first row is the oldest on screen.
-        if event.start + room < entries_len.saturating_sub(scroll) {
-            scroll = entries_len.saturating_sub(event.start + room);
+        // Above the top edge: wind back until its first row is the oldest on screen. On the
+        // oldest event, measured from the first row instead where that still leaves the event's
+        // first row in the room. The rows above `events[0]` belong to no event - they are the
+        // notice that older events were not loaded - and a cursor walked to the oldest event is
+        // exactly the user who wants to know whether there is anything older.
+        let oldest = self.history_cursor + 1 == self.history().events.len();
+        let head = match oldest && event.start < room {
+            true => 0,
+            false => event.start,
+        };
+        if head + room < entries_len.saturating_sub(scroll) {
+            scroll = entries_len.saturating_sub(head + room);
         }
         (scroll != self.history_scroll).then_some(scroll)
     }
@@ -2243,8 +3854,8 @@ impl State {
     /// The reader: one event of the timeline with the whole pane to itself.
     ///
     /// A divider of the same shape the halves have - what this is, and how far through it you
-    /// are - and the event's markdown below it. `focused` is unconditionally true: there is
-    /// nowhere else for the keys to be while this is up.
+    /// are - and the event's markdown below it. Focused whenever the keys are here at all,
+    /// since there is nowhere else in the pane for them to be while this is up.
     fn render_reader(&mut self, rows: usize, cols: usize) {
         // A row for the divider, the rest for the event. Settled before the winding below,
         // which is measured in the rows this frame has to give.
@@ -2265,21 +3876,7 @@ impl State {
         let lines = self.reader_lines();
         let max_scroll = lines.len().saturating_sub(room);
         let scroll = reading.scroll.min(max_scroll);
-        // The label is built here rather than held in `Reading` so the age goes on ticking with
-        // the minute timer, the way every other age on this pane does.
-        let mut label = reading.kind.to_owned();
-        if let Some(tag) = reading.envelope.as_deref() {
-            label.push_str(&format!(" · {tag}"));
-        }
-        if let Some(then_ms) = reading.created_at_ms {
-            label.push_str(&format!(" · {}", agents::short_age(now_ms(), then_ms)));
-        }
-        // Said rather than left to be inferred: with the folds replaced by the source, every
-        // key in here does something different, and a reader that looked the same either way
-        // would be a reader nobody could tell they were in.
-        if reading.raw {
-            label.push_str(" · raw");
-        }
+        let label = self.reader_label();
         let end = (scroll + room).min(lines.len());
         // The cursor's fold marks its first row, in the margin every other row leaves blank —
         // the same shape the list and the history half both use to say where their cursor is.
@@ -2292,7 +3889,7 @@ impl State {
             .reader_starts()
             .get(reading.cursor)
             .map(|&start| start.max(scroll));
-        render_divider(&label, scroll, lines.len() - end, true, 0, cols);
+        render_divider(&label, scroll, lines.len() - end, self.keys_here(), 0, cols);
         for (index, line) in lines[scroll..end].iter().enumerate() {
             let line = match cursor == Some(scroll + index) {
                 true => line.clone().prepend(">", markdown::MdStyle::default()),
@@ -2308,6 +3905,38 @@ impl State {
         if let Some(reading) = self.reading.as_mut() {
             reading.scroll = scroll;
         }
+    }
+
+    /// What the reader's divider says about the event: its kind first, then whether the source
+    /// is showing, the envelope's tag and its age.
+    ///
+    /// Built per frame rather than held in `Reading`, so the age goes on ticking with the minute
+    /// timer the way every other age on this pane does.
+    fn reader_label(&self) -> String {
+        let Some(reading) = self.reading.as_ref() else {
+            return String::new();
+        };
+        let mut label = reading.kind.to_owned();
+        // Said rather than left to be inferred, and straight after the kind, where a narrow
+        // divider still has it: with the folds replaced by the source, every key in here does
+        // something different, and a reader that looked the same either way would be a reader
+        // nobody could tell they were in. Called `source`, the word `v` and every hint about it
+        // use for this view.
+        if reading.raw {
+            label.push_str(" · source");
+        }
+        if let Some(tag) = reading.envelope.as_deref() {
+            label.push_str(&format!(" · {tag}"));
+        }
+        if let Some(then_ms) = reading.created_at_ms {
+            label.push_str(&format!(" · {}", agents::short_age(now_ms(), then_ms)));
+        }
+        // What the last `o` or `y` had to say leads, until the next key: it answers the key just
+        // pressed, and a narrow divider keeps its head.
+        if let Some(note) = self.open_note.as_deref() {
+            label = format!("{note} · {label}");
+        }
+        label
     }
 
     /// Wind the reader so the cursor's fold is on screen, the way `reveal_cursor` does for the
@@ -2414,12 +4043,11 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// What the divider says: what the half is about, and whether a summary was asked for
-    /// and has not come back.
+    /// What the divider says: what the half is about, and whatever is happening to it.
     ///
-    /// The hint is appended to the label rather than drawn anywhere of its own, because the
+    /// The hint is part of the label rather than drawn anywhere of its own, because the
     /// divider is already the row that names the half - and `fit_label` cuts it to the room
-    /// left over, so a narrow pane loses the hint rather than the rule.
+    /// left over, so where the hint goes decides what a narrow pane loses (see `Hint`).
     ///
     /// Compared against the selection rather than read as a flag: `summarizing` is cleared
     /// when the cursor moves, so this can only differ from it in the moment between a strip
@@ -2433,12 +4061,11 @@ impl State {
             // news, and `fit_label` cuts from the tail: sharing the row with a label is what
             // loses the half of it that says what went wrong.
             Some(Hint::Instead(hint)) => hint,
-            Some(Hint::Beside(hint)) => match label.is_empty() {
-                // A selected agent with neither a run nor a summary yet has no label at all,
-                // and the first thing it ever says should not open with a separator.
-                true => hint,
-                false => format!("{label} · {hint}"),
-            },
+            // A selected agent with neither a run nor a summary yet has no label at all, and
+            // the first thing it ever says should not open or close with a separator.
+            Some(Hint::Before(hint) | Hint::Beside(hint)) if label.is_empty() => hint,
+            Some(Hint::Before(hint)) => format!("{hint} · {label}"),
+            Some(Hint::Beside(hint)) => format!("{label} · {hint}"),
         }
     }
 
@@ -2449,6 +4076,8 @@ impl State {
     /// the user is being asked *now*, and a note from a refused resume is about a question
     /// already answered. `arm_resume` clears the note anyway, so the two can only overlap
     /// for as long as it takes a `y` to come back refused, but the order says which wins.
+    /// The question goes before the label, since its tail is its answer keys; so does what an
+    /// `o` just found, which answers the key just pressed.
     ///
     /// Every arm is compared against the selection rather than read as a flag: `summarizing`
     /// and both resume fields are cleared when the cursor moves, so this can only differ from
@@ -2459,15 +4088,34 @@ impl State {
         let selection = self.selection_key();
         selection.as_ref()?;
         if self.confirming_resume == selection {
-            return Some(Hint::Beside("resume this run? y/n".to_owned()));
+            return Some(Hint::Before("resume? y/n".to_owned()));
         }
         if let Some((row, detail)) = self.resume_note.as_ref() {
             if Some(row) == selection.as_ref() {
                 return Some(Hint::Instead(format!("resume failed: {detail}")));
             }
         }
-        if self.summarizing == selection {
-            return Some(Hint::Beside("summarising…".to_owned()));
+        if let Some(note) = self.open_note.as_ref() {
+            return Some(Hint::Before(note.clone()));
+        }
+        if let Some(ask) = self.summarizing.as_ref() {
+            if Some(&ask.row) == selection.as_ref() {
+                // Neutral about why: a refusal and a summary that said what the last one did
+                // both look like nothing arriving.
+                return Some(match ask.stale {
+                    true => Hint::Instead("no new summary · s to try again".to_owned()),
+                    false => Hint::Beside("summarising…".to_owned()),
+                });
+            }
+        }
+        // The waiting view keeps the row the cursor is on after it stops waiting, so it says
+        // why a row without a `!` is in the queue.
+        let answered = matches!(
+            self.rows.get(self.selected),
+            Some(StripRow::Agent { waiting: false, .. })
+        );
+        if self.waiting_base.is_some() && answered {
+            return Some(Hint::Beside("no longer waiting".to_owned()));
         }
         None
     }
@@ -2574,10 +4222,12 @@ impl State {
         let Some(summary) = self.summaries.get(&pane_id) else {
             return agents::HistoryLines::default();
         };
-        let Some(StripRow::Agent { kind, .. }) = self.rows.get(self.selected) else {
+        let Some(StripRow::Agent { kind, waiting, .. }) = self.rows.get(self.selected) else {
             return agents::HistoryLines::default();
         };
-        agents::summary_history(pane_id, kind, summary, width, now_ms())
+        // The row's own `!`, which has already asked whether the summary is still about the
+        // screen: the stored summary goes on saying it is waiting after the user answered.
+        agents::summary_history(pane_id, kind, summary, *waiting, width, now_ms())
     }
 
     /// Whether anything this pane draws is an age - the one thing on it that goes stale on
@@ -2592,6 +4242,10 @@ impl State {
         // The reader is the whole pane, so what it says is the only thing that can go stale.
         if let Some(reading) = self.reading.as_ref() {
             return reading.created_at_ms.is_some();
+        }
+        // A search's own age, on its label - the one age an empty "no matches" still shows.
+        if self.search_base.is_some() && self.searched_at_ms.is_some() && !self.search_editing {
+            return true;
         }
         // The archive table's age column is in the *list* half, so it ticks whatever the
         // history half beside it happens to be showing - and it is usually the only age on a
@@ -2635,6 +4289,11 @@ impl State {
         };
         let moved = target != self.history_scroll;
         self.history_scroll = target;
+        if moved {
+            // The window the user moved is the one to keep: its old anchor would put it back.
+            self.history_scrolled = true;
+            self.history_bottom_anchor = None;
+        }
         moved
     }
 
@@ -2657,6 +4316,9 @@ impl State {
         };
         let moved = target != self.history_cursor;
         self.history_cursor = target;
+        // The window follows a cursor a key moved, and the cursor holds the event it landed on.
+        self.history_scrolled = false;
+        self.history_cursor_anchor = self.cursor_anchor();
         moved
     }
 
@@ -2748,7 +4410,9 @@ impl State {
                 BareKey::Char('j') if folding => return self.step_fold(1),
                 BareKey::Enter if folding => return self.toggle_fold(),
                 BareKey::Char('o') => return self.open_the_file(),
-                BareKey::Char('r') => return self.toggle_raw(),
+                // Not `r`: one `Esc` from here `r` arms a resume of this same run, and `y`
+                // answers it - so the reader's own `r` then `y` repeated there would start one.
+                BareKey::Char('v') => return self.toggle_raw(),
                 BareKey::Char('y') => return self.copy_the_event(),
                 _ => {},
             }
@@ -2832,9 +4496,9 @@ impl State {
     /// The file the keys would open: the fold under the reader's cursor, or the event under the
     /// history half's.
     ///
-    /// Split out from the key handler because `open_file_floating_near_plugin` has no answer
-    /// worth asserting on, and the decision — *which* file, and whether there is one — is the
-    /// whole of what this pane contributes.
+    /// Split out from the key handler because `open_file_floating` has no answer worth
+    /// asserting on, and the decision — *which* file, and whether there is one — is the whole
+    /// of what this pane contributes.
     ///
     /// `None` for a run recorded on another machine. The path in the envelope names a file in
     /// that machine's temp folder, and opening the same path here would either fail or, worse,
@@ -2843,25 +4507,7 @@ impl State {
         if self.run.as_ref().is_some_and(|run| run.host.is_some()) {
             return None;
         }
-        let path = match self.reading.as_ref() {
-            // With the source up there is no cursor to read — the same reason `copy_target`
-            // falls back to the whole event there — so the offer is the first path the event
-            // names, which is what the history half offers too.
-            Some(reading) if reading.raw => reading
-                .sections
-                .iter()
-                .find_map(|section| section.path.clone())?,
-            Some(reading) => reading
-                .sections
-                .get(reading.cursor)
-                .and_then(|section| section.path.clone())?,
-            None => {
-                let event = self.cursor_event()?;
-                event_sections(event.kind, &event.text)
-                    .into_iter()
-                    .find_map(|section| section.path)?
-            },
-        };
+        let path = self.named_path()?;
         // A relative path is relative to the folder the agent was working in, which is the one
         // thing the run knows and the envelope does not.
         if path.starts_with('/') {
@@ -2871,11 +4517,36 @@ impl State {
         Some(format!("{}/{path}", cwd.trim_end_matches('/')))
     }
 
-    /// What `y` would put on the clipboard: the fold under the cursor, or the whole event
-    /// exactly as it arrived.
-    ///
-    /// The event whole is the default because that is what a paste buffer is usually wanted
-    /// for — the thing itself, not our reading of it.
+    /// The path the keys are pointing at, as the event spells it, whichever machine it is on:
+    /// the fold under the reader's cursor, or the first one the event names. Apart from
+    /// `open_target` so that `o` on another machine's run can tell a file it cannot open from
+    /// no file at all.
+    fn named_path(&self) -> Option<String> {
+        match self.reading.as_ref() {
+            // With the source up there is no cursor to read — the same reason `copy_target`
+            // falls back to the whole event there — so the offer is the first path the event
+            // names, which is what the history half offers too.
+            Some(reading) if reading.raw => reading
+                .sections
+                .iter()
+                .find_map(|section| section.path.clone()),
+            Some(reading) => reading
+                .sections
+                .get(reading.cursor)
+                .and_then(|section| section.path.clone()),
+            None => {
+                let event = self.cursor_event()?;
+                event_sections(event.kind, &event.text)
+                    .into_iter()
+                    .find_map(|section| section.path)
+            },
+        }
+    }
+
+    /// What `y` would put on the clipboard: in a folding reader the fold under the `>`, and
+    /// otherwise - a prose event, or the source `v` put up - the whole event exactly as it
+    /// arrived. So `v` then `y` is how a folded event is copied whole: the thing itself, not
+    /// our reading of it. `y` says which of the two it took (`copy_the_event`).
     fn copy_target(&self) -> Option<String> {
         let reading = self.reading.as_ref()?;
         let fold = (!reading.raw)
@@ -2887,22 +4558,59 @@ impl State {
         })
     }
 
+    /// Open the file the cursor names, or say why there is none.
+    ///
+    /// Floating, because the agents pane is an overlay and a tiled open would rearrange the
+    /// layout underneath it - and opened for this client, which shows the floating layer and
+    /// focuses the editor. The near-plugin placement did neither: the editor started hidden and
+    /// unfocused, so `o` looked like a key that did nothing and each press left another one
+    /// behind. The panel goes first, as `activate`'s does, since the editor is under it.
     fn open_the_file(&mut self) -> bool {
         let Some(path) = self.open_target() else {
-            return false;
+            // Nothing to open is still an answer: a key that silently does nothing is one the
+            // user cannot tell from a key that is not bound. Where the file is, only when there
+            // is one: a fold that names no file names none on any machine.
+            let on_another_host = self
+                .run
+                .as_ref()
+                .and_then(|run| run.host.clone())
+                .filter(|_| self.named_path().is_some());
+            self.open_note = Some(match on_another_host {
+                Some(host) => format!("file is on {host}"),
+                None => "no file named here".to_owned(),
+            });
+            return true;
         };
-        // Floating and near this plugin: the agents pane is an overlay, and a tiled open would
-        // rearrange the layout underneath it.
-        open_file_floating_near_plugin(FileToOpen::new(path), None, BTreeMap::new());
-        // The server paints the new pane; nothing here changed.
+        self.hide_the_panel();
+        #[cfg(test)]
+        self.opened_files.push(path.clone());
+        // Waits on the host's answer, which a native test has nobody to give.
+        #[cfg(not(test))]
+        open_file_floating(FileToOpen::new(path), None, BTreeMap::new());
+        // The panel is gone and the server paints the editor; nothing here to redraw.
         false
     }
 
+    /// Copy what `copy_target` names, and say on the divider which it was: the fold or the whole
+    /// event are two different things to paste, and a copy is otherwise invisible until then.
+    /// The note leads the label, which `fit_label` cuts from the tail, and goes with the next
+    /// key, as `o`'s does.
     fn copy_the_event(&mut self) -> bool {
-        if let Some(text) = self.copy_target() {
-            copy_to_clipboard(text);
-        }
-        false
+        let Some(text) = self.copy_target() else {
+            return false;
+        };
+        let fold = self
+            .reading
+            .as_ref()
+            .filter(|reading| !reading.raw)
+            .and_then(|reading| reading.sections.get(reading.cursor))
+            .map(|section| section.name.clone());
+        self.open_note = Some(match fold {
+            Some(name) => format!("copied {name} · v then y copies the whole event"),
+            None => "copied the whole event".to_owned(),
+        });
+        copy_to_clipboard(text);
+        true
     }
 
     /// One page of the reader: what it can show, less a line of overlap, the same bargain
@@ -2946,7 +4654,7 @@ impl State {
 
     /// The fold whose rows the line `row` falls in.
     ///
-    /// `None` where there are no folds to point at: a prose event, or the source `r` put up,
+    /// `None` where there are no folds to point at: a prose event, or the source `v` put up,
     /// both of which `fill_reader_cache` renders as one document with no spans.
     fn fold_at(&self, row: usize) -> Option<usize> {
         let starts = self.reader_starts();
@@ -2994,6 +4702,9 @@ impl State {
             return false;
         };
         self.history_cursor = self.history().events.len() - index - 1;
+        // Held on the hit even at the tail: the match is what the user searched for, and a
+        // working agent's newer events must not walk the cursor off it.
+        self.history_cursor_anchor = Some(Some(revision));
         self.pending_history_revision = None;
         true
     }
@@ -3034,6 +4745,10 @@ impl State {
                 .summary
                 .as_ref()
                 .is_some_and(|summary| summary.created_at_ms.is_some());
+        let answered = self
+            .summarizing
+            .as_ref()
+            .is_some_and(|ask| answers(ask, &run));
         self.run = Some(LoadedRun {
             ended: run.ended_at_ms.is_some(),
             pane_id: run.pane_id,
@@ -3045,12 +4760,14 @@ impl State {
             cwd: run.cwd,
         });
         self.run_revision += 1;
-        // A run that changed is the only answer an `s` ever gets: the summary it asked for
-        // arrives inside one of these, as an entry on the timeline. Cleared on any change
-        // rather than on one that demonstrably carries a summary, because a run that grew a
-        // prompt while the request was out has moved on from the state the hint was
-        // describing either way.
-        self.summarizing = None;
+        self.run_error = None;
+        // A summary asked for arrives inside one of these, as an entry on the timeline, and
+        // only a summary stamped after the press answers it: clearing on any change used to
+        // take the hint down on a busy agent's next message, which read as "done" when the
+        // summary had not come - and might never.
+        if answered {
+            self.summarizing = None;
+        }
     }
 
     /// [`Self::load_run`] with the fingerprint the run's own encoding gives it, as though
@@ -3191,6 +4908,112 @@ fn live(rows: &[StripRow], selected: usize, focused: Option<u32>) -> bool {
     )
 }
 
+/// This pane, as a manifest describes it, if the manifest names it at all. A `PaneUpdate`
+/// reaches the active tab only, and says nothing about a pane in any other.
+fn own_pane(manifest: &PaneManifest, own_plugin_id: PluginId) -> Option<&PaneInfo> {
+    manifest
+        .panes
+        .values()
+        .flatten()
+        .find(|pane| pane.id == PaneId::Plugin(own_plugin_id))
+}
+
+/// A paste as one line of text, for a box that has only the one.
+///
+/// Every box in this pane is a single line, and a newline arriving in one must not read as the
+/// Enter that submits it: each line break becomes one space, with the blank lines and the
+/// whitespace either side of the break dropped - what a terminal copy leaves at the ends of
+/// its lines. A paste with no line break keeps its spacing as it is. Any other control
+/// character becomes a space too: an escape sequence in a paste must not reach a box that is
+/// drawn back to the terminal.
+fn single_line(text: &str) -> String {
+    let pieces: Vec<&str> = text.split(['\n', '\r']).collect();
+    let last = pieces.len() - 1;
+    let mut line = String::with_capacity(text.len());
+    for (index, piece) in pieces.into_iter().enumerate() {
+        let piece: String = piece
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect();
+        let piece = match (index == 0, index == last) {
+            (true, true) => piece.as_str(),
+            (true, false) => piece.trim_end(),
+            (false, true) => piece.trim_start(),
+            (false, false) => piece.trim(),
+        };
+        if piece.is_empty() {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(piece);
+    }
+    line
+}
+
+/// `text` broken into lines of at most `width` columns, between words where it can be and
+/// through a word only where one is wider than the line. Plain text, not markdown: a refusal
+/// quotes paths and messages, whose `*` and `_` mean nothing.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word.to_owned();
+        loop {
+            let needed = match line.is_empty() {
+                true => word.width(),
+                false => line.width() + 1 + word.width(),
+            };
+            if needed <= width {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(&word);
+                break;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                continue;
+            }
+            // A word too wide for a line of its own: as much of it as fits, and the rest on
+            // the next.
+            let head = agents::cut_to_width(word.clone(), width);
+            let taken = head.chars().count().max(1);
+            lines.push(word.chars().take(taken).collect());
+            word = word.chars().skip(taken).collect();
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Whether `run` answers the `s` `ask` is waiting on: it is the run of the row asked about, and
+/// it carries a summary made at or after the press - an entry somebody asked for, or the
+/// run's rolling one. Any other change to the run is the run moving on, not an answer.
+fn answers(ask: &SummaryAsk, run: &agents::AgentRun) -> bool {
+    let about = ask.row == format!("run:{}", run.id)
+        || (ask.row == format!("pane:{}", run.pane_id) && run.ended_at_ms.is_none());
+    let since = |made: Option<i64>| made.is_some_and(|made| made >= ask.asked_at_ms);
+    about
+        && (run
+            .entries
+            .iter()
+            .any(|entry| entry.kind == agents::RunEntryKind::Summary && since(entry.created_at_ms))
+            || run
+                .summary
+                .as_ref()
+                .is_some_and(|summary| since(summary.created_at_ms)))
+}
+
 /// Where a pane sits in the strip, if it is an agent at all.
 fn position_of(rows: &[StripRow], pane_id: u32) -> Option<usize> {
     rows.iter()
@@ -3222,8 +5045,10 @@ fn waiting_row(row: &StripRow) -> bool {
     matches!(row, StripRow::Agent { waiting: true, .. })
 }
 
-/// Keep the project and branch context of waiting agents, without empty headers or archive.
-fn waiting_rows(rows: &[StripRow]) -> Vec<StripRow> {
+/// Keep the project and branch context of waiting agents, without empty headers or archive -
+/// and the row `keep` names, waiting or not, which is the one the cursor is on: see
+/// `State::set_rows_keeping`.
+fn waiting_rows(rows: &[StripRow], keep: Option<&str>) -> Vec<StripRow> {
     let mut filtered = Vec::new();
     let mut headers = Vec::new();
     for row in rows {
@@ -3238,7 +5063,11 @@ fn waiting_rows(rows: &[StripRow]) -> Vec<StripRow> {
                 }
                 headers.push(row.clone());
             },
-            row if waiting_row(row) => {
+            row if waiting_row(row)
+                || (keep.is_some()
+                    && matches!(row, StripRow::Agent { .. })
+                    && row_key(row).as_deref() == keep) =>
+            {
                 filtered.append(&mut headers);
                 filtered.push(row.clone());
             },
@@ -3246,6 +5075,102 @@ fn waiting_rows(rows: &[StripRow]) -> Vec<StripRow> {
         }
     }
     filtered
+}
+
+/// The selectable row nearest `at` in `rows`: at it or after it first, the way a list closes
+/// up over a row that has gone, and before it only at the end.
+fn nearest_selectable(rows: &[StripRow], at: usize) -> Option<usize> {
+    let at = at.min(rows.len());
+    (at..rows.len())
+        .find(|index| selectable(&rows[*index]))
+        .or_else(|| (0..at).rev().find(|index| selectable(&rows[*index])))
+}
+
+/// A search snippet from the first word of `query` it contains, with a few characters of what
+/// led up to it: the list's cell is narrow, and the part of a snippet that says why it matched
+/// is the part a cell cut from the tail used never to reach. Matched without regard to case,
+/// and counted in characters so a multi-byte one cannot split. A snippet the word is not in,
+/// or a query with no word, is left as it was.
+fn hit_first(snippet: &str, query: &str) -> String {
+    /// How much of what comes before the match is kept, for the sense of where it is.
+    const LEAD: usize = 8;
+    let Some(word) = query
+        .split_whitespace()
+        .map(|word| word.trim_matches(|ch: char| !ch.is_alphanumeric()))
+        .find(|word| !word.is_empty())
+    else {
+        return snippet.to_owned();
+    };
+    let folded = |ch: &char| ch.to_lowercase().collect::<String>();
+    let haystack: Vec<char> = snippet.chars().collect();
+    let needle: Vec<char> = word.chars().collect();
+    let Some(at) = (0..haystack.len()).find(|&at| {
+        haystack.len() - at >= needle.len()
+            && haystack[at..at + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(a, b)| folded(a) == folded(b))
+    }) else {
+        return snippet.to_owned();
+    };
+    if at <= LEAD {
+        return snippet.to_owned();
+    }
+    let kept: String = haystack[at - LEAD..].iter().collect();
+    format!("…{}", kept.trim_start())
+}
+
+/// What `D` and `F` launch the New agent modal with: the agent to duplicate or fork, named the
+/// way `Ctrl e d` and `Ctrl e f` name the focused pane, and the overlay the modal opens in.
+fn pane_action_configuration(pane_id: u32, fork: bool) -> BTreeMap<String, String> {
+    let action = match fork {
+        true => "fork_focused",
+        false => "duplicate_focused",
+    };
+    BTreeMap::from([
+        ("caller_terminal_pane_id".to_owned(), pane_id.to_string()),
+        (action.to_owned(), "true".to_owned()),
+        ("overlay".to_owned(), "true".to_owned()),
+        ("modal".to_owned(), "true".to_owned()),
+    ])
+}
+
+/// A key sheet from borrowed rows.
+fn sheet(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(keys, what)| ((*keys).to_owned(), (*what).to_owned()))
+        .collect()
+}
+
+/// One entry of the key sheet, in `cols` columns: the keys in a column `key_width` wide and
+/// what they do beside it, each wrapped between words onto as many rows as it needs, with the
+/// descriptions lined up whatever the keys' widths. Beside each row, how many of its characters
+/// are keys and their margin, which is the part drawn as keys - none on a row the keys have
+/// already ended above.
+///
+/// Wrapped rather than cut: a sheet exists to say what every key does, and at the widths a
+/// panel is drawn the description column is ten to twenty columns, where cutting stopped most
+/// descriptions mid-word. Keys wider than their column, such as the Todos box's caret keys,
+/// break at the spaces around their ` / `s. Each row is still cut to `cols`, for a pane too
+/// narrow for the margins themselves.
+fn key_sheet_lines(keys: &str, what: &str, key_width: usize, cols: usize) -> Vec<(String, usize)> {
+    let keys = wrap_words(keys, key_width);
+    let what = wrap_words(what, cols.saturating_sub(1 + key_width + 2));
+    (0..keys.len().max(what.len()).max(1))
+        .map(|row| {
+            let piece = keys.get(row).map_or("", String::as_str);
+            let mut line = format!(" {piece}");
+            let key_chars = match piece.is_empty() {
+                true => 0,
+                false => line.chars().count(),
+            };
+            if let Some(what) = what.get(row) {
+                line.push_str(&" ".repeat(key_width.saturating_sub(piece.width()) + 2));
+                line.push_str(what);
+            }
+            (agents::cut_to_width(line, cols), key_chars)
+        })
+        .collect()
 }
 
 /// The row a click on screen line `line` resolves to, if any - `None` for a
@@ -3273,10 +5198,9 @@ enum Motion {
 
 /// The motion an arrow asks for, if any. Modifier-agnostic, as it always was.
 ///
-/// `j`/`k` are the vim spelling of these and used to be answered here too - this pane is a
-/// list and never a text field, so the letters are free to take. They are dispatched in
-/// `on_key` now instead, because they follow the focus and the arrows do not: the arrows are
-/// how the *list* is steered from either half.
+/// `j`/`k` are the vim spelling of these, matched in `agents_key` because they are reserved
+/// there for unmodified presses. Both pairs follow the focus there: rows in the list, events in
+/// the history half.
 fn arrow(key: &KeyWithModifier) -> Option<Motion> {
     match key.bare_key {
         BareKey::Up => Some(Motion::Up),
@@ -3299,6 +5223,11 @@ fn step(rows: &[StripRow], selected: usize, motion: Motion) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The row an `s` is waiting on, if any.
+    fn asked(state: &State) -> Option<&str> {
+        state.summarizing.as_ref().map(|ask| ask.row.as_str())
+    }
 
     fn search_reply(state: &mut State, ids: &[&str]) -> wire::SearchResult {
         state.begin_search();
@@ -3431,14 +5360,18 @@ mod tests {
         let empty = predecessor_reply(&state, &[]);
         assert!(state.apply_predecessors(empty.clone()));
         assert!(!state.apply_predecessors(empty));
-        assert!(!state.on_key(KeyWithModifier::new(BareKey::Esc)));
-        assert!(
-            state.predecessors.is_some(),
-            "Escape dismisses without clearing"
-        );
         assert!(state.rows.iter().any(
             |row| matches!(row, StripRow::Project(label) if label == "No predecessors recorded")
         ));
+        // Esc steps back out of the view first, and only then is the dismissal it always was.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(
+            state.predecessors.is_none(),
+            "the first Escape leaves the view"
+        );
+        assert_eq!(state.panel_hides, 0);
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert_eq!(state.panel_hides, 1, "and the second puts the panel away");
         state.begin_predecessors();
         let mut partial = predecessor_reply(&state, &["reachable"]);
         partial.diagnostic = "Incomplete chain: missing run lost".into();
@@ -3694,7 +5627,11 @@ mod tests {
             let mut state = reading("An open event");
             state.history_scroll = 3;
             state.history_cursor = 2;
-            state.summarizing = state.selection_key();
+            state.summarizing = state.selection_key().map(|row| SummaryAsk {
+                row,
+                asked_at_ms: 0,
+                stale: false,
+            });
             state.confirming_resume = state.selection_key();
             state.resume_note = Some((state.selection_key().unwrap(), "refused".to_owned()));
             state
@@ -3722,10 +5659,13 @@ mod tests {
             reply.error = error.to_owned();
             reply.truncated = true;
             assert!(state.apply_search_result(reply.clone()));
-            assert!(!state.search_editing);
+            // A failure keeps the box open on the query, for Enter to retry and Esc to leave.
+            assert_eq!(state.search_editing, !error.is_empty());
             assert!(!state.search_pending);
             assert!(state.search_base.is_some());
-            assert!(state.search_truncated);
+            // A failure says nothing about how many matches there were: the rows below are the
+            // last search's, and so is whether it left some out.
+            assert_eq!(state.search_truncated, error.is_empty());
             assert_eq!(
                 state.search_error.as_deref(),
                 (!error.is_empty()).then_some(error)
@@ -3744,6 +5684,32 @@ mod tests {
             assert!(!state.search_truncated);
             assert!(state.search_error.is_none());
         }
+    }
+
+    /// A refinement that fails leaves the search it was refining exactly as it was, including
+    /// the notice that it had more matches than it showed: `Esc` goes back to that search, and
+    /// the rows under it are still its rows.
+    #[test]
+    fn a_failed_refinement_keeps_the_applied_searchs_omission_notice() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let mut reply = search_reply(&mut state, &["match-1", "match-2"]);
+        reply.truncated = true;
+        assert!(state.apply_search_result(reply));
+        let label = state.view_label().expect("a search view");
+        assert!(label.contains("more matches omitted"), "{label}");
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('x'))));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        let failed = wire::SearchResult {
+            request_id: state.search_request.to_string(),
+            error: "store busy".into(),
+            ..Default::default()
+        };
+        assert!(state.apply_search_result(failed));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert_eq!(state.view_label(), Some(label));
     }
 
     fn agent(pane_id: u32, text: &str) -> StripRow {
@@ -3959,7 +5925,7 @@ mod tests {
             arrow(&KeyWithModifier::new(BareKey::Up).with_shift_modifier()),
             Some(Motion::Up)
         );
-        // `j`/`k` are answered in `on_key` now, because they follow the focus.
+        // `j`/`k` are answered in `agents_key`, not here; see `arrow`.
         assert_eq!(arrow(&KeyWithModifier::new(BareKey::Char('j'))), None);
     }
 
@@ -4433,7 +6399,7 @@ mod tests {
             state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
             "a live agent does, and the divider says so"
         );
-        assert_eq!(state.summarizing.as_deref(), Some("pane:3"));
+        assert_eq!(asked(&state), Some("pane:3"));
         assert_eq!(state.selected, 2, "and the cursor stays where it was");
 
         state.set_rows(unfocused(vec![
@@ -4446,7 +6412,7 @@ mod tests {
             state.on_key(KeyWithModifier::new(BareKey::Char('s'))),
             "an archived run is summarised from what it recorded"
         );
-        assert_eq!(state.summarizing.as_deref(), Some("run:claude:session-1"));
+        assert_eq!(asked(&state), Some("run:claude:session-1"));
 
         state.selected = 2;
         state.summarizing = None;
@@ -4623,7 +6589,7 @@ mod tests {
         assert_eq!(state.history_label(), "");
 
         state.on_key(KeyWithModifier::new(BareKey::Char('r')));
-        assert_eq!(state.history_label(), "resume this run? y/n");
+        assert_eq!(state.history_label(), "resume? y/n");
 
         state.on_key(KeyWithModifier::new(BareKey::Char('y')));
         assert_eq!(state.history_label(), "", "the question has been answered");
@@ -4651,6 +6617,10 @@ mod tests {
             state.history_label(),
             "resume failed: this run recorded no session id to resume"
         );
+        assert_eq!(
+            state.panel_hides, 0,
+            "a refusal leaves the keyboard here, and the panel up to say why"
+        );
 
         // An answer about a row the cursor is not on says nothing about the row it is on.
         state.on_key(KeyWithModifier::new(BareKey::Down));
@@ -4677,7 +6647,7 @@ mod tests {
 
         state.on_key(KeyWithModifier::new(BareKey::Char('r')));
         assert!(state.resume_note.is_none());
-        assert_eq!(state.history_label(), "resume this run? y/n");
+        assert_eq!(state.history_label(), "resume? y/n");
     }
 
     /// A refusal takes the whole divider rather than sharing it with the label: it is the
@@ -4731,10 +6701,10 @@ mod tests {
         assert!(state.summarizing.is_none());
     }
 
-    /// The hint on the divider is a hint: it says a request is out, and it goes as soon as
-    /// there is any answer or the cursor moves off the row it was about. Nothing ever tells
-    /// this pane that a request was refused, so a hint with no ending of its own would be a
-    /// lie the user could not clear.
+    /// The hint on the divider is a hint: it says a request is out, and it goes when a summary
+    /// made after the press arrives, or the cursor moves off the row it was about. A run that
+    /// merely changes is not an answer - a working agent adds a message while the summary is
+    /// still being written - and a hint that ended on one read as "done" when nothing had come.
     #[test]
     fn the_divider_says_a_summary_was_asked_for_until_something_answers() {
         let mut state = State::default();
@@ -4746,19 +6716,36 @@ mod tests {
         state.on_key(KeyWithModifier::new(BareKey::Char('s')));
         assert_eq!(state.history_label(), "summarising…");
 
-        // A run arriving is the only answer an `s` ever gets.
+        let send = |state: &mut State, run: &agents::AgentRun| {
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &Some(serde_json::to_string(run).expect("encoded")),
+                &None,
+                false,
+            ));
+            state.fill_history_cache(48);
+        };
         let mut run = a_run();
         run.pane_id = 3;
         run.ended_at_ms = None;
         run.outcome = agents::RunOutcome::Active;
-        state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
-            wire::AGENT_RUN_DETAIL,
-            &Some(serde_json::to_string(&run).expect("encoded")),
-            &None,
-            false,
-        ));
-        state.fill_history_cache(48);
+        send(&mut state, &run);
+        assert_eq!(
+            state.history_label(),
+            "claude:session-1 · summarising…",
+            "the run moved on, and said nothing about the summary"
+        );
+
+        // A summary made after the press is the answer.
+        run.entries.push(agents::RunEntry {
+            revision: 5,
+            event_id: None,
+            kind: agents::RunEntryKind::Summary,
+            text: "Tests pass.".to_owned(),
+            created_at_ms: Some(now_ms() + 1_000),
+        });
+        send(&mut state, &run);
         assert_eq!(state.history_label(), "claude:session-1");
 
         // And walking away from an answer that never came takes the hint with it. `update`
@@ -4773,6 +6760,99 @@ mod tests {
             state.history_label(),
             "",
             "the cursor is on another agent now, and that one was not asked about"
+        );
+    }
+
+    /// A pane with no hooks is summarised from its screen, and its answer comes in the strip
+    /// rather than in a run: a summary there stamped after the press ends the hint too, and one
+    /// from before it does not.
+    #[test]
+    fn a_summary_in_the_strip_answers_an_s_on_a_live_agent() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.selected = 2;
+        state.on_key(KeyWithModifier::new(BareKey::Char('s')));
+        let push = |state: &mut State, created_at_ms: Option<i64>| {
+            let mut strip = with_summary(strip(), 3, "Ran the tests.", false);
+            strip.summaries.get_mut(&3).expect("pushed").created_at_ms = created_at_ms;
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_STRIP,
+                &Some(serde_json::to_string(&strip).expect("encoded")),
+                &None,
+                false,
+            ))
+        };
+        push(&mut state, Some(1));
+        assert_eq!(
+            asked(&state),
+            Some("pane:3"),
+            "an old summary is not the answer"
+        );
+        assert!(push(&mut state, Some(now_ms() + 1_000)));
+        assert_eq!(asked(&state), None);
+    }
+
+    /// Nothing tells this pane an `s` was refused, so the hint cannot wait for ever: once it
+    /// has waited longer than the daemon ever takes it says nothing came, and `s` asks again.
+    #[test]
+    fn a_summary_nobody_answers_says_so_and_s_asks_again() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.selected = 2;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        let asked_at = state.summarizing.as_ref().expect("asked").asked_at_ms;
+        assert!(!state.expire_summary_ask(asked_at + SUMMARY_WAIT_MS - 1));
+        state.fill_history_cache(48);
+        assert_eq!(state.history_label(), "summarising…");
+
+        assert!(state.expire_summary_ask(asked_at + SUMMARY_WAIT_MS));
+        assert!(
+            !state.expire_summary_ask(asked_at + SUMMARY_WAIT_MS + 1),
+            "said once"
+        );
+        assert_eq!(state.history_label(), "no new summary · s to try again");
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        assert_eq!(state.history_label(), "summarising…");
+        assert!(!state.summarizing.as_ref().expect("asked again").stale);
+    }
+
+    /// Every note that takes the divider's place is held whole under it, as a refused resume
+    /// is: a narrow divider cut "no new summary · s to try again" before the key that asks
+    /// again.
+    #[test]
+    fn a_summary_nobody_wrote_is_wrapped_whole_under_the_divider() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.selected = 2;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        let asked_at = state.summarizing.as_ref().expect("asked").asked_at_ms;
+        assert!(state.expire_summary_ask(asked_at + SUMMARY_WAIT_MS));
+        for cols in 22..=40 {
+            let lines = state.refusal_lines(cols);
+            assert!(
+                lines.iter().all(|line| line.width() <= cols - 2),
+                "{lines:?} at {cols}"
+            );
+            assert_eq!(lines.join(" "), "no new summary · s to try again", "{cols}");
+        }
+
+        state.render(21, 22);
+        let lines = state.refusal_lines(22);
+        let header = state.header_rows(state.last_history_rows);
+        let held = lines.len().min(state.last_history_rows - header - 1);
+        assert!(held > 0);
+        assert_eq!(state.last_history_body_top, header + held);
+        assert_eq!(
+            state.last_history_body_rows,
+            state.last_history_rows - header - held
+        );
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        assert!(
+            state.refusal_lines(22).is_empty(),
+            "asked again, and waiting"
         );
     }
 
@@ -4840,47 +6920,227 @@ mod tests {
         assert!(!state.on_mouse(Mouse::LeftClick(0, 39)));
     }
 
+    /// Whole segments or none: at every width the hint is the first few of `expected`'s keys,
+    /// perhaps with the `? keys` marker after them, and only a first key too wide for the row
+    /// on its own is ever cut. At full width it is `expected` exactly.
+    ///
+    /// And the marker is there wherever keys were left out and the ones that lead
+    /// (`agents_hints`) still fit beside it - except in the search box, where `?` is typed
+    /// rather than opening anything, and which never has one.
+    fn check_footer(state: &mut State, rows: usize, expected: &str) {
+        let segments: Vec<&str> = expected.split(" · ").collect();
+        for cols in 1..=expected.width() + 1 {
+            state.render(rows, cols);
+            let hint = state.footer_hint().unwrap();
+            assert!(hint.width() <= cols, "{hint:?} in {cols} columns");
+            assert!(!hint.contains('\n'));
+            assert_eq!(state.last_footer_row, Some(rows - 1));
+            let keys = hint.strip_suffix(" · ? keys").unwrap_or(&hint);
+            let whole = (1..=segments.len()).any(|n| keys == segments[..n].join(" · "));
+            let cut = segments[0].width() > cols && segments[0].starts_with(keys);
+            assert!(whole || cut, "{hint:?} in {cols} columns");
+            if cols >= expected.width() {
+                assert_eq!(hint, expected);
+            }
+            if state.typing() {
+                assert!(!hint.ends_with("? keys"), "{hint:?} in {cols} columns");
+                continue;
+            }
+            let keep = state.agents_hints().1.clamp(1, segments.len());
+            let leads = segments[..keep].join(" · ").width() + " · ? keys".width();
+            if keys != expected && leads <= cols {
+                assert!(hint.ends_with(" · ? keys"), "{hint:?} in {cols} columns");
+            }
+        }
+    }
+
     #[test]
     fn footer_hints_follow_the_view_and_fit_one_line() {
-        let check = |state: &mut State, expected: &str| {
-            for cols in 1..=expected.width() + 1 {
-                state.render(12, cols);
-                let hint = state.footer_hint().unwrap();
-                assert_eq!(hint, expected.chars().take(cols).collect::<String>());
-                assert!(hint.width() <= cols);
-                assert!(!hint.contains('\n'));
-                assert_eq!(state.last_footer_row, Some(11));
-            }
-        };
         let mut state = State::default();
-        check(
-            &mut state,
-            "w waiting (0) · Enter focus · / search · s summary · p previous",
-        );
+        // Nothing to act on: no row keys, no history half to Tab into - nor a conversation to
+        // Tab to, as far as anybody has said, until hocus sends its first strip.
+        check_footer(&mut state, 12, "/ search · Esc hide");
+        state.strip_seen = true;
+        check_footer(&mut state, 12, "/ search · Tab chat · Esc hide");
         state.set_rows(unfocused(strip()));
-        check(
+        check_footer(
             &mut state,
-            "w waiting (0) · Enter focus · / search · s summary · p previous",
+            12,
+            "Enter focus · s summary · p previous · w waiting (0) · / search · Tab history",
         );
         assert!(state.begin_predecessors());
-        check(&mut state, "c clear · p previous · w waiting");
+        check_footer(
+            &mut state,
+            12,
+            "Esc/c clear · Enter focus · s summary · p previous · w waiting (0) · / search · \
+             Tab history",
+        );
         assert!(state.begin_search());
-        check(&mut state, "Enter apply · Esc cancel");
+        check_footer(&mut state, 12, "Enter apply · Esc cancel");
         state.search_query = "a query".into();
+        check_footer(&mut state, 12, "Enter apply · Esc cancel · Ctrl-u clear");
         assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
-        check(&mut state, "Enter apply · Esc cancel");
+        check_footer(&mut state, 12, "searching… · Esc cancel");
         let result = search_reply(&mut state, &[]);
         assert!(state.apply_search_result(result));
-        check(&mut state, "c clear · / edit · r resume · w waiting");
+        check_footer(&mut state, 12, "Esc/c clear · / edit");
         state.search_truncated = true;
-        check(&mut state, "c clear · / edit · r resume · w waiting");
-        state.search_error = Some("search failed".into());
-        check(&mut state, "c clear · / edit · r resume · w waiting");
+        check_footer(&mut state, 12, "Esc/c clear · / edit");
+        // A failure keeps the box open, and says why under it - so the footer is the keys.
+        assert!(state.begin_search());
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        let mut failed = wire::SearchResult {
+            request_id: state.search_request.to_string(),
+            ..Default::default()
+        };
+        failed.error = "store busy".into();
+        assert!(state.apply_search_result(failed));
+        check_footer(&mut state, 12, "Enter retry · Esc back");
         assert!(state.clear_search());
-        check(
+        check_footer(
             &mut state,
-            "w waiting (0) · Enter focus · / search · s summary · p previous",
+            12,
+            "Enter focus · s summary · p previous · w waiting (0) · / search · Tab history",
         );
+    }
+
+    /// The footer is read off the row under the cursor as well as the view: keys that work
+    /// there, and none that do not - no `p` on a run, no `s` on `load older runs…`, no `Enter`
+    /// on an empty list - with a question's answer keys first, and somebody waiting ahead of
+    /// the row's own keys.
+    #[test]
+    fn footer_hints_name_the_keys_for_the_row_under_the_cursor() {
+        let mut state = State::default();
+        let mut rows = strip();
+        rows.extend(archive());
+        state.set_rows(unfocused(rows));
+        state.render(21, 120);
+        let footer = |state: &mut State| {
+            state.render(21, 200);
+            state.footer_hint().unwrap()
+        };
+        state.selected = 7;
+        assert_eq!(
+            footer(&mut state),
+            "Enter history · r resume · s summary · w waiting (0) · / search · Tab history"
+        );
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+        assert_eq!(footer(&mut state), "y resume · n cancel");
+        state.on_key(KeyWithModifier::new(BareKey::Char('n')));
+        state.resume_note = Some(("run:claude:session-1".into(), "no session id".into()));
+        assert!(footer(&mut state).starts_with("resume failed: no session id · Enter history"));
+        state.resume_note = None;
+
+        state.selected = 8;
+        assert_eq!(
+            footer(&mut state),
+            "Enter load older runs · w waiting (0) · / search · Tab history"
+        );
+
+        // The history half on a run: its events, then the run's own keys.
+        state.selected = 7;
+        state.set_run(a_run());
+        state.focus = Focus::History;
+        assert_eq!(
+            footer(&mut state),
+            "↑↓ event · Enter read · r resume · s summary · w waiting (0) · / search · \
+             PgUp/PgDn scroll · Tab chat"
+        );
+        // Unless another pane has the keyboard, when the half does not claim them.
+        state.has_keyboard = Some(false);
+        assert!(footer(&mut state).starts_with("Enter history"));
+        state.has_keyboard = None;
+        state.focus = Focus::List;
+
+        // Somebody waiting goes ahead of the row's keys.
+        let mut waiting = strip();
+        waiting[3] = StripRow::Agent {
+            pane_id: 7,
+            text: "  7  codex  asking".into(),
+            kind: "codex".into(),
+            waiting: true,
+        };
+        state.set_rows(unfocused(waiting));
+        state.selected = 2;
+        assert_eq!(
+            footer(&mut state),
+            "w waiting (1) · Enter focus · s summary · p previous · / search · Tab history"
+        );
+        assert!(state.toggle_waiting());
+        assert_eq!(
+            footer(&mut state),
+            "Esc/w all · 1 waiting · Enter focus · s summary · p previous · / search · \
+             Tab history"
+        );
+        assert!(state.clear_waiting());
+
+        // The reader's own keys, by what kind of reader it is.
+        let mut state = reading(&task_notification());
+        let reader = |state: &mut State| {
+            state.render(21, 120);
+            state.footer_hint().unwrap()
+        };
+        // The keys nothing on screen suggests come before the `Enter` the fold glyphs do.
+        assert_eq!(
+            reader(&mut state),
+            "Esc back · j/k fold · y copy · v source · Enter open · PgUp/PgDn page"
+        );
+        for _ in 0..3 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert_eq!(
+            reader(&mut state),
+            "Esc back · j/k fold · y copy · o file · v source · Enter open · PgUp/PgDn page",
+            "on the fold that names a file"
+        );
+        press(&mut state, BareKey::Char('v'));
+        assert_eq!(
+            reader(&mut state),
+            "Esc back · ↑↓ scroll · y copy · o file · v folds · PgUp/PgDn page"
+        );
+    }
+
+    /// At the widths a panel is drawn the keys fill the footer to within a few columns, which
+    /// left `? keys` no room at all. The footer gives up a trailing key or two to say it - but
+    /// never the row's verb, nor anything ahead of it - and the search box, where `?` is typed,
+    /// never says it.
+    #[test]
+    fn the_footer_names_the_key_sheet_at_the_default_width() {
+        let footer = |state: &mut State, cols: usize| {
+            state.render(12, cols);
+            state.render(12, cols);
+            state.footer_hint().unwrap()
+        };
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        assert_eq!(footer(&mut state, 24), "Enter focus · ? keys");
+        assert_eq!(footer(&mut state, 34), "Enter focus · s summary · ? keys");
+
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        assert_eq!(footer(&mut state, 24), "Enter history · ? keys");
+
+        let mut state = reading(&task_notification());
+        assert_eq!(footer(&mut state, 24), "Esc back · ? keys");
+
+        // The history half's verb and the key before it take the row with no room left over:
+        // the marker gives way to them.
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        state.focus = Focus::History;
+        assert_eq!(footer(&mut state, 24), "↑↓ event · Enter read");
+
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.begin_search();
+        for query in ["", "a query"] {
+            state.search_query = query.into();
+            for cols in 1..=45 {
+                let hint = footer(&mut state, cols);
+                assert!(!hint.contains("? keys"), "{hint:?} at {cols}");
+            }
+        }
     }
 
     #[test]
@@ -4953,14 +7213,22 @@ mod tests {
         }
     }
 
+    /// The reader has a footer of its own, with its own keys - not the list's, which would be
+    /// wrong over it - and the other tabs still have none: their hints are on a row of their
+    /// own already. The footer's row is not the reader's, so the wheel over it does nothing.
     #[test]
-    fn readers_and_other_tabs_have_no_agents_footer() {
+    fn readers_have_their_own_footer_and_other_tabs_none() {
         let mut state = reading(&"word ".repeat(1000));
         state.render(12, 50);
-        assert!(state.footer_hint().is_none());
-        assert_eq!(state.last_footer_row, None);
-        assert_eq!(state.last_reader_rows, 10);
+        assert_eq!(
+            state.footer_hint().as_deref(),
+            Some("Esc back · ↑↓ scroll · y copy · PgUp/PgDn page")
+        );
+        assert_eq!(state.last_footer_row, Some(11));
+        assert_eq!(state.last_reader_rows, 9);
         state.on_mouse(Mouse::Hover(11, 0));
+        assert!(!state.on_mouse(Mouse::ScrollDown(1)), "the footer's row");
+        state.on_mouse(Mouse::Hover(10, 0));
         assert!(state.on_mouse(Mouse::ScrollDown(1)));
         state.close_reader();
         state.render(12, 50);
@@ -4971,6 +7239,456 @@ mod tests {
             assert!(state.footer_hint().is_none());
             assert_eq!(state.last_footer_row, None);
         }
+    }
+
+    /// While the tab bar has the keys the Agents footer says how to work the bar, over the list
+    /// and over the reader - neither of which would otherwise have the right keys on show - and
+    /// goes back to the list's or the reader's own hints once the keys leave it. The other tabs
+    /// say it in the hint row they have anyway, so they grow no footer: their bodies keep the
+    /// same number of rows whoever has the keys - but for a quiet VMs list, which has no such
+    /// row and grows one of its own (`render_vms`).
+    #[test]
+    fn the_bar_hint_is_the_footer_wherever_the_bar_has_the_keys() {
+        let mut state = reading(&"word ".repeat(1000));
+        for reader in [true, false] {
+            if !reader {
+                state.close_reader();
+                state.set_rows(unfocused(strip()));
+            }
+            state.tabs_focused = true;
+            state.render(12, 60);
+            assert_eq!(state.footer_hint().as_deref(), Some(tabs::BAR_HINT));
+            assert_eq!(state.last_footer_row, Some(11));
+            assert!(state.tab_cells.iter().any(|cell| cell.focused));
+
+            // Another pane took the keyboard: the stop is kept, but nothing claims it.
+            state.has_keyboard = Some(false);
+            state.render(12, 60);
+            assert!(state.tabs_focused);
+            assert!(state.tab_cells.iter().all(|cell| !cell.focused));
+            assert_ne!(state.footer_hint().as_deref(), Some(tabs::BAR_HINT));
+            state.has_keyboard = None;
+
+            state.tabs_focused = false;
+            state.render(12, 60);
+            assert_eq!(state.last_footer_row, Some(11));
+            assert_ne!(state.footer_hint().as_deref(), Some(tabs::BAR_HINT));
+        }
+        for surface in [Surface::Todos, Surface::Vms, Surface::Swamp] {
+            state.surface = surface;
+            for bar in [true, false, true] {
+                state.tabs_focused = bar;
+                state.render(12, 60);
+                assert_eq!(state.last_footer_row, None, "{surface:?}, bar {bar}");
+                assert_eq!(state.footer_hint(), None, "{surface:?}, bar {bar}");
+            }
+            assert!(state.tab_cells.iter().any(|cell| cell.focused));
+        }
+        state.surface = Surface::Agents;
+        // A box being typed in takes the keys ahead of the bar, so its hint does too.
+        state.begin_search();
+        state.tabs_focused = true;
+        state.render(12, 60);
+        assert_eq!(
+            state.footer_hint().as_deref(),
+            Some("Enter apply · Esc cancel")
+        );
+    }
+
+    /// Ctrl-o moves the panel from wherever the keys are in it, including every state that
+    /// answers all the other keys itself - and changes nothing inside it on the way.
+    #[test]
+    fn ctrl_o_is_taken_ahead_of_every_state_that_answers_every_key() {
+        let ctrl_o = || KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier();
+        let mut state = reading("An event being read");
+        assert!(!state.on_key(ctrl_o()));
+        assert!(state.reading.is_some(), "the reader stays open");
+
+        let mut state = State::default();
+        let mut rows = strip();
+        rows.extend(archive());
+        state.set_rows(unfocused(rows));
+        state.begin_search();
+        state.search_query = "typed".into();
+        assert!(!state.on_key(ctrl_o()));
+        assert!(state.search_editing);
+        assert_eq!(state.search_query, "typed", "nothing typed into the box");
+        state.clear_search();
+
+        state.tabs_focused = true;
+        assert!(!state.on_key(ctrl_o()));
+        assert!(state.tabs_focused, "the bar keeps the keys");
+        state.tabs_focused = false;
+
+        state.selected = 7;
+        assert!(state.arm_resume());
+        assert!(!state.on_key(ctrl_o()));
+        assert_eq!(
+            state.confirming_resume.as_deref(),
+            Some("run:claude:session-1"),
+            "the question stays armed and on screen"
+        );
+    }
+
+    /// The bar answers its own keys and hands every other one back to the surface, which then
+    /// does with it what it always does - rather than the key vanishing under a surface still
+    /// advertising it.
+    #[test]
+    fn a_key_the_bar_does_not_own_goes_to_the_list_below_it() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.selected = 3;
+        for release in [BareKey::Enter, BareKey::Down, BareKey::Char('j')] {
+            state.tabs_focused = true;
+            assert!(state.on_key(KeyWithModifier::new(release)));
+            assert!(!state.tabs_focused);
+            assert_eq!(state.selected, 3, "{release:?} only leaves the bar");
+        }
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
+        assert!(!state.tabs_focused);
+        assert_eq!(state.selected, 2, "k walked the list");
+
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
+        assert_eq!(asked(&state), Some("pane:3"));
+        assert!(!state.tabs_focused);
+
+        // Modified keys too: Ctrl-r is the list's refresh, not the bar's to drop. And a redraw,
+        // like every key that leaves the bar, whether or not the list has anything to draw for
+        // it: the bar's highlight and its footer are coming down.
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier()));
+        assert!(!state.tabs_focused);
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('x'))));
+        assert!(!state.tabs_focused);
+
+        for surface in [Surface::Todos, Surface::Vms, Surface::Swamp] {
+            state.surface = surface;
+            state.tabs_focused = true;
+            assert!(
+                state.on_key(KeyWithModifier::new(BareKey::Char('%'))),
+                "{surface:?}"
+            );
+            assert!(!state.tabs_focused, "{surface:?}");
+        }
+    }
+
+    /// A click takes the keys off the bar wherever it lands, and that is a redraw even on a
+    /// row nothing can be chosen on.
+    #[test]
+    fn a_click_off_the_bar_is_a_redraw_wherever_it_lands() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.focus = Focus::List;
+        state.tabs_focused = true;
+        assert!(state.on_mouse(Mouse::LeftClick(1, 0)), "the project header");
+        assert!(!state.tabs_focused);
+        assert_eq!(state.selected, 2);
+    }
+
+    /// A click that brings the keys back - off the tab bar, off another stop of the ring, or
+    /// into this pane from another - only points, even on the row already chosen: the click
+    /// after it, with the keys here, is the Enter. Walking the user out of the panel on the
+    /// click that was only meant to get the keys back made the mouse a trap.
+    #[test]
+    fn a_click_bringing_the_keys_back_only_points() {
+        for away in ["shift-tab", "take", "another pane"] {
+            let mut state = State::default();
+            state.set_rows(unfocused(strip()));
+            state.render(21, 40);
+            match away {
+                "shift-tab" => {
+                    assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+                    assert!(state.tabs_focused);
+                },
+                "take" => {
+                    state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+                    assert!(state.tabs_focused);
+                },
+                _ => state.has_keyboard = Some(false),
+            }
+            // The selected row, pane 3, under the tab bar.
+            let row = 1 + state.selected as isize;
+            state.on_mouse(Mouse::LeftClick(row, 0));
+            assert!(state.activations.is_empty(), "{away}");
+            assert_eq!(state.panel_hides, 0, "{away}");
+            assert!(state.keys_here() || away == "another pane", "{away}");
+            // What the manifest the click makes the host send says.
+            state.has_keyboard = Some(true);
+            state.on_mouse(Mouse::LeftClick(row, 0));
+            assert_eq!(state.activations, [3], "{away}");
+        }
+
+        // In the history half too: the click that brings the keys back to the event under the
+        // cursor points at it, and the next one reads it.
+        let mut state = State::default();
+        state.set_rows(with_summary(strip(), 3, "Ran the tests.", false));
+        state.render(21, 40);
+        state.focus = Focus::History;
+        state.has_keyboard = Some(false);
+        let event = (state.last_list_rows + 2) as isize;
+        state.on_mouse(Mouse::LeftClick(event, 0));
+        assert!(state.reading.is_none());
+        state.has_keyboard = Some(true);
+        assert!(state.on_mouse(Mouse::LeftClick(event, 0)));
+        assert!(state.reading.is_some(), "the idle summary is an event too");
+    }
+
+    /// Esc on the bar is a step back to the list, the way Esc on the conversation's bar is a
+    /// step back to its box - not the whole panel put away.
+    #[test]
+    fn esc_on_the_tab_bar_returns_to_the_list() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.focus = Focus::History;
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(!state.tabs_focused);
+        assert_eq!(state.focus, Focus::List);
+        assert_eq!(state.panel_hides, 0);
+
+        state.surface = Surface::Vms;
+        state.vms.details = true;
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(!state.tabs_focused);
+        assert!(!state.vms.details);
+        assert_eq!(state.panel_hides, 0);
+    }
+
+    /// A click on the tab already showing is a click on its list, too: the keys go to the list
+    /// and `j` walks it.
+    #[test]
+    fn clicking_the_agents_tab_then_j_walks_the_list() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.focus = Focus::History;
+        assert!(state.on_mouse(Mouse::LeftClick(0, state.tab_cells[0].x)));
+        assert!(!state.tabs_focused);
+        assert_eq!(state.focus, Focus::List);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert_eq!(state.selected, 3);
+    }
+
+    /// The tab bar is the panel's only map, so a filtered Agents view does not take it away:
+    /// the four tabs stay drawn and clickable on every surface, and the view's name is the
+    /// Agents surface's own first row, with the list a row below it.
+    #[test]
+    fn the_tab_bar_stays_up_in_every_view_and_the_view_names_itself_above_the_list() {
+        for view in ["search", "typing", "previous", "waiting"] {
+            let mut state = State::default();
+            let mut rows = strip();
+            for (index, pane_id) in [(2, 3), (3, 7)] {
+                rows[index] = StripRow::Agent {
+                    pane_id,
+                    text: format!("  {pane_id}  claude  asking"),
+                    kind: "claude".into(),
+                    waiting: true,
+                };
+            }
+            state.set_rows(unfocused(rows));
+            let label = match view {
+                "search" => {
+                    let result = search_reply(&mut state, &["claude:a", "claude:b"]);
+                    assert!(state.apply_search_result(result));
+                    "Search: history"
+                },
+                "typing" => {
+                    state.begin_search();
+                    state.search_query = "half".into();
+                    "Search: half"
+                },
+                "previous" => {
+                    state.selected = 2;
+                    assert!(state.begin_predecessors());
+                    "Previous agents:   3  claude  asking"
+                },
+                _ => {
+                    assert!(state.toggle_waiting());
+                    "Waiting for you"
+                },
+            };
+            state.render(12, 40);
+            assert_eq!(state.view_label().as_deref(), Some(label), "{view}");
+            assert_eq!(state.last_label_rows, 1);
+            // Row 1 is the label, and the list starts on row 2.
+            assert!(!state.on_mouse(Mouse::LeftClick(1, 0)), "{view}");
+            let first = state.rows.iter().position(selectable).unwrap();
+            let last = state.rows.iter().rposition(selectable).unwrap();
+            assert_ne!(first, last, "{view}");
+            state.selected = last;
+            assert!(state.on_mouse(Mouse::LeftClick(2 + first as isize, 0)));
+            assert_eq!(state.selected, first, "{view}");
+            for surface in [
+                Surface::Agents,
+                Surface::Todos,
+                Surface::Vms,
+                Surface::Swamp,
+            ] {
+                state.surface = surface;
+                state.render(12, 40);
+                assert_eq!(state.tab_cells.len(), 4, "{view} on {surface:?}");
+                assert_eq!(
+                    state
+                        .tab_cells
+                        .iter()
+                        .find(|cell| cell.active)
+                        .map(|cell| cell.target),
+                    Some(surface)
+                );
+                if surface != Surface::Agents {
+                    assert_eq!(
+                        state.last_label_rows, 0,
+                        "the label is the Agents surface's"
+                    );
+                }
+            }
+            state.surface = Surface::Agents;
+            state.render(12, 40);
+            let todos_x = state.tab_cells[1].x;
+            assert!(state.on_mouse(Mouse::LeftClick(0, todos_x)));
+            assert_eq!(state.surface, Surface::Todos, "{view}");
+            assert!(
+                !state.search_editing,
+                "a search being typed ends with the switch, rather than taking Todos' keys"
+            );
+        }
+    }
+
+    /// A paste lands in the box being typed in, as the typed characters would have, and
+    /// nowhere else: on the list it would have been a string of single-letter commands.
+    #[test]
+    fn a_paste_extends_a_search_being_typed_and_nothing_else() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let before = state.selected;
+        assert!(!state.update(Event::PastedText("sjp/w".into())));
+        assert_eq!(state.selected, before);
+        assert!(state.summarizing.is_none());
+        assert!(state.waiting_base.is_none() && state.predecessors.is_none());
+
+        state.begin_search();
+        state.search_query = "build".into();
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        assert!(state.search_pending);
+        let request = state.search_request;
+        assert!(state.update(Event::PastedText(" failing\r\n  on macOS\n".into())));
+        assert_eq!(state.search_query, "build failing on macOS");
+        assert!(
+            !state.search_pending,
+            "the reply in flight was for another query"
+        );
+        assert_ne!(state.search_request, request);
+        assert!(!state.update(Event::PastedText("\n\n".into())));
+    }
+
+    #[test]
+    fn a_paste_is_one_line_with_no_control_characters() {
+        assert_eq!(single_line("one\ntwo\r\nthree\rfour"), "one two three four");
+        assert_eq!(single_line("  padded  \n\n\n  lines "), "  padded lines ");
+        assert_eq!(
+            single_line(" one line, as it was "),
+            " one line, as it was "
+        );
+        assert_eq!(single_line("copied line\n"), "copied line");
+        assert_eq!(single_line("tab\there\u{1b}[31m"), "tab here [31m");
+        assert_eq!(single_line("\n \n"), "");
+    }
+
+    /// Putting the panel away puts the keyboard stop back on the list and drops every question
+    /// left armed, whichever half did the hiding. What the user was looking at stays.
+    #[test]
+    fn a_hide_ends_the_visit_but_keeps_the_view() {
+        let pane = |shown: bool, focused: bool| {
+            Event::PaneUpdate(PaneManifest {
+                panes: std::collections::HashMap::from([(
+                    TabPosition::new(0),
+                    vec![PaneInfo {
+                        id: PaneId::Plugin(PluginId::default()),
+                        is_suppressed: !shown,
+                        is_focused: focused,
+                        ..Default::default()
+                    }],
+                )]),
+            })
+        };
+        let mut rows = strip();
+        rows.extend(archive());
+        for hide in ["esc", "manifest"] {
+            let mut state = State::default();
+            state.set_rows(unfocused(rows.clone()));
+            state.render(21, 40);
+            state.update(pane(true, true));
+            state.selected = 7;
+            assert!(state.arm_resume());
+            state.focus = Focus::History;
+            state.tabs_focused = true;
+            match hide {
+                "esc" => state.hide_the_panel(),
+                _ => assert!(!state.update(pane(false, false)), "nothing shown to redraw"),
+            }
+            assert!(!state.tabs_focused, "{hide}");
+            assert_eq!(state.focus, Focus::List, "{hide}");
+            assert!(state.confirming_resume.is_none(), "{hide}");
+            assert_eq!(state.selected, 7, "the selection is kept");
+            state.update(pane(true, true));
+            state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+            assert!(
+                state.resume_requests.is_empty(),
+                "{hide}: y answers nothing now"
+            );
+        }
+
+        // A surface other than Agents is kept too, and so is a filtered view.
+        let mut state = State::default();
+        state.set_rows(unfocused(rows.clone()));
+        state.toggle_waiting();
+        state.surface = Surface::Todos;
+        state.tabs_focused = true;
+        state.update(pane(true, true));
+        state.update(pane(false, false));
+        assert_eq!(state.surface, Surface::Todos);
+        assert!(state.waiting_base.is_some());
+        assert!(!state.tabs_focused);
+    }
+
+    /// The keyboard leaving this pane only changes what is drawn - the stops stay where they
+    /// are, for the keys to come back to - and the first manifest is no edge at all.
+    #[test]
+    fn losing_the_keyboard_redraws_but_keeps_the_stop() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        assert!(
+            state.keys_here(),
+            "told nothing, the pane assumes the keys are here"
+        );
+        assert!(
+            !state.own_pane_changed(true, false),
+            "the first manifest without the focus does not redraw"
+        );
+        assert!(!state.keys_here());
+        assert!(state.own_pane_changed(true, true));
+        assert!(state.keys_here());
+        assert!(!state.own_pane_changed(true, true), "no edge, no redraw");
+        state.focus = Focus::History;
+        assert!(state.own_pane_changed(true, false));
+        assert_eq!(
+            state.focus,
+            Focus::History,
+            "the stop is kept for the way back"
+        );
+        assert!(!state.keys_here());
+        assert!(
+            !state.own_pane_changed(false, false),
+            "a hidden pane has nothing on screen to correct"
+        );
+        assert_eq!(state.focus, Focus::List, "but hiding it ends the visit");
     }
 
     #[test]
@@ -5070,7 +7788,6 @@ mod tests {
             } else {
                 state.close_reader();
             }
-            state.tabs_focused = true;
             state.render(12, 50);
             let position = |state: &State| {
                 (
@@ -5129,6 +7846,12 @@ mod tests {
                 assert_eq!(state.surface == Surface::Vms, header_visible);
                 assert_eq!(state.on_mouse(Mouse::LeftClick(0, 0)), header_visible);
                 assert_eq!(state.surface, Surface::Agents);
+                // A tab click lands on the tab's list; put the keys back where they were to
+                // go on.
+                if header_visible {
+                    assert_eq!(state.focus, Focus::List);
+                    state.focus = before.5;
+                }
 
                 state.render(12, 50);
                 assert_eq!(position(&state), before);
@@ -5152,7 +7875,7 @@ mod tests {
         for raw in [false, true] {
             let mut state = reading(&long_notification());
             if raw {
-                press(&mut state, BareKey::Char('r'));
+                press(&mut state, BareKey::Char('v'));
             } else {
                 for _ in 0..5 {
                     press(&mut state, BareKey::Char('j'));
@@ -5428,9 +8151,8 @@ mod tests {
         );
     }
 
-    /// `Tab` and `Shift+Tab` walk the ring, `j`/`k` do whatever the half they are in does with
-    /// a step - a row of the list, an event of the timeline - and the arrows walk the list from
-    /// either half.
+    /// `Tab` and `Shift+Tab` walk the ring, and `j`/`k` and the arrows do whatever the half they
+    /// are in does with a step - a row of the list, an event of the timeline.
     ///
     /// Directional now: forward off the history half leaves this pane for the conversation, so
     /// getting back to the list is `Shift+Tab` rather than another `Tab`.
@@ -5464,11 +8186,22 @@ mod tests {
         );
         assert_eq!(state.selected, 1, "and moves no selection");
 
-        // the arrows steer the list from either half, and take the keys back with them
+        // The arrows follow the focus too: in the history half they walk its events, and leave
+        // the list and the keys where they are.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Down)));
+        assert_eq!(
+            state.history_cursor, 0,
+            "Down is j, a step toward the newest"
+        );
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Up)));
+        assert_eq!(state.history_cursor, 1, "Up is k");
+        assert_eq!((state.selected, state.focus), (1, Focus::History));
+
+        // Shift+Tab is the way back to the list, where they walk the rows.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+        assert_eq!(state.focus, Focus::List);
         assert!(state.on_key(KeyWithModifier::new(BareKey::Down)));
         assert_eq!(state.selected, 2);
-        assert_eq!(state.focus, Focus::List);
-
         assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
         assert_eq!(state.selected, 1, "k walks the list it is back in");
 
@@ -5488,22 +8221,18 @@ mod tests {
         assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
         assert_eq!(state.focus, Focus::List);
 
-        // An arrow that finds nowhere to go still took the keys back, and the divider draws
-        // them: without the redraw it would go on claiming the focus is down there.
+        // An arrow with nowhere to go is nothing to redraw, in either half.
         state.on_key(KeyWithModifier::new(BareKey::Down));
         assert_eq!(state.selected, 2, "the last row there is");
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Down)));
         state.on_key(KeyWithModifier::new(BareKey::Tab));
         assert_eq!(state.focus, Focus::History);
-        assert!(
-            state.on_key(KeyWithModifier::new(BareKey::Down)),
-            "the focus moved even though the selection could not"
-        );
-        assert_eq!(state.focus, Focus::List);
-        assert_eq!(state.selected, 2);
+        state.history_cursor = 0;
         assert!(
             !state.on_key(KeyWithModifier::new(BareKey::Down)),
-            "and now nothing moved at all"
+            "already on the newest event"
         );
+        assert_eq!((state.selected, state.focus), (2, Focus::History));
     }
 
     /// A strip of one archived run, the shape every history test below wants.
@@ -5568,9 +8297,43 @@ mod tests {
         assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
     }
 
+    /// The oldest event is where anybody looking for something older ends up, and the notice
+    /// that older events were not loaded is the row above it - a row no event owns, which
+    /// winding the window to the event's own first row left just off the top.
+    #[test]
+    fn walking_to_the_oldest_event_shows_the_omitted_notice() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        let mut run = a_run();
+        run.summary = None;
+        run.omitted_entries = 3;
+        run.entries = (0..30)
+            .map(|index| agents::RunEntry {
+                revision: index + 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Question,
+                text: format!("question {index}"),
+                created_at_ms: None,
+            })
+            .collect();
+        state.set_run(run);
+        state.focus = Focus::History;
+        state.render(21, 50);
+        for _ in 0..50 {
+            state.on_key(KeyWithModifier::new(BareKey::Char('k')));
+        }
+        state.render(21, 50);
+        assert_eq!(state.history_cursor, 29);
+        assert_eq!(state.history_scroll, state.last_history_max_scroll);
+        assert_eq!(state.last_history_window_start, 0);
+        let notice = &state.history().entries[0].text;
+        assert!(notice.contains("older events not loaded"), "{notice}");
+    }
+
     /// `Enter` in the history half opens the event under the cursor, uncapped and with the
     /// whole pane to read it in; `Esc` puts the reader away and leaves the pane where it is.
-    /// The list half's `Enter` is untouched - the two halves have separate cursors.
+    /// On a run, the list half's `Enter` is the way into that half: the run has no pane to walk
+    /// to, and the two halves have separate cursors.
     #[test]
     fn enter_in_the_history_half_opens_the_event_and_esc_comes_back() {
         let mut state = State::default();
@@ -5592,14 +8355,13 @@ mod tests {
             state.cached_history_lines(50).entries.len(),
             agents::MAX_ENTRY_ROWS
         );
-        assert!(
-            !state.on_key(KeyWithModifier::new(BareKey::Enter)),
-            "the keys are in the list half, where Enter is the list's - and this row is an \
-             archived run, which has no pane to walk to"
-        );
+        // In the list half a run has no pane to walk into, so Enter walks into its history -
+        // and opens nothing yet, and leaves the panel up.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        assert_eq!(state.focus, Focus::History);
         assert!(state.reading.is_none());
+        assert_eq!(state.panel_hides, 0);
 
-        state.focus = Focus::History;
         assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
         let reading = state.reading.as_ref().expect("the event under the cursor");
         assert_eq!(reading.kind, "prompt");
@@ -5734,18 +8496,26 @@ mod tests {
         state.render(21, 50);
 
         assert_eq!(state.focus, Focus::List, "the page keys did not need it");
-        assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
-        assert_eq!(state.history_scroll, state.page());
-        assert!(state.on_key(KeyWithModifier::new(BareKey::PageDown)));
-        assert_eq!(state.history_scroll, 0);
-        assert!(
-            !state.on_key(KeyWithModifier::new(BareKey::PageDown)),
-            "at the newest line already"
-        );
+        // A frame between the presses, so a window wound back to the cursor on render would
+        // show: in the history half the cursor has to come to the window instead.
+        for focus in [Focus::List, Focus::History] {
+            state.focus = focus;
+            assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
+            state.render(21, 50);
+            assert_eq!(state.history_scroll, state.page(), "{focus:?}");
+            assert!(state.on_key(KeyWithModifier::new(BareKey::PageDown)));
+            state.render(21, 50);
+            assert_eq!(state.history_scroll, 0, "{focus:?}");
+            assert!(
+                !state.on_key(KeyWithModifier::new(BareKey::PageDown)),
+                "at the newest line already"
+            );
+        }
     }
 
     /// A click lands in the half it points at. In the list it moves the cursor and no more;
-    /// below the divider the focus is all it does, because nothing down there is a row.
+    /// below the divider it points at the event under it, and on the divider the focus is all
+    /// it does.
     #[test]
     fn a_click_lands_in_the_half_it_points_at() {
         let mut state = State::default();
@@ -5763,8 +8533,12 @@ mod tests {
         assert_eq!(state.selected, 2, "and selects nothing");
         assert!(
             !state.on_mouse(Mouse::LeftClick((list_rows + 3) as isize, 0)),
-            "already down here"
+            "already down here, and on no event"
         );
+        // A click on the event the cursor is on, with the keys already down here, reads it.
+        assert!(state.on_mouse(Mouse::LeftClick((list_rows + 2) as isize, 0)));
+        assert!(state.reading.is_some(), "the idle summary is an event too");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
 
         assert!(
             state.on_mouse(Mouse::LeftClick(4, 0)),
@@ -5800,7 +8574,7 @@ mod tests {
         state.history_scroll = 4;
         let was = state.selection_key();
 
-        assert!(state.on_click(3), "the row under the pointer");
+        assert!(state.on_click(3, true), "the row under the pointer");
         assert_eq!(state.selected, 3, "pane 7");
         assert!(
             state.activations.is_empty(),
@@ -5821,6 +8595,31 @@ mod tests {
             state.panel_hides, 1,
             "putting the panel away on the way, so the agent is not walked into behind it"
         );
+
+        // A second click on the row the cursor is on, with the keys already in the list, is the
+        // Enter - but not the click that brings the keys back from the history half onto it.
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 40);
+        state.focus = Focus::History;
+        assert!(state.on_click(2, true), "back to the list");
+        assert!(state.activations.is_empty());
+        assert!(
+            !state.on_click(2, true),
+            "the panel went, so nothing here to redraw"
+        );
+        assert_eq!(state.activations, [3]);
+        assert_eq!(state.panel_hides, 1);
+
+        // `load older runs…` has nothing to preview, so its first click is its Enter.
+        let mut rows = strip();
+        rows.push(StripRow::MoreRuns);
+        let mut state = State::default();
+        state.set_rows(unfocused(rows));
+        state.render(21, 40);
+        assert!(state.on_click(6, true));
+        assert_eq!(state.archive_requests, 1);
+        assert_eq!(state.panel_hides, 0);
     }
 
     /// Only the Enter that actually walks into an agent dismisses the panel. Every other Enter
@@ -5874,6 +8673,18 @@ mod tests {
             "the rows it asks for arrive here, so the list has to still be on screen"
         );
         assert!(state.activations.is_empty(), "and it is not an agent");
+
+        // an archived run walks into its history, in this pane
+        let mut rows = strip();
+        rows.extend(archive());
+        state.set_rows(unfocused(rows));
+        state.render(21, 40);
+        state.selected = 7;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        assert_eq!(state.focus, Focus::History);
+        assert_eq!(state.panel_hides, 0, "what Enter found is in the panel");
+        assert!(state.activations.is_empty());
+        state.focus = Focus::List;
 
         // and the one that is
         state.selected = 2;
@@ -6209,7 +9020,8 @@ mod tests {
         );
     }
 
-    /// A search hit is drawn in the archive's columns, so the hits can be read down them too.
+    /// A search hit is drawn in the archive's columns, so the hits can be read down them too -
+    /// with what matched first, since the cell is narrow and why a row matched is its point.
     #[test]
     fn a_search_hit_fills_the_same_cells() {
         let mut state = State {
@@ -6237,7 +9049,7 @@ mod tests {
             [StripRow::Run {
                 run_id: "claude:session-1".to_owned(),
                 kind: "claude".to_owned(),
-                title: "hook history — the matching line".to_owned(),
+                title: "the matching line — hook history".to_owned(),
                 worktree: "hocus".to_owned(),
                 started_at_ms: Some(10),
                 continuation: false,
@@ -6314,6 +9126,7 @@ mod tests {
                     created_at_ms: None,
                 },
             ],
+            omitted_entries: 0,
         }
     }
     // -- a prompt a harness wrote --------------------------------------------
@@ -6480,12 +9293,12 @@ mod tests {
         assert_eq!(prose.reading.as_ref().expect("a reader").scroll, 1);
     }
 
-    /// The folds are a reading of the event; `r` is how you get back to the event. A reader
+    /// The folds are a reading of the event; `v` is how you get back to the event. A reader
     /// that could not would be asking to be trusted.
     #[test]
-    fn r_shows_the_event_exactly_as_it_arrived() {
+    fn v_shows_the_event_exactly_as_it_arrived() {
         let mut state = reading(&task_notification());
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
         let raw = rows(&state).join("\n");
         assert!(raw.contains("<task-notification>"), "{raw}");
         assert!(
@@ -6493,7 +9306,7 @@ mod tests {
             "{raw}"
         );
 
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
         let folded = rows(&state).join("\n");
         assert!(!folded.contains("<task-notification>"), "{folded}");
         assert!(folded.contains("▸ result"), "{folded}");
@@ -6579,10 +9392,34 @@ mod tests {
 
         state.run.as_mut().expect("a run").host = Some("buildbox".to_owned());
         assert_eq!(state.open_target(), None);
+        // `o` says where the file is rather than doing nothing, and leaves the panel up.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        assert_eq!(state.panel_hides, 0);
+        assert_eq!(state.open_note.as_deref(), Some("file is on buildbox"));
+        assert!(state.reader_label().starts_with("file is on buildbox"));
     }
 
-    /// `y` copies the fold you are pointing at, and the whole event when you are not pointing
-    /// at anything — which is what a paste buffer is usually wanted for.
+    /// Where a file is on another machine, `o` says which one - but only where there is a
+    /// file: a fold or an event that names none names none on any machine.
+    #[test]
+    fn o_on_another_hosts_run_says_where_only_when_there_is_a_file() {
+        let mut state = reading(&task_notification());
+        state.run.as_mut().expect("a run").host = Some("buildbox".to_owned());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        assert_eq!(state.open_note.as_deref(), Some("no file named here"));
+
+        let mut state = reading("fix the flaky reconnect test");
+        state.run.as_mut().expect("a run").host = Some("buildbox".to_owned());
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert_eq!(state.focus, Focus::History);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        assert_eq!(state.open_note.as_deref(), Some("no file named here"));
+        assert_eq!(state.panel_hides, 0);
+    }
+
+    /// `y` copies the fold under the `>` in a folding reader, and the whole event exactly as it
+    /// arrived from the source `v` puts up or from a prose event - so `v` then `y` is how a
+    /// folded event is copied whole.
     #[test]
     fn y_copies_the_fold_under_the_cursor_and_the_whole_event_otherwise() {
         let mut state = reading(&task_notification());
@@ -6597,7 +9434,7 @@ mod tests {
         );
 
         // Showing the source is asking for the source.
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
         assert_eq!(
             state.copy_target().as_deref(),
             Some(task_notification().as_str())
@@ -6607,6 +9444,32 @@ mod tests {
         assert_eq!(
             prose.copy_target().as_deref(),
             Some("fix the flaky reconnect test")
+        );
+    }
+
+    /// A copy is invisible until it is pasted, and the fold and the whole event are two
+    /// different things to paste: `y` says which it took, and how to get the other, on the
+    /// divider until the next key.
+    #[test]
+    fn y_says_what_it_copied() {
+        let mut state = reading(&task_notification());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('y'))));
+        assert!(
+            state
+                .reader_label()
+                .starts_with("copied status · v then y copies the whole event · prompt"),
+            "{}",
+            state.reader_label()
+        );
+        press(&mut state, BareKey::Char('v'));
+        assert!(state.open_note.is_none(), "the next key takes it down");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('y'))));
+        assert!(
+            state
+                .reader_label()
+                .starts_with("copied the whole event · prompt"),
+            "{}",
+            state.reader_label()
         );
     }
 
@@ -6666,12 +9529,12 @@ mod tests {
     }
 
     /// The reader's parse depends on the event's text alone, which an opening never changes,
-    /// so leaving the source with `r` and coming back re-wraps the parse made the first time
+    /// so leaving the source with `v` and coming back re-wraps the parse made the first time
     /// rather than parsing the whole event again. Read by poisoning that parse.
     #[test]
     fn toggling_raw_keeps_the_readers_parse() {
         let mut state = reading(&task_notification());
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
         let id = state.reading.as_ref().expect("a reader").id;
         assert_eq!(
             state.reader_blocks.as_ref().map(|(held, _)| *held),
@@ -6679,8 +9542,8 @@ mod tests {
         );
 
         state.reader_blocks = Some((id, markdown::parse("poison").into()));
-        press(&mut state, BareKey::Char('r'));
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
+        press(&mut state, BareKey::Char('v'));
         let lines: Vec<&str> = state
             .reader_lines()
             .iter()
@@ -6747,7 +9610,7 @@ mod tests {
         }
     }
 
-    /// `r` puts up a different document, so there is no row to hold the place at and the
+    /// `v` puts up a different document, so there is no row to hold the place at and the
     /// reader starts at the head of it. The cursor goes back with the scroll: left where it
     /// was, it pointed forty rows below a window anchored to zero, where nothing draws it and
     /// `Enter`, `y` and `o` would all have acted on a fold nobody could see.
@@ -6768,8 +9631,8 @@ mod tests {
             "the fold is off the foot at a scroll of zero"
         );
 
-        press(&mut state, BareKey::Char('r'));
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
+        press(&mut state, BareKey::Char('v'));
         let reader = state.reading.as_ref().expect("a reader");
         assert_eq!((reader.scroll, reader.cursor), (0, 0));
     }
@@ -6828,10 +9691,1212 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        // `r` and `Enter` have nothing to act on and say so by doing nothing.
+        // `v` and `Enter` have nothing to act on and say so by doing nothing.
         let before = rows(&state);
-        press(&mut state, BareKey::Char('r'));
+        press(&mut state, BareKey::Char('v'));
         press(&mut state, BareKey::Enter);
         assert_eq!(rows(&state), before);
+    }
+
+    // -- the keys a view names ------------------------------------------------
+
+    /// A question's answer keys are its tail, and a narrow divider cuts the tail: the footer
+    /// asks answer first at every width the panel's half comes in, the divider puts the
+    /// question before the run's name, and a pane with no history half still asks.
+    #[test]
+    fn the_resume_question_keeps_its_answer_keys_at_every_width() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.set_run(a_run());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        for cols in 22..=40 {
+            state.render(12, cols);
+            let footer = state.footer_hint().unwrap();
+            assert!(footer.starts_with("y resume · n"), "{footer:?} at {cols}");
+        }
+        state.render(8, 30);
+        assert_eq!(state.last_history_rows, 0, "no divider to ask on");
+        assert_eq!(state.footer_hint().as_deref(), Some("y resume · n cancel"));
+        state.render(12, 24);
+        let line = divider_line(&state.history_label(), 5, 0, 24);
+        assert!(line.contains("y/n"), "{line}");
+    }
+
+    /// A refusal is wrapped whole under the divider, which a narrow half cuts to a few words
+    /// of it, and the timeline keeps a row under it.
+    #[test]
+    fn a_refusal_is_wrapped_whole_under_the_divider() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.set_run(a_run());
+        let detail = "that run is live again in pane 12, and resuming it would put two agents on \
+                      one conversation";
+        state.resume_note = Some(("run:claude:session-1".into(), detail.into()));
+        let lines = state.refusal_lines(24);
+        assert!(lines.len() > 2, "{lines:?}");
+        assert!(lines.iter().all(|line| line.width() <= 22), "{lines:?}");
+        assert_eq!(lines.join(" "), format!("resume failed: {detail}"));
+
+        state.render(21, 24);
+        let header = state.history().header.len() + 1;
+        let held = lines.len().min(state.last_history_rows - header - 1);
+        assert_eq!(state.last_history_body_top, header + held);
+        assert_eq!(
+            state.last_history_body_rows,
+            state.last_history_rows - header - held
+        );
+        assert!(state
+            .footer_hint()
+            .unwrap()
+            .starts_with("resume failed: that run"));
+        assert_eq!(
+            wrap_words("a veryveryverylongword b", 5),
+            ["a", "veryv", "eryve", "rylon", "gword", "b"]
+        );
+    }
+
+    /// A resume that worked has walked the keyboard into the new pane, under the panel: the
+    /// panel goes, wherever the cursor has got to since the question was answered.
+    #[test]
+    fn a_successful_resume_puts_the_panel_away() {
+        let succeeded = || {
+            let result = wire::ResumeResult {
+                run_id: "claude:session-1".to_owned(),
+                detail: String::new(),
+            };
+            PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RESUME_RESULT,
+                &Some(serde_json::to_string(&result).expect("encoded")),
+                &None,
+                false,
+            )
+        };
+        for walked_on in [false, true] {
+            let mut state = State::default();
+            state.set_rows(unfocused(archive()));
+            state.selected = 1;
+            state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+            state.on_key(KeyWithModifier::new(BareKey::Char('y')));
+            assert_eq!(state.resume_requests, ["claude:session-1"]);
+            if walked_on {
+                state.on_key(KeyWithModifier::new(BareKey::Down));
+            }
+            assert!(state.pipe(succeeded()));
+            assert_eq!(state.panel_hides, 1, "walked on: {walked_on}");
+        }
+    }
+
+    /// `o` opens the file for this client - floating, focused and shown - and puts the panel
+    /// away first, since the editor is under it.
+    #[test]
+    fn o_opens_the_named_file_and_puts_the_panel_away() {
+        let mut state = reading(&task_notification());
+        for _ in 0..3 {
+            press(&mut state, BareKey::Char('j'));
+        }
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        assert_eq!(state.panel_hides, 1);
+        assert_eq!(
+            state.opened_files,
+            ["/private/tmp/claude-501/x/a10fe836c6a9fa4ca.output"]
+        );
+        assert!(
+            state.reading.is_some(),
+            "the event is still open when the panel comes back"
+        );
+    }
+
+    /// Where there is no file, `o` says so - on the reader's divider or the history half's -
+    /// and the next key takes the note down.
+    #[test]
+    fn o_on_a_fold_with_no_file_says_so() {
+        let mut state = reading(&task_notification());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        assert_eq!(state.panel_hides, 0);
+        assert!(state.opened_files.is_empty());
+        assert!(state
+            .reader_label()
+            .starts_with("no file named here · prompt"));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert!(state.open_note.is_none());
+
+        let mut state = reading("fix the flaky reconnect test");
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert_eq!(state.focus, Focus::History);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('o'))));
+        state.fill_history_cache(50);
+        assert!(state.history_label().starts_with("no file named here · "));
+        assert!(
+            state.on_key(KeyWithModifier::new(BareKey::Char('x'))),
+            "a key that does nothing else still takes the note down"
+        );
+        assert!(state.open_note.is_none());
+    }
+
+    /// The reader's source toggle is `v`, so `r` in there neither shows the source nor arms a
+    /// resume - one `Esc` from a resume `y` answers.
+    #[test]
+    fn reader_r_does_not_show_the_source_or_arm_a_resume() {
+        let mut state = reading(&task_notification());
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('r'))));
+        assert!(!state.reading.as_ref().expect("a reader").raw);
+        assert!(state.confirming_resume.is_none());
+        press(&mut state, BareKey::Char('v'));
+        assert!(state.reader_label().starts_with("prompt · source"));
+    }
+
+    /// The search box scrolls sideways rather than losing its end, and the terminal's caret is
+    /// in it - where the next character typed goes.
+    #[test]
+    fn the_search_box_keeps_its_end_and_its_caret_in_view() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.begin_search();
+        state.search_query = "a query long enough to run off the end of the box".into();
+        state.render(12, 24);
+        let label = state.view_label().unwrap();
+        assert!(label.starts_with("Search: "), "{label}");
+        assert!(label.width() < 24, "{label}");
+        assert!(label.ends_with("box"), "{label}");
+        let (_, column) = state.search_box(24);
+        assert!(column < 24);
+        assert_eq!(state.text_cursor(None, 10, 24), Some((column, 1)));
+        state.has_keyboard = Some(false);
+        assert_eq!(state.text_cursor(None, 10, 24), None);
+    }
+
+    /// An empty list says whether anybody has told it so: before hocus's first strip it is
+    /// waiting, and after one it says what to do about having no agents.
+    #[test]
+    fn an_empty_list_says_whether_hocus_has_said_anything_yet() {
+        let mut state = State::default();
+        assert_eq!(state.empty_list_message(), ("waiting for hocus…", None));
+        state.render(12, 60);
+        let footer = state.footer_hint().unwrap();
+        assert!(
+            !footer.contains("Tab chat"),
+            "nobody said there is one: {footer}"
+        );
+        let empty = serde_json::to_string(&unfocused(Vec::new())).expect("encoded");
+        assert!(
+            state.pipe(PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_STRIP,
+                &Some(empty),
+                &None,
+                false,
+            )),
+            "the first strip is news, empty or not"
+        );
+        assert_eq!(
+            state.empty_list_message(),
+            ("no agents", Some("Ctrl e n starts one"))
+        );
+        state.render(12, 60);
+        let footer = state.footer_hint().unwrap();
+        assert!(footer.contains("Tab chat"), "{footer}");
+    }
+
+    fn questions(count: u64) -> agents::AgentRun {
+        let mut run = a_run();
+        run.summary = None;
+        run.entries = (0..count)
+            .map(|index| agents::RunEntry {
+                revision: index + 1,
+                event_id: None,
+                kind: agents::RunEntryKind::Question,
+                text: format!("question {index}"),
+                created_at_ms: None,
+            })
+            .collect();
+        run
+    }
+
+    /// The page keys and the wheel move the focused half: the window stays where they put it,
+    /// and the cursor comes to the window, so `Enter` and `o` act on something on screen.
+    #[test]
+    fn the_page_keys_scroll_the_focused_history_half() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(40));
+        state.focus = Focus::History;
+        state.render(21, 50);
+        let on_screen = |state: &State| {
+            let end = state.history().entries.len() - state.history_scroll;
+            let start = end - state.last_history_body_rows;
+            let event = state.cursor_event().expect("a cursor");
+            event.start >= start && event.end() <= end
+        };
+        assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, state.page());
+        assert!(on_screen(&state), "the cursor came with the window");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, 2 * state.page());
+        assert!(on_screen(&state));
+        for _ in 0..2 {
+            assert!(state.on_key(KeyWithModifier::new(BareKey::PageDown)));
+            state.render(21, 50);
+        }
+        assert_eq!(state.history_scroll, 0);
+        assert!(on_screen(&state));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_focused_history_half() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(40));
+        state.render(21, 50);
+        let below = (state.last_list_rows + 3) as isize;
+        assert!(state.on_mouse(Mouse::LeftClick(below, 0)));
+        assert_eq!(state.focus, Focus::History);
+        state.on_mouse(Mouse::Hover(below, 0));
+        assert!(state.on_mouse(Mouse::ScrollUp(3)));
+        state.render(21, 50);
+        assert_eq!(
+            state.history_scroll, 3,
+            "kept, not wound back to the cursor"
+        );
+    }
+
+    /// Taking the half's keys after wheeling it keeps the window where the wheel left it, and
+    /// puts the cursor on screen in it.
+    #[test]
+    fn taking_the_history_half_keeps_where_the_wheel_left_it() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(40));
+        state.render(21, 50);
+        state.on_mouse(Mouse::Hover((state.last_list_rows + 3) as isize, 0));
+        assert!(state.on_mouse(Mouse::ScrollUp(5)));
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, 5);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, 5);
+        let end = state.history().entries.len() - 5;
+        let event = state.cursor_event().expect("a cursor");
+        assert!(event.start >= end - state.last_history_body_rows && event.end() <= end);
+    }
+
+    /// The revision of the event the bottom row of the history's window belongs to.
+    fn bottom_revision(state: &State) -> Option<u64> {
+        let end = state.history().entries.len() - state.history_scroll;
+        let from_newest = state.event_at_row(end - 1)?;
+        let events = &state.history().events;
+        events[events.len() - from_newest - 1].revision
+    }
+
+    /// Off the tail the cursor holds the event it was put on, as a working agent adds more -
+    /// and as the oldest are trimmed off - while on the newest it follows the tail.
+    #[test]
+    fn the_cursor_holds_its_event_as_the_run_grows() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(30));
+        state.focus = Focus::History;
+        state.render(21, 50);
+        for _ in 0..2 {
+            state.on_key(KeyWithModifier::new(BareKey::Char('k')));
+        }
+        state.render(21, 50);
+        assert_eq!(state.cursor_event().unwrap().revision, Some(28));
+        state.set_run(questions(31));
+        state.render(21, 50);
+        assert_eq!(state.cursor_event().unwrap().revision, Some(28));
+        // The oldest trimmed off and a newer one on: the same event still.
+        let mut trimmed = questions(32);
+        trimmed.entries.remove(0);
+        state.set_run(trimmed);
+        state.render(21, 50);
+        assert_eq!(state.cursor_event().unwrap().revision, Some(28));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        assert_eq!(
+            &*state.reading.as_ref().expect("a reader").text,
+            "question 27"
+        );
+
+        // On the newest, the cursor follows the tail.
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(30));
+        state.focus = Focus::History;
+        state.render(21, 50);
+        state.set_run(questions(31));
+        state.render(21, 50);
+        assert_eq!(state.cursor_event().unwrap().revision, Some(31));
+    }
+
+    /// A window wound back from the tail holds the text being read as the run grows under it,
+    /// and as the pane is resized; at the tail it follows new events.
+    #[test]
+    fn a_wound_back_window_holds_still_as_the_run_grows() {
+        let mut state = State::default();
+        state.set_rows(one_run_selected());
+        state.set_run(questions(30));
+        state.render(21, 50);
+        assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
+        state.render(21, 50);
+        let before = bottom_revision(&state);
+        assert!(before.is_some());
+        state.set_run(questions(33));
+        state.render(21, 50);
+        assert_eq!(bottom_revision(&state), before);
+        state.render(21, 41);
+        assert_eq!(bottom_revision(&state), before, "a resize moves nothing");
+
+        while state.on_key(KeyWithModifier::new(BareKey::PageDown)) {
+            state.render(21, 50);
+        }
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, 0);
+        state.set_run(questions(35));
+        state.render(21, 50);
+        assert_eq!(state.history_scroll, 0, "the tail follows");
+        assert_eq!(bottom_revision(&state), Some(35));
+    }
+
+    /// A search sent and not answered says it is searching, is not sent again by a second
+    /// Enter, and gives up after a while with the query still there to retry.
+    #[test]
+    fn a_search_nobody_answers_times_out_and_keeps_the_query() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.begin_search();
+        state.search_query = "flaky".into();
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        let request = state.search_request;
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        assert_eq!(state.search_request, request, "nothing sent twice");
+        let late = wire::SearchResult {
+            request_id: request.to_string(),
+            ..Default::default()
+        };
+        assert!(!state.expire_search(state.search_deadline_ms - 1));
+        assert!(state.expire_search(state.search_deadline_ms));
+        assert!(!state.search_pending);
+        assert!(state.search_editing);
+        assert_eq!(state.search_query, "flaky");
+        assert_eq!(state.search_error.as_deref(), Some("hocus did not answer"));
+        assert_eq!(
+            state.search_failure_lines(24).join(" "),
+            "failed: hocus did not answer",
+            "said under the box, whole"
+        );
+        assert!(!state.apply_search_result(late), "a late reply is ignored");
+        assert!(state.search_key(KeyWithModifier::new(BareKey::Enter)));
+        assert!(state.search_pending, "Enter asks again");
+        assert!(state.search_error.is_none());
+    }
+
+    /// A failed search stays open on the query as typed, over the rows the last search found,
+    /// and `Esc` goes back to that search. `/` over a search edits its query, and `Ctrl-u`
+    /// clears it.
+    #[test]
+    fn a_failed_search_stays_open_on_its_query_and_esc_goes_back_to_the_last_one() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let reply = search_reply(&mut state, &["match", "another match"]);
+        assert!(state.apply_search_result(reply));
+        let matches = state.rows.clone();
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('/'))));
+        assert_eq!(
+            state.search_query, "history",
+            "/ edits the search it is over"
+        );
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()));
+        assert!(state.search_query.is_empty());
+        for ch in "bar".chars() {
+            state.on_key(KeyWithModifier::new(BareKey::Char(ch)));
+        }
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Enter)));
+        let failed = wire::SearchResult {
+            request_id: state.search_request.to_string(),
+            error: "store busy".into(),
+            ..Default::default()
+        };
+        assert!(state.apply_search_result(failed));
+        assert!(state.search_editing);
+        assert_eq!(state.search_query, "bar");
+        assert_eq!(state.rows, matches, "the last search's rows stay");
+        // The reason is under the box, whole, and the footer is the keys that go on from it.
+        for cols in [24, 28, 34, 40] {
+            state.render(12, cols);
+            assert_eq!(
+                state.footer_hint().as_deref(),
+                Some("Enter retry · Esc back")
+            );
+            let lines = state.search_failure_lines(cols);
+            assert_eq!(lines.join(" "), "failed: store busy", "{cols}");
+            assert_eq!(state.last_label_rows, 1 + lines.len(), "{cols}");
+        }
+        // Clicks land on the list under the reason, not on the reason.
+        state.render(12, 24);
+        state.selected = state.rows.len() - 1;
+        let first = state.rows.iter().position(selectable).unwrap();
+        assert!(state.on_mouse(Mouse::LeftClick(
+            (1 + state.last_label_rows + first) as isize,
+            0
+        )));
+        assert_eq!(state.selected, first);
+        // A reason hocus gives while it is starting up, long enough to need every row it gets.
+        state.search_error =
+            Some("hocus has not registered this agent list yet - try again".to_owned());
+        state.render(12, 24);
+        let lines = state.search_failure_lines(24);
+        assert!(lines.iter().all(|line| line.width() <= 24), "{lines:?}");
+        assert_eq!(
+            lines.join(" "),
+            "failed: hocus has not registered this agent list yet - try again"
+        );
+        assert_eq!(state.last_label_rows, 1 + lines.len());
+        state.search_error = Some("store busy".to_owned());
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert_eq!(state.search_query, "history");
+        assert!(state.search_error.is_none());
+        assert!(!state.search_editing);
+        state.render(12, 24);
+        assert!(state.search_failure_lines(24).is_empty());
+        assert_eq!(state.last_label_rows, 1, "nothing is left under the box");
+    }
+
+    /// The search box takes every key ahead of the tab bar, so it cannot stay open behind a
+    /// `Tab`: the key closes it, keeps what was typed for the next `/`, and goes on round the
+    /// ring from the list it sits over - into the history half, or with Shift to the tab bar.
+    #[test]
+    fn tab_in_the_search_box_keeps_the_draft_and_walks_the_ring() {
+        let key = |ch: char| KeyWithModifier::new(BareKey::Char(ch));
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(12, 60);
+        assert!(state.on_key(key('/')));
+        for ch in "ab".chars() {
+            assert!(state.on_key(key(ch)));
+        }
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert!(!state.search_editing);
+        assert!(
+            state.search_base.is_none(),
+            "nothing was applied to go back to"
+        );
+        assert!(
+            state.ring_yields == [wire::STOP_TABS] || state.focus == Focus::History,
+            "on round the ring from the list"
+        );
+        assert_eq!(state.search_draft.as_deref(), Some("ab"));
+        // Neither `w` nor `p` puts a search away when there is none: they leave views, and the
+        // draft waits for the next `/` through both.
+        assert!(state.on_key(key('w')));
+        assert!(state.waiting_base.is_some());
+        assert!(state.on_key(key('w')));
+        assert!(state.waiting_base.is_none());
+        assert_eq!(state.search_draft.as_deref(), Some("ab"), "w, w keeps it");
+        assert!(matches!(
+            state.rows.get(state.selected),
+            Some(StripRow::Agent { .. })
+        ));
+        state.on_key(key('p'));
+        assert!(state.predecessors.is_some());
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(state.predecessors.is_none());
+        assert_eq!(state.search_draft.as_deref(), Some("ab"), "p, Esc keeps it");
+        assert!(state.on_key(key('/')));
+        assert_eq!(state.search_query, "ab", "the draft comes back");
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()));
+        assert!(!state.search_editing);
+        assert!(state.tabs_focused, "Shift+Tab from the box is the tab bar");
+        state.tabs_focused = false;
+
+        // Esc cancels as it always did, and keeps nothing.
+        assert!(state.on_key(key('/')));
+        assert_eq!(state.search_query, "ab");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+        assert!(!state.search_editing);
+        assert!(state.on_key(key('/')));
+        assert!(state.search_query.is_empty(), "Esc keeps no draft");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Esc)));
+
+        // Over a search already applied, Tab goes back to that search, and `c` puts the draft
+        // away with it.
+        let reply = search_reply(&mut state, &["match"]);
+        assert!(state.apply_search_result(reply));
+        assert!(state.on_key(key('/')));
+        assert!(state.on_key(key('x')));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert!(!state.search_editing);
+        assert_eq!(
+            state.search_query, "history",
+            "the applied search, under the list"
+        );
+        assert_eq!(state.search_draft.as_deref(), Some("historyx"));
+        assert!(state.on_key(key('c')));
+        assert!(state.search_draft.is_none());
+        assert!(state.on_key(key('/')));
+        assert!(state.search_query.is_empty());
+    }
+
+    /// The hits are not run again, so once they are old enough to matter the view says how old.
+    #[test]
+    fn an_applied_search_says_how_old_it_is() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        let reply = search_reply(&mut state, &["match"]);
+        assert!(state.apply_search_result(reply));
+        assert_eq!(state.view_label().as_deref(), Some("Search: history"));
+        state.searched_at_ms = Some(now_ms() - 42 * 60_000);
+        assert_eq!(
+            state.view_label().as_deref(),
+            Some("Search: history · 42m ago")
+        );
+        assert!(state.shows_an_age());
+        assert!(state.clear_search());
+        assert!(state.searched_at_ms.is_none());
+    }
+
+    /// Enter on the last page of `load older runs…` puts the cursor on the first run it loaded,
+    /// not back at the top of the list; a page that is not the last keeps it on the row.
+    #[test]
+    fn the_last_archive_page_leaves_the_cursor_on_the_first_run_it_loaded() {
+        let archive_of = |runs: &[&str], more: bool| {
+            let mut rows = strip();
+            rows.push(StripRow::Project("archive".to_owned()));
+            rows.extend(runs.iter().map(|id| run_row(*id, "a run")));
+            if more {
+                rows.push(StripRow::MoreRuns);
+            }
+            unfocused(rows)
+        };
+        let mut state = State::default();
+        state.set_rows(archive_of(&["claude:1"], true));
+        state.selected = state.rows.len() - 1;
+        assert_eq!(state.history_placeholder(40), "Enter loads older runs");
+        state.set_rows(archive_of(&["claude:1", "claude:2"], true));
+        assert_eq!(state.selection_key().as_deref(), Some("more"));
+        state.set_rows(archive_of(&["claude:1", "claude:2", "claude:3"], false));
+        assert_eq!(state.selection_key().as_deref(), Some("run:claude:3"));
+        assert_eq!(state.list_scroll, None);
+    }
+
+    /// The history half says which kind of empty it is.
+    #[test]
+    fn an_empty_history_says_which_kind_of_empty_it_is() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        assert_eq!(state.history_placeholder(40), "loading…");
+        let mut empty = a_run();
+        empty.summary = None;
+        empty.entries.clear();
+        state.set_run(empty);
+        assert_eq!(state.history_placeholder(40), "no events recorded");
+        state.run = None;
+        let failed = |run_id: &str| {
+            PipeMessage::new(
+                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                wire::AGENT_RUN_DETAIL,
+                &None,
+                &Some(BTreeMap::from([
+                    ("error".to_owned(), "store unavailable".to_owned()),
+                    ("run_id".to_owned(), run_id.to_owned()),
+                ])),
+                false,
+            )
+        };
+        // About a run the cursor is not on: another row's answer, and not this one's.
+        assert!(!state.pipe(failed("claude:somewhere-else")));
+        assert_eq!(state.history_placeholder(40), "loading…");
+        assert!(state.pipe(failed("claude:session-1")));
+        assert_eq!(
+            state.history_placeholder(40),
+            "history unavailable: store unavailable"
+        );
+        // hocus says it again on every snapshot, which is not news.
+        assert!(!state.pipe(failed("claude:session-1")));
+        assert_eq!(state.history_placeholder(12), "too narrow for history");
+        state.set_rows(unfocused(strip()));
+        assert_eq!(state.history_placeholder(40), "nothing to show yet");
+    }
+
+    /// Why a history is unavailable is the end of its sentence, and a half of the width a
+    /// panel is drawn at cut it off there: the placeholder wraps over the half's rows instead.
+    #[test]
+    fn an_unavailable_history_is_wrapped_whole() {
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        assert!(state.pipe(PipeMessage::new(
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            wire::AGENT_RUN_DETAIL,
+            &None,
+            &Some(BTreeMap::from([
+                (
+                    "error".to_owned(),
+                    "the run is no longer in the archive".to_owned()
+                ),
+                ("run_id".to_owned(), "claude:session-1".to_owned()),
+            ])),
+            false,
+        )));
+        for (cols, said) in [
+            (
+                24,
+                "history unavailable: the run is no longer in the archive",
+            ),
+            (
+                34,
+                "history unavailable: the run is no longer in the archive",
+            ),
+            (21, "too narrow for history"),
+            (12, "too narrow for history"),
+        ] {
+            let lines = state.placeholder_lines(cols);
+            assert!(
+                lines.iter().all(|line| line.width() <= cols - 2),
+                "{lines:?} at {cols}"
+            );
+            assert_eq!(lines.join(" "), said, "{cols}");
+        }
+        state.render(12, 24);
+        assert!(state.last_history_body_rows >= state.placeholder_lines(24).len());
+    }
+
+    /// The focus is drawn as a glyph as well as a colour, and a dimmed rule keeps its waiting
+    /// `!` in the error colour rather than dimming it with the rest.
+    #[test]
+    fn the_focus_markers_are_glyphs_as_well_as_colours() {
+        let focused = divider_text("3 · claude !", 0, 0, true, 30);
+        assert!(focused.content().starts_with("─ ▸ 3 · claude !"));
+        let unfocused = divider_text("3 · claude !", 0, 0, false, 30);
+        assert!(unfocused.content().starts_with("─   3 · claude !"));
+        let at = unfocused
+            .content()
+            .chars()
+            .position(|ch| ch == '!')
+            .unwrap();
+        // The levels `Text` keeps its dim and error ranges at.
+        let (dim, error) = (&unfocused.indices()[4], &unfocused.indices()[6]);
+        assert!(!dim.contains(&at));
+        assert!(dim.contains(&(at - 1)) && dim.contains(&(at + 1)));
+        assert!(error.contains(&at));
+
+        let row = agent(3, "  3  claude  busy");
+        let columns = Columns::default();
+        assert!(list_text(&row, true, true, &columns, 0)
+            .content()
+            .starts_with('>'));
+        assert!(list_text(&row, true, false, &columns, 0)
+            .content()
+            .starts_with('·'));
+        assert!(list_text(&row, false, false, &columns, 0)
+            .content()
+            .starts_with(' '));
+    }
+
+    /// The `!` on the divider is the row's own, which knows the agent was answered - not the
+    /// stored summary's, which goes on saying it is waiting.
+    #[test]
+    fn the_divider_marks_a_wait_only_while_the_row_does() {
+        let mut state = State::default();
+        state.set_rows(with_summary(
+            strip(),
+            3,
+            "Waiting on a permission prompt.",
+            true,
+        ));
+        let label = state.history_lines(38).label;
+        assert!(!label.contains('!'), "{label}");
+    }
+
+    /// No label reaches the terminal carrying a character that moves its cursor.
+    #[test]
+    fn a_label_cannot_move_the_terminal_cursor() {
+        let line = divider_line("edit: a\nb\u{1b}[2J", 0, 0, 40);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.contains("edit: a b"), "{line:?}");
+    }
+
+    /// A hit's cell opens on the word that matched, where the narrow cell can show it.
+    #[test]
+    fn a_hit_opens_on_the_word_that_matched() {
+        let cell = hit_first(
+            "lorem ipsum dolor sit amet consectetur the needle is here",
+            "needle",
+        );
+        assert!(cell.starts_with('…'), "{cell}");
+        let at = cell.find("needle").unwrap();
+        assert!(cell[..at].chars().count() <= 9, "{cell}");
+        assert_eq!(
+            hit_first("the needle up front", "needle"),
+            "the needle up front"
+        );
+        assert_eq!(hit_first("nothing matches", "needle"), "nothing matches");
+        let folded = hit_first("Case Folded And Then NEEDLE", "\"needle\"");
+        assert!(
+            folded.starts_with('…') && folded.ends_with("NEEDLE"),
+            "{folded}"
+        );
+    }
+
+    /// `D` and `F` open the New agent modal on the agent under the cursor - named, so the modal
+    /// has an agent to copy - with the panel left up under it, so an Esc in the modal comes
+    /// back to this list. Nothing on a run.
+    #[test]
+    fn d_and_f_open_the_new_agent_modal_on_the_agent_under_the_cursor() {
+        let fork = pane_action_configuration(7, true);
+        assert_eq!(
+            fork.get("caller_terminal_pane_id").map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(fork.get("fork_focused").map(String::as_str), Some("true"));
+        assert!(!fork.contains_key("duplicate_focused"));
+        assert_eq!(
+            pane_action_configuration(7, false)
+                .get("duplicate_focused")
+                .map(String::as_str),
+            Some("true")
+        );
+
+        let mut state = State::default();
+        let mut rows = strip();
+        rows.extend(archive());
+        state.set_rows(unfocused(rows));
+        state.selected = 7;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('D'))));
+        assert!(state.new_agent_launches.is_empty(), "a run has `r`");
+        assert_eq!(state.panel_hides, 0);
+        state.selected = 3;
+        state.on_key(KeyWithModifier::new(BareKey::Char('F')).with_shift_modifier());
+        assert_eq!(
+            state.new_agent_launches,
+            [pane_action_configuration(7, true)]
+        );
+        assert_eq!(state.panel_hides, 0, "the panel stays up under the modal");
+    }
+
+    /// A click on a fold points the reader's cursor at it, and a second one opens it. A prose
+    /// reader has nothing to point at and ignores clicks, as it always did.
+    #[test]
+    fn a_click_on_a_fold_points_at_it_and_a_second_opens_it() {
+        let mut state = reading(&task_notification());
+        let starts = state.reader_starts().to_vec();
+        // In pane rows: the tab bar and the reader's divider are above the body.
+        let line = (starts[5] + 2) as isize;
+        assert!(state.on_mouse(Mouse::LeftClick(line, 3)));
+        let reader = state.reading.as_ref().expect("a reader");
+        assert_eq!(reader.cursor, 5);
+        assert!(!reader.sections[5].open);
+        assert!(state.on_mouse(Mouse::LeftClick(line, 3)));
+        assert!(state.reading.as_ref().expect("a reader").sections[5].open);
+
+        let mut prose = reading(&"word ".repeat(200));
+        assert!(!prose.on_mouse(Mouse::LeftClick(3, 3)));
+    }
+
+    // -- the key sheet ---------------------------------------------------------
+
+    /// `?` puts the key sheet up, and `Esc`, `q` or `?` take it down again - `Esc` the sheet,
+    /// not the panel.
+    #[test]
+    fn question_mark_opens_the_key_sheet_and_esc_q_or_question_mark_shut_it() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 60);
+        for shut in [BareKey::Esc, BareKey::Char('q'), BareKey::Char('?')] {
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+            assert!(state.key_sheet_scroll.is_some());
+            state.render(21, 60);
+            assert_eq!(state.footer_hint().as_deref(), Some("Esc/? close"));
+            assert!(state.on_key(KeyWithModifier::new(shut)));
+            assert!(state.key_sheet_scroll.is_none(), "{shut:?}");
+            assert_eq!(
+                state.panel_hides, 0,
+                "{shut:?} shut the sheet, not the panel"
+            );
+        }
+        // Some terminals report the Shift the `?` took.
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?')).with_shift_modifier()));
+        assert!(state.key_sheet_scroll.is_some());
+        // On the bar, the sheet is the bar's.
+        state.key_sheet_scroll = None;
+        state.tabs_focused = true;
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+        assert!(state.tabs_focused, "the bar keeps the keys under it");
+        assert_eq!(state.key_sheet()[0].0, "←/→");
+    }
+
+    /// The sheet names every key the list answers - and none it does not on this row - and
+    /// scrolls when it is taller than the pane, without steering anything under it.
+    #[test]
+    fn the_key_sheet_lists_what_the_list_answers_and_scrolls_when_it_is_taller() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 60);
+        let keys: Vec<String> = state
+            .key_sheet()
+            .into_iter()
+            .map(|(keys, _)| keys)
+            .collect();
+        for key in [
+            "↑/↓ j/k",
+            "Enter",
+            "click",
+            "s",
+            "p",
+            "D / F",
+            "w",
+            "/",
+            "PgUp/PgDn",
+            "wheel",
+            "Tab",
+            "Shift+Tab",
+            "Ctrl-r",
+            "Esc",
+            "Ctrl e o",
+            "?",
+        ] {
+            assert!(keys.iter().any(|held| held == key), "{key} in {keys:?}");
+        }
+        assert!(!keys.iter().any(|held| held == "r"), "r is a run's key");
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+        state.render(8, 60);
+        assert_eq!(
+            state.footer_hint().as_deref(),
+            Some("Esc/? close · j/k scroll")
+        );
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        state.render(8, 60);
+        assert_eq!(state.key_sheet_scroll, Some(1));
+        for _ in 0..50 {
+            state.on_key(KeyWithModifier::new(BareKey::Down));
+        }
+        state.render(8, 60);
+        assert_eq!(state.key_sheet_scroll, Some(state.last_sheet_max_scroll));
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::PageUp)));
+        assert_eq!(state.selected, 2, "and walked no list");
+    }
+
+    /// An empty list has no row to walk, act on or click and no history half to scroll, so
+    /// its sheet lists the keys that lead out of it - the same ones its footer offers.
+    #[test]
+    fn the_key_sheet_on_an_empty_list_lists_no_row_or_history_keys() {
+        for view in ["plain", "waiting", "no matches"] {
+            // Every one of these is reached from a strip; before the first there is no `Tab`
+            // row, which the next test covers.
+            let mut state = State {
+                strip_seen: true,
+                ..Default::default()
+            };
+            match view {
+                "plain" => {
+                    state.set_rows(unfocused(Vec::new()));
+                },
+                "waiting" => {
+                    state.set_rows(unfocused(strip()));
+                    assert!(state.toggle_waiting());
+                },
+                _ => {
+                    state.set_rows(unfocused(strip()));
+                    let reply = search_reply(&mut state, &[]);
+                    assert!(state.apply_search_result(reply));
+                },
+            }
+            state.render(21, 60);
+            assert!(state.rows.is_empty(), "{view}");
+            let sheet = state.key_sheet();
+            let keys: Vec<&str> = sheet.iter().map(|(keys, _)| keys.as_str()).collect();
+            for key in [
+                "↑/↓ j/k",
+                "Enter",
+                "click",
+                "PgUp/PgDn",
+                "wheel",
+                "s",
+                "p",
+                "r",
+                "D / F",
+            ] {
+                assert!(!keys.contains(&key), "{view}: {key} in {keys:?}");
+            }
+            for key in [
+                "w",
+                "/",
+                "Tab",
+                "Shift+Tab",
+                "Ctrl-r",
+                "Esc",
+                "Ctrl e o",
+                "?",
+            ] {
+                assert!(keys.contains(&key), "{view}: {key} in {keys:?}");
+            }
+            assert_eq!(keys.contains(&"c"), view != "plain", "{view}");
+            assert_eq!(
+                sheet
+                    .iter()
+                    .find(|(keys, _)| keys == "Tab")
+                    .map(|(_, what)| what.as_str()),
+                Some("to the conversation"),
+                "{view}"
+            );
+            for key in [BareKey::Enter, BareKey::PageUp, BareKey::PageDown] {
+                assert!(!state.on_key(KeyWithModifier::new(key)), "{view}: {key:?}");
+            }
+            assert_eq!(state.panel_hides, 0, "{view}");
+        }
+    }
+
+    /// The sheet agrees with the empty list's footer about `Tab`: not before hocus's first
+    /// strip, when there may be no conversation for it to reach, and from that strip on.
+    #[test]
+    fn the_key_sheet_offers_tab_to_the_conversation_only_once_hocus_has_answered() {
+        let mut state = State::default();
+        state.render(21, 60);
+        assert!(!state.footer_hint().unwrap().contains("Tab chat"));
+        let before = state.key_sheet();
+        let names: Vec<&str> = before.iter().map(|(keys, _)| keys.as_str()).collect();
+        assert!(!names.contains(&"Tab"), "{names:?}");
+        for key in ["Shift+Tab", "/", "w", "Esc"] {
+            assert!(names.contains(&key), "{key} in {names:?}");
+        }
+        let empty = serde_json::to_string(&unfocused(Vec::new())).expect("encoded");
+        assert!(state.pipe(PipeMessage::new(
+            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            wire::AGENT_STRIP,
+            &Some(empty),
+            &None,
+            false,
+        )));
+        state.render(21, 60);
+        assert!(state.footer_hint().unwrap().contains("Tab chat"));
+        assert_eq!(
+            state
+                .key_sheet()
+                .iter()
+                .find(|(keys, _)| keys == "Tab")
+                .map(|(_, what)| what.as_str()),
+            Some("to the conversation")
+        );
+    }
+
+    /// The ring works through the sheet, and the sheet then lists the stop the keys went to.
+    /// Any key it has no use for shuts it and does what it always does, a click shuts it, and a
+    /// `?` typed into a box is a character.
+    #[test]
+    fn keys_the_sheet_does_not_answer_shut_it_and_do_their_job() {
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        state.render(21, 60);
+        state.on_key(KeyWithModifier::new(BareKey::Char('?')));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert_eq!(state.focus, Focus::History);
+        assert!(state.key_sheet_scroll.is_some(), "the sheet stays up");
+        assert!(state
+            .key_sheet()
+            .iter()
+            .any(|(keys, what)| keys == "Enter" && what.contains("read")));
+
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('w'))));
+        assert!(state.key_sheet_scroll.is_none());
+        assert!(state.waiting_base.is_some(), "and the w did its job");
+        state.clear_waiting();
+
+        state.begin_search();
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+        assert_eq!(state.search_query, "?");
+        assert!(state.key_sheet_scroll.is_none());
+        state.clear_search();
+
+        state.render(21, 60);
+        state.on_key(KeyWithModifier::new(BareKey::Char('?')));
+        assert!(state.on_mouse(Mouse::LeftClick(4, 0)));
+        assert!(state.key_sheet_scroll.is_none());
+        assert_eq!(state.selected, 2, "the click did nothing under the sheet");
+
+        // An armed question stays armed under the sheet, which says how to answer it.
+        let mut state = State::default();
+        state.set_rows(unfocused(archive()));
+        state.selected = 1;
+        state.on_key(KeyWithModifier::new(BareKey::Char('r')));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+        assert!(state.confirming_resume.is_some());
+        assert_eq!(state.key_sheet()[0].0, "y");
+        state.on_key(KeyWithModifier::new(BareKey::Esc));
+        assert!(state.confirming_resume.is_some(), "Esc shut the sheet");
+
+        // Every surface has a sheet of its own, even one with nothing listed on it yet - on
+        // VMs with no hocus to ask, only the key that finds one.
+        for (surface, key) in [
+            (Surface::Todos, "p"),
+            (Surface::Vms, "Ctrl e c"),
+            (Surface::Swamp, "Enter"),
+        ] {
+            let mut state = State {
+                surface,
+                ..State::default()
+            };
+            assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+            state.render(60, 40);
+            assert!(state.footer_hint().unwrap().starts_with("Esc/? close"));
+            assert!(
+                state.key_sheet().iter().any(|(keys, _)| keys == key),
+                "{surface:?}: {key}"
+            );
+            state.hide_the_panel();
+            assert!(state.key_sheet_scroll.is_none(), "a hide shuts it");
+        }
+    }
+
+    /// What a key sheet row says after the keys' column, `key_width` wide: the description's
+    /// piece on that row, if it has one.
+    fn described(line: &str, key_width: usize) -> String {
+        use unicode_width::UnicodeWidthChar;
+        let mut columns = 0;
+        line.chars()
+            .skip_while(|ch| {
+                let skip = columns < 1 + key_width + 2;
+                columns += ch.width().unwrap_or(0);
+                skip
+            })
+            .collect()
+    }
+
+    /// Whether `pieces` are `what` wrapped: every word of it, in order, with only the spaces
+    /// between them moved - or, where a word was too wide for the column, only the word broken.
+    fn rewraps(pieces: &[String], what: &str) -> bool {
+        let words = what.split_whitespace().collect::<Vec<_>>().join(" ");
+        let squeezed = |text: &str| text.split_whitespace().collect::<String>();
+        pieces.join(" ") == words || squeezed(&pieces.concat()) == squeezed(what)
+    }
+
+    /// The sheet's descriptions line up whatever the keys' widths, and a narrow pane wraps
+    /// both columns onto more rows rather than cutting either or overflowing.
+    #[test]
+    fn the_key_sheet_lines_its_descriptions_up() {
+        let short = key_sheet_lines("j/k", "the next fold", 9, 40);
+        let long = key_sheet_lines("Shift+Tab", "to the tab bar", 9, 40);
+        assert_eq!((short.len(), long.len()), (1, 1));
+        assert_eq!(short[0].0.find("the next"), long[0].0.find("to the"));
+        assert_eq!(short[0].1, 4, "the margin and the keys");
+
+        let narrow = key_sheet_lines("Shift+Tab", "to the tab bar", 5, 12);
+        assert!(narrow.len() > 1, "{narrow:?}");
+        assert!(
+            narrow.iter().all(|(line, _)| line.width() <= 12),
+            "{narrow:?}"
+        );
+        let pieces: Vec<String> = narrow
+            .iter()
+            .map(|(line, _)| described(line, 5))
+            .filter(|piece| !piece.is_empty())
+            .collect();
+        assert_eq!(pieces.join(" "), "to the tab bar", "{narrow:?}");
+        assert!(
+            narrow.iter().skip(2).all(|(_, keys)| *keys == 0),
+            "no keys drawn once the keys have ended: {narrow:?}"
+        );
+    }
+
+    /// At the width a panel is usually drawn, every sheet wraps its descriptions under their
+    /// column rather than cutting them: every word of every entry is on screen, and no row is
+    /// wider than the pane.
+    #[test]
+    fn the_key_sheet_wraps_rather_than_cuts_at_the_default_width() {
+        let mut agents = State::default();
+        agents.set_rows(unfocused(strip()));
+        // No VM, so no lease: every row this tab lists without one.
+        let vms = State {
+            surface: Surface::Vms,
+            ..State::default()
+        };
+        let mut todos = State {
+            surface: Surface::Todos,
+            ..State::default()
+        };
+        todos.todos.mode = todos::Mode::Input {
+            action: todos::InputAction::Add { parent_id: None },
+            input: zellij_tile::ui_components::forms::TextInput::new(String::new()),
+            refusal: None,
+        };
+        for mut state in [agents, vms, todos] {
+            let surface = state.surface;
+            state.key_sheet_scroll = Some(0);
+            state.render(40, 24);
+            let sheet = state.key_sheet();
+            let key_width = sheet
+                .iter()
+                .map(|(keys, _)| keys.width())
+                .max()
+                .unwrap_or(0)
+                .min(23 / 2);
+            for (keys, what) in &sheet {
+                let lines = key_sheet_lines(keys, what, key_width, 24);
+                assert!(
+                    lines.iter().all(|(line, _)| line.width() <= 24),
+                    "{surface:?}: {lines:?}"
+                );
+                let pieces: Vec<String> = lines
+                    .iter()
+                    .map(|(line, _)| described(line, key_width))
+                    .filter(|piece| !piece.is_empty())
+                    .collect();
+                assert!(rewraps(&pieces, what), "{surface:?} {keys}: {pieces:?}");
+                if keys == "x" {
+                    assert!(pieces.join(" ").ends_with("(asks first)"), "{pieces:?}");
+                }
+            }
+            assert_eq!(
+                state.key_sheet_display(24).len(),
+                sheet
+                    .iter()
+                    .map(|(keys, what)| key_sheet_lines(keys, what, key_width, 24).len())
+                    .sum::<usize>(),
+                "{surface:?}"
+            );
+        }
+
+        // The footer counts the sheet in the rows it wraps to, and so does its scroll.
+        let mut state = State::default();
+        state.set_rows(unfocused(strip()));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('?'))));
+        state.render(12, 24);
+        assert_eq!(
+            state.footer_hint().as_deref(),
+            Some("Esc/? close · j/k scroll")
+        );
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('j'))));
+        assert_eq!(state.key_sheet_scroll, Some(1));
+        for _ in 0..100 {
+            state.on_key(KeyWithModifier::new(BareKey::Down));
+        }
+        state.render(12, 24);
+        assert_eq!(
+            state.last_sheet_max_scroll,
+            state.key_sheet_display(24).len() - 10,
+            "the last wrapped row can be scrolled onto the screen"
+        );
+        assert_eq!(state.key_sheet_scroll, Some(state.last_sheet_max_scroll));
+
+        // No `? keys` on a row where `?` shuts the sheet, at any width.
+        for cols in 1..=30 {
+            state.render(8, cols);
+            let footer = state.footer_hint().unwrap();
+            assert!(!footer.contains("? keys"), "{footer:?} at {cols}");
+        }
+        state.render(8, 22);
+        assert_eq!(state.footer_hint().as_deref(), Some("Esc/? close"));
+        state.render(8, 24);
+        assert_eq!(
+            state.footer_hint().as_deref(),
+            Some("Esc/? close · j/k scroll")
+        );
     }
 }

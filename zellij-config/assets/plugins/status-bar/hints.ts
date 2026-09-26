@@ -9,6 +9,7 @@ import {
   modeKeymap,
   newPane,
   ownKey,
+  pipeKeys,
   pluginKeys,
   resize,
   shallowEqual,
@@ -217,6 +218,7 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
         hint("Fork agent", "Fork", plugin("hocus-fork-agent")),
         hint("Agents", "Agents", plugin("hocus-agents")),
         hint("Chat", "Chat", plugin("hocus")),
+        hint("Move panel", "Move", pipeKeys(km, "agent_strip_reposition")),
         select,
       ];
     case "Tmux":

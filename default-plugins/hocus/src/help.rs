@@ -45,11 +45,15 @@ const COMMAND_HELP: &[(&str, &str)] = &[
     ),
     (
         "keys",
-        "/keys\n\nShow all the keys the panel obeys. The chat has no help line, thus this is the only list of them.",
+        "/keys\n\nShow all the keys that the panel obeys: the keys of the conversation, of the agent list and its four tabs, and of the panel itself, with the ways to change its size. The help line under the box shows only the keys for the current state. In the agent list, press ? to see all the keys for the tab that shows. This command is the only list of every key.",
+    ),
+    (
+        "split",
+        "/split [columns | percent]\n\nSet the width of the agent list, the left half of the panel. The conversation gets the remaining width. Give a number of columns, for example /split 40, or a percentage of the panel, for example /split 35%. Each half keeps at least 24 columns while the panel has space for both. A bare /split shows the two widths and changes nothing. The divider stays where you put it until you drag it, type /split again or edit split in the config. At the next start, hocus uses the split from the config.",
     ),
     (
         "plan",
-        "/plan <what to plan>\n\nAsk the model for a plan before it does the work. While the model makes the plan, it can only read: it cannot change your session. A tool that you type still runs, because a typed command is a person who acts. Read the plan, then type /execute to approve it, or press n to keep refining it. Ctrl+l leaves the plan behind in its own tab. A tool call that waits for a y/n is declined when the plan starts. A prompt is necessary; /plan on and /plan off do not exist.",
+        "/plan <what to plan>\n\nAsk the model for a plan before it does the work. While the model makes the plan, it can only read: it cannot change your session. A tool that you type still runs, because a typed command is a person who acts. Read the plan, then type /execute to approve it, or press n to keep refining it. Ctrl+l leaves the plan behind in its own tab. A tool call that waits for a y/n is declined when the plan starts. A prompt is necessary, and /plan on does not exist. Type /plan off to leave the plan mode and not do the work. The plan stays in the chat.",
     ),
     (
         "execute",

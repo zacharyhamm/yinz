@@ -533,7 +533,7 @@ pub enum Firecracker {
         #[clap(long)]
         session: Option<String>,
     },
-    /// Copy a running VM's workspace back to its unchanged host worktree.
+    /// Merge a running VM's guest changes into its host worktree; host copies win conflicts.
     Sync {
         name: String,
         #[clap(long)]

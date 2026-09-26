@@ -7117,6 +7117,34 @@ Config {
                 bare_key: Char(
                     'o',
                 ),
+                key_modifiers: {},
+            }: [
+                KeybindPipe {
+                    name: Some(
+                        "agent_strip_reposition",
+                    ),
+                    payload: None,
+                    args: None,
+                    plugin: None,
+                    plugin_id: None,
+                    configuration: None,
+                    launch_new: false,
+                    skip_cache: false,
+                    floating: Some(
+                        false,
+                    ),
+                    in_place: None,
+                    cwd: None,
+                    pane_title: None,
+                },
+                SwitchToMode {
+                    input_mode: Normal,
+                },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'o',
+                ),
                 key_modifiers: {
                     Ctrl,
                 },

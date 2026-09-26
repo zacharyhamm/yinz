@@ -2569,16 +2569,17 @@ impl Screen {
     }
 
     /// Move the client's focus one pane in `direction`, escalating to the host session when the
-    /// tab reports the focus stayed put. A modal holding the keyboard is checked first: the
-    /// keypress is then a no-op, never a hop to the host.
+    /// tab reports the focus stayed put. An overlay holding the keyboard is checked once the tab
+    /// has had its turn - a multipane's halves may trade the keyboard, and a dismissible overlay
+    /// gives it up to a pane the move lands on - and a move that went nowhere under it is a
+    /// no-op, never a hop to the host, as `move_focus_{left_or_previous,right_or_next}_tab` treat
+    /// the same move. The modal test stays beside the overlay one: `Tab::overlay_holds_focus`
+    /// counts an overlay only while one is drawn, and a modal owns the keyboard regardless.
     pub(crate) fn move_focus_in_direction_or_escalate(
         &mut self,
         direction: Direction,
         client_id: ClientId,
     ) -> Result<()> {
-        if self.active_tab_modal_holds_focus(client_id) {
-            return self.log_and_report_session_state();
-        }
         let old_pane_id = self.get_active_pane_id(&client_id);
         active_tab_and_connected_client_id!(
             self,
@@ -2592,6 +2593,12 @@ impl Screen {
             ?
         );
         let new_pane_id = self.get_active_pane_id(&client_id);
+        if old_pane_id == new_pane_id
+            && (self.active_tab_modal_holds_focus(client_id)
+                || self.active_tab_overlay_holds_focus(client_id))
+        {
+            return self.log_and_report_session_state();
+        }
         if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
             if old == new {
                 self.bubble_focus_to_host(client_id, direction);
@@ -2624,13 +2631,6 @@ impl Screen {
             self.get_first_client_id()
         };
         if let Some(client_id) = client_id {
-            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab or
-            // the host session
-            if self.active_tab_modal_holds_focus(client_id) {
-                return self
-                    .log_and_report_session_state()
-                    .with_context(err_context);
-            }
             let moved = match self.get_active_tab_mut(client_id) {
                 Ok(active_tab) => Some(
                     active_tab
@@ -2642,7 +2642,12 @@ impl Screen {
                     None
                 },
             };
-            if moved == Some(false) {
+            // A move that went nowhere while an overlay holds the keyboard is a no-op, not a hop
+            // to another tab or the host session: a modal owns the keyboard, and a dismissible
+            // overlay is what the user is looking at - hocus would carry its panel into the new
+            // tab. Across a multipane's divider the tab has already moved
+            // (`Tab::move_focus_to_overlay_sibling`).
+            if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
                 if self.tabs.len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Left);
                 } else {
@@ -2671,13 +2676,6 @@ impl Screen {
         };
 
         if let Some(client_id) = client_id {
-            // a modal owns the keyboard: the keypress is a no-op, not a hop to another tab or
-            // the host session
-            if self.active_tab_modal_holds_focus(client_id) {
-                return self
-                    .log_and_report_session_state()
-                    .with_context(err_context);
-            }
             let moved = match self.get_active_tab_mut(client_id) {
                 Ok(active_tab) => Some(
                     active_tab
@@ -2689,7 +2687,12 @@ impl Screen {
                     None
                 },
             };
-            if moved == Some(false) {
+            // A move that went nowhere while an overlay holds the keyboard is a no-op, not a hop
+            // to another tab or the host session: a modal owns the keyboard, and a dismissible
+            // overlay is what the user is looking at - hocus would carry its panel into the new
+            // tab. Across a multipane's divider the tab has already moved
+            // (`Tab::move_focus_to_overlay_sibling`).
+            if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
                 if self.tabs.len() == 1 {
                     self.bubble_focus_to_host(client_id, Direction::Right);
                 } else {
@@ -2866,6 +2869,14 @@ impl Screen {
     pub(super) fn active_tab_modal_holds_focus(&self, client_id: ClientId) -> bool {
         self.get_active_tab(client_id)
             .map(|tab| !tab.lower_layer_may_take_focus(client_id))
+            .unwrap_or(false)
+    }
+
+    /// Whether any overlay in the client's active tab holds the keyboard. A focus move that went
+    /// nowhere is then not a reason to switch tabs.
+    pub(super) fn active_tab_overlay_holds_focus(&self, client_id: ClientId) -> bool {
+        self.get_active_tab(client_id)
+            .map(|tab| tab.overlay_holds_focus(client_id))
             .unwrap_or(false)
     }
 

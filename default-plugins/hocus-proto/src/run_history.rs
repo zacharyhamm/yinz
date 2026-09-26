@@ -1000,6 +1000,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         }
     }
 

@@ -8886,6 +8886,7 @@ mod permission_tests {
                     ratio: 5000,
                 },
                 focus: None,
+                min_cells: 0,
             })
         };
         let existing = command(MultipaneChild::Existing(PaneId::Plugin(PluginId::new(3))));

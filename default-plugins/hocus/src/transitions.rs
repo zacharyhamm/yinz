@@ -898,38 +898,63 @@ impl State {
         run_id: &str,
         revision: Option<u64>,
     ) {
-        let Ok(rows) = self.store().fetch(&agents::rows::run_by_id_request(run_id)) else {
-            return;
-        };
-        let Some(mut run) = agents::rows::runs_from_rows(&rows).into_iter().next() else {
-            return;
-        };
+        pipe_message_to_plugin(self.run_detail_message(plugin_id, run_id, revision));
+    }
+
+    /// The answer to the panel asking for a run's history: the run as the payload, or - with no
+    /// payload - an `error` arg saying why there is none, beside a `run_id` arg naming the run
+    /// asked for. `revision` is echoed either way, as the panel matches replies on it.
+    ///
+    /// Answered either way for the reason `resume_run` is: a request that is never answered
+    /// leaves the history half on its placeholder for good, and the user cannot tell a run still
+    /// loading from one that never will. A failure is sent again on each snapshot, like the
+    /// request that produced it, so a store that recovers replaces it with the run.
+    pub(crate) fn run_detail_message(
+        &self,
+        plugin_id: zellij_tile::prelude::PluginId,
+        run_id: &str,
+        revision: Option<u64>,
+    ) -> MessageToPlugin {
+        let mut args: BTreeMap<String, String> = revision
+            .map(|revision| ("revision".to_owned(), revision.to_string()))
+            .into_iter()
+            .collect();
+        let message =
+            MessageToPlugin::new(wire::AGENT_RUN_DETAIL).with_destination_plugin_id(plugin_id);
+        match self.run_detail(run_id, revision) {
+            Ok(payload) => message.with_args(args).with_payload(payload),
+            Err(error) => {
+                args.insert("run_id".to_owned(), run_id.to_owned());
+                args.insert("error".to_owned(), error);
+                message.with_args(args)
+            },
+        }
+    }
+
+    /// The selected run, serialised with the entries the panel shows.
+    fn run_detail(&self, run_id: &str, revision: Option<u64>) -> Result<String, String> {
+        let rows = self
+            .store()
+            .fetch(&agents::rows::run_by_id_request(run_id))
+            .map_err(|_| "the run's record could not be read".to_owned())?;
+        let mut run = agents::rows::runs_from_rows(&rows)
+            .into_iter()
+            .next()
+            .ok_or_else(|| "the run is no longer in the archive".to_owned())?;
         // Search details keep the full match with context; ordinary details load the bounded
         // newest entries. A run stored before the split still carries its entries in its
         // payload, and keeps them when hydrating the newest entries.
         if let Some(revision) = revision {
-            let Ok(page) = hocus_proto::run_history::search_detail(&self.store(), run_id, revision)
-            else {
-                return;
-            };
+            let page = hocus_proto::run_history::search_detail(&self.store(), run_id, revision)?;
+            // Counted the way `hydrate_newest_entries` counts what it leaves out, as a lower
+            // bound: the page starts a little before the match, and without the count the
+            // oldest event it holds reads as the start of the run.
+            run.omitted_entries = usize::from(page.earlier);
             run.entries = page.entries;
         } else {
             agents::rows::hydrate_newest_entries(&self.store(), &mut run);
         }
-        let Ok(payload) = serde_json::to_string(&run) else {
-            return;
-        };
-        pipe_message_to_plugin(
-            MessageToPlugin::new(wire::AGENT_RUN_DETAIL)
-                .with_destination_plugin_id(plugin_id)
-                .with_args(
-                    revision
-                        .map(|revision| ("revision".to_owned(), revision.to_string()))
-                        .into_iter()
-                        .collect(),
-                )
-                .with_payload(payload),
-        );
+        serde_json::to_string(&run).map_err(|error| error.to_string())
     }
 
     /// Start an archived run again, resuming the session it recorded.
@@ -1099,8 +1124,9 @@ impl State {
             Some(Fired { show }) => {
                 if show {
                     // The panel, not this pane: `show_self` alone leaves hocus believing it is
-                    // still hidden - see `State::show_panel`.
-                    self.show_panel();
+                    // still hidden - see `State::show_panel`. And only if it is down: one that is
+                    // up keeps the keyboard where the user has it.
+                    self.show_panel_for_job();
                 }
                 true
             },
@@ -1137,12 +1163,22 @@ impl State {
             fired = fired || asked || retried || job.is_some();
         }
         // A job that asked to be seen fired into a tab nobody is looking at.
-        // Popping the pane open would show the wrong chat, and any confirmation
-        // that run raises would wait where no `y` can reach it — so the tab is
-        // switched to first, and then the pane shown.
+        // Popping the pane open would show the wrong chat - the one on screen,
+        // not the one the job is writing into - so the tab is switched to first,
+        // and then the panel shown if it is down. Nothing here is waiting on the
+        // keyboard: a scheduled run declines or auto-confirms instead of asking
+        // (see `pump_tools`), so a panel that is up keeps the keys where they are.
+        //
+        // Except from someone typing into the box, whose chat stays on screen: a
+        // switch would swap their draft out from under the next keystroke, and the
+        // words after it would land in the job's chat. The job runs in its own tab
+        // all the same, which the bar marks as live.
         if let Some(tab) = show_tab {
-            self.switch_to_tab(tab);
-            self.show_panel();
+            let typing = self.own_is_focused == Some(true) && !self.input.get_text().is_empty();
+            if !typing {
+                self.switch_to_tab(tab);
+            }
+            self.show_panel_for_job();
         }
         let fired = self.poll_plugin_loads() || fired;
         let fired = self.poll_extension_calls() || fired;

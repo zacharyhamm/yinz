@@ -10,7 +10,8 @@ use zellij_tile::prelude::actions::Action;
 use zellij_tile::prelude::*;
 
 use crate::{
-    action_key, action_key_group, plugin_launch_key, the_modes_own_key, LinePart, MORE_MSG,
+    action_key, action_key_group, keybind_pipe_key, plugin_launch_key, the_modes_own_key, LinePart,
+    MORE_MSG,
 };
 
 /// One hint: what to say when there is room, what to say when there is not, and the keys that
@@ -344,6 +345,7 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Fork agent", "Fork", plugin_launch_key(&km, "hocus-fork-agent")),
         hint("Agents", "Agents", plugin_launch_key(&km, "hocus-agents")),
         hint("Chat", "Chat", plugin_launch_key(&km, "hocus")),
+        hint("Move panel", "Move", keybind_pipe_key(&km, "agent_strip_reposition")),
         hint("Select pane", "Select", to_base_mode),
     ]} else if mi.mode == IM::Tmux { vec![
         hint("Move focus", "Move", keys_doing_each(&km, &move_focus)),
@@ -492,6 +494,36 @@ mod tests {
                 mode
             );
         }
+    }
+
+    // Ctrl o moves the panel only in Locked mode - everywhere else it enters Session mode - so
+    // `Ctrl e o` is the way to move it, and Agent mode should say so. The key sends a message to
+    // the running plugins rather than launching one, and it goes unmentioned when nothing binds it.
+    #[test]
+    fn agent_mode_names_the_key_that_moves_the_panel() {
+        let move_panel = |mode_info: &ModeInfo| {
+            hints_for_mode(mode_info)
+                .into_iter()
+                .find(|hint| hint.long == "Move panel")
+                .expect("Agent mode has a Move panel hint")
+                .keys
+        };
+
+        let shipped = with_shipped_keybinds(InputMode::Agent);
+        assert_eq!(
+            move_panel(&shipped),
+            vec![KeyWithModifier::new(BareKey::Char('o'))]
+        );
+
+        let mut without_the_pipe = with_shipped_keybinds(InputMode::Agent);
+        for (_, binds) in without_the_pipe.keybinds.iter_mut() {
+            binds.retain(|(_, actions)| {
+                !actions
+                    .iter()
+                    .any(|action| matches!(action, Action::KeybindPipe { .. }))
+            });
+        }
+        assert_eq!(move_panel(&without_the_pipe), vec![]);
     }
 
     #[test]

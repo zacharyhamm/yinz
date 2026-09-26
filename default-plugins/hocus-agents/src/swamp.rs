@@ -7,7 +7,9 @@ use hocus_proto::swamp::swamp_lab::{self, api::SearchQuery, types as lab, Client
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use zellij_tile::ui_components::forms::{Combo, Form, FormEvent, Rect, RenderBuffer, Select};
+use zellij_tile::ui_components::forms::{
+    viewport, Combo, Form, FormEvent, InputAction, Rect, RenderBuffer, Select, TextInput,
+};
 
 #[path = "swamp_cache.rs"]
 mod cache;
@@ -17,12 +19,23 @@ const ISSUE_NUMBER: &str = "swamp_issue_number";
 const PAGE: u32 = 200;
 const TYPES: [&str; 4] = ["", "bug", "feature", "security"];
 const STATUSES: [&str; 6] = ["", "open", "triaged", "in_progress", "shipped", "closed"];
+/// The Sort dropdown's options, in `View::sort` order.
 const SORTS: [&str; 4] = [
     "Updated newest first",
     "Updated oldest first",
     "Created newest first",
     "Created oldest first",
 ];
+/// The same four orders as the Sort chip says them. The dropdown has room for the sentence;
+/// the chip shares a row with four others in a pane a third of the screen wide, and at 32
+/// columns the sentence was the chip that lost its `(o)`.
+const SORT_CHIPS: [&str; 4] = ["Updated ↓", "Updated ↑", "Created ↓", "Created ↑"];
+/// How long a triage handed to hocus may go unacknowledged before the note stops saying it is
+/// on its way. hocus acks every `ASK` it receives, so only a lost message or a hocus that is
+/// not listening ever gets here - and then nothing else would ever take "Sending…" down.
+const TRIAGE_ACK_TIMEOUT_MS: i64 = 60_000;
+/// Beside the issue caches: this plugin has been granted its permissions in an earlier load.
+const PERMISSION_MARKER: &str = "permitted";
 
 /// What the panel draws of an issue, read from the Lab's own shape.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,14 +186,52 @@ struct FilterEditor {
     row: Option<Rect>,
 }
 
+/// How the note row is painted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Tone {
+    /// Something that went wrong, and what to do about it.
+    Error,
+    /// Something the user has to answer or do before the tab can go on.
+    Ask,
+    /// Progress, and news of something that went as asked.
+    Quiet,
+}
+
 #[derive(Default)]
 pub(super) struct View {
-    // The surface starts available; a PaneUpdate must confirm the pane is shown.
+    // Three signals, all of which must say "shown" before anything is fetched. The surface
+    // starts available; a PaneUpdate must confirm the pane is shown.
+    //
+    // `surface_hidden` is the tab-level `Event::Visible`, which also fires - false, then true -
+    // when hocus carries the panel to another Zellij tab without it ever leaving the screen. So
+    // it only gates polling. The panel-level signals, `pane_visible` (the pane suppressed or
+    // not) and `panel_hidden` (hocus's `vms::VISIBILITY`), are the ones that mean the panel was
+    // put away: they close the filter editor and drop the message about what was typed in it,
+    // a triage question left unanswered and a press waiting for its release, and the next show
+    // re-reads the login. A `/` query being typed stays open with its text, as the Agents
+    // search box does: a draft is the user's, and a hide is not the user throwing it away.
     surface_hidden: bool,
     pub(super) pane_visible: bool,
+    panel_hidden: bool,
+    // A panel-level show since the login was last read: the next time all three signals agree,
+    // it is read again (`activate_swamp`) rather than only resuming what was left waiting.
+    reopen_pending: bool,
     permission: Permission,
+    // `r` was pressed in this load, so asking the host is what the user wants. Until then the
+    // tab only asks the host when an earlier load was granted (`PERMISSION_MARKER`): the host's
+    // prompt takes over the whole pane, and walking the tab bar past Swamp is not asking for it.
+    permission_asked: bool,
     query: String,
-    editing: Option<String>,
+    // The `/` box while it is open. What it holds only becomes `query` on Enter.
+    editing: Option<TextInput>,
+    // The `/` box as Tab left it: closed, so the bar and the list get their keys, but what was
+    // typed - and the cursor, and the undo - is what the next `/` opens on. Esc and Enter end a
+    // box for good; Tab only walks away from it.
+    query_draft: Option<TextInput>,
+    // A value the user typed that cannot be used: an invalid Source, a search too long for the
+    // Lab. Apart from `list_error` because nothing is retried - the fix is in the box that is
+    // still open - and because committing a good value must not wipe a real network error.
+    input_error: Option<String>,
     status: usize,
     kind: usize,
     sort: usize,
@@ -197,6 +248,10 @@ pub(super) struct View {
     loading: Option<Loading>,
     catalogue_wanted: bool,
     selected: usize,
+    // Where a press on an issue row, or on the reader's header row, landed, in body
+    // coordinates. The issue opens - or the reader closes - on the release, and only on the
+    // same cell: a press that became a drag was selecting text.
+    press: Option<(isize, usize)>,
     list_scroll: Option<usize>,
     list_rows: Vec<(usize, markdown::MdLine)>,
     list_cache_key: Option<(usize, i64)>, // width, age minute
@@ -216,9 +271,25 @@ pub(super) struct View {
     pending: Option<Request>,
     search_wanted: bool,
     detail_wanted: bool,
+    // `a` asks before it sends: this issue, if `y` comes while it is still the one selected.
+    // A triage is a model turn in the user's own conversation, carrying standing
+    // instructions, and it cannot be taken back once hocus has it.
+    confirming_triage: Option<u64>,
     triage_wanted: Option<u64>,
+    // From `y` until hocus acknowledges the handoff or refuses it, or `TRIAGE_ACK_TIMEOUT_MS`
+    // after it was sent. One at a time.
     triage_waiting: bool,
+    // The issue the current or last triage is about, which every note about it names.
+    triage_number: Option<u64>,
     triage_note: Option<String>,
+    // Whether `triage_note` reports a failure rather than progress or success.
+    triage_failed: bool,
+    // Whether `triage_note` was written after the list, reader or cache error standing beside
+    // it, and so is the newer news. Set with every note (`set_triage_note`), cleared whenever
+    // one of those errors lands: the note row says whichever happened last.
+    triage_is_newer: bool,
+    // When a sent triage stops waiting for hocus's acknowledgement.
+    triage_deadline_ms: i64,
     #[cfg(test)]
     triage_text: Option<String>,
     search_generation: u64,
@@ -241,64 +312,82 @@ pub(super) struct View {
 }
 
 impl View {
+    /// Where the body starts, under the header, the note and the filter chips, and the chips'
+    /// texts in `filter_cells` order.
+    ///
+    /// Each chip is `[Label: value (k)]` while the row has room, and gives up its value before
+    /// its key: the key is the chip's whole use to a keyboard. Where that layout would stack
+    /// the chips more than two rows deep, or leave the list fewer than three rows, they drop
+    /// their labels (`[k value]`) - at the default panel width five labelled chips took a row
+    /// each and left room for about one issue. And they never take the body's last row: every
+    /// filter key works without its chip, and a list with no rows shows nothing at all.
     fn layout_filters(&mut self, rows: usize, cols: usize) -> (usize, Vec<String>) {
-        let mut top = 1 + usize::from(self.note().is_some() && rows > 1);
+        let mut top = 1 + self.note_rows(rows, cols).len();
         let mut labels = Vec::new();
         self.filter_cells.clear();
         if self.opened.is_none() {
-            let mut x = 0;
-            let assignee = self.assignee_label().to_owned();
-            for (label, value, shortcut) in [
-                ("Status", status_label(STATUSES[self.status]), 's'),
-                (
-                    "Type",
-                    if self.kind == 0 {
-                        "All"
-                    } else {
-                        TYPES[self.kind]
-                    },
-                    't',
-                ),
-                (
-                    "Source",
-                    if self.source.is_empty() {
-                        "All"
-                    } else {
-                        &self.source
-                    },
-                    'f',
-                ),
-                ("Sort", SORTS[self.sort], 'o'),
-                ("Assignee", &assignee, 'u'),
-            ] {
-                let text = fit(&format!("[{label}: {value} ({shortcut})]"), cols);
-                let width = text.width();
-                if x > 0 && x + width > cols {
-                    top += 1;
-                    x = 0;
-                }
-                if top >= rows {
+            let chips = self.chips();
+            let mut placed = place_chips(&chips, cols, false);
+            let stacked = placed.last().map_or(0, |(row, _, _, _)| row + 1);
+            if stacked > 2 || rows.saturating_sub(top + stacked) < 3 {
+                placed = place_chips(&chips, cols, true);
+            }
+            let first = top;
+            for (row, x, text, shortcut) in placed {
+                let row = first + row;
+                if row + 1 >= rows {
                     break;
                 }
+                let width = text.width();
                 labels.push(text);
-                self.filter_cells.push((top, x, width, shortcut));
-                x += width + 1;
+                self.filter_cells.push((row, x, width, shortcut));
+                top = row + 1;
             }
-            top = (top + 1).min(rows);
         }
-        (top, labels)
+        (top.min(rows), labels)
+    }
+
+    /// The filter chips as `(label, value, key)`, in the order they are drawn.
+    fn chips(&self) -> [(&'static str, String, char); 5] {
+        let or_all = |value: &str| {
+            if value.is_empty() {
+                "All".to_owned()
+            } else {
+                value.to_owned()
+            }
+        };
+        [
+            (
+                "Status",
+                status_label(STATUSES[self.status]).to_owned(),
+                's',
+            ),
+            ("Type", or_all(TYPES[self.kind]), 't'),
+            ("Source", or_all(&self.source), 'f'),
+            ("Sort", SORT_CHIPS[self.sort].to_owned(), 'o'),
+            ("Assignee", self.assignee_label().to_owned(), 'u'),
+        ]
     }
 
     fn visible(&self) -> bool {
-        !self.surface_hidden && self.pane_visible
+        !self.surface_hidden && !self.panel_hidden && self.pane_visible
     }
 
     pub(super) fn is_editing(&self) -> bool {
         self.editing.is_some() || self.filter.is_some()
     }
 
+    /// Close the filter editor, and drop everything else that belongs to the moment rather than
+    /// to the tab: the validation message about what was typed in it, a triage question left
+    /// unanswered, a press waiting for its release.
+    ///
+    /// What leaving the surface, a tab click and putting the panel away all end - so a `y`
+    /// typed an hour later cannot answer a question asked about a list since forgotten.
     pub(super) fn cancel_filter(&mut self) {
         self.filter = None;
+        self.input_error = None;
+        self.confirming_triage = None;
+        self.press = None;
     }
 
     pub(super) fn has_filter_editor(&self) -> bool {
@@ -317,12 +406,108 @@ impl View {
         self.max_scroll = 0;
     }
 
+    /// A panel-level signal changed: the pane suppressed or shown, or hocus putting the panel
+    /// away or showing it. A hide ends the visit, which closes the filter editor and drops what
+    /// belongs to the moment (`cancel_filter`); a `/` query being typed stays open with its
+    /// text, as the Agents search box does. A show means the next return to the screen reads
+    /// the login again.
+    fn panel_shown(&mut self, shown: bool) {
+        if shown {
+            self.reopen_pending = true;
+        } else {
+            self.cancel_filter();
+        }
+    }
+
+    /// Where the issue caches live: the plugin's persistent `/cache` preopen.
+    fn cache_directory(&self) -> Option<PathBuf> {
+        #[cfg(test)]
+        let directory = self.cache_dir.clone()?;
+        #[cfg(not(test))]
+        let directory = PathBuf::from("/cache/swamp-issues");
+        Some(directory)
+    }
+
+    /// Whether an earlier load of this plugin was granted its permissions, so asking again only
+    /// has the host answer from its own cache - silently, rather than with a prompt over the
+    /// whole pane.
+    fn permitted_before(&self) -> bool {
+        self.cache_directory().is_some_and(|directory| {
+            cache::remembers_permission(&directory.join(PERMISSION_MARKER))
+        })
+    }
+
+    /// Whether something here has gone wrong, which the tab says with its `!`.
     pub(super) fn has_error(&self) -> bool {
         self.list_error.is_some()
+            || self.input_error.is_some()
             || self.cache_error.is_some()
             || self.detail_error.is_some()
             || self.credentials_error.is_some()
+            || self.triage_failed
             || self.permission == Permission::Denied
+    }
+
+    /// What an empty list says. Filtered to nothing is not the same as nothing there, and
+    /// says the way back.
+    fn empty_list(&self) -> &'static str {
+        if self.has_active_filters() {
+            "No issues match · Esc/c clear"
+        } else {
+            "No issues found"
+        }
+    }
+
+    /// Whether the query or any filter narrows the list. Sort orders it and is left out.
+    fn has_active_filters(&self) -> bool {
+        !self.query.is_empty()
+            || self.status != 0
+            || self.kind != 0
+            || !self.source.is_empty()
+            || self.assignee.is_some()
+    }
+
+    /// Waiting on hocus to say what it did with a triage already handed to it, as against
+    /// fetching the issue to hand over.
+    fn awaiting_triage_ack(&self) -> bool {
+        self.triage_waiting
+            && self.triage_wanted.is_none()
+            && !matches!(
+                self.pending.as_ref().map(|r| &r.target),
+                Some(Target::Triage(_))
+            )
+    }
+
+    /// Stop waiting for an acknowledgement that has not come. Worded as not knowing, because
+    /// hocus may well have the question queued: a blind retry would triage the issue twice.
+    fn give_up_on_triage_ack(&mut self) {
+        let number = self
+            .triage_number
+            .map_or_else(String::new, |number| format!(" about #{number}"));
+        self.triage_waiting = false;
+        self.set_triage_note(
+            format!("Hocus did not answer{number}; check the conversation · a retry"),
+            true,
+        );
+    }
+
+    /// Say where a triage has got to, and whether that is a failure. The newest thing to have
+    /// happened, so it has the note row over a list, reader or cache error from before it,
+    /// until another lands (`triage_is_newer`).
+    fn set_triage_note(&mut self, note: String, failed: bool) {
+        self.triage_note = Some(note);
+        self.triage_failed = failed;
+        self.triage_is_newer = true;
+    }
+
+    /// Drop a triage note that has done its job. A triage still under way keeps its note: it
+    /// is the only sign that something is happening.
+    fn clear_finished_triage(&mut self) {
+        if !self.triage_waiting {
+            self.triage_note = None;
+            self.triage_failed = false;
+            self.triage_is_newer = false;
+        }
     }
 
     fn issues(&self) -> &[Issue] {
@@ -333,11 +518,21 @@ impl View {
         self.issues().get(self.selected).map(|issue| issue.number)
     }
 
+    /// The issue drawn on body row `line` by the last render, if any.
+    fn issue_at(&self, line: isize) -> Option<usize> {
+        let row = usize::try_from(line)
+            .ok()?
+            .checked_sub(self.last_body_top)?;
+        if row >= self.last_body_rows {
+            return None;
+        }
+        self.list_rows
+            .get(self.window + row)
+            .map(|(issue, _)| *issue)
+    }
+
     fn cache_path(&self) -> Option<PathBuf> {
-        #[cfg(test)]
-        let directory = self.cache_dir.clone()?;
-        #[cfg(not(test))]
-        let directory = PathBuf::from("/cache/swamp-issues");
+        let directory = self.cache_directory()?;
         Some(directory.join(format!("{}.json", self.cache_identity.as_ref()?)))
     }
 
@@ -433,70 +628,291 @@ impl View {
         self.list_cache_key = Some(key);
     }
 
+    /// Whether the list on screen says how old anything is. Whenever there is a list there is
+    /// the header's "cached 5m ago", as well as any ages its issues carry.
     pub(super) fn shows_an_age(&self) -> bool {
-        self.visible()
-            && self.opened.is_none()
-            && self.last_body_rows > 0
-            && self
-                .issues()
-                .iter()
-                .any(|issue| issue.created_at.is_some() || issue.updated_at.is_some())
+        self.visible() && self.opened.is_none() && self.last_body_rows > 0 && self.search.is_some()
     }
 
+    /// The line under the header, if anything needs saying: `noted` without the tone, which
+    /// is what most tests ask about. Drawing always wants the tone as well.
+    #[cfg(test)]
     fn note(&self) -> Option<String> {
+        self.noted().map(|(note, _)| note)
+    }
+
+    /// The note and how to paint it.
+    ///
+    /// One message, the most urgent: permission, then a question waiting on its `y/n`, then a
+    /// login that could not be read, then what the user just typed, then the fetch errors,
+    /// then progress - and only once nothing is loading or wrong, the outcome of a triage.
+    /// That last used to come first, so a triage sent an hour ago kept its row over every error
+    /// since, painted in the error colour whenever one was hiding under it.
+    ///
+    /// Except a triage note newer than the fetch error beside it (`triage_is_newer`): a triage
+    /// asked for over a standing "Cache not saved" used to say nothing of itself - not that it
+    /// was on its way, not that hocus refused it - until that error went. The newer of the two
+    /// has the row, in its own colour, and the error is back as soon as the user moves on from
+    /// the triage or it happens again.
+    fn noted(&self) -> Option<(String, Tone)> {
+        let error = |text: String| Some((text, Tone::Error));
+        let ask = |text: String| Some((text, Tone::Ask));
+        let quiet = |text: String| Some((text, Tone::Quiet));
         match self.permission {
-            Permission::Unrequested | Permission::Waiting => {
-                return Some("Waiting for permission to reach swamp-club".into());
+            Permission::Unrequested => {
+                return ask("Swamp needs permission to read your swamp login and reach \
+                            swamp-club · r to allow"
+                    .into());
             },
-            Permission::Denied => {
-                return Some("Permission denied: r to request permission again".into());
+            // The host's prompt has the whole pane while this is up; y and n answer it.
+            Permission::Waiting => {
+                return ask("Answer the permission prompt: y allow · n deny".into());
             },
+            Permission::Denied => return error("Permission denied · r to ask again".into()),
             Permission::Granted => {},
         }
-        if let Some(note) = &self.triage_note {
-            return Some(note.clone());
+        if let Some(number) = self.confirming_triage {
+            // The question and its keys first, and short enough for one row of the narrowest
+            // pane, so the list under it does not jump down for a question and back up after.
+            return ask(format!("Triage #{number}? y/n"));
         }
-        if let Some(error) = &self.credentials_error {
-            return Some(format!("Error: {error} · r retry"));
+        if let Some(failed) = &self.credentials_error {
+            return error(format!("Error: {failed} · r retry"));
         }
-        let error = if self.opened.is_some() {
+        // No `r retry`: nothing was fetched, and the fix is in the box that is still open.
+        if let Some(input) = &self.input_error {
+            return error(format!("Error: {input} · Esc cancel"));
+        }
+        let failed = if self.opened.is_some() {
             self.detail_error.as_ref().or(self.list_error.as_ref())
         } else {
             self.list_error.as_ref()
         };
-        if let Some(error) = error {
-            return Some(format!("Error: {error} · r retry"));
+        if self.triage_is_newer && (failed.is_some() || self.cache_error.is_some()) {
+            if let Some(note) = &self.triage_note {
+                return match self.triage_failed {
+                    true => error(note.clone()),
+                    false => quiet(note.clone()),
+                };
+            }
         }
-        if let Some(error) = &self.cache_error {
-            return Some(format!("Cache not saved: {error} · r retry"));
+        if let Some(failed) = failed {
+            return error(format!("Error: {failed} · r retry"));
         }
-        (self.pending.is_some()
-            || self.loading.is_some()
+        if let Some(failed) = &self.cache_error {
+            return error(format!("Cache not saved: {failed} · r retry"));
+        }
+        if self.triage_waiting {
+            if let Some(note) = &self.triage_note {
+                return quiet(note.clone());
+            }
+        }
+        // The reader waits on its own issue, however many catalogue pages are also on the way.
+        if let Some(number) = self.opened {
+            let fetching = matches!(
+                self.pending.as_ref().map(|r| &r.target),
+                Some(Target::Detail(..))
+            );
+            if self.detail.is_none() && (self.detail_wanted || fetching) {
+                return quiet(format!("Loading #{number}…"));
+            }
+        }
+        // Counted, not measured against the Lab's total: that counts issues this caller may
+        // never be sent. A partial catalogue is not drawn, so this is the only sign a long
+        // first load is getting anywhere. Once there is a count, the count is the news and the
+        // noun gives way to it, so the note stays one row at the narrowest pane rather than
+        // growing a second as the first page lands and pushing the list down under it.
+        if let Some(loading) = &self.loading {
+            let what = if loading.query.is_empty() {
+                "issues"
+            } else {
+                "matches"
+            };
+            return quiet(match loading.issues.len() {
+                0 => format!("Loading {what}…"),
+                count => format!("Loading… {count} so far"),
+            });
+        }
+        if self.pending.is_some()
             || self.catalogue_wanted
             || self.search_wanted
-            || self.detail_wanted)
-            .then(|| "Loading…".into())
+            || self.detail_wanted
+        {
+            return quiet("Loading…".into());
+        }
+        let note = self.triage_note.clone()?;
+        match self.triage_failed {
+            true => error(note),
+            false => quiet(note),
+        }
     }
 
-    fn header(&self) -> String {
-        if let Some(query) = &self.editing {
-            return format!("/{query} · Enter apply · Esc cancel");
-        }
-        if let Some(number) = self.opened {
-            return format!("#{number} · Esc back · a triage · r refresh");
-        }
-        let count = self.search.as_ref().map_or(String::new(), |search| {
-            let timestamp = DateTime::from_timestamp_millis(search.fetched_at)
-                .map(|time| time.format("%Y-%m-%d %H:%M UTC").to_string())
-                .unwrap_or_else(|| "unknown".into());
-            format!(" · {} issues · cached {timestamp}", search.issues.len())
-        });
-        let query = if self.query.is_empty() {
-            String::new()
-        } else {
-            format!(" · {}", self.query)
+    /// The note as the rows it is drawn on at `cols` columns: none on a pane with no row to
+    /// spare for it, and never so many that the header and a row of body are lost.
+    ///
+    /// Wrapped rather than cut. An error is one sentence of what went wrong and one of what to
+    /// do about it - `run \`swamp auth login\` again` - and a single row cut at the panel's width
+    /// kept the first and lost the second. The action a note ends in, `· r retry`, stays whole
+    /// on one row; where the rows run out, the message gives way to an ellipsis before it does.
+    ///
+    /// Three rows at most for progress, which says little and changes often. An error or a
+    /// question may have up to half the pane instead: until it is dealt with the list under it
+    /// is not what the user is reading, and at the default panel's 24 columns the remedy is
+    /// the fourth row of the 401's note: three rows kept "swamp-club rejected the API key" and
+    /// cut the `swamp auth login` after it to an ellipsis.
+    fn note_rows(&self, rows: usize, cols: usize) -> Vec<String> {
+        let Some((note, tone)) = self.noted() else {
+            return Vec::new();
         };
-        format!("Issues{count}{query} · / search · a triage · r refresh")
+        if rows <= 1 || cols == 0 {
+            return Vec::new();
+        }
+        let most = match tone {
+            Tone::Error | Tone::Ask => (rows / 2).max(3),
+            Tone::Quiet => 3,
+        };
+        let cap = rows.saturating_sub(2).clamp(1, most);
+        // Errors carry text from the Lab and from hocus: nothing in them may reach the screen
+        // as a control sequence.
+        let note = zellij_tile::text::sanitize(&note).replace('\n', " ");
+        let action = note
+            .rsplit_once(" · ")
+            // Room for it after an ellipsis, should the message have to be cut.
+            .filter(|(_, action)| "…".width() + " · ".width() + action.width() <= cols);
+        let (body, action) = match action {
+            Some((body, action)) => (body, Some(action)),
+            None => (note.as_str(), None),
+        };
+        let wrapped = zellij_tile::text::wrap(body, cols);
+        let tail = action.map_or_else(String::new, |action| format!(" · {action}"));
+        let mut lines = wrapped.clone();
+        if let Some(action) = action {
+            match lines.last_mut() {
+                Some(last) if last.width() + tail.width() <= cols => last.push_str(&tail),
+                _ => lines.push(action.to_owned()),
+            }
+        }
+        if lines.len() <= cap {
+            return lines;
+        }
+        let mut lines = wrapped;
+        lines.truncate(cap);
+        let marker = format!("…{tail}");
+        if let Some(last) = lines.pop() {
+            let room = cols.saturating_sub(marker.width());
+            lines.push(agents::cut_to_width(last, room) + &marker);
+        }
+        lines
+    }
+
+    /// The header row in `cols` columns: what the keys do here first, then what the list is.
+    ///
+    /// Fitted by whole segments, most useful first, so a narrow pane loses how old the cache
+    /// is before it loses a key - it used to lead with a 50-column count and timestamp, and at
+    /// the default panel width no key made it onto the row at all.
+    ///
+    /// The list's row gives up its last key or two for `? keys` (`fit_hints_marked`), which
+    /// otherwise never fitted at the widths the panel is drawn: its trailing keys are its least
+    /// used, and the sheet lists them all. Never the search, its clear key or the first key
+    /// after them - the way out of a filtered list and the way into an issue. The reader's row
+    /// names its issue only where the way back still fits beside it: the body's first row
+    /// names it too, and a header of `#2180` alone was a reader with no key on show.
+    fn header(&self, cols: usize) -> String {
+        if let Some(number) = self.opened {
+            let number = format!("#{number}");
+            let mut segments = vec!["Esc back", "a triage", "Ctrl-r refresh"];
+            if number.width() + " · ".width() + segments[0].width() <= cols {
+                segments.insert(0, number.as_str());
+            }
+            return agents::fit_hints(&segments, cols);
+        }
+        let mut segments = Vec::new();
+        if !self.query.is_empty() {
+            // Cut so that, however long the query, the key that clears it still fits.
+            let query = format!("/{}", self.query);
+            let most = (cols / 2).max(8);
+            segments.push(if query.width() > most {
+                agents::cut_to_width(query, most.saturating_sub(1)) + "…"
+            } else {
+                query
+            });
+        }
+        if self.has_active_filters() {
+            segments.push("Esc/c clear".into());
+        }
+        if !self.issues().is_empty() {
+            segments.push("Enter open".into());
+        }
+        let slash = if self.query.is_empty() {
+            "/ search"
+        } else {
+            "/ edit"
+        };
+        segments.push(slash.into());
+        if !self.issues().is_empty() {
+            segments.push("a triage".into());
+        }
+        segments.push("Ctrl-r refresh".into());
+        if let Some(search) = &self.search {
+            let shown = search.issues.len();
+            let unfiltered = self
+                .cache
+                .search(&self.query)
+                .map_or(shown, |all| all.issues.len());
+            let noun = if unfiltered == 1 { "issue" } else { "issues" };
+            segments.push(if shown == unfiltered {
+                format!("{shown} {noun}")
+            } else {
+                format!("{shown} of {unfiltered} {noun}")
+            });
+            segments.push(match agents::short_age(now_ms(), search.fetched_at) {
+                age if age == "now" => "cached now".into(),
+                age => format!("cached {age} ago"),
+            });
+        }
+        // The search and its clear key, where there are any, and the first key after them.
+        let keep = usize::from(!self.query.is_empty()) + usize::from(self.has_active_filters()) + 1;
+        let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
+        agents::fit_hints_marked(&segments, cols, keep)
+    }
+
+    /// The `/` box as its header row: the line, the column the cursor belongs in, and where the
+    /// hints start. The text and the cursor come first; the hints only where the whole query
+    /// fits beside them, so typing past the edge scrolls the text rather than hiding its end.
+    ///
+    /// The hints are added one at a time, Enter's first, for as long as each fits whole - the
+    /// pair used to go together or not at all, so at the default panel's 24 columns an empty
+    /// box said nothing of how to use it. No `? keys`: in the box `?` is a question mark.
+    fn query_line(&self, cols: usize) -> Option<(String, usize, usize)> {
+        let input = self.editing.as_ref()?;
+        let text = input.get_text();
+        let enter = if text.trim().is_empty() && !self.query.is_empty() {
+            "Enter clear"
+        } else {
+            "Enter apply"
+        };
+        let whole = "/".width() + text.width() + 1;
+        let mut hints = String::new();
+        for hint in [enter, "Esc cancel"] {
+            let next = match hints.is_empty() {
+                true => format!("· {hint}"),
+                false => format!(" · {hint}"),
+            };
+            if whole + hints.width() + next.width() > cols {
+                break;
+            }
+            hints.push_str(&next);
+        }
+        if !hints.is_empty() {
+            // The whole query is on the row, and the column after it is the cursor's.
+            let (line, column) = viewport("/", text, input.get_cursor_position(), whole);
+            let line = format!("{line} ");
+            let hint_start = line.chars().count();
+            return Some((line + &hints, column, hint_start));
+        }
+        let (line, column) = viewport("/", text, input.get_cursor_position(), cols);
+        let hint_start = line.chars().count();
+        Some((line, column, hint_start))
     }
 }
 
@@ -513,26 +929,108 @@ impl State {
             return false;
         };
         let was_visible = self.swamp.visible();
-        self.swamp.pane_visible = !pane.is_suppressed;
+        let shown = !pane.is_suppressed;
+        if shown != self.swamp.pane_visible {
+            self.swamp.panel_shown(shown);
+        }
+        self.swamp.pane_visible = shown;
         self.swamp_visibility_changed(was_visible)
     }
 
+    /// The tab-level `Event::Visible`. Only polling follows it: hocus carrying the panel to
+    /// another Zellij tab sends a false and a true without the panel leaving the screen, and
+    /// that used to close an open filter, throw away what was typed in it and flash
+    /// "Loading…" while the login was read again - twice, counting the way back.
     pub(super) fn swamp_visibility(&mut self, visible: bool) -> bool {
         let was_visible = self.swamp.visible();
         self.swamp.surface_hidden = !visible;
         self.swamp_visibility_changed(was_visible)
     }
 
+    /// hocus's `vms::VISIBILITY`: the whole panel shown or put away, as against the tab-level
+    /// `Event::Visible` that `swamp_visibility` takes.
+    ///
+    /// A show also clears the tab-level flag. It is the verified owner's word that the panel is
+    /// on screen, and a panel moved to another tab can arrive there without a `Visible(true)`.
+    pub(super) fn swamp_panel_visibility(&mut self, visible: bool) -> bool {
+        let was_visible = self.swamp.visible();
+        if visible == self.swamp.panel_hidden {
+            self.swamp.panel_shown(visible);
+        }
+        self.swamp.panel_hidden = !visible;
+        if visible {
+            self.swamp.surface_hidden = false;
+        }
+        self.swamp_visibility_changed(was_visible)
+    }
+
+    /// A bracketed paste while a Swamp box has the keys - the `/` query or a filter editor -
+    /// and whether it changed anything. A select takes none (`Form::insert_pasted_text`).
+    ///
+    /// One line, like everything the boxes hold: a newline in a paste must not act as Enter.
+    pub(super) fn swamp_paste(&mut self, text: &str) -> bool {
+        let line = single_line(text);
+        if line.is_empty() {
+            return false;
+        }
+        if let Some(editor) = &mut self.swamp.filter {
+            return editor.form.insert_pasted_text(&line).is_some();
+        }
+        if let Some(input) = &mut self.swamp.editing {
+            input.insert_text(&line);
+            return true;
+        }
+        false
+    }
+
+    /// Where the terminal cursor belongs in the `/` query box, in pane coordinates, given the
+    /// `rows` and `cols` `render_swamp` is about to draw in; `None` when it is not open.
+    ///
+    /// The box is the header row, content row 0, so pane row 1.
+    pub(super) fn swamp_query_cursor(&self, rows: usize, cols: usize) -> Option<(usize, usize)> {
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        let (_, column, _) = self.swamp.query_line(cols)?;
+        Some((column, 1))
+    }
+
+    /// Give up on a triage hocus never acknowledged, once its deadline has passed at `now_ms`,
+    /// and whether that changed what is drawn.
+    pub(super) fn expire_swamp_triage(&mut self, now_ms: i64) -> bool {
+        if !self.swamp.awaiting_triage_ack() || now_ms < self.swamp.triage_deadline_ms {
+            return false;
+        }
+        let had_error = self.swamp.has_error();
+        self.swamp.give_up_on_triage_ack();
+        self.swamp_redraw(had_error)
+    }
+
+    /// Whether something that just happened to Swamp is a redraw, given whether the tab was
+    /// already in error (`had_error`) before it.
+    ///
+    /// Its own content only while it is the tab on show, but its `!` on the panel's tab bar
+    /// whichever tab is: a triage that fails while the user is on Agents is exactly the news
+    /// the mark is for, and it used to wait for whatever redrew next to show up.
+    fn swamp_redraw(&self, had_error: bool) -> bool {
+        self.swamp.visible()
+            && (self.surface == Surface::Swamp || self.swamp.has_error() != had_error)
+    }
+
+    /// What follows any of the three visibility signals changing. A return to the screen
+    /// that follows a panel-level show re-reads the login, as opening the tab does; one that
+    /// only follows the tab-level signal resumes whatever was left waiting while hidden.
     fn swamp_visibility_changed(&mut self, was_visible: bool) -> bool {
         let visible = self.swamp.visible();
-        if !visible {
-            self.swamp.cancel_filter();
-        }
         if was_visible == visible {
             return false;
         }
         if visible {
-            self.activate_swamp();
+            if std::mem::take(&mut self.swamp.reopen_pending) {
+                self.activate_swamp();
+            } else {
+                self.dispatch_swamp();
+            }
         }
         self.surface == Surface::Swamp
     }
@@ -545,6 +1043,14 @@ impl State {
             PermissionStatus::Granted => Permission::Granted,
             PermissionStatus::Denied => Permission::Denied,
         };
+        // Best effort: without the marker the next load waits for `r` again, which is the
+        // behaviour for someone who has never been asked.
+        if let Some(directory) = self.swamp.cache_directory() {
+            let _ = cache::remember_permission(
+                &directory.join(PERMISSION_MARKER),
+                self.swamp.permission == Permission::Granted,
+            );
+        }
         self.dispatch_swamp();
         self.surface == Surface::Swamp && self.swamp.visible()
     }
@@ -594,7 +1100,10 @@ impl State {
             self.swamp.detail_error = None;
             self.swamp.triage_wanted = None;
             self.swamp.triage_waiting = false;
+            self.swamp.triage_number = None;
             self.swamp.triage_note = None;
+            self.swamp.triage_failed = false;
+            self.swamp.triage_is_newer = false;
             #[cfg(test)]
             {
                 self.swamp.triage_text = None;
@@ -622,6 +1131,12 @@ impl State {
         }
         match self.swamp.permission {
             Permission::Unrequested => {
+                // The host's prompt replaces the whole pane, tab bar and all, and swallows the
+                // keys that would walk away from it; so it waits to be asked for, unless the
+                // host is known to have its answer cached (see `permission_asked`).
+                if !self.swamp.permission_asked && !self.swamp.permitted_before() {
+                    return;
+                }
                 self.swamp.permission = Permission::Waiting;
                 // Commands only to read `auth.json`; the environment for
                 // SWAMP_API_KEY and SWAMP_CLUB_URL; the web for the Lab itself.
@@ -636,6 +1151,14 @@ impl State {
             _ => return,
         }
         if self.swamp.credentials_error.is_some() {
+            // A triage confirmed now cannot be fetched, and is dropped rather than parked: `r`
+            // is the retry every note here names, and a parked one would send an issue the user
+            // said `y` to minutes ago, on a key that only promised a reload. What the note says
+            // is the login's error, which is why there is nothing to triage; `a` asks again.
+            if self.swamp.triage_wanted.take().is_some() {
+                self.swamp.triage_waiting = false;
+                self.swamp.triage_note = None;
+            }
             return;
         }
         #[cfg(test)]
@@ -682,12 +1205,31 @@ impl State {
                 self.swamp.search_generation += 1;
             }
         }
+        // Wanted for an issue that is no longer open: nothing left to fetch.
+        self.swamp.detail_wanted &= self.swamp.opened.is_some();
         let (target, request) = if let Some(number) = self.swamp.triage_wanted.take() {
             match client.get(number) {
                 Ok(request) => (Target::Triage(number), request),
                 Err(error) => {
                     self.swamp.triage_waiting = false;
-                    self.swamp.triage_note = Some(format!("Triage #{number}: {error} · a retry"));
+                    self.swamp
+                        .set_triage_note(format!("Triage #{number}: {error} · a retry"), true);
+                    return;
+                },
+            }
+        } else if let Some(number) = self.swamp.opened.filter(|_| self.swamp.detail_wanted) {
+            // The issue on screen ahead of the catalogue's next page: the reader is waiting on
+            // this one reply, and the list the pages refresh is not even drawn. A catalogue
+            // load keeps its offset, so its paging resumes after the reply.
+            self.swamp.detail_wanted = false;
+            match client.get(number) {
+                Ok(request) => (
+                    Target::Detail(number, self.swamp.detail_generation),
+                    request,
+                ),
+                Err(error) => {
+                    self.swamp.detail_error = Some(error.to_string());
+                    self.swamp.triage_is_newer = false;
                     return;
                 },
             }
@@ -699,21 +1241,7 @@ impl State {
                 Err(error) => {
                     self.swamp.loading = None;
                     self.swamp.list_error = Some(error);
-                    return;
-                },
-            }
-        } else if self.swamp.detail_wanted {
-            self.swamp.detail_wanted = false;
-            let Some(number) = self.swamp.opened else {
-                return;
-            };
-            match client.get(number) {
-                Ok(request) => (
-                    Target::Detail(number, self.swamp.detail_generation),
-                    request,
-                ),
-                Err(error) => {
-                    self.swamp.detail_error = Some(error.to_string());
+                    self.swamp.triage_is_newer = false;
                     return;
                 },
             }
@@ -767,6 +1295,7 @@ impl State {
         if self.take_swamp_reply(context).is_none() {
             return false;
         }
+        let had_error = self.swamp.has_error();
         let resolved =
             swamp_lab::auth::auth_json_from_output(code, stdout, stderr).and_then(|file| {
                 Credentials::resolve(&get_session_environment_variables(), file.as_deref())
@@ -782,7 +1311,7 @@ impl State {
             },
         }
         self.dispatch_swamp();
-        self.surface == Surface::Swamp && self.swamp.visible()
+        self.swamp_redraw(had_error)
     }
 
     pub(super) fn swamp_web_result(
@@ -801,6 +1330,7 @@ impl State {
         let Some(target) = self.take_swamp_reply(context) else {
             return false;
         };
+        let had_error = self.swamp.has_error();
         let current = match target {
             Target::Search(generation) => generation == self.swamp.search_generation,
             Target::Detail(number, generation) => {
@@ -810,7 +1340,7 @@ impl State {
         };
         if !current {
             self.dispatch_swamp();
-            return self.surface == Surface::Swamp && self.swamp.visible();
+            return self.swamp_redraw(had_error);
         }
         let Some(credentials) = self.swamp.credentials.clone() else {
             return false;
@@ -820,7 +1350,7 @@ impl State {
         if self.swamp.credentials_wanted {
             self.retry_swamp_target(&target);
             self.dispatch_swamp();
-            return self.surface == Surface::Swamp && self.swamp.visible();
+            return self.swamp_redraw(had_error);
         }
         // A key revoked or expired since it was read: read it again once, in
         // case `swamp auth login` has replaced it, before saying so.
@@ -830,7 +1360,7 @@ impl State {
             self.swamp.credentials_wanted = true;
             self.retry_swamp_target(&target);
             self.dispatch_swamp();
-            return self.surface == Surface::Swamp && self.swamp.visible();
+            return self.swamp_redraw(had_error);
         }
         if status != 401 {
             self.swamp.reloaded_after_401 = false;
@@ -849,7 +1379,8 @@ impl State {
                     let error = result
                         .err()
                         .unwrap_or_else(|| "Malformed Swamp response: wrong issue number".into());
-                    self.swamp.triage_note = Some(format!("Triage #{number}: {error} · a retry"));
+                    self.swamp
+                        .set_triage_note(format!("Triage #{number}: {error} · a retry"), true);
                 },
             },
             Target::Search(generation) if generation == self.swamp.search_generation => {
@@ -875,8 +1406,14 @@ impl State {
                                 .cache_path()
                                 .and_then(|path| self.swamp.cache.write(&path).err())
                                 .map(|error| error.to_string());
+                            if self.swamp.cache_error.is_some() {
+                                self.swamp.triage_is_newer = false;
+                            }
                         },
-                        Err(error) => self.swamp.list_error = Some(error),
+                        Err(error) => {
+                            self.swamp.list_error = Some(error);
+                            self.swamp.triage_is_newer = false;
+                        },
                     }
                 }
             },
@@ -892,15 +1429,19 @@ impl State {
                     },
                     Ok(_) => {
                         self.swamp.detail_error =
-                            Some("Malformed Swamp response: wrong issue number".into())
+                            Some("Malformed Swamp response: wrong issue number".into());
+                        self.swamp.triage_is_newer = false;
                     },
-                    Err(error) => self.swamp.detail_error = Some(error),
+                    Err(error) => {
+                        self.swamp.detail_error = Some(error);
+                        self.swamp.triage_is_newer = false;
+                    },
                 }
             },
             _ => {},
         }
         self.dispatch_swamp();
-        self.surface == Surface::Swamp && self.swamp.visible()
+        self.swamp_redraw(had_error)
     }
 
     fn retry_swamp_target(&mut self, target: &Target) {
@@ -916,26 +1457,35 @@ impl State {
         }
     }
 
-    fn triage_swamp_issue(&mut self) {
-        if self.swamp.triage_waiting {
+    /// The issue `a` is about: the one open in the reader, otherwise the one selected.
+    fn swamp_triage_target(&self) -> Option<u64> {
+        self.swamp.opened.or_else(|| self.swamp.selected_number())
+    }
+
+    /// `y` to `a`'s question: fetch `number` fresh and hand it to hocus - but only if it is
+    /// still the issue the question was about. A reply or a refresh that moved the selection
+    /// in between must not send an issue the user was never asked about.
+    fn triage_swamp_issue(&mut self, number: u64) {
+        if self.swamp.triage_waiting || self.swamp_triage_target() != Some(number) {
             return;
         }
-        let Some(number) = self.swamp.opened.or_else(|| self.swamp.selected_number()) else {
-            return;
-        };
         self.swamp.triage_waiting = true;
-        self.swamp.triage_note = Some(format!("Fetching #{number} for triage…"));
+        self.swamp.triage_number = Some(number);
+        self.swamp
+            .set_triage_note(format!("Fetching #{number}…"), false);
         self.swamp.triage_wanted = Some(number);
         self.dispatch_swamp();
     }
 
     fn send_swamp_triage(&mut self, detail: &Detail) {
         let text = triage_prompt(detail);
+        let number = detail.issue.number;
         let payload = match serde_json::to_string(&wire::Ask { text: text.clone() }) {
             Ok(payload) => payload,
             Err(error) => {
                 self.swamp.triage_waiting = false;
-                self.swamp.triage_note = Some(format!("Triage: {error}"));
+                self.swamp
+                    .set_triage_note(format!("Triage #{number}: {error} · a retry"), true);
                 return;
             },
         };
@@ -943,7 +1493,9 @@ impl State {
         {
             self.swamp.triage_text = Some(text);
         }
-        self.swamp.triage_note = Some(format!("Sending #{} to Hocus…", detail.issue.number));
+        self.swamp
+            .set_triage_note(format!("Sending #{number} to Hocus…"), false);
+        self.swamp.triage_deadline_ms = now_ms().saturating_add(TRIAGE_ACK_TIMEOUT_MS);
         pipe_message_to_plugin(
             MessageToPlugin::new(wire::ASK)
                 .with_plugin_url(launch::HOCUS_ALIAS)
@@ -970,11 +1522,23 @@ impl State {
             return false;
         };
         self.swamp.triage_waiting = false;
-        self.swamp.triage_note = Some(match ack.outcome {
-            wire::AskOutcome::Sent => "Triage sent to Hocus".into(),
-            wire::AskOutcome::Queued => "Triage queued in Hocus".into(),
-            wire::AskOutcome::Refused => format!("Hocus refused triage: {} · a retry", ack.detail),
-        });
+        let number = self
+            .swamp
+            .triage_number
+            .map_or_else(|| "the issue".to_owned(), |number| format!("#{number}"));
+        // Each says where the next step is: hocus asks its question in the conversation, not
+        // here, and the keys stay in this list until the user goes there. That is two Tabs
+        // away: the first lands on the chat's tab bar, which swallows letters - and closes the
+        // chat on an `x` - and only the second reaches its input box.
+        let note = match ack.outcome {
+            wire::AskOutcome::Sent => format!("{number} sent to Hocus · answer in chat: Tab Tab"),
+            wire::AskOutcome::Queued => format!("{number} queued · Hocus asks in chat"),
+            wire::AskOutcome::Refused => {
+                format!("Hocus refused {number}: {} · a retry", ack.detail)
+            },
+        };
+        self.swamp
+            .set_triage_note(note, ack.outcome == wire::AskOutcome::Refused);
         true
     }
 
@@ -982,6 +1546,7 @@ impl State {
         let Some(number) = self.swamp.selected_number() else {
             return;
         };
+        self.swamp.clear_finished_triage();
         self.swamp.opened = Some(number);
         self.swamp.detail = None;
         self.swamp.detail_cache = None;
@@ -990,6 +1555,51 @@ impl State {
         self.swamp.detail_generation += 1;
         self.swamp.detail_wanted = true;
         self.dispatch_swamp();
+    }
+
+    /// Back from the reader to the list, which kept its selection and scroll.
+    fn close_swamp_issue(&mut self) {
+        self.swamp.clear_finished_triage();
+        self.swamp.opened = None;
+        self.swamp.detail = None;
+        self.swamp.detail_cache = None;
+        self.swamp.detail_error = None;
+        self.swamp.detail_generation += 1;
+        self.swamp.detail_wanted = false;
+    }
+
+    /// `Ctrl-r`, as on every tab, and plain `r`, which every note here names: read the login
+    /// again and reload the list, and the issue in the reader. From a permission never given,
+    /// or refused, it asks the host.
+    fn refresh_swamp(&mut self) {
+        self.swamp.confirming_triage = None;
+        if self.swamp.awaiting_triage_ack() {
+            // A reload is what someone does about a "Sending…" that has sat there; it is not
+            // one that the reload itself can resolve.
+            self.swamp.give_up_on_triage_ack();
+        } else {
+            self.swamp.clear_finished_triage();
+        }
+        if self.swamp.permission != Permission::Granted {
+            self.swamp.permission_asked = true;
+        }
+        if self.swamp.permission == Permission::Denied {
+            self.swamp.permission = Permission::Unrequested;
+        }
+        self.reload_swamp();
+    }
+
+    /// `c`, and Esc on a list that has something to clear: the search and every filter back to
+    /// showing everything, from the catalogue already held. Sort is not a filter and stays. A
+    /// search that Tab left half-typed goes with the one applied, so the next `/` is empty.
+    fn clear_swamp_filters(&mut self) {
+        self.swamp.query.clear();
+        self.swamp.query_draft = None;
+        self.swamp.source.clear();
+        self.swamp.status = 0;
+        self.swamp.kind = 0;
+        self.swamp.assignee = None;
+        self.search_swamp();
     }
 
     fn search_swamp(&mut self) {
@@ -1006,7 +1616,15 @@ impl State {
         }
         self.swamp.search_wanted =
             !self.swamp.query.is_empty() && self.swamp.cache.search(&self.swamp.query).is_none();
-        self.swamp.list_error = None;
+        // Only for a request on its way, which is a retry: a load that works leaves
+        // `list_error` alone, so the search going out is what takes the error down. A list
+        // only re-filtered from the catalogue already held has retried nothing, and clearing
+        // the error there left the tab without its `!` or `r retry` over a list that had
+        // failed to refresh.
+        if self.swamp.search_wanted {
+            self.swamp.list_error = None;
+        }
+        self.swamp.clear_finished_triage();
         self.swamp.filter_issues();
         self.dispatch_swamp();
     }
@@ -1031,26 +1649,66 @@ impl State {
             }
             return true;
         }
-        if let Some(query) = self.swamp.editing.as_mut() {
-            match key.bare_key {
-                BareKey::Esc => self.swamp.editing = None,
-                BareKey::Enter => {
-                    if let Err(error) = search_query(query.trim(), 0) {
-                        self.swamp.list_error = Some(error);
+        if let Some(input) = self.swamp.editing.as_mut() {
+            // Not text: `TextInput` would type the letter of an Alt chord it has no use for.
+            if key.has_modifiers(&[KeyModifier::Alt]) && matches!(key.bare_key, BareKey::Char(_)) {
+                return false;
+            }
+            // Read before the box takes the key: to it Shift+Tab is a Tab like any other.
+            let shift = key.has_modifiers(&[KeyModifier::Shift]);
+            match input.handle_key(key) {
+                InputAction::Submit => {
+                    let query = input.get_text().trim().to_owned();
+                    if let Err(error) = search_query(&query, 0) {
+                        self.swamp.input_error = Some(error);
                         return true;
                     }
-                    self.swamp.query = query.trim().to_owned();
                     self.swamp.editing = None;
+                    self.swamp.input_error = None;
+                    self.swamp.query = query;
                     self.search_swamp();
                 },
-                BareKey::Backspace => {
-                    query.pop();
+                InputAction::Cancel => {
+                    self.swamp.editing = None;
+                    self.swamp.input_error = None;
                 },
-                BareKey::Char(ch) if key.has_no_modifiers() => query.push(ch),
-                _ => return false,
+                // Tab closes the box, as it closes the filter editors beside it: the box takes
+                // every key ahead of the tab bar, so one left open would type the bar's arrows
+                // and Enter into the query. But it is walking away, not cancelling - what was
+                // typed is kept for the next `/` - and it goes where Tab goes from the list, so
+                // one press is one step round the ring rather than a step out of the box.
+                InputAction::Complete => {
+                    self.swamp.query_draft = self.swamp.editing.take();
+                    self.swamp.input_error = None;
+                    if shift {
+                        self.tabs_focused = true;
+                    } else {
+                        self.yield_to_chat(wire::STOP_TABS);
+                    }
+                },
+                InputAction::Continue => {},
+                InputAction::NoAction => return false,
             }
             return true;
         }
+        // An armed question answers the next key, the way the Agents resume question does: `y`
+        // sends, `n` or Esc drops it - Esc without hiding the panel, one step back before the
+        // way out - and any other key drops it and then does what it always does.
+        let armed = self.swamp.confirming_triage.take();
+        if let Some(number) = armed {
+            let plain = key.has_no_modifiers();
+            match key.bare_key {
+                BareKey::Char('y') if plain => {
+                    self.triage_swamp_issue(number);
+                    return true;
+                },
+                BareKey::Char('n') if plain => return true,
+                BareKey::Esc => return true,
+                _ => {},
+            }
+        }
+        // Whatever the key turns out to do, a question taken off the note is a redraw.
+        let dropped = armed.is_some();
         if key.bare_key == BareKey::Tab {
             if key.has_modifiers(&[KeyModifier::Shift]) {
                 self.tabs_focused = true;
@@ -1059,36 +1717,35 @@ impl State {
             }
             return true;
         }
-        if key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl]) {
-            pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_STRIP_REPOSITION));
+        // Ctrl-o never gets this far: `on_key` takes it ahead of every surface. Ctrl-r is the
+        // refresh key on every tab, so it is one here too.
+        if key.bare_key == BareKey::Char('r') && key.has_modifiers(&[KeyModifier::Ctrl]) {
+            self.refresh_swamp();
             return true;
         }
         if !key.has_no_modifiers() {
-            return false;
+            return dropped;
         }
         let page = self.swamp.last_body_rows.saturating_sub(1).max(1) as isize;
         match key.bare_key {
-            BareKey::Char('a') => self.triage_swamp_issue(),
-            BareKey::Esc if self.swamp.opened.is_some() => {
-                self.swamp.opened = None;
-                self.swamp.detail = None;
-                self.swamp.detail_cache = None;
-                self.swamp.detail_error = None;
-                self.swamp.detail_generation += 1;
-                self.swamp.detail_wanted = false;
+            BareKey::Char('a') if !self.swamp.triage_waiting => {
+                self.swamp.confirming_triage = self.swamp_triage_target();
             },
+            BareKey::Esc if self.swamp.opened.is_some() => self.close_swamp_issue(),
+            // One step back before the way out, as from the reader: a searched or filtered
+            // list goes back to every issue first, as `c` does, and only then does Esc hide.
+            BareKey::Esc if self.swamp.has_active_filters() => self.clear_swamp_filters(),
             BareKey::Esc => self.hide_the_panel(),
-            BareKey::Char('r') => {
-                if !self.swamp.triage_waiting {
-                    self.swamp.triage_note = None;
-                }
-                if self.swamp.permission == Permission::Denied {
-                    self.swamp.permission = Permission::Unrequested;
-                }
-                self.reload_swamp();
-            },
+            BareKey::Char('r') => self.refresh_swamp(),
             BareKey::Char('/') if self.swamp.opened.is_none() => {
-                self.swamp.editing = Some(self.swamp.query.clone());
+                let input = self.swamp.query_draft.take();
+                self.swamp.editing =
+                    Some(input.unwrap_or_else(|| TextInput::new(self.swamp.query.clone())));
+            },
+            BareKey::Char('c')
+                if self.swamp.opened.is_none() && self.swamp.has_active_filters() =>
+            {
+                self.clear_swamp_filters();
             },
             BareKey::Char(shortcut @ ('s' | 't' | 'f' | 'o' | 'u'))
                 if self.swamp.opened.is_none() =>
@@ -1102,9 +1759,89 @@ impl State {
             BareKey::PageDown => self.swamp_page(page),
             BareKey::Home => self.swamp_step(-isize::MAX),
             BareKey::End => self.swamp_step(isize::MAX),
-            _ => return false,
+            _ => return dropped,
         }
         true
+    }
+
+    /// The keys this tab answers right now, as `(keys, what they do)` rows for the `?` sheet,
+    /// most useful first. The header has room for a few of them; this is all of them.
+    ///
+    /// Per mode, the way `swamp_key` hands the keys out: an armed question, then the reader or
+    /// the list. A box being typed in - the `/` query or a filter editor - has no sheet: `?` is
+    /// a character there (`typing`), so the sheet never opens over one, and a key that opens a
+    /// box shuts the sheet on its way. The boxes' keys are in hocus's `/keys`, and the `/` box
+    /// names Enter's and Esc's on its own row.
+    pub(super) fn swamp_key_sheet(&self) -> Vec<(String, String)> {
+        let rows = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(keys, what)| ((*keys).to_owned(), (*what).to_owned()))
+                .collect()
+        };
+        let mut sheet = Vec::new();
+        if let Some(number) = self.swamp.confirming_triage {
+            sheet.push(("y".to_owned(), format!("send #{number} to Hocus to triage")));
+            sheet.extend(rows(&[
+                ("n/Esc", "keep it here"),
+                ("any other key", "keep it here, then do what that key does"),
+            ]));
+        }
+        match self.swamp.permission {
+            Permission::Unrequested => sheet.extend(rows(&[(
+                "r",
+                "allow Swamp to read your swamp login and reach swamp-club",
+            )])),
+            Permission::Denied => sheet.extend(rows(&[("r", "ask for permission again")])),
+            Permission::Waiting | Permission::Granted => {},
+        }
+        if self.swamp.opened.is_some() {
+            sheet.extend(rows(&[
+                ("Esc", "back to the list"),
+                ("j/k ↑/↓", "scroll"),
+                ("PgUp/PgDn", "a page at a time"),
+                ("Home/End", "the top, the bottom"),
+                ("a", "triage this issue in Hocus (asks first)"),
+                ("Ctrl-r/r", "reload the issues and this one"),
+                ("Tab", "to the conversation"),
+                ("Shift+Tab", "to the panel's tabs"),
+                ("click the top row", "back to the list"),
+                ("wheel", "scroll"),
+            ]));
+            return sheet;
+        }
+        sheet.extend(rows(&[
+            ("Enter", "open the selected issue"),
+            ("j/k ↑/↓", "move through the issues"),
+            ("PgUp/PgDn", "a page at a time"),
+            ("Home/End", "the first, the last"),
+        ]));
+        sheet.extend(rows(&[match self.swamp.query.is_empty() {
+            true => ("/", "search titles and bodies"),
+            false => ("/", "edit the search"),
+        }]));
+        let filtered = self.swamp.has_active_filters();
+        if filtered {
+            sheet.extend(rows(&[("Esc/c", "clear the search and every filter")]));
+        }
+        sheet.extend(rows(&[
+            ("s/t/f/u", "filter by status, type, source, assignee"),
+            ("o", "sort by when issues were updated or created"),
+            ("a", "triage the issue in Hocus (asks first)"),
+            ("Ctrl-r/r", "reload the issues"),
+            ("Tab", "to the conversation"),
+            ("Shift+Tab", "to the panel's tabs"),
+        ]));
+        // Esc hides only a list with nothing to clear; on a filtered one it is the row above.
+        if !filtered {
+            sheet.extend(rows(&[("Esc", "hide the panel")]));
+        }
+        sheet.extend(rows(&[
+            ("click", "select an issue; opens when released on it"),
+            ("click a chip", "change that filter"),
+            ("wheel", "scroll the list"),
+        ]));
+        sheet
     }
 
     fn open_swamp_filter(&mut self, shortcut: char) {
@@ -1191,12 +1928,12 @@ impl State {
             let source = editor.form.text("value").trim().to_owned();
             if !source.is_empty() {
                 if let Err(error) = swamp_lab::api::valid_source(&source) {
-                    self.swamp.list_error = Some(error.to_string());
+                    // The editor stays open on the bad value, back in editing, for the fix.
+                    self.swamp.input_error = Some(error.to_string());
                     editor.form.handle_key(KeyWithModifier::new(BareKey::Enter));
                     return;
                 }
             }
-            self.swamp.list_error = None;
             if !source.is_empty() && source != "swamp" && !self.swamp.source_tags.contains(&source)
             {
                 self.swamp.source_tags.push(source.clone());
@@ -1205,7 +1942,9 @@ impl State {
             self.swamp.source = source;
             changed
         };
+        // Closing the editor takes any message about what was typed in it too.
         self.swamp.cancel_filter();
+        self.swamp.clear_finished_triage();
         if changed {
             self.swamp.filter_issues();
         }
@@ -1283,7 +2022,19 @@ impl State {
         }
     }
 
+    /// Mouse events in body coordinates: content row 0 is the header.
+    ///
+    /// A click on an issue selects it, as a click does on every other tab, and the issue opens
+    /// when the button comes up on the same cell. It used to open on the press, so a drag that
+    /// started on a title to copy it selected the reader's text instead. In the reader the
+    /// header row - `#N · Esc back` - is the one target, the way back, and it goes back the same
+    /// way: on a release on the cell that was pressed, so a drag across it copies the `#N`
+    /// rather than closing the issue under the selection. Clicks on the body are ignored, as
+    /// the Agents reader ignores them, so a stray one cannot lose the user's place.
     pub(super) fn swamp_mouse(&mut self, mouse: Mouse) -> bool {
+        if let Mouse::LeftClick(..) = mouse {
+            self.swamp.press = None;
+        }
         if self.swamp.opened.is_none() && self.swamp.editing.is_none() {
             if let Mouse::LeftClick(line, column) = mouse {
                 if let Some((_, _, _, shortcut)) =
@@ -1295,9 +2046,27 @@ impl State {
                 }
             }
         }
+        if self.swamp.opened.is_some() {
+            match mouse {
+                Mouse::LeftClick(0, column) => {
+                    self.swamp.press = Some((0, column));
+                    return false;
+                },
+                Mouse::Release(line, column) => {
+                    let pressed = self.swamp.press.take();
+                    if line == 0 && pressed == Some((line, column)) {
+                        self.close_swamp_issue();
+                        return true;
+                    }
+                    return false;
+                },
+                _ => {},
+            }
+        }
         if self.swamp.last_body_rows == 0 {
             return false;
         }
+        let listing = self.swamp.opened.is_none() && self.swamp.editing.is_none();
         match mouse {
             Mouse::ScrollUp(lines) | Mouse::ScrollDown(lines) => {
                 let delta = lines.max(1).min(isize::MAX as usize) as isize;
@@ -1318,20 +2087,23 @@ impl State {
                 }
                 true
             },
-            Mouse::LeftClick(line, _)
-                if self.swamp.opened.is_none() && self.swamp.editing.is_none() =>
-            {
-                let Some(row) = (line as usize).checked_sub(self.swamp.last_body_top) else {
+            Mouse::LeftClick(line, column) if listing => {
+                let Some(issue) = self.swamp.issue_at(line) else {
                     return false;
                 };
-                let index = self.swamp.window + row;
-                if row >= self.swamp.last_body_rows {
+                // A question about one issue is not an answer about another.
+                self.swamp.confirming_triage = None;
+                self.swamp.selected = issue;
+                self.swamp.press = Some((line, column));
+                true
+            },
+            Mouse::Release(line, column) if listing => {
+                let pressed = self.swamp.press.take();
+                if pressed != Some((line, column))
+                    || self.swamp.issue_at(line) != Some(self.swamp.selected)
+                {
                     return false;
                 }
-                let Some((issue, _)) = self.swamp.list_rows.get(index) else {
-                    return false;
-                };
-                self.swamp.selected = *issue;
                 self.open_swamp_issue();
                 true
             },
@@ -1364,13 +2136,33 @@ impl State {
         None
     }
 
+    /// What the header row says in `cols` columns while no box is open on it: the tab bar's
+    /// keys while the bar has them, this tab's own otherwise.
+    ///
+    /// The bar answers nothing but its own keys, so the tab's hints under it would name keys
+    /// the next press does not reach. The bar's hint used to be a footer here, a row off the
+    /// body that came and went with the focus; the header is the tab's hint row, and says
+    /// whichever keys are live. Dim, as the header is whenever the keys are not the tab's.
+    fn swamp_header(&self, cols: usize) -> String {
+        if self.bar_has_keys() && !self.box_ahead_of_the_bar() {
+            let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
+            return agents::fit_hints(&segments, cols);
+        }
+        self.swamp.header(cols)
+    }
+
     pub(super) fn render_swamp(&mut self, rows: usize, cols: usize) {
         if rows == 0 || cols == 0 {
             self.swamp.clear_dimensions();
             return;
         }
-        let note = self.swamp.note();
+        let note = self.swamp.noted();
+        let note_rows = self.swamp.note_rows(rows, cols);
         let (top, labels) = self.swamp.layout_filters(rows, cols);
+        // Where a key pressed now goes. Not here while the panel's tab bar has the keys, or
+        // another pane does, and then the header says so by going quiet - and, for the bar,
+        // by naming the bar's keys instead (`swamp_header`).
+        let keys_here = self.keys_here();
         for ((row, x, width, _), text) in self.swamp.filter_cells.iter().zip(labels) {
             paint(
                 Text::new(text).color_range(2, ..),
@@ -1406,14 +2198,12 @@ impl State {
             }
             let scroll = self.swamp.detail_scroll.min(lines.len());
             let end = scroll.saturating_add(room).min(lines.len());
-            render_divider(
-                &self.swamp.header(),
-                scroll,
-                lines.len() - end,
-                !self.tabs_focused,
-                0,
-                cols,
-            );
+            let below = lines.len() - end;
+            // Fitted by whole segments in the room the scroll readout and the focus mark leave
+            // it, so `divider_line` never has to cut it again mid-word.
+            let readout = scroll_readout(scroll, below).width();
+            let label = self.swamp_header(cols.saturating_sub(readout + 4 + FOCUS_MARK_COLS));
+            render_divider(&label, scroll, below, keys_here, 0, cols);
             for (row, line) in lines[scroll..end].iter().enumerate() {
                 let text = markdown::style_text(&line.text, &line.styles, false);
                 paint(
@@ -1425,13 +2215,18 @@ impl State {
                 );
             }
         } else {
-            paint(
-                Text::new(fit(&self.swamp.header(), cols)).color_range(2, ..),
-                0,
-                0,
-                Some(cols),
-                None,
-            );
+            let header = match self.swamp.query_line(cols) {
+                // What is typed is plain, the hints after it dim, whoever has the keys.
+                Some((line, _, hints)) => Text::new(line).dim_range(hints..),
+                None => {
+                    let header = Text::new(self.swamp_header(cols));
+                    match keys_here {
+                        true => header.color_range(2, ..),
+                        false => header.dim_range(..),
+                    }
+                },
+            };
+            paint(header, 0, 0, Some(cols), None);
             self.swamp.fill_list_cache(cols, now_ms());
             let lines = &self.swamp.list_rows;
             self.swamp.max_scroll = lines.len().saturating_sub(room);
@@ -1461,7 +2256,7 @@ impl State {
                 }
                 if self.swamp.issues().is_empty() && note.is_none() {
                     paint(
-                        Text::new(fit("No issues found", cols)).dim_range(..),
+                        Text::new(fit(self.swamp.empty_list(), cols)).dim_range(..),
                         0,
                         top,
                         Some(cols),
@@ -1474,15 +2269,17 @@ impl State {
                 }
             }
         }
-        if let Some(note) = note {
-            if rows > 1 {
-                let text = Text::new(fit(&note, cols));
-                let text = if self.swamp.has_error() {
-                    text.error_color_range(..)
-                } else {
-                    text.dim_range(..)
+        // Coloured by what the note says, not by whether anything anywhere has failed: a
+        // triage that went through was once painted as an error while one was hiding under it.
+        if let Some((_, tone)) = note {
+            for (row, line) in note_rows.into_iter().enumerate() {
+                let text = Text::new(line);
+                let text = match tone {
+                    Tone::Error => text.error_color_range(..),
+                    Tone::Ask => text,
+                    Tone::Quiet => text.dim_range(..),
                 };
-                paint(text, 0, 1, Some(cols), None);
+                paint(text, 0, 1 + row, Some(cols), None);
             }
         }
     }
@@ -1519,6 +2316,63 @@ fn status_label(status: &str) -> &str {
 fn fit(text: &str, cols: usize) -> String {
     let text = zellij_tile::text::sanitize(text).replace('\n', " ");
     agents::cut_to_width(text, cols)
+}
+
+/// `value` in `cols` columns, ending in `…` where it had to be cut.
+fn fit_value(value: &str, cols: usize) -> String {
+    let value = fit(value, usize::MAX);
+    if value.width() <= cols || cols < 2 {
+        return fit(&value, cols);
+    }
+    agents::cut_to_width(value, cols - 1) + "…"
+}
+
+/// One filter chip in at most `cols` columns: the key survives every cut.
+///
+/// `[Label: value (k)]`, then the value cut, then `[Label (k)]`, then `(k)` alone. Compact,
+/// `[k value]`, which puts the key first the way a hint line does.
+fn chip_text(label: &str, value: &str, shortcut: char, cols: usize, compact: bool) -> String {
+    if compact {
+        let prefix = format!("[{shortcut} ");
+        let room = cols.saturating_sub(prefix.width() + 1);
+        if room == 0 {
+            return fit(&format!("[{shortcut}]"), cols);
+        }
+        return format!("{prefix}{}]", fit_value(value, room));
+    }
+    let prefix = format!("[{label}: ");
+    let suffix = format!(" ({shortcut})]");
+    let room = cols.saturating_sub(prefix.width() + suffix.width());
+    if room >= 2 {
+        return format!("{prefix}{}{suffix}", fit_value(value, room));
+    }
+    let short = format!("[{label} ({shortcut})]");
+    if short.width() <= cols {
+        return short;
+    }
+    fit(&format!("({shortcut})"), cols)
+}
+
+/// The chips laid out in reading order, wrapping at `cols`: `(row, x, text, key)`, with rows
+/// counted from the chips' first.
+fn place_chips(
+    chips: &[(&'static str, String, char)],
+    cols: usize,
+    compact: bool,
+) -> Vec<(usize, usize, String, char)> {
+    let mut placed = Vec::new();
+    let (mut row, mut x) = (0, 0);
+    for (label, value, shortcut) in chips {
+        let text = chip_text(label, value, *shortcut, cols, compact);
+        let width = text.width();
+        if x > 0 && x + width > cols {
+            row += 1;
+            x = 0;
+        }
+        placed.push((row, x, text, *shortcut));
+        x += width + 1;
+    }
+    placed
 }
 
 const METADATA: markdown::MdStyle = markdown::MdStyle {
@@ -1849,14 +2703,20 @@ mod tests {
         ))
     }
 
+    /// `a` then `y`: the question, and the answer that sends.
+    fn triage(state: &mut State) {
+        key(state, BareKey::Char('a'));
+        key(state, BareKey::Char('y'));
+    }
+
     #[test]
     fn triage_captures_selection_and_suppresses_duplicate_fetches_and_handoffs() {
         let mut state = loaded();
         key(&mut state, BareKey::Char('j'));
-        key(&mut state, BareKey::Char('a'));
+        triage(&mut state);
         let count = state.swamp.requests.len();
         key(&mut state, BareKey::Char('k'));
-        key(&mut state, BareKey::Char('a'));
+        triage(&mut state);
         assert_eq!(state.swamp.requests.len(), count);
         assert!(
             !ack(&mut state, wire::AskOutcome::Sent),
@@ -1885,24 +2745,24 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected}: {text}");
         }
-        key(&mut state, BareKey::Char('a'));
+        triage(&mut state);
         assert_eq!(state.swamp.requests.len(), count);
         assert!(ack(&mut state, wire::AskOutcome::Queued));
-        assert!(state.swamp.note().unwrap().contains("queued"));
+        assert!(state.swamp.note().unwrap().contains("#2180 queued"));
         assert!(!ack(&mut state, wire::AskOutcome::Sent));
     }
 
     #[test]
     fn triage_in_reader_fetches_current_detail_and_reports_each_acknowledgement() {
         let mut state = reader();
-        assert!(state.swamp.header().contains("a triage"));
+        assert!(state.swamp.header(usize::MAX).contains("a triage"));
         for (outcome, note) in [
             (wire::AskOutcome::Sent, "sent"),
             (wire::AskOutcome::Queued, "queued"),
             (wire::AskOutcome::Refused, "no API key"),
         ] {
             let count = state.swamp.requests.len();
-            key(&mut state, BareKey::Char('a'));
+            triage(&mut state);
             assert!(state.swamp.triage_waiting);
             assert_eq!(state.swamp.requests.len(), count + 1);
             assert!(!ack(&mut state, outcome));
@@ -1918,6 +2778,11 @@ mod tests {
                 .contains("Fresh body."));
             assert!(ack(&mut state, outcome));
             assert!(state.swamp.note().unwrap().contains(note));
+            assert!(state.swamp.note().unwrap().contains("#2180"));
+            assert_eq!(
+                state.swamp.noted().unwrap().1 == Tone::Error,
+                outcome == wire::AskOutcome::Refused
+            );
             assert!(!state.swamp.triage_waiting);
         }
     }
@@ -1927,7 +2792,7 @@ mod tests {
         let mut state = loaded();
         key(&mut state, BareKey::Char('r'));
         key(&mut state, BareKey::Char('j'));
-        key(&mut state, BareKey::Char('a'));
+        triage(&mut state);
         key(&mut state, BareKey::Char('k'));
         reply(&mut state, SEARCH);
         assert!(matches!(
@@ -1939,7 +2804,8 @@ mod tests {
         state.swamp_web_result(400, &BTreeMap::new(), b"offline", &context);
         assert!(!state.swamp.triage_waiting);
         assert!(state.swamp.note().unwrap().contains("offline"));
-        key(&mut state, BareKey::Char('a'));
+        assert!(state.swamp.has_error(), "a failed triage marks the tab");
+        triage(&mut state);
         reply(&mut state, DETAIL); // now selected 2254, so this is a mismatched reply
         assert!(state.swamp.note().unwrap().contains("wrong issue number"));
         assert!(state.swamp.triage_text.is_none());
@@ -1950,7 +2816,7 @@ mod tests {
         let mut state = loaded();
         key(&mut state, BareKey::Char('j'));
         key(&mut state, BareKey::Enter);
-        key(&mut state, BareKey::Char('a'));
+        triage(&mut state);
         key(&mut state, BareKey::Esc);
         state.switch_surface(Surface::Agents);
         reply(&mut state, DETAIL); // reader fetch was already in flight
@@ -1970,10 +2836,13 @@ mod tests {
     #[test]
     fn triage_does_not_capture_text_entry() {
         let mut state = loaded();
-        assert!(state.swamp.header().contains("a triage"));
+        assert!(state.swamp.header(usize::MAX).contains("a triage"));
         key(&mut state, BareKey::Char('/'));
         key(&mut state, BareKey::Char('a'));
-        assert_eq!(state.swamp.editing.as_deref(), Some("a"));
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("a")
+        );
         key(&mut state, BareKey::Esc);
         key(&mut state, BareKey::Char('f'));
         key(&mut state, BareKey::Char('a'));
@@ -2162,7 +3031,7 @@ mod tests {
             );
             assert_eq!(state.swamp.selected_number(), Some(3));
             assert_eq!(state.swamp.requests.len(), count, "sorting stays local");
-            assert!(state.swamp.header().contains("6 issues"));
+            assert!(state.swamp.header(usize::MAX).contains("6 issues"));
         }
         key(&mut state, BareKey::Char('o'));
         key(&mut state, BareKey::Up);
@@ -2212,7 +3081,7 @@ mod tests {
     #[test]
     fn minute_ticks_redraw_issue_ages_while_a_refresh_is_pending() {
         let mut state = loaded();
-        assert!(!state.shows_an_age(), "legacy issues have no ages to tick");
+        assert!(state.shows_an_age(), "the header says how old the list is");
         key(&mut state, BareKey::Char('r'));
         reply(&mut state, &timestamped_search());
         state.render(12, 80);
@@ -2376,10 +3245,11 @@ mod tests {
         assert_eq!(state.swamp.source, "swamp");
         assert!(state
             .swamp
-            .list_error
+            .input_error
             .as_ref()
             .unwrap()
             .contains("must be 1-64 letters"));
+        assert!(state.swamp.list_error.is_none());
         clear_source(&mut state);
         key(&mut state, BareKey::Enter);
         assert!(state.swamp.source.is_empty());
@@ -2412,6 +3282,8 @@ mod tests {
             assert!(state.swamp.note().unwrap().starts_with("Error:"));
             assert!(state.tab_cells.last().unwrap().text.contains("Swamp!"));
             let error_body_top = state.swamp.last_body_top;
+            let error_rows = state.swamp.note_rows(11, 80).len();
+            assert!(error_rows > 0);
 
             clear_source(&mut state);
             type_text(&mut state, corrected);
@@ -2422,7 +3294,7 @@ mod tests {
             assert!(!state.swamp.has_error());
             assert!(state.swamp.note().is_none());
             assert!(!state.tab_cells.last().unwrap().text.contains('!'));
-            assert_eq!(state.swamp.last_body_top + 1, error_body_top);
+            assert_eq!(state.swamp.last_body_top + error_rows, error_body_top);
             assert_eq!(state.swamp.requests.len(), 1);
         }
     }
@@ -2556,8 +3428,18 @@ mod tests {
             reply(&mut state, SEARCH);
             key(&mut state, BareKey::Char(shortcut));
             state.render(14, 80);
-            state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 79));
+            // On an issue row, clear of the dropdown hanging under the chip.
+            let line = state.swamp.last_body_top as isize + 1;
+            let overlay = state.swamp.filter.as_ref().unwrap().form.overlay_rect();
+            let column = if overlay.is_some_and(|rect| rect.x > 0) {
+                0
+            } else {
+                79
+            };
+            state.on_mouse(Mouse::LeftClick(line, column));
             assert!(!state.swamp.is_editing());
+            // The click that closed the editor was not a click on the row under it.
+            state.on_mouse(Mouse::Release(line, column));
             assert!(state.swamp.opened.is_none());
             assert_eq!(state.swamp.requests.len(), expected_count);
         }
@@ -2589,12 +3471,15 @@ mod tests {
         }
         state.render(12, 20);
         assert_eq!(state.swamp.filter_cells.len(), 5);
-        assert!(state
-            .swamp
-            .filter_cells
-            .windows(2)
-            .all(|pair| pair[0].0 < pair[1].0));
-        assert!(state.on_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize + 1, 0)));
+        let chip_rows: BTreeSet<_> = state.swamp.filter_cells.iter().map(|cell| cell.0).collect();
+        assert!(
+            chip_rows.len() < 5,
+            "narrow chips share rows: {chip_rows:?}"
+        );
+        let line = state.swamp.last_body_top as isize + 1;
+        assert!(state.on_mouse(Mouse::LeftClick(line, 0)));
+        assert_eq!(state.swamp.opened, None, "a press only selects");
+        assert!(state.on_mouse(Mouse::Release(line, 0)));
         assert_eq!(state.swamp.opened, Some(2254));
     }
 
@@ -2608,8 +3493,9 @@ mod tests {
             type_text(&mut state, "provisional");
             match leave {
                 0 => state.switch_surface(Surface::Agents),
+                // hocus putting the panel away, as `vms::VISIBILITY` hands it on.
                 1 => {
-                    state.swamp_visibility(false);
+                    state.swamp_panel_visibility(false);
                 },
                 2 => {
                     state.update(pane_update(state.own_plugin_id, true));
@@ -2620,7 +3506,7 @@ mod tests {
             assert!(state.swamp.source.is_empty());
             assert_eq!(TYPES[state.swamp.kind], "security");
             state.switch_surface(Surface::Swamp);
-            state.swamp_visibility(true);
+            state.swamp_panel_visibility(true);
             state.update(pane_update(state.own_plugin_id, false));
             reply(&mut state, SEARCH);
         }
@@ -2821,12 +3707,14 @@ mod tests {
         key(&mut state, BareKey::Char('r'));
         assert_eq!(state.swamp.requests.len(), count + 1);
         assert!(!state.update(Event::Timer(FractionalSeconds::new(0.0))));
-        reply(&mut state, SEARCH);
+        // The issue on screen first, then the catalogue behind it.
         assert_eq!(
             state.swamp.requests.last().unwrap().0.url,
             "https://swamp-club.com/api/v1/lab/issues/2180"
         );
         reply(&mut state, DETAIL);
+        assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
+        reply(&mut state, SEARCH);
         assert_eq!(state.swamp.requests.len(), count + 2);
     }
 
@@ -2908,14 +3796,15 @@ mod tests {
                 assert!(!state.update(Event::Visible(true)));
             }
             assert!(!state.activate_swamp());
+            // The reader's issue was asked for first; the catalogue behind it waits.
             assert!(!state.update(Event::WebRequestResult(
                 200,
                 server(),
-                SEARCH.as_bytes().to_vec(),
+                DETAIL.as_bytes().to_vec(),
                 pending,
             )));
             assert!(state.swamp.pending.is_none());
-            assert!(state.swamp.detail_wanted);
+            assert!(state.swamp.loading.is_some());
             assert_eq!(state.swamp.requests.len(), count);
 
             if surface_hidden {
@@ -2924,7 +3813,8 @@ mod tests {
                 assert!(state.update(pane_update(state.own_plugin_id, false)));
             }
             assert_eq!(state.swamp.requests.len(), count + 1);
-            reply(&mut state, DETAIL);
+            assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
+            reply(&mut state, SEARCH);
             assert!(!state.update(pane_update(state.own_plugin_id, false)));
             assert!(!state.update(Event::Visible(true)));
             assert_eq!(state.swamp.requests.len(), count + 1);
@@ -2938,11 +3828,13 @@ mod tests {
             state.swamp.permission = Permission::Unrequested;
             state.activate_swamp();
             assert!(state.swamp.requests.is_empty());
-            assert!(state
-                .swamp
-                .note()
-                .unwrap()
-                .contains("Waiting for permission"));
+            assert!(
+                state.swamp.permission == Permission::Unrequested,
+                "arriving on the tab asks the host nothing"
+            );
+            assert!(state.swamp.note().unwrap().ends_with("r to allow"));
+            key(&mut state, BareKey::Char('r'));
+            assert!(state.swamp.permission == Permission::Waiting);
             state.update(Event::PermissionRequestResult(PermissionStatus::Denied));
             assert!(state.swamp.note().unwrap().contains("Permission denied"));
             state.update(Event::Timer(FractionalSeconds::new(0.0)));
@@ -2971,8 +3863,8 @@ mod tests {
     fn detail_replies_match_both_request_and_issue_and_survive_refresh_failure() {
         let mut state = reader();
         state.swamp.detail_scroll = 4;
+        // A refresh in the reader asks for its issue ahead of the catalogue.
         key(&mut state, BareKey::Char('r'));
-        reply(&mut state, SEARCH);
         let mut wrong_context = context(&state);
         wrong_context.insert(ISSUE_NUMBER.into(), "2254".into());
         assert!(!state.swamp_web_result(200, &server(), DETAIL.as_bytes(), &wrong_context));
@@ -2986,14 +3878,14 @@ mod tests {
             .contains("wrong issue number"));
         assert_eq!(state.swamp.detail.as_ref().unwrap().issue.number, 2180);
         assert_eq!(state.swamp.detail_scroll, 4);
-        key(&mut state, BareKey::Char('r'));
         reply(&mut state, SEARCH);
+        key(&mut state, BareKey::Char('r'));
         reply(&mut state, DETAIL);
+        reply(&mut state, SEARCH);
         assert_eq!(state.swamp.detail_scroll, 4);
         assert!(!state.swamp.has_error());
 
         key(&mut state, BareKey::Char('r'));
-        reply(&mut state, SEARCH);
         let old = context(&state);
         key(&mut state, BareKey::Esc);
         key(&mut state, BareKey::Up);
@@ -3005,6 +3897,22 @@ mod tests {
         assert!(!state.swamp_web_result(200, &server(), DETAIL.as_bytes(), &old));
         reply(&mut state, &DETAIL.replace("2180", "2254"));
         assert_eq!(state.swamp.detail.as_ref().unwrap().issue.number, 2254);
+    }
+
+    #[test]
+    fn a_tab_click_hands_the_keys_to_the_issue_list() {
+        let mut state = loaded();
+        let before = state.swamp.selected;
+        let x = state
+            .tab_cells
+            .iter()
+            .find(|cell| cell.target == Surface::Swamp)
+            .unwrap()
+            .x;
+        assert!(state.on_mouse(Mouse::LeftClick(0, x)));
+        assert!(!state.tabs_focused);
+        key(&mut state, BareKey::Char('j'));
+        assert_eq!(state.swamp.selected, before + 1);
     }
 
     #[test]
@@ -3024,6 +3932,9 @@ mod tests {
         state.render(12, 80);
         let line = state.swamp.last_body_top + 4; // second metadata row plus tab bar
         assert!(state.on_mouse(Mouse::LeftClick(line as isize, 4)));
+        assert_eq!(state.swamp.opened, None, "a press selects, as on every tab");
+        assert_eq!(state.swamp.selected_number(), Some(2180));
+        assert!(state.on_mouse(Mouse::Release(line as isize, 4)));
         assert_eq!(state.swamp.opened, Some(2180));
         key(&mut state, BareKey::Esc);
         assert_eq!(state.swamp.opened, None);
@@ -3041,7 +3952,10 @@ mod tests {
             .x;
         state.on_mouse(Mouse::LeftClick(0, x));
         assert_eq!(state.surface, Surface::Swamp);
-        key(&mut state, BareKey::Enter);
+        assert!(
+            !state.tabs_focused,
+            "a tab click gives the keys to its list"
+        );
         key(&mut state, BareKey::Tab);
         assert_eq!(state.ring_yields, [wire::STOP_TABS]);
         key(&mut state, BareKey::Esc);
@@ -3101,7 +4015,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["A", "T", "V", "S"]
         );
-        assert!(state.swamp.header().contains("2 issues"));
+        assert!(state.swamp.header(usize::MAX).contains("2 issues"));
     }
 
     #[test]
@@ -3292,7 +4206,9 @@ mod tests {
         state.render_swamp(10, 12);
         assert_eq!(state.swamp.window, 3);
         assert_eq!(state.swamp.selected, 0);
-        assert!(state.swamp_mouse(Mouse::LeftClick(state.swamp.last_body_top as isize, 0)));
+        let line = state.swamp.last_body_top as isize;
+        assert!(state.swamp_mouse(Mouse::LeftClick(line, 0)));
+        assert!(state.swamp_mouse(Mouse::Release(line, 0)));
         assert_eq!(state.swamp.opened, Some(2254));
         key(&mut state, BareKey::Esc);
         state.render_swamp(10, 12);
@@ -3321,10 +4237,9 @@ mod tests {
             .iter()
             .rposition(|(index, _)| *index == 1)
             .unwrap();
-        assert!(state.swamp_mouse(Mouse::LeftClick(
-            (state.swamp.last_body_top + continuation) as isize,
-            0
-        )));
+        let line = (state.swamp.last_body_top + continuation) as isize;
+        assert!(state.swamp_mouse(Mouse::LeftClick(line, 0)));
+        assert!(state.swamp_mouse(Mouse::Release(line, 0)));
         assert_eq!(state.swamp.opened, Some(2180));
     }
 
@@ -3399,7 +4314,10 @@ mod tests {
         assert_eq!(state.swamp.issues().len(), 1);
         choose(&mut state, 'u', "Unassigned");
         assert_eq!(state.swamp.selected_number(), Some(4));
-        assert!(state.swamp.header().contains("1 issues · cached"));
+        assert!(state
+            .swamp
+            .header(usize::MAX)
+            .contains("1 of 4 issues · cached"));
         choose(&mut state, 'u', "All");
         assert_eq!(state.swamp.issues().len(), 2);
         for cancel in [BareKey::Esc, BareKey::Tab] {
@@ -3415,11 +4333,14 @@ mod tests {
     fn pagination_finds_assignees_beyond_page_one_and_deduplicates_at_returned_offsets() {
         let mut state = ready();
         state.activate_swamp();
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading issues…"));
         reply(&mut state, &page(&(1..=200).collect::<Vec<_>>(), 203));
         assert!(
             state.swamp.issues().is_empty(),
             "partial catalogues are never displayed"
         );
+        // Counted, never against the Lab's total, which here promises one issue too many.
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading… 200 so far"));
         assert_eq!(
             state.swamp.requests.last().unwrap().0.url,
             format!("{}&offset=200", search_url(""))
@@ -3435,11 +4356,14 @@ mod tests {
             .0
             .url
             .ends_with("offset=202"));
+        // 200 came back twice; the count is of distinct issues.
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading… 201 so far"));
         reply(&mut state, &page(&[202], 203));
         assert!(
             state.swamp.pending.is_none(),
             "reported total terminates the load"
         );
+        assert!(state.swamp.note().is_none());
         assert_eq!(state.swamp.issues().len(), 202);
         choose(&mut state, 'u', "amy");
         assert_eq!(state.swamp.selected_number(), Some(201));
@@ -3515,13 +4439,6 @@ mod tests {
         key(&mut state, BareKey::Enter);
         reply(&mut state, &DETAIL.replace("2180", "10"));
         key(&mut state, BareKey::Char('r'));
-        assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
-        reply(&mut state, SEARCH);
-        assert_eq!(
-            state.swamp.requests.last().unwrap().0.url,
-            search_url("body-only phrase")
-        );
-        reply(&mut state, &page(&[10], 1));
         assert!(state
             .swamp
             .requests
@@ -3531,6 +4448,13 @@ mod tests {
             .url
             .ends_with("/issues/10"));
         reply(&mut state, &DETAIL.replace("2180", "10"));
+        assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
+        reply(&mut state, SEARCH);
+        assert_eq!(
+            state.swamp.requests.last().unwrap().0.url,
+            search_url("body-only phrase")
+        );
+        reply(&mut state, &page(&[10], 1));
         assert_eq!(
             state.swamp.cache.catalogue.as_ref().unwrap().issues.len(),
             2
@@ -3815,6 +4739,1008 @@ mod tests {
         reply(&mut state, SEARCH);
         assert!(!state.swamp.has_error());
         assert!(!state.swamp.reloaded_after_401);
+    }
+
+    /// A finished triage says so only while nothing more urgent has the row, and goes when
+    /// the user moves on: it used to outrank loading and every error until the next `r`.
+    #[test]
+    fn a_finished_triage_gives_way_to_loading_errors_and_what_was_typed() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('j'));
+        triage(&mut state);
+        reply(&mut state, DETAIL);
+        assert!(ack(&mut state, wire::AskOutcome::Sent));
+        let note = state.swamp.note().unwrap();
+        assert!(note.starts_with("#2180 sent to Hocus") && note.contains("chat"));
+        // The chat's input box is two Tabs away: its tab bar first, then the box.
+        assert!(note.ends_with("Tab Tab"), "{note}");
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Quiet);
+        assert_eq!(state.swamp.note_rows(11, 24).len(), 2);
+        key(&mut state, BareKey::Tab);
+        assert_eq!(state.ring_yields, [wire::STOP_TABS]);
+        key(&mut state, BareKey::Char('k'));
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading #2254…"));
+        reply_status(&mut state, 503, r#"{"error":"unavailable"}"#);
+        assert!(state.swamp.note().unwrap().starts_with("Error:"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Error);
+        key(&mut state, BareKey::Esc);
+
+        triage(&mut state);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert!(ack(&mut state, wire::AskOutcome::Queued));
+        assert!(state.swamp.note().unwrap().starts_with("#2254 queued"));
+        key(&mut state, BareKey::Char('f'));
+        type_text(&mut state, "bad tag");
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.note().unwrap().contains("must be 1-64"));
+        key(&mut state, BareKey::Esc);
+        choose(&mut state, 's', "triaged");
+        assert!(
+            state.swamp.note().is_none(),
+            "a filter commit is moving on too"
+        );
+    }
+
+    #[test]
+    fn a_refused_or_unanswered_triage_is_an_error_and_can_be_asked_again() {
+        let mut state = loaded();
+        triage(&mut state);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert!(ack(&mut state, wire::AskOutcome::Refused));
+        assert!(state
+            .swamp
+            .note()
+            .unwrap()
+            .starts_with("Hocus refused #2254"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Error);
+        assert!(state.swamp.has_error());
+
+        // Sent, and never acknowledged: after the deadline the note stops saying it is on its
+        // way, and says so without claiming it failed.
+        triage(&mut state);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert_eq!(
+            state.swamp.note().as_deref(),
+            Some("Sending #2254 to Hocus…")
+        );
+        let deadline = state.swamp.triage_deadline_ms;
+        assert!(!state.expire_swamp_triage(deadline - 1));
+        assert!(state.expire_swamp_triage(deadline));
+        assert!(!state.expire_swamp_triage(deadline + 1), "given up on once");
+        let note = state.swamp.note().unwrap();
+        assert!(note.contains("did not answer about #2254") && note.ends_with("a retry"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Error);
+        assert!(
+            !ack(&mut state, wire::AskOutcome::Sent),
+            "too late to count"
+        );
+        let count = state.swamp.requests.len();
+        triage(&mut state);
+        assert_eq!(state.swamp.requests.len(), count + 1, "a asks again");
+
+        // `r` is what someone does about a "Sending…" that has sat there.
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert!(state.swamp.triage_waiting);
+        key(&mut state, BareKey::Char('r'));
+        assert!(!state.swamp.triage_waiting);
+        reply(&mut state, SEARCH);
+        assert!(state.swamp.note().unwrap().contains("did not answer"));
+        // Off the Swamp tab the expiry still happens, and redraws for the tab's `!`: the bar
+        // is on show whichever tab is.
+        triage(&mut state);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        state.switch_surface(Surface::Agents);
+        assert!(!state.swamp.has_error());
+        assert!(state.expire_swamp_triage(i64::MAX));
+        assert!(!state.swamp.triage_waiting);
+        assert!(state.swamp.has_error());
+        state.render(12, 60);
+        assert!(state.tab_cells.last().unwrap().text.contains("Swamp!"));
+    }
+
+    /// The other way a triage fails while the user is elsewhere: the fetch before the handoff.
+    #[test]
+    fn off_tab_triage_fetch_failure_redraws_for_the_tab_marker() {
+        let mut state = loaded();
+        triage(&mut state);
+        state.switch_surface(Surface::Agents);
+        let context = context(&state);
+        assert!(state.swamp_web_result(500, &server(), br#"{"error":"boom"}"#, &context));
+        assert!(state.swamp.has_error());
+        assert!(!state.swamp.triage_waiting);
+    }
+
+    #[test]
+    fn errors_wrap_so_the_remedy_and_the_retry_key_are_read() {
+        let mut state = loaded();
+        state.swamp.keep_credentials = false;
+        key(&mut state, BareKey::Char('r'));
+        answer_login(&mut state, &login("swamp_old"));
+        reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
+        answer_login(&mut state, &login("swamp_old"));
+        reply_status(&mut state, 401, r#"{"error":"Unauthorized"}"#);
+        state.render(12, 46);
+        let rows = state.swamp.note_rows(11, 46);
+        assert!(rows.len() > 1, "{rows:?}");
+        assert!(rows.join(" ").contains("swamp auth login"), "{rows:?}");
+        // The action is never split: it rides the last row, or takes one of its own.
+        assert_eq!(rows.last().unwrap(), "r retry", "{rows:?}");
+        assert!(rows.iter().all(|row| row.width() <= 46));
+        // The chips follow the note down, and still open their filters.
+        let (row, x, _, shortcut) = state.swamp.filter_cells[0];
+        assert_eq!(row, 1 + rows.len());
+        let last_chip_row = state.swamp.filter_cells.last().unwrap().0;
+        assert_eq!(state.swamp.last_body_top, last_chip_row + 1);
+        assert!(state.on_mouse(Mouse::LeftClick(row as isize + 1, x)));
+        assert_eq!(state.swamp.filter.as_ref().unwrap().shortcut, shortcut);
+        key(&mut state, BareKey::Esc);
+        // The default panel's 24 columns: an error may take half the pane, which is room for
+        // the remedy as well as what went wrong.
+        state.render(12, 24);
+        let rows = state.swamp.note_rows(11, 24);
+        assert!(rows.join(" ").contains("`swamp auth login`"), "{rows:?}");
+        assert!(rows.last().unwrap().ends_with("r retry"), "{rows:?}");
+        assert!(rows.iter().all(|row| row.width() <= 24), "{rows:?}");
+        assert!(state.swamp.last_body_rows >= 1);
+        // Too short for all of it: cut, marked, the key kept, and a row left for the body.
+        state.render(5, 24);
+        let rows = state.swamp.note_rows(4, 24);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows[1].ends_with("… · r retry"), "{rows:?}");
+        assert!(rows.iter().all(|row| row.width() <= 24));
+        assert_eq!(state.swamp.last_body_top, 3);
+        assert_eq!(state.swamp.last_body_rows, 1);
+    }
+
+    /// A validation message is about the box still open: no `r retry`, which in the box types
+    /// an `r`, and gone with the box.
+    #[test]
+    fn what_was_typed_is_not_a_network_error() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('f'));
+        type_text(&mut state, "cli tag");
+        key(&mut state, BareKey::Enter);
+        let note = state.swamp.note().unwrap();
+        assert!(note.contains("must be 1-64"), "{note}");
+        assert!(
+            note.ends_with("Esc cancel") && !note.contains("r retry"),
+            "{note}"
+        );
+        state.render(12, 80);
+        assert!(state.tab_cells.last().unwrap().text.contains('!'));
+        key(&mut state, BareKey::Esc);
+        assert!(!state.swamp.has_error());
+        assert!(state.swamp.note().is_none());
+        state.render(12, 80);
+        assert!(!state.tab_cells.last().unwrap().text.contains('!'));
+
+        key(&mut state, BareKey::Char('/'));
+        type_text(&mut state, &"q".repeat(201));
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.is_editing());
+        let note = state.swamp.note().unwrap();
+        assert!(note.contains("longer than 200") && !note.contains("r retry"));
+        key(&mut state, BareKey::Esc);
+        assert!(!state.swamp.has_error());
+        assert!(state.swamp.note().is_none());
+
+        // A real network error outlasts a good Source and a bad one.
+        key(&mut state, BareKey::Char('r'));
+        reply_status(&mut state, 503, r#"{"error":"Network unavailable"}"#);
+        choose(&mut state, 'f', "swamp");
+        assert_eq!(state.swamp.source, "swamp");
+        assert!(state.swamp.note().unwrap().contains("Network unavailable"));
+        choose(&mut state, 'f', " bad");
+        key(&mut state, BareKey::Esc);
+        assert!(state.swamp.note().unwrap().contains("Network unavailable"));
+    }
+
+    #[test]
+    fn opening_an_issue_mid_refresh_fetches_it_before_the_next_page() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('r'));
+        reply(&mut state, &page(&[1], 3));
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("offset=1"));
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.opened, Some(2254));
+        assert_eq!(state.swamp.requests.len(), count, "one request at a time");
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading #2254…"));
+        reply(&mut state, &page(&[2], 3));
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("/issues/2254"));
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert_eq!(state.swamp.detail.as_ref().unwrap().issue.number, 2254);
+        assert!(state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .ends_with("offset=2"));
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading… 2 so far"));
+        reply(&mut state, &page(&[3], 3));
+        assert_eq!(
+            state.swamp.cache.catalogue.as_ref().unwrap().issues.len(),
+            3
+        );
+        assert!(state.swamp.pending.is_none());
+    }
+
+    #[test]
+    fn c_clears_query_and_filters_and_reuses_the_catalogue() {
+        let mut state = loaded();
+        assert!(!state.swamp.header(usize::MAX).contains("c clear"));
+        choose(&mut state, 's', "triaged");
+        choose(&mut state, 't', "bug");
+        choose(&mut state, 'o', "Created oldest first");
+        choose(&mut state, '/', "two words");
+        reply(&mut state, SEARCH);
+        assert!(state
+            .swamp
+            .header(usize::MAX)
+            .starts_with("/two words · Esc/c clear · Enter open · / edit"));
+        // The clear key outlasts the others on a narrow row, whatever the query's length, and
+        // gives way to `? keys` no more than the query does.
+        state.swamp.query = "q".repeat(100);
+        assert!(state.swamp.header(30).contains("Esc/c clear"));
+        state.swamp.query = "two words".into();
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Char('c'));
+        assert!(state.swamp.query.is_empty());
+        assert_eq!((state.swamp.status, state.swamp.kind), (0, 0));
+        assert!(state.swamp.source.is_empty() && state.swamp.assignee.is_none());
+        assert_eq!(state.swamp.sort, 3, "sort is not a filter");
+        assert_eq!(state.swamp.issues().len(), 2);
+        assert_eq!(state.swamp.requests.len(), count, "the catalogue is reused");
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('c'))));
+        assert!(!state.swamp.header(usize::MAX).contains("c clear"));
+        assert_eq!(state.swamp.empty_list(), "No issues found");
+        choose(&mut state, 's', "closed");
+        assert!(state.swamp.issues().is_empty());
+        assert_eq!(state.swamp.empty_list(), "No issues match · Esc/c clear");
+        assert!(state.swamp.header(usize::MAX).contains("0 of 2 issues"));
+        // In the box it is a letter.
+        key(&mut state, BareKey::Char('/'));
+        key(&mut state, BareKey::Char('c'));
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("c")
+        );
+        key(&mut state, BareKey::Esc);
+        // In the reader it does nothing.
+        let mut state = reader();
+        state.swamp.status = 2;
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('c'))));
+        assert_eq!(state.swamp.status, 2);
+    }
+
+    #[test]
+    fn every_chip_keeps_its_key_and_narrow_chips_leave_the_list_room() {
+        let mut state = loaded();
+        state.swamp.source = "a-very-long-source-tag-name".into();
+        for cols in 8..=60 {
+            let (_, labels) = state.swamp.layout_filters(12, cols);
+            assert_eq!(labels.len(), 5, "{cols}");
+            for ((_, x, width, key), label) in state.swamp.filter_cells.iter().zip(&labels) {
+                assert!(x + width <= cols, "{cols}: {label}");
+                assert!(
+                    label.contains(&format!("({key})]")) || label.starts_with(&format!("[{key} ")),
+                    "{cols}: {label}"
+                );
+            }
+        }
+        state.swamp.source.clear();
+        // The default panel on an 80-column terminal: two rows of chips, not five.
+        state.render(13, 24);
+        assert_eq!(state.swamp.filter_cells.len(), 5);
+        assert_eq!(state.swamp.last_body_top, 3);
+        assert!(state.swamp.last_body_rows >= 3);
+        // Wide enough, the chips say what they filter.
+        let (_, labels) = state.swamp.layout_filters(12, 120);
+        assert_eq!(labels[3], "[Sort: Updated ↓ (o)]");
+        // Too short for the chips and a list: the list keeps a row.
+        state.render(4, 80);
+        assert!(state.swamp.last_body_rows >= 1);
+    }
+
+    #[test]
+    fn swamp_asks_the_host_only_when_asked_or_granted_before() {
+        let directory = tempfile::tempdir().unwrap();
+        let unrequested = || {
+            let mut state = ready();
+            state.swamp.cache_dir = Some(directory.path().to_owned());
+            state.swamp.permission = Permission::Unrequested;
+            state
+        };
+        let mut state = unrequested();
+        state.surface = Surface::Agents;
+        state.tabs_focused = true;
+        for _ in 0..3 {
+            key(&mut state, BareKey::Right);
+        }
+        assert_eq!(state.surface, Surface::Swamp);
+        assert!(
+            state.swamp.permission == Permission::Unrequested,
+            "walking the tab bar past Swamp asks nothing"
+        );
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Ask);
+        // A key the bar does not own goes to the tab below it.
+        key(&mut state, BareKey::Char('r'));
+        assert!(state.swamp.permission == Permission::Waiting);
+        state.update(Event::PermissionRequestResult(PermissionStatus::Granted));
+        assert_eq!(state.swamp.requests.len(), 1);
+
+        // The next load remembers the grant and asks straight away; the host answers from its
+        // own cache, without a prompt.
+        let mut next = unrequested();
+        next.activate_swamp();
+        assert!(next.swamp.permission == Permission::Waiting);
+        // A denial forgets it.
+        next.update(Event::PermissionRequestResult(PermissionStatus::Denied));
+        let mut third = unrequested();
+        third.activate_swamp();
+        assert!(third.swamp.permission == Permission::Unrequested);
+    }
+
+    #[test]
+    fn ctrl_r_refreshes_as_plain_r_does() {
+        let ctrl_r = KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier();
+        let mut state = loaded();
+        let count = state.swamp.requests.len();
+        assert!(state.on_key(ctrl_r.clone()));
+        assert_eq!(state.swamp.requests.len(), count + 1);
+        assert_eq!(state.swamp.requests.last().unwrap().0.url, search_url(""));
+        assert!(state.swamp.header(usize::MAX).contains("Ctrl-r refresh"));
+        let mut state = ready();
+        state.swamp.permission = Permission::Denied;
+        assert!(state.on_key(ctrl_r));
+        assert!(state.swamp.permission == Permission::Waiting);
+    }
+
+    #[test]
+    fn a_click_selects_and_only_a_release_on_the_same_cell_opens() {
+        let mut state = loaded();
+        state.render(12, 80);
+        let count = state.swamp.requests.len();
+        let second = (state.swamp.last_body_top + 3) as isize; // 2180's first row
+        assert!(state.swamp_mouse(Mouse::LeftClick(second, 4)));
+        assert_eq!(state.swamp.selected_number(), Some(2180));
+        assert!(state.swamp.opened.is_none());
+        assert_eq!(state.swamp.requests.len(), count);
+        // A press that became a drag was selecting text.
+        state.swamp_mouse(Mouse::Hold(second, 10));
+        assert!(!state.swamp_mouse(Mouse::Release(second, 10)));
+        assert!(state.swamp.opened.is_none());
+        // A release with no press of its own opens nothing either.
+        assert!(!state.swamp_mouse(Mouse::Release(second, 4)));
+        assert_eq!(state.swamp.requests.len(), count);
+        state.swamp_mouse(Mouse::LeftClick(second, 4));
+        assert!(state.swamp_mouse(Mouse::Release(second, 4)));
+        assert_eq!(state.swamp.opened, Some(2180));
+        assert_eq!(state.swamp.requests.len(), count + 1);
+        reply(&mut state, DETAIL);
+        state.render(12, 80);
+        // In the reader the header row is the one target: the way back, on a release on the
+        // cell pressed. A drag across it is copying the `#N`.
+        assert!(!state.swamp_mouse(Mouse::LeftClick(3, 0)));
+        assert_eq!(state.swamp.opened, Some(2180));
+        assert!(!state.swamp_mouse(Mouse::LeftClick(0, 1)));
+        state.swamp_mouse(Mouse::Hold(0, 5));
+        assert!(!state.swamp_mouse(Mouse::Release(0, 5)));
+        assert_eq!(state.swamp.opened, Some(2180));
+        assert!(!state.swamp_mouse(Mouse::LeftClick(0, 5)));
+        assert_eq!(state.swamp.opened, Some(2180), "not on the press");
+        assert!(state.swamp_mouse(Mouse::Release(0, 5)));
+        assert!(state.swamp.opened.is_none());
+        assert_eq!(state.panel_hides, 0);
+        assert_eq!(state.swamp.selected_number(), Some(2180));
+    }
+
+    /// hocus carrying the panel to another Zellij tab is a `Visible(false)` and a
+    /// `Visible(true)` with the panel on screen the whole time.
+    #[test]
+    fn a_tab_switch_that_carries_the_panel_keeps_the_open_filter_and_the_login() {
+        let mut state = ready();
+        state.swamp.keep_credentials = false;
+        state.activate_swamp();
+        answer_login(&mut state, b"");
+        reply(&mut state, SEARCH);
+        let commands = state.swamp.commands.len();
+        key(&mut state, BareKey::Char('f'));
+        type_text(&mut state, "provisional");
+        for visible in [false, true, false, true] {
+            state.update(Event::Visible(visible));
+        }
+        assert!(state.swamp.has_filter_editor());
+        assert_eq!(
+            state.swamp.filter.as_ref().unwrap().form.text("value"),
+            "provisional"
+        );
+        assert_eq!(state.swamp.commands.len(), commands, "no second login read");
+        assert!(state.swamp.note().is_none(), "no Loading…");
+        // Work that waited while the tab was hidden goes out when it is back.
+        key(&mut state, BareKey::Esc);
+        state.update(Event::Visible(false));
+        key(&mut state, BareKey::Enter);
+        let requests = state.swamp.requests.len();
+        state.update(Event::Visible(true));
+        assert_eq!(state.swamp.requests.len(), requests + 1);
+        reply(&mut state, DETAIL.replace("2180", "2254").as_str());
+        // Putting the panel away is another matter: the filter closes, the login is read again.
+        key(&mut state, BareKey::Esc);
+        key(&mut state, BareKey::Char('f'));
+        state.swamp_panel_visibility(false);
+        assert!(!state.swamp.is_editing());
+        state.swamp_panel_visibility(true);
+        assert_eq!(state.swamp.commands.len(), commands + 1);
+    }
+
+    #[test]
+    fn triage_asks_first_and_any_other_key_keeps_the_issue_here() {
+        let mut state = loaded();
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Char('a'));
+        assert_eq!(state.swamp.note().as_deref(), Some("Triage #2254? y/n"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Ask);
+        assert_eq!(state.swamp.requests.len(), count);
+        // Any other key drops the question and does its job.
+        key(&mut state, BareKey::Char('j'));
+        assert!(state.swamp.confirming_triage.is_none());
+        assert_eq!(state.swamp.selected_number(), Some(2180));
+        key(&mut state, BareKey::Char('y'));
+        assert!(!state.swamp.triage_waiting);
+        // Esc and n drop it without hiding the panel.
+        for answer in [BareKey::Esc, BareKey::Char('n')] {
+            key(&mut state, BareKey::Char('a'));
+            assert!(state.on_key(KeyWithModifier::new(answer)));
+            assert!(state.swamp.confirming_triage.is_none());
+            assert_eq!(state.panel_hides, 0);
+        }
+        // A selection moved under the question turns its `y` into nothing.
+        key(&mut state, BareKey::Char('a'));
+        state.swamp.selected = 0;
+        key(&mut state, BareKey::Char('y'));
+        assert!(!state.swamp.triage_waiting);
+        // So does a click on another issue, and a hide.
+        key(&mut state, BareKey::Char('a'));
+        state.render(12, 80);
+        let top = state.swamp.last_body_top as isize;
+        state.swamp_mouse(Mouse::LeftClick(top + 3, 0));
+        assert!(state.swamp.confirming_triage.is_none());
+        key(&mut state, BareKey::Char('a'));
+        state.hide_the_panel();
+        assert!(state.swamp.confirming_triage.is_none());
+        assert_eq!(state.swamp.requests.len(), count);
+        state.update(pane_update(state.own_plugin_id, false));
+        triage(&mut state);
+        assert!(state.swamp.triage_waiting);
+        assert_eq!(state.swamp.requests.len(), count + 1);
+    }
+
+    #[test]
+    fn a_paste_lands_in_the_query_and_the_source_box_but_not_a_select() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('/'));
+        type_text(&mut state, "ab");
+        key(&mut state, BareKey::Left);
+        assert!(state.update(Event::PastedText("x\r\ny".into())));
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("ax yb")
+        );
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.query, "ax yb");
+        reply(&mut state, EMPTY);
+        key(&mut state, BareKey::Char('f'));
+        assert!(state.update(Event::PastedText("swamp-club".into())));
+        assert_eq!(
+            state.swamp.filter.as_ref().unwrap().form.text("value"),
+            "swamp-club"
+        );
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.source, "swamp-club");
+        key(&mut state, BareKey::Char('s'));
+        assert!(!state.update(Event::PastedText("closed".into())));
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.status, 0);
+        // Outside a box a paste is not a string of commands.
+        assert!(!state.update(Event::PastedText("ar".into())));
+        assert!(state.swamp.confirming_triage.is_none());
+    }
+
+    #[test]
+    fn the_query_box_edits_mid_text_and_keeps_its_cursor_in_view() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('/'));
+        type_text(&mut state, "refral");
+        for _ in 0..3 {
+            key(&mut state, BareKey::Left);
+        }
+        type_text(&mut state, "er");
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("referral")
+        );
+        // The cursor sits after "refer", on the header row: pane row 1.
+        assert_eq!(state.swamp_query_cursor(11, 80), Some((6, 1)));
+        assert_eq!(
+            state.swamp.query_line(80).unwrap().0,
+            "/referral · Enter apply · Esc cancel"
+        );
+        // Past the edge the text scrolls with the cursor and the hints give way.
+        key(&mut state, BareKey::End);
+        type_text(&mut state, &"x".repeat(40));
+        let (line, column, _) = state.swamp.query_line(24).unwrap();
+        assert!(line.width() <= 24 && line.ends_with('x'), "{line}");
+        assert!(!line.contains("Esc"));
+        assert_eq!(column, 23);
+        assert!(state.swamp_query_cursor(0, 24).is_none());
+        state.on_key(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier());
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("")
+        );
+        // Tab closes it, as it closes the Source box, and goes on round the ring.
+        key(&mut state, BareKey::Tab);
+        assert!(state.swamp.editing.is_none());
+        assert!(state.swamp_query_cursor(11, 80).is_none());
+        assert_eq!(state.ring_yields, [wire::STOP_TABS]);
+        // Emptied, Enter clears the search, and says so.
+        choose(&mut state, '/', "words");
+        key(&mut state, BareKey::Char('/'));
+        state.on_key(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier());
+        assert!(state
+            .swamp
+            .query_line(80)
+            .unwrap()
+            .0
+            .contains("Enter clear"));
+    }
+
+    /// The hints come one at a time, Enter's first, and only whole: at the default panel's 24
+    /// columns the pair never fitted beside an empty box, which then said nothing at all.
+    #[test]
+    fn the_query_box_names_its_keys_one_at_a_time() {
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('/'));
+        assert_eq!(state.swamp.query_line(24).unwrap().0, "/ · Enter apply");
+        type_text(&mut state, "referral");
+        assert_eq!(
+            state.swamp.query_line(24).unwrap().0,
+            "/referral · Enter apply"
+        );
+        let hints = ["Enter apply", "Enter clear", "Esc cancel"];
+        for cols in 1..=40 {
+            let (line, _, hint_start) = state.swamp.query_line(cols).unwrap();
+            assert!(line.width() <= cols, "{cols}: {line}");
+            let tail: String = line.chars().skip(hint_start).collect();
+            for hint in tail.split(" · ").filter(|hint| !hint.is_empty()) {
+                let hint = hint.strip_prefix("· ").unwrap_or(hint);
+                assert!(hints.contains(&hint), "{cols}: {line}");
+            }
+        }
+        key(&mut state, BareKey::Esc);
+        choose(&mut state, '/', "words");
+        key(&mut state, BareKey::Char('/'));
+        state.on_key(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier());
+        assert_eq!(state.swamp.query_line(24).unwrap().0, "/ · Enter clear");
+    }
+
+    #[test]
+    fn the_header_leads_with_keys_and_drops_whole_segments() {
+        let state = loaded();
+        let full = state.swamp.header(usize::MAX);
+        assert_eq!(
+            full,
+            "Enter open · / search · a triage · Ctrl-r refresh · 2 issues · cached now"
+        );
+        for cols in "Enter open".width()..full.width() {
+            let header = state.swamp.header(cols);
+            assert!(header.width() <= cols, "{cols}: {header}");
+            for segment in header.split(" · ") {
+                assert!(
+                    segment == "? keys" || full.split(" · ").any(|whole| whole == segment),
+                    "{cols}: {header}"
+                );
+            }
+        }
+        // The default panel on an 80-column terminal still names the keys, and says there are
+        // more: a key or two give way to the marker rather than the marker never fitting.
+        assert_eq!(state.swamp.header(24), "Enter open · ? keys");
+        assert_eq!(state.swamp.header(28), "Enter open · ? keys");
+        assert_eq!(state.swamp.header(34), "Enter open · / search · ? keys");
+        for cols in "Enter open · ? keys".width()..full.width() {
+            assert!(state.swamp.header(cols).ends_with("? keys"), "{cols}");
+        }
+        let state = reader();
+        assert_eq!(
+            state.swamp.header(40),
+            "#2180 · Esc back · a triage · ? keys"
+        );
+        // Where the issue's number and the way back do not both fit, the way back stays: the
+        // body's first row names the issue anyway. The room is what `render_swamp` gives the
+        // reader's header at 24 columns, beside each scroll readout.
+        for (above, below) in [(0, 22), (3, 19), (0, 9)] {
+            let readout = scroll_readout(above, below).width();
+            let header = state.swamp.header(24 - (readout + 4 + FOCUS_MARK_COLS));
+            assert!(header.starts_with("Esc back"), "{above}/{below}: {header}");
+        }
+    }
+
+    /// At the 24 columns the default panel gives the list on an 80-column terminal, every tab
+    /// is still named on the bar, and Swamp's `!` with it: the last tab is the one a narrow bar
+    /// used to cut first, and the mark is what says to look there.
+    #[test]
+    fn swamp_and_its_mark_survive_the_default_width() {
+        let mut state = State::default();
+        state.swamp.list_error = Some("swamp-club is unreachable".into());
+        state.render(12, 24);
+        let texts: Vec<&str> = state
+            .tab_cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert_eq!(texts, ["Agents│", "Todos│", "VMs│", "Swamp!"]);
+        let swamp = state.tab_cells.last().unwrap();
+        assert!(swamp.x + swamp.width <= 24, "{texts:?}");
+    }
+
+    #[test]
+    fn the_key_sheet_names_every_key_each_mode_answers() {
+        let keys = |state: &State| {
+            state
+                .swamp_key_sheet()
+                .into_iter()
+                .map(|(keys, _)| keys)
+                .collect::<Vec<_>>()
+        };
+        let mut state = loaded();
+        let list = keys(&state);
+        for expected in [
+            "Enter",
+            "j/k ↑/↓",
+            "PgUp/PgDn",
+            "Home/End",
+            "/",
+            "s/t/f/u",
+            "o",
+            "a",
+            "Ctrl-r/r",
+            "Tab",
+            "Shift+Tab",
+            "Esc",
+            "click",
+            "click a chip",
+            "wheel",
+        ] {
+            assert!(
+                list.iter().any(|keys| keys == expected),
+                "{expected}: {list:?}"
+            );
+        }
+        assert_eq!(list[0], "Enter");
+        assert!(!list.iter().any(|keys| keys == "Esc/c"), "nothing to clear");
+        choose(&mut state, 's', "triaged");
+        // Esc clears a filtered list before it hides the panel, so the sheet says that instead.
+        let filtered = keys(&state);
+        assert!(filtered.iter().any(|keys| keys == "Esc/c"));
+        assert!(!filtered.iter().any(|keys| keys == "Esc"), "{filtered:?}");
+        key(&mut state, BareKey::Char('a'));
+        assert_eq!(keys(&state)[..3], ["y", "n/Esc", "any other key"]);
+        key(&mut state, BareKey::Esc);
+        // A box being typed in has no sheet: `?` is a character there.
+        key(&mut state, BareKey::Char('/'));
+        key(&mut state, BareKey::Char('?'));
+        assert!(state.key_sheet_scroll.is_none());
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("?")
+        );
+        key(&mut state, BareKey::Esc);
+        key(&mut state, BareKey::Char('f'));
+        key(&mut state, BareKey::Char('?'));
+        assert!(state.key_sheet_scroll.is_none());
+        assert!(state.swamp.has_filter_editor());
+        key(&mut state, BareKey::Esc);
+        let state = reader();
+        let reading = keys(&state);
+        assert_eq!(reading[0], "Esc");
+        assert!(reading.iter().any(|keys| keys == "click the top row"));
+        let mut state = ready();
+        state.swamp.permission = Permission::Unrequested;
+        assert_eq!(keys(&state)[0], "r");
+    }
+
+    /// Esc is one step back before the way out, from a search or a filter as from the reader:
+    /// the panel's docs promised it, and the key used to hide the panel over a filtered list.
+    #[test]
+    fn esc_steps_out_of_a_search_or_filter_then_hides() {
+        let mut state = loaded();
+        choose(&mut state, 's', "triaged");
+        choose(&mut state, 'o', "Created oldest first");
+        choose(&mut state, '/', "two words");
+        reply(&mut state, SEARCH);
+        state.render(12, 80);
+        key(&mut state, BareKey::Enter);
+        assert_eq!(state.swamp.opened, Some(2254));
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        key(&mut state, BareKey::Esc);
+        assert!(state.swamp.opened.is_none());
+        assert_eq!(state.swamp.query, "two words");
+        assert_eq!(STATUSES[state.swamp.status], "triaged");
+        assert_eq!(state.panel_hides, 0);
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Esc);
+        assert!(state.swamp.query.is_empty());
+        assert_eq!(state.swamp.status, 0);
+        assert_eq!(state.swamp.sort, 3, "sort is not a filter");
+        assert_eq!(state.swamp.requests.len(), count, "the catalogue is reused");
+        assert_eq!(state.panel_hides, 0);
+        key(&mut state, BareKey::Esc);
+        assert_eq!(state.panel_hides, 1);
+    }
+
+    /// `y` while the login cannot be read has nothing to fetch the issue with. It used to wait
+    /// for the next `r`, which then sent a triage asked for minutes before - and until then
+    /// `a` was refused, as if one were on its way.
+    #[test]
+    fn a_triage_confirmed_while_the_login_is_unreadable_is_dropped_not_parked() {
+        let mut state = loaded();
+        state.swamp.keep_credentials = false;
+        key(&mut state, BareKey::Char('r'));
+        let context = state.swamp.commands.last().unwrap().1.clone();
+        state.swamp_result(Some(1), b"", b"Permission denied", &context);
+        let requests = state.swamp.requests.len();
+        triage(&mut state);
+        assert_eq!(state.swamp.requests.len(), requests);
+        assert!(!state.swamp.triage_waiting);
+        assert!(state.swamp.triage_wanted.is_none());
+        assert!(state.swamp.note().unwrap().contains("Permission denied"));
+        key(&mut state, BareKey::Char('a'));
+        assert!(state.swamp.confirming_triage.is_some(), "a asks again");
+        key(&mut state, BareKey::Char('n'));
+        // And `r` only reloads.
+        key(&mut state, BareKey::Char('r'));
+        answer_login(&mut state, b"");
+        assert!(!state
+            .swamp
+            .requests
+            .last()
+            .unwrap()
+            .0
+            .url
+            .contains("/issues/"));
+        assert!(!matches!(
+            state.swamp.pending.as_ref().map(|r| &r.target),
+            Some(Target::Triage(_))
+        ));
+    }
+
+    /// The note row says whichever happened last, a triage or a fetch error: a triage asked
+    /// for over a standing error used to say nothing of itself until the error went.
+    #[test]
+    fn a_triage_started_over_an_error_has_the_row_until_a_newer_error() {
+        let mut state = loaded();
+        state.swamp.cache_error = Some("disk full".into());
+        assert!(state.swamp.note().unwrap().starts_with("Cache not saved"));
+        triage(&mut state);
+        assert_eq!(state.swamp.note().as_deref(), Some("Fetching #2254…"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Quiet);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert!(state.swamp.note().unwrap().starts_with("Sending #2254"));
+        assert!(ack(&mut state, wire::AskOutcome::Refused));
+        assert!(state
+            .swamp
+            .note()
+            .unwrap()
+            .starts_with("Hocus refused #2254"));
+        assert_eq!(state.swamp.noted().unwrap().1, Tone::Error);
+        // Moving on from the triage gives the row back to the error it was over.
+        state.render(12, 80);
+        key(&mut state, BareKey::Enter);
+        assert!(state.swamp.note().unwrap().starts_with("Cache not saved"));
+
+        // An error that lands while the triage waits is the newer news, until the triage moves.
+        let mut state = loaded();
+        key(&mut state, BareKey::Char('r'));
+        triage(&mut state);
+        assert_eq!(state.swamp.note().as_deref(), Some("Fetching #2254…"));
+        reply_status(&mut state, 503, r#"{"error":"unavailable"}"#);
+        assert!(state.swamp.note().unwrap().starts_with("Error:"));
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        assert!(state.swamp.note().unwrap().starts_with("Sending #2254"));
+    }
+
+    /// Putting the panel away ends what belongs to the moment, a filter being chosen among it,
+    /// and keeps a search being typed, as the Agents search box keeps its own.
+    #[test]
+    fn a_hide_closes_the_filter_editor_and_keeps_the_query_box() {
+        let mut state = loaded();
+        for owner in [true, false] {
+            // hocus's `vms::VISIBILITY`, or the panel's own Esc.
+            let hide = |state: &mut State| match owner {
+                true => {
+                    state.swamp_panel_visibility(false);
+                },
+                false => state.hide_the_panel(),
+            };
+            let show = |state: &mut State| match owner {
+                true => {
+                    state.swamp_panel_visibility(true);
+                },
+                false => {
+                    state.update(pane_update(state.own_plugin_id, false));
+                },
+            };
+            key(&mut state, BareKey::Char('f'));
+            type_text(&mut state, "provisional");
+            hide(&mut state);
+            assert!(!state.swamp.has_filter_editor(), "{owner}");
+            show(&mut state);
+            key(&mut state, BareKey::Char('/'));
+            type_text(&mut state, "foo");
+            hide(&mut state);
+            assert!(!state.swamp.has_filter_editor(), "{owner}");
+            assert_eq!(
+                state.swamp.editing.as_ref().map(TextInput::get_text),
+                Some("foo"),
+                "{owner}"
+            );
+            show(&mut state);
+            assert!(state.swamp.is_editing(), "{owner}");
+            key(&mut state, BareKey::Esc);
+        }
+    }
+
+    /// A list only re-filtered from the catalogue already held has retried nothing, so a
+    /// failed load's error stays up, `!` and all, until a request actually goes out.
+    #[test]
+    fn clearing_or_reusing_a_search_keeps_a_network_error() {
+        let mut state = loaded();
+        choose(&mut state, 's', "triaged");
+        key(&mut state, BareKey::Char('r'));
+        reply_status(&mut state, 503, r#"{"error":"Network unavailable"}"#);
+        let count = state.swamp.requests.len();
+        let still_failed = |state: &mut State| {
+            assert_eq!(state.swamp.requests.len(), count);
+            assert!(state.swamp.note().unwrap().contains("Network unavailable"));
+            state.render(12, 80);
+            assert!(state.tab_cells.last().unwrap().text.contains("Swamp!"));
+        };
+        key(&mut state, BareKey::Char('c'));
+        assert_eq!(state.swamp.status, 0);
+        still_failed(&mut state);
+        choose(&mut state, '/', "");
+        still_failed(&mut state);
+        choose(&mut state, '/', "two words");
+        assert_eq!(state.swamp.requests.len(), count + 1);
+        assert!(state.swamp.list_error.is_none());
+    }
+
+    /// At the default panel's 24 columns a note that comes and goes in a few seconds takes one
+    /// row, so the list under it holds still: a triage used to push it down a row for the
+    /// question, and again for the fetch.
+    #[test]
+    fn transient_notes_hold_one_row_at_the_narrowest_panel() {
+        let mut state = loaded();
+        let mut top = None;
+        let mut one_row = |state: &mut State| {
+            state.render(12, 24);
+            let rows = state.swamp.note_rows(11, 24);
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(state.swamp.note_rows(11, 46).len(), 1, "{rows:?}");
+            let body_top = state.swamp.last_body_top;
+            assert_eq!(*top.get_or_insert(body_top), body_top, "{rows:?}");
+        };
+        key(&mut state, BareKey::Char('a'));
+        one_row(&mut state);
+        key(&mut state, BareKey::Char('y'));
+        one_row(&mut state);
+        reply(&mut state, &DETAIL.replace("2180", "2254"));
+        one_row(&mut state);
+        // The acknowledgements stay put longer, and say where to go: two rows at most.
+        for outcome in [wire::AskOutcome::Queued, wire::AskOutcome::Sent] {
+            if outcome == wire::AskOutcome::Sent {
+                triage(&mut state);
+                reply(&mut state, &DETAIL.replace("2180", "2254"));
+            }
+            assert!(ack(&mut state, outcome));
+            let rows = state.swamp.note_rows(11, 24);
+            assert!(rows.len() <= 2, "{rows:?}");
+            assert_eq!(state.swamp.note_rows(11, 46).len(), 1, "{rows:?}");
+        }
+
+        let mut state = ready();
+        state.activate_swamp();
+        assert_eq!(state.swamp.note_rows(11, 24).len(), 1);
+        reply(&mut state, &page(&(1..=200).collect::<Vec<_>>(), 203));
+        assert_eq!(state.swamp.note().as_deref(), Some("Loading… 200 so far"));
+        assert_eq!(state.swamp.note_rows(11, 24).len(), 1);
+        assert_eq!(state.swamp.note_rows(11, 46).len(), 1);
+    }
+
+    /// Tab in the `/` box closes it - the box takes every key ahead of the tab bar - but keeps
+    /// what was typed for the next `/`, and goes on to where Tab goes from the list.
+    #[test]
+    fn tab_in_the_query_box_walks_the_ring_and_keeps_the_draft() {
+        let mut state = loaded();
+        let count = state.swamp.requests.len();
+        key(&mut state, BareKey::Char('/'));
+        type_text(&mut state, "referral");
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
+        assert!(state.swamp.editing.is_none());
+        assert_eq!(state.ring_yields, [wire::STOP_TABS]);
+        assert_eq!(state.swamp.query, "", "walked away from, not searched");
+        assert_eq!(state.swamp.requests.len(), count);
+        key(&mut state, BareKey::Char('/'));
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("referral")
+        );
+        // Shift+Tab is a step the other way: onto the tab bar, whose keys are then the bar's.
+        state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
+        assert!(state.tabs_focused);
+        assert!(state.swamp.editing.is_none());
+        key(&mut state, BareKey::Left);
+        assert_eq!(state.surface, Surface::Vms);
+        assert_eq!(state.ring_yields, [wire::STOP_TABS]);
+        key(&mut state, BareKey::Right);
+        key(&mut state, BareKey::Down);
+        assert_eq!(state.surface, Surface::Swamp);
+        assert!(!state.tabs_focused);
+        // Clearing the search clears what was being typed for it too.
+        choose(&mut state, 's', "triaged");
+        key(&mut state, BareKey::Char('c'));
+        key(&mut state, BareKey::Char('/'));
+        assert_eq!(
+            state.swamp.editing.as_ref().map(TextInput::get_text),
+            Some("")
+        );
+    }
+
+    /// While the panel's tab bar has the keys, the header names the bar's keys rather than the
+    /// tab's, which the next press does not reach - in the header's own row, not a footer that
+    /// takes a row off the list and gives it back as the focus moves.
+    #[test]
+    fn the_bar_hint_takes_the_swamp_header_not_a_row() {
+        let mut state = loaded();
+        state.render(12, 60);
+        let body_rows = state.swamp.last_body_rows;
+        assert!(state.swamp_header(60).starts_with("Enter open"));
+        state.tabs_focused = true;
+        state.render(12, 60);
+        assert!(state.swamp_header(60).contains("←/→ switch"));
+        assert_eq!(state.swamp.last_body_rows, body_rows);
+        state.tabs_focused = false;
+        state.render(12, 60);
+        assert_eq!(state.swamp.last_body_rows, body_rows);
+        assert!(!state.swamp_header(60).contains("←/→ switch"));
+        // A box ahead of the bar has the keys however the bar is drawn, and says its own.
+        key(&mut state, BareKey::Char('s'));
+        state.tabs_focused = true;
+        assert!(!state.swamp_header(60).contains("←/→ switch"));
+        key(&mut state, BareKey::Esc);
+        // The reader's header is the same row.
+        let mut state = reader();
+        state.tabs_focused = true;
+        state.render(12, 80);
+        assert!(state.swamp_header(60).contains("←/→ switch"));
     }
 
     #[test]

@@ -769,6 +769,37 @@ pub fn plugin_launch_key(
     )
 }
 
+/// Get the key bound to sending a particular message to the plugins already running, by the
+/// message's name: a `MessagePlugin` binding, which the keymap holds as an [`Action::KeybindPipe`].
+///
+/// [`action_key`] cannot tell one message from another any more than it can tell one plugin
+/// launch from another, so this matches on the name instead.
+///
+/// The config always gives a message a name, but the plugin API's wire encoding of a
+/// `KeybindPipe` carries none of its fields, so a Wasm plugin gets every such binding with
+/// `name: None`. A nameless pipe is therefore one whose name was lost on the way, not one that
+/// never had one, and it counts: otherwise this bar could never find the key that the Deno bar,
+/// whose keymap arrives whole, finds and shows. The price is that where a mode binds more than one
+/// message this bar cannot tell them apart; the shipped keymap binds one at most.
+///
+/// Of the keys that do the same thing, the one a hint should name — see [`the_modes_own_key`].
+pub fn keybind_pipe_key(
+    keymap: &[(KeyWithModifier, Vec<Action>)],
+    name: &str,
+) -> Vec<KeyWithModifier> {
+    the_modes_own_key(
+        keymap
+            .iter()
+            .filter(|(_, acvec)| {
+                acvec.iter().any(|a| {
+                    matches!(a, Action::KeybindPipe { name: sent, .. }
+                        if sent.as_deref().is_none_or(|sent| sent == name))
+                })
+            })
+            .map(|(key, _)| key),
+    )
+}
+
 /// Pick the key a hint should name out of several that do the same thing.
 ///
 /// A thing can be reachable by more than one key — the mode's own leader-then-letter binding plus,
@@ -1084,6 +1115,74 @@ pub mod tests {
         assert_eq!(
             plugin_launch_key(&keymap, "hocus-new-agent"),
             vec![KeyWithModifier::new(BareKey::Char('k'))]
+        );
+    }
+
+    /// A `MessagePlugin { name "…" }` binding as the keymap holds it; `None` is how it reaches a
+    /// Wasm plugin, whose wire carries no name.
+    fn pipes(name: Option<&str>) -> Action {
+        Action::KeybindPipe {
+            name: name.map(str::to_string),
+            payload: None,
+            args: None,
+            plugin: None,
+            plugin_id: None,
+            configuration: None,
+            launch_new: false,
+            skip_cache: false,
+            floating: Some(false),
+            in_place: None,
+            cwd: None,
+            pane_title: None,
+        }
+    }
+
+    #[test]
+    fn keybind_pipe_key_finds_the_message_by_name() {
+        let keymap = vec![
+            (
+                KeyWithModifier::new(BareKey::Char('m')),
+                vec![pipes(Some("something_else")), TO_NORMAL],
+            ),
+            (
+                KeyWithModifier::new(BareKey::Char('o')),
+                vec![pipes(Some("agent_strip_reposition")), TO_NORMAL],
+            ),
+            (
+                KeyWithModifier::new(BareKey::Char('c')),
+                vec![launches("hocus"), TO_NORMAL],
+            ),
+        ];
+
+        assert_eq!(
+            keybind_pipe_key(&keymap, "agent_strip_reposition"),
+            vec![KeyWithModifier::new(BareKey::Char('o'))]
+        );
+        assert_eq!(keybind_pipe_key(&keymap, "nothing_sends_this"), vec![]);
+        // A plugin launch is not a message, whatever it is called.
+        assert_eq!(keybind_pipe_key(&keymap[2..], "hocus"), vec![]);
+    }
+
+    // The Wasm bar's keymap comes over the plugin API, which drops a pipe's name. Were a nameless
+    // pipe not to count, this bar would never show the Move panel key the Deno bar shows, and the
+    // two would draw Agent mode differently.
+    #[test]
+    fn keybind_pipe_key_counts_a_pipe_whose_name_the_wire_dropped() {
+        let keymap = vec![
+            (
+                KeyWithModifier::new(BareKey::Char('o')),
+                vec![pipes(None), TO_NORMAL],
+            ),
+            (KeyWithModifier::new(BareKey::Char('q')), vec![TO_NORMAL]),
+        ];
+
+        assert_eq!(
+            keybind_pipe_key(&keymap, "agent_strip_reposition"),
+            vec![KeyWithModifier::new(BareKey::Char('o'))]
+        );
+        assert_eq!(
+            keybind_pipe_key(&keymap[1..], "agent_strip_reposition"),
+            vec![]
         );
     }
 

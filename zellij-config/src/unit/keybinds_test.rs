@@ -489,3 +489,37 @@ fn session_pane_selector_checks_kdl_range() {
         assert!(crate::kdl::action::from_kdl((&node, &Options::default())).is_err());
     }
 }
+
+/// `example/default.kdl` is the config people copy to start their own, and nothing else loads
+/// it, so a key the shipped config gains can go missing from it without anything failing.
+/// `Ctrl e o` did: the example's comments said Ctrl o moved the panel, and its Agent mode had
+/// no `o`.
+#[test]
+fn example_agent_mode_moves_the_panel() {
+    let config = Config::from_kdl(include_str!("../../../example/default.kdl"), None)
+        .expect("example/default.kdl parses");
+    let actions = config
+        .keybinds
+        .get_actions_for_key_in_mode(&InputMode::Agent, &KeyWithModifier::new(BareKey::Char('o')))
+        .expect("Agent mode binds o");
+    // A message that names no plugin, so it reaches the hocus already running and starts
+    // none, then back to Normal as every other Agent-mode key goes.
+    assert!(
+        matches!(
+            &actions[..],
+            [
+                Action::KeybindPipe {
+                    name: Some(name),
+                    plugin: None,
+                    plugin_id: None,
+                    launch_new: false,
+                    ..
+                },
+                Action::SwitchToMode {
+                    input_mode: InputMode::Normal
+                },
+            ] if name == "agent_strip_reposition"
+        ),
+        "{actions:?}"
+    );
+}

@@ -186,6 +186,22 @@ export function pluginKeys(km: Keymap, alias: string): Key[] {
       .map(([k]) => k),
   );
 }
+// A MessagePlugin binding, by its message's name. The Wasm bar gets every KeybindPipe nameless
+// (the plugin API's wire drops its fields) and so counts a nameless one; this keymap arrives
+// whole, where the config always names a message, so the same rule only ever matches the name.
+export const pipeKeys = (km: Keymap, name: string): Key[] =>
+  ownKey(
+    km
+      .filter(([, actions]) =>
+        actions.some(
+          (a) =>
+            typeof a !== "string" &&
+            "KeybindPipe" in a &&
+            (a.KeybindPipe.name === null || a.KeybindPipe.name === name),
+        ),
+      )
+      .map(([k]) => k),
+  );
 export const keySeparator = (labels: readonly string[], inline = false): string =>
   ["HJKL", "hjkl", "←↓↑→", "←→", "↓↑", "[]", ...(inline ? ["+-"] : [])].includes(labels.join(""))
     ? ""

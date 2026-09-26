@@ -241,9 +241,10 @@ fn a_paste_into_a_released_box_takes_the_keys_back() {
 
 // -- the ring's forward step out of the box ---------------------------------
 
-/// Nothing to complete, so Tab is the ring's.
+/// Nothing to complete, so Tab is the ring's: on round to the panel's own tab bar, the stop
+/// after the box.
 #[test]
-fn tab_on_a_blank_box_steps_to_the_agent_list() {
+fn tab_on_a_blank_box_steps_to_the_panel_tabs() {
     let mut state = ready_state();
     state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
 

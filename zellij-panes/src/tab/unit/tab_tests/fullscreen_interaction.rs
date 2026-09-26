@@ -30,6 +30,7 @@ fn hiding_an_expanded_overlay_allows_the_next_fullscreen_shortcut_to_reach_the_t
                         direction: MultipaneDirection::LeftRight,
                         ratio: 4300,
                     },
+                    0,
                     placement,
                 )
                 .unwrap();

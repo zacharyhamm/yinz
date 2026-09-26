@@ -1218,6 +1218,12 @@ function openPicker(work: string, key: string, action: string, source: number): 
       swamp_reply_plugin: String(z.getPluginIds().plugin_id),
       swamp_work: work,
       swamp_key: key,
+      // A modal overlay, as every other New agent launch is (`Ctrl e n/d/f`, the agents
+      // list's D and F). A plain floating pane hands the keys to the tiled layer when it
+      // closes, not back to where they came from, and hocus reads a tiled pane taking the
+      // keys from over its panel as the user leaving it: a cancelled picker put the panel away.
+      overlay: "true",
+      modal: "true",
     },
     new_plugin_args: {
       should_float: true,

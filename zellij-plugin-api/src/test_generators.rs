@@ -2015,6 +2015,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 placement: overlay_placements(tc),
                 split: multipane_split(tc),
                 focus: booleans(tc).then(|| usize::from(booleans(tc))),
+                min_cells: tc.draw(generators::integers::<u16>()),
             })
         },
         CommandType::UpdateMultipane => {

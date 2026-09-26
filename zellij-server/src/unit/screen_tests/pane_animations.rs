@@ -175,7 +175,7 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
         .tabs
         .get_mut(&TabId::new(0))
         .unwrap()
-        .create_multipane([left, right], panel_split(), panel_placement())
+        .create_multipane([left, right], panel_split(), 0, panel_placement())
         .unwrap();
     let later = start + Duration::from_millis(120);
     screen.pinned_now = Some(later);
@@ -306,7 +306,7 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
                 .tabs
                 .get_mut(&TabId::new(0))
                 .unwrap()
-                .create_multipane([panes[0], panes[1]], panel_split(), panel_placement())
+                .create_multipane([panes[0], panes[1]], panel_split(), 0, panel_placement())
                 .unwrap();
         }
         let original_geoms: Vec<_> = panes
@@ -383,7 +383,7 @@ fn opening_ripple_alone_and_reopened_beside_a_settled_half() {
     let (_, conversation) = panel_half(&mut screen, 8, "hocus", 38, false);
     let later = start + Duration::from_secs(1);
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-    tab.create_multipane([agents, conversation], panel_split(), panel_placement())
+    tab.create_multipane([agents, conversation], panel_split(), 0, panel_placement())
         .unwrap();
     tab.sample_overlay_ripples(later, true);
     assert_eq!(

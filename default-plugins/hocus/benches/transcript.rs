@@ -188,6 +188,7 @@ fn long_run() -> AgentRun {
         summarized_revision: 0,
         summary: None,
         entries,
+        omitted_entries: 0,
     }
 }
 
