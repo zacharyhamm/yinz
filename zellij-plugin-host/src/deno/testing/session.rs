@@ -464,7 +464,9 @@ impl Controller {
                     }
                 };
                 let sender = IpcSenderWithContext::<ClientMsg>::new(stream);
-                let mut receiver = sender.get_receiver::<ServerMsg>();
+                let mut receiver = sender
+                    .get_receiver::<ServerMsg>()
+                    .context("set up test session replies")?;
                 let (tx, rx) = mpsc::sync_channel(1000);
                 std::thread::spawn(move || {
                     while let Some((message, _)) = receiver.recv_server_msg().msg() {
@@ -687,7 +689,9 @@ impl Controller {
     fn pipe(&self, arg: &Value, plugin: Option<String>, timeout: Duration) -> Result<Value> {
         let stream = ipc_connect(&self.root.join("session")).context("connect test pipe")?;
         let mut sender = IpcSenderWithContext::<ClientMsg>::new(stream);
-        let mut receiver = sender.get_receiver::<ServerMsg>();
+        let mut receiver = sender
+            .get_receiver::<ServerMsg>()
+            .context("set up test pipe reply")?;
         receiver
             .set_recv_timeout(Some(timeout))
             .context("bound pipe reply")?;

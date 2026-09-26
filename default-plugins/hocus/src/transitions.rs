@@ -112,6 +112,7 @@ impl State {
             owes_reply: std::mem::take(&mut self.owes_reply),
             manual_head: std::mem::take(&mut self.manual_head),
             chat_id: self.chat_id.take(),
+            chat_revision: self.chat_revision.take(),
             saved: std::mem::take(&mut self.saved),
             view: std::mem::take(&mut self.view),
             scheduled_run: self.scheduled_run.take(),
@@ -144,6 +145,7 @@ impl State {
         self.owes_reply = chat.owes_reply;
         self.manual_head = chat.manual_head;
         self.chat_id = chat.chat_id;
+        self.chat_revision = chat.chat_revision;
         self.saved = chat.saved;
         self.view = chat.view;
         self.scheduled_run = chat.scheduled_run;
@@ -1864,6 +1866,7 @@ impl State {
         self.usage = None;
         self.last_request_input = None;
         self.chat_id = None;
+        self.chat_revision = None;
         self.saved = self.fingerprint();
         self.picker = None;
         self.input.clear();

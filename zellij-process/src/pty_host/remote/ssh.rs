@@ -5,7 +5,7 @@
 //!   1. **Bootstrap** — `ssh <host> zellij --pty-broker ensure` runs to
 //!      completion and prints where the broker is listening. The remote decides
 //!      that path, never this side: `ZELLIJ_SOCK_DIR` resolves differently on
-//!      Linux and macOS (`$XDG_RUNTIME_DIR` vs a `$TMPDIR` fallback), and the
+//!      Linux and macOS (`$XDG_RUNTIME_DIR` vs the `~/.zellij/run` fallback), and the
 //!      `sun_path` limit differs too (108 vs 104), so a locally-computed guess
 //!      would be wrong in exactly the cases that are hardest to diagnose.
 //!   2. **Forward** — one long-lived `ssh -N -L <local>:<remote>` per target
@@ -130,36 +130,31 @@ fn ensure_local_socket_dir() -> Result<PathBuf> {
 /// way out.
 ///
 /// Folded into the digest rather than appended to it, to keep the path well
-/// inside `sockaddr_un` — 104 bytes on macOS, where the temp dir alone can be
-/// nearly 50.
+/// inside `sockaddr_un` — 104 bytes on macOS.
 fn local_socket_path(instance: &str, host: &str, options: &SshOptions) -> PathBuf {
     // A host may be an alias, a user@host, or contain characters a path cannot
     // hold, so key by a digest rather than the name itself.
-    let digest = blake3_short(&format!("{host}\0{options:?}\0{instance}"));
+    let digest = socket_key(&format!("{host}\0{options:?}\0{instance}"));
     local_socket_dir().join(format!("{digest}.sock"))
 }
 
-fn blake3_short(input: &str) -> String {
-    // A short, stable, filesystem-safe key. Collisions only cost a shared
-    // forward between two hosts, so 4 bytes (truncated from the 8-byte hash)
-    // is ample — and every byte here is one the socket path can't spare.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    input.hash(&mut hasher);
-    format!("{:08x}", hasher.finish() as u32)
+fn socket_key(input: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use sha2::{Digest, Sha256};
+    // A collision can reuse an authenticated connection to the wrong host.
+    // 96 bits fit in 16 path characters, leaving room for the socket directory
+    // and OpenSSH's extra control-socket suffix. Do not fall back to shorter keys.
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(input.as_bytes())[..12])
 }
 
 /// The ControlMaster socket, keyed by host and authentication options.
 ///
-/// Unlike the forward there is no collision to fix here: nothing unlinks or
-/// rebinds it, and `ControlMaster=auto` is built for exactly this — several
-/// processes sharing one authenticated connection. Making it per-server would
-/// cost a full handshake per host per reconnect and buy nothing.
+/// Unlike the forward this is shared across servers: `ControlMaster=auto`
+/// lets several processes reuse one authenticated connection to the same target.
 fn control_path(host: &str, options: &SshOptions) -> PathBuf {
     local_socket_dir().join(format!(
         "{}.ctl",
-        blake3_short(&format!("{host}\0{options:?}"))
+        socket_key(&format!("{host}\0{options:?}"))
     ))
 }
 

@@ -1,5 +1,106 @@
 use super::*;
 
+#[test]
+fn closing_a_stale_chat_preserves_both_archived_transcripts() {
+    let mut state = idle_state();
+    state.messages = vec![
+        Message::user("question"),
+        Message::assistant("initial answer"),
+    ];
+    state.flush_save();
+    let id = state.chat_id.unwrap();
+    let revision = state.chat_revision;
+    state.reset_chat();
+    state.switch_to_chat(id);
+    assert_eq!(
+        state.chat_revision, revision,
+        "reopening carries the author's revision"
+    );
+
+    // Another server opens the same chat and wins the next write.
+    let winner = vec![
+        Message::user("question"),
+        Message::assistant("new answer"),
+        Message::user("follow-up"),
+    ];
+    let mut other_id = Some(id);
+    let mut other_revision = revision;
+    history::save(
+        &state.private_store(),
+        &state.host_id,
+        &mut other_id,
+        &mut other_revision,
+        &winner,
+        0,
+        None,
+        None,
+        Plan::Off,
+    )
+    .unwrap();
+
+    // The stale writer shortens the transcript. Its DELETE must roll back along
+    // with the conflicting update, and closing must save this version separately.
+    let losing = vec![Message::user("my changed question")];
+    state.messages = losing.clone();
+    state.close_tab(0);
+    assert!(state.messages.is_empty());
+    assert_eq!(state.chat_revision, None);
+    assert_eq!(history::load(&state.private_store(), id).unwrap(), winner);
+    let entries = history::list(&state.private_store());
+    assert_eq!(entries.len(), 2);
+    let fork = entries.iter().find(|entry| entry.id != id).unwrap();
+    assert_eq!(
+        history::load(&state.private_store(), fork.id).unwrap(),
+        losing
+    );
+}
+
+#[test]
+fn a_parked_chat_keeps_its_revision_and_forked_jobs_follow_its_new_id() {
+    use hocus_proto::store::Backend;
+    let mut state = idle_state();
+    state.messages = vec![Message::user("question")];
+    state.flush_save();
+    let original = state.chat_id.unwrap();
+    let revision = state.chat_revision;
+    state.new_chat();
+    state.switch_to_chat(original);
+    assert_eq!(
+        state.chat_revision, revision,
+        "parking preserves the author revision"
+    );
+    state.run_local(&schedule_call(r#"{"seconds":60,"prompt":"check"}"#));
+    state.flush_save();
+    let mut other_id = state.chat_id;
+    let mut other_revision = state.chat_revision;
+    history::save(
+        &state.private_store(),
+        &state.host_id,
+        &mut other_id,
+        &mut other_revision,
+        &[Message::user("other writer")],
+        0,
+        None,
+        None,
+        Plan::Off,
+    )
+    .unwrap();
+    state.messages.push(Message::assistant("local answer"));
+    state.flush_save();
+    assert_ne!(state.chat_id, Some(original));
+    let rows = state
+        .store()
+        .fetch(&hocus_proto::jobs::owned_request(&state.owner()))
+        .unwrap();
+    let jobs = hocus_proto::jobs::from_rows(&rows);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].chat_id, state.chat_id);
+    assert_eq!(
+        history::load(&state.private_store(), original).unwrap(),
+        vec![Message::user("other writer")]
+    );
+}
+
 /// The point of the archive: starting over must not destroy what came
 /// before. Ctrl-l detaches from the file rather than deleting it.
 #[test]

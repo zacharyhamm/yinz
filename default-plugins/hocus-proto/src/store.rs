@@ -251,9 +251,8 @@ pub fn chat_def() -> EntityDef {
     EntityDef::new("chat", 2)
         .attr(AttrDef::text("title").required())
         // Attribution, not key. A chat's id is allocated by the database, so two machines never
-        // mint the same one, and the `(chat_id, seq)` rewrite that saves a transcript stays a
-        // single-writer problem per chat. This is so the archive can say where a conversation
-        // happened once the archive spans machines.
+        // mint the same one. The chat row's revision guards transcript rewrites when
+        // multiple panes reopen it. The host records where the conversation began.
         .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::text("plan"))
         .attr(AttrDef::int("legacy_id"))

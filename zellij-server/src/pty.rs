@@ -2763,8 +2763,8 @@ impl Pty {
     /// Everything `close_pane` does *except* the two things that end a process:
     /// no `kill` of the child, and `release_terminal_for_warp` in place of
     /// `clear_terminal_id`, which would terminate the supervisor. Aborting the
-    /// reader task drops its `RawFdAsyncReader`, which closes this server's dup of
-    /// the master — the supervisor keeps its own and starts draining into the ring.
+    /// reader task stops consuming output; releasing the transport then gives up
+    /// this server's master — the supervisor keeps its own and drains into the ring.
     ///
     /// The reader is stopped *before* the release, not after, and for a remote
     /// pane that ordering is load-bearing rather than tidy. The broker replays
@@ -2774,15 +2774,10 @@ impl Pty {
     /// could grow between being read and the screen being dumped, and the
     /// overlap would be replayed on top of itself.
     ///
-    /// It costs the local path nothing. There, aborting the task drops the
-    /// `RawFdAsyncReader` and closes this server's dup of the master, which the
-    /// supervisor has been waiting for either way.
-    ///
-    /// That drop is also why [`Self::check_terminal_can_be_warped`] runs first
+    /// Stopping the reader is also why [`Self::check_terminal_can_be_warped`] runs first
     /// and is a separate question rather than something the release discovers as
-    /// it goes: once the abort has happened there is no dup left to reopen, so a
-    /// refusal raised after it would leave a pane on screen with no process on
-    /// the other end. Everything knowable is therefore knowable *before*.
+    /// it goes: a refusal after the abort would leave a pane whose output is no
+    /// longer being read. Everything knowable is therefore knowable *before*.
     pub fn release_terminal_for_warp(
         &mut self,
         terminal_id: TerminalId,
@@ -2792,9 +2787,8 @@ impl Pty {
         // Asked before the reader is touched, which is the whole point of it
         // being a separate question: everything the release below can refuse for
         // is knowable now, and refusing now leaves the pane exactly as it was.
-        // Once the abort has run there is no way back — the `RawFdAsyncReader`
-        // drops with it and takes this server's dup of the master with it — so a
-        // refusal from that side would cost the user a working pane.
+        // A refusal after aborting the reader would leave the pane without its
+        // output task, so all known refusals must precede the abort.
         self.check_terminal_can_be_warped(terminal_id)
             .with_context(err_context)?;
         refuse_if_nobody_is_waiting(deadline).with_context(err_context)?;

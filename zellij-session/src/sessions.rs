@@ -253,7 +253,8 @@ fn assert_socket(name: &SessionName) -> Result<SessionProbe, io::ErrorKind> {
                 started_at.elapsed(),
                 if send_result.is_ok() { "ok" } else { "error" }
             );
-            let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+            let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
+                sender.get_receiver().map_err(|error| error.kind())?;
             let status = classify_probe_reply(receiver.recv_server_msg());
             log::info!(
                 "attach trace: probe {name:?} reply {status:?} after {:?}",

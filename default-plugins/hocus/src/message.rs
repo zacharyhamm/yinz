@@ -460,9 +460,10 @@ impl Picker {
     pub fn completion(&self) -> Option<String> {
         let needle = self.filter.to_lowercase();
         let mut tails = self.visible().into_iter().map(|at| {
-            let text = &self.entries[at].text;
+            // Case conversion can change byte lengths (eg. İ and K). Keep the
+            // match and suffix in the same string, including partial expansions.
+            let text = self.entries[at].text.to_lowercase();
             let at = text
-                .to_lowercase()
                 .find(&needle)
                 .expect("a visible row contains the filter");
             text[at + needle.len()..].to_owned()

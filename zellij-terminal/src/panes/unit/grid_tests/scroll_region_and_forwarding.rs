@@ -880,6 +880,28 @@ fn osc_4_set_stays_local() {
 }
 
 #[test]
+fn osc_4_processes_every_palette_update_and_query() {
+    use crate::host_query::{HostQuery, OscTerminator};
+
+    let mut parser = vte::Parser::new();
+    let mut grid = new_grid_for_forwarding_test();
+    parser.advance(
+        &mut grid,
+        b"\x1b]4;5;rgb:ffff/0000/0000;6;rgb:0000/ffff/0000;7;?\x07",
+    );
+    let changed = grid.changed_colors.unwrap();
+    assert_eq!(changed[5], Some(AnsiCode::RgbCode((255, 0, 0))));
+    assert_eq!(changed[6], Some(AnsiCode::RgbCode((0, 255, 0))));
+    assert_eq!(
+        grid.pending_forwarded_queries,
+        vec![HostQuery::PaletteRegister {
+            index: 7,
+            terminator: OscTerminator::Bel,
+        }]
+    );
+}
+
+#[test]
 fn decset_2031_enables_color_palette_notification() {
     let mut parser = vte::Parser::new();
     let mut grid = new_grid_for_forwarding_test();

@@ -272,7 +272,11 @@ impl ServerOsApi for FakeServerOsApi {
         stream: LocalSocketStream,
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>> {
         let ipc_receiver = IpcReceiverWithContext::new(stream);
-        let non_blocking_client_sender = NonBlockingClientSender::new(ipc_receiver.get_sender());
+        let non_blocking_client_sender = NonBlockingClientSender::new(
+            ipc_receiver
+                .get_sender()
+                .context("failed to clone server socket")?,
+        );
         self.non_blocking_client_senders
             .lock()
             .unwrap()

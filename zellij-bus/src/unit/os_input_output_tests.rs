@@ -853,54 +853,127 @@ mod coalescing_send_queue {
     }
 
     #[test]
-    fn renders_coalesce_to_the_newest() {
+    fn incremental_renders_survive_backlog_and_precede_exit() {
         let queue = CoalescingSendQueue::new();
-        assert!(matches!(queue.push(render("first")), SendQueuePush::Queued));
-        assert!(matches!(
-            queue.push(render("second")),
-            SendQueuePush::CoalescedRender
-        ));
-        assert!(matches!(
-            queue.push(render("third")),
-            SendQueuePush::CoalescedRender
-        ));
-        assert_eq!(queue.len(), 1);
+        // Independent cell changes and an OSC side effect all have to arrive.
+        let messages = [
+            render("\x1b[1;1Hfirst"),
+            render("\x1b[2;1Hsecond"),
+            control("notice"),
+            render("\x1b]0;title\x07"),
+            ServerToClientMsg::Exit {
+                exit_reason: ExitReason::Normal,
+            },
+        ];
+        for message in &messages {
+            assert!(matches!(queue.push(message.clone()), SendQueuePush::Queued));
+        }
         queue.close();
-        assert_eq!(queue.pop(), Some(render("third")));
+        for message in messages {
+            assert_eq!(queue.pop(), Some(message));
+        }
         assert_eq!(queue.pop(), None);
     }
 
     #[test]
-    fn control_messages_stay_fifo_and_precede_the_render() {
-        let queue = CoalescingSendQueue::new();
-        assert!(matches!(queue.push(render("stale")), SendQueuePush::Queued));
-        assert!(matches!(queue.push(control("a")), SendQueuePush::Queued));
-        assert!(matches!(queue.push(control("b")), SendQueuePush::Queued));
-        queue.close();
-        assert_eq!(queue.pop(), Some(control("a")));
-        assert_eq!(queue.pop(), Some(control("b")));
-        assert_eq!(queue.pop(), Some(render("stale")));
-        assert_eq!(queue.pop(), None);
-    }
-
-    #[test]
-    fn control_queue_fills_while_renders_still_coalesce() {
+    fn a_full_ordered_queue_refuses_render_deltas_without_losing_accepted_frames() {
         let queue = CoalescingSendQueue::new();
         for i in 0..SEND_QUEUE_CONTROL_CAPACITY {
             assert!(matches!(
-                queue.push(control(&i.to_string())),
+                queue.push(render(&i.to_string())),
                 SendQueuePush::Queued
             ));
         }
         assert!(matches!(
+            queue.push(render("overflow")),
+            SendQueuePush::ControlQueueFull
+        ));
+        assert!(matches!(
             queue.push(control("overflow")),
             SendQueuePush::ControlQueueFull
         ));
-        assert!(matches!(queue.push(render("r1")), SendQueuePush::Queued));
+        queue.close();
+        for i in 0..SEND_QUEUE_CONTROL_CAPACITY {
+            assert_eq!(queue.pop(), Some(render(&i.to_string())));
+        }
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn render_byte_budget_preserves_fifo_and_recovers_after_pop() {
+        let queue = CoalescingSendQueue::new();
+        let first = "a".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY / 2);
+        let second = "b".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY / 2);
+        let third = "c".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY / 2);
+        for message in [render(&first), control("notice"), render(&second)] {
+            assert!(matches!(queue.push(message), SendQueuePush::Queued));
+        }
+        assert!(queue.len() < SEND_QUEUE_CONTROL_CAPACITY);
         assert!(matches!(
-            queue.push(render("r2")),
-            SendQueuePush::CoalescedRender
+            queue.push(render("overflow")),
+            SendQueuePush::ControlQueueFull
         ));
+        assert_eq!(queue.pop(), Some(render(&first)));
+        assert!(matches!(queue.push(render(&third)), SendQueuePush::Queued));
+        assert_eq!(queue.pop(), Some(control("notice")));
+        assert!(matches!(
+            queue.push(render("still full")),
+            SendQueuePush::ControlQueueFull
+        ));
+        let exit = ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        };
+        assert!(matches!(queue.push(exit.clone()), SendQueuePush::Queued));
+        queue.close();
+        assert_eq!(queue.pop(), Some(render(&second)));
+        assert_eq!(queue.pop(), Some(render(&third)));
+        assert_eq!(queue.pop(), Some(exit));
+        assert_eq!(queue.pop(), None);
+        assert_eq!(queue.state.lock().unwrap().render_bytes, 0);
+    }
+
+    #[test]
+    fn an_oversized_render_leaves_the_byte_budget_untouched() {
+        let queue = CoalescingSendQueue::new();
+        assert!(matches!(
+            queue.push(render(&"x".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1))),
+            SendQueuePush::ControlQueueFull
+        ));
+        assert_eq!(queue.len(), 0);
+        let content = "y".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY);
+        assert!(matches!(
+            queue.push(render(&content)),
+            SendQueuePush::Queued
+        ));
+        queue.close();
+        assert!(matches!(queue.push(render("late")), SendQueuePush::Queued));
+        assert_eq!(queue.pop(), Some(render(&content)));
+        assert_eq!(queue.pop(), None);
+        assert_eq!(queue.state.lock().unwrap().render_bytes, 0);
+    }
+
+    #[test]
+    fn render_byte_budget_counts_and_releases_spare_string_capacity() {
+        let queue = CoalescingSendQueue::new();
+        let mut content = String::with_capacity(SEND_QUEUE_RENDER_BYTE_CAPACITY);
+        content.push('x');
+        assert!(matches!(
+            queue.push(ServerToClientMsg::Render { content }),
+            SendQueuePush::Queued
+        ));
+        assert!(matches!(
+            queue.push(render("overflow")),
+            SendQueuePush::ControlQueueFull
+        ));
+        assert_eq!(queue.pop(), Some(render("x")));
+        let content = "y".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY);
+        assert!(matches!(
+            queue.push(render(&content)),
+            SendQueuePush::Queued
+        ));
+        queue.close();
+        assert_eq!(queue.pop(), Some(render(&content)));
+        assert_eq!(queue.pop(), None);
     }
 
     /// The shutdown shape: the writer is popping while the router closes the queue under
@@ -1001,7 +1074,7 @@ mod coalescing_send_queue {
     }
 
     #[test]
-    fn initial_and_scrollback_pane_renders_stay_fifo() {
+    fn initial_and_scrollback_pane_renders_replace_older_pending_viewports() {
         // initial snapshots and scrollback responses are one-offs, not a stream
         // of repaints - they take the FIFO path, so they precede coalesced
         // updates for the same pane
@@ -1024,19 +1097,29 @@ mod coalescing_send_queue {
             SendQueuePush::Queued
         ));
         assert!(matches!(queue.push(initial.clone()), SendQueuePush::Queued));
+        assert_eq!(queue.len(), 1);
+        assert!(matches!(
+            queue.push(pane_render(pane, "before scrollback")),
+            SendQueuePush::Queued
+        ));
         assert!(matches!(
             queue.push(with_scrollback.clone()),
+            SendQueuePush::Queued
+        ));
+        assert_eq!(queue.len(), 2);
+        assert!(matches!(
+            queue.push(pane_render(pane, "latest")),
             SendQueuePush::Queued
         ));
         queue.close();
         assert_eq!(queue.pop(), Some(initial));
         assert_eq!(queue.pop(), Some(with_scrollback));
-        assert_eq!(queue.pop(), Some(pane_render(pane, "coalesced")));
+        assert_eq!(queue.pop(), Some(pane_render(pane, "latest")));
         assert_eq!(queue.pop(), None);
     }
 
     #[test]
-    fn drain_order_is_control_then_pane_renders_then_full_render() {
+    fn ordered_messages_precede_replaceable_pane_snapshots() {
         let queue = CoalescingSendQueue::new();
         let pane = DataPaneId::Plugin(zellij_types::internal_ids::PluginId::new(7));
         assert!(matches!(queue.push(render("full")), SendQueuePush::Queued));
@@ -1046,9 +1129,9 @@ mod coalescing_send_queue {
         ));
         assert!(matches!(queue.push(control("ctl")), SendQueuePush::Queued));
         queue.close();
+        assert_eq!(queue.pop(), Some(render("full")));
         assert_eq!(queue.pop(), Some(control("ctl")));
         assert_eq!(queue.pop(), Some(pane_render(pane, "pane")));
-        assert_eq!(queue.pop(), Some(render("full")));
         assert_eq!(queue.pop(), None);
     }
 
@@ -1072,7 +1155,6 @@ mod coalescing_send_queue {
         real: CoalescingSendQueue,
         control: VecDeque<ServerToClientMsg>,
         pane_renders: BTreeMap<DataPaneId, ServerToClientMsg>,
-        full_render: Option<ServerToClientMsg>,
         closed: bool,
         seq: u32,
     }
@@ -1083,7 +1165,6 @@ mod coalescing_send_queue {
                 real: CoalescingSendQueue::new(),
                 control: VecDeque::new(),
                 pane_renders: BTreeMap::new(),
-                full_render: None,
                 closed: false,
                 seq: 0,
             }
@@ -1092,6 +1173,15 @@ mod coalescing_send_queue {
             self.seq += 1;
             self.seq.to_string()
         }
+        fn render_bytes(&self) -> usize {
+            self.control
+                .iter()
+                .map(|msg| match msg {
+                    ServerToClientMsg::Render { content } => content.capacity(),
+                    _ => 0,
+                })
+                .sum()
+        }
     }
 
     #[hegel::state_machine]
@@ -1099,13 +1189,22 @@ mod coalescing_send_queue {
         /// What the model says the control FIFO does with `msg`, and the check against the
         /// real queue. Shared by every message that takes the FIFO path.
         fn push_fifo(&mut self, msg: ServerToClientMsg) {
+            let render_bytes = match &msg {
+                ServerToClientMsg::Render { content } => content.capacity(),
+                _ => 0,
+            };
             let outcome = self.real.push(msg.clone());
             if self.closed {
                 assert!(matches!(outcome, SendQueuePush::Queued));
-            } else if self.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
+            } else if self.control.len() >= SEND_QUEUE_CONTROL_CAPACITY
+                || self.render_bytes() + render_bytes > SEND_QUEUE_RENDER_BYTE_CAPACITY
+            {
                 assert!(matches!(outcome, SendQueuePush::ControlQueueFull));
             } else {
                 assert!(matches!(outcome, SendQueuePush::Queued));
+                if let ServerToClientMsg::PaneRenderUpdate { pane_id, .. } = &msg {
+                    self.pane_renders.remove(pane_id);
+                }
                 self.control.push_back(msg);
             }
         }
@@ -1117,18 +1216,12 @@ mod coalescing_send_queue {
         }
 
         #[rule]
-        fn push_full_render(&mut self, _tc: hegel::TestCase) {
-            let msg = render(&self.next_seq());
-            let outcome = self.real.push(msg.clone());
-            if self.closed {
-                assert!(matches!(outcome, SendQueuePush::Queued));
-            } else {
-                assert_eq!(
-                    matches!(outcome, SendQueuePush::CoalescedRender),
-                    self.full_render.is_some(),
-                );
-                self.full_render = Some(msg);
-            }
+        fn push_full_render(&mut self, tc: hegel::TestCase) {
+            let repeats = tc.draw(
+                generators::integers::<usize>().max_value(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1),
+            );
+            let msg = render(&self.next_seq().repeat(repeats));
+            self.push_fifo(msg);
         }
 
         #[rule]
@@ -1177,9 +1270,7 @@ mod coalescing_send_queue {
 
         #[rule]
         fn pop(&mut self, tc: hegel::TestCase) {
-            let model_has_message = !self.control.is_empty()
-                || !self.pane_renders.is_empty()
-                || self.full_render.is_some();
+            let model_has_message = !self.control.is_empty() || !self.pane_renders.is_empty();
             // pop blocks on an open empty queue; only pop when it can't block
             tc.assume(model_has_message || self.closed);
             let expected = if let Some(msg) = self.control.pop_front() {
@@ -1187,7 +1278,7 @@ mod coalescing_send_queue {
             } else if let Some((_, msg)) = self.pane_renders.pop_first() {
                 Some(msg)
             } else {
-                self.full_render.take()
+                None
             };
             assert_eq!(self.real.pop(), expected);
         }
@@ -1202,9 +1293,11 @@ mod coalescing_send_queue {
         fn depth_agrees_with_the_model(&self, _: hegel::TestCase) {
             assert_eq!(
                 self.real.len(),
-                self.control.len()
-                    + self.pane_renders.len()
-                    + usize::from(self.full_render.is_some()),
+                self.control.len() + self.pane_renders.len(),
+            );
+            assert_eq!(
+                self.real.state.lock().unwrap().render_bytes,
+                self.render_bytes(),
             );
         }
     }
@@ -1269,7 +1362,8 @@ mod client_writer_flush {
             IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
             live_writers.clone(),
             server_fd,
-        );
+        )
+        .unwrap();
 
         // What every break in the server main loop does on its way out.
         sender
@@ -1357,7 +1451,8 @@ mod client_writer_flush {
             IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
             live_writers.clone(),
             server_fd,
-        );
+        )
+        .unwrap();
         sender
             .send_or_buffer(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Normal,
@@ -1477,10 +1572,11 @@ mod client_writer_flush {
             IpcReceiverWithContext::new(server_end);
         let sender = ClientSender::new(
             crate::ClientId::new(1),
-            receiver.get_sender(),
+            receiver.get_sender().unwrap(),
             live_writers.clone(),
             server_fd,
-        );
+        )
+        .unwrap();
 
         // The client is deliberately kept alive for the whole test: a peer that
         // hangs up would produce the EOF on its own, which is the case that

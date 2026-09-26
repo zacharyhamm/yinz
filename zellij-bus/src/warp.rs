@@ -110,7 +110,9 @@ fn connect_to_session(
 fn supports_warp_companions(session: &SessionName, timeout: Duration) -> Result<bool> {
     let mut probe = connect_to_session(session, timeout)?;
     probe.send_client_msg(ClientToServerMsg::ConnStatus)?;
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe.get_receiver();
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe
+        .get_receiver()
+        .context("failed to set up warp capability reply")?;
     loop {
         match receiver.recv_server_msg().msg() {
             Some((ServerToClientMsg::Connected { warp_companions }, _)) => {
@@ -164,7 +166,9 @@ impl std::error::Error for SessionEnded {}
 /// receive an unrelated input-unblock broadcast before its action-specific
 /// reply. That control message says nothing about the warp and is skipped.
 fn read_cli_reply(sender: &mut IpcSenderWithContext<ClientToServerMsg>) -> Result<String> {
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender
+        .get_receiver()
+        .context("failed to set up warp reply")?;
     loop {
         match receiver.recv_server_msg().msg() {
             Some((ServerToClientMsg::UnblockInputThread, _)) => continue,

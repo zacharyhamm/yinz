@@ -236,6 +236,7 @@ struct Chat {
     pub(crate) owes_reply: bool,
     pub(crate) manual_head: bool,
     pub(crate) chat_id: Option<u64>,
+    pub(crate) chat_revision: Option<DataRevision>,
     pub(crate) saved: (usize, usize, Option<TokenUsage>, Plan),
     pub(crate) view: View,
     pub(crate) scheduled_run: Option<ScheduledRun>,
@@ -501,6 +502,7 @@ pub struct State {
     /// Which archived chat this conversation is being written back to. `None`
     /// until the first save, which is what makes an untouched pane leave no file.
     chat_id: Option<u64>,
+    chat_revision: Option<DataRevision>,
     /// `fingerprint()` as of the last save, so an event that changed nothing
     /// doesn't rewrite the file.
     saved: (usize, usize, Option<TokenUsage>, Plan),
@@ -885,6 +887,7 @@ impl Default for State {
             usage: None,
             last_request_input: None,
             chat_id: None,
+            chat_revision: None,
             saved: (0, 0, None, Plan::Off),
             parked: Vec::new(),
             chat_tab: 0,

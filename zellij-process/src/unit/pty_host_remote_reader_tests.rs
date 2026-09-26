@@ -54,6 +54,61 @@ async fn output_frames_arrive_as_plain_pty_bytes() {
 }
 
 #[tokio::test]
+async fn accepted_input_and_control_drain_without_another_write() {
+    let (mut reader, conn, mut peer) = reader_pair();
+    let read = tokio::spawn(async move { reader.read(&mut [0; 16]).await });
+    // Let the reader start waiting for output before input makes the socket full.
+    tokio::task::yield_now().await;
+    let payload = vec![b'x'; 64 * 1024];
+    let mut accepted = 0;
+    loop {
+        let count = conn.write_input(&payload).unwrap();
+        accepted += count;
+        if count == 0 {
+            break;
+        }
+    }
+    assert!(conn.has_pending_writes());
+    let size = WireWinsize {
+        cols: 120,
+        rows: 40,
+        width_in_pixels: 0,
+        height_in_pixels: 0,
+    };
+    conn.resize(size).unwrap();
+    let peer = tokio::task::spawn_blocking(move || {
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut delivered = 0;
+        let mut resized = false;
+        while delivered < accepted || !resized {
+            match protocol::read_frame(&mut peer).unwrap().unwrap() {
+                Frame::Input(bytes) => {
+                    assert!(bytes.iter().all(|byte| *byte == b'x'));
+                    delivered += bytes.len();
+                },
+                frame @ Frame::Control(_) => {
+                    assert_eq!(
+                        frame.decode_control::<ServerToBrokerMsg>().unwrap(),
+                        ServerToBrokerMsg::Resize(size)
+                    );
+                    resized = true;
+                },
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        assert_eq!(delivered, accepted);
+        write_control(
+            &mut peer,
+            &BrokerToServerMsg::ChildExited { status: Some(0) },
+        )
+        .unwrap();
+    });
+    peer.await.unwrap();
+    assert_eq!(read.await.unwrap().unwrap(), 0);
+}
+
+#[tokio::test]
 async fn gaps_between_replay_chunks_advance_offsets_without_counting_notices() {
     let (mut reader, conn, mut peer) = reader_pair();
     let mut framed = Vec::new();

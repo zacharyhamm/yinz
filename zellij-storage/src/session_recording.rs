@@ -1435,6 +1435,7 @@ fn sqlite_export_recording(
     writeln!(output, "{}", serde_json::to_string(&header)?)?;
     // events ordered by elapsed_us, id
     let mut prev_elapsed: Option<i64> = None;
+    let mut pending_text = [Vec::new(), Vec::new()];
     let mut write_event = |elapsed_us: i64, code: &str, data: &[u8]| -> Result<()> {
         let mut interval_us = match prev_elapsed {
             Some(prev) => elapsed_us - prev,
@@ -1450,16 +1451,21 @@ fn sqlite_export_recording(
             );
             interval_us = 0;
         }
-        // but spec example: events at 0, 500k, 1250k, 2000k with intervals 0.0, 0.5, 0.75, 0.75
-        // That suggests intervals are from prior event, first interval 0.0 if first event at 0?
-        // Our events are stored with absolute elapsed from pane start? In store, elapsed_us is absolute from session start? In test they use 0,500k etc as elapsed.
-        // Need to handle first interval as elapsed_us - 0? Actually first event at 0 should be 0.0
-        // For our implementation, first interval should be elapsed_us / 1_000_000? But spec shows intervals 0.0,0.5,0.75,0.75 for events at 0,500k,1250k,2000k where last interval is 0.75 not 0.75? Wait 2000k - 1250k = 750k =0.75 yep.
-        // So interval is elapsed - prev
         let secs = interval_us as f64 / 1_000_000.0;
         // format with at most 6 decimal places, trimming trailing zeros
         let secs_str = format_interval(secs);
-        let data_str = String::from_utf8_lossy(data).to_string();
+        let data_str = if matches!(code, "o" | "i") {
+            // PTY chunks and compressed segments can split a codepoint. Keep the incomplete
+            // suffix for each independent byte stream until its next event completes it.
+            let pending = &mut pending_text[usize::from(code == "i")];
+            pending.extend_from_slice(data);
+            let complete = utf8_safe_len(pending);
+            let text = String::from_utf8_lossy(&pending[..complete]).into_owned();
+            pending.drain(..complete);
+            text
+        } else {
+            String::from_utf8_lossy(data).into_owned()
+        };
         let code_json = serde_json::to_string(code)?;
         let data_json = serde_json::to_string(&data_str)?;
         writeln!(output, "[{}, {}, {}]", secs_str, code_json, data_json)?;
@@ -1485,6 +1491,17 @@ fn sqlite_export_recording(
     while let Some(row) = rows.next()? {
         let data: Vec<u8> = row.get(2)?;
         write_event(row.get(0)?, &row.get::<_, String>(1)?, &data)?;
+    }
+    // A stream ending inside a codepoint is genuinely incomplete. Emit its replacement at
+    // the final timestamp; ordinary chunk boundaries must never introduce replacements.
+    for (code, pending) in ["o", "i"].into_iter().zip(pending_text) {
+        if !pending.is_empty() {
+            writeln!(
+                output,
+                "{}",
+                serde_json::json!([0, code, String::from_utf8_lossy(&pending)])
+            )?;
+        }
     }
     Ok(())
 }
@@ -1585,8 +1602,12 @@ const MAX_INDEXED_LINE: usize = 64 * 1024;
 /// so its "lines" index as fragmented text. Shell and command output — the case this is for
 /// — indexes cleanly. Doing better would mean replaying through a terminal emulator.
 fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
+    // Acquire the write lock before reading progress: another search may have indexed the
+    // same events while we waited. IMMEDIATE also avoids a deferred read-to-write upgrade,
+    // which fails with SQLITE_BUSY without consulting the connection's busy timeout.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let panes: Vec<(i64, i64, Vec<u8>)> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = tx.prepare(
             "SELECT p.id, COALESCE(st.last_event_id, 0), COALESCE(st.pending, X'')
              FROM recording_panes p
              LEFT JOIN recording_search_state st ON st.pane_id = p.id",
@@ -1594,11 +1615,6 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
-    // IMMEDIATE, not the default DEFERRED: this transaction reads before it writes, and a
-    // deferred read->write upgrade returns SQLITE_BUSY *without* consulting `busy_timeout`
-    // (waiting could deadlock). A live server flushes every 100ms, so a deferred
-    // transaction loses that race every time and search fails with "database is locked".
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (pane_id, last_event_id, mut buffer) in panes {
         // One parser for the whole pane, not one per flush: an escape sequence can be split
         // across two PTY chunks, and parsing each chunk on its own leaks the tail of the
@@ -1845,6 +1861,48 @@ mod search_tests {
         // attributed to the event that completed the line
         assert_eq!(hits[0].elapsed_us, ElapsedMicros::new(200));
         assert_eq!(hits[0].started_at_us, UnixMicros::new(1_000_000 + 200));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_indexers_read_progress_after_acquiring_the_write_lock() -> Result<()> {
+        use std::cell::RefCell;
+        use std::sync::mpsc::{channel, Receiver, Sender};
+        use std::time::Duration;
+
+        thread_local! {
+            static RETRY: RefCell<Option<(Sender<()>, Receiver<()>)>> = const { RefCell::new(None) };
+        }
+        let dir = tempdir()?;
+        let mut store = open(dir.path());
+        record(&mut store, 0, b"exactly once\n");
+        let path = dir.path().join("session-recordings.db");
+        let mut first = connect(&path)?;
+        ensure_search_schema(&first)?;
+        let blocker = first.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (waiting_tx, waiting_rx) = channel();
+        let (retry_tx, retry_rx) = channel();
+        let second = std::thread::spawn(move || -> Result<()> {
+            let mut conn = connect(&path)?;
+            RETRY.with(|retry| *retry.borrow_mut() = Some((waiting_tx, retry_rx)));
+            conn.busy_handler(Some(|_| {
+                RETRY.with(|retry| {
+                    let retry = retry.borrow();
+                    let Some((waiting, proceed)) = retry.as_ref() else {
+                        return false;
+                    };
+                    waiting.send(()).is_ok()
+                        && proceed.recv_timeout(Duration::from_secs(10)).is_ok()
+                })
+            }))?;
+            index_pending(&mut conn)
+        });
+        waiting_rx.recv_timeout(Duration::from_secs(10))?;
+        blocker.rollback()?;
+        index_pending(&mut first)?;
+        retry_tx.send(())?;
+        second.join().unwrap()?;
+        assert_eq!(run_search(&first, "exactly", 10)?.len(), 1);
         Ok(())
     }
 
@@ -2443,6 +2501,56 @@ mod compaction_tests {
             .collect::<Vec<_>>();
         store.update_panes(&panes, ElapsedMicros::new(0)).unwrap();
         store
+    }
+
+    #[test]
+    fn export_preserves_utf8_across_events_and_compaction() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = open_store(dir.path());
+        let text = "aé中🦀\u{fffd}";
+        // Interleave independent input and output streams with resizes; neither a PTY read
+        // nor a segment boundary is a character boundary.
+        let mut events = Vec::new();
+        for (index, byte) in text.bytes().chain([0xff, 0xe2, 0x82]).enumerate() {
+            let elapsed = ElapsedMicros::new(index as i64);
+            events.push(RecordedEvent::output(
+                TerminalId::new(1),
+                elapsed,
+                vec![byte],
+            ));
+            events.push(RecordedEvent::input(
+                TerminalId::new(1),
+                elapsed,
+                vec![byte],
+            ));
+            events.push(RecordedEvent::resize(TerminalId::new(1), elapsed, 80, 24));
+        }
+        store.record_events(&events)?;
+        let before = export(dir.path(), 1);
+        for compacted in [false, true] {
+            if compacted {
+                let mut conn = connection(dir.path());
+                while matches!(compact_segment(&mut conn, 1, LATER, 1)?, Block::Packed(_)) {}
+            }
+            let exported = export(dir.path(), 1);
+            assert_eq!(exported, before);
+            let rows = exported
+                .lines()
+                .skip(1)
+                .map(serde_json::from_str::<serde_json::Value>)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            for code in ["i", "o"] {
+                let actual: String = rows
+                    .iter()
+                    .filter(|row| row[1] == code)
+                    .map(|row| row[2].as_str().unwrap())
+                    .collect();
+                assert_eq!(actual, format!("{text}��"));
+            }
+            let elapsed: f64 = rows.iter().map(|row| row[0].as_f64().unwrap()).sum();
+            assert!((elapsed - (text.len() + 2) as f64 / 1_000_000.0).abs() < 1e-12);
+        }
+        Ok(())
     }
 
     fn output(terminal: u32, elapsed_us: i64, data: &[u8]) -> RecordedEvent {

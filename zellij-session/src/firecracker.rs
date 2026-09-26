@@ -66,7 +66,9 @@ fn vm_session_action(
         zellij_ipc::consts::ipc_connect(&zellij_runtime::consts::ZELLIJ_SOCK_DIR.join(session))
             .context("could not contact the VM's owning session")?;
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
-    let mut receiver = sender.get_receiver::<ServerToClientMsg>();
+    let mut receiver = sender
+        .get_receiver::<ServerToClientMsg>()
+        .context("could not set up the VM session reply")?;
     receiver.set_recv_timeout(Some(
         deadline
             .saturating_duration_since(Instant::now())

@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn unsigned_options_reject_negative_numbers_and_validate_zero() {
+    for option in [
+        "scroll_buffer_size",
+        "scrollback_lines_to_serialize",
+        "notification_timeout",
+        "serialization_interval",
+        "firecracker_provider_timeout_secs",
+        "locked_escape_timeout_ms",
+        "agent_pane_min_columns",
+        "agent_pane_min_rows",
+    ] {
+        for invalid in [-1, -i64::MAX] {
+            let document = format!("{option} {invalid}").parse().unwrap();
+            let error = crate::kdl::options::from_kdl(&document).unwrap_err();
+            assert!(
+                matches!(&error, ConfigError::KdlError(details) if details.error_message.contains(option)),
+                "{error:?}"
+            );
+        }
+        let document = format!("{option} 0").parse().unwrap();
+        let requires_positive = matches!(
+            option,
+            "serialization_interval" | "firecracker_provider_timeout_secs"
+        );
+        assert_eq!(
+            crate::kdl::options::from_kdl(&document).is_err(),
+            requires_positive,
+            "{option}"
+        );
+        let document = format!("{option} 1").parse().unwrap();
+        crate::kdl::options::from_kdl(&document).unwrap();
+    }
+}
+
+#[test]
 fn firecracker_provider_options_round_trip() {
     let document: KdlDocument = r#"
         firecracker_provider "/opt/bin/zellij-firecracker"

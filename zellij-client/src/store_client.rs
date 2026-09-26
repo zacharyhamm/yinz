@@ -14,7 +14,8 @@ pub fn request(session: &SessionName, action: Action) -> Result<serde_json::Valu
     let socket =
         crate::os_input_output::connect_with_deadline(&path, timeout, Duration::from_millis(50))
             .context("cannot connect to the notes and todos session")?;
-    let (mut sender, mut receiver) = crate::os_input_output_unix::setup_ipc(socket, &path);
+    let (mut sender, mut receiver) =
+        crate::os_input_output_unix::setup_ipc(socket, &path).context("cannot set up store IPC")?;
     let deadline = Instant::now() + timeout;
     sender
         .send_client_msg(ClientToServerMsg::Action {

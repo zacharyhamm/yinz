@@ -113,6 +113,7 @@ pub trait Reconnector: Send + Sync {
 /// A live connection to one pane's broker.
 pub struct RemoteConn {
     outbound: Mutex<Outbound>,
+    pub(super) outbound_ready: tokio::sync::Notify,
     status: Mutex<RemoteStatus>,
     /// `Some(status)` once the broker has reported the child exiting. This is
     /// the *only* thing that means the pane is over — a transport failure must
@@ -164,6 +165,7 @@ impl RemoteConn {
                 socket,
                 broken: false,
             }),
+            outbound_ready: tokio::sync::Notify::new(),
             status: Mutex::new(RemoteStatus::default()),
             child_exit: Mutex::new(None),
             git_probe: Mutex::new(None),
@@ -223,6 +225,7 @@ impl RemoteConn {
         out.queued_input_bytes += take;
         out.input.push_back(framed);
         Self::flush_locked(&mut out)?;
+        self.outbound_ready.notify_one();
         Ok(take)
     }
 
@@ -248,7 +251,27 @@ impl RemoteConn {
         protocol::write_control(&mut framed, msg)
             .context("failed to frame a control message for a remote pane")?;
         out.control.push_back(framed);
-        Self::flush_locked(&mut out)
+        Self::flush_locked(&mut out)?;
+        self.outbound_ready.notify_one();
+        Ok(())
+    }
+
+    pub(super) fn has_pending_writes(&self) -> bool {
+        self.outbound
+            .lock()
+            .is_ok_and(|out| !out.broken && (!out.control.is_empty() || !out.input.is_empty()))
+    }
+
+    /// The reader drives socket readiness after the writer has accepted the last
+    /// input chunk. No later keystroke is needed to flush the queued tail.
+    pub(super) fn flush_pending(&self) -> Result<bool> {
+        let mut out = self
+            .outbound
+            .lock()
+            .to_anyhow()
+            .context("failed to lock a remote pane's outbound queue")?;
+        Self::flush_locked(&mut out)?;
+        Ok(!out.control.is_empty() || !out.input.is_empty())
     }
 
     pub fn resize(&self, size: WireWinsize) -> Result<()> {

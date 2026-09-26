@@ -206,7 +206,7 @@ impl PaneFrame {
     ) -> Self {
         PaneFrame {
             geom,
-            title: main_title,
+            title: zellij_types::text::clean_string_from_control_and_linebreak(&main_title),
             subtitle: None,
             scroll_position,
             style: frame_params.style,

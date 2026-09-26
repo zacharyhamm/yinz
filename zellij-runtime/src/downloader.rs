@@ -17,6 +17,9 @@ use url::Url;
 
 const STREAM_BUFFER_SIZE_BYTES: usize = 65535;
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+// Layouts are decoded in memory. Enforce the bound on decoded bytes, even when
+// Content-Length is missing or describes a compressed body.
+const MAX_LAYOUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Error, Debug)]
 pub enum DownloaderError {
@@ -58,6 +61,17 @@ pub enum DownloaderError {
     NotFoundFileName(String),
     #[error("Failed to parse URL body: {0}")]
     InvalidUrlBody(String),
+    #[error("layout from {url} exceeds the {MAX_LAYOUT_BYTES}-byte limit")]
+    LayoutTooLarge { url: String },
+}
+
+fn decode_layout_body(url: &str, bytes: Vec<u8>) -> Result<String, DownloaderError> {
+    if bytes.len() > MAX_LAYOUT_BYTES {
+        return Err(DownloaderError::LayoutTooLarge {
+            url: url.to_owned(),
+        });
+    }
+    String::from_utf8(bytes).map_err(|e| DownloaderError::InvalidUrlBody(e.to_string()))
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +387,8 @@ impl Downloader {
         Ok(file_path)
     }
     pub async fn download_without_cache(url: &str) -> Result<String, DownloaderError> {
+        use tokio::io::AsyncReadExt;
+
         let request = Request::get(url)
             .header("Content-Type", "application/octet-stream")
             .body(())?;
@@ -381,19 +397,14 @@ impl Downloader {
         let mut res = client.send_async(request).await?;
         ensure_success(url, res.status())?;
 
-        let mut downloaded_bytes: Vec<u8> = vec![];
-        let body = res.body_mut();
-        let mut stream = ReaderStream::with_capacity(body.compat(), STREAM_BUFFER_SIZE_BYTES);
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(DownloaderError::Io)?;
-            downloaded_bytes.extend_from_slice(&chunk);
-        }
-
-        log::debug!("Download complete");
-        let stringified = String::from_utf8(downloaded_bytes)
-            .map_err(|e| DownloaderError::InvalidUrlBody(format!("{}", e)))?;
-
-        Ok(stringified)
+        let mut bytes = Vec::new();
+        res.body_mut()
+            .compat()
+            .take(MAX_LAYOUT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(DownloaderError::Io)?;
+        decode_layout_body(url, bytes)
     }
 
     /// Download a layout synchronously, including when called from an async runtime.
@@ -409,9 +420,10 @@ impl Downloader {
         let mut bytes = Vec::new();
         response
             .body_mut()
+            .take(MAX_LAYOUT_BYTES as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(DownloaderError::Io)?;
-        String::from_utf8(bytes).map_err(|e| DownloaderError::InvalidUrlBody(e.to_string()))
+        decode_layout_body(url, bytes)
     }
 
     fn parse_name(&self, url: &str) -> Result<String, DownloaderError> {

@@ -443,7 +443,12 @@ impl ServerConnection for ClientOsInputOutput {
             CONNECT_TO_SERVER_TIMEOUT,
             CONNECT_TO_SERVER_RETRY_INTERVAL,
         )?;
-        let (sender, receiver) = setup_ipc(socket, path);
+        let (sender, receiver) =
+            setup_ipc(socket, path).map_err(|last_error| ConnectToServerError {
+                path: path.to_owned(),
+                waited: std::time::Duration::ZERO,
+                last_error,
+            })?;
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
         Ok(())

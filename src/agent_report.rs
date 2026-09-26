@@ -119,7 +119,9 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             zellij_ipc::consts::ipc_connect(&zellij_runtime::consts::ZELLIJ_SOCK_DIR.join(session))
                 .context("connect report session")?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
-        let mut receiver = sender.get_receiver::<ServerToClientMsg>();
+        let mut receiver = sender
+            .get_receiver::<ServerToClientMsg>()
+            .context("set up report acknowledgement")?;
         receiver
             .set_recv_timeout(Some(
                 REPORT_DEADLINE

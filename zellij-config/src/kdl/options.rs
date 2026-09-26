@@ -1,5 +1,26 @@
 use super::*;
 use zellij_types::internal_ids::HostId;
+
+fn unsigned_option<T: TryFrom<i64>>(
+    document: &KdlDocument,
+    name: &str,
+    minimum: i64,
+) -> Result<Option<T>, ConfigError> {
+    kdl_property_first_arg_as_i64_or_error!(document, name)
+        .map(|(value, entry)| {
+            T::try_from(value)
+                .ok()
+                .filter(|_| value >= minimum)
+                .ok_or_else(|| {
+                    kdl_parsing_error!(
+                        format!("{name} must be at least {minimum} and in range, got {value}"),
+                        entry
+                    )
+                })
+        })
+        .transpose()
+}
+
 pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let on_force_close =
         match kdl_property_first_arg_as_string_or_error!(kdl_options, "on_force_close") {
@@ -43,9 +64,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
             },
             None => None,
         };
-    let notification_timeout =
-        kdl_property_first_arg_as_i64_or_error!(kdl_options, "notification_timeout")
-            .map(|(v, _)| zellij_types::units::ElapsedSeconds::from_legacy_signed_bits(v));
+    let notification_timeout = unsigned_option(kdl_options, "notification_timeout", 0)?
+        .map(zellij_types::units::ElapsedSeconds::new);
     let auto_layout =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "auto_layout").map(|(v, _)| v);
     let theme = kdl_property_first_arg_as_string_or_error!(kdl_options, "theme")
@@ -106,33 +126,10 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
             },
             None => None,
         };
-    let firecracker_provider_timeout_secs = match kdl_property_first_arg_as_i64_or_error!(
-        kdl_options,
-        "firecracker_provider_timeout_secs"
-    ) {
-        Some((value, _)) if value > 0 => Some(value as u64),
-        Some((value, entry)) => {
-            return Err(kdl_parsing_error!(
-                format!("firecracker_provider_timeout_secs must be greater than zero, got {value}"),
-                entry
-            ))
-        },
-        None => None,
-    };
-    let scroll_buffer_size =
-        kdl_property_first_arg_as_i64_or_error!(kdl_options, "scroll_buffer_size")
-            .map(|(scroll_buffer_size, _entry)| scroll_buffer_size as usize);
-    let locked_escape_timeout_ms =
-        match kdl_property_first_arg_as_i64_or_error!(kdl_options, "locked_escape_timeout_ms") {
-            Some((value, _)) if value >= 0 => Some(value as u64),
-            Some((value, entry)) => {
-                return Err(kdl_parsing_error!(
-                    format!("locked_escape_timeout_ms cannot be negative, got {value}"),
-                    entry
-                ))
-            },
-            None => None,
-        };
+    let firecracker_provider_timeout_secs =
+        unsigned_option(kdl_options, "firecracker_provider_timeout_secs", 1)?;
+    let scroll_buffer_size = unsigned_option(kdl_options, "scroll_buffer_size", 0)?;
+    let locked_escape_timeout_ms = unsigned_option(kdl_options, "locked_escape_timeout_ms", 0)?;
     let copy_command = kdl_property_first_arg_as_string_or_error!(kdl_options, "copy_command")
         .map(|(copy_command, _entry)| copy_command.to_string());
     let copy_clipboard =
@@ -217,15 +214,11 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "serialize_pane_viewport")
             .map(|(v, _)| v);
     let scrollback_lines_to_serialize =
-        kdl_property_first_arg_as_i64_or_error!(kdl_options, "scrollback_lines_to_serialize")
-            .map(|(v, _)| v as usize);
+        unsigned_option(kdl_options, "scrollback_lines_to_serialize", 0)?;
     let styled_underlines =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "styled_underlines").map(|(v, _)| v);
-    let serialization_interval = kdl_property_first_arg_as_i64_or_error!(
-        kdl_options,
-        "serialization_interval"
-    )
-    .map(|(seconds, _entry)| zellij_types::units::ElapsedSeconds::from_legacy_signed_bits(seconds));
+    let serialization_interval = unsigned_option(kdl_options, "serialization_interval", 1)?
+        .map(zellij_types::units::ElapsedSeconds::new);
     let disable_session_metadata =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "disable_session_metadata")
             .map(|(v, _)| v);
@@ -240,28 +233,8 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
             .map(|(v, _)| v);
     let stacked_resize =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "stacked_resize").map(|(v, _)| v);
-    let agent_pane_min_columns =
-        match kdl_property_first_arg_as_i64_or_error!(kdl_options, "agent_pane_min_columns") {
-            Some((value, _)) if value >= 0 => Some(value as usize),
-            Some((value, entry)) => {
-                return Err(kdl_parsing_error!(
-                    format!("agent_pane_min_columns cannot be negative, got {value}"),
-                    entry
-                ))
-            },
-            None => None,
-        };
-    let agent_pane_min_rows =
-        match kdl_property_first_arg_as_i64_or_error!(kdl_options, "agent_pane_min_rows") {
-            Some((value, _)) if value >= 0 => Some(value as usize),
-            Some((value, entry)) => {
-                return Err(kdl_parsing_error!(
-                    format!("agent_pane_min_rows cannot be negative, got {value}"),
-                    entry
-                ))
-            },
-            None => None,
-        };
+    let agent_pane_min_columns = unsigned_option(kdl_options, "agent_pane_min_columns", 0)?;
+    let agent_pane_min_rows = unsigned_option(kdl_options, "agent_pane_min_rows", 0)?;
     let stacked_pane_list =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "stacked_pane_list").map(|(v, _)| v);
     let show_release_notes =

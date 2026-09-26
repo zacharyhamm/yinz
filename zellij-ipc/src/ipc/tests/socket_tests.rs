@@ -44,6 +44,53 @@ fn flush_failing_sender<T: serde::Serialize>() -> IpcSenderWithContext<T> {
 
 static IPC_COUNTER: AtomicU32 = AtomicU32::new(0);
 
+#[test]
+fn splitting_an_ipc_connection_reports_descriptor_exhaustion() {
+    struct CloneFailingStream;
+    impl std::io::Read for CloneFailingStream {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Ok(0)
+        }
+    }
+    impl std::io::Write for CloneFailingStream {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl IpcStream for CloneFailingStream {
+        fn try_clone_stream(&self) -> std::io::Result<Box<dyn IpcStream>> {
+            Err(std::io::Error::from_raw_os_error(libc::EMFILE))
+        }
+        fn set_read_timeout(&self, _: Option<std::time::Duration>) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let sender =
+        IpcSenderWithContext::<ClientToServerMsg>::from_boxed(Box::new(CloneFailingStream));
+    let receiver =
+        IpcReceiverWithContext::<ClientToServerMsg>::from_boxed(Box::new(CloneFailingStream));
+    assert_eq!(
+        sender
+            .get_receiver::<ServerToClientMsg>()
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EMFILE)
+    );
+    assert_eq!(
+        receiver
+            .get_sender::<ServerToClientMsg>()
+            .err()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EMFILE)
+    );
+}
+
 type IpcGuard = tempfile::TempDir;
 type IpcName = std::path::PathBuf;
 fn new_ipc() -> (IpcGuard, IpcName) {
@@ -240,7 +287,8 @@ fn bidirectional_communication_via_fd_duplication() {
         let stream = listener.incoming().next().unwrap().expect("accept failed");
         let mut sender: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(stream);
 
-        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> = sender.get_receiver();
+        let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
+            sender.get_receiver().unwrap();
         sender
             .send_server_msg(ServerToClientMsg::Connected {
                 warp_companions: true,
@@ -259,7 +307,7 @@ fn bidirectional_communication_via_fd_duplication() {
     let stream = connect_stream(&name);
     let mut sender: IpcSenderWithContext<ClientToServerMsg> = IpcSenderWithContext::new(stream);
 
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver().unwrap();
 
     let msg = receiver.recv_server_msg().msg();
     assert!(msg.is_some(), "client should receive server message");
@@ -400,7 +448,7 @@ fn session_probe_accepts_responding_socket() {
         let stream = listener.incoming().next().unwrap().expect("accept failed");
         let mut receiver: IpcReceiverWithContext<ClientToServerMsg> =
             IpcReceiverWithContext::new(stream);
-        let mut sender: IpcSenderWithContext<ServerToClientMsg> = receiver.get_sender();
+        let mut sender: IpcSenderWithContext<ServerToClientMsg> = receiver.get_sender().unwrap();
 
         let msg = receiver.recv_client_msg().msg();
         assert!(matches!(msg, Some((ClientToServerMsg::ConnStatus, _))));
@@ -417,7 +465,7 @@ fn session_probe_accepts_responding_socket() {
     sender
         .send_client_msg(ClientToServerMsg::ConnStatus)
         .expect("send failed");
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver().unwrap();
 
     let result = receiver.recv_server_msg().msg();
     assert!(
@@ -660,7 +708,7 @@ fn a_peer_that_accepts_and_never_answers_times_out_as_idle() {
     sender
         .send_client_msg(ClientToServerMsg::ConnStatus)
         .expect("send failed");
-    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver();
+    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = sender.get_receiver().unwrap();
 
     let started_at = std::time::Instant::now();
     let received = receiver.recv_server_msg();
@@ -1030,7 +1078,7 @@ fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
         let server = std::thread::spawn(move || {
             let stream = listener.accept().unwrap();
             let mut sender = IpcSenderWithContext::<ServerToClientMsg>::new(stream);
-            let mut receiver = sender.get_receiver::<ClientToServerMsg>();
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
             assert!(matches!(
                 receiver.recv_client_msg(),
                 IpcRecv::Msg(ClientToServerMsg::KillSessionWithCompletion, _)

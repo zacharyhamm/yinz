@@ -93,6 +93,60 @@ fn each_host_gets_its_own_socket_path_whatever_it_is_called() {
     );
 }
 
+#[test]
+fn hosts_that_collided_in_the_old_32_bit_key_have_distinct_control_sockets() {
+    // Both host + default-options strings hashed to fa970eb9 under the old key.
+    let options = SshOptions::default();
+    assert_ne!(
+        control_path("host-9374", &options),
+        control_path("host-98072", &options)
+    );
+    // Keep room for OpenSSH's temporary suffix in short Unix socket paths.
+    assert_eq!(socket_key("host-9374").len(), 16);
+}
+
+#[test]
+fn home_fallback_control_path_fits_macos_with_ssh_rename_margin() {
+    const PROBE: &str = "ZELLIJ_SSH_HOME_FALLBACK_PROBE";
+    if std::env::var_os(PROBE).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pty_host::remote::ssh::pty_host_remote_ssh_tests::home_fallback_control_path_fits_macos_with_ssh_rename_margin",
+            ])
+            .env(PROBE, "1")
+            .env("HOME", "/Users/zacharyhamm")
+            .env("TMPDIR", "/var/folders/zz/zyxvpxvq6csfxvn_n0000000000000/T")
+            .env_remove("ZELLIJ_SOCKET_DIR")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let args = ssh_common_args("build-box", &SshOptions::default());
+    let path = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("ControlPath=\""))
+        .and_then(|path| path.strip_suffix('"'))
+        .map(Path::new)
+        .expect("no quoted ControlPath option");
+    assert_eq!(
+        path.parent().unwrap(),
+        Path::new("/Users/zacharyhamm/.zellij/run/cv1/r")
+    );
+    assert_eq!(path.file_stem().unwrap().len(), 16);
+    assert_eq!(path.extension().unwrap(), "ctl");
+    // Pin macOS's strict limit even when this test runs on Linux.
+    assert!(path.as_os_str().len() + SSH_CONTROL_PATH_RENAME_MARGIN < 104);
+    check_socket_path_length(path, SSH_CONTROL_PATH_RENAME_MARGIN).unwrap();
+}
+
 /// `ZELLIJ_SOCK_DIR` is per user, not per session, so a host-only name puts two
 /// of one person's sessions on the same socket. Then the second session's
 /// forward unlinks and rebinds the first's, the first silently routes its panes

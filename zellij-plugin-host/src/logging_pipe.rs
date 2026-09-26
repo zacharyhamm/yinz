@@ -1,7 +1,6 @@
 use std::{collections::VecDeque, io::Write};
 
 use log::{debug, error};
-use zellij_runtime::errors::prelude::*;
 
 use serde::{Deserialize, Serialize};
 
@@ -47,10 +46,8 @@ impl LoggingPipe {
 impl Write for LoggingPipe {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if self.buffer.len() + buf.len() > ZELLIJ_MAX_PIPE_BUFFER_SIZE {
-            let error_msg =
-                "Exceeded log buffer size. Make sure that your plugin calls flush on stderr on \
-                valid UTF-8 symbol boundary. Additionally, make sure that your log message contains \
-                endline \\n symbol.";
+            let error_msg = "Plugin stderr exceeded its buffer limit. Split large writes and end \
+                each log message with a newline.";
             error!("{}: {}", self.plugin_name, error_msg);
             self.buffer.clear();
             return Err(std::io::Error::new(
@@ -65,38 +62,20 @@ impl Write for LoggingPipe {
         Ok(buf.len())
     }
 
-    // When we flush, check if current buffer is valid utf8 string, split by '\n' and truncate buffer in the process.
-    // We assume that eventually, flush will be called on valid string boundary (i.e. std::str::from_utf8(..).is_ok() returns true at some point).
-    // Above assumption might not be true, in which case we'll have to think about it. Make it simple for now.
     fn flush(&mut self) -> std::io::Result<()> {
+        // Newlines frame bytes, independently of UTF-8 validity. Decode each
+        // complete line so one invalid byte cannot poison all later diagnostics.
         self.buffer.make_contiguous();
-
-        match std::str::from_utf8(self.buffer.as_slices().0) {
-            Ok(converted_buffer) => {
-                if converted_buffer.contains('\n') {
-                    let mut consumed_bytes = 0;
-                    let mut split_converted_buffer = converted_buffer.split('\n').peekable();
-
-                    while let Some(msg) = split_converted_buffer.next() {
-                        if split_converted_buffer.peek().is_none() {
-                            // Log last chunk iff the last char is endline. Otherwise do not do it.
-                            if converted_buffer.ends_with('\n') && !msg.is_empty() {
-                                self.log_message(msg);
-                                consumed_bytes += msg.len() + 1;
-                            }
-                        } else {
-                            self.log_message(msg);
-                            consumed_bytes += msg.len() + 1;
-                        }
-                    }
-                    drop(self.buffer.drain(..consumed_bytes));
-                }
-            },
-            Err(e) => Err::<(), _>(e)
-                .context("failed to flush logging pipe buffer")
-                .non_fatal(),
+        let bytes = self.buffer.as_slices().0;
+        let consumed = bytes
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        let lines = String::from_utf8_lossy(&bytes[..consumed]);
+        for line in lines.split_terminator('\n') {
+            self.log_message(line);
         }
-
+        self.buffer.drain(..consumed);
         Ok(())
     }
 }
@@ -106,6 +85,19 @@ impl Write for LoggingPipe {
 mod logging_pipe_test {
 
     use super::*;
+
+    #[test]
+    fn malformed_stderr_does_not_hide_later_lines_or_a_split_utf8_tail() {
+        let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
+        pipe.write_all(b"bad \xff\nhealthy\n\xf0\x9f").unwrap();
+        assert_eq!(*pipe.logged.borrow(), ["bad \u{fffd}", "healthy"]);
+        pipe.write_all(b"\x98\xb1\nnext\n").unwrap();
+        assert_eq!(
+            *pipe.logged.borrow(),
+            ["bad \u{fffd}", "healthy", "😱", "next"]
+        );
+        assert!(pipe.buffer.is_empty());
+    }
 
     #[test]
     fn plugin_stderr_reaches_configured_log_once() {
@@ -263,22 +255,16 @@ mod logging_pipe_test {
         assert_eq!(*pipe.logged.borrow(), ["😱"]);
     }
 
-    /// `flush` checks the whole buffer for UTF-8 validity, so a complete line followed by a
-    /// split code point waits with the code point rather than going out ahead of it. That is
-    /// the current behaviour, pinned here; the line is not lost, only late.
+    /// A partial code point belongs to the next line and cannot delay a complete diagnostic.
     #[test]
-    fn a_line_ahead_of_a_split_code_point_waits_for_it() {
+    fn a_complete_line_is_logged_before_a_following_split_code_point() {
         let mut pipe = LoggingPipe::new("TestPipe", crate::PluginId::new(0));
         let scream = "😱".as_bytes();
 
         pipe.write_all(&[b"line\n", &scream[..3]].concat())
             .expect("Err write");
-        assert_eq!(pipe.buffer.len(), 5 + 3);
-        assert!(
-            pipe.logged.borrow().is_empty(),
-            "the line waits for the code point, got {:?}",
-            pipe.logged.borrow()
-        );
+        assert_eq!(pipe.buffer.len(), 3);
+        assert_eq!(*pipe.logged.borrow(), ["line"]);
 
         pipe.write_all(&[&scream[3..], b"\n"].concat())
             .expect("Err write");
@@ -345,7 +331,7 @@ mod logging_pipe_test {
 
     /// A write that is either arbitrary bytes or something shaped like real plugin output: text
     /// with lone `\n`, `\r\n`, and multi-byte UTF-8 deliberately split across the write boundary,
-    /// which is what makes `flush`'s hand-counted `consumed_bytes` interesting.
+    /// exercising line framing independently of UTF-8 validity.
     #[hegel::composite]
     fn any_write(tc: &hegel::TestCase) -> Vec<u8> {
         if tc.draw(generators::booleans()) {
@@ -427,14 +413,12 @@ mod logging_pipe_test {
         // logged without being drained
         pipe.buffer.make_contiguous();
         let residual: Vec<u8> = pipe.buffer.iter().copied().collect();
-        if let Ok(text) = std::str::from_utf8(&residual) {
-            assert!(
-                !text.contains('\n'),
-                "residual buffer {:?} still holds a complete line after {:?}",
-                text,
-                writes.iter().map(|w| w.len()).collect::<Vec<_>>()
-            );
-        }
+        assert!(
+            !residual.contains(&b'\n'),
+            "residual buffer {:?} still holds a complete line after {:?}",
+            residual,
+            writes.iter().map(|w| w.len()).collect::<Vec<_>>()
+        );
         // every logged line is one line: it was split on '\n', which never survives into it
         for line in pipe.logged.borrow().iter() {
             assert!(!line.contains('\n'), "logged line {line:?} holds a newline");

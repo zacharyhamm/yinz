@@ -23,8 +23,8 @@ use crate::envs::get_session_name;
 use crate::errors::prelude::*;
 
 pub fn make_terminal_title(pane_title: &str) -> String {
-    format!(
-        "\u{1b}]0;{}{}\u{07}",
+    let title = format!(
+        "{}{}",
         get_session_name()
             .map(|n| if pane_title.is_empty() {
                 n.to_string()
@@ -33,6 +33,10 @@ pub fn make_terminal_title(pane_title: &str) -> String {
             })
             .unwrap_or_default(),
         pane_title
+    );
+    format!(
+        "\u{1b}]0;{}\u{07}",
+        zellij_types::text::clean_string_from_control_and_linebreak(&title)
     )
 }
 
@@ -85,3 +89,7 @@ pub fn version_number(mut version: &str) -> usize {
 
     version_number
 }
+
+#[cfg(test)]
+#[path = "unit/shared_tests.rs"]
+mod tests;

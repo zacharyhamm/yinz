@@ -118,7 +118,7 @@ fn reporter_requires_its_exact_acceptance_and_bounds_stalled_peers() {
             _ => panic!("expected a dedicated report"),
         };
         assert!(matches!(report.state, AgentReportState::Set(_)));
-        let mut sender = receiver.get_sender::<ServerToClientMsg>();
+        let mut sender = receiver.get_sender::<ServerToClientMsg>().unwrap();
         match response {
             "accepted" => sender
                 .send_server_msg(ServerToClientMsg::AgentReportAccepted {
@@ -209,6 +209,7 @@ fn oversized_reports_use_the_existing_bounded_payload() {
     assert!(report.event.unwrap().raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
     receiver
         .get_sender::<ServerToClientMsg>()
+        .unwrap()
         .send_server_msg(ServerToClientMsg::AgentReportAccepted {
             report_id: report.report_id,
         })
@@ -288,6 +289,7 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
         assert_eq!(matches!(report.state, AgentReportState::Clear), clear);
         receiver
             .get_sender::<ServerToClientMsg>()
+            .unwrap()
             .send_server_msg(ServerToClientMsg::AgentReportAccepted {
                 report_id: report.report_id,
             })

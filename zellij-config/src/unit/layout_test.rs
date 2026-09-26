@@ -12,6 +12,31 @@ fn normalize_layout_debug(s: String) -> String {
 }
 
 #[test]
+fn negative_pane_sizes_and_swap_constraints_are_rejected() {
+    for kind in ["max_panes", "min_panes", "exact_panes"] {
+        let raw = format!("layout {{ swap_tiled_layout {{ tab {kind}=2 {{ pane; }}; }}; }}");
+        crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+    }
+    for size in [-1, -i64::MAX] {
+        for pane in [format!("size={size}"), format!("{{ size {size}; }}")] {
+            let raw = format!("layout {{ pane {pane}; }}");
+            assert!(
+                crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(),
+                "{raw}"
+            );
+        }
+        for kind in ["max_panes", "min_panes", "exact_panes"] {
+            let raw =
+                format!("layout {{ swap_tiled_layout {{ tab {kind}={size} {{ pane; }}; }}; }}");
+            assert!(
+                crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(),
+                "{raw}"
+            );
+        }
+    }
+}
+
+#[test]
 fn relative_layout_directory_preserves_metadata() {
     let dir = tempfile::tempdir_in(".").unwrap();
     let relative_dir = Path::new(".").join(dir.path().file_name().unwrap());

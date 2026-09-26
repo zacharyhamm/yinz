@@ -201,7 +201,7 @@ fn check_ipc_pipe_length(ipc_pipe: &Path, teardown: Option<ClientTeardown>) {
             teardown,
             format!(
                 "Error: the IPC socket path is too long ({} bytes, max {}):\n  {}\n\n\
-                 This is usually caused by a long $TMPDIR path.\n\
+                 The socket directory or session name is too long.\n\
                  To fix this, set a shorter socket directory, eg.:\n  \
                  ZELLIJ_SOCKET_DIR=/tmp/zellij zellij",
                 path_len,
