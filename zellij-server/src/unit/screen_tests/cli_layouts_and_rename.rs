@@ -608,6 +608,65 @@ pub fn pty_bytes_and_hold_pane_buffered_before_new_pane() {
     );
 }
 
+#[test]
+fn pty_bytes_buffered_before_replace_pane_are_replayed() {
+    for close_replaced_pane in [false, true] {
+        let size = Size { cols: 80, rows: 20 };
+        let mut mock = MockScreen::new(size);
+        let screen_thread = mock.run(None, vec![]);
+        let server_events = Watched::new(vec![]);
+        let server_receiver = mock.server_receiver.take().unwrap();
+        let server_thread = log_actions_in_thread!(
+            server_events,
+            ServerInstruction::KillSession,
+            server_receiver
+        );
+        let replacement = TerminalId::new(2);
+        // Hold the screen on a rendezvous until all three instructions are queued. A replay
+        // at the queue's tail must then put the early bytes after the later bytes and fail.
+        let (response_channel, barrier) = crossbeam::channel::bounded(0);
+        mock.to_screen
+            .send(ScreenInstruction::GetPaneInfo {
+                pane_id: PaneId::Terminal(TerminalId::new(0)),
+                response_channel,
+            })
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::PtyBytes(
+                replacement,
+                b"EARLY REPLACEMENT ".to_vec(),
+            ))
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::ReplacePane(
+                PaneId::Terminal(replacement),
+                None,
+                None,
+                None,
+                close_replaced_pane,
+                ClientTabIndexOrPaneId::PaneId(PaneId::Terminal(TerminalId::new(0))),
+                None,
+            ))
+            .unwrap();
+        mock.to_screen
+            .send(ScreenInstruction::PtyBytes(
+                replacement,
+                b"THEN LATER OUTPUT\r\n".to_vec(),
+            ))
+            .unwrap();
+        barrier
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+        wait_for_settled_render(
+            &server_events,
+            size,
+            "replacement displays output received before it was placed",
+            |frame| frame.contains("EARLY REPLACEMENT THEN LATER OUTPUT"),
+        );
+        mock.teardown(vec![server_thread, screen_thread]);
+    }
+}
+
 /// The first `LogError` line reported to the server that mentions `needle`, once one arrives.
 fn wait_for_reported_error_mentioning(
     received_server_instructions: &Watched<Vec<ServerInstruction>>,

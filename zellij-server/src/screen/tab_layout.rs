@@ -101,12 +101,12 @@ impl Screen {
             }
         }
 
-        for event in pending.waiting_for_client.drain(..) {
-            replay_pending_pane_event(self, event).non_fatal();
+        for event in std::mem::take(&mut pending.waiting_for_client) {
+            replay_pending_pane_event(self, event, pending).non_fatal();
         }
 
-        for event in pending.waiting_for_tab.drain(..) {
-            replay_pending_pane_event(self, event).non_fatal();
+        for event in std::mem::take(&mut pending.waiting_for_tab) {
+            replay_pending_pane_event(self, event, pending).non_fatal();
         }
 
         if !self.has_pending_tabs() {
@@ -199,7 +199,7 @@ impl Screen {
         for pane_id in new_terminal_pane_ids {
             if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                 for event in pending_events {
-                    replay_pending_pane_event(self, event).non_fatal();
+                    replay_pending_pane_event(self, event, pending).non_fatal();
                 }
             }
         }
@@ -217,12 +217,12 @@ impl Screen {
             }
         }
 
-        for event in pending.waiting_for_client.drain(..) {
-            replay_pending_pane_event(self, event).non_fatal();
+        for event in std::mem::take(&mut pending.waiting_for_client) {
+            replay_pending_pane_event(self, event, pending).non_fatal();
         }
 
-        for event in pending.waiting_for_tab.drain(..) {
-            replay_pending_pane_event(self, event).non_fatal();
+        for event in std::mem::take(&mut pending.waiting_for_tab) {
+            replay_pending_pane_event(self, event, pending).non_fatal();
         }
 
         Ok(())

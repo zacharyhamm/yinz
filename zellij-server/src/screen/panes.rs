@@ -450,7 +450,7 @@ impl Screen {
         self.fire_agent_start_for_new_pane(pid);
         if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
             for event in pending_events {
-                replay_pending_pane_event(self, event).non_fatal();
+                replay_pending_pane_event(self, event, pending).non_fatal();
             }
         }
         Ok(())

@@ -119,6 +119,9 @@
 //! take the focus - `wire::OPENED_BY` is what tells it so - because the user
 //! asked for a list.
 
+#[cfg(test)]
+#[path = "unit/attention.rs"]
+mod attention_tests;
 mod swamp;
 mod todos;
 mod vms;
@@ -337,6 +340,8 @@ struct State {
     search_error: Option<String>,
     search_truncated: bool,
     search_base: Option<(Vec<StripRow>, Summaries)>,
+    /// Latest unfiltered strip while the list shows only agents waiting for an answer.
+    waiting_base: Option<Strip>,
 }
 
 /// Everything [`State::history_lines`] reads, as one comparable value.
@@ -840,7 +845,9 @@ impl ZellijPlugin for State {
             // too-short pane makes below, and what the Tab handler's ring relies on.
             self.focus = Focus::List;
             self.last_history_max_scroll = 0;
-            let message = if self.search_base.is_some() {
+            let message = if self.waiting_base.is_some() {
+                "no agents waiting for you"
+            } else if self.search_base.is_some() {
                 "no matches"
             } else {
                 "no agents"
@@ -1192,16 +1199,27 @@ impl State {
         {
             return None;
         }
+        let waiting = self.rows.iter().filter(|row| waiting_row(row)).count();
         let hint = if self.search_editing {
-            "Enter apply · Esc cancel"
+            "Enter apply · Esc cancel".to_owned()
+        } else if self.waiting_base.is_some() {
+            let keys = match self.focus {
+                Focus::List => "Enter focus · Tab history",
+                Focus::History => "Enter read · Tab chat",
+            };
+            format!("w all · {waiting} waiting · {keys}")
         } else if self.predecessors.is_some() {
-            "c clear · p previous"
+            "c clear · p previous · w waiting".to_owned()
         } else if self.search_base.is_some() {
-            "c clear · / edit"
+            "c clear · / edit · r resume · w waiting".to_owned()
+        } else if self.focus == Focus::History {
+            "Enter read · Tab chat · s summary · p previous · w waiting".to_owned()
+        } else if matches!(self.rows.get(self.selected), Some(StripRow::Run { .. })) {
+            format!("r resume · / search · w waiting ({waiting}) · s summary")
         } else {
-            "p previous"
+            format!("w waiting ({waiting}) · Enter focus · / search · s summary · p previous")
         };
-        Some(agents::cut_to_width(hint.to_owned(), self.last_cols))
+        Some(agents::cut_to_width(hint, self.last_cols))
     }
 
     fn switch_surface(&mut self, surface: Surface) {
@@ -1394,6 +1412,7 @@ impl State {
         }
         if key.has_no_modifiers() {
             match key.bare_key {
+                BareKey::Char('w') => return self.toggle_waiting(),
                 BareKey::Char('p') => return self.begin_predecessors(),
                 BareKey::Char('c') if self.predecessors.is_some() => {
                     return self.clear_predecessors()
@@ -1477,6 +1496,7 @@ impl State {
             return false;
         };
         let (pane_id, title) = (*pane_id, text.clone());
+        self.clear_waiting();
         self.clear_search();
         self.clear_predecessors();
         self.predecessor_request = self.predecessor_request.wrapping_add(1);
@@ -1598,6 +1618,7 @@ impl State {
     }
 
     fn begin_search(&mut self) -> bool {
+        self.clear_waiting();
         self.clear_predecessors();
         self.search_request = self.search_request.wrapping_add(1);
         self.search_pending = false;
@@ -1674,6 +1695,32 @@ impl State {
         self.search_truncated = false;
         self.selected = self.rows.iter().position(selectable).unwrap_or(0);
         self.generation += 1;
+        true
+    }
+
+    fn toggle_waiting(&mut self) -> bool {
+        self.focus = Focus::List;
+        self.list_scroll = None;
+        if !self.clear_waiting() {
+            self.clear_search();
+            self.clear_predecessors();
+            let strip = Strip {
+                rows: self.rows.clone(),
+                focused: self.focused,
+                summaries: self.summaries.clone(),
+            };
+            self.waiting_base = Some(strip.clone());
+            self.set_rows(strip);
+        }
+        true
+    }
+
+    fn clear_waiting(&mut self) -> bool {
+        let Some(strip) = self.waiting_base.take() else {
+            return false;
+        };
+        self.list_scroll = None;
+        self.set_rows(strip);
         true
     }
 
@@ -1986,7 +2033,11 @@ impl State {
     /// selected, because the answer to "which agent" has not changed, only
     /// whether you are in it.
     fn set_rows(&mut self, mut strip: Strip) -> bool {
-        let filtered = self.predecessors.is_some();
+        let filtered = self.predecessors.is_some() || self.waiting_base.is_some();
+        if let Some(base) = &mut self.waiting_base {
+            *base = strip.clone();
+            strip.rows = waiting_rows(&strip.rows);
+        }
         if let Some(previous) = &mut self.predecessors {
             previous.base = strip.clone();
             strip.rows = previous.rows();
@@ -3167,6 +3218,36 @@ fn selectable(row: &StripRow) -> bool {
     )
 }
 
+fn waiting_row(row: &StripRow) -> bool {
+    matches!(row, StripRow::Agent { waiting: true, .. })
+}
+
+/// Keep the project and branch context of waiting agents, without empty headers or archive.
+fn waiting_rows(rows: &[StripRow]) -> Vec<StripRow> {
+    let mut filtered = Vec::new();
+    let mut headers = Vec::new();
+    for row in rows {
+        match row {
+            StripRow::Project(_) => {
+                headers.clear();
+                headers.push(row.clone());
+            },
+            StripRow::Branch(_) => {
+                if matches!(headers.last(), Some(StripRow::Branch(_))) {
+                    headers.pop();
+                }
+                headers.push(row.clone());
+            },
+            row if waiting_row(row) => {
+                filtered.append(&mut headers);
+                filtered.push(row.clone());
+            },
+            _ => {},
+        }
+    }
+    filtered
+}
+
 /// The row a click on screen line `line` resolves to, if any - `None` for a
 /// header row, a click past the last row, or a click on the summary box under
 /// the list, which `list_rows` is the height of the list above.
@@ -3669,6 +3750,7 @@ mod tests {
         StripRow::Agent {
             pane_id,
             text: text.to_owned(),
+            waiting: false,
             // the second field of the line, the way hocus spells it
             kind: text
                 .split_whitespace()
@@ -4771,11 +4853,17 @@ mod tests {
             }
         };
         let mut state = State::default();
-        check(&mut state, "p previous");
+        check(
+            &mut state,
+            "w waiting (0) · Enter focus · / search · s summary · p previous",
+        );
         state.set_rows(unfocused(strip()));
-        check(&mut state, "p previous");
+        check(
+            &mut state,
+            "w waiting (0) · Enter focus · / search · s summary · p previous",
+        );
         assert!(state.begin_predecessors());
-        check(&mut state, "c clear · p previous");
+        check(&mut state, "c clear · p previous · w waiting");
         assert!(state.begin_search());
         check(&mut state, "Enter apply · Esc cancel");
         state.search_query = "a query".into();
@@ -4783,13 +4871,16 @@ mod tests {
         check(&mut state, "Enter apply · Esc cancel");
         let result = search_reply(&mut state, &[]);
         assert!(state.apply_search_result(result));
-        check(&mut state, "c clear · / edit");
+        check(&mut state, "c clear · / edit · r resume · w waiting");
         state.search_truncated = true;
-        check(&mut state, "c clear · / edit");
+        check(&mut state, "c clear · / edit · r resume · w waiting");
         state.search_error = Some("search failed".into());
-        check(&mut state, "c clear · / edit");
+        check(&mut state, "c clear · / edit · r resume · w waiting");
         assert!(state.clear_search());
-        check(&mut state, "p previous");
+        check(
+            &mut state,
+            "w waiting (0) · Enter focus · / search · s summary · p previous",
+        );
     }
 
     #[test]
@@ -5842,6 +5933,7 @@ mod tests {
                     pane_id: 3,
                     text: "  3  claude◆  waiting".to_owned(),
                     kind: "claude◆".to_owned(),
+                    waiting: true,
                 },
             ],
             3,
@@ -5937,6 +6029,7 @@ mod tests {
                     pane_id: 3,
                     text: "↳ claude · history".into(),
                     kind: "claude".into(),
+                    waiting: false,
                 }
             };
             let mut state = State::default();

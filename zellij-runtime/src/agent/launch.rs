@@ -73,6 +73,15 @@ pub const CURSOR_PERMISSION_MODES: &[&str] = &["skip", "force"];
 /// `auto`, its own word, and `skip`, the spelling every other kind shares, name it.
 pub const OPENCODE_PERMISSION_MODES: &[&str] = &["auto", "skip"];
 
+/// The reasoning efforts a kind accepts, shared by the launcher and its chooser.
+pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
+    match kind {
+        Some("codex") => &["none", "minimal", "low", "medium", "high", "xhigh"],
+        Some("claude" | "cursor") => &["low", "medium", "high", "xhigh", "max"],
+        _ => &[],
+    }
+}
+
 /// The program a kind runs.
 ///
 /// Identity for all but one: `cursor` ships its agent as `cursor-agent`, and the bare
@@ -113,11 +122,7 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
     let mut flags = Vec::new();
     let mut model = trimmed(&spec.model).map(str::to_owned);
     if let Some(effort) = trimmed(&spec.effort) {
-        let accepted: &[&str] = match kind {
-            Some("codex") => &["none", "minimal", "low", "medium", "high", "xhigh"],
-            Some("claude" | "cursor") => &["low", "medium", "high", "xhigh", "max"],
-            _ => &[],
-        };
+        let accepted = effort_levels(kind);
         if !accepted.contains(&effort) {
             return Err(format!(
                 "{} does not support effort {effort:?}; accepted: {}",

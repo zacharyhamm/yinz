@@ -35,7 +35,7 @@ use {
     zellij_types::data::PluginCapabilities,
 };
 
-fn apply_queued_agent_report(
+pub(super) fn apply_queued_agent_report(
     screen: &mut Screen,
     report: &zellij_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
@@ -106,16 +106,27 @@ fn apply_queued_agent_report(
     Ok(true)
 }
 
-// Reports waiting for creation are applied here, before newer instructions already in the
-// queue. Re-enqueuing them at the tail would invert their state and event arrival order.
+// Reports and output waiting for creation are applied before newer instructions already in
+// the queue. Re-enqueuing them at the tail would invert state and byte arrival order.
 pub(super) fn replay_pending_pane_event(
     screen: &mut Screen,
     event: ScreenInstruction,
+    pending: &mut PendingEvents,
 ) -> Result<()> {
-    if let ScreenInstruction::AgentReport(report, accepted_at) = event {
-        apply_queued_agent_report(screen, &report, accepted_at)?;
-    } else {
-        screen.bus.senders.send_to_screen(event)?;
+    match event {
+        ScreenInstruction::AgentReport(report, accepted_at) => {
+            apply_queued_agent_report(screen, &report, accepted_at)?;
+        },
+        ScreenInstruction::PtyBytes(pid, bytes) => {
+            screen
+                .handle_pty_bytes(pid, bytes, pending)
+                .context("failed to replay buffered terminal output")?;
+            let _ = screen
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::RenderToClients);
+        },
+        event => screen.bus.senders.send_to_screen(event)?,
     }
     Ok(())
 }
@@ -490,7 +501,7 @@ pub(crate) fn screen_thread_main(
 
                     if let Some(pending_events) = pending.waiting_for_pane.remove(&pid) {
                         for event in pending_events {
-                            replay_pending_pane_event(&mut screen, event).non_fatal();
+                            replay_pending_pane_event(&mut screen, event, &mut pending).non_fatal();
                         }
                     }
 
@@ -2862,6 +2873,13 @@ pub(crate) fn screen_thread_main(
                     )?;
                     // A plugin can open an agent pane in place, the same as anywhere else.
                     screen.fire_agent_start_for_new_pane(new_pane_id);
+                    // Its reader can produce output before the replacement is placed, just
+                    // as it can before NewPane. Agent-start precedes the buffered events.
+                    if let Some(events) = pending.waiting_for_pane.remove(&new_pane_id) {
+                        for event in events {
+                            replay_pending_pane_event(&mut screen, event, &mut pending).non_fatal();
+                        }
+                    }
 
                     screen.log_and_report_session_state()?;
                 },

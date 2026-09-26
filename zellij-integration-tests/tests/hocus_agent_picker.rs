@@ -231,6 +231,103 @@ fn an_agent_that_never_leaves_its_folder_lands_under_its_project() {
     zellij.quit();
 }
 
+#[test]
+fn a_todo_launches_an_agent_with_its_project_and_task_context() {
+    use zellij_cli::notes_todos::NotesTodos;
+    use zellij_integration_tests::Size;
+
+    let repository = write_git_repository("todo-agent", "main")
+        .canonicalize()
+        .unwrap();
+    let mut zellij = TestRunner::new(Size {
+        cols: 120,
+        rows: 50,
+    })
+    .with_config(&format!("mouse_mode true\n{HOCUS_PROJECT_CONFIG}"))
+    .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+    .start();
+    let shell = zellij.expect_pty_spawn();
+    shell.output(b"ready");
+    zellij.wait_until("the session is ready", |grid| grid.contains("ready"));
+    let request = |command: NotesTodos| {
+        let action = command.action(&mut std::io::empty()).unwrap();
+        zellij_client::store_client::request(&zellij.session_name().into(), action).unwrap()
+    };
+    request(NotesTodos::ProjectRemember {
+        name: "todo-agent".into(),
+        root: repository.to_string_lossy().into_owned(),
+    });
+    let parent = request(NotesTodos::TodoAdd {
+        project: "todo-agent".into(),
+        text: "Improve the build".into(),
+        parent_id: None,
+    });
+    let task = "Keep $HOME literal\nand test the build";
+    let child = request(NotesTodos::TodoAdd {
+        project: "todo-agent".into(),
+        text: task.into(),
+        parent_id: parent["id"].as_u64(),
+    });
+
+    open_sidebar(&zellij);
+    zellij.resize(Size {
+        cols: 120,
+        rows: 50,
+    });
+    zellij.send_stdin(&keys::SHIFT_TAB);
+    zellij.send_stdin(b"\x1b[C");
+    zellij.send_stdin(&keys::ENTER);
+    zellij.wait_until("the todo panel is open", |grid| {
+        grid.contains("Improve the build") && grid.contains("Keep $HOME literal")
+    });
+    zellij.send_stdin(b"jn");
+    zellij.wait_until("the task opens the agent launcher", |grid| {
+        grid.contains("New agent") && grid.contains("Prompt (optional)")
+    });
+
+    // Keep this test in the remembered checkout. Worktree creation has its own tests.
+    let click = |label: &str| {
+        let snapshot = zellij.snapshot();
+        let (row, line) = snapshot
+            .text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(label))
+            .unwrap_or_else(|| panic!("{label} is missing:\n{}", snapshot.text));
+        let column = line[..line.find(label).unwrap()].chars().count();
+        zellij.send_stdin(format!("\x1b[<0;{};{}M", column + 1, row + 1).as_bytes());
+        zellij.send_stdin(format!("\x1b[<0;{};{}m", column + 1, row + 1).as_bytes());
+    };
+    click("Create and switch branch");
+    zellij.wait_until("branch creation is disabled", |grid| {
+        grid.text
+            .lines()
+            .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
+    });
+    click("Create agent");
+    let agent = zellij.expect_pty_spawn();
+    let command = agent.run_command();
+    assert_eq!(command.command.to_string_lossy(), "codex");
+    assert_eq!(
+        command.cwd.as_ref().unwrap().canonicalize().unwrap(),
+        repository.canonicalize().unwrap()
+    );
+    let prompt = command
+        .args
+        .last()
+        .expect("the task is passed as one argument");
+    assert!(prompt.contains(task), "{prompt}");
+    assert!(prompt.contains("Improve the build"), "{prompt}");
+    let todos = request(NotesTodos::TodoList {
+        project: "todo-agent".into(),
+        include_done: true,
+    });
+    let item = &todos["items"][0]["children"][0];
+    assert_eq!(item["id"], child["id"]);
+    assert_eq!(item["done"], false, "launching does not complete the task");
+    zellij.quit();
+}
+
 /// The wrong-branch bug, end to end with a real `git worktree`.
 ///
 /// Two agents in one repository: one in the primary checkout on `trunk`, one in
