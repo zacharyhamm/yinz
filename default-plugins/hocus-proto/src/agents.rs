@@ -25,6 +25,10 @@ use zellij_types::internal_ids::SessionName;
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
 
+#[cfg(test)]
+#[path = "unit/agents_attention.rs"]
+mod attention_tests;
+
 /// How many lines of a pane the model sees for each agent in one `agent_list`.
 const PREVIEW_LINES: usize = 20;
 /// The hard ceiling on one preview, whatever those lines hold.
@@ -3124,42 +3128,35 @@ pub fn parse_summary(body: &[u8], hash: u64) -> Option<Summary> {
     })
 }
 
-/// The marker column at the head of an agent row.
-///
-/// Two characters whether or not anything is waiting, so the list does not shift sideways
-/// as agents start and stop asking. `!` is the only thing drawn today; the summary text
-/// behind it is carried but not yet shown.
+/// Whether the running agent is waiting for an answer, shared by the strip and model tools.
 ///
 /// Gated on the pane being idle as well as on the answer, because a summary outlives the
 /// moment it describes: it is deliberately kept while the agent works again — that is what
 /// lets an agent returning to the same screen be free rather than another request — and an
 /// agent that is working is not waiting on anybody, whatever it was waiting on before.
-fn waiting_marker(
+fn awaiting_confirmation(
     summaries: &Summaries,
     activity: &Activity,
     hooks: &HookFeeds,
     status: AgentStatus,
     pane_id: u32,
-) -> &'static str {
+) -> bool {
+    if status != AgentStatus::Running {
+        return false;
+    }
     // An agent that says it is blocked on the user is blocked on the user. No
     // freshness check against `activity` here, unlike the summary path below: that
     // check exists because a summary describes one screen and outlives it, while a
     // feed has no screen behind it at all - it is the current state or it is nothing.
     if let Some(feed) = hooks.get(&pane_id) {
-        return match (status, feed.phase) {
-            (AgentStatus::Running, HookPhase::Waiting) => "! ",
-            _ => "  ",
-        };
+        return feed.phase == HookPhase::Waiting;
     }
     let idle = activity.get(&pane_id).is_some_and(|(_, polls)| *polls > 0);
     let current = activity_hash(activity, pane_id);
     let fresh = summaries
         .get(&pane_id)
         .is_some_and(|s| s.awaiting && Some(s.hash) == current);
-    match idle && fresh {
-        true => "! ",
-        false => "  ",
-    }
+    idle && fresh
 }
 
 /// What marks an agent whose state is *reported* rather than inferred.
@@ -3223,6 +3220,10 @@ pub enum StripRow {
         text: String,
         #[serde(default)]
         kind: String,
+        /// Current evidence that this agent is waiting for an answer. Never inferred from
+        /// its title or from a completed turn; shared with the marker and `agent_list`.
+        #[serde(default)]
+        waiting: bool,
     },
     /// A completed hook session with no live pane to focus.
     ///
@@ -3289,12 +3290,8 @@ pub struct Strip {
 /// Neither is repeated on the agent's own line: the headers carry them, so an
 /// agent row stays short enough to read in a narrow sidebar. Agents of no known
 /// project come last, under a header that says so.
-/// One agent, sorted before it becomes a row: its project, its branch, its pane, the line as
-/// drawn, and the kind that line names. Named because clippy counts the tuple's arms, and
-/// because the sort below reads better against a name than against five anonymous slots.
-/// The kind is owned rather than borrowed because it carries the hook marker, which
-/// is a fact about the pane rather than about the kind's name.
-type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, String, String);
+/// One agent row with its project, branch, and pane id as sorting keys.
+type SortableAgent<'a> = (Option<&'a str>, Option<&'a str>, u32, StripRow);
 
 pub fn strip_rows(
     panes: &[AgentPane],
@@ -3316,9 +3313,11 @@ pub fn strip_rows(
             // marker rides there too — see `kind_cell`.
             let hooked = hooks.contains_key(&pane.pane_id);
             let cell = kind_cell(kind, pane.host.as_deref(), hooked);
+            let waiting =
+                awaiting_confirmation(summaries, activity, hooks, pane.status, pane.pane_id);
             let mut row = format!(
                 "{}{:>3}  {cell}  {}",
-                waiting_marker(summaries, activity, hooks, pane.status, pane.pane_id),
+                if waiting { "! " } else { "  " },
                 pane.pane_id,
                 status_cell(
                     pane.status,
@@ -3334,10 +3333,13 @@ pub fn strip_rows(
                 owners.get(&pane.pane_id).map(String::as_str),
                 branches.get(&pane.pane_id).map(String::as_str),
                 pane.pane_id,
-                row,
-                // Marked, but never hosted: the box this heads is drawn beside the row
-                // that already names the machine, and a header is one line wide.
-                kind_cell(kind, None, hooked),
+                StripRow::Agent {
+                    pane_id: pane.pane_id,
+                    text: row,
+                    // The row already names the host; the history header only needs the kind.
+                    kind: kind_cell(kind, None, hooked),
+                    waiting,
+                },
             ))
         })
         .collect();
@@ -3358,7 +3360,7 @@ pub fn strip_rows(
     let mut project: Option<Option<&str>> = None;
     let mut branch: Option<Option<&str>> = None;
     let mut rows = Vec::with_capacity(agents.len());
-    for (owner, checkout, pane_id, text, kind) in agents {
+    for (owner, checkout, _, row) in agents {
         if project != Some(owner) {
             rows.push(StripRow::Project(owner.unwrap_or(NO_PROJECT).to_owned()));
             project = Some(owner);
@@ -3373,11 +3375,7 @@ pub fn strip_rows(
             )));
             branch = Some(checkout);
         }
-        rows.push(StripRow::Agent {
-            pane_id,
-            text,
-            kind,
-        });
+        rows.push(row);
     }
     rows
 }
@@ -3660,7 +3658,7 @@ pub fn list_json(
                 item["summary"] = json!(summary.text);
             }
             // Answered exactly as the strip's marker is, so the model and the list
-            // cannot disagree about who is blocked. See `waiting_marker`: an agent
+            // cannot disagree about who is blocked. See `awaiting_confirmation`: an agent
             // reporting for itself is believed outright, and only a pane without a
             // feed is read off a summary — where the answer is gated on that summary
             // still describing the screen the pane is showing.
@@ -3669,8 +3667,13 @@ pub fn list_json(
             // cannot: a pane can be blocked on the user before anything has been
             // written about it, and the model asking for the list needs to know that.
             if let Some(feed) = hooks.get(&pane.pane_id) {
-                item["awaiting_confirmation"] =
-                    json!(pane.status == AgentStatus::Running && feed.phase == HookPhase::Waiting);
+                item["awaiting_confirmation"] = json!(awaiting_confirmation(
+                    summaries,
+                    activity,
+                    hooks,
+                    pane.status,
+                    pane.pane_id
+                ));
                 // The fact the strip spells `◆`. A reader of this list wants to know
                 // that the two fields below are reported rather than inferred; it has
                 // no use for the glyph that says so in a column.
@@ -3688,14 +3691,14 @@ pub fn list_json(
                     activity.get(&pane.pane_id),
                     Some(feed)
                 ));
-            } else if let Some(summary) = summaries.get(&pane.pane_id) {
-                item["awaiting_confirmation"] = json!(
-                    summary.awaiting
-                        && activity
-                            .get(&pane.pane_id)
-                            .is_some_and(|(_, polls)| *polls > 0)
-                        && Some(summary.hash) == activity_hash(activity, pane.pane_id)
-                );
+            } else if summaries.contains_key(&pane.pane_id) {
+                item["awaiting_confirmation"] = json!(awaiting_confirmation(
+                    summaries,
+                    activity,
+                    hooks,
+                    pane.status,
+                    pane.pane_id
+                ));
             }
             Some(item)
         })
@@ -3981,6 +3984,7 @@ mod tests {
             pane_id,
             kind: kind_in(text),
             text: format!("  {text}"),
+            waiting: false,
         }
     }
 
@@ -3998,6 +4002,7 @@ mod tests {
             pane_id,
             kind: kind_in(text),
             text: format!("! {text}"),
+            waiting: true,
         }
     }
 
@@ -6841,16 +6846,13 @@ mod tests {
                 status_cell(AgentStatus::Running, None, hooks.get(&3)),
                 "busy · Bash git"
             );
-            assert_eq!(
-                waiting_marker(
-                    &Summaries::new(),
-                    &Activity::new(),
-                    &hooks,
-                    AgentStatus::Running,
-                    3
-                ),
-                "  "
-            );
+            assert!(!awaiting_confirmation(
+                &Summaries::new(),
+                &Activity::new(),
+                &hooks,
+                AgentStatus::Running,
+                3
+            ));
             let json = list_json(
                 &[pane(3, kind, Some(kind))],
                 &manual(&[]),

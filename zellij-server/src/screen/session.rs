@@ -282,8 +282,8 @@ impl Screen {
             "attach trace: screen client_id={client_id} pending events drain begin after {:?}",
             attach_started_at.elapsed()
         );
-        for event in pending.waiting_for_client.drain(..) {
-            replay_pending_pane_event(self, event).non_fatal();
+        for event in std::mem::take(&mut pending.waiting_for_client) {
+            replay_pending_pane_event(self, event, pending).non_fatal();
         }
         log::info!("attach trace: screen client_id={client_id} log_and_report_session_state begin");
         self.log_and_report_session_state()?;

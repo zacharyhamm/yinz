@@ -5134,8 +5134,8 @@ fn replay_pending_plugin_events(
             event => event,
         };
         match event {
-            event @ ScreenInstruction::AgentReport(..) => {
-                thread_main::replay_pending_pane_event(screen, event)?;
+            ScreenInstruction::AgentReport(report, accepted_at) => {
+                thread_main::apply_queued_agent_report(screen, &report, accepted_at)?;
             },
             ScreenInstruction::ClosePane(id, _, _, _)
                 if screen.destroyed_panes.contains(&id)

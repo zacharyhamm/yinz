@@ -19,7 +19,11 @@ use zellij_tile::ui_components::forms::{
 const PROJECT: &str = "project";
 const AGENT: &str = "agent";
 const MODEL: &str = "model";
+const EFFORT: &str = "effort";
+const PERMISSION_MODE: &str = "permission_mode";
+const AGENT_DEFAULT: &str = "Agent default";
 const PROMPT: &str = "prompt";
+const INITIAL_PROMPT: &str = "initial_prompt";
 const FIRECRACKER: &str = "firecracker";
 const FIRECRACKER_IMAGE: &str = "firecracker_image";
 const CREATE_BRANCH: &str = "create_branch";
@@ -111,12 +115,12 @@ struct State {
     /// What the fork modal is forking, for its status row. Outlived by the error, which
     /// takes the same row when there is one.
     note: Option<String>,
-    /// The `(width, height)` `resize` last asked the host for, so it can decline to ask again.
+    /// The `(width, height, y)` `resize` last asked the host for, so it can decline to ask again.
     ///
     /// `TabUpdate` arrives for reasons that have nothing to do with this modal's size - including
     /// every step of a mouse drag of the modal itself - and each coordinate change re-resolves the
     /// pane. Sending only when the size actually changed keeps the drag quiet.
-    requested_size: Option<(String, String)>,
+    requested_size: Option<(String, usize, usize)>,
     /// Which round of Git probes the suggestions on screen belong to.
     ///
     /// The project can change while a probe is in flight, and the answer that
@@ -145,6 +149,18 @@ impl Default for State {
                 Select::new(launch::OFFERED.iter().copied().map(capitalized)),
             )
             .field(MODEL, "Model (optional)", TextInput::empty())
+            .select(
+                EFFORT,
+                "Reasoning effort",
+                Select::new(agent_options(launch::effort_levels(Some(
+                    launch::OFFERED[0],
+                )))),
+            )
+            .select(
+                PERMISSION_MODE,
+                "Approval mode",
+                Select::new(agent_options(permission_modes(launch::OFFERED[0]))),
+            )
             // What the agent is started with. The same argument `agent_spawn`
             // takes, so asking hocus for an agent and filling this in are the
             // same request said two ways.
@@ -229,6 +245,7 @@ impl ZellijPlugin for State {
             .map(|((id, work), key)| (id, work, key));
         self.load_projects();
         self.fill_projects();
+        self.fill_initial_prompt(&configuration);
         self.plugin_id = get_plugin_ids().plugin_id;
         let asked_for = |key: &str| configuration.get(key).map(String::as_str) == Some("true");
         // Without a caller pane there is nothing to duplicate or fork, whatever the alias
@@ -295,8 +312,8 @@ impl ZellijPlugin for State {
                 false
             },
             Event::TabUpdate(tabs) => {
-                if let Some(tab) = tabs.first() {
-                    self.resize((tab.display_area_columns).get());
+                if let Some(tab) = tabs.iter().find(|tab| tab.active).or_else(|| tabs.first()) {
+                    self.resize(tab.display_area_columns.get(), tab.viewport_rows.get());
                 }
                 false
             },
@@ -425,6 +442,25 @@ fn help_for(form: &Form) -> &'static str {
         return "<Enter> create  <↓/Tab> next  <Esc> back";
     };
     if let Some(select) = field.select() {
+        if field.id() == PERMISSION_MODE && !select.is_open() {
+            return match (form.text(AGENT), form.text(PERMISSION_MODE)) {
+                ("Codex", "skip") => "Bypasses approvals AND sandbox",
+                ("Claude", "skip" | "bypassPermissions") => "Bypasses all permission checks",
+                ("Cursor", "skip" | "force") => "Allows commands without approval",
+                ("Opencode", "auto" | "skip") => "Auto-approves; explicit denials stay",
+                ("Codex", "never") => "No prompts; keeps sandbox setting",
+                ("Codex", "full-auto") => "Automatic mode with workspace sandbox",
+                ("Codex", "untrusted") => "Asks before commands outside trust list",
+                ("Codex", "on-request") => "Agent decides when to ask for approval",
+                ("Codex", "on-failure") => "Asks after a sandboxed command fails",
+                ("Claude", "acceptEdits") => "Auto-approves file edits",
+                ("Claude", "dontAsk") => "Denies actions that need approval",
+                ("Claude", "plan") => "Plans without making changes",
+                ("Claude", "auto") => "Automatic permission approval",
+                ("Claude", "manual") => "Requests manual permission approvals",
+                _ => "Uses the agent's configured permissions",
+            };
+        }
         return if select.is_open() {
             "<Enter> choose  <↑↓> move  <Esc> close"
         } else {
@@ -521,32 +557,33 @@ fn modal_width(display_columns: usize) -> String {
 /// Rows of pane the dialog needs: its own rows plus the two the pane frame
 /// takes. Derived rather than written down so that adding a field - or the
 /// error row - cannot quietly start scrolling the form.
-fn modal_height(dialog: &Dialog) -> String {
-    (dialog.height() + FRAME_ROWS).to_string()
+fn modal_height(dialog: &Dialog) -> usize {
+    dialog.height() + FRAME_ROWS
 }
 
 impl State {
-    fn resize(&mut self, display_columns: usize) {
-        let size = (modal_width(display_columns), modal_height(&self.dialog));
+    fn resize(&mut self, display_columns: usize, available_rows: usize) {
+        // Floating geometry clips at the bottom instead of moving a tall dialog up.
+        let height = modal_height(&self.dialog).min(available_rows);
+        let y = (available_rows / 5).min(available_rows.saturating_sub(height));
+        let size = (modal_width(display_columns), height, y);
         if self.requested_size.as_ref() == Some(&size) {
             // nothing about the modal's size changed, so there is nothing to ask for. A
             // `TabUpdate` is not evidence that this pane wants to be a different shape.
             return;
         }
-        let (width, height) = size.clone();
+        let (width, height, y) = size.clone();
         if let Some(coordinates) = FloatingPaneCoordinates::new(
             None,
-            Some("20%".into()),
+            Some(y.to_string()),
             Some(width),
-            Some(height),
+            Some(height.to_string()),
             None,
             None,
         ) {
-            // Already an overlay by the time this runs - the keybinding opens it as a modal. This
-            // resizes it where it is; `OverlayPanes` keeps the kind, and keeps the position too
-            // once the user has dragged the modal - which is what makes the `None` x and the 20% y
-            // an *initial* placement rather than one re-imposed for the life of the pane.
-            change_overlay_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
+            // This API resizes either a floating pane or an overlay where it already is.
+            // For overlays it preserves the kind and any position the user dragged it to.
+            change_floating_panes_coordinates(vec![(PaneId::Plugin(self.plugin_id), coordinates)]);
             self.requested_size = Some(size);
         }
     }
@@ -838,7 +875,7 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
-    Some(command_in_context(pane, kind))
+    command_in_context(pane, kind).ok()
 }
 
 fn agent_cwd(pane: &AgentPane) -> Option<&str> {
@@ -852,7 +889,7 @@ fn agent_cwd(pane: &AgentPane) -> Option<&str> {
 /// The command that starts `kind` where `pane` is running: same machine, same VM, same
 /// folder, and nothing of the old argv - a duplicate and a fork both start a fresh
 /// conversation, they only differ over which agent has it.
-fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
+fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, String> {
     // Use the source pane even when this picker was opened from a workflow view.
     // An exited process loses its live cwd, but its agent record retains it.
     let mut target = PaneTarget::parse_display(pane.host.as_deref());
@@ -863,12 +900,18 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> CommandToRun {
         image.clone_from(&pane.firecracker_image);
         *worktree = pane.firecracker_worktree.clone().map(Into::into);
     }
-    CommandToRun {
-        path: launch::binary_for(kind).into(),
+    let (command, _) = launch::plan(&launch::Spec {
+        kind: Some(kind.to_owned()),
+        // Remote targets use installed broker-aware hooks; inline local reporting hooks
+        // cannot reach this session and would duplicate the installed hooks.
+        hooks: Some(target.is_local()),
+        ..Default::default()
+    })?;
+    Ok(CommandToRun {
         cwd: agent_cwd(pane).map(Into::into),
         target,
-        ..Default::default()
-    }
+        ..command
+    })
 }
 
 /// Start an agent, reusing the held source pane for a workflow fork.
@@ -963,6 +1006,17 @@ impl State {
         if id == PATH {
             self.worktree_dir_edited = true;
         }
+        if id == AGENT {
+            let kind = self.dialog.form().text(AGENT).to_lowercase();
+            if let Some(select) = self.dialog.form_mut().select_by_id_mut(EFFORT) {
+                select.set_options(agent_options(launch::effort_levels(Some(&kind))));
+            }
+            if let Some(select) = self.dialog.form_mut().select_by_id_mut(PERMISSION_MODE) {
+                select.set_options(agent_options(permission_modes(&kind)));
+                // Permission names shared by agents need not promise the same access.
+                select.select_index(0);
+            }
+        }
         if id == PROJECT {
             self.fill_worktree_default();
             self.refresh_git_suggestions();
@@ -990,6 +1044,20 @@ impl State {
             .and_then(|field| field.input_mut())
         {
             input.set_text(text.to_owned());
+        }
+    }
+
+    fn fill_initial_prompt(&mut self, configuration: &BTreeMap<String, String>) {
+        if let Some(prompt) = configuration.get(INITIAL_PROMPT) {
+            if let Some(input) = self
+                .dialog
+                .form_mut()
+                .field_by_id_mut(PROMPT)
+                .and_then(|field| field.input_mut())
+            {
+                input.set_text(prompt.clone());
+                input.set_cursor_position(0);
+            }
         }
     }
 
@@ -1076,7 +1144,9 @@ impl State {
             .workflow_reply
             .as_ref()
             .map(|_| PaneId::Terminal(TerminalId::new(*pane_id)));
-        match start(command_in_context(&context.pane, &kind), reuse) {
+        match command_in_context(&context.pane, &kind)
+            .and_then(|command| start(command, reuse).map_err(str::to_owned))
+        {
             Ok(pane_id) => {
                 self.finish_launch(pane_id);
                 false
@@ -1157,6 +1227,8 @@ fn spec(form: &Form) -> launch::Spec {
         command: None,
         args: Vec::new(),
         model: Some(form.text(MODEL).to_owned()),
+        effort: selected_agent_option(form, EFFORT),
+        permission_mode: selected_agent_option(form, PERMISSION_MODE),
         prompt: Some(form.text(PROMPT).to_owned()),
         firecracker,
         firecracker_image: Some(form.text(FIRECRACKER_IMAGE).to_owned()),
@@ -1180,6 +1252,30 @@ fn spec(form: &Form) -> launch::Spec {
         allow_outside_worktree: Some(!form.checked(CREATE_BRANCH) || !form.checked(WORKTREE)),
         ..Default::default()
     }
+}
+
+fn permission_modes(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "codex" => launch::CODEX_PERMISSION_MODES,
+        "claude" => launch::CLAUDE_PERMISSION_MODES,
+        "cursor" => launch::CURSOR_PERMISSION_MODES,
+        "opencode" => launch::OPENCODE_PERMISSION_MODES,
+        _ => &[],
+    }
+}
+
+fn agent_options(values: &[&str]) -> Vec<String> {
+    std::iter::once(AGENT_DEFAULT)
+        .chain(values.iter().copied())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn selected_agent_option(form: &Form, id: &str) -> Option<String> {
+    form.select_by_id(id)
+        .filter(|select| select.selected_index().is_some_and(|index| index > 0))
+        .and_then(|select| select.selected_option())
+        .map(str::to_owned)
 }
 
 /// The form as the pair Zellij wants. Kept as its own function because the tests
@@ -1290,10 +1386,11 @@ mod tests {
                 assert_eq!(state.requested_size, None);
                 let tab = TabInfo {
                     display_area_columns: ColumnCount::new(columns),
+                    viewport_rows: RowCount::new(40),
                     ..Default::default()
                 };
                 state.update(Event::TabUpdate(vec![tab.clone()]));
-                let expected = Some((modal_width(columns), modal_height(&state.dialog)));
+                let expected = Some((modal_width(columns), modal_height(&state.dialog), 8));
                 assert_eq!(state.requested_size, expected);
                 state.update(Event::TabUpdate(vec![tab]));
                 assert_eq!(state.requested_size, expected);
@@ -1304,8 +1401,18 @@ mod tests {
     #[test]
     fn the_modal_is_tall_enough_for_the_whole_dialog() {
         let state = State::default();
-        assert_eq!(modal_height(&state.dialog), "20");
-        assert_eq!(state.dialog.height() + FRAME_ROWS, 20);
+        assert_eq!(modal_height(&state.dialog), 22);
+        assert_eq!(state.dialog.height() + FRAME_ROWS, 22);
+    }
+
+    #[test]
+    fn the_modal_moves_up_to_keep_its_footer_inside_short_viewports() {
+        let mut state = State::default();
+        for (rows, y) in [(40, 8), (24, 2), (22, 0), (18, 0), (22, 0), (40, 8)] {
+            state.resize(80, rows);
+            assert_eq!(state.requested_size, Some(("40".into(), rows.min(22), y)));
+            assert!(y + 22.min(rows) <= rows);
+        }
     }
 
     #[test]
@@ -1476,6 +1583,123 @@ mod tests {
         assert_eq!(command.args, ["fix the parser"]);
     }
 
+    #[test]
+    fn a_todo_prefills_an_editable_prompt_without_changing_its_text() {
+        let mut state = State::default();
+        let prompt = "Implement todo #4: fix `parser`\nCheck $(literal) and 日本語.\nRun tests.";
+        state.fill_initial_prompt(&BTreeMap::from([(
+            INITIAL_PROMPT.to_owned(),
+            prompt.to_owned(),
+        )]));
+        state.set_checked(CREATE_BRANCH, false);
+        assert_eq!(state.dialog.form().text(PROMPT), prompt);
+        assert_eq!(
+            state
+                .dialog
+                .form()
+                .field_by_id(PROMPT)
+                .unwrap()
+                .input()
+                .unwrap()
+                .get_cursor_position(),
+            0
+        );
+        assert_eq!(request(state.dialog.form()).unwrap().0.args, [prompt]);
+        state.set_text(PROMPT, "the edited task");
+        assert_eq!(
+            spec(state.dialog.form()).prompt.as_deref(),
+            Some("the edited task")
+        );
+        assert_eq!(State::default().dialog.form().text(PROMPT), "");
+    }
+
+    #[test]
+    fn launch_options_follow_the_agent_and_default_to_its_configuration() {
+        let mut state = State::default();
+        state.set_checked(CREATE_BRANCH, false);
+        state.set_text(MODEL, "example");
+        for kind in launch::OFFERED {
+            state
+                .dialog
+                .form_mut()
+                .select_by_id_mut(AGENT)
+                .unwrap()
+                .select_option(&capitalized(kind));
+            state.changed(AGENT);
+            let form = state.dialog.form();
+            assert_eq!(spec(form).effort, None);
+            assert_eq!(spec(form).permission_mode, None);
+            assert_eq!(
+                form.select_by_id(EFFORT).unwrap().options(),
+                agent_options(launch::effort_levels(Some(kind)))
+            );
+            assert_eq!(
+                form.select_by_id(PERMISSION_MODE).unwrap().options(),
+                agent_options(permission_modes(kind))
+            );
+            for mode in permission_modes(kind) {
+                state
+                    .dialog
+                    .form_mut()
+                    .select_by_id_mut(PERMISSION_MODE)
+                    .unwrap()
+                    .select_option(mode);
+                assert_eq!(
+                    spec(state.dialog.form()).permission_mode.as_deref(),
+                    Some(*mode)
+                );
+                assert!(request(state.dialog.form()).is_ok(), "{kind}: {mode}");
+            }
+        }
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(AGENT)
+            .unwrap()
+            .select_option("Codex");
+        state.changed(AGENT);
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(EFFORT)
+            .unwrap()
+            .select_option("xhigh");
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PERMISSION_MODE)
+            .unwrap()
+            .select_option("full-auto");
+        let command = request(state.dialog.form()).unwrap().0;
+        assert_eq!(
+            command.args,
+            [
+                "-c",
+                "model_reasoning_effort=\"xhigh\"",
+                "--model",
+                "example",
+                "--full-auto"
+            ]
+        );
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(AGENT)
+            .unwrap()
+            .select_option("Opencode");
+        state.changed(AGENT);
+        assert_eq!(
+            spec(state.dialog.form()).effort,
+            None,
+            "unsupported effort is reset"
+        );
+        assert_eq!(
+            spec(state.dialog.form()).permission_mode,
+            None,
+            "permission choices never carry across agents"
+        );
+    }
+
     /// A field the user cleared is not a field they left alone: `launch` would
     /// default both of these, and the modal deliberately will not.
     #[test]
@@ -1567,7 +1791,16 @@ mod tests {
         let narrowest: usize = modal_width(80).parse().unwrap();
         let mut state = State::default();
         let mut lines = vec![];
-        for id in [PROJECT, AGENT, MODEL, CREATE_BRANCH, BASE, "create"] {
+        for id in [
+            PROJECT,
+            AGENT,
+            MODEL,
+            EFFORT,
+            PERMISSION_MODE,
+            CREATE_BRANCH,
+            BASE,
+            "create",
+        ] {
             state.dialog.form_mut().focus_on(id);
             lines.push(help_for(state.dialog.form()));
         }
@@ -1604,6 +1837,51 @@ mod tests {
                 line.chars().count() <= narrowest,
                 "{line:?} does not fit {narrowest} columns"
             );
+        }
+    }
+
+    #[test]
+    fn approval_help_explains_bypasses_without_changing_the_dropdown_controls() {
+        let mut state = State::default();
+        for (agent, mode, expected) in [
+            ("Codex", "skip", "Bypasses approvals AND sandbox"),
+            ("Codex", "never", "No prompts; keeps sandbox setting"),
+            ("Claude", "skip", "Bypasses all permission checks"),
+            (
+                "Claude",
+                "bypassPermissions",
+                "Bypasses all permission checks",
+            ),
+            ("Cursor", "force", "Allows commands without approval"),
+            ("Opencode", "skip", "Auto-approves; explicit denials stay"),
+        ] {
+            state
+                .dialog
+                .form_mut()
+                .select_by_id_mut(AGENT)
+                .unwrap()
+                .select_option(agent);
+            state.changed(AGENT);
+            state.dialog.form_mut().focus_on(PERMISSION_MODE);
+            state
+                .dialog
+                .form_mut()
+                .select_by_id_mut(PERMISSION_MODE)
+                .unwrap()
+                .select_option(mode);
+            assert_eq!(help_for(state.dialog.form()), expected);
+            assert!(expected.chars().count() <= 40);
+            state
+                .dialog
+                .form_mut()
+                .select_by_id_mut(PERMISSION_MODE)
+                .unwrap()
+                .open();
+            assert_eq!(
+                help_for(state.dialog.form()),
+                "<Enter> choose  <↑↓> move  <Esc> close"
+            );
+            state.dialog.handle_key(KeyWithModifier::new(BareKey::Esc));
         }
     }
 
@@ -1906,23 +2184,25 @@ mod tests {
     /// A fork is a duplicate that changed its mind about which agent: everything that says
     /// *where* the pane runs is carried over untouched.
     #[test]
-    fn forking_keeps_the_context_and_changes_only_the_binary() {
+    fn forking_keeps_the_context_and_applies_the_new_agents_launch_defaults() {
         let pane = AgentPane {
             host: Some("builder".to_owned()),
             cwd: Some("/tmp/repo".to_owned()),
             ..agent_pane("codex")
         };
-        let command = command_in_context(&pane, "claude");
+        let command = command_in_context(&pane, "claude").unwrap();
         assert_eq!(command.path, PathBuf::from("claude"));
-        // A fork starts a fresh conversation, like a duplicate.
-        assert!(command.args.is_empty());
+        assert!(
+            command.args.is_empty(),
+            "SSH forks preserve installed broker-aware hooks"
+        );
         // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
         assert_eq!(command.cwd, Some("/tmp/repo".into()));
         assert_eq!(command.target.ssh_host(), Some("builder"));
 
         // The one offered kind whose program is not its name.
         assert_eq!(
-            command_in_context(&pane, "cursor").path,
+            command_in_context(&pane, "cursor").unwrap().path,
             PathBuf::from("cursor-agent")
         );
 
@@ -1930,25 +2210,59 @@ mod tests {
             host: None,
             ..pane.clone()
         };
+        let local_command = command_in_context(&local, "claude").unwrap();
         assert_eq!(
-            command_in_context(&local, "claude").cwd,
-            Some("/tmp/repo".into())
+            local_command.args,
+            launch::plan(&launch::Spec {
+                kind: Some("claude".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .0
+            .args
         );
+        assert_eq!(
+            local_command.args[0], "--settings",
+            "local forks keep automatic reporting hooks"
+        );
+        assert_eq!(local_command.cwd, Some("/tmp/repo".into()));
+        assert!(local_command.target.is_local());
 
         let vm = AgentPane {
             host: Some("firecracker:review".to_owned()),
             firecracker_image: Some("rust-dev".to_owned()),
             firecracker_worktree: Some("/host/repo".to_owned()),
-            ..pane
+            ..pane.clone()
         };
+        let vm_command = command_in_context(&vm, "claude").unwrap();
+        assert!(
+            vm_command.args.is_empty(),
+            "VM hooks are already installed in the guest"
+        );
+        assert_eq!(vm_command.cwd, Some("/tmp/repo".into()));
         assert_eq!(
-            command_in_context(&vm, "claude").target,
+            vm_command.target,
             PaneTarget::Firecracker {
                 vm: "review".to_owned(),
                 image: Some("rust-dev".to_owned()),
                 worktree: Some("/host/repo".into()),
             }
         );
+        for (pane, fork) in [
+            (&pane, &command),
+            (&local, &local_command),
+            (&vm, &vm_command),
+        ] {
+            let duplicate =
+                duplicate_command(pane, &BTreeMap::from([(7, "claude".into())])).unwrap();
+            assert_eq!(duplicate.path, fork.path);
+            assert_eq!(
+                duplicate.args, fork.args,
+                "duplicates use the same reporting hooks as forks"
+            );
+            assert_eq!(duplicate.cwd, fork.cwd);
+            assert_eq!(duplicate.target, fork.target);
+        }
     }
 
     /// The alternative would be starting an agent in whatever folder the modal was opened
@@ -1991,10 +2305,7 @@ mod tests {
     #[test]
     fn the_fork_modal_is_only_as_tall_as_its_one_question() {
         let dialog = fork_dialog();
-        assert_eq!(
-            modal_height(&dialog),
-            (dialog.height() + FRAME_ROWS).to_string()
-        );
+        assert_eq!(modal_height(&dialog), dialog.height() + FRAME_ROWS);
         // Much shorter than the New agent form, which is the point of a second dialog.
         assert!(dialog.height() < State::default().dialog.height());
     }
@@ -2268,7 +2579,7 @@ mod tests {
             assert_eq!(duplicate.path, PathBuf::from("claude"));
             assert_eq!(duplicate.cwd, Some("/work/repo".into()));
             assert_eq!(duplicate.target, target);
-            let fork = command_in_context(&pane, "codex");
+            let fork = command_in_context(&pane, "codex").unwrap();
             assert_eq!(fork.path, PathBuf::from("codex"));
             assert_eq!(fork.cwd, duplicate.cwd);
             assert_eq!(fork.target, target);

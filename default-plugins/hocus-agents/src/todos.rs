@@ -273,10 +273,55 @@ impl State {
                 )
             },
             BareKey::Enter | BareKey::Char(' ') => self.toggle_todo(),
+            BareKey::Char('n') => {
+                let Some(configuration) = self.todo_agent_configuration() else {
+                    return false;
+                };
+                // A fresh modal keeps each launch's project and prompt, even if another
+                // agent form is already open.
+                load_new_plugin("hocus-new-agent", configuration, false, false);
+                true
+            },
             BareKey::Char('d') => self.arm_todo_delete(),
             BareKey::Char('m') => self.arm_todo_move(),
             _ => false,
         }
+    }
+
+    fn todo_agent_configuration(&self) -> Option<BTreeMap<String, String>> {
+        let root = self.todos.project_root.as_ref()?;
+        let item = self.selected_todo()?;
+        let mut prompt = format!("Work on project todo #{}:\n\n{}", item.id, item.text);
+        let mut ancestors = todos::trail_of(&self.todos.list.items, item.id);
+        ancestors.pop();
+        if !ancestors.is_empty() {
+            prompt.push_str("\n\nParent context (for reference):");
+            for ancestor in ancestors {
+                prompt.push_str(&format!("\n- {ancestor}"));
+            }
+        }
+        let subtasks = todo_rows(
+            &todos::List {
+                items: item.children.clone(),
+                ..Default::default()
+            },
+            false,
+        );
+        if !subtasks.is_empty() {
+            prompt.push_str("\n\nOpen subtasks:");
+            for row in subtasks {
+                prompt.push_str(&format!("\n{}- [ ] {}", "  ".repeat(row.depth), row.text));
+            }
+        }
+        prompt.push_str(
+            "\n\nImplement the task, run relevant checks, and summarize the changes and anything still outstanding.",
+        );
+        Some(BTreeMap::from([
+            ("caller_cwd".into(), root.clone()),
+            ("initial_prompt".into(), prompt),
+            ("overlay".into(), "true".into()),
+            ("modal".into(), "true".into()),
+        ]))
     }
 
     fn todo_projects(&self) -> Vec<String> {
@@ -712,7 +757,7 @@ impl State {
             },
             Mode::Normal if !self.todos.status.is_empty() => self.todos.status.clone(),
             Mode::Normal => format!(
-                "{} · a add · A subtask · e edit · Space done · d delete · m move · v {}",
+                "{} · n agent · a add · A subtask · e edit · Space done · d delete · m move · v {}",
                 self.todo_project_name(),
                 if self.todos.show_done {
                     "hide done"
@@ -825,6 +870,51 @@ mod tests {
             rev: DataRevision::new(id as i64),
             children,
         }
+    }
+
+    #[test]
+    fn starting_a_todo_prefills_its_project_and_open_work_without_changing_the_list() {
+        let mut state = State::default();
+        state.todos.initial_cwd = "/somewhere/else".into();
+        state.todos.project_root = Some("/work".into());
+        state.todos.list.items = vec![item(
+            1,
+            "Improve the build",
+            false,
+            vec![
+                item(
+                    2,
+                    "Handle `quotes` and $(commands)\nKeep each argument intact",
+                    false,
+                    vec![
+                        item(3, "Already finished", true, vec![]),
+                        item(
+                            4,
+                            "Cover multiline prompts",
+                            false,
+                            vec![item(5, "Check newlines", false, vec![])],
+                        ),
+                    ],
+                ),
+                item(6, "Unrelated sibling", false, vec![]),
+            ],
+        )];
+        state.todos.selected = Some(2);
+        let before = state.todos.list.clone();
+        let configuration = state.todo_agent_configuration().unwrap();
+        assert_eq!(configuration["caller_cwd"], "/work");
+        assert_eq!(configuration["overlay"], "true");
+        assert_eq!(configuration["modal"], "true");
+        assert_eq!(
+            configuration["initial_prompt"],
+            "Work on project todo #2:\n\nHandle `quotes` and $(commands)\nKeep each argument intact\n\nParent context (for reference):\n- Improve the build\n\nOpen subtasks:\n- [ ] Cover multiline prompts\n  - [ ] Check newlines\n\nImplement the task, run relevant checks, and summarize the changes and anything still outstanding.",
+        );
+        assert!(state.todo_key(KeyWithModifier::new(BareKey::Char('n'))));
+        assert_eq!(state.todos.list, before);
+        state.todos.selected = None;
+        assert!(!state.todo_key(KeyWithModifier::new(BareKey::Char('n'))));
+        state.todos.selected = Some(999);
+        assert!(state.todo_agent_configuration().is_none());
     }
 
     #[test]

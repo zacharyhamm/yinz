@@ -99,7 +99,9 @@ fn opening_a_dropdown_leaves_the_rest_of_the_form_where_it_was() {
 
     zellij.send_stdin(&keys::ctrl('b'));
     let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Create and switch branch") && snapshot.contains("[x]")
+        snapshot.contains("Create and switch branch")
+            && snapshot.contains("[x]")
+            && snapshot.contains("<Enter> open")
     });
     let title = position_of(&snapshot, "New agent");
     let project = position_of(&snapshot, "Project");
@@ -144,7 +146,9 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
 
     zellij.send_stdin(&keys::ctrl('b'));
     let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Create and switch branch") && snapshot.contains("[x]")
+        snapshot.contains("Create and switch branch")
+            && snapshot.contains("[x]")
+            && snapshot.contains("<Enter> open")
     });
     // The dialog's own title, on the row that used to be scrolled off the top.
     assert!(
@@ -227,8 +231,7 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
 /// rather than reaching the host as a pane that cannot start.
 #[test]
 fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
-    // Tall enough for the whole dialog: in the default 24 rows the form scrolls, and
-    // the button and the status row this test reads sit below the viewport.
+    // A tall terminal lets this check the modal's requested size rather than scrolling.
     let mut zellij = TestRunner::new(Size {
         cols: 120,
         rows: 40,
@@ -240,7 +243,9 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
 
     zellij.send_stdin(&keys::ctrl('b'));
     let snapshot = zellij.wait_until("the new agent modal is up", |snapshot| {
-        snapshot.contains("Firecracker image") && snapshot.contains("[x]")
+        snapshot.contains("Firecracker image")
+            && snapshot.contains("[x]")
+            && snapshot.contains("<Enter> open")
     });
     assert!(
         snapshot.contains("Run in Firecracker"),
