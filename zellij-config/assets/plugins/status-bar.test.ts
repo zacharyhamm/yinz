@@ -1,4 +1,4 @@
-import z, { type TabInfo } from "zellij:plugin";
+import z, { type Action, type KeyWithModifier, type TabInfo } from "zellij:plugin";
 import { test, loadPlugin, assert, assertEquals } from "zellij:testing";
 import { defaultMode } from "./status-bar/default-mode.ts";
 
@@ -113,6 +113,50 @@ test("status bar refreshes the UTC offset at the next whole hour", async () => {
   await p.advance(1);
   assertEquals(named(p.commands, "GetLocalUtcOffset").length, 2);
   assert((await p.render(1, 80)).includes("20:00"));
+});
+
+// Ctrl e o moves the agents panel by sending the running plugins a message, not by launching one,
+// so its key is found by the message's name - another message bound in the mode is not it.
+test("status bar names the Agent-mode key that moves the panel by its message", async () => {
+  const p = await loadPlugin("./status-bar.ts", { replies, configuration: { classic: "true" } });
+  const pipe = (name: string): Action => ({
+    KeybindPipe: {
+      name,
+      payload: null,
+      args: null,
+      plugin: null,
+      plugin_id: null,
+      configuration: null,
+      launch_new: false,
+      skip_cache: false,
+      floating: false,
+      in_place: null,
+      cwd: null,
+      pane_title: null,
+    },
+  });
+  const bind = (char: string, name: string): [KeyWithModifier, Action[]] => [
+    { bare_key: { Char: char }, key_modifiers: [] },
+    [pipe(name), { SwitchToMode: { input_mode: "Normal" } }],
+  ];
+  const done: [KeyWithModifier, Action[]] = [
+    { bare_key: "Enter", key_modifiers: [] },
+    [{ SwitchToMode: { input_mode: "Normal" } }],
+  ];
+  const agentMode = (...binds: [KeyWithModifier, Action[]][]) => ({
+    ...defaultMode(),
+    mode: "Agent" as const,
+    keybinds: [["Agent", [...binds, done]] as ["Agent", [KeyWithModifier, Action[]][]]],
+  });
+  await p.event({ TabUpdate: [activeTab] });
+  await p.event({ ModeUpdate: agentMode(bind("m", "something_else")) });
+  const without = await p.render(2, 200);
+  assert(without.includes("Select pane") && !without.includes("Move panel"), without);
+  await p.event({
+    ModeUpdate: agentMode(bind("m", "something_else"), bind("o", "agent_strip_reposition")),
+  });
+  const frame = await p.render(2, 200);
+  assert(frame.includes("<o> Move panel"), frame);
 });
 
 test("status bar clipboard messages clear on input and live Alt release restores the clock", async () => {

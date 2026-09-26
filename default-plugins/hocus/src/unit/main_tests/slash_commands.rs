@@ -193,6 +193,17 @@ fn slash_keys_prints_the_keybinding_reference() {
     assert_eq!(notice.role, Role::Notice);
     assert!(notice.content.contains("Ctrl+l"));
     assert!(notice.content.contains("new chat"));
+    // VMs' c says how many paths changed; the paths themselves are the sync's to show.
+    assert!(notice.content.contains("count the guest paths"));
+    assert!(!notice.content.contains("list the guest paths"));
+    // The Swamp boxes' keys: a box being typed in has no key sheet of its own, since '?' is a
+    // character there, so this is where they are written down.
+    let (_, swamp) = notice
+        .content
+        .split_once("In Swamp:")
+        .expect("the sheet has a Swamp block");
+    assert!(swamp.contains("empty one clears"), "{swamp}");
+    assert!(swamp.contains("Tab or Esc cancels"), "{swamp}");
 }
 
 // -- /clear ----------------------------------------------------------------

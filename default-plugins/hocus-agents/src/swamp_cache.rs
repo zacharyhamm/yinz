@@ -1,4 +1,5 @@
-//! Complete issue snapshots in the plugin's persistent /cache preopen.
+//! Complete issue snapshots in the plugin's persistent /cache preopen, and the marker that
+//! remembers the host granted this plugin its permissions.
 use super::{Credentials, Search};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -80,6 +81,32 @@ impl Cache {
     }
 }
 
+/// Whether `marker` records that an earlier load was granted the permissions Swamp asks for.
+///
+/// The host answers a request it has already granted from its own cache, without a prompt; but
+/// only a request says what the host has cached, and a first request with nothing cached puts
+/// a prompt over the whole pane. The marker is what lets a returning user skip the key press
+/// that a new one is asked for.
+pub(super) fn remembers_permission(marker: &Path) -> bool {
+    marker.is_file()
+}
+
+/// Record the host's answer: a grant as the marker, a denial as no marker, so the next load
+/// waits to be asked again.
+pub(super) fn remember_permission(marker: &Path, granted: bool) -> io::Result<()> {
+    if granted {
+        let parent = marker
+            .parent()
+            .ok_or_else(|| io::Error::other("permission marker has no parent"))?;
+        fs::create_dir_all(parent)?;
+        return fs::write(marker, b"");
+    }
+    match fs::remove_file(marker) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 /// Credentials::resolve has already normalized the server URL. Hash both
 /// partitions so neither a key nor a username is written into a filename.
 pub(super) fn identity(credentials: &Credentials) -> String {
@@ -129,6 +156,24 @@ mod tests {
             )),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_grant_is_remembered_and_a_denial_forgets_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("swamp-issues").join("permitted");
+        assert!(!remembers_permission(&marker));
+        remember_permission(&marker, false).unwrap();
+        assert!(
+            !remembers_permission(&marker),
+            "denying first writes nothing"
+        );
+        remember_permission(&marker, true).unwrap();
+        assert!(remembers_permission(&marker));
+        remember_permission(&marker, true).unwrap();
+        assert!(remembers_permission(&marker));
+        remember_permission(&marker, false).unwrap();
+        assert!(!remembers_permission(&marker));
     }
 
     #[test]

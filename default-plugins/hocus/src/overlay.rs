@@ -7,6 +7,7 @@ use zellij_tile::prelude::*;
 
 use hocus_proto::launch;
 
+use crate::message::Message;
 use crate::ui;
 use crate::State;
 
@@ -17,19 +18,128 @@ const DEFAULT_HEIGHT_PERCENT: usize = 66;
 const DEFAULT_SPLIT_PERCENT: usize = 50;
 const MIN_PANE_COLS: usize = ui::MIN_COLS + 2;
 const MIN_PANE_ROWS: usize = ui::MIN_ROWS + 2;
+/// The fewest columns the host draws either half in, while the panel has room for two. The
+/// conversation cannot lay itself out in less, and the agent list is no use narrower either.
+const MIN_HALF_COLS: u16 = ui::MIN_COLS as u16;
+
+/// One `width`, `height`, `split` or `pad` value as written: a count of cells ("120"), or a
+/// share of the whole ("60%", "60 %").
+///
+/// The one reading of all four keys, so the placement, the config warnings and `/split` cannot
+/// disagree about what a value means - or about which values mean nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Measure {
+    Cells(usize),
+    Percent(usize),
+}
+
+impl Measure {
+    /// `None` for anything but a whole number, with or without a '%': a decimal, a minus sign,
+    /// text, or nothing at all. A leading '+' is read as the number it signs, as
+    /// `usize::from_str` reads it.
+    fn parse(value: &str) -> Option<Measure> {
+        let value = value.trim();
+        match value.strip_suffix('%') {
+            Some(percent) => percent.trim().parse().ok().map(Measure::Percent),
+            None => value.parse().ok().map(Measure::Cells),
+        }
+    }
+
+    fn of(self, whole: usize) -> usize {
+        match self {
+            Measure::Cells(cells) => cells,
+            Measure::Percent(percent) => whole.saturating_mul(percent) / 100,
+        }
+    }
+}
 
 fn resolve(value: Option<&String>, whole: usize, default_percent: usize) -> usize {
-    let fallback = whole * default_percent / 100;
-    let Some(value) = value.map(|value| value.trim()).filter(|v| !v.is_empty()) else {
-        return fallback;
+    value
+        .and_then(|value| Measure::parse(value))
+        .unwrap_or(Measure::Percent(default_percent))
+        .of(whole)
+}
+
+/// The agent list's share of a panel `panel_cols` wide, in the basis points
+/// [`MultipaneSplit::ratio`] takes. `None` is the default even split.
+///
+/// A count of columns is turned into a share of this width, once: the host keeps a ratio, so a
+/// divider set as "40" is a share of whatever the panel is when it is set. Either way the result
+/// is clamped so that neither half drops under [`MIN_HALF_COLS`] while the panel has room for
+/// both - "0" and "100%" would otherwise leave one half a single column wide. The host applies
+/// the same floor to what it draws; clamping the ratio too keeps a panel that later grows from
+/// springing back to the one-column sliver the value asked for.
+fn split_ratio(split: Option<Measure>, panel_cols: usize) -> u16 {
+    // One outer frame either side and the divider between the halves, as the host counts it.
+    let available = panel_cols.saturating_sub(3).max(1);
+    // The host draws the list `available * ratio / 10_000` columns wide, rounded down, so every
+    // ratio here is the smallest or largest that rounds to the width it stands for: a count of
+    // columns rounds up to land on that count rather than one short of it, the low bound rounds
+    // up to land on `floor`, and the high bound is the last ratio that leaves `floor` over.
+    let ratio = match split.unwrap_or(Measure::Percent(DEFAULT_SPLIT_PERCENT)) {
+        Measure::Percent(percent) => percent.saturating_mul(100),
+        Measure::Cells(columns) => columns.saturating_mul(10_000).div_ceil(available),
     };
-    match value.strip_suffix('%') {
-        Some(percent) => match percent.trim().parse::<usize>() {
-            Ok(percent) => whole * percent / 100,
-            Err(_) => fallback,
-        },
-        None => value.parse::<usize>().unwrap_or(fallback),
-    }
+    let floor = MultipaneSplit::floor(available, MIN_HALF_COLS);
+    let high = ((available - floor + 1) * 10_000 - 1) / available;
+    let low = (floor * 10_000).div_ceil(available).min(high);
+    ratio.clamp(low, high).clamp(1, 9999) as u16
+}
+
+/// The two halves' widths, `(list, conversation)`, for a split of a panel `rows` x `cols`, as the
+/// host will draw them.
+fn split_widths(ratio: u16, rows: usize, cols: usize) -> (usize, usize) {
+    let split = MultipaneSplit {
+        direction: MultipaneDirection::LeftRight,
+        ratio,
+    };
+    let outer = zellij_types::pane_size::PaneGeom::from(&Size { rows, cols });
+    let ([list, conversation], _) = split.geometry(outer, true, MIN_HALF_COLS);
+    (list.cols.as_usize(), conversation.cols.as_usize())
+}
+
+/// One line per `width`, `height`, `split` or `pad` value hocus cannot read, naming what it
+/// uses instead.
+///
+/// Only a value that does not parse. A zero, or a size larger than the screen, is read and then
+/// clamped as the config comment says, which is an answer rather than a fallback; warning on "0"
+/// and not on "10", which is raised just the same, would be arbitrary. An empty value is the key
+/// left blank, which means the default and says so.
+pub(crate) fn geometry_warnings(config: &BTreeMap<String, String>) -> Vec<String> {
+    let keys = [
+        (
+            "width",
+            "a column count like \"120\" or a percentage like \"60%\"",
+            format!("{DEFAULT_WIDTH_PERCENT}%"),
+        ),
+        (
+            "height",
+            "a row count like \"30\" or a percentage like \"66%\"",
+            format!("{DEFAULT_HEIGHT_PERCENT}%"),
+        ),
+        (
+            "split",
+            "a column count like \"40\" or a percentage like \"40%\"",
+            format!("{DEFAULT_SPLIT_PERCENT}%"),
+        ),
+        (
+            "pad",
+            "a number of cells like \"3\"",
+            DEFAULT_PAD.to_string(),
+        ),
+    ];
+    keys.into_iter()
+        .filter_map(|(key, shape, fallback)| {
+            let value = config.get(key)?;
+            let readable = match Measure::parse(value) {
+                // The one key of the four that is never a share of anything.
+                Some(Measure::Percent(_)) => key != "pad",
+                Some(Measure::Cells(_)) => true,
+                None => value.trim().is_empty(),
+            };
+            (!readable).then(|| format!("{key} {value:?} is not {shape}; using {fallback}"))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,9 +200,10 @@ fn fit(configured: usize, min: usize, room: usize, whole: usize) -> usize {
 fn pad_of(config: &BTreeMap<String, String>, rows: usize, cols: usize, halves: usize) -> usize {
     config
         .get("pad")
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| match Measure::parse(value) {
+            Some(Measure::Cells(cells)) => Some(cells),
+            _ => None,
+        })
         .unwrap_or(DEFAULT_PAD)
         .min(rows / 4)
         .min(cols / 4)
@@ -247,6 +358,31 @@ impl State {
         };
         self.place_multipane(panel, false);
     }
+
+    /// Say so, once, when the config holds a panel size hocus cannot read.
+    ///
+    /// Each unreadable value falls back to its default, which is the right thing for a typo -
+    /// the panel still opens - but without this the user sees only that their size did not
+    /// take, not why. Once per distinct list: the host repeats `PluginConfigurationChanged` for
+    /// every save once the config has changed at all, and a notice per save would bury the
+    /// conversation. A fixed value followed by a fresh mistake is a new list, and is reported.
+    pub(crate) fn warn_bad_geometry(&mut self) {
+        let lines = geometry_warnings(&self.kdl);
+        if lines == self.geometry_warned {
+            return;
+        }
+        self.geometry_warned = lines.clone();
+        if lines.is_empty() {
+            return;
+        }
+        let notice = format!(
+            "hocus cannot read a panel size in its plugin configuration:\n{}",
+            lines.join("\n")
+        );
+        self.messages.push(Message::notice(notice));
+        self.log_global("config_warning", serde_json::json!({ "geometry": lines }));
+    }
+
     fn placement_command(
         &self,
         panel: Rect,
@@ -275,27 +411,7 @@ impl State {
                     configuration: launch::overlay_configuration(),
                 }
             };
-            let available = panel.cols.saturating_sub(3).max(1);
-            let ratio = self
-                .kdl
-                .get("split")
-                .map(|value| value.trim())
-                .and_then(|value| {
-                    if let Some(percent) = value.strip_suffix('%') {
-                        percent
-                            .trim()
-                            .parse::<usize>()
-                            .ok()
-                            .map(|percent| percent.saturating_mul(100))
-                    } else {
-                        value
-                            .parse::<usize>()
-                            .ok()
-                            .map(|columns| columns.saturating_mul(10_000) / available)
-                    }
-                })
-                .unwrap_or(DEFAULT_SPLIT_PERCENT * 100)
-                .clamp(1, 9999) as u16;
+            let ratio = split_ratio(self.configured_split(), panel.cols);
             PluginCommand::CreateMultipane(CreateMultipane {
                 children: [
                     agents,
@@ -310,8 +426,100 @@ impl State {
                     ratio,
                 },
                 focus: None,
+                // Neither half is drawn narrower than the conversation can lay itself out in,
+                // however far the configured split or a divider drag pushes it.
+                min_cells: MIN_HALF_COLS,
             })
         })
+    }
+
+    /// The `split` the config asks for, `None` when it is unset or unreadable - see
+    /// [`geometry_warnings`] for the second.
+    fn configured_split(&self) -> Option<Measure> {
+        self.kdl
+            .get("split")
+            .and_then(|value| Measure::parse(value))
+    }
+
+    /// Move the divider to `ratio`, and nothing else.
+    ///
+    /// Its own request rather than a `placement_command` with a split in it: every placement -
+    /// a resize, Ctrl-o, a reveal - sends `split: None`, which is what keeps a divider the user
+    /// dragged where they put it. Only the two things that *are* the user choosing a split come
+    /// through here: `/split`, and an edit to `split` in the config.
+    fn send_split(&mut self, ratio: u16) {
+        let Some(id) = self.multipane.as_ref().map(|info| info.id) else {
+            return;
+        };
+        let split = MultipaneSplit {
+            direction: MultipaneDirection::LeftRight,
+            ratio,
+        };
+        #[cfg(test)]
+        {
+            self.last_split = Some(split);
+        }
+        #[cfg(target_family = "wasm")]
+        let result = update_multipane(UpdateMultipane {
+            id,
+            coordinates: None,
+            split: Some(split),
+            override_user_placement: false,
+        });
+        #[cfg(not(target_family = "wasm"))]
+        let result: Result<Option<MultipaneInfo>, String> = {
+            let _ = (id, split);
+            Err("multipanes require the zellij host".into())
+        };
+        if let Ok(Some(info)) = result {
+            self.multipane = Some(info);
+            self.panel.placed_rect = self.reported_panel();
+        }
+    }
+
+    /// A live edit to `split` in the config: the divider moves to it, as `width`, `height` and
+    /// `pad` already move the panel. Called only when the value itself changed, since the host
+    /// repeats `PluginConfigurationChanged` for edits to anything in the file - resending the
+    /// configured split on each of those would undo every drag.
+    pub(crate) fn apply_split_edit(&mut self) {
+        if !self.is_panel() {
+            return;
+        }
+        let Some(columns) = self.multipane.as_ref().map(|info| info.columns) else {
+            return;
+        };
+        self.send_split(split_ratio(self.configured_split(), columns));
+    }
+
+    /// `/split <columns | percent>`: set the divider from the keyboard, the one way to move it
+    /// without a mouse. A bare `/split` changes nothing and reports the widths.
+    ///
+    /// Answers the `(list, conversation)` widths the host will draw, floor and all, so the
+    /// notice says what the user will see rather than what they typed.
+    pub(crate) fn set_split(&mut self, value: &str) -> Result<(usize, usize), String> {
+        if !self.is_panel() {
+            return Err("/split sets the panel's divider, and this hocus is not the panel".into());
+        }
+        let Some((rows, cols, ratio)) = self
+            .multipane
+            .as_ref()
+            .map(|info| (info.rows, info.columns, info.split.ratio))
+        else {
+            return Err("the panel is not placed yet - try again in a moment".into());
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            return Ok(split_widths(ratio, rows, cols));
+        }
+        let Some(split) = Measure::parse(value) else {
+            return Err(format!(
+                "/split {value}: give the agent list's width as a column count like /split 40 \
+                 or a percentage like /split 35%"
+            ));
+        };
+        let ratio = split_ratio(Some(split), cols);
+        self.send_split(ratio);
+        Ok(split_widths(ratio, rows, cols))
     }
     fn place_multipane(&mut self, panel: Rect, override_user_placement: bool) {
         let Some(command) = self.placement_command(panel, override_user_placement) else {
@@ -453,6 +661,33 @@ impl State {
         self.chat_input_released = false;
     }
 
+    /// The pane the host has this client's keyboard on.
+    ///
+    /// Asked, rather than read off the manifest, because the manifest cannot say: every layer
+    /// reports `is_focused` for its own active pane, so the tiled pane under the panel reads as
+    /// focused whether or not an overlay above it has the keys. Asked only while a leave is
+    /// armed (see `on_panes`), as file-finder asks on its `PaneUpdate`: on the edge where both
+    /// halves lose the keyboard, and on the arrival of a panel that followed a tab switch - and
+    /// then on every manifest after either for as long as the leave stays armed, which is while
+    /// a floating pane or an overlay on the panel's tab holds the keys, or the pane that held
+    /// them when the panel followed still does (`State::followed_holder`). Each is a host round
+    /// trip, so a holder that retitles itself often costs one per retitle.
+    /// A host call off wasm would read the test runner's stdin, so tests name the holder.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn keyboard_holder(&self) -> Option<PaneId> {
+        get_focused_pane_info().ok().map(|(_, pane)| pane)
+    }
+    #[cfg(all(test, not(target_family = "wasm")))]
+    pub(crate) fn keyboard_holder(&self) -> Option<PaneId> {
+        self.keyboard_holder_calls
+            .set(self.keyboard_holder_calls.get() + 1);
+        self.keyboard_holder_for_test
+    }
+    #[cfg(not(any(test, target_family = "wasm")))]
+    pub(crate) fn keyboard_holder(&self) -> Option<PaneId> {
+        None
+    }
+
     fn note_ring_focus(&mut self, pane: PaneId, stop: &'static str) {
         #[cfg(test)]
         self.ring_focus_calls.push((pane, stop));
@@ -524,6 +759,19 @@ impl State {
         show_self(true);
         self.note_visibility(PaneId::Plugin(self.own_plugin_id), true);
         self.reveal_panel();
+    }
+
+    /// A job's `show`. A panel the user put away comes back with the keyboard in it, as
+    /// `show_panel` brings it. A panel that is already up is left alone: it follows the user's
+    /// tab while visible, so it is already in front of them, and the keyboard may be mid-entry
+    /// in the list half or in a terminal. Taking it would carry the rest of what they were
+    /// typing into the chat box, where Enter queues it as a message to the model. The job
+    /// itself needs no keys: a scheduled run never waits on a y/n (see `pump_tools`).
+    pub(crate) fn show_panel_for_job(&mut self) {
+        if self.is_panel() && !self.hidden {
+            return;
+        }
+        self.show_panel();
     }
 
     pub(crate) fn on_toast_click(&mut self, chat_id: Option<u64>) -> bool {

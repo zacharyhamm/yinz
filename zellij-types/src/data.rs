@@ -2996,8 +2996,9 @@ pub enum PluginCommand {
     ChangeOverlayCoordinates {
         placements: Vec<(PaneId, FloatingPaneCoordinates)>,
         /// The placement is a user gesture made through the plugin, so it may reclaim a position
-        /// the user dragged and a size they resized (`OverlayCarry::position_is_user_stated` /
-        /// `size_is_user_stated` on the server) rather than being overruled by them.
+        /// the user dragged (`OverlayCarry::position_is_user_stated` on the server) rather than
+        /// being overruled by it. A size the user resized (`size_is_user_stated`) is kept even
+        /// so: the overlay moves where the placement says, at the size the user gave it.
         override_user_placement: bool,
     },
     TogglePaneBorderless(PaneId),

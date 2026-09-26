@@ -273,6 +273,8 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
   await call({method:'pane_action',work:'work',key:'fork-1',action:'fork',cancel_active:true});
   const again=await call({method:'pane_action',work:'work',key:'fork-2',action:'fork',cancel_active:true});
   check(again.key==='fork-1'&&!read('work','fork-2')&&pickers.length===2&&pickers.every(p=>p.swamp_key==='fork-1'));
+  // A modal overlay like every other New agent launch, so a cancel hands the keys back.
+  check(pickers.every(p=>p.overlay==='true'&&p.modal==='true'));
   // A cancellation is acknowledged too, while leaving the active workflow alone.
   mock.command=(name,args)=>{
     if(name==='MessageToPlugin'&&args.message_name==='swamp-pane-ack'){acks++;return;}

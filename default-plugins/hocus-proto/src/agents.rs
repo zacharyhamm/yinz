@@ -731,8 +731,8 @@ fn plain_prose(message: &str) -> String {
 /// What the model said about an idle agent's pane.
 ///
 /// Held in memory by `hocus-agentd` and shipped in its snapshot. `awaiting` is the strip's
-/// `!` marker, `text` is the inset hocus draws over its transcript, and `title` is what the
-/// daemon renames the pane to.
+/// `!` marker for as long as `hash` is still the pane's screen, `text` is the inset hocus draws
+/// over its transcript, and `title` is what the daemon renames the pane to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
     pub text: String,
@@ -964,6 +964,19 @@ pub struct AgentRun {
     pub summary: Option<Summary>,
     #[serde(default)]
     pub entries: Vec<RunEntry>,
+    /// How many of the run's oldest entries `entries` leaves out, at least.
+    ///
+    /// Set by [`rows::hydrate_newest_entries`], which hands the panel only the newest end of a
+    /// long run: without it the oldest event the history half holds reads as the start of the
+    /// run. A lower bound, because the fetch stops at [`rows::RUN_DETAIL_ENTRIES`] and only
+    /// says there was more, which counts as one. Zero on every stored run - a record is every
+    /// entry it has - so it is only written when it says something.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_entries: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 impl AgentRun {
@@ -1617,7 +1630,11 @@ pub mod rows {
     /// The budget is spent from the newest end, which is the end the history half is anchored
     /// to, and the newest entry is kept whatever it costs: a run whose last plan is on its own
     /// over the budget should show that plan, not an empty history.
+    ///
+    /// What is left out is counted in [`AgentRun::omitted_entries`], so the half can say its
+    /// oldest row is not where the run began.
     pub fn hydrate_newest_entries(backend: &impl Backend, run: &mut AgentRun) {
+        run.omitted_entries = 0;
         let Ok(rows) = backend.fetch(&newest_entries_request(&run.id)) else {
             return;
         };
@@ -1633,7 +1650,11 @@ pub mod rows {
             spent = spent.saturating_add(entry.text.len());
             kept += 1;
         }
-        entries.drain(..entries.len() - kept);
+        let dropped = entries.len() - kept;
+        entries.drain(..dropped);
+        // A truncated fetch stopped at the row limit with older rows still behind it. It does
+        // not say how many, so they count as one: enough for "there is more".
+        run.omitted_entries = dropped + usize::from(rows.truncated);
         run.entries = entries;
     }
 
@@ -1914,6 +1935,8 @@ pub mod rows {
             summarized_revision: run.summarized_revision,
             summary: run.summary.clone(),
             entries: Vec::new(),
+            // A record is every entry the run has; only a copy sent to the panel leaves any out.
+            omitted_entries: 0,
         };
         serde_json::to_string(&stored).expect("AgentRun serializes")
     }
@@ -2132,7 +2155,10 @@ pub struct HistoryLines {
     /// `entries` alone is a flat run of lines, and a capped event is a lie without the whole
     /// of what it said kept somewhere: this is what lets a caller put a cursor on an event
     /// rather than on a line, and open the uncapped text when the user asks for it. The spans
-    /// tile `entries` exactly - every row belongs to one event and no row to two.
+    /// tile `entries` exactly - every row belongs to one event and no row to two - with one
+    /// exception: a run that arrived without its oldest entries opens with a row saying so
+    /// (see [`AgentRun::omitted_entries`]), which belongs to no event and which the first
+    /// span starts after.
     pub events: Vec<HistoryEvent>,
     /// The rows a reader pins under its divider, above the scrolling timeline: what stays true
     /// of the run however far back it is wound - when it began, and which session it is.
@@ -2224,6 +2250,109 @@ pub fn cut_to_width(mut text: String, width: usize) -> String {
         text.pop();
     }
     text
+}
+
+/// What joins two segments of a hint line.
+const HINT_SEPARATOR: &str = " · ";
+
+/// What a hint line ends with when [`fit_hints`] had to leave keys out of it.
+const MORE_KEYS: &str = "? keys";
+
+/// A key-hint line: `segments` joined with ` · ` for as long as they fit `width` columns.
+///
+/// Whole segments are dropped from the end, never cut: half of `Enter focus` names no key, and
+/// a hint that reads `Enter fo` is worse than one that stops a key sooner. So callers put the
+/// segments most important first - the selection's own verb, then the rest of the keys, then
+/// anything that is not a key at all. Where something was dropped and there is still room,
+/// the line ends in `? keys` to say there is more - room that is left over, never made:
+/// [`fit_hints_marked`] is for a line that would rather give up a key or two for the marker,
+/// and [`fit_keys`] for one that must not have it. Only a first segment too wide for the row
+/// on its own is cut, by [`cut_to_width`], since an empty hint line helps nobody.
+///
+/// Not for table cells: those keep [`cut_to_width`], which has no segments to respect.
+pub fn fit_hints(segments: &[&str], width: usize) -> String {
+    let (mut line, dropped) = fit_segments(segments, width);
+    if dropped && !line.is_empty() {
+        let marked = line.width() + HINT_SEPARATOR.width() + MORE_KEYS.width();
+        if marked <= width {
+            line.push_str(HINT_SEPARATOR);
+            line.push_str(MORE_KEYS);
+        }
+    }
+    line
+}
+
+/// [`fit_hints`] for a line that would rather say `? keys` than show its last key or two.
+///
+/// [`fit_hints`] adds the marker only where it fits after everything else that did, and on a
+/// line of keys alone that is almost never: at the widths a panel is usually drawn, the keys
+/// fill the row to within a few columns and `? keys` needs nine. That is the right trade where
+/// the line leads with something that is not a key - a status or a note, where the one action
+/// after it is the only useful thing left to press - so [`fit_hints`] keeps it. A footer of
+/// nothing but keys is the other case: its trailing keys are the least important ones by
+/// construction, and the sheet `?` opens lists all of them, so giving up one or two to say so
+/// is the better use of the row.
+///
+/// So this drops whole segments from the end, one at a time, until the marker fits after what
+/// is left - but never below the first `keep`, which a caller sets to however many segments
+/// name the keys a user cannot do without here. Where no count down to `keep` makes room, or
+/// fewer than `keep` fit at all, the line is exactly what [`fit_hints`] would draw.
+///
+/// Segments are counted rather than found by searching for the separator: a status segment can
+/// hold ` · ` of its own, and cutting at the last one would split it. Nothing is ever cut to
+/// make room.
+pub fn fit_hints_marked(segments: &[&str], width: usize, keep: usize) -> String {
+    let unmarked = fit_hints(segments, width);
+    if !fit_segments(segments, width).1 || unmarked.ends_with(MORE_KEYS) {
+        return unmarked;
+    }
+    let segments: Vec<&str> = segments
+        .iter()
+        .copied()
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    // Longest first, and never all of them: something was dropped, so the whole line does not
+    // fit even without the marker. Nor does any prefix longer than what `fit_segments` kept, so
+    // counting down from the top finds the same line as counting down from what it kept - and a
+    // first segment it had to cut fits no count at all, which leaves that cut line standing.
+    let marker = HINT_SEPARATOR.width() + MORE_KEYS.width();
+    (keep.max(1)..segments.len())
+        .rev()
+        .map(|n| segments[..n].join(HINT_SEPARATOR))
+        .find(|line| line.width() + marker <= width)
+        .map(|line| format!("{line}{HINT_SEPARATOR}{MORE_KEYS}"))
+        .unwrap_or(unmarked)
+}
+
+/// A key-hint line with no `? keys` marker: the whole segments that fit, as [`fit_hints`]
+/// drops them.
+///
+/// For the rows where the marker would be wrong rather than merely short of room: a row drawn
+/// while `?` is being typed into a box, where the key types a question mark instead of opening
+/// anything, and the rows of the sheet itself, where `?` is what shuts it.
+pub fn fit_keys(segments: &[&str], width: usize) -> String {
+    fit_segments(segments, width).0
+}
+
+/// [`fit_hints`] without the marker: the segments that fit, and whether any were left out.
+/// Empty segments are skipped rather than drawn as a doubled separator.
+fn fit_segments(segments: &[&str], width: usize) -> (String, bool) {
+    let mut segments = segments.iter().filter(|segment| !segment.is_empty());
+    let Some(first) = segments.next() else {
+        return (String::new(), false);
+    };
+    if first.width() > width {
+        return (cut_to_width((*first).to_owned(), width), true);
+    }
+    let mut line = (*first).to_owned();
+    for segment in segments {
+        if line.width() + HINT_SEPARATOR.width() + segment.width() > width {
+            return (line, true);
+        }
+        line.push_str(HINT_SEPARATOR);
+        line.push_str(segment);
+    }
+    (line, false)
 }
 
 /// The selected run as the history half draws it: one timeline, summaries among the events
@@ -2489,6 +2618,11 @@ impl ParsedRun {
         };
         let mut entries: Vec<MdLine> = Vec::new();
         let mut events: Vec<HistoryEvent> = Vec::with_capacity(self.events.len());
+        // First, so it is what the top of the scroll reaches and every span below still starts
+        // where its rows do. It belongs to no event, so no cursor can land on it.
+        if self.run.omitted_entries > 0 {
+            entries.push(omitted_notice(inner));
+        }
         // Walked rather than `flat_map`ped: each event's rows have to be counted before the next
         // one's begin, which is the whole of what a span is.
         for event in &mut self.events {
@@ -2593,6 +2727,37 @@ impl ParsedRun {
     }
 }
 
+/// What [`omitted_notice`] says happened.
+const OMITTED_NOTICE: &str = "older events not loaded";
+
+/// [`OMITTED_NOTICE`] in fewer words, for a half too narrow for the whole phrase.
+const OMITTED_NOTICE_SHORT: &str = "older not loaded";
+
+// The narrowest half that draws a timeline at all has room for the short phrase after the age
+// gutter, so it is never cut. By `len`, since `width` is not const: the phrase is ASCII.
+const _: () = assert!(OMITTED_NOTICE_SHORT.len() <= HISTORY_MIN_COLS - AGE_WIDTH);
+
+/// What a timeline opens with when its run arrived without its oldest entries: see
+/// [`AgentRun::omitted_entries`].
+///
+/// Without it the oldest row loaded reads as the start of the run. The second half says where
+/// the rest can still be found, and goes first when the half is too narrow for both. Narrower
+/// still, the notice says it in fewer words rather than being cut: `older events not` is a
+/// sentence that stopped, where [`OMITTED_NOTICE_SHORT`] is a whole one. Always the one row, so
+/// the event spans after it start where they did. Dim and under the labels, like the capped
+/// marker: it is pane furniture, not something the run said.
+fn omitted_notice(width: usize) -> MdLine {
+    let room = width.saturating_sub(AGE_WIDTH);
+    let notice = if OMITTED_NOTICE.width() <= room {
+        fit_segments(&[OMITTED_NOTICE, "/ searches them"], room).0
+    } else {
+        OMITTED_NOTICE_SHORT.to_owned()
+    };
+    MdLine::plain("")
+        .prepend(&notice, LABEL_STYLE)
+        .indent(AGE_WIDTH)
+}
+
 /// A run's JSON reduced to its length and a hash, for telling a run sent again unchanged from
 /// one that moved without holding on to the bytes it came as.
 ///
@@ -2617,6 +2782,8 @@ struct RunFacts {
     started_at_ms: i64,
     origin_run_id: Option<String>,
     previous_run_id: Option<String>,
+    /// [`AgentRun::omitted_entries`], for the notice the timeline opens with.
+    omitted_entries: usize,
 }
 
 impl RunFacts {
@@ -2628,6 +2795,7 @@ impl RunFacts {
             started_at_ms: run.started_at_ms,
             origin_run_id: run.origin_run_id.clone(),
             previous_run_id: run.previous_run_id.clone(),
+            omitted_entries: run.omitted_entries,
         }
     }
 }
@@ -2722,12 +2890,18 @@ fn repeats_newest(run: &AgentRun, summary: &Summary) -> bool {
 
 /// The idle summary as the history half draws it, for a selected agent with no run loaded.
 ///
+/// `waiting` is the flag on the row's own [`StripRow::Agent`], not `summary.awaiting`: the stored
+/// flag outlives the screen it was read from, and a divider that went on saying `!` after the
+/// user answered would contradict the row above it, which checks that the summary is still
+/// about the current screen.
+///
 /// A talkative model is windowed by the caller rather than cut here, which is what the box
 /// had to do with six rows to give.
 pub fn summary_history(
     pane_id: u32,
     kind: &str,
     summary: &Summary,
+    waiting: bool,
     width: usize,
     now_ms: i64,
 ) -> HistoryLines {
@@ -2735,11 +2909,11 @@ pub fn summary_history(
         return HistoryLines::default();
     };
     let mut label = format!("{pane_id} · {kind}");
-    if summary.awaiting {
-        // The same claim the strip's `!` marker makes, in the one place the user
-        // is already looking. Ahead of the age because `fit_label` cuts from the tail: a
-        // divider too narrow for both should lose how old the answer is rather than that
-        // the agent is waiting on you.
+    if waiting {
+        // The same claim the strip's `!` marker makes, from the same flag, in the one place
+        // the user is already looking. Ahead of the age because `fit_label` cuts from the
+        // tail: a divider too narrow for both should lose how old the answer is rather than
+        // that the agent is waiting on you.
         label.push_str(" !");
     }
     // The age goes on the divider rather than in a gutter: there is one thing below it and
@@ -3235,7 +3409,8 @@ pub enum StripRow {
         run_id: String,
         #[serde(default)]
         kind: String,
-        /// The prompt cell: the run's title, or `"{title} - {snippet}"` in search mode.
+        /// The prompt cell: the run's title, or `"{snippet} - {title}"` in search mode - the
+        /// matching text first, so a cell too narrow for both still says why the row matched.
         #[serde(default)]
         title: String,
         /// The checkout the run worked in, as a leaf name, empty where there is none to name.
@@ -3315,15 +3490,22 @@ pub fn strip_rows(
             let cell = kind_cell(kind, pane.host.as_deref(), hooked);
             let waiting =
                 awaiting_confirmation(summaries, activity, hooks, pane.status, pane.pane_id);
-            let mut row = format!(
-                "{}{:>3}  {cell}  {}",
-                if waiting { "! " } else { "  " },
-                pane.pane_id,
-                status_cell(
+            // A hooked pane that is waiting already says so through its feed. One without hooks
+            // is only known to be waiting from its summary, and its status cell would read
+            // `idle` beside the `!` - true of the screen, but not what the row is claiming.
+            // Only here: `status_cell` is also the model's `state`, which stays what it was.
+            let status = match waiting && !hooked {
+                true => "waiting".to_owned(),
+                false => status_cell(
                     pane.status,
                     activity.get(&pane.pane_id),
-                    hooks.get(&pane.pane_id)
-                )
+                    hooks.get(&pane.pane_id),
+                ),
+            };
+            let mut row = format!(
+                "{}{:>3}  {cell}  {status}",
+                if waiting { "! " } else { "  " },
+                pane.pane_id,
             );
             if let Some((_, name)) = &pane.tab {
                 row.push_str("  ");
@@ -4916,6 +5098,7 @@ mod tests {
                     created_at_ms: None,
                 })
                 .collect(),
+            omitted_entries: 0,
         };
 
         let history = run_history(&run, 40, 100, 0);
@@ -5038,7 +5221,7 @@ mod tests {
             hash: 0,
             created_at_ms: Some(50),
         };
-        assert!(summary_history(3, "claude", &summary, 40, 100)
+        assert!(summary_history(3, "claude", &summary, false, 40, 100)
             .header
             .is_empty());
     }
@@ -5078,6 +5261,7 @@ mod tests {
                 text: "Rewrote the retry backoff.".to_owned(),
                 created_at_ms: None,
             }],
+            omitted_entries: 0,
         };
 
         let live = run_history(&run, 60, 100, 0);
@@ -5151,6 +5335,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         };
 
         assert!(push_summary_entry(
@@ -5214,6 +5399,7 @@ mod tests {
                 text: "Implemented and tested.".to_owned(),
                 created_at_ms: None,
             }],
+            omitted_entries: 0,
         };
 
         assert!(
@@ -5305,6 +5491,7 @@ mod tests {
                 text: "implement history".to_owned(),
                 created_at_ms: None,
             }],
+            omitted_entries: 0,
         };
         local.apply(rows::run_mutations(&run)).unwrap();
         let mut foreign = run.clone();
@@ -5436,6 +5623,11 @@ mod tests {
             "and what it kept is the newest end, in order"
         );
         assert!(!detail.entries.is_empty());
+        assert_eq!(
+            detail.omitted_entries,
+            run.entries.len() - detail.entries.len(),
+            "and it counts what it left out"
+        );
 
         // One entry over the budget on its own is still sent: an empty history is worse than
         // a large one.
@@ -5448,6 +5640,83 @@ mod tests {
         };
         rows::hydrate_newest_entries(&local, &mut detail);
         assert_eq!(detail.entries, big.entries);
+        assert_eq!(detail.omitted_entries, 0);
+    }
+
+    /// A run longer than the panel is handed says so at the top of its timeline, rather than
+    /// letting the oldest event it was sent pass for the start of the run.
+    #[test]
+    fn a_run_cut_to_its_newest_entries_opens_with_a_notice() {
+        use crate::store::{self, Backend};
+
+        let local = store::Local::shared("hocus-agentd");
+        local.define_all(&store::shared_defs()).unwrap();
+        let texts: Vec<String> = (0..rows::RUN_DETAIL_ENTRIES + 5)
+            .map(|n| format!("entry {n}"))
+            .collect();
+        let run = a_run_with_entries(
+            "claude:session-1",
+            "zellij",
+            7,
+            &texts.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        local.apply(rows::run_mutations(&run)).unwrap();
+        let mut detail = AgentRun {
+            entries: Vec::new(),
+            ..run.clone()
+        };
+        rows::hydrate_newest_entries(&local, &mut detail);
+        assert_eq!(detail.entries.len(), rows::RUN_DETAIL_ENTRIES as usize);
+        assert!(detail.omitted_entries > 0, "the row limit cut it");
+        // The count rides to the panel with the run, and is left off a run that has nothing
+        // to say about it.
+        let sent: AgentRun =
+            serde_json::from_str(&serde_json::to_string(&detail).unwrap()).unwrap();
+        assert_eq!(sent.omitted_entries, detail.omitted_entries);
+        assert!(!serde_json::to_string(&run)
+            .unwrap()
+            .contains("omitted_entries"));
+
+        let history = run_history(&detail, 60, 100, 0);
+        assert_eq!(
+            history.entries[0].text.trim(),
+            "older events not loaded · / searches them"
+        );
+        assert!(history.entries[0]
+            .styles
+            .iter()
+            .all(|style| style.dim || *style == MdStyle::default()));
+        // It belongs to no event: the first one starts after it, and the rest still tile.
+        let mut at = 1;
+        for event in &history.events {
+            assert_eq!(event.start, at, "{:?}", history.events);
+            at = event.end();
+        }
+        assert_eq!(at, history.entries.len());
+
+        // A half too narrow for all of it keeps the part that says what happened, and one too
+        // narrow for that says it shorter - a whole phrase at every width, never one cut off
+        // mid-word, and still the one row.
+        for width in HISTORY_MIN_COLS + 2..=60 {
+            let history = run_history(&detail, width, 100, 0);
+            let notice = &history.entries[0].text;
+            assert!(
+                [
+                    "older not loaded",
+                    "older events not loaded",
+                    "older events not loaded · / searches them",
+                ]
+                .contains(&notice.trim()),
+                "{width}: {notice:?}"
+            );
+            assert!(notice.width() <= width - 2, "{width}: {notice:?}");
+            assert_eq!(history.events[0].start, 1, "{width}");
+        }
+
+        // A run that was sent whole has no notice.
+        let whole = run_history(&run, 60, 100, 0);
+        assert!(!whole.entries[0].text.contains("not loaded"));
+        assert_eq!(whole.events[0].start, 0);
     }
 
     /// A timeline longer than one fetch page still comes back whole.
@@ -5567,6 +5836,7 @@ mod tests {
                     created_at_ms: None,
                 })
                 .collect(),
+            omitted_entries: 0,
         }
     }
 
@@ -6152,7 +6422,8 @@ mod tests {
                 project("no project"),
                 branch("no branch"),
                 agent(3, "  3  codex  idle"),
-                waiting(4, "  4  claude  idle"),
+                // `waiting` rather than the `idle` its screen is: the row says one thing.
+                waiting(4, "  4  claude  waiting"),
                 agent(5, "  5  aider  idle"),
             ],
         );
@@ -7385,6 +7656,7 @@ mod tests {
             7,
             "claude",
             &a_summary("Ran the tests, all green.", false),
+            false,
             30,
             0,
         );
@@ -7392,7 +7664,7 @@ mod tests {
         assert_eq!(texts(&history.entries), ["Ran the tests, all green."]);
 
         let long = "word ".repeat(200);
-        let long = summary_history(7, "claude", &a_summary(&long, false), 30, 0);
+        let long = summary_history(7, "claude", &a_summary(&long, false), false, 30, 0);
         assert!(
             long.entries.len() > 6,
             "every line of it, for the half to window, past the box's old ceiling of {}",
@@ -8274,26 +8546,32 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         }
     }
 
-    /// The claim the strip's `!` makes, on the divider the user is already reading.
+    /// The claim the strip's `!` makes, on the divider the user is already reading - and made
+    /// from the row's flag, so the two cannot disagree.
     #[test]
     fn a_blocked_agent_is_marked_on_the_divider() {
-        let waiting = summary_history(7, "claude", &a_summary("Shall I?", true), 30, 0);
+        let waiting = summary_history(7, "claude", &a_summary("Shall I?", true), true, 30, 0);
         assert_eq!(waiting.label, "7 · claude !");
-        // And an agent that merely finished is not.
-        let done = summary_history(7, "claude", &a_summary("Shall I?", false), 30, 0);
+        // An agent that merely finished is not.
+        let done = summary_history(7, "claude", &a_summary("Shall I?", false), false, 30, 0);
         assert!(!done.label.contains('!'), "{}", done.label);
+        // Nor is one whose stored summary still says it was waiting, once the row stopped
+        // saying so: the user answered, and the screen the summary was about is gone.
+        let answered = summary_history(7, "claude", &a_summary("Shall I?", true), false, 30, 0);
+        assert!(!answered.label.contains('!'), "{}", answered.label);
     }
 
     /// Better nothing than a column of single words - the half draws a placeholder instead.
     #[test]
     fn there_is_no_history_where_there_is_no_room_for_one() {
         let one = a_summary("Ran the tests.", false);
-        assert!(summary_history(7, "claude", &one, HISTORY_MIN_COLS + 1, 0).is_empty());
+        assert!(summary_history(7, "claude", &one, false, HISTORY_MIN_COLS + 1, 0).is_empty());
         assert!(
-            !summary_history(7, "claude", &one, HISTORY_MIN_COLS + 2, 0).is_empty(),
+            !summary_history(7, "claude", &one, false, HISTORY_MIN_COLS + 2, 0).is_empty(),
             "just enough"
         );
     }
@@ -8365,8 +8643,15 @@ mod tests {
         let minute = 60_000;
         let mut summary = a_summary("Shall I?", true);
         summary.created_at_ms = Some(100 * minute);
-        let label =
-            summary_history(7, "claude", &summary, HISTORY_MIN_COLS + 2, 105 * minute).label;
+        let label = summary_history(
+            7,
+            "claude",
+            &summary,
+            true,
+            HISTORY_MIN_COLS + 2,
+            105 * minute,
+        )
+        .label;
         assert_eq!(label, "7 · claude ! · 5m", "uncut where it is built");
         // A divider with less room than that - the scroll readout shares the row - loses the
         // age and keeps the marker, where before it kept the age and lost the marker.
@@ -8402,7 +8687,7 @@ mod tests {
     #[test]
     fn a_label_too_wide_for_its_divider_is_cut_rather_than_burst() {
         let kind = "a-very-long-agent-kind-indeed-xx";
-        let label = summary_history(7, kind, &a_summary("Done.", true), 26, 0).label;
+        let label = summary_history(7, kind, &a_summary("Done.", true), true, 26, 0).label;
         assert_eq!(label, format!("7 · {kind} !"), "uncut where it is built");
 
         let cut = fit_label(label, 26);
@@ -8411,6 +8696,148 @@ mod tests {
 
         // And a divider with no room for a label at all keeps the rule.
         assert!(fit_label("claude · active".to_owned(), 3).is_empty());
+    }
+
+    /// A hint line loses whole keys from its end, never half of one, and says when it did.
+    #[test]
+    fn a_hint_line_drops_whole_segments_from_the_end() {
+        let segments = ["Enter focus", "/ search", "w waiting (0)", "s summary"];
+        let whole = segments.join(" · ");
+        assert_eq!(
+            fit_hints(&segments, whole.width()),
+            whole,
+            "no marker when all fit"
+        );
+        assert_eq!(fit_hints(&segments, 200), whole);
+        // Room for two keys but not for the marker as well: the keys win.
+        assert_eq!(fit_hints(&segments, 24), "Enter focus · / search");
+        // Room for both: the marker says there is more.
+        assert_eq!(fit_hints(&segments, 31), "Enter focus · / search · ? keys");
+        // Only a first segment too wide for the row alone is ever cut.
+        assert_eq!(fit_hints(&segments, 5), "Enter");
+        assert_eq!(fit_hints(&segments, 0), "");
+        assert_eq!(fit_hints(&[], 10), "");
+        // An empty segment is a key a caller had nothing to say about, not a doubled rule.
+        assert_eq!(fit_hints(&["a", "", "b"], 10), "a · b");
+
+        for width in 0..=whole.width() + 1 {
+            let hint = fit_hints(&segments, width);
+            assert!(hint.width() <= width, "{width}: {hint:?}");
+            if width < segments[0].width() {
+                assert!(segments[0].starts_with(&hint), "{width}: {hint:?}");
+                continue;
+            }
+            let (shown, marked) = match hint.strip_suffix(" · ? keys") {
+                Some(shown) => (shown, true),
+                None => (hint.as_str(), false),
+            };
+            let parts: Vec<&str> = shown.split(" · ").collect();
+            assert_eq!(
+                parts,
+                segments[..parts.len()],
+                "{width}: whole, from the front"
+            );
+            let dropped = parts.len() < segments.len();
+            let room = shown.width() + " · ? keys".width() <= width;
+            assert_eq!(marked, dropped && room, "{width}: {hint:?}");
+        }
+    }
+
+    /// A line that asks for it gives up its trailing keys to say `? keys`, down to the ones it
+    /// keeps - and a line that must not have the marker never gets it.
+    #[test]
+    fn a_marked_hint_line_gives_way_to_the_marker() {
+        let segments = [
+            "Enter focus",
+            "s summary",
+            "p previous",
+            "w waiting (0)",
+            "/ search",
+            "Tab history",
+        ];
+        let whole = segments.join(" · ");
+        // Room for two keys but not the marker after them: the second gives way to it, where
+        // `fit_hints` would keep it.
+        assert_eq!(fit_hints_marked(&segments, 24, 1), "Enter focus · ? keys");
+        assert_eq!(fit_hints(&segments, 24), "Enter focus · s summary");
+        // Room for the marker after both, which `fit_hints` already draws.
+        assert_eq!(
+            fit_hints_marked(&segments, 34, 1),
+            "Enter focus · s summary · ? keys"
+        );
+        // Two kept: there is no giving way below them, so the line is what `fit_hints` draws.
+        assert_eq!(
+            fit_hints_marked(&segments, 24, 2),
+            "Enter focus · s summary"
+        );
+        // No room for the marker after even the first key, and a first key cut to fit.
+        assert_eq!(fit_hints_marked(&segments, 15, 1), "Enter focus");
+        assert_eq!(fit_hints_marked(&segments, 5, 1), "Enter");
+        // Everything fits: nothing to point at.
+        assert_eq!(fit_hints_marked(&segments, whole.width(), 1), whole);
+        assert_eq!(fit_hints_marked(&segments, 200, 3), whole);
+
+        let join = |n: usize| segments[..n].join(" · ");
+        for keep in 1..=3 {
+            for width in 1..=whole.width() {
+                let hint = fit_hints_marked(&segments, width, keep);
+                assert!(hint.width() <= width, "{keep} {width}: {hint:?}");
+                if width < segments[0].width() {
+                    assert_eq!(hint, fit_hints(&segments, width), "{keep} {width}");
+                    continue;
+                }
+                let (shown, marked) = match hint.strip_suffix(" · ? keys") {
+                    Some(shown) => (shown, true),
+                    None => (hint.as_str(), false),
+                };
+                let parts: Vec<&str> = shown.split(" · ").collect();
+                assert_eq!(
+                    parts,
+                    segments[..parts.len()],
+                    "{keep} {width}: whole, from the front"
+                );
+                // What `fit_segments` keeps, and so what `fit_hints` would draw.
+                let kept = (1..=segments.len())
+                    .rev()
+                    .find(|&n| join(n).width() <= width)
+                    .unwrap();
+                let dropped = kept < segments.len();
+                // Never below `keep` for the marker's sake - but where fewer than `keep` fit at
+                // all, the line is `fit_hints`'s, marker and all.
+                let floor = keep.min(kept);
+                let room = join(floor).width() + " · ? keys".width() <= width;
+                assert_eq!(marked, dropped && room, "{keep} {width}: {hint:?}");
+                // And it gives up no more than the marker needs.
+                let most = if marked {
+                    (floor..=kept)
+                        .rev()
+                        .find(|&n| join(n).width() + " · ? keys".width() <= width)
+                        .unwrap()
+                } else {
+                    kept
+                };
+                assert_eq!(parts.len(), most, "{keep} {width}: {hint:?}");
+            }
+        }
+
+        // A status can hold the separator itself, and is still one segment: never split to
+        // make room for the marker.
+        let status = ["2 of 5 · waiting", "Enter", "Tab history"];
+        assert_eq!(fit_hints_marked(&status, 24, 1), "2 of 5 · waiting · Enter");
+        assert_eq!(
+            fit_hints_marked(&status, 25, 1),
+            "2 of 5 · waiting · ? keys"
+        );
+
+        // The unmarked line is the keys that fit and nothing else, however much was dropped.
+        assert_eq!(fit_keys(&segments, 34), "Enter focus · s summary");
+        assert_eq!(fit_keys(&segments, whole.width()), whole);
+        for width in 0..=whole.width() + 1 {
+            let keys = fit_keys(&segments, width);
+            assert!(keys.width() <= width, "{width}: {keys:?}");
+            assert!(!keys.ends_with("? keys"), "{width}: {keys:?}");
+            assert!(whole.starts_with(&keys), "{width}: {keys:?}");
+        }
     }
     // -- prompts that a harness wrote ----------------------------------------
 

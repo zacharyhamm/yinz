@@ -68,9 +68,14 @@ fn resize_terminal_window() {
         cols < (TERMINAL_SIZE.cols / 2) as u16
     });
 
+    // The split went through Pane mode, and the status bar is a plugin that renders the mode
+    // on its own time: the panes can be drawn at the new size while it still shows `PANE`.
+    // So wait for its Normal-mode line, not for any status bar at all - at this width that
+    // line is the modes' bare letters, and a mode's name on it is the Pane mode still.
     let grid_snapshot =
         zellij.wait_until("app re-rendered at the new window size", |grid_snapshot| {
             grid_snapshot.contains("Ctrl +")
+                && !grid_snapshot.contains("PANE")
                 && grid_snapshot.tab_bar_appears()
                 && grid_snapshot.cursor_is_at(col(52).row(2))
         });

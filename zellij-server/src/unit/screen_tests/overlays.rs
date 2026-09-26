@@ -1072,6 +1072,85 @@ fn a_modal_overlay_hands_focus_to_the_pane_it_opened_when_it_closes() {
     );
 }
 
+/// A left/right multipane of two dismissible plugin overlays in `tab_id`, the way hocus composes
+/// its panel from the agent list and the conversation, with the client's keyboard on the list.
+fn panel_multipane(screen: &mut Screen, tab_id: TabId) -> [PaneId; 2] {
+    use zellij_types::multipane::*;
+    let children = [7, 8]
+        .map(|id| open_overlay_plugin(screen, PluginId::new(id), tab_id, popup_coordinates()).1);
+    screen
+        .multipane_command(
+            MultipaneOperation::Create {
+                children,
+                split: MultipaneSplit {
+                    direction: MultipaneDirection::LeftRight,
+                    ratio: 5000,
+                },
+                placement: OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+                    x: Some(PercentOrFixed::Fixed(3)),
+                    y: Some(PercentOrFixed::Fixed(3)),
+                    width: Some(PercentOrFixed::Fixed(80)),
+                    height: Some(PercentOrFixed::Fixed(24)),
+                    ..Default::default()
+                })),
+                focus: Some(0),
+                min_cells: 0,
+            },
+            CLIENT_1,
+        )
+        .expect("TEST");
+    assert_eq!(screen.active_pane_id(CLIENT_1), Some(children[0]));
+    children
+}
+
+/// `hocus-new-agent` opened over the hocus panel, from the agent list half. Cancelled, it used to
+/// close onto the topmost overlay left - the conversation half - so the next key went into the
+/// chat box while the list still drew its selection. Submitted, it named the new agent, but the
+/// keyboard went to the conversation all the same, over the agent it had just started.
+#[test]
+fn a_modal_over_a_panel_hands_the_keyboard_back_to_its_half_or_to_the_pane_it_opened() {
+    for submitted in [false, true] {
+        let mut screen = create_non_mirrored_screen(Size {
+            cols: 120,
+            rows: 40,
+        });
+        new_tab(&mut screen, 1, TabId::new(0));
+        let children = panel_multipane(&mut screen, TabId::new(0));
+        let modal_id = add_modal_plugin_overlay(&mut screen, PluginId::new(9));
+        let tab = screen.get_active_tab_mut(CLIENT_1).unwrap();
+        assert_eq!(tab.get_active_pane_id(CLIENT_1), Some(modal_id));
+        let agent = PaneId::Terminal(crate::TerminalId::new(3));
+        if submitted {
+            tab.new_pane(
+                agent,
+                None,
+                None,
+                false,
+                true,
+                NewPanePlacement::default(),
+                Some(CLIENT_1),
+                None,
+            )
+            .expect("TEST");
+            tab.focus_pane_with_id(agent, false, false, CLIENT_1)
+                .expect("TEST");
+            assert_eq!(
+                tab.get_active_pane_id(CLIENT_1),
+                Some(modal_id),
+                "the modal keeps the keyboard until it goes"
+            );
+        }
+
+        tab.close_pane(modal_id, false, None);
+
+        assert_eq!(
+            tab.get_active_pane_id(CLIENT_1),
+            Some(if submitted { agent } else { children[0] }),
+            "submitted: {submitted}"
+        );
+    }
+}
+
 /// The overlay did not lose focus - the layer under it went away. Telling its terminal otherwise
 /// is a lie, and one an application that tracks focus reporting will act on.
 ///
@@ -1863,6 +1942,7 @@ mod invariant_props {
                                 direction: *direction,
                                 ratio: 5000,
                             },
+                            0,
                             OverlayPlacement::dismissible(Some(overlay_coordinates())),
                         )
                         .expect("TEST");
@@ -4280,6 +4360,258 @@ fn a_focus_move_at_the_edge_under_a_modal_does_not_bubble_to_the_host() {
     );
 }
 
+/// The two halves of a left/right multipane sit side by side, so Alt h/l cross the divider
+/// between them rather than moving the focus of the pane hidden under the panel - which, at the
+/// edge of the tiled layout, used to switch tabs with the panel in tow.
+#[test]
+fn a_directional_move_crosses_a_left_right_multipane_to_its_sibling() {
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let children = panel_multipane(&mut screen, TabId::new(1));
+    let position = |screen: &Screen| screen.get_active_tab(CLIENT_1).expect("TEST").position;
+    assert_eq!(position(&screen), TabPosition::new(1));
+
+    screen.move_focus_right_or_next_tab(CLIENT_1).expect("TEST");
+    assert_eq!(screen.active_pane_id(CLIENT_1), Some(children[1]));
+    assert_eq!(position(&screen), TabPosition::new(1), "and no tab switch");
+
+    screen
+        .move_focus_left_or_previous_tab(CLIENT_1)
+        .expect("TEST");
+    assert_eq!(screen.active_pane_id(CLIENT_1), Some(children[0]));
+
+    screen
+        .move_focus_in_direction_or_escalate(Direction::Right, CLIENT_1)
+        .expect("TEST");
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(children[1]),
+        "plain MoveFocus crosses the same way"
+    );
+    assert_eq!(position(&screen), TabPosition::new(1));
+}
+
+/// Off the panel's outer edge the move carries on from the pane hidden under it, and that tab has
+/// one tiled pane, so nothing lies beyond the covered pane. While any overlay holds the keyboard
+/// that is a no-op, as it is under a modal: switching tabs would have hocus carry the panel into
+/// the new tab.
+#[test]
+fn a_focus_move_or_tab_at_the_edge_under_a_dismissible_overlay_does_not_switch_tabs() {
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let children = panel_multipane(&mut screen, TabId::new(1));
+    // down, as a real overlay leaves it, so the move looks among the tiled panes
+    // (`a_focus_move_or_tab_past_the_panel_edge_moves_to_the_tiled_pane_beyond_the_covered_one`)
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .expect("TEST")
+        .hide_floating_panes();
+    let position = |screen: &Screen| screen.get_active_tab(CLIENT_1).expect("TEST").position;
+
+    screen
+        .move_focus_left_or_previous_tab(CLIENT_1)
+        .expect("TEST");
+    assert_eq!(position(&screen), TabPosition::new(1));
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(children[0]),
+        "the list keeps the keyboard"
+    );
+
+    screen.move_focus_right_or_next_tab(CLIENT_1).expect("TEST");
+    screen.move_focus_right_or_next_tab(CLIENT_1).expect("TEST");
+    assert_eq!(position(&screen), TabPosition::new(1));
+    assert_eq!(screen.active_pane_id(CLIENT_1), Some(children[1]));
+}
+
+/// The same rule without a multipane: a plain dismissible popup holding the keyboard over a tab
+/// with one tiled pane. Alt h/l find nothing either way, so neither hops to the other tab.
+#[test]
+fn a_focus_move_or_tab_at_the_edge_under_a_single_dismissible_overlay_does_not_switch_tabs() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    open_overlay_of_kind(&mut screen, 3, "POPUP", OverlayKind::Dismissible);
+    let position = |screen: &Screen| screen.get_active_tab(CLIENT_1).expect("TEST").position;
+    assert_eq!(position(&screen), TabPosition::new(1));
+
+    screen.move_focus_right_or_next_tab(CLIENT_1).expect("TEST");
+    assert_eq!(position(&screen), TabPosition::new(1), "no tab switch");
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(PaneId::Terminal(TERMINAL_3)),
+        "and the popup still has the keyboard"
+    );
+
+    screen
+        .move_focus_left_or_previous_tab(CLIENT_1)
+        .expect("TEST");
+    assert_eq!(position(&screen), TabPosition::new(1));
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(PaneId::Terminal(TERMINAL_3))
+    );
+}
+
+/// Plain `MoveFocus` (Alt j/k, and h/l in pane mode) keeps to the same rule as `MoveFocusOrTab`.
+/// At the edge of a single-tab session it used to bubble the focus out to the host session while
+/// a dismissible popup still held the keyboard - only a modal stopped it.
+#[test]
+fn a_focus_move_at_the_edge_under_a_dismissible_overlay_does_not_bubble_to_the_host() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    open_overlay_of_kind(&mut screen, 2, "POPUP", OverlayKind::Dismissible);
+    let (server_sender, server_receiver) = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(server_sender));
+    let assert_nothing_bubbled = |what: &str| {
+        while let Ok((instruction, _)) = server_receiver.try_recv() {
+            assert!(
+                !matches!(
+                    instruction,
+                    ServerInstruction::EmitNestedSessionFrameToClient(..)
+                ),
+                "{what}: nothing was handed to the host session"
+            );
+        }
+    };
+
+    screen
+        .move_focus_in_direction_or_escalate(Direction::Down, CLIENT_1)
+        .expect("TEST");
+    assert_nothing_bubbled("MoveFocus down");
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(PaneId::Terminal(crate::TerminalId::new(2))),
+        "the popup still has the keyboard"
+    );
+
+    screen
+        .move_focus_left_or_previous_tab(CLIENT_1)
+        .expect("TEST");
+    assert_nothing_bubbled("MoveFocusOrTab left");
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(PaneId::Terminal(crate::TerminalId::new(2)))
+    );
+}
+
+/// Past the panel's outer edge Alt h/l carry on from the pane hidden under it, as they would
+/// without the panel. Here there is a tiled pane that way, so the keyboard goes to it - the
+/// panel lets go as it does for a click on that pane - and the tab stays where it is.
+#[test]
+fn a_focus_move_or_tab_past_the_panel_edge_moves_to_the_tiled_pane_beyond_the_covered_one() {
+    let mut screen = create_non_mirrored_screen(Size {
+        cols: 120,
+        rows: 40,
+    });
+    new_tab(&mut screen, 1, TabId::new(0));
+    new_tab(&mut screen, 2, TabId::new(1));
+    let left = PaneId::Terminal(crate::TerminalId::new(2));
+    let right = PaneId::Terminal(TERMINAL_3);
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .expect("TEST")
+        .vertical_split(right, None, CLIENT_1, None, None)
+        .expect("TEST");
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(right),
+        "pre-condition: the right-hand tiled pane is focused"
+    );
+    let children = panel_multipane(&mut screen, TabId::new(1));
+    // `open_overlay_plugin` raises the floating layer, which a real overlay leaves as it was
+    // (`opening_an_overlay_does_not_raise_the_floating_layer`), and a raised layer with nothing
+    // on it is where the move would look instead of among the tiled panes
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .expect("TEST")
+        .hide_floating_panes();
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(children[0]),
+        "pre-condition: the list has the keyboard"
+    );
+    let position = |screen: &Screen| screen.get_active_tab(CLIENT_1).expect("TEST").position;
+
+    screen
+        .move_focus_left_or_previous_tab(CLIENT_1)
+        .expect("TEST");
+
+    assert_eq!(
+        screen.active_pane_id(CLIENT_1),
+        Some(left),
+        "the list has no half to its left, so the move went on from the covered pane"
+    );
+    assert_eq!(position(&screen), TabPosition::new(1), "and no tab switch");
+}
+
+/// hocus carries its panel into the tab its client just switched to (`follow_tab`, after a tab
+/// switch or `Ctrl t n`). By then the client is no longer on the panel's tab, so the panel lands
+/// drawn but unfocused and the pane the client went to keeps the keyboard. A break done while the
+/// client is still on the panel's tab is the counterpart: the list keeps it.
+#[test]
+fn a_panel_carried_after_its_client_switched_tabs_arrives_unfocused() {
+    for client_left_first in [true, false] {
+        let mut screen = create_non_mirrored_screen(Size {
+            cols: 120,
+            rows: 40,
+        });
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        let children = panel_multipane(&mut screen, TabId::new(1));
+        if client_left_first {
+            screen
+                .switch_active_tab(TabPosition::new(0), None, true, CLIENT_1)
+                .expect("TEST");
+        }
+
+        screen
+            .break_multiple_panes_to_tab_with_id(
+                vec![children[0]],
+                TabId::new(0),
+                !client_left_first,
+                CLIENT_1,
+            )
+            .expect("TEST");
+
+        let destination = &screen.tabs[&TabId::new(0)];
+        for child in children {
+            assert!(
+                destination.pane_is_overlay(child),
+                "client left first: {client_left_first}: both halves travel as an overlay"
+            );
+        }
+        assert_eq!(
+            screen.get_active_tab(CLIENT_1).expect("TEST").id,
+            TabId::new(0)
+        );
+        if client_left_first {
+            assert_eq!(
+                screen.active_pane_id(CLIENT_1),
+                Some(PaneId::Terminal(crate::TerminalId::new(1))),
+                "the tab the client switched to keeps the keyboard"
+            );
+            assert!(!destination.overlay_holds_focus(CLIENT_1));
+        } else {
+            assert_eq!(
+                screen.active_pane_id(CLIENT_1),
+                Some(children[0]),
+                "a break made from the panel's own tab keeps the list focused"
+            );
+        }
+    }
+}
+
 /// Switching panes while fullscreen is active is a focus move like any other, so a dismissible
 /// overlay above it has to let go. The fullscreen branch used to return before the release.
 #[test]
@@ -5731,6 +6063,7 @@ fn summoning_a_linked_overlay_moves_and_reveals_the_whole_panel() {
                             direction: zellij_types::multipane::MultipaneDirection::LeftRight,
                             ratio: 5000,
                         },
+                        0,
                         OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
                             width: Some(PercentOrFixed::Fixed(50)),
                             ..coordinates(5)
@@ -6378,6 +6711,7 @@ fn multipane_structural_commands_and_transfers_keep_mixed_children_contained() {
                             ..Default::default()
                         })),
                         focus: Some(selected),
+                        min_cells: 0,
                     },
                     CLIENT_1,
                 )
@@ -6500,6 +6834,7 @@ fn multipane_creation_focus_switches_to_the_children_tab_only_when_requested() {
                     },
                     placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                     focus,
+                    min_cells: 0,
                 },
                 CLIENT_1,
             )
@@ -6544,6 +6879,7 @@ fn multipane_close_self_restores_a_replaced_child_and_only_closes_the_temporary_
                 },
                 placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                 focus: Some(0),
+                min_cells: 0,
             },
             CLIENT_1,
         )
@@ -6603,6 +6939,7 @@ fn multipane_scrollback_editor_exit_restores_the_child_while_ordinary_exits_hold
                 },
                 placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                 focus: Some(0),
+                min_cells: 0,
             },
             CLIENT_1,
         )
@@ -6690,6 +7027,7 @@ fn multipane_replacing_a_child_with_the_last_working_pane_retains_the_tab() {
                         },
                         placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                         focus: Some(0),
+                        min_cells: 0,
                     },
                     CLIENT_1,
                 )
@@ -6787,6 +7125,7 @@ fn multipane_rejected_adoption_changes_nothing_and_child_replacement_retains_the
         },
         placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
         focus: None,
+        min_cells: 0,
     };
     for operation in [
         create([first, first], 5000),
@@ -6870,6 +7209,7 @@ fn multipane_transfer_carries_replacements_and_tab_closure_keeps_the_container()
                 },
                 placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                 focus: Some(1),
+                min_cells: 0,
             },
             CLIENT_1,
         )
@@ -6943,6 +7283,7 @@ fn closing_a_multipane_repaints_the_idle_terminal_underneath() {
                     },
                     placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                     focus: None,
+                    min_cells: 0,
                 },
                 CLIENT_1,
             )
@@ -6993,6 +7334,7 @@ fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
                     },
                     placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                     focus: None,
+                    min_cells: 0,
                 },
                 CLIENT_1,
             )
@@ -7049,6 +7391,7 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
                 },
                 placement: OverlayPlacement::dismissible(Some(popup_coordinates())),
                 focus: None,
+                min_cells: 0,
             },
             CLIENT_1,
         )

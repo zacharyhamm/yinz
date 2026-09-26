@@ -56,6 +56,7 @@ impl Screen {
                 placement,
                 split,
                 focus,
+                min_cells,
             } => {
                 split.validate().map_err(|error| anyhow!(error))?;
                 if focus.is_some_and(|slot| slot >= 2) {
@@ -65,7 +66,7 @@ impl Screen {
                 let tab = self
                     .tab_containing_pane_mut(children[0])
                     .context("multipane tab disappeared")?;
-                tab.create_multipane(children, split, placement)?;
+                tab.create_multipane(children, split, min_cells, placement)?;
                 if let Some(slot) = focus {
                     self.focus_pane_with_id(children[slot], false, false, client)?;
                 }

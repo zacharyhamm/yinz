@@ -40,7 +40,7 @@ use crate::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use zellij_types::multipane::{MultipaneDirection, MultipaneId, MultipaneInfo, MultipaneSplit};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct OverlayId(u64);
 static NEXT_OVERLAY_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -50,6 +50,8 @@ enum Children {
     Multipane {
         children: [Child; 2],
         split: MultipaneSplit,
+        /// The fewest cells either child keeps along the split (`MultipaneSplit::floor`).
+        min_cells: u16,
     },
 }
 impl Children {
@@ -143,6 +145,11 @@ pub struct OverlayPanes {
     senders: ThreadSenders,
     window_title: Option<String>,
     dimmed_clients: HashSet<ClientId>,
+    /// Where each client's keyboard goes back to when a modal container it is on goes away:
+    /// the overlay it was on when the modal took the keyboard, or `None` for the layers
+    /// beneath. Without it the keyboard fell to whichever overlay was topmost, so a modal
+    /// opened from one half of a panel closed onto the other half. See `modal_return_for`.
+    modal_return: HashMap<(ClientId, OverlayId), Option<PaneId>>,
 }
 
 #[allow(clippy::borrowed_box)]
@@ -179,6 +186,7 @@ impl OverlayPanes {
             dimmed_clients: HashSet::new(),
             pane_being_moved_with_mouse: None,
             seam_being_dragged: None,
+            modal_return: HashMap::new(),
         }
     }
     fn surface(&self) -> Viewport {
@@ -222,7 +230,10 @@ impl OverlayPanes {
     }
     pub fn multipane_info(&self, pane_id: &PaneId) -> Option<MultipaneInfo> {
         let overlay = self.overlay(pane_id)?;
-        let Children::Multipane { children, split } = &overlay.children else {
+        let Children::Multipane {
+            children, split, ..
+        } = &overlay.children
+        else {
             return None;
         };
         Some(MultipaneInfo {
@@ -284,6 +295,7 @@ impl OverlayPanes {
         &mut self,
         children: [PaneId; 2],
         split: MultipaneSplit,
+        min_cells: u16,
         placement: OverlayPlacement,
     ) -> Result<MultipaneId> {
         split.validate().map_err(|error| anyhow!(error))?;
@@ -318,11 +330,14 @@ impl OverlayPanes {
             unreachable!()
         };
         self.z_indices.retain(|id| !ids.contains(id));
+        self.modal_return
+            .retain(|(_, container), _| !ids.contains(container));
         first.id = OverlayId(NEXT_OVERLAY_ID.fetch_add(1, Ordering::Relaxed));
         let id = MultipaneId(first.id.0);
         first.children = Children::Multipane {
             children: [a, b],
             split,
+            min_cells,
         };
         first.coordinates = placement.coordinates.unwrap_or_default();
         first.carry.hidden |= second.carry.hidden;
@@ -373,12 +388,20 @@ impl OverlayPanes {
         // Hide before relocating focus, so no client can fall onto the sibling.
         let carry = self.carry_of(&pane_id);
         let fullscreen = self.panes[&id].fullscreen;
-        let arrival_focus = self
-            .active_panes
-            .iter()
-            .filter(|(_, id)| members.contains(id))
-            .map(|(client, id)| (*client, *id))
-            .collect();
+        // The keyboard travels only with a client still on this tab. One that has already
+        // switched away left its entry behind - leaving a tab does not clear it - and carrying
+        // that would take the keys back from the tab the client went to: hocus carries its panel
+        // after a tab switch or `Ctrl t n` (`follow_tab`), and it lands drawn but unfocused, so
+        // the new tab's pane keeps them. A break or a tab close done while the client is still
+        // here keeps its focus, and an explicit focus once the container lands wins either way.
+        let arrival_focus = {
+            let connected_clients = self.connected_clients.borrow();
+            self.active_panes
+                .iter()
+                .filter(|(client, id)| members.contains(id) && connected_clients.contains(*client))
+                .map(|(client, id)| (*client, *id))
+                .collect()
+        };
         self.hide_pane(pane_id);
         self.z_indices.retain(|other| *other != id);
         let mut overlay = self.panes.remove(&id)?;
@@ -390,6 +413,11 @@ impl OverlayPanes {
             pane.reset_size_and_position_override();
             pane.reset_logical_position();
         }
+        // The hide above has already handed back whatever keyboard this container held. What
+        // is left names a container no longer here, or a way back to a pane no longer here.
+        self.modal_return.retain(|(_, container), back| {
+            *container != id && !back.is_some_and(|back| members.contains(&back))
+        });
         for member in members {
             self.release_seam_drag_of(member);
         }
@@ -423,6 +451,11 @@ impl OverlayPanes {
         let mut old = std::mem::replace(pane, with_pane);
         old.reset_size_and_position_override();
         self.move_clients_between_panes(pane_id, with_id);
+        for back in self.modal_return.values_mut() {
+            if *back == Some(pane_id) {
+                *back = Some(with_id);
+            }
+        }
         self.set_pane_frames()?;
         self.set_force_render();
         Ok(old)
@@ -707,6 +740,7 @@ impl OverlayPanes {
         if self.active_panes.contains_key(&client_id) || !self.may_be_focused(&pane_id) {
             return;
         }
+        self.note_modal_return(client_id, None, pane_id);
         self.active_panes.insert(client_id, pane_id, &self.panes);
         self.set_force_render();
     }
@@ -717,6 +751,7 @@ impl OverlayPanes {
         let connected_clients: Vec<ClientId> =
             self.connected_clients.borrow().iter().copied().collect();
         for client_id in connected_clients {
+            self.note_modal_return(client_id, self.active_pane_id(client_id), pane_id);
             self.active_panes.insert(client_id, pane_id, &self.panes);
             self.set_pane_active_at(pane_id);
         }
@@ -736,10 +771,12 @@ impl OverlayPanes {
         if !self.may_be_focused(&pane_id) {
             return;
         }
-        if let Some(previously_active) = self.active_pane_id(client_id) {
+        let previously_active = self.active_pane_id(client_id);
+        if let Some(previously_active) = previously_active {
             self.active_panes
                 .set_last_pane(client_id, previously_active);
         }
+        self.note_modal_return(client_id, previously_active, pane_id);
         self.active_panes.insert(client_id, pane_id, &self.panes);
         self.set_pane_active_at(pane_id);
         self.raise_within_class(pane_id);
@@ -785,7 +822,83 @@ impl OverlayPanes {
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
         self.active_panes.remove(&client_id, &self.panes);
+        self.modal_return
+            .retain(|(client, _), _| *client != client_id);
     }
+    /// A modal has just taken `client_id`'s keyboard from `from` (`None`: the layers beneath).
+    /// Note it, so the keyboard can go back there when the modal goes (`modal_return_for`). A
+    /// move between the halves of one modal multipane is not a modal taking the keyboard, and
+    /// keeps the container's way back as it was.
+    fn note_modal_return(&mut self, client_id: ClientId, from: Option<PaneId>, to: PaneId) {
+        if !self.is_modal(&to) {
+            return;
+        }
+        let Some(container) = self.container_id(&to) else {
+            return;
+        };
+        if from.is_some_and(|from| self.container_id(&from) == Some(container)) {
+            return;
+        }
+        self.modal_return.insert((client_id, container), from);
+    }
+    /// `client_id` asked for `pane_id` while a modal holds its keyboard. The modal keeps the
+    /// keyboard (`may_be_focused`), but the named pane is where the user now means to be, so it
+    /// is where the modal hands the keyboard when it goes: `hocus-new-agent` names the agent it
+    /// started and then closes itself. `pane_id` is one of ours or a pane on the layers beneath;
+    /// a modal named is focused in its own right and changes nothing here.
+    pub fn return_from_modal_to(&mut self, client_id: ClientId, pane_id: PaneId) {
+        let Some(container) = self
+            .active_pane_id(client_id)
+            .filter(|active| self.is_modal(active))
+            .and_then(|active| self.container_id(&active))
+        else {
+            return;
+        };
+        if self.is_modal(&pane_id) {
+            return;
+        }
+        let back = self.panes_contain(&pane_id).then_some(pane_id);
+        self.modal_return.insert((client_id, container), back);
+    }
+    /// Where `client_id`'s keyboard goes as `leaving` stops holding it, when a modal noted a way
+    /// back (`note_modal_return`, `return_from_modal_to`) and that way is still open: `Some(pane)`
+    /// for an overlay, `Some(None)` for the layers beneath. `None` leaves the choice to the
+    /// caller's own search.
+    ///
+    /// The way back is taken only when the modal's whole container is leaving the client - a
+    /// multipane half that stays on screen keeps the keyboard in the container - and only to a
+    /// place no modal still on screen would outrank: while another modal is up, the keyboard
+    /// stays in modal hands, as it always has.
+    fn modal_return_for(&mut self, client_id: ClientId, leaving: PaneId) -> Option<Option<PaneId>> {
+        let key = (client_id, self.container_id(&leaving)?);
+        let back = *self.modal_return.get(&key)?;
+        let stack = self.stack_layer_ids();
+        let can_take = |pane_id: &PaneId| {
+            *pane_id != leaving
+                && stack.contains(pane_id)
+                && self.get(pane_id).is_some_and(|pane| pane.selectable())
+        };
+        if self.members(&leaving).iter().any(can_take) {
+            return None;
+        }
+        let another_modal_is_up = stack
+            .iter()
+            .any(|pane_id| can_take(pane_id) && self.is_modal(pane_id));
+        let open = match back {
+            Some(pane_id) => {
+                can_take(&pane_id) && (self.is_modal(&pane_id) || !another_modal_is_up)
+            },
+            None => !another_modal_is_up,
+        };
+        if !open {
+            return None;
+        }
+        self.modal_return.remove(&key);
+        Some(back)
+    }
+    /// Move every client on `pane_id` elsewhere, as it closes or can no longer be focused: a
+    /// modal hands each client back where it took the keyboard from (`modal_return_for`), and
+    /// anything else falls to the topmost overlay still on screen, or to the layers beneath.
     pub fn move_clients_out_of_pane(&mut self, pane_id: PaneId) {
         let next = self
             .stack_layer_ids()
@@ -799,7 +912,7 @@ impl OverlayPanes {
             .map(|(c_id, _)| *c_id)
             .collect();
         for client_id in focused_clients {
-            match next {
+            match self.modal_return_for(client_id, pane_id).unwrap_or(next) {
                 Some(next_pane_id) => {
                     self.active_panes
                         .insert(client_id, next_pane_id, &self.panes)
@@ -810,6 +923,9 @@ impl OverlayPanes {
             }
         }
     }
+    /// As `move_clients_out_of_pane`, for a modal being set aside rather than closed. Without a
+    /// way back only another modal may take the keyboard: the overlays under a modal were not
+    /// focusable a moment ago, and hiding it does not make an arbitrary one of them so.
     fn move_clients_out_of_modal(&mut self, pane_id: PaneId) {
         let next = self.stack_layer_ids().into_iter().rev().find(|id| {
             *id != pane_id
@@ -823,7 +939,7 @@ impl OverlayPanes {
             .map(|(c_id, _)| *c_id)
             .collect();
         for client_id in focused_clients {
-            match next {
+            match self.modal_return_for(client_id, pane_id).unwrap_or(next) {
                 Some(next_pane_id) => {
                     self.active_panes
                         .insert(client_id, next_pane_id, &self.panes)
@@ -1206,6 +1322,35 @@ impl OverlayPanes {
         self.set_pane_being_moved_with_mouse(id, position);
         true
     }
+    /// The other half of `pane_id`'s multipane when it lies in `direction` from `pane_id`: right
+    /// of (or below) the first child, left of (or above) the second. `None` for a single overlay,
+    /// a direction across the split rather than along it, or one pointing out of the container.
+    pub fn sibling_toward(
+        &self,
+        pane_id: &PaneId,
+        direction: zellij_types::geometry::Direction,
+    ) -> Option<PaneId> {
+        use zellij_types::geometry::Direction;
+        let Children::Multipane {
+            children: [(first, _), (second, _)],
+            split,
+            ..
+        } = &self.overlay(pane_id)?.children
+        else {
+            return None;
+        };
+        let (toward_second, toward_first) = match split.direction {
+            MultipaneDirection::LeftRight => (Direction::Right, Direction::Left),
+            MultipaneDirection::TopBottom => (Direction::Down, Direction::Up),
+        };
+        if pane_id == first && direction == toward_second {
+            Some(*second)
+        } else if pane_id == second && direction == toward_first {
+            Some(*first)
+        } else {
+            None
+        }
+    }
     pub fn multipane_children(&self, pane_id: &PaneId) -> Option<(PaneId, PaneId)> {
         self.multipane_info(pane_id)
             .map(|info| (info.children[0], info.children[1]))
@@ -1217,10 +1362,15 @@ impl OverlayPanes {
             if !contains(outer, position) {
                 continue;
             }
-            let Children::Multipane { children, split } = &overlay.children else {
+            let Children::Multipane {
+                children,
+                split,
+                min_cells,
+            } = &overlay.children
+            else {
                 return None;
             };
-            let (_, divider) = split.geometry(outer, overlay.framed());
+            let (_, divider) = split.geometry(outer, overlay.framed(), *min_cells);
             return contains(divider, position).then_some((children[0].0, children[1].0));
         }
         None
@@ -1244,7 +1394,10 @@ impl OverlayPanes {
             return false;
         };
         let framed = overlay.framed();
-        let Children::Multipane { split, .. } = &mut overlay.children else {
+        let Children::Multipane {
+            split, min_cells, ..
+        } = &mut overlay.children
+        else {
             return false;
         };
         let horizontal = split.direction == MultipaneDirection::LeftRight;
@@ -1263,8 +1416,11 @@ impl OverlayPanes {
         } else {
             position.line()
         };
+        // the same floor `MultipaneSplit::geometry` keeps, so a drag past it stops where the
+        // divider is drawn rather than storing a ratio the geometry would only clamp back
+        let floor = MultipaneSplit::floor(available, *min_cells);
         let first_size = (pointer - (start + usize::from(framed)) as isize)
-            .clamp(1, (available - 1) as isize) as usize;
+            .clamp(floor as isize, (available - floor) as isize) as usize;
         let ratio = (first_size * 10_000).div_ceil(available).clamp(1, 9999) as u16;
         if split.ratio == ratio {
             return false;
@@ -1392,11 +1548,15 @@ impl OverlayPanes {
                 .map(|ui| viewport_geom(if ui { surface } else { viewport }))
                 .unwrap_or(overlay.geom);
             let split = match overlay.children {
-                Children::Multipane { split, .. } => Some(split),
+                Children::Multipane {
+                    split, min_cells, ..
+                } => Some((split, min_cells)),
                 _ => None,
             };
-            let base = split.map(|split| split.geometry(overlay.geom, !borderless).0);
-            let displayed = split.map(|split| split.geometry(outer, framed).0);
+            let base = split
+                .map(|(split, min_cells)| split.geometry(overlay.geom, !borderless, min_cells).0);
+            let displayed =
+                split.map(|(split, min_cells)| split.geometry(outer, framed, min_cells).0);
             for (index, (_, pane)) in overlay.children.as_mut_slice().iter_mut().enumerate() {
                 let geom = base.map(|geoms| geoms[index]).unwrap_or(overlay.geom);
                 let geom_override = overlay
@@ -1568,9 +1728,9 @@ impl OverlayPanes {
             let first_id = overlay.children.as_slice()[0].0;
             let framed = overlay.framed();
             let divider = match overlay.children {
-                Children::Multipane { split, .. } => {
-                    Some((split.geometry(outer, framed).1, split.direction))
-                },
+                Children::Multipane {
+                    split, min_cells, ..
+                } => Some((split.geometry(outer, framed, min_cells).1, split.direction)),
                 _ => None,
             };
             let overlay_ids: Vec<_> = overlay.pane_ids().collect();

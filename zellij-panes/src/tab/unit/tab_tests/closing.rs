@@ -436,6 +436,7 @@ fn explicit_close_of_any_multipane_replacement_destroys_both_chains() {
                 direction: MultipaneDirection::LeftRight,
                 ratio: 5000,
             },
+            0,
             placement,
         )
         .unwrap();

@@ -93,6 +93,7 @@ fn stored_run(
         summarized_revision: 0,
         summary: None,
         entries,
+        omitted_entries: 0,
     }
 }
 

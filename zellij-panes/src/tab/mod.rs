@@ -5858,6 +5858,7 @@ impl Tab {
         &mut self,
         children: [PaneId; 2],
         split: zellij_types::multipane::MultipaneSplit,
+        min_cells: u16,
         placement: OverlayPlacement,
     ) -> Result<zellij_types::multipane::MultipaneId> {
         split.validate().map_err(|error| anyhow!(error))?;
@@ -5908,7 +5909,7 @@ impl Tab {
         }
         let id = self
             .overlay_panes
-            .create_multipane(children, split, placement)?;
+            .create_multipane(children, split, min_cells, placement)?;
         if retains_tab {
             self.overlay_panes.retain_tab_for(children[0]);
         }
@@ -7027,6 +7028,30 @@ impl Tab {
     pub fn release_overlay_focus_to_lower_layer(&mut self, client_id: ClientId) {
         self.overlay_panes.defocus_pane_if_dismissible(client_id);
     }
+    /// Whether an overlay - modal or not - holds this client's keyboard.
+    pub fn overlay_holds_focus(&self, client_id: ClientId) -> bool {
+        self.overlays_are_rendered() && self.overlay_panes.active_pane_id(client_id).is_some()
+    }
+    /// Move the client's keyboard across the divider of the multipane overlay holding it, when
+    /// the other half lies in `direction`. The halves sit side by side on screen, so that is
+    /// where a directional move goes, rather than to whatever is hidden under the overlay in
+    /// that direction. Tried before `lower_layer_may_take_focus`: a modal multipane's halves may
+    /// trade the keyboard between themselves. `false` when there is no such half to take it.
+    fn move_focus_to_overlay_sibling(&mut self, direction: Direction, client_id: ClientId) -> bool {
+        let Some(sibling) = self
+            .overlay_panes
+            .active_pane_id(client_id)
+            .and_then(|active| self.overlay_panes.sibling_toward(&active, direction))
+        else {
+            return false;
+        };
+        self.overlay_panes.focus_pane(sibling, client_id);
+        if self.overlay_panes.active_pane_id(client_id) != Some(sibling) {
+            return false;
+        }
+        self.set_force_render();
+        true
+    }
     pub fn focus_next_pane(&mut self, client_id: ClientId) {
         if !self.has_selectable_panes() {
             return;
@@ -7139,6 +7164,9 @@ impl Tab {
     pub fn move_focus_left(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus left for client {}", client_id);
 
+        if self.move_focus_to_overlay_sibling(Direction::Left, client_id) {
+            return Ok(true);
+        }
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
         }
@@ -7168,6 +7196,9 @@ impl Tab {
     pub fn move_focus_down(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus down for client {}", client_id);
 
+        if self.move_focus_to_overlay_sibling(Direction::Down, client_id) {
+            return Ok(true);
+        }
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
         }
@@ -7207,6 +7238,9 @@ impl Tab {
     pub fn move_focus_up(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus up for client {}", client_id);
 
+        if self.move_focus_to_overlay_sibling(Direction::Up, client_id) {
+            return Ok(true);
+        }
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
         }
@@ -7247,6 +7281,9 @@ impl Tab {
     pub fn move_focus_right(&mut self, client_id: ClientId) -> Result<bool> {
         let err_context = || format!("failed to move focus right for client {}", client_id);
 
+        if self.move_focus_to_overlay_sibling(Direction::Right, client_id) {
+            return Ok(true);
+        }
         if !self.lower_layer_may_take_focus(client_id) {
             return Ok(false);
         }
@@ -9218,8 +9255,8 @@ impl Tab {
         // A pane named by id is the pane the user just asked for, so this takes the *opening*
         // shape of the rule rather than the moving one that `lower_layer_may_take_focus` applies
         // to the focus-move family: a dismissible overlay gives the keyboard up so it can dismiss
-        // itself, a modal keeps it, and either way the focus underneath still lands where it was
-        // asked to - exactly as `add_floating_pane` does.
+        // itself, a modal keeps it until it goes, and either way the focus underneath still lands
+        // where it was asked to - exactly as `add_floating_pane` does.
         //
         // A replacement keeps the focus of its slot. Otherwise, defocus only for a pane this
         // tab holds outside the overlay collection: focusing another overlay or naming an
@@ -9229,6 +9266,11 @@ impl Tab {
             && self.get_pane_with_id(pane_id).is_some()
         {
             self.overlay_panes.defocus_pane_if_dismissible(client_id);
+        }
+        // A modal keeping the keyboard still learns where the user now wants to be, and hands
+        // the keyboard there when it goes rather than back to where it was opened from.
+        if pane_id_to_replace.is_none() && self.get_pane_with_id(pane_id).is_some() {
+            self.overlay_panes.return_from_modal_to(client_id, pane_id);
         }
         if self.focus_hidden_stack_list_member(pane_id, client_id) {
             return Ok(());

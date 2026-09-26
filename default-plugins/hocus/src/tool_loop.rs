@@ -9,6 +9,11 @@ use std::collections::BTreeMap;
 use zellij_tile::prelude::TabId;
 use zellij_tile::prelude::*;
 
+/// The answer to an agent list hocus has not yet seen in the session's plugin list, which is
+/// what says a sender is the builtin list and may read the archive. The next `SessionUpdate`
+/// names it, so the same request a moment later is answered.
+const NOT_LISTED_YET: &str = "hocus has not registered this agent list yet - try again";
+
 // ---------------------------------------------------------------------------
 // The tool loop
 // ---------------------------------------------------------------------------
@@ -464,6 +469,29 @@ impl State {
                 "notice",
                 serde_json::json!({"content": log::truncate(KEYS_HELP)}),
             );
+            return true;
+        }
+        // The divider, from the keyboard. Runs nothing, so it is legal mid-tool like /keys.
+        if line == "/split" || line.starts_with("/split ") {
+            let value = &line["/split".len()..];
+            match self.set_split(value) {
+                Ok((list, conversation)) => {
+                    let notice = if value.trim().is_empty() {
+                        format!(
+                            "split: list {list} · conversation {conversation} - /split 40 or \
+                             /split 35% moves it"
+                        )
+                    } else {
+                        format!("split: list {list} · conversation {conversation}")
+                    };
+                    self.messages.push(Message::notice(notice.clone()));
+                    self.log("notice", serde_json::json!({"content": notice}));
+                },
+                Err(error) => {
+                    self.messages.push(Message::error(error.clone()));
+                    self.log("error", serde_json::json!({"error": error}));
+                },
+            }
             return true;
         }
         // The list of skills, or a fresh read of their folders. The reload
@@ -3173,7 +3201,8 @@ impl State {
         let PipeSource::Plugin(plugin_id) = message.source else {
             return false;
         };
-        if self.listed_as_agent_list(plugin_id) != Some(true) {
+        let listed = self.listed_as_agent_list(plugin_id);
+        if listed == Some(false) {
             return false;
         }
         let Some(request) = message
@@ -3183,7 +3212,15 @@ impl State {
         else {
             return false;
         };
-        let result = self.agent_predecessors(request);
+        let result = match listed {
+            Some(_) => self.agent_predecessors(request),
+            None => wire::PredecessorsResult {
+                request_id: request.request_id,
+                pane_id: request.pane_id,
+                diagnostic: NOT_LISTED_YET.to_owned(),
+                ..Default::default()
+            },
+        };
         if let Ok(payload) = serde_json::to_string(&result) {
             pipe_message_to_plugin(
                 MessageToPlugin::new(wire::AGENT_PREDECESSORS_RESULT)
@@ -3230,7 +3267,8 @@ impl State {
         }) else {
             return false;
         };
-        if self.listed_as_agent_list(plugin_id) != Some(true) {
+        let listed = self.listed_as_agent_list(plugin_id);
+        if listed == Some(false) {
             return false;
         }
         let Some(request) = message
@@ -3240,15 +3278,7 @@ impl State {
         else {
             return false;
         };
-        let mut result = wire::SearchResult {
-            request_id: request.request_id,
-            ..Default::default()
-        };
-        if request.query.trim().is_empty() {
-            result.error = "search text is empty".to_owned();
-        } else if let Err(error) = self.search_agent_runs(&request.query, &mut result) {
-            result.error = error;
-        }
+        let result = self.agent_search_result(request, listed.is_some());
         let Ok(payload) = serde_json::to_string(&result) else {
             return false;
         };
@@ -3258,6 +3288,32 @@ impl State {
                 .with_payload(payload),
         );
         false
+    }
+
+    /// The answer to a search from an agent list; `listed` is whether the session's plugin list
+    /// has named it yet.
+    ///
+    /// A list the session has not listed yet - freshly loaded, before the `SessionUpdate` that
+    /// names it - is answered with an error and nothing from the archive, rather than not at
+    /// all: dropped, its search looks exactly like one still running, and the user presses
+    /// Enter again. Only a sender known to be something else is ignored outright, by the caller.
+    pub(crate) fn agent_search_result(
+        &self,
+        request: wire::SearchRequest,
+        listed: bool,
+    ) -> wire::SearchResult {
+        let mut result = wire::SearchResult {
+            request_id: request.request_id,
+            ..Default::default()
+        };
+        if !listed {
+            result.error = NOT_LISTED_YET.to_owned();
+        } else if request.query.trim().is_empty() {
+            result.error = "search text is empty".to_owned();
+        } else if let Err(error) = self.search_agent_runs(&request.query, &mut result) {
+            result.error = error;
+        }
+        result
     }
 
     fn search_agent_runs(

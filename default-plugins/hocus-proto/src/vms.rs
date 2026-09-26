@@ -5,9 +5,21 @@ use zellij_types::firecracker::{Metrics, RecoveryEntry, VmEntry};
 pub const REQUEST: &str = "vm_panel_request";
 pub const RESULT: &str = "vm_panel_result";
 pub const VISIBILITY: &str = "vm_panel_visibility";
+/// [`crate::wire::PANEL_STOP`]: the agent panel's own tab bar - Agents, Todos, VMs, Swamp -
+/// which is the first stop of the focus ring and where it lands wrapping forward off the
+/// conversation's input box. Not [`crate::wire::STOP_TABS`], which is the conversation's chat
+/// tab bar. The value predates the bar holding more than management tabs, and is kept because
+/// it is on the wire between two plugins.
 pub const STOP_TABS: &str = "management_tabs";
+/// The error hocus answers a panel request with while an earlier one is still running: it runs
+/// them one at a time. Shared so the panel can tell "still busy" from a real failure - a busy
+/// reply is proof the request it is waiting on is alive, not that anything went wrong.
+pub const BUSY: &str = "Another VM request is still running";
 
 pub use zellij_types::firecracker::Identity;
+/// How long the provider keeps a retained disk before deleting it, so the panel can say when
+/// that happens from the same number the provider uses.
+pub use zellij_types::firecracker::RECOVERY_RETENTION_SECS;
 
 /// Only a unique builtin overlay with a pane can own the management companion.
 /// Suppressed panes still own it; visibility does not change plugin identity.

@@ -76,8 +76,14 @@ impl VmEntry {
     }
 }
 
+/// How long the provider keeps a `RecoveryEntry` before deleting it. Every provider call
+/// prunes older disks, a listing included, so a surface that shows retained disks takes the
+/// deadline from here rather than repeating the number.
+pub const RECOVERY_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// A guest disk the provider kept instead of deleting: a VM that crashed, failed to
-/// provision, or could not be merged back into its worktree when it was released.
+/// provision, or could not be merged back into its worktree when it was released. It is
+/// deleted `RECOVERY_RETENTION_SECS` after `retained_at`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RecoveryEntry {
     pub path: PathBuf,

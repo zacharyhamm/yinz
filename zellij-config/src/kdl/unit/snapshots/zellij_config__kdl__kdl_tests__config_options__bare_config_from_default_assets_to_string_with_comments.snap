@@ -193,6 +193,13 @@ keybinds clear-defaults=true {
             }
             SwitchToMode "normal"
         }
+        bind "o" {
+            MessagePlugin {
+                name "agent_strip_reposition"
+                floating false
+            }
+            SwitchToMode "normal"
+        }
     }
     notifications {
         bind "down" { MoveNotificationSelection "down"; }

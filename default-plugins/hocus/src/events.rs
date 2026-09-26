@@ -16,6 +16,10 @@ impl State {
     /// Ctrl-o: move the conversation one corner clockwise. See `State::reposition`. The agent
     /// list takes the same key in its own pane, and asks hocus for it over
     /// `wire::AGENT_STRIP_REPOSITION`.
+    ///
+    /// Only in Locked mode: the default keymap's Normal mode takes Ctrl-o for Session mode
+    /// before either half sees it. `Ctrl e o` is the binding that works in every mode; it sends
+    /// the same message from the keymap, and `State::pipe` takes it there.
     pub(crate) fn is_reposition_key(key: &KeyWithModifier) -> bool {
         key.bare_key == BareKey::Char('o') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
@@ -111,6 +115,7 @@ impl State {
             PermissionStatus::Granted => {
                 self.granted = true;
                 self.warn_if_not_shared();
+                self.warn_bad_geometry();
                 // The agent daemon needs this grant only for the initial snapshot;
                 // afterwards it follows Zellij's pane events.
                 self.subscribe_to_agentd();
@@ -670,6 +675,10 @@ impl State {
     }
 
     /// Read visibility, placement and child identities from the host-owned container.
+    ///
+    /// Asks for a redraw when the keyboard leaving took a ring stop with it - the chat tab bar's
+    /// highlight and its help line are drawn from the stop - or when a tiled pane taking the
+    /// keyboard put the panel away (see `State::panel_focus_seen`).
     pub(crate) fn on_panes(&mut self, manifest: PaneManifest) -> bool {
         let own_id = PaneId::Plugin(self.own_plugin_id);
         let Some((tab_index, own, panes)) = manifest.panes.iter().find_map(|(tab, panes)| {
@@ -682,7 +691,11 @@ impl State {
         };
         self.own_tab_index = Some(tab_index);
         self.own_is_floating = Some(own.is_floating);
-        if self.ring_focus_pending > 0 && !own.is_focused {
+        let stop_was_standing = self.chat_tab_focus.is_some() || self.chat_input_released;
+        // A focus this half asked for itself and the manifests still in flight from before it:
+        // not a leave, for the ring stop or for the panel.
+        let discounted = self.ring_focus_pending > 0 && !own.is_focused;
+        if discounted {
             self.ring_focus_pending -= 1;
         } else if self.own_is_focused == Some(true) && !own.is_focused {
             self.reset_ring_stop();
@@ -691,11 +704,90 @@ impl State {
             self.ring_focus_pending = 0;
         }
         self.own_is_focused = Some(own.is_focused);
+        let stop_reset =
+            stop_was_standing && self.chat_tab_focus.is_none() && !self.chat_input_released;
+        // The panel's keyboard, which is the two halves' together: Tab across the seam moves it
+        // without it ever leaving.
+        let list = own
+            .multipane
+            .as_ref()
+            .and_then(|info| {
+                info.children.iter().find_map(|pane| match pane {
+                    PaneId::Plugin(id) if *pane != own_id => Some(*id),
+                    _ => None,
+                })
+            })
+            .or(self.agents_plugin)
+            .map(PaneId::Plugin);
+        let panel_focused = own.is_focused
+            || list.is_some_and(|list| panes.iter().any(|pane| pane.id == list && pane.is_focused));
+        // Both halves lost it since the last manifest, on the tab they were on then. A different
+        // tab is the panel following a tab switch, which lands it unfocused over a tab whose
+        // tiled pane has the keys, and is not the user walking away from it.
+        let left = self.is_panel()
+            && !discounted
+            && !own.is_suppressed
+            && !panel_focused
+            && self.panel_focus_seen == Some((tab_index, true));
+        // Whether the pane that took the keys floats, when it is one on this tab: asked only of a
+        // leave. A pane on another tab is a switch in flight, above, and no answer at all - the
+        // host naming nobody - is not a pane to wait on.
+        let holder = match left {
+            true => self
+                .keyboard_holder()
+                .filter(|holder| *holder != own_id && Some(*holder) != list),
+            false => None,
+        };
+        let holder_here = holder.and_then(|holder| panes.iter().find(|pane| pane.id == holder));
+        // The pane that already had this tab's keys when the panel followed a tab switch onto
+        // it keeping them is not a pane taking them (see `State::followed_holder`).
+        let kept = holder_here.is_some_and(|pane| Some(pane.id) == self.followed_holder);
+        let holder_floating = holder_here.filter(|_| !kept).map(|pane| pane.is_floating);
+        // The panel landing on another tab after following a switch there, unfocused, over the
+        // pane that has that tab's keys - from a tab where it had them, or was waiting on a
+        // pane that did. Armed on the new tab too, with that pane named, so the keyboard moving
+        // on from it there puts the panel away as it would have on the tab it came from.
+        let arrived = self.is_panel()
+            && !discounted
+            && !own.is_suppressed
+            && !panel_focused
+            && self
+                .panel_focus_seen
+                .is_some_and(|(tab, armed)| armed && tab != tab_index);
+        if arrived {
+            self.followed_holder = self
+                .keyboard_holder()
+                .filter(|holder| *holder != own_id && Some(*holder) != list)
+                .filter(|holder| panes.iter().any(|pane| pane.id == *holder));
+        } else if panel_focused
+            || own.is_suppressed
+            || holder_floating.is_some()
+            || (left && holder.is_none())
+        {
+            self.followed_holder = None;
+        }
+        // Kept armed through the manifests of another switch in flight, whose holder is on the
+        // tab the panel is about to follow to, so it arrives there armed too.
+        let in_flight = left && holder.is_some() && holder_here.is_none();
+        let followed = self.followed_holder.is_some() && (arrived || kept || in_flight);
+        // Only a tiled pane in this tab taking the keys puts the panel away. Overlays and
+        // floating panes both report `is_floating` - the modal the Todos `n` or `Ctrl e n` opens
+        // over the panel is one - and neither is the user done with the panel: an overlay hands
+        // the keys back when it closes, and the panel has to be there to take them. But a
+        // floating pane closing passes them to the tiled layer instead, so the leave stays armed
+        // while one holds them, and the tiled pane that has them next puts the panel away as if
+        // it had taken them from the panel directly. A modal handing them back is the panel
+        // focused again, which disarms it.
+        let tiled_took_the_keys = holder_floating == Some(false);
+        self.panel_focus_seen = Some((
+            tab_index,
+            panel_focused || holder_floating == Some(true) || followed,
+        ));
         if self.last_pane_title.as_deref() != Some(own.title.as_str()) {
             self.last_pane_title = None;
         }
         if !self.is_panel() {
-            return false;
+            return stop_reset;
         }
         self.hidden = own.is_suppressed;
         // The host's metadata is authoritative, including after a plugin reload.
@@ -740,7 +832,17 @@ impl State {
             self.send_vm_panel_visibility(visible);
         }
         self.agents_visible = visible;
-        false
+        // Last, so the manifest's picture of the panel above - taken before the hide - cannot
+        // overwrite what the hide just set.
+        if tiled_took_the_keys {
+            // What Esc does, for the gesture that means the same thing: the user is done with
+            // the panel for now, and either launch binding brings the whole of it back.
+            self.hide_panel();
+            // `hide_panel` has told the VM half; the suppressed manifest that follows need not.
+            self.agents_visible = false;
+            return true;
+        }
+        stop_reset
     }
 
     pub(crate) fn on_key(&mut self, key: KeyWithModifier) -> bool {

@@ -45,9 +45,12 @@ impl State {
             return false;
         };
         let error = if !self.granted {
-            Some("Command execution permission has not been granted")
+            // The prompt, or hocus's page on a refusal, is in the conversation half beside the
+            // list, which is where this points.
+            Some("hocus has no permission to run commands - see the conversation")
         } else if self.vm_panel_pending.is_some() {
-            Some("Another VM request is still running")
+            // The shared text, so the panel can tell "busy" from a real failure.
+            Some(vms::BUSY)
         } else {
             None
         };
@@ -113,24 +116,25 @@ impl State {
             self.vm_panel_pending = None;
             return false;
         }
-        let mut output = [
-            String::from_utf8_lossy(stdout).as_ref(),
-            String::from_utf8_lossy(stderr).as_ref(),
-        ]
-        .join("\n");
+        let mut output = command_output(stdout, stderr);
         if exit == Some(0) && !context.contains_key(VALIDATE) {
             match request.operation {
                 Operation::Changes => {
                     output = format!("Guest paths changed since sync: {}", output.trim())
                 },
-                Operation::Sync => output = format!("Worktree sync completed.\n{output}"),
+                Operation::Sync => {
+                    output = match output.is_empty() {
+                        true => "Worktree sync completed.".to_owned(),
+                        false => format!("Worktree sync completed.\n{output}"),
+                    }
+                },
                 _ => {},
             }
         }
         let mut error = if exit == Some(0) {
             String::new()
         } else {
-            format!("VM command failed ({exit:?}): {output}")
+            failure(exit, &output)
         };
         let mut snapshot = None;
         if error.is_empty() && context.contains_key(VALIDATE) {
@@ -176,6 +180,34 @@ impl State {
         self.vm_panel_pending = None;
         vm_reply(sender, &request, snapshot, output, error);
         false
+    }
+}
+
+/// What a VM command printed, stdout then stderr, as one text with no blank edges.
+///
+/// A stream that printed nothing is left out rather than joined as an empty line: the provider
+/// reports most failures on stderr alone, and a leading newline is what the panel's one-row
+/// divider would break on, pushing the reason into the details below it.
+fn command_output(stdout: &[u8], stderr: &[u8]) -> String {
+    [stdout, stderr]
+        .into_iter()
+        .map(String::from_utf8_lossy)
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| text.trim().to_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The error a failed VM command is reported with: the exit status in words, then what it
+/// printed, which is where the reason is.
+fn failure(exit: Option<i32>, output: &str) -> String {
+    let status = exit.map_or_else(
+        || "no exit status".to_owned(),
+        |code| format!("exit {code}"),
+    );
+    match output.trim() {
+        "" => format!("VM command failed ({status})"),
+        output => format!("VM command failed ({status}): {output}"),
     }
 }
 
@@ -455,6 +487,25 @@ mod tests {
         assert!(state.vm_panel_pending.is_none());
         assert_eq!(state.vm_panel_snapshot.vms.len(), 1);
     }
+    /// The provider reports "not configured" on stderr alone, with an exit status of 1. The
+    /// panel's divider is one row, so the reason has to come first and whole: no leading line
+    /// break from an empty stdout, and no Rust `Some(..)` for the status.
+    #[test]
+    fn a_failed_vm_command_reads_as_a_sentence() {
+        let output = command_output(b"", b"Error: Firecracker is not configured\n");
+        assert_eq!(output, "Error: Firecracker is not configured");
+        let error = failure(Some(1), &output);
+        assert_eq!(
+            error,
+            "VM command failed (exit 1): Error: Firecracker is not configured"
+        );
+        assert!(!error.contains("Some("));
+
+        assert_eq!(failure(None, ""), "VM command failed (no exit status)");
+        assert_eq!(command_output(b"listed\n", b"warned\n"), "listed\nwarned");
+        assert_eq!(command_output(b" \n", b""), "");
+    }
+
     #[test]
     fn vm_panel_revalidates_the_full_lease_before_a_mutation() {
         let mut state = state();

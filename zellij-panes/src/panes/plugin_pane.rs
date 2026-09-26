@@ -386,12 +386,23 @@ impl Pane for PluginPane {
     ) -> Option<AdjustedInput> {
         if client_id
             .and_then(|c| self.grids.get(&c))
-            .map(|g| g.has_selection())
-            .unwrap_or(false)
+            .is_some_and(|g| g.has_selection())
         {
+            // The next input clears a mouse selection's highlight, and only a bare Esc stops
+            // there: it is how you let go of a selection, and passing it on as well would close
+            // whatever the plugin has open. Anything else still reaches the plugin - swallowing
+            // it lost the key after every copy, and for a paste it lost the bracketed-paste
+            // opener, so the text arrived as keystrokes the plugin acted on one by one.
             self.reset_selection(client_id);
-            None
-        } else if let Some(requesting_permissions) = &self.requesting_permissions {
+            let bare_esc = match key_with_modifier {
+                Some(key) => key.bare_key == BareKey::Esc && key.has_no_modifiers(),
+                None => raw_input_bytes == [27],
+            };
+            if bare_esc {
+                return None;
+            }
+        }
+        if let Some(requesting_permissions) = &self.requesting_permissions {
             let permissions = requesting_permissions.permissions.clone();
             if let Some(key_with_modifier) = key_with_modifier {
                 match key_with_modifier.bare_key {
@@ -1298,6 +1309,75 @@ mod tests {
         pane.end_selection(&Position::new(0, 4), client_id);
 
         assert!(pane.should_render());
+    }
+
+    /// A pane with a finished mouse selection over its first word, as a drag-to-copy leaves it.
+    fn pane_with_a_selection() -> (
+        PluginPane,
+        channels::Receiver<(PluginInstruction, zellij_types::diagnostics::ErrorContext)>,
+    ) {
+        let (mut pane, plugin_rx) =
+            test_plugin_pane_and_plugin_receiver(5, 40, Offset::frame(1), None);
+        let client_id = ClientId::new(1);
+        pane.handle_plugin_bytes(client_id, b"some text to select".to_vec());
+        pane.set_mouse_selection_support(true);
+        pane.start_selection(&Position::new(0, 0), client_id);
+        pane.update_selection(&Position::new(0, 4), client_id);
+        pane.end_selection(&Position::new(0, 4), client_id);
+        assert!(pane.grids[&client_id].has_selection());
+        (pane, plugin_rx)
+    }
+
+    /// The first key after a drag-to-copy used to be spent clearing the highlight, so the `j`,
+    /// arrow or Tab that followed every copy did nothing.
+    #[test]
+    fn a_key_after_a_selection_clears_it_and_still_reaches_the_plugin() {
+        let (mut pane, _plugin_rx) = pane_with_a_selection();
+        let client_id = ClientId::new(1);
+        let j = KeyWithModifier::new(BareKey::Char('j'));
+
+        let adjusted =
+            pane.adjust_input_to_terminal(&Some(j.clone()), b"j".to_vec(), false, Some(client_id));
+
+        assert!(
+            matches!(&adjusted, Some(AdjustedInput::WriteKeyToPlugin(key)) if *key == j),
+            "{adjusted:?}"
+        );
+        assert!(!pane.grids[&client_id].has_selection());
+    }
+
+    /// Esc is how you let go of a selection, so it stops at clearing it: passed on as well, it
+    /// would close whatever the plugin has open.
+    #[test]
+    fn esc_after_a_selection_only_clears_it() {
+        for key in [Some(KeyWithModifier::new(BareKey::Esc)), None] {
+            let (mut pane, _plugin_rx) = pane_with_a_selection();
+            let client_id = ClientId::new(1);
+
+            let adjusted = pane.adjust_input_to_terminal(&key, vec![27], false, Some(client_id));
+
+            assert!(adjusted.is_none(), "{key:?}: {adjusted:?}");
+            assert!(!pane.grids[&client_id].has_selection());
+        }
+    }
+
+    /// A paste after a selection used to lose its bracketed-paste opener to the clearing, so the
+    /// text arrived as keystrokes - a newline as Enter, letters as commands.
+    #[test]
+    fn a_paste_after_a_selection_still_arrives_as_a_paste() {
+        let (mut pane, _plugin_rx) = pane_with_a_selection();
+        let client_id = ClientId::new(1);
+
+        let adjusted = pane.adjust_input_to_terminal(
+            &None,
+            BRACKETED_PASTE_BEGIN.to_vec(),
+            false,
+            Some(client_id),
+        );
+
+        assert!(adjusted.is_none(), "{adjusted:?}");
+        assert_eq!(pane.text_being_pasted, Some(vec![]));
+        assert!(!pane.grids[&client_id].has_selection());
     }
 
     #[test]

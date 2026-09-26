@@ -1710,21 +1710,29 @@ fn help_line(state: &State) -> &'static str {
         Status::ReviewingTool { .. } => {
             "checking safety…  <y> yes  <n> no  <Ctrl c> abort  <Esc> hide"
         },
-        Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingDecisions => "evaluating…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingSwamp { .. } => "running…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingExtension => "running extension…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingPluginTest => "testing plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingPluginLoad => "loading plugin…  <Ctrl c> abort  <Esc> hide  <↑↓> scroll",
-        Status::AwaitingRetry => "retrying…  <Ctrl c> give up  <Esc> hide  <↑↓> scroll",
+        Status::AwaitingCommand => "running…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll",
+        Status::AwaitingSearch => "searching…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll",
+        Status::AwaitingDecisions => "evaluating…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll",
+        Status::AwaitingSwamp { .. } => "running…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll",
+        Status::AwaitingExtension => {
+            "running extension…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll"
+        },
+        Status::AwaitingPluginTest => {
+            "testing plugin…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll"
+        },
+        Status::AwaitingPluginLoad => {
+            "loading plugin…  <Ctrl c> abort  <Esc> hide  <PgUp/PgDn> scroll"
+        },
+        Status::AwaitingRetry => "retrying…  <Ctrl c> give up  <Esc> hide  <PgUp/PgDn> scroll",
         Status::Idle if state.is_streaming() => {
-            "streaming…  <Ctrl c> cancel  <Esc> hide  <↑↓> scroll"
+            "streaming…  <Ctrl c> cancel  <Esc> hide  <PgUp/PgDn> scroll"
         },
         Status::Idle if state.is_planning() => {
             "planning  read-only tools  </plan off> exit  <Esc> hide"
         },
-        Status::Idle => "<Ctrl l> new chat  <Ctrl o> move  <Esc> hide",
+        // `Ctrl e o` rather than Ctrl-o, which only Locked mode lets through: Normal mode takes it
+        // for Session mode before the panel sees it.
+        Status::Idle => "<Ctrl l> new chat  <Ctrl e o> move  <Esc> hide",
     }
 }
 
@@ -2701,7 +2709,46 @@ mod tests {
             status: Status::Idle,
             ..Default::default()
         };
-        assert!(help_line(&state).contains("<Ctrl o> move"));
+        assert!(help_line(&state).contains("<Ctrl e o> move"));
+    }
+
+    /// Bare Up and Down belong to the box's prompt history in every one of these, so the keys
+    /// the line offers for the transcript are the page keys - as the confirmation's line and
+    /// `/keys` say.
+    #[test]
+    fn busy_help_names_the_page_keys_not_the_arrows() {
+        let busy = [
+            Status::AwaitingCommand,
+            Status::AwaitingSearch,
+            Status::AwaitingDecisions,
+            Status::AwaitingSwamp {
+                server_url: "https://lab.example.test".into(),
+            },
+            Status::AwaitingExtension,
+            Status::AwaitingPluginTest,
+            Status::AwaitingPluginLoad,
+            Status::AwaitingRetry,
+        ];
+        let streaming = State {
+            stream: Some(crate::StreamState {
+                id: "hocus-1".into(),
+                finishing: false,
+                usage: None,
+            }),
+            ..Default::default()
+        };
+        let states = busy
+            .into_iter()
+            .map(|status| State {
+                status,
+                ..Default::default()
+            })
+            .chain([streaming]);
+        for state in states {
+            let help = help_line(&state);
+            assert!(help.contains("<PgUp/PgDn> scroll"), "{help}");
+            assert!(!help.contains("<↑↓>"), "{help}");
+        }
     }
 
     #[test]

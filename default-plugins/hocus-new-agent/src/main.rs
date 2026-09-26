@@ -13,7 +13,7 @@ use hocus_proto::{
 };
 use zellij_tile::prelude::*;
 use zellij_tile::ui_components::forms::{
-    Button, Checkbox, Combo, Dialog, Form, FormEvent, Rect, Select, TextInput,
+    viewport_window, Button, Checkbox, Combo, Dialog, Form, FormEvent, Rect, Select, TextInput,
 };
 
 const PROJECT: &str = "project";
@@ -43,8 +43,16 @@ const FORK_FOCUSED: &str = "fork_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
 /// The one refusal a fork makes on its own: nothing else can be forked from a pane whose
-/// agent the session does not know.
+/// agent the session does not know. A duplicate says the same when it falls back to the
+/// New agent form, for the same reason.
 const NOT_AN_AGENT: &str = "the focused pane is not an agent";
+
+/// What the New agent form says when the alias asked to duplicate or fork and no terminal
+/// pane was focused to do it to - the agents panel, or any plugin, had the keys. The title
+/// already says what the modal is; this says why it is not what the key asked for, and
+/// what would have made it so.
+const NO_PANE_TO_DUPLICATE: &str = "duplicate needs a focused agent pane";
+const NO_PANE_TO_FORK: &str = "fork needs a focused agent pane";
 
 /// The project option that stands for "wherever the caller was", which is where
 /// this modal created agents before it knew about projects at all.
@@ -108,12 +116,17 @@ struct State {
     source_directory: PathBuf,
     projects: Registry,
     plugin_id: zellij_tile::prelude::PluginId,
+    /// The tab this modal is on, off the last `PaneUpdate` that had it: what the panel hide
+    /// names, so only the panel drawn over the new agent's tab goes (see `hand_over_focus`).
+    /// A manifest without this pane keeps the last one known.
+    own_tab: Option<TabPosition>,
     job: Job,
     firecracker_image_edited: bool,
     worktree_dir_edited: bool,
     error: Option<String>,
-    /// What the fork modal is forking, for its status row. Outlived by the error, which
-    /// takes the same row when there is one.
+    /// A standing remark for the status row: what the fork modal is forking, or why a
+    /// duplicate or fork is showing the New agent form instead. Outlived by the error,
+    /// which takes the same row when there is one.
     note: Option<String>,
     /// The `(width, height, y)` `resize` last asked the host for, so it can decline to ask again.
     ///
@@ -218,6 +231,7 @@ impl Default for State {
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
             plugin_id: zellij_tile::prelude::PluginId::new(0),
+            own_tab: None,
             job: Job::New,
             firecracker_image_edited: false,
             worktree_dir_edited: false,
@@ -248,23 +262,20 @@ impl ZellijPlugin for State {
         self.fill_initial_prompt(&configuration);
         self.plugin_id = get_plugin_ids().plugin_id;
         let asked_for = |key: &str| configuration.get(key).map(String::as_str) == Some("true");
-        // Without a caller pane there is nothing to duplicate or fork, whatever the alias
-        // asked for, so the modal stays the New agent one.
         let caller_pane_id = configuration
             .get(CALLER_TERMINAL_PANE_ID)
             .and_then(|pane_id| pane_id.parse().ok());
         self.workflow_source = caller_pane_id.map(|id| PaneId::Terminal(TerminalId::new(id)));
-        if let Some(pane_id) = caller_pane_id {
-            if asked_for(DUPLICATE_FOCUSED) {
-                self.job = Job::Duplicate { pane_id };
-            } else if asked_for(FORK_FOCUSED) {
-                self.job = Job::Fork {
-                    pane_id,
-                    source: ForkSource::Waiting,
-                };
-                // Before `resize`, which sizes the overlay to whichever dialog is up.
-                self.dialog = fork_dialog();
-            }
+        let (job, note) = requested_job(
+            caller_pane_id,
+            asked_for(DUPLICATE_FOCUSED),
+            asked_for(FORK_FOCUSED),
+        );
+        self.job = job;
+        self.note = note.map(str::to_owned);
+        if matches!(self.job, Job::Fork { .. }) {
+            // Before `resize`, which sizes the overlay to whichever dialog is up.
+            self.dialog = fork_dialog();
         }
         if !matches!(self.job, Job::New) {
             pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
@@ -298,9 +309,16 @@ impl ZellijPlugin for State {
                 }
                 false
             },
-            // A source rerun elsewhere (Restart) leaves nothing to fork. The picker's own launch
-            // reruns it too, but that has already sent its result, which `finish_picker` guards.
-            Event::PaneUpdate(manifest) if self.workflow_reply.is_some() => {
+            Event::PaneUpdate(manifest) => {
+                if let Some(tab) = tab_of(&manifest, PaneId::Plugin(self.plugin_id)) {
+                    self.own_tab = Some(tab);
+                }
+                // A source rerun elsewhere (Restart) leaves nothing to fork. The picker's own
+                // launch reruns it too, but that has already sent its result, which
+                // `finish_picker` guards.
+                if self.workflow_reply.is_none() {
+                    return false;
+                }
                 let rerun = manifest
                     .panes
                     .values()
@@ -346,13 +364,8 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         let help = help_for(self.dialog.form());
         self.dialog.set_help(Some(Text::new(help)));
-        // The error wins the row: it is the thing the user has to act on. The note only
-        // says what is being forked, and can wait for the error to be cleared.
-        self.dialog.set_status(match (&self.error, &self.note) {
-            (Some(error), _) => Some(Text::new(error).color_all(3)),
-            (None, Some(note)) => Some(Text::new(note)),
-            (None, None) => None,
-        });
+        let status = self.status(cols);
+        self.dialog.set_status(status);
         self.dialog.render(Rect::new(0, 0, cols, rows));
     }
 
@@ -365,7 +378,7 @@ impl ZellijPlugin for State {
                     self.workflow_reply = None;
                     self.workflow_result_pending = false;
                     if let Some(pane) = self.workflow_focus.take() {
-                        hand_over_focus(pane);
+                        hand_over_focus(pane, self.own_tab);
                     } else {
                         close_self();
                     }
@@ -401,11 +414,24 @@ impl ZellijPlugin for State {
                 let command =
                     pane_of(pane_id).and_then(|pane| duplicate_command(&pane, &reply.manual_kinds));
                 // A pane that is not an agent leaves the New agent form up, which is what
-                // this modal is underneath.
-                if let Some(new_pane_id) = command.and_then(|command| start(command, None).ok()) {
-                    self.finish_launch(new_pane_id);
+                // this modal is underneath - and says so, or the form would read as the
+                // answer to some other key.
+                let Some(command) = command else {
+                    self.note = Some(NOT_AN_AGENT.to_owned());
+                    return true;
+                };
+                match start(command, None) {
+                    Ok(new_pane_id) => {
+                        self.finish_launch(new_pane_id);
+                        false
+                    },
+                    // The form is up underneath either way; the error is what says that
+                    // this was a duplicate that failed rather than one that never started.
+                    Err(error) => {
+                        self.error = Some(error.to_owned());
+                        true
+                    },
                 }
-                false
             },
             Job::Fork {
                 pane_id,
@@ -434,12 +460,14 @@ impl ZellijPlugin for State {
 /// The help line for whatever has focus.
 ///
 /// Enter means something different in every widget here, so one static line
-/// cannot describe it. Every arm has to fit the narrowest modal - see
-/// `the_help_line_fits_the_narrowest_modal`.
+/// cannot describe it. Every arm has to fit inside the narrowest modal's frame -
+/// see `the_help_line_fits_the_narrowest_modal` - which is why the button and the
+/// checkbox name `Tab` alone: `↓` moves on from them too, but the two keys and
+/// the rest of the line are two columns wider than the frame leaves.
 fn help_for(form: &Form) -> &'static str {
     let Some(field) = form.focused_id().and_then(|id| form.field_by_id(id)) else {
         // No field of that id: focus is on the button, or the form is empty.
-        return "<Enter> create  <↓/Tab> next  <Esc> back";
+        return "<Enter> create  <Tab> next  <Esc> back";
     };
     if let Some(select) = field.select() {
         if field.id() == PERMISSION_MODE && !select.is_open() {
@@ -450,7 +478,7 @@ fn help_for(form: &Form) -> &'static str {
                 ("Opencode", "auto" | "skip") => "Auto-approves; explicit denials stay",
                 ("Codex", "never") => "No prompts; keeps sandbox setting",
                 ("Codex", "full-auto") => "Automatic mode with workspace sandbox",
-                ("Codex", "untrusted") => "Asks before commands outside trust list",
+                ("Codex", "untrusted") => "Asks before any untrusted command",
                 ("Codex", "on-request") => "Agent decides when to ask for approval",
                 ("Codex", "on-failure") => "Asks after a sandboxed command fails",
                 ("Claude", "acceptEdits") => "Auto-approves file edits",
@@ -458,7 +486,7 @@ fn help_for(form: &Form) -> &'static str {
                 ("Claude", "plan") => "Plans without making changes",
                 ("Claude", "auto") => "Automatic permission approval",
                 ("Claude", "manual") => "Requests manual permission approvals",
-                _ => "Uses the agent's configured permissions",
+                _ => "Uses the agent's permission settings",
             };
         }
         return if select.is_open() {
@@ -479,7 +507,7 @@ fn help_for(form: &Form) -> &'static str {
         };
     }
     if field.checkbox().is_some() {
-        return "<Enter> toggle  <↓/Tab> next  <Esc> back";
+        return "<Enter> toggle  <Tab> next  <Esc> back";
     }
     if field.radio().is_some() {
         return if form.is_radio_active() {
@@ -493,6 +521,81 @@ fn help_for(form: &Form) -> &'static str {
     } else {
         "<Enter> edit  <↓/Tab> next  <Esc> back"
     }
+}
+
+/// What the alias asked this modal to do, and what the status row says when it cannot.
+///
+/// Without a caller pane there is nothing to duplicate or fork, whatever the alias asked
+/// for, so the modal stays the New agent one. The host stamps a caller only when a
+/// terminal pane had the keys, and the duplicate and fork keys are bound everywhere - a
+/// press from the agents panel reaches this modal with no pane at all. Without the note
+/// that press would open a form nobody asked for and say nothing of why. Duplicate wins
+/// when both are asked for, as it always has.
+fn requested_job(caller: Option<u32>, duplicate: bool, fork: bool) -> (Job, Option<&'static str>) {
+    match (caller, duplicate, fork) {
+        (Some(pane_id), true, _) => (Job::Duplicate { pane_id }, None),
+        (Some(pane_id), false, true) => (
+            Job::Fork {
+                pane_id,
+                source: ForkSource::Waiting,
+            },
+            None,
+        ),
+        (None, true, _) => (Job::New, Some(NO_PANE_TO_DUPLICATE)),
+        (None, false, true) => (Job::New, Some(NO_PANE_TO_FORK)),
+        (_, false, false) => (Job::New, None),
+    }
+}
+
+/// The status row's account of a prompt the field cannot show: how much of it there is.
+///
+/// A count rather than a quote, because at its narrowest the row is 38 columns and a
+/// count is what still means something there. Always short enough for that row - see
+/// `the_prompt_summary_fits_the_narrowest_modal`.
+fn prompt_summary(text: &str) -> String {
+    let plural = |count: usize, noun: &str| match count {
+        1 => format!("1 {noun}"),
+        _ => format!("{count} {noun}s"),
+    };
+    format!(
+        "prompt: {}, {}",
+        plural(text.lines().count(), "line"),
+        plural(text.chars().count(), "char")
+    )
+}
+
+/// Whether the prompt field, in a pane `cols` wide, is keeping any of its prompt out of
+/// sight: text scrolled off either end, or line breaks the row draws as spaces.
+///
+/// The field is one row that scrolls sideways, draws a newline as a space and opens on
+/// the first column, so a todo's prompt - paragraphs of it - shows as its opening words
+/// with nothing to say the rest exists.
+///
+/// Asks `viewport_window`, which is what draws the row, so the cursor's own scroll counts
+/// too. The width it is handed mirrors the layout rather than reading it, because that is
+/// not exposed: `Dialog::render_buffer` insets the form two columns each side, and a text
+/// field draws `"<label>: "` before its value. A test draws the dialog to hold the two to
+/// the same answer (`the_prompt_summary_appears_when_the_row_cuts_the_prompt`).
+fn prompt_is_cut(form: &Form, cols: usize) -> bool {
+    let Some(field) = form.field_by_id(PROMPT) else {
+        return false;
+    };
+    let Some(input) = field.input() else {
+        return false;
+    };
+    let text = input.get_text();
+    if text.lines().count() > 1 {
+        return true;
+    }
+    let inset = if cols > 4 { 2 } else { 0 };
+    let label = format!("{}: ", field.label().content());
+    let (line, _, start) = viewport_window(
+        &label,
+        text,
+        input.get_cursor_position(),
+        cols.saturating_sub(inset * 2),
+    );
+    start > 0 || line.chars().count() < label.chars().count() + text.chars().count()
 }
 
 /// The Fork agent modal: one question, and the button that answers it.
@@ -953,7 +1056,7 @@ impl State {
                     ),
             );
         } else if let Some(pane) = pane {
-            hand_over_focus(pane);
+            hand_over_focus(pane, self.own_tab);
         } else {
             close_self();
         }
@@ -1092,6 +1195,24 @@ impl State {
         self.set_text(FIRECRACKER_IMAGE, &image);
     }
 
+    /// What the status row says in a pane `cols` wide.
+    ///
+    /// The error wins the row: it is the thing the user has to act on. The note says what
+    /// is being forked, or why this is the New agent form, and can wait for the error to
+    /// be cleared. The prompt's size comes last and is worked out afresh every render
+    /// rather than kept as a note, so an edit or a resize is reflected at once and a
+    /// prompt that comes to fit takes it away.
+    fn status(&self, cols: usize) -> Option<Text> {
+        match (&self.error, &self.note) {
+            (Some(error), _) => Some(Text::new(error).color_all(3)),
+            (None, Some(note)) => Some(Text::new(note)),
+            (None, None) => {
+                let form = self.dialog.form();
+                prompt_is_cut(form, cols).then(|| Text::new(prompt_summary(form.text(PROMPT))))
+            },
+        }
+    }
+
     fn pane_title(&self) -> &'static str {
         match self.job {
             Job::Fork { .. } => "fork agent",
@@ -1198,15 +1319,55 @@ impl State {
 /// are right; what neither can do is decide that *this* submit is over. Only
 /// the modal knows that, so handing the keyboard on is its job.
 ///
-/// Focus first, then close. While this pane is still up it goes on reading as
-/// the focused one whatever the tiled layer says, so the focus call moves the
-/// tiled focus *underneath* - and closing the last floating pane hands that
-/// tiled focus back out. The other order has nothing left to focus from: the
-/// close would restore whichever pane the user came from, and this plugin is
-/// gone by then.
-fn hand_over_focus(pane_id: PaneId) {
+/// Focus first, then close. While this modal is up it keeps the keyboard whatever
+/// the layers under it say, so the focus call moves the tiled focus *underneath* -
+/// and it also changes where the keys go when the modal closes. A closing modal
+/// hands them back to the pane it took them from, which is all a cancel
+/// (`close_self` alone) wants. A focus call made while the modal holds them
+/// repoints that at the lower layer, so the close gives the keys to the pane just
+/// focused rather than to whatever the user came from, an overlay included. The
+/// other order has nothing left to focus from: the close would already have handed
+/// the keys back, and this plugin is gone by then.
+///
+/// The agents panel is put away on the way. It stays up under a launcher opened from
+/// it - Todos `n`, or `Ctrl e n` with the panel showing - so that Esc hands the keys
+/// back to it; but once an agent has started, the panel is an overlay drawn over the
+/// pane that now has them. hocus puts the panel away on its own when a tiled pane
+/// takes the keyboard from it, a modal holding the keys in between included - but
+/// only a panel that had them when this modal opened, and `Ctrl e n` opens it over
+/// a panel that is merely showing as readily as over one being typed in. So it is
+/// asked (`wire::AGENT_STRIP_HIDE`, what Esc in the list sends). The message carries
+/// no url, so it launches nobody, and a panel already away stays away.
+///
+/// Nor does it carry a destination, so every panel hears it: `tab`, this modal's own,
+/// goes with it (`panel_hide`), and a panel on another tab - another client's, not
+/// drawn over the new agent - stays up. `None` only before the first `PaneUpdate`,
+/// and a hide naming no tab is one every panel takes, as the list's Esc is.
+fn hand_over_focus(pane_id: PaneId, tab: Option<TabPosition>) {
     focus_pane_with_id(pane_id, false, false);
+    pipe_message_to_plugin(panel_hide(tab));
     close_self();
+}
+
+/// The hide `hand_over_focus` sends: `wire::AGENT_STRIP_HIDE`, naming the tab it was
+/// sent from when that is known (`wire::PANEL_TAB`).
+fn panel_hide(tab: Option<TabPosition>) -> MessageToPlugin {
+    let message = MessageToPlugin::new(wire::AGENT_STRIP_HIDE);
+    match tab {
+        Some(tab) => message.with_args(BTreeMap::from([(
+            wire::PANEL_TAB.to_owned(),
+            tab.to_string(),
+        )])),
+        None => message,
+    }
+}
+
+/// The tab `me` is on in `manifest`, or `None` when the manifest does not list it.
+fn tab_of(manifest: &PaneManifest, me: PaneId) -> Option<TabPosition> {
+    manifest
+        .panes
+        .iter()
+        .find_map(|(tab, panes)| panes.iter().any(|pane| pane.id == me).then_some(*tab))
 }
 
 /// What the form is asking for, in the terms hocus asks for the same thing.
@@ -1627,6 +1788,128 @@ mod tests {
         assert_eq!(State::default().dialog.form().text(PROMPT), "");
     }
 
+    /// The prompt `n` on a todo fills in: parent context, open subtasks, instructions.
+    const TODO_PROMPT: &str = "Todo #2: Handle `quotes` and $(commands)\nKeep each argument intact\n\nParent context (for reference):\n- Improve the build\n\nOpen subtasks:\n- [ ] Cover multiline prompts\n  - [ ] Check newlines\n\nImplement the task, run relevant checks, and summarize the changes and anything still outstanding.";
+
+    /// Columns inside the narrowest modal: `modal_width` less the frame's two.
+    fn narrowest_inside() -> usize {
+        modal_width(80).parse::<usize>().unwrap() - 2
+    }
+
+    /// A prompt opened the way a todo opens it: cursor on the first column.
+    fn prefilled(prompt: &str) -> State {
+        let mut state = State::default();
+        state.fill_initial_prompt(&BTreeMap::from([(
+            INITIAL_PROMPT.to_owned(),
+            prompt.to_owned(),
+        )]));
+        state
+    }
+
+    fn status(state: &State, cols: usize) -> Option<String> {
+        state.status(cols).map(|text| text.content().to_owned())
+    }
+
+    #[test]
+    fn a_prompt_the_row_cannot_show_is_counted_on_the_status_row() {
+        let narrowest = narrowest_inside();
+        let state = prefilled(TODO_PROMPT);
+        let summary = status(&state, narrowest).unwrap();
+        assert_eq!(summary, "prompt: 11 lines, 288 chars");
+        assert!(
+            summary.chars().count() <= narrowest,
+            "{summary:?} does not fit {narrowest} columns"
+        );
+        // Line breaks are drawn as spaces, so even a prompt narrow enough for the row
+        // hides something.
+        assert_eq!(
+            status(&prefilled("fix\nthe parser"), 60).as_deref(),
+            Some("prompt: 2 lines, 14 chars")
+        );
+    }
+
+    #[test]
+    fn the_prompt_summary_fits_the_narrowest_modal() {
+        let narrowest = narrowest_inside();
+        // Far past any prompt a todo writes, and still inside the row.
+        let summary = prompt_summary(&"x\n".repeat(99_990));
+        assert_eq!(summary, "prompt: 99990 lines, 199980 chars");
+        assert!(summary.chars().count() <= narrowest);
+    }
+
+    #[test]
+    fn the_prompt_summary_goes_when_the_prompt_is_all_on_screen() {
+        let mut state = prefilled(TODO_PROMPT);
+        state.set_text(PROMPT, "");
+        assert_eq!(status(&state, narrowest_inside()), None);
+        let short = prefilled("fix the parser");
+        assert_eq!(status(&short, narrowest_inside()), None);
+        // And the fork modal, which has no prompt at all, never shows one.
+        let fork = State {
+            dialog: fork_dialog(),
+            ..Default::default()
+        };
+        assert_eq!(status(&fork, narrowest_inside()), None);
+    }
+
+    #[test]
+    fn an_error_or_a_note_takes_the_row_over_the_prompt_summary() {
+        let mut state = prefilled(TODO_PROMPT);
+        state.note = Some(NO_PANE_TO_FORK.to_owned());
+        assert_eq!(
+            status(&state, narrowest_inside()).as_deref(),
+            Some(NO_PANE_TO_FORK)
+        );
+        state.error = Some("branch and base are required".to_owned());
+        assert_eq!(
+            status(&state, narrowest_inside()).as_deref(),
+            Some("branch and base are required")
+        );
+        state.error = None;
+        state.note = None;
+        assert_eq!(
+            status(&state, narrowest_inside()).as_deref(),
+            Some("prompt: 11 lines, 288 chars")
+        );
+    }
+
+    /// `prompt_is_cut` works out the field's width rather than being told it, so this
+    /// draws the dialog and holds the two to the same answer at the modal's narrowest and
+    /// widest: 15 and 35 columns of text beside the label.
+    #[test]
+    fn the_prompt_summary_appears_when_the_row_cuts_the_prompt() {
+        // A drawn row's text is its bytes, comma-separated, after its colour indices.
+        fn drawn(state: &mut State, cols: usize, text: &str) -> bool {
+            let bytes: Vec<String> = format!("Prompt (optional): {text}")
+                .bytes()
+                .map(|byte| byte.to_string())
+                .collect();
+            let rows = state.dialog.height();
+            state
+                .dialog
+                .render_buffer(Rect::new(0, 0, cols, rows))
+                .output
+                .contains(&format!("${}\u{1b}\\", bytes.join(",")))
+        }
+        for (cols, field) in [(narrowest_inside(), 15), (58, 35)] {
+            // Opened on the first column, the field shows all of a prompt its own width.
+            let mut state = prefilled(&"x".repeat(field));
+            assert!(drawn(&mut state, cols, &"x".repeat(field)));
+            assert_eq!(status(&state, cols), None);
+            let mut state = prefilled(&"x".repeat(field + 1));
+            assert!(!drawn(&mut state, cols, &"x".repeat(field + 1)));
+            assert!(status(&state, cols).is_some());
+            // With the cursor after the end, one column goes to the cursor, and the
+            // first character scrolls off to make room.
+            state.set_text(PROMPT, &"x".repeat(field));
+            assert!(!drawn(&mut state, cols, &"x".repeat(field)));
+            assert!(status(&state, cols).is_some());
+            state.set_text(PROMPT, &"x".repeat(field - 1));
+            assert!(drawn(&mut state, cols, &"x".repeat(field - 1)));
+            assert_eq!(status(&state, cols), None);
+        }
+    }
+
     #[test]
     fn launch_options_follow_the_agent_and_default_to_its_configuration() {
         let mut state = State::default();
@@ -1806,8 +2089,8 @@ mod tests {
     #[test]
     fn the_help_line_fits_the_narrowest_modal() {
         // `modal_width` is half the display, so 80 columns is the narrowest
-        // terminal worth drawing this in.
-        let narrowest: usize = modal_width(80).parse().unwrap();
+        // terminal worth drawing this in - and the line is drawn inside the frame.
+        let narrowest = narrowest_inside();
         let mut state = State::default();
         let mut lines = vec![];
         for id in [
@@ -2382,6 +2665,55 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_or_fork_with_no_pane_opens_new_agent_and_says_why() {
+        assert!(matches!(
+            requested_job(None, true, false),
+            (Job::New, Some(NO_PANE_TO_DUPLICATE))
+        ));
+        assert!(matches!(
+            requested_job(None, false, true),
+            (Job::New, Some(NO_PANE_TO_FORK))
+        ));
+        // Duplicate wins a request for both, with or without a pane.
+        assert!(matches!(
+            requested_job(None, true, true),
+            (Job::New, Some(NO_PANE_TO_DUPLICATE))
+        ));
+        assert!(matches!(
+            requested_job(Some(7), true, true),
+            (Job::Duplicate { pane_id: 7 }, None)
+        ));
+        assert!(matches!(
+            requested_job(Some(7), false, true),
+            (
+                Job::Fork {
+                    pane_id: 7,
+                    source: ForkSource::Waiting
+                },
+                None
+            )
+        ));
+        // A plain New agent, with or without a pane, has nothing to explain.
+        for caller in [None, Some(7)] {
+            assert!(matches!(
+                requested_job(caller, false, false),
+                (Job::New, None)
+            ));
+        }
+    }
+
+    #[test]
+    fn the_new_agent_fallback_notes_fit_the_narrowest_modal() {
+        let narrowest = narrowest_inside();
+        for note in [NO_PANE_TO_DUPLICATE, NO_PANE_TO_FORK, NOT_AN_AGENT] {
+            assert!(
+                note.chars().count() <= narrowest,
+                "{note:?} does not fit {narrowest} columns"
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_fallback_keeps_its_source_until_the_picker_finishes() {
         let source = PaneId::Terminal(TerminalId::new(7));
         let mut state = State {
@@ -2405,6 +2737,8 @@ mod tests {
             false,
         ));
         assert!(matches!(state.job, Job::New));
+        // The form it falls back to says why it is not a duplicate.
+        assert_eq!(state.note.as_deref(), Some(NOT_AN_AGENT));
         assert!(state.workflow_focus.is_none());
         state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(8))));
         assert!(!state.workflow_result_pending);
@@ -2704,5 +3038,55 @@ mod tests {
             ..pane
         };
         assert!(duplicate_command(&ordinary_pane, &BTreeMap::new()).is_none());
+    }
+
+    /// The hide goes to every panel, so it says which tab the launch was on: the panel on
+    /// another client's tab is not over the new agent, and leaves itself up.
+    #[test]
+    fn the_hide_names_the_modals_tab() {
+        let me = PaneId::Plugin(zellij_tile::prelude::PluginId::new(12));
+        let two_tabs = |modal_tab: usize| PaneManifest {
+            panes: std::collections::HashMap::from([
+                (
+                    TabPosition::new(modal_tab),
+                    vec![PaneInfo {
+                        id: me,
+                        is_floating: true,
+                        ..Default::default()
+                    }],
+                ),
+                (
+                    TabPosition::new(1 - modal_tab),
+                    vec![PaneInfo {
+                        id: PaneId::Terminal(TerminalId::new(3)),
+                        ..Default::default()
+                    }],
+                ),
+            ]),
+        };
+        assert_eq!(tab_of(&two_tabs(1), me), Some(TabPosition::new(1)));
+        assert_eq!(tab_of(&two_tabs(0), me), Some(TabPosition::new(0)));
+        assert_eq!(tab_of(&PaneManifest::default(), me), None);
+
+        // Every manifest moves it, and one without the modal keeps the last one known.
+        let mut state = State {
+            plugin_id: zellij_tile::prelude::PluginId::new(12),
+            ..Default::default()
+        };
+        state.update(Event::PaneUpdate(two_tabs(1)));
+        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
+        state.update(Event::PaneUpdate(PaneManifest::default()));
+        assert_eq!(state.own_tab, Some(TabPosition::new(1)));
+
+        let hide = panel_hide(Some(TabPosition::new(2)));
+        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
+        assert_eq!(
+            hide.message_args.get(wire::PANEL_TAB).map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(hide.plugin_url, None, "a hide launches nobody");
+        let hide = panel_hide(None);
+        assert_eq!(hide.message_name, wire::AGENT_STRIP_HIDE);
+        assert!(hide.message_args.is_empty());
     }
 }

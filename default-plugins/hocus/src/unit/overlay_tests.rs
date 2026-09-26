@@ -410,3 +410,724 @@ fn nothing_is_followed_until_we_know_where_we_are() {
         "and a client heard from for the first time is not known to have been anywhere"
     );
 }
+
+// -- the keyboard leaving the panel -------------------------------------------
+
+/// A tiled pane on the panel's tab, the layer under the overlay.
+fn tiled(id: u32, is_focused: bool) -> PaneInfo {
+    PaneInfo {
+        id: PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)),
+        is_floating: false,
+        is_focused,
+        ..Default::default()
+    }
+}
+
+/// A placed panel whose conversation half has the keyboard, as the host last reported it.
+fn panel_with_the_keys() -> State {
+    let mut state = placed_state();
+    state.on_panes(manifest(
+        0,
+        vec![focused_pane(7), pane(9, false), tiled(3, true)],
+    ));
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(0), true)));
+    state
+}
+
+/// A click on the pane under the panel, Alt h/j/k/l, or a focus by id: the host takes the
+/// keyboard off the Dismissible panel, and the panel goes, as Esc would put it away. Left up it
+/// would cover the pane that now has the keys while still marking itself as having them.
+#[test]
+fn a_lower_layer_taking_the_keyboard_hides_the_panel() {
+    let mut state = panel_with_the_keys();
+    state.visibility_calls.clear();
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+
+    assert!(
+        state.on_panes(manifest(
+            0,
+            vec![pane(7, false), pane(9, false), tiled(3, true)]
+        )),
+        "the hide is drawn"
+    );
+
+    assert!(state.hidden);
+    assert_eq!(
+        state.visibility_calls,
+        [(PaneId::Plugin(PluginId::new(7)), false)]
+    );
+    // And the suppressed manifest the hide causes is not a second one.
+    state.visibility_calls.clear();
+    assert!(!state.on_panes(manifest(
+        0,
+        vec![pane(7, true), pane(9, true), tiled(3, true)]
+    )));
+    assert!(state.visibility_calls.is_empty());
+}
+
+/// From the list half as much as from the conversation: the panel is one thing.
+#[test]
+fn leaving_from_the_list_half_hides_the_panel_too() {
+    let mut state = placed_state();
+    let list = PaneInfo {
+        is_focused: true,
+        ..pane(9, false)
+    };
+    state.on_panes(manifest(0, vec![pane(7, false), list, tiled(3, false)]));
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+
+    assert!(state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true)]
+    )));
+    assert!(state.hidden);
+}
+
+/// Todos `n`, or `Ctrl e n`, opens a modal over the panel, and closing it hands the keyboard
+/// back to the panel - which has to still be there to take it.
+#[test]
+fn a_modal_over_the_panel_does_not_hide_it() {
+    let mut state = panel_with_the_keys();
+    let modal = PaneInfo {
+        id: PaneId::Plugin(PluginId::new(20)),
+        is_floating: true,
+        is_focused: true,
+        ..Default::default()
+    };
+    state.keyboard_holder_for_test = Some(modal.id);
+
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true), modal],
+    ));
+
+    assert!(!state.hidden);
+}
+
+/// A floating pane that took the keys from the panel gives them to the tiled layer when it
+/// closes, not back to the panel. Its time holding them keeps the leave armed, so the tiled
+/// pane that has them next puts the panel away as a click on it would have.
+#[test]
+fn a_floating_pane_taking_the_keys_keeps_the_leave_armed() {
+    let mut state = panel_with_the_keys();
+    state.visibility_calls.clear();
+    let floating = PaneInfo {
+        is_floating: true,
+        ..tiled(5, true)
+    };
+    state.keyboard_holder_for_test = Some(floating.id);
+
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true), floating],
+    ));
+    assert!(
+        !state.hidden,
+        "a floating pane is not the user done with the panel"
+    );
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(0), true)));
+
+    // It closes, and the keys fall to the tiled pane under it.
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+    assert!(
+        state.on_panes(manifest(
+            0,
+            vec![pane(7, false), pane(9, false), tiled(3, true)]
+        )),
+        "the hide is drawn"
+    );
+    assert!(state.hidden);
+    assert_eq!(
+        state.visibility_calls,
+        [(PaneId::Plugin(PluginId::new(7)), false)]
+    );
+}
+
+/// Closing a modal hands the keys back to the panel, which is the panel focused again rather
+/// than a leave - and the next tiled leave is one like any other.
+#[test]
+fn a_modal_handing_the_keys_back_does_not_hide_the_panel() {
+    let mut state = panel_with_the_keys();
+    let modal = PaneInfo {
+        id: PaneId::Plugin(PluginId::new(20)),
+        is_floating: true,
+        is_focused: true,
+        ..Default::default()
+    };
+    state.keyboard_holder_for_test = Some(modal.id);
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true), modal],
+    ));
+
+    state.keyboard_holder_for_test = Some(PaneId::Plugin(PluginId::new(7)));
+    state.on_panes(manifest(
+        0,
+        vec![focused_pane(7), pane(9, false), tiled(3, true)],
+    ));
+    assert!(!state.hidden);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(0), true)));
+
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+    assert!(state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true)]
+    )));
+    assert!(state.hidden);
+}
+
+/// The New agent modal's hide has no destination, so every panel hears it. The one on the tab
+/// the modal was on goes; one on another client's tab is not over the new agent, and stays. A
+/// hide that names no tab - the list's Esc - is for this panel wherever it is.
+#[test]
+fn a_launch_on_another_clients_tab_leaves_the_panel_up() {
+    let hide = |tab: Option<&str>| PipeMessage {
+        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(55)),
+        name: hocus_proto::wire::AGENT_STRIP_HIDE.to_owned(),
+        payload: None,
+        args: tab
+            .map(|tab| BTreeMap::from([(hocus_proto::wire::PANEL_TAB.to_owned(), tab.to_owned())]))
+            .unwrap_or_default(),
+        is_private: true,
+        pane_id: None,
+    };
+
+    let mut state = placed_state();
+    state.pipe(hide(Some("1")));
+    assert!(!state.hidden, "a launch over tab 1 is not over this panel");
+    assert!(state.visibility_calls.is_empty());
+
+    state.pipe(hide(Some("0")));
+    assert!(state.hidden, "one over its own tab puts it away");
+    assert_eq!(
+        state.visibility_calls,
+        [(PaneId::Plugin(PluginId::new(7)), false)]
+    );
+
+    let mut state = placed_state();
+    state.pipe(hide(None));
+    assert!(state.hidden, "and a hide naming no tab always does");
+}
+
+/// A leave the host names no holder for is not one to wait on: it disarms, as it always did.
+#[test]
+fn a_leave_to_nobody_does_not_stay_armed() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = None;
+
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true)],
+    ));
+    assert!(!state.hidden);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(0), false)));
+}
+
+/// Tab across the seam moves the keyboard from one half to the other without it leaving.
+#[test]
+fn the_ring_crossing_to_the_list_is_not_a_leave() {
+    let mut state = panel_with_the_keys();
+    // Were the host asked, it would name the pane under the panel: the halves' own flags are
+    // what must answer first.
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+    let list = PaneInfo {
+        is_focused: true,
+        ..pane(9, false)
+    };
+
+    state.on_panes(manifest(0, vec![pane(7, false), list, tiled(3, true)]));
+
+    assert!(!state.hidden);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(0), true)));
+}
+
+/// A visible panel follows the user's tab switch, and lands on the new tab over a tiled pane
+/// that has that tab's keyboard. That is the panel coming along, not the user leaving it.
+#[test]
+fn following_a_tab_switch_is_not_a_leave() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+
+    assert!(!state.hidden);
+}
+
+/// A panel that followed a tab switch lands without the keys, but still goes when the
+/// keyboard moves on from the pane that had them there, as it would have on the tab it came
+/// from. That pane keeping them - a retitle, any manifest after the arrival - is no leave.
+#[test]
+fn a_panel_that_followed_a_tab_switch_goes_when_the_keyboard_moves_on_its_new_tab() {
+    let mut state = panel_with_the_keys();
+    state.visibility_calls.clear();
+    let tab = |panes| manifest(1, panes);
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+    state.on_panes(tab(vec![
+        pane(7, false),
+        pane(9, false),
+        tiled(4, true),
+        tiled(5, false),
+    ]));
+    assert!(!state.hidden, "arriving is not a leave");
+    assert_eq!(state.followed_holder, Some(tiled(4, true).id));
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), true)));
+
+    state.on_panes(tab(vec![
+        pane(7, false),
+        pane(9, false),
+        tiled(4, true),
+        tiled(5, false),
+    ]));
+    assert!(!state.hidden, "the pane that had the keys keeping them");
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), true)));
+
+    state.keyboard_holder_for_test = Some(tiled(5, true).id);
+    assert!(
+        state.on_panes(tab(vec![
+            pane(7, false),
+            pane(9, false),
+            tiled(4, false),
+            tiled(5, true),
+        ])),
+        "the hide is drawn"
+    );
+    assert!(
+        state.hidden,
+        "a tiled pane taking the keys on the new tab puts the panel away"
+    );
+    assert_eq!(
+        state.visibility_calls,
+        [(PaneId::Plugin(PluginId::new(7)), false)]
+    );
+    assert_eq!(state.followed_holder, None);
+}
+
+/// Focused after following, the panel is armed as it always is, and the pane it followed onto
+/// is a pane like any other: the keys going back to it are a leave.
+#[test]
+fn a_followed_panel_focused_again_goes_like_any_other() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    state.on_panes(manifest(
+        1,
+        vec![focused_pane(7), pane(9, false), tiled(4, true)],
+    ));
+    assert_eq!(state.followed_holder, None);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), true)));
+
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    assert!(state.hidden, "a click on the pane it followed onto");
+}
+
+/// A second switch before the panel is touched: the manifests in flight name a holder on the
+/// tab it is about to follow to, which keeps it armed, and it arrives there armed again with
+/// that tab's pane named. With the host naming nobody on arrival, there is no pane to wait on,
+/// and it stays up unarmed as it used to.
+#[test]
+fn a_followed_panel_stays_armed_through_another_switch() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = Some(tiled(4, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+
+    // The keys are on tab 2 already; the panel is still on tab 1.
+    state.keyboard_holder_for_test = Some(tiled(6, true).id);
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    assert!(!state.hidden);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), true)));
+
+    state.on_panes(manifest(
+        2,
+        vec![
+            pane(7, false),
+            pane(9, false),
+            tiled(6, true),
+            tiled(8, false),
+        ],
+    ));
+    assert!(!state.hidden);
+    assert_eq!(state.followed_holder, Some(tiled(6, true).id));
+    state.keyboard_holder_for_test = Some(tiled(8, true).id);
+    state.on_panes(manifest(
+        2,
+        vec![
+            pane(7, false),
+            pane(9, false),
+            tiled(6, false),
+            tiled(8, true),
+        ],
+    ));
+    assert!(state.hidden);
+
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_for_test = None;
+    state.on_panes(manifest(
+        1,
+        vec![pane(7, false), pane(9, false), tiled(4, true)],
+    ));
+    assert!(!state.hidden);
+    assert_eq!(state.followed_holder, None);
+    assert_eq!(state.panel_focus_seen, Some((TabPosition::new(1), false)));
+}
+
+/// The host is asked who has the keys only while a leave is armed: not while the panel has
+/// them, on each manifest while a floating pane holds them, and not once the panel is away.
+#[test]
+fn the_host_is_asked_for_the_keyboard_only_while_a_leave_is_armed() {
+    let mut state = panel_with_the_keys();
+    state.keyboard_holder_calls.set(0);
+    state.on_panes(manifest(
+        0,
+        vec![focused_pane(7), pane(9, false), tiled(3, true)],
+    ));
+    assert_eq!(state.keyboard_holder_calls.get(), 0, "the panel has them");
+
+    let floating = PaneInfo {
+        is_floating: true,
+        ..tiled(5, true)
+    };
+    state.keyboard_holder_for_test = Some(floating.id);
+    let with_floating = || {
+        manifest(
+            0,
+            vec![
+                pane(7, false),
+                pane(9, false),
+                tiled(3, true),
+                floating.clone(),
+            ],
+        )
+    };
+    state.on_panes(with_floating());
+    assert_eq!(state.keyboard_holder_calls.get(), 1);
+    state.on_panes(with_floating());
+    assert_eq!(
+        state.keyboard_holder_calls.get(),
+        2,
+        "asked again while the floating pane holds them"
+    );
+
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true)],
+    ));
+    assert!(state.hidden);
+    assert_eq!(state.keyboard_holder_calls.get(), 3);
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, true), pane(9, true), tiled(3, true)],
+    ));
+    assert_eq!(
+        state.keyboard_holder_calls.get(),
+        3,
+        "nothing to ask once away"
+    );
+}
+
+/// A focus the panel asked for itself has manifests in flight from before it, which still say
+/// both halves are unfocused. The discount that keeps them from resetting the stop keeps them
+/// from hiding the panel too.
+#[test]
+fn a_manifest_from_before_our_own_focus_is_not_a_leave() {
+    let mut state = panel_with_the_keys();
+    assert!(state.pipe(yielded(hocus_proto::wire::STOP_TABS)));
+    state.keyboard_holder_for_test = Some(tiled(3, true).id);
+
+    state.on_panes(manifest(
+        0,
+        vec![pane(7, false), pane(9, false), tiled(3, true)],
+    ));
+
+    assert!(!state.hidden);
+}
+
+/// The chat tab bar's highlight and its help line are drawn from the stop, so a leave that
+/// takes the stop with it is a redraw - and a manifest that changes nothing drawn is not.
+#[test]
+fn on_panes_redraws_when_the_stop_resets() {
+    let mut state = placed_state();
+    assert!(!state.on_panes(manifest(0, vec![focused_pane(7)])));
+    state.chat_tab_focus = Some(state.chat_tab);
+
+    assert!(state.on_panes(manifest(0, vec![pane(7, false)])));
+    assert_eq!(state.chat_tab_focus, None);
+    assert!(
+        !state.hidden,
+        "no host to name a holder: the panel stays up"
+    );
+
+    assert!(!state.on_panes(manifest(0, vec![pane(7, false)])));
+}
+
+// -- Ctrl e o -----------------------------------------------------------------
+
+fn keybind(name: &str) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Keybind,
+        name: name.to_owned(),
+        payload: None,
+        args: BTreeMap::new(),
+        is_private: false,
+        pane_id: None,
+    }
+}
+
+/// The agent-mode binding reaches hocus from the keymap, not from the list, so it moves the
+/// panel whichever half is up - here a conversation with no list beside it.
+#[test]
+fn the_keybinding_moves_the_panel_without_a_list() {
+    let mut state = placed_state();
+    state.agents_plugin = None;
+    state.panel.placed_corner = Some(Corner::BottomLeft);
+
+    assert!(!state.pipe(keybind(hocus_proto::wire::AGENT_STRIP_REPOSITION)));
+
+    assert_eq!(state.panel.placed_corner, Some(Corner::TopLeft));
+    assert!(
+        state.last_placement.as_ref().unwrap().1,
+        "at the size it has"
+    );
+}
+
+/// A panel that is put away stays put, and a hocus in the user's own layout owns no panel.
+#[test]
+fn the_keybinding_moves_nothing_that_is_not_a_visible_panel() {
+    let mut state = placed_state();
+    state.hidden = true;
+    state.pipe(keybind(hocus_proto::wire::AGENT_STRIP_REPOSITION));
+    assert!(state.last_placement.is_none());
+
+    let mut state = placed_state();
+    state.own_is_floating = Some(false);
+    state.pipe(keybind(hocus_proto::wire::AGENT_STRIP_REPOSITION));
+    assert!(state.last_placement.is_none());
+}
+
+/// The list's own request still needs the list to be half of this panel.
+#[test]
+fn the_lists_request_still_needs_the_list_here() {
+    let mut state = placed_state();
+    state.agents_tab_index = Some(TabPosition::new(1));
+    let mut request = keybind(hocus_proto::wire::AGENT_STRIP_REPOSITION);
+    request.source = PipeSource::Plugin(PluginId::new(9));
+
+    state.pipe(request);
+
+    assert!(state.last_placement.is_none());
+}
+
+// -- the split ----------------------------------------------------------------
+
+/// The configured split `value` as the host would draw it, for a panel on a `rows` x `cols`
+/// screen - with no host floor, so what is measured is hocus's own clamp.
+fn configured_halves(value: &str, rows: usize, cols: usize) -> (usize, usize) {
+    let mut state = placed_state();
+    state.multipane = None;
+    state.surface_rows = rows;
+    state.surface_cols = cols;
+    state.kdl = config(&[("split", value)]);
+    let panel = state.panel_rect().unwrap();
+    let PluginCommand::CreateMultipane(request) = state.placement_command(panel, false).unwrap()
+    else {
+        panic!("create")
+    };
+    let outer = zellij_types::pane_size::PaneGeom::from(&Size {
+        rows: panel.rows,
+        cols: panel.cols,
+    });
+    let ([list, conversation], _) = request.split.geometry(outer, true, 0);
+    (list.cols.as_usize(), conversation.cols.as_usize())
+}
+
+/// "0" and "100%" used to leave one half a single column wide, and "40" on a small screen a
+/// ten-column conversation. Each half keeps the conversation's minimum while there is room.
+#[test]
+fn a_configured_split_leaves_both_halves_room() {
+    for (value, rows, cols) in [
+        ("0", 40, 120),
+        ("0%", 40, 120),
+        ("100%", 40, 120),
+        ("200%", 40, 120),
+        ("40", 40, 80),
+    ] {
+        let (list, conversation) = configured_halves(value, rows, cols);
+        let floor = ui::MIN_COLS.min((list + conversation) / 2);
+        assert!(
+            list >= floor && conversation >= floor,
+            "split {value:?} on {cols} columns gave {list} + {conversation}"
+        );
+    }
+    // Inside the bounds a value is what it says.
+    assert_eq!(configured_halves("30", 50, 200).0, 30);
+}
+
+#[test]
+fn geometry_warnings_name_each_unparsable_value() {
+    for (key, value) in [
+        ("width", "abc"),
+        ("width", "60.5%"),
+        ("height", "-10"),
+        ("split", "0.4"),
+        ("pad", "5%"),
+        ("width", "+"),
+    ] {
+        let warnings = geometry_warnings(&config(&[(key, value)]));
+        assert_eq!(warnings.len(), 1, "{key} {value}");
+        assert!(warnings[0].starts_with(&format!("{key} \"{value}\" is not ")));
+        assert!(warnings[0].contains("; using "), "{}", warnings[0]);
+    }
+    assert!(geometry_warnings(&config(&[("split", "0.4")]))[0].ends_with("using 50%"));
+    assert!(geometry_warnings(&config(&[("pad", "5%")]))[0].ends_with("using 3"));
+    // Clamped, not unreadable - and a blank key is the default. A '+' signs the number it
+    // leads, as `usize::from_str` reads it.
+    for (key, value) in [
+        ("width", "0"),
+        ("width", "200%"),
+        ("height", "60 %"),
+        ("split", "40"),
+        ("split", ""),
+        ("pad", "20"),
+        ("width", "+40"),
+        ("split", "+40%"),
+    ] {
+        assert!(
+            geometry_warnings(&config(&[(key, value)])).is_empty(),
+            "{key} {value}"
+        );
+    }
+}
+
+/// The host repeats the event for every save once the config has changed, so the same
+/// mistake is told once; a new one is told again.
+#[test]
+fn a_bad_panel_size_is_reported_once_per_mistake() {
+    let mut state = placed_state();
+    let changed = |state: &mut State, pairs: &[(&str, &str)]| {
+        state.handle(Event::PluginConfigurationChanged(config(pairs)))
+    };
+    let notices = |state: &State| {
+        state
+            .messages
+            .iter()
+            .filter(|message| message.content.contains("cannot read a panel size"))
+            .count()
+    };
+
+    changed(&mut state, &[("width", "wide")]);
+    changed(&mut state, &[("width", "wide")]);
+    changed(&mut state, &[("width", "wide"), ("model", "other")]);
+    assert_eq!(notices(&state), 1);
+    assert!(state
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("width \"wide\""));
+
+    changed(&mut state, &[("width", "80%")]);
+    changed(&mut state, &[("width", "wide")]);
+    assert_eq!(notices(&state), 2, "fixed, then broken again");
+}
+
+/// An edit to `split` is the user choosing a divider, and moves it. A save that changes
+/// anything else must not, or it would undo every drag.
+#[test]
+fn a_split_edit_moves_the_divider_and_an_unrelated_edit_leaves_it() {
+    let mut state = placed_state();
+
+    state.handle(Event::PluginConfigurationChanged(config(&[(
+        "split", "25%",
+    )])));
+    let moved = state.last_split.take().expect("the divider moved");
+    assert_eq!(moved.direction, MultipaneDirection::LeftRight);
+    assert!((2400..=2500).contains(&moved.ratio), "{}", moved.ratio);
+
+    state.handle(Event::PluginConfigurationChanged(config(&[(
+        "split", "25%",
+    )])));
+    state.handle(Event::PluginConfigurationChanged(config(&[
+        ("split", "25%"),
+        ("model", "other"),
+    ])));
+    assert_eq!(state.last_split, None);
+
+    // And the placement the edit also sends still carries no split of its own.
+    let PluginCommand::UpdateMultipane(request) = state
+        .placement_command(state.panel_rect().unwrap(), false)
+        .unwrap()
+    else {
+        panic!("update")
+    };
+    assert_eq!(request.split, None);
+}
+
+/// `/split` is the keyboard's divider: it moves the split and nothing else, and says what the
+/// two halves are now.
+#[test]
+fn slash_split_moves_only_the_divider() {
+    let mut state = placed_state();
+
+    assert!(state.run_manual("/split 25%"));
+
+    assert_eq!(state.last_split.map(|split| split.ratio), Some(2500));
+    assert!(state.last_placement.is_none(), "no placement rides along");
+    let notice = &state.messages.last().unwrap().content;
+    assert!(
+        notice.starts_with("split: list 29 · conversation 88"),
+        "{notice}"
+    );
+}
+
+/// A column count is clamped like the configured one, and a bare `/split` only reports.
+#[test]
+fn slash_split_keeps_both_halves_room_and_a_bare_one_reports() {
+    let mut state = placed_state();
+
+    state.run_manual("/split 110");
+    let notice = &state.messages.last().unwrap().content;
+    assert!(notice.ends_with("conversation 24"), "{notice}");
+
+    state.last_split = None;
+    state.run_manual("/split");
+    assert_eq!(state.last_split, None);
+    let notice = &state.messages.last().unwrap().content;
+    assert!(notice.contains("/split 40 or /split 35%"), "{notice}");
+}
+
+#[test]
+fn a_malformed_split_is_refused_and_sends_nothing() {
+    for line in ["/split 0.4", "/split wide", "/split 40%%"] {
+        let mut state = placed_state();
+        assert!(state.run_manual(line));
+        assert_eq!(state.last_split, None, "{line}");
+        let error = state.messages.last().unwrap();
+        assert_eq!(error.role, crate::message::Role::Error, "{line}");
+        assert!(error.content.contains("/split 40"), "{}", error.content);
+    }
+    let mut state = placed_state();
+    state.own_is_floating = Some(false);
+    state.run_manual("/split 40");
+    assert_eq!(state.last_split, None);
+    assert!(state
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .contains("not the panel"));
+}

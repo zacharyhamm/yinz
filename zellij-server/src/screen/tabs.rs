@@ -480,8 +480,10 @@ impl Screen {
     /// action - the lowest surviving tab id, which is the rule
     /// [`Screen::move_suppressed_panes_from_closed_tab`] uses for the same situation.
     ///
-    /// They arrive **unfocused**, exactly as they do when hocus carries them across a tab switch
-    /// itself: a tab closing is not a request to type into hocus. Modals never reach here - see
+    /// A panel that had a client's keys **keeps them**: `close_tab_by_id` extracts it while that
+    /// client is still on the closing tab, so the keyboard goes where the user goes. Only a panel
+    /// carried after its client switched tabs - hocus following a tab switch itself - arrives
+    /// unfocused (`OverlayPanes::take_container`). Modals never reach here - see
     /// [`Tab::extract_overlay_panes`] for why they close with their tab instead.
     fn move_overlay_panes_from_closed_tab(
         &mut self,

@@ -147,6 +147,7 @@ fn create(env: &PluginEnv, request: CreateMultipane) -> Result<Option<MultipaneI
                 placement: request.placement,
                 split: request.split,
                 focus: request.focus,
+                min_cells: request.min_cells,
             },
         )
     })();

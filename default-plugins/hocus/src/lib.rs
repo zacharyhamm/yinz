@@ -133,42 +133,84 @@ const MAX_QUEUED_ASKS: usize = 8;
 
 /// Slash commands that drive the plugin itself rather than a tool. Typed and
 /// completed like tools, but never offered to the model.
-const LOCAL_COMMANDS: [&str; 9] = [
+const LOCAL_COMMANDS: [&str; 10] = [
     "help",
     "history",
     "models",
     "stop_jobs",
     "keys",
+    "split",
     "plan",
     "execute",
     "clear",
     "skills",
 ];
 
-/// Full keybinding reference for `/keys`. The chat view has no persistent
-/// help line, so this is the one place all of these are written down.
+/// Full keybinding reference for `/keys`: the conversation, the agent list with its four tabs,
+/// and the panel the two make together.
+///
+/// Everything else that names keys names only some of them: the conversation's help line the
+/// ones for the state it is in, the list's footer what fits on its row, and the list's `?`
+/// sheet the tab that is showing. This is the one place they are all written down together, so
+/// it has to follow whatever those say.
 const KEYS_HELP: &str = "\
+Every key the panel answers: this conversation on the right,
+the agent list on the left. The line under the box shows the
+keys for the moment; in the list, ? shows every key that the
+tab showing answers.
+
+The panel:
+Ctrl+e a      bring it up with the keys in the agent list, on
+              the tab you left it on
+Ctrl+e c      bring it up with the keys in this conversation
+Ctrl+e o      move it one corner clockwise - bottom left, top
+              left, top right, bottom right, and round again.
+              Ctrl+o does the same, in Locked mode only
+Tab, Shift+Tab   walk the ring of five stops: the panel's tab
+              bar, the tab's list, its second half (the history
+              on Agents, the details on VMs), this chat's tab
+              bar, the box you type in - and round again
+Alt+h, Alt+l  cross between the list and the conversation
+Esc           step back first - out of an event, a question, a
+              search or a view, a tab bar, the key sheet - and
+              then hide the panel. Nothing is lost: Ctrl+e a or
+              Ctrl+e c brings all of it back
+click elsewhere  a click on a pane under the panel, or moving
+              the keys to one, puts the panel away as Esc
+              does. Once it has followed you to another tab
+              without the keys, only moving them on from the
+              pane that has them does: a click on that pane
+              changes nothing
+Ctrl+r        in the list, refresh the tab that is showing
+
+Panel size:
+drag the divider   share the width between the halves
+/split 40, /split 35%   the same from the keyboard, in columns
+              or as a percentage; /split alone shows the widths
+Ctrl+n, arrows   resize the whole panel (Resize mode); a Ctrl +
+              drag of its border does the same
+width, height, split, pad   the size it starts at, set in the
+              hocus block of config.kdl - 60%, 66%, 50% and 3
+
+In the conversation:
 Ctrl+l        new chat, in a new tab (also /clear)
-Ctrl+o        move the panel one corner clockwise - bottom left, top left,
-              top right, bottom right, and round again
-Tab, Shift+Tab   walk the panel's ring of stops: the agent list, its history
-              half, the chat tab bar, the box you type in - and round again
 Up / Down     previous / next message in history
-Tab           complete a /command or @agent, when there is something half
-              typed to complete. A box with a draft in it keeps Tab for that;
-              Esc lets go of the box so Tab walks the ring again, and
-              Shift+Tab walks it either way
+Tab           complete a /command or @agent, when there is
+              something half typed to complete. A box with a
+              draft in it keeps Tab for that; Esc lets go of the
+              box so Tab walks the ring again, and Shift+Tab
+              walks it either way
 Alt+Enter, Shift+Enter   insert a newline
 PageUp / PageDown        scroll the transcript
-Esc           let go of a box you have typed in, keeping the draft; from an
-              empty box, or one already let go of, hide the panel - the agent
-              list goes with it, and Ctrl+e c or Ctrl+e a brings it all back
-Ctrl+c        cancel a stream or tool, keep refining a
-              plan, or clear the prompt
+Esc           let go of a box you have typed in, keeping the
+              draft; from an empty box, or one already let go
+              of, hide the panel
+Ctrl+c        cancel a stream or tool, keep refining a plan, or
+              clear the prompt
 y / n         run the pending tool call, or decline it and stop
 n             keep refining a plan hocus has written
-/plan <text>  plan before acting: read-only tools until
-              you /execute the plan hocus writes
+/plan <text>  plan before acting: read-only tools until you
+              /execute the plan hocus writes
 /plan off     leave planning mode without carrying the plan
               out; the plan stays in the transcript
 /execute      carry out that plan; trailing text amends it
@@ -191,22 +233,114 @@ Enter         send what is in the box
 type anything    take the box back and carry on writing
 Esc           hide the panel
 
-With the tab bar focused:
+With this chat's tab bar focused:
 Left / Right  choose
-Tab, Shift+Tab   leave the bar - the box below, or the agent list
 Enter         switch to that chat
 x             close it
 Ctrl+l        new chat
-Esc           back to the prompt
+Tab, Esc      back to the box
+Shift+Tab     back to the list's second half, or to the list
 
-In the agent list (the panel's other half):
-Tab, Shift+Tab   walk the ring on into the conversation
-Up / Down     choose an agent, from either of the list's halves
-j / k         step by whatever the half you are in is made of
-Enter         focus that agent's pane, or open the event under the cursor
-s             ask for a summary of the agent under the cursor
-Ctrl+o        move the panel     Ctrl+r  re-read the branch
-Esc           hide the panel, the conversation with it";
+The panel's tab bar (Agents, Todos, VMs, Swamp):
+Left / Right  switch tab; a click on a tab does the same
+Enter, Down, j, Tab, Esc   into the tab's list
+Shift+Tab     to this conversation's box
+other keys    go to the list, and do their job there
+
+In the agent list (Agents):
+Up / Down, j / k   choose an agent or a run; in the history
+              half, the next or previous event
+Enter         go to the agent, and the panel goes; on a run,
+              into its history; in the history, read the event;
+              on load older runs…, load them
+s             summarise the agent or the run now
+p             the agent's previous runs
+w             only the agents waiting for you; again for all
+/             search every run, or edit the search you have;
+              Enter searches, Ctrl+u clears, Esc goes back, and
+              Tab leaves it for the ring - / brings back what
+              you typed
+c             leave a search, previous runs or waiting view
+r             resume the archived run, after y/n; the panel goes
+              once it has started
+o             in the history half, open the file the event
+              names, focused, and put the panel away
+D / F         duplicate / fork the agent under the cursor, in
+              New agent
+PageUp / PageDown   scroll the history, from either half
+wheel         scroll the half under the pointer
+click         select a row, or point at an event; a second
+              click goes to the agent, or reads the event
+Ctrl+r        look at the agents' branches again
+?             the key sheet: every key the tab answers now.
+              Esc, ? or q shuts it
+Esc           leave a search or a view, then hide the panel
+  !           waits for you. On a tab name - VMs!, Swamp! -
+              that tab has an error to read
+  ◆           the agent reports its own state, through hooks
+  >           the selected agent, and you are in its pane
+  ·           the selected agent, while you are in another pane
+  ▸           on a divider: the keys are in the half below
+
+Reading an event (Enter in the history half):
+j / k         the next or previous fold, or a line where there
+              are none; a click points at a fold
+Enter         open or shut the fold; so does a second click
+Up / Down     scroll a line
+PageUp / PageDown   scroll a page
+y             copy the fold, or the whole event
+o             open the file the fold names
+v             show the event as it arrived; again for the folds
+Esc           back to the history
+
+In Todos:
+Space         complete the todo, or reopen it; asks y/n first
+              when open subtasks would be completed with it
+Enter, e      edit it
+a / A         add a todo / a subtask under the selected one
+d             delete it, after y/n
+n             start an agent on it in New agent; the panel
+              stays up, and Esc there comes back here
+m             move it under another todo; t puts it at the top
+p             pick the project, named above the list
+v             show or hide done todos
+Ctrl+r        reload
+In the box, Enter saves, Alt+Enter starts a new line and Esc
+keeps what you typed as a draft for a, A or e to bring back.
+Ctrl+w deletes the word before the caret and Ctrl+u back to
+the start of the line; Ctrl+z and Ctrl+y undo and redo.
+Tab and Shift+Tab walk the ring from the box, a move or a
+project pick, each kept for the keys to come back to; a y/n
+question is dropped first.
+
+In VMs:
+Up / Down, j / k   choose a VM, or a pane in its details
+Enter         the VM's details and panes; on a pane, go to it
+x             close the VM's lease and its panes, after y/n
+s             merge its guest changes into the host worktree,
+              after y/n
+c             count the guest paths changed since the last sync
+PageUp / PageDown   scroll the details
+Ctrl+r        refresh the list now
+Esc           from the details, back to the list
+
+In Swamp:
+Enter         open the issue, as a click does; Esc, or a click
+              on the top row, goes back
+/             search titles and bodies. In the box, Enter
+              searches (an empty one clears the search), Ctrl+u
+              erases up to the caret, Ctrl+z undoes, Esc
+              cancels, and Tab leaves it for the ring, keeping
+              what you typed for the next /
+s, t, f, u    filter by status, type, source or assignee. In
+              the filter, type to narrow the choices, Enter
+              applies, Tab or Esc cancels
+o             sort by when issues were updated or created
+c             clear the search and every filter
+Esc           clear a search or filter, then hide the panel
+a             triage the issue in hocus, after y/n
+Ctrl+r, r     reload the issues; the first time, r also allows
+              the permission that Swamp needs";
 
 /// Context key carrying a chat request's stream id back on its `WebRequestResult`,
 /// so the response can be matched to the chat that asked.
@@ -748,6 +882,45 @@ pub struct State {
     /// released box, the next time they came back. So `on_panes` resets both when this goes
     /// false. `None` until the first manifest, which is not "unfocused": nothing to reset yet.
     pub(crate) own_is_focused: Option<bool>,
+    /// Whether *either* half had the keyboard, off the last manifest, and the tab it was on.
+    ///
+    /// The panel is one thing, so a Tab across the seam is not a leave; only both halves losing
+    /// the keys is. When that happens because a tiled pane in the same tab took them - a click
+    /// on it, Alt h/j/k/l, a focus by id - `on_panes` puts the panel away, as its Dismissible
+    /// overlay kind promises: left up, it would cover the pane that now has the keys while still
+    /// drawing its own "the keys are here" markers. The tab is kept because a tab switch the
+    /// panel follows is not a leave either, and is the one other way both halves can read as
+    /// unfocused from one manifest to the next.
+    ///
+    /// A floating pane or an overlay on the panel's tab holding the keys keeps this `true`: the
+    /// keys went there from the panel, and the tiled pane they reach when it closes is still
+    /// the user leaving the panel. So does a panel that followed a tab switch while this was
+    /// `true`, on its new tab: see `followed_holder`.
+    pub(crate) panel_focus_seen: Option<(TabPosition, bool)>,
+    /// The pane that had the keys on the tab the panel last followed a switch to, while the
+    /// panel has not had them there since.
+    ///
+    /// A followed panel lands drawn but unfocused (`follow_tab`), over the pane the switch gave
+    /// the keys to. Left disarmed there, as it used to be, nothing but Esc from inside it put it
+    /// away: moving the keyboard to another pane on the new tab left the panel covering most of
+    /// it. Armed, with this pane named, the keyboard moving on from it puts the panel away as it
+    /// would have on the tab it came from, and this pane keeping them - every manifest after the
+    /// arrival says so - does not. A click on this pane is no signal at all: it had the keys
+    /// already, so nothing changes. Cleared once the panel has the keys again, is put away, or
+    /// another pane takes them.
+    pub(crate) followed_holder: Option<PaneId>,
+    /// Who `keyboard_holder` answers in tests, where there is no host to ask.
+    #[cfg(test)]
+    pub(crate) keyboard_holder_for_test: Option<PaneId>,
+    /// How many times `keyboard_holder` was asked: each is a host round trip on wasm.
+    #[cfg(test)]
+    pub(crate) keyboard_holder_calls: std::cell::Cell<usize>,
+    /// The unreadable panel sizes last reported - see `State::warn_bad_geometry`.
+    pub(crate) geometry_warned: Vec<String>,
+    /// The last divider move sent, from `/split` or a config edit. Test-only, for the reason
+    /// `last_placement` is: the host call has no reply off wasm.
+    #[cfg(test)]
+    pub(crate) last_split: Option<MultipaneSplit>,
     /// `PaneUpdate`s a focus this half asked for itself may discount before the reset above
     /// applies again - see [`overlay::RING_FOCUS_PENDING_FRAMES`], which is what sets it.
     ///
@@ -776,8 +949,8 @@ pub struct State {
     /// Where the panel sits: the corner it is in and the rectangle it asked for.
     ///
     /// See [`overlay::Panel`]: the agent list and the conversation are the two halves of one
-    /// panel, so there is one corner between them - Ctrl-o in either half advances it one corner
-    /// clockwise.
+    /// panel, so there is one corner between them - `Ctrl e o`, or Ctrl-o in either half in
+    /// Locked mode, advances it one corner clockwise.
     pub(crate) panel: overlay::Panel,
     pub(crate) multipane: Option<MultipaneInfo>,
     /// The last placement sent, and whether it reclaimed a user's drag.
@@ -956,6 +1129,15 @@ impl Default for State {
             own_tab_index: None,
             own_is_floating: None,
             own_is_focused: None,
+            panel_focus_seen: None,
+            followed_holder: None,
+            #[cfg(test)]
+            keyboard_holder_for_test: None,
+            #[cfg(test)]
+            keyboard_holder_calls: std::cell::Cell::new(0),
+            geometry_warned: Vec::new(),
+            #[cfg(test)]
+            last_split: None,
             agents_tab_index: None,
             agents_visible: false,
             client_tabs: BTreeMap::new(),
@@ -1176,14 +1358,42 @@ impl ZellijPlugin for State {
             },
             wire::AGENT_SELECTION => return self.on_selection(&pipe_message),
             wire::AGENT_STRIP_REPOSITION => {
-                // Ctrl-o in the agent list. hocus owns the panel's geometry, so the list asks
-                // rather than moves; nothing to redraw here, the move is the server's to paint.
-                self.reposition_from_list();
+                // hocus owns the panel's geometry, so everything else asks rather than moves;
+                // nothing to redraw here, the move is the server's to paint.
+                //
+                // From a keybinding it is `Ctrl e o`: the only form of the key that reaches the
+                // panel under the default keymap, where Normal mode takes Ctrl-o for Session
+                // mode before any plugin sees it. The binding is a broadcast with no url, so it
+                // cannot launch a hocus that is not running, and it reaches a hocus in the
+                // user's own layout too - which owns no panel and moves nothing. It asks for the
+                // panel whichever half is showing, so it does not need the list to be here.
+                //
+                // From the agent list it is Ctrl-o there, which only moves a panel that list is
+                // half of.
+                match pipe_message.source {
+                    PipeSource::Keybind => {
+                        if self.is_panel() && !self.hidden {
+                            self.reposition();
+                        }
+                    },
+                    _ => self.reposition_from_list(),
+                }
                 return false;
             },
             wire::AGENT_STRIP_HIDE => {
-                // Esc or agent selection hides the host-owned container.
-                self.hide_panel();
+                // Esc or agent selection hides the host-owned container, and so does the New
+                // agent modal once the agent it started has the keys. The modal's hide has no
+                // destination, so it reaches a panel on every tab; it names its own, and a
+                // panel on another one - another client's, not over the new agent - stays up.
+                // One that does not name a tab, the list's Esc, is always for this panel.
+                let elsewhere = pipe_message
+                    .args
+                    .get(wire::PANEL_TAB)
+                    .and_then(|tab| tab.parse::<TabPosition>().ok())
+                    .is_some_and(|tab| Some(tab) != self.own_tab_index);
+                if !elsewhere {
+                    self.hide_panel();
+                }
                 return false;
             },
             wire::AGENT_STRIP_YIELD => {
@@ -1347,6 +1557,7 @@ impl State {
             // chat's config only, never routed to a parked chat.
             Event::PluginConfigurationChanged(kdl) => {
                 let skills_dir_was = self.skills_dir();
+                let split_was = self.kdl.get("split").cloned();
                 self.kdl = kdl;
                 self.reconfigure();
                 // `skills_dir` is read straight from the block, so a change to
@@ -1359,6 +1570,15 @@ impl State {
                 // or tab move happens to re-place them. Not folded into `reconfigure`, which is
                 // gated on the permission grant - placing a pane is not.
                 self.apply_overlay_geometry();
+                // `split` too, but only when it is the value that changed. A placement never
+                // carries a split, so that a divider the user dragged stays put; an edit to the
+                // key is the user choosing a new one. Compared against the block we had rather
+                // than taken from the event, because the host repeats the event for a save to
+                // anything in the file once the config has changed at all.
+                if self.kdl.get("split") != split_was.as_ref() {
+                    self.apply_split_edit();
+                }
+                self.warn_bad_geometry();
                 true
             },
             // The payload is the real time the host slept, which is the only

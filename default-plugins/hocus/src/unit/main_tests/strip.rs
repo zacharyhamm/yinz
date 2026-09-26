@@ -237,6 +237,7 @@ fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
         summarized_revision: 0,
         summary: None,
         entries: Vec::new(),
+        omitted_entries: 0,
     };
     state
         .store()
@@ -291,6 +292,97 @@ fn a_run_that_cannot_be_resumed_says_why() {
     // And a row this hocus has never loaded and the store has never held.
     let refused = state.resume_plan("claude:never-heard-of-it").unwrap_err();
     assert!(refused.contains("archive"), "{refused}");
+}
+
+/// Selecting a run asks hocus for its history, and a run hocus cannot produce is still an
+/// answer: without one the history half would say "nothing to show yet" for good, the same as
+/// a run still on its way.
+#[test]
+fn a_run_detail_hocus_cannot_read_is_answered_with_why() {
+    let state = state_with_panes();
+    let panel = zellij_tile::prelude::PluginId::new(9);
+
+    let missing = state.run_detail_message(panel, "claude:never-heard-of-it", Some(4));
+    assert_eq!(missing.message_name, wire::AGENT_RUN_DETAIL);
+    assert_eq!(missing.destination_plugin_id, Some(panel));
+    assert_eq!(missing.message_payload, None);
+    assert_eq!(
+        missing.message_args.get("run_id").map(String::as_str),
+        Some("claude:never-heard-of-it")
+    );
+    assert!(
+        missing.message_args["error"].contains("archive"),
+        "{:?}",
+        missing.message_args
+    );
+    assert_eq!(
+        missing.message_args.get("revision").map(String::as_str),
+        Some("4"),
+        "matched on it, like the run it stands in for"
+    );
+
+    seed_run(&state, "session-1", None, true);
+    let run_id = agents::run_id("claude", 3, "session-1", 10, &HostId::new("test-host"));
+    let found = state.run_detail_message(panel, &run_id, None);
+    assert!(found.message_payload.is_some());
+    assert!(!found.message_args.contains_key("error"));
+}
+
+/// A search hit's history starts a little before the match, and says so: the page it is drawn
+/// from leaves the older entries out, and without the count the half would open on its first
+/// event as though the run began there.
+#[test]
+fn a_search_hits_history_counts_the_older_entries_it_leaves_out() {
+    let state = state_with_panes();
+    let panel = zellij_tile::prelude::PluginId::new(9);
+    seed_run(&state, "session-1", None, true);
+    let host = HostId::new("test-host");
+    let run_id = agents::run_id("claude", 3, "session-1", 10, &host);
+    let entries: Vec<_> = (1..=6)
+        .map(|revision| agents::RunEntry {
+            revision,
+            event_id: None,
+            kind: agents::RunEntryKind::Message,
+            text: format!("entry {revision}"),
+            created_at_ms: Some(revision as i64),
+        })
+        .map(|entry| agents::rows::entry_mutation(&run_id, &host, &entry))
+        .collect();
+    state.store().apply(entries).expect("seeded the entries");
+    let detail = |revision: u64| -> agents::AgentRun {
+        let message = state.run_detail_message(panel, &run_id, Some(revision));
+        serde_json::from_str(message.message_payload.as_deref().expect("the run")).unwrap()
+    };
+
+    let late = detail(5);
+    assert_eq!(late.entries.first().map(|entry| entry.revision), Some(3));
+    assert_eq!(
+        late.omitted_entries, 1,
+        "a lower bound, like the newest page's"
+    );
+    let early = detail(2);
+    assert_eq!(early.entries.first().map(|entry| entry.revision), Some(1));
+    assert_eq!(early.omitted_entries, 0);
+}
+
+/// A list the session's plugin list has not named yet - loaded a moment ago - is told so
+/// rather than ignored, and is given nothing from the archive: a dropped search looks exactly
+/// like a slow one, and the user presses Enter again.
+#[test]
+fn a_search_from_a_list_not_registered_yet_is_answered_with_nothing_found() {
+    let state = state_with_panes();
+    let request = |query: &str| wire::SearchRequest {
+        request_id: "7".to_owned(),
+        query: query.to_owned(),
+    };
+
+    let early = state.agent_search_result(request("resize"), false);
+    assert_eq!(early.request_id, "7");
+    assert!(early.runs.is_empty());
+    assert!(early.error.contains("try again"), "{}", early.error);
+
+    let blank = state.agent_search_result(request("  "), true);
+    assert_eq!(blank.error, "search text is empty");
 }
 
 /// A run can go live between the strip being drawn and the `y` — someone resumed it in

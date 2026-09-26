@@ -559,3 +559,25 @@ fn a_job_that_fires_with_show_brings_the_panel_back() {
 
     assert!(!state.hidden, "the panel is up, and hocus says so");
 }
+
+/// A panel that is already up is in front of the user, who may be typing in it - into the
+/// Todos box, a search, a terminal behind it. Taking the keyboard for the job would carry the
+/// rest of that typing into the chat box, and Enter would queue it for the model.
+#[test]
+fn a_job_that_fires_with_show_leaves_a_visible_panel_s_keyboard_alone() {
+    let mut state = idle_state();
+    state.run_local(&schedule_call(
+        r#"{"seconds":60,"prompt":"check pane 3","show":true}"#,
+    ));
+    assert!(!state.hidden);
+    state.visibility_calls.clear();
+
+    assert!(state.on_timer(60.0), "the job is due");
+
+    assert!(
+        state.visibility_calls.is_empty(),
+        "no show, so no focus: {:?}",
+        state.visibility_calls
+    );
+    assert!(!state.hidden);
+}

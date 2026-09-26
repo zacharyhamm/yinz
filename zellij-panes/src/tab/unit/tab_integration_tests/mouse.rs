@@ -41,6 +41,7 @@ fn fullscreen_overlay_divider_drags_with_complete_borders_under_title_only_frame
                     direction: zellij_types::multipane::MultipaneDirection::LeftRight,
                     ratio: 5000,
                 },
+                0,
                 OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
                     width: Some(PercentOrFixed::Fixed(60)),
                     ..coordinates(2)

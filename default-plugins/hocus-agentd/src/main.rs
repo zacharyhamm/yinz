@@ -1234,6 +1234,7 @@ impl State {
                 summarized_revision: 0,
                 summary: None,
                 entries: Vec::new(),
+                omitted_entries: 0,
             });
         let already_ended = run.outcome != agents::RunOutcome::Active;
         let mut changed = new_run;
@@ -4411,6 +4412,7 @@ mod tests {
                 text: "ship it".to_owned(),
                 created_at_ms: Some(10),
             }],
+            omitted_entries: 0,
         };
         run = run.adopted_by(
             2,
@@ -6644,6 +6646,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         };
         run.entries.push(agents::RunEntry {
             revision: 1,
@@ -7796,6 +7799,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         };
         for text in ["ship it", "and the archive"] {
             agents::push_summary_entry(&mut run, text, 100);
@@ -9159,6 +9163,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: Vec::new(),
+            omitted_entries: 0,
         };
         agents::push_summary_entry(&mut run, "a paraphrase of a paraphrase", 100);
         run.entries.push(agents::RunEntry {
@@ -9216,6 +9221,7 @@ mod tests {
                     created_at_ms: Some(15),
                 },
             ],
+            omitted_entries: 0,
         }
     }
 

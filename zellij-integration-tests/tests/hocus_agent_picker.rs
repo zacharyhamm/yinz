@@ -130,6 +130,20 @@ fn wait_with_resizes(zellij: &TestSession, what: &str, predicate: impl Fn(&GridS
 }
 
 fn open_sidebar(zellij: &TestSession) {
+    // `Ctrl b` is a `LaunchOrFocusPlugin`, which the screen drops ("No connected clients
+    // found") until it has applied the layout and registered this client - and the pty spawns
+    // and output the callers wait on come before that. The server sends a client no frame
+    // before registering it, so anything drawn is the proof. The harness draws the cursor as
+    // `█` on a blank screen too, so that does not count.
+    zellij.wait_until(
+        "the server has drawn this client a frame",
+        |grid_snapshot| {
+            grid_snapshot
+                .text
+                .chars()
+                .any(|character| !character.is_whitespace() && character != '█')
+        },
+    );
     zellij.send_stdin(&keys::ctrl('b'));
     wait_with_resizes(zellij, "hocus asks for permissions", |grid_snapshot| {
         grid_snapshot.contains("Allow? (y/n)")
@@ -277,13 +291,39 @@ fn a_todo_launches_an_agent_with_its_project_and_task_context() {
     zellij.send_stdin(&keys::SHIFT_TAB);
     zellij.send_stdin(b"\x1b[C");
     zellij.send_stdin(&keys::ENTER);
+    // The session runs outside the checkout, so no project is chosen for it: the tab says so
+    // rather than filing todos into whichever project sorts first, and `p` picks one.
+    zellij.wait_until("the todo tab asks for a project", |grid| {
+        grid.contains("p to pick one")
+    });
+    zellij.send_stdin(&keys::key('p'));
+    zellij.wait_until("the project picker is open", |grid| {
+        grid.contains("Pick a project") && grid.contains("todo-agent")
+    });
+    zellij.send_stdin(&keys::ENTER);
     zellij.wait_until("the todo panel is open", |grid| {
         grid.contains("Improve the build") && grid.contains("Keep $HOME literal")
     });
     zellij.send_stdin(b"jn");
-    zellij.wait_until("the task opens the agent launcher", |grid| {
-        grid.contains("New agent") && grid.contains("Prompt (optional)")
-    });
+    // Drawn at its own size, not merely drawn. The launcher renders first at the size an
+    // overlay is born with, half the screen, and the server can show that render for a frame
+    // in the shorter pane its `TabUpdate` placed it in, before the resize reaches the plugin:
+    // every row then sits one below the widget the plugin hit-tests there, and a click read
+    // off that frame lands on the next field down. A settled dialog fills its pane exactly,
+    // so its title is on the row under the top border.
+    zellij.wait_until(
+        "the task opens the agent launcher at its own size",
+        |grid| {
+            let Some(top) = grid.row_of_line("┌ new agent") else {
+                return false;
+            };
+            grid.text
+                .lines()
+                .nth(top + 1)
+                .is_some_and(|line| line.contains("New agent"))
+                && grid.contains("Prompt (optional)")
+        },
+    );
 
     // Keep this test in the remembered checkout. Worktree creation has its own tests.
     let click = |label: &str| {
@@ -901,6 +941,13 @@ fn swamp_issue_details_load_after_moving_the_panel_to_another_tab() {
     for _ in 0..3 {
         zellij.send_stdin(b"\x1b[C");
     }
+    // Walking the tab bar onto Swamp asks the host nothing: the tab says what it needs, and
+    // the host's prompt, which takes over the whole pane, waits for `r`.
+    zellij.wait_until("Swamp asks to be allowed", |grid| {
+        grid.contains("r to allow")
+    });
+    assert!(!zellij.snapshot().contains("Allow?"));
+    zellij.send_stdin(&keys::key('r'));
     zellij.wait_until("permission requested", |grid| grid.contains("Allow?"));
     zellij.send_stdin(&keys::key('y'));
     zellij.wait_until("issue list loaded", |grid| grid.contains("List proof"));

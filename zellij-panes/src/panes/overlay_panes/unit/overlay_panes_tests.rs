@@ -2860,11 +2860,11 @@ fn a_pane_swapped_into_an_expanded_slot_is_expanded() {
 #[test]
 fn an_expanded_overlay_cannot_move_or_resize_its_outer_rectangle() {
     let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
-    let (_, divider) = panes
-        .multipane_info(&children[0])
-        .unwrap()
-        .split
-        .geometry(panes.outer_geom(children[0]).unwrap(), true);
+    let (_, divider) = panes.multipane_info(&children[0]).unwrap().split.geometry(
+        panes.outer_geom(children[0]).unwrap(),
+        true,
+        0,
+    );
     let seam = Position::new(divider.y as i32, divider.x as u16);
     panes.toggle_pane_fullscreen(PaneId::Terminal(crate::TerminalId::new(1)));
     let before = (geom(&panes, 1), geom(&panes, 2));
@@ -2996,6 +2996,7 @@ fn composed(direction: MultipaneDirection) -> (OverlayPanes, [PaneId; 2], Multip
                 direction,
                 ratio: 3700,
             },
+            0,
             OverlayPlacement {
                 kind: OverlayKind::Dismissible,
                 coordinates: Some(placed_coordinates("10", "5", "80", "24")),
@@ -3053,6 +3054,7 @@ fn assert_composition_preserves_contents(alternate_screen: bool) {
                     direction,
                     ratio: 5000,
                 },
+                0,
                 OverlayPlacement::dismissible(Some(coordinates)),
             )
             .unwrap();
@@ -3246,7 +3248,7 @@ fn multipane_owns_both_slots_and_structural_commands_resolve_either_member() {
             .is_err());
         assert_eq!(panes.multipane_info(&children[1]).unwrap(), before);
         assert!(panes
-            .create_multipane(children, before.split, OverlayPlacement::default())
+            .create_multipane(children, before.split, 0, OverlayPlacement::default())
             .is_err());
         assert_eq!(panes.multipane_info(&children[0]).unwrap().id, id);
     }
@@ -3258,7 +3260,7 @@ fn multipane_divider_and_fullscreen_preserve_requested_ratio_through_tiny_surfac
         let (mut panes, children, _) = composed(direction);
         let info = panes.multipane_info(&children[0]).unwrap();
         let outer = panes.outer_geom(children[0]).unwrap();
-        let (_, divider) = info.split.geometry(outer, true);
+        let (_, divider) = info.split.geometry(outer, true, 0);
         let position = Position::new(divider.y as i32, divider.x as u16);
         assert_eq!(panes.seam_at(&position), Some((children[0], children[1])));
         panes.start_seam_drag(children[0], children[1], position);
@@ -3316,6 +3318,8 @@ fn multipane_transfer_and_replacement_keep_ownership_focus_and_placement() {
         .unwrap();
     panes.toggle_pane_fullscreen(children[1]);
     let before = panes.multipane_info(&children[0]).unwrap();
+    // both clients are still on the source tab, so both keep their half across the move
+    panes.connected_clients.borrow_mut().extend(clients);
     let transfer = panes.take_container(children[1]).unwrap();
     assert!(panes.is_empty());
     let mut destination = overlay_panes(120, 40);
@@ -3342,6 +3346,29 @@ fn multipane_transfer_and_replacement_keep_ownership_focus_and_placement() {
     assert_eq!(
         panes.multipane_info(&replacement).unwrap().split,
         before.split
+    );
+}
+
+/// A client that has already left the source tab does not take the keyboard back when the
+/// container lands: that is hocus carrying its panel after a tab switch, and the tab the client
+/// went to keeps the keys. A client still on the source tab keeps its half.
+#[test]
+fn a_container_taken_after_its_client_left_arrives_unfocused() {
+    let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+    let [stayed, left] = [ClientId::new(1), ClientId::new(2)];
+    panes.connected_clients.borrow_mut().insert(stayed);
+    panes.focus_pane(children[0], stayed);
+    panes.focus_pane(children[0], left);
+
+    let transfer = panes.take_container(children[0]).unwrap();
+    let mut destination = overlay_panes(120, 40);
+    destination.insert_container(transfer);
+
+    assert_eq!(destination.active_pane_id(stayed), Some(children[0]));
+    assert_eq!(
+        destination.active_pane_id(left),
+        None,
+        "the client that switched away arrives on nothing"
     );
 }
 
@@ -3438,6 +3465,7 @@ fn multipane_modal_focus_is_trapped_at_the_container_boundary() {
                 direction: MultipaneDirection::LeftRight,
                 ratio: 5000,
             },
+            0,
             OverlayPlacement {
                 kind: OverlayKind::Modal,
                 coordinates: None,
@@ -3457,4 +3485,227 @@ fn multipane_modal_focus_is_trapped_at_the_container_boundary() {
     for client in clients {
         assert_eq!(panes.active_pane_id(client), Some(children[1]));
     }
+}
+
+// ---- where a modal hands the keyboard back --------------------------------------------------
+
+fn close(panes: &mut OverlayPanes, pane_id: PaneId) {
+    panes.move_clients_out_of_pane(pane_id);
+    panes.remove_pane(pane_id);
+}
+
+/// A modal opened from the first half of a multipane, as `hocus-new-agent` is from the agent
+/// list, used to close onto whichever overlay was topmost - the panel's other half - so the next
+/// key went into the conversation while the list still drew its selection.
+#[test]
+fn closing_a_modal_returns_the_keyboard_to_the_multipane_child_it_took_it_from() {
+    let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+    let client = ClientId::new(1);
+    panes.connected_clients.borrow_mut().insert(client);
+    panes.focus_pane(children[0], client);
+    add(&mut panes, 3, OverlayKind::Modal, coordinates("40", "10"));
+    let modal = PaneId::Terminal(TerminalId::new(3));
+    panes.focus_pane(modal, client);
+    assert_eq!(panes.active_pane_id(client), Some(modal));
+
+    close(&mut panes, modal);
+
+    assert_eq!(
+        panes.active_pane_id(client),
+        Some(children[0]),
+        "back on the half it came from, not the topmost one"
+    );
+}
+
+/// The other side of the same rule: a client that was on the layers beneath goes back there,
+/// rather than to an overlay that was on screen without having the keyboard.
+#[test]
+fn a_modal_opened_while_the_tiled_layer_had_the_keys_leaves_them_there_when_it_closes() {
+    let (mut panes, _, _) = composed(MultipaneDirection::LeftRight);
+    let client = ClientId::new(1);
+    panes.connected_clients.borrow_mut().insert(client);
+    add(&mut panes, 3, OverlayKind::Modal, coordinates("40", "10"));
+    let modal = PaneId::Terminal(TerminalId::new(3));
+    panes.focus_pane(modal, client);
+
+    close(&mut panes, modal);
+
+    assert_eq!(panes.active_pane_id(client), None);
+}
+
+/// Setting a modal aside hands the keyboard back the same way closing it does.
+/// `hiding_a_modal_does_not_hand_the_keyboard_to_the_overlay_under_it` is the case where the
+/// client came from the layers beneath.
+#[test]
+fn hiding_a_modal_hands_the_keyboard_back_to_the_overlay_it_took_it_from() {
+    let mut panes = overlay_panes(80, 20);
+    let client = ClientId::new(1);
+    panes.connected_clients.borrow_mut().insert(client);
+    for id in [1, 2] {
+        add(
+            &mut panes,
+            id,
+            OverlayKind::Dismissible,
+            coordinates("50%", "50%"),
+        );
+    }
+    panes.focus_pane(PaneId::Terminal(TerminalId::new(1)), client);
+    add(&mut panes, 3, OverlayKind::Modal, coordinates("50%", "50%"));
+    panes.focus_pane(PaneId::Terminal(TerminalId::new(3)), client);
+
+    panes.hide_pane(PaneId::Terminal(TerminalId::new(3)));
+
+    assert_eq!(
+        panes.active_pane_id(client),
+        Some(PaneId::Terminal(TerminalId::new(1)))
+    );
+}
+
+/// A pane named while the modal holds the keyboard is where the keyboard goes when the modal
+/// closes: `hocus-new-agent` names the agent it has just started, then closes itself. The modal
+/// keeps the keyboard until then.
+#[test]
+fn a_pane_named_under_a_modal_takes_the_keyboard_when_the_modal_closes() {
+    let beneath = PaneId::Terminal(TerminalId::new(9));
+    for named_other_half in [true, false] {
+        let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+        let client = ClientId::new(1);
+        panes.connected_clients.borrow_mut().insert(client);
+        panes.focus_pane(children[0], client);
+        add(&mut panes, 3, OverlayKind::Modal, coordinates("40", "10"));
+        let modal = PaneId::Terminal(TerminalId::new(3));
+        panes.focus_pane(modal, client);
+
+        let named = if named_other_half {
+            children[1]
+        } else {
+            beneath
+        };
+        panes.return_from_modal_to(client, named);
+        assert_eq!(panes.active_pane_id(client), Some(modal));
+
+        close(&mut panes, modal);
+
+        assert_eq!(
+            panes.active_pane_id(client),
+            named_other_half.then_some(children[1]),
+            "a pane beneath the overlays is reached by leaving them"
+        );
+    }
+}
+
+/// While another modal is still up, the way back does not reach past it: the keyboard stays in
+/// modal hands. Modal 2 came up without taking this client's keyboard, as one another client
+/// opened would.
+#[test]
+fn a_way_back_does_not_reach_past_a_modal_still_on_screen() {
+    let mut panes = overlay_panes(80, 20);
+    let client = ClientId::new(1);
+    panes.connected_clients.borrow_mut().insert(client);
+    add(
+        &mut panes,
+        1,
+        OverlayKind::Dismissible,
+        coordinates("50%", "50%"),
+    );
+    panes.focus_pane(PaneId::Terminal(TerminalId::new(1)), client);
+    add(&mut panes, 2, OverlayKind::Modal, coordinates("50%", "50%"));
+    add(&mut panes, 3, OverlayKind::Modal, coordinates("40%", "40%"));
+    panes.focus_pane(PaneId::Terminal(TerminalId::new(3)), client);
+
+    close(&mut panes, PaneId::Terminal(TerminalId::new(3)));
+
+    assert_eq!(
+        panes.active_pane_id(client),
+        Some(PaneId::Terminal(TerminalId::new(2)))
+    );
+}
+
+#[test]
+fn a_multipane_child_finds_its_sibling_only_along_the_split() {
+    use Direction::*;
+    for (direction, toward_second, toward_first, across) in [
+        (MultipaneDirection::LeftRight, Right, Left, [Up, Down]),
+        (MultipaneDirection::TopBottom, Down, Up, [Left, Right]),
+    ] {
+        let (mut panes, children, _) = composed(direction);
+        assert_eq!(
+            panes.sibling_toward(&children[0], toward_second),
+            Some(children[1])
+        );
+        assert_eq!(
+            panes.sibling_toward(&children[1], toward_first),
+            Some(children[0])
+        );
+        assert_eq!(
+            panes.sibling_toward(&children[0], toward_first),
+            None,
+            "out of the container, not round to the other half"
+        );
+        assert_eq!(panes.sibling_toward(&children[1], toward_second), None);
+        for direction in across {
+            for child in children {
+                assert_eq!(panes.sibling_toward(&child, direction), None);
+            }
+        }
+        add(
+            &mut panes,
+            3,
+            OverlayKind::Dismissible,
+            coordinates("20", "10"),
+        );
+        assert_eq!(
+            panes.sibling_toward(&PaneId::Terminal(TerminalId::new(3)), toward_second),
+            None,
+            "a single overlay has no other half"
+        );
+    }
+}
+
+/// hocus asks for 24 columns a half. A ratio outside that is drawn at the floor without being
+/// rewritten, and a divider dragged past it stops there on either side.
+#[test]
+fn a_multipane_floor_holds_against_the_ratio_and_the_divider() {
+    let mut panes = overlay_panes(120, 40);
+    for id in [1, 2] {
+        add(
+            &mut panes,
+            id,
+            OverlayKind::Dismissible,
+            coordinates("50", "20"),
+        );
+    }
+    let children = [1, 2].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    panes
+        .create_multipane(
+            children,
+            MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 1,
+            },
+            24,
+            OverlayPlacement::dismissible(Some(placed_coordinates("10", "5", "80", "24"))),
+        )
+        .unwrap();
+    let widths = |panes: &OverlayPanes| {
+        children.map(|child| panes.get(&child).unwrap().current_geom().cols.as_usize())
+    };
+    // 80 columns less the frame and the divider leave 77.
+    assert_eq!(widths(&panes), [24, 53]);
+    assert_eq!(panes.multipane_info(&children[0]).unwrap().split.ratio, 1);
+
+    let outer = panes.outer_geom(children[0]).unwrap();
+    let (_, divider) = panes
+        .multipane_info(&children[0])
+        .unwrap()
+        .split
+        .geometry(outer, true, 24);
+    let seam = Position::new(divider.y as i32, divider.x as u16);
+    assert_eq!(panes.seam_at(&seam), Some((children[0], children[1])));
+    panes.start_seam_drag(children[0], children[1], seam);
+    let right_edge = (outer.x + outer.cols.as_usize() - 1) as u16;
+    panes.drag_seam_to(&Position::new(divider.y as i32, right_edge));
+    assert_eq!(widths(&panes), [53, 24]);
+    panes.stop_seam_drag(Position::new(divider.y as i32, outer.x as u16));
+    assert_eq!(widths(&panes), [24, 53]);
 }

@@ -29,9 +29,26 @@ impl MultipaneSplit {
         Ok(())
     }
 
+    /// The fewest cells either half may be given out of `available`: `min_cells`, or an even
+    /// share when the surface cannot hold two of those, and never under one cell while both
+    /// halves fit. Taking the even share rather than dropping the floor keeps the halves from
+    /// jumping to a one-cell sliver the moment the panel narrows past twice the floor.
+    pub fn floor(available: usize, min_cells: u16) -> usize {
+        usize::from(available >= 2).max(usize::from(min_cells).min(available / 2))
+    }
+
     /// Subtract one outer frame and one divider, then derive both content viewports.
     /// Zero-sized slots remain present when the surface cannot accommodate them.
-    pub fn geometry(self, outer: PaneGeom, framed: bool) -> ([PaneGeom; 2], PaneGeom) {
+    ///
+    /// Each half keeps at least `Self::floor(available, min_cells)` cells whatever the ratio
+    /// asks for. The floor clamps only the effective sizes: the ratio itself is left alone, so a
+    /// divider squeezed by a narrow surface returns to where it was when the surface grows.
+    pub fn geometry(
+        self,
+        outer: PaneGeom,
+        framed: bool,
+        min_cells: u16,
+    ) -> ([PaneGeom; 2], PaneGeom) {
         let mut content = outer;
         let inset_x = usize::from(framed).min(outer.cols.as_usize());
         let inset_y = usize::from(framed).min(outer.rows.as_usize());
@@ -50,9 +67,8 @@ impl MultipaneSplit {
             content.rows.as_usize()
         };
         let available = length.saturating_sub(1);
-        let minimum = usize::from(available >= 2);
-        let first = (available * usize::from(self.ratio) / 10_000)
-            .clamp(minimum, available.saturating_sub(minimum));
+        let floor = Self::floor(available, min_cells);
+        let first = (available * usize::from(self.ratio) / 10_000).clamp(floor, available - floor);
         let mut children = [content; 2];
         let mut divider = content;
         if horizontal {
@@ -95,22 +111,24 @@ mod tests {
                 direction,
                 ratio: 3700,
             };
-            for rows in 0..12 {
-                for cols in 0..12 {
-                    let outer = PaneGeom::from(&Size { rows, cols });
-                    let ([first, second], divider) = split.geometry(outer, true);
-                    for geom in [first, second, divider] {
-                        assert!(geom.x + geom.cols.as_usize() <= cols);
-                        assert!(geom.y + geom.rows.as_usize() <= rows);
+            for min_cells in [0, 1, 4, 24] {
+                for rows in 0..12 {
+                    for cols in 0..12 {
+                        let outer = PaneGeom::from(&Size { rows, cols });
+                        let ([first, second], divider) = split.geometry(outer, true, min_cells);
+                        for geom in [first, second, divider] {
+                            assert!(geom.x + geom.cols.as_usize() <= cols);
+                            assert!(geom.y + geom.rows.as_usize() <= rows);
+                        }
+                        if direction == MultipaneDirection::LeftRight {
+                            assert_eq!(first.x + first.cols.as_usize(), divider.x);
+                            assert_eq!(divider.x + divider.cols.as_usize(), second.x);
+                        } else {
+                            assert_eq!(first.y + first.rows.as_usize(), divider.y);
+                            assert_eq!(divider.y + divider.rows.as_usize(), second.y);
+                        }
+                        assert_eq!(split.ratio, 3700);
                     }
-                    if direction == MultipaneDirection::LeftRight {
-                        assert_eq!(first.x + first.cols.as_usize(), divider.x);
-                        assert_eq!(divider.x + divider.cols.as_usize(), second.x);
-                    } else {
-                        assert_eq!(first.y + first.rows.as_usize(), divider.y);
-                        assert_eq!(divider.y + divider.rows.as_usize(), second.y);
-                    }
-                    assert_eq!(split.ratio, 3700);
                 }
             }
         }
@@ -120,6 +138,68 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    /// The hocus panel's `split "0"` and `split "100%"` became a 1 and a 9999 basis-point
+    /// ratio, and left one half a single column wide. With a floor each half keeps it, and on a
+    /// panel too narrow for two floors the halves share what there is evenly instead.
+    #[test]
+    fn a_floor_keeps_both_halves_usable_whatever_the_ratio() {
+        let widths = |ratio, cols, min_cells| {
+            let split = MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio,
+            };
+            let outer = PaneGeom::from(&Size { rows: 10, cols });
+            let ([first, second], _) = split.geometry(outer, true, min_cells);
+            (first.cols.as_usize(), second.cols.as_usize())
+        };
+        // 80 columns less two frame columns and the divider leave 77 to share.
+        assert_eq!(
+            widths(1, 80, 0),
+            (1, 76),
+            "no floor: the old one-column half"
+        );
+        assert_eq!(widths(1, 80, 24), (24, 53));
+        assert_eq!(widths(9999, 80, 24), (53, 24));
+        assert_eq!(
+            widths(5000, 80, 24),
+            (38, 39),
+            "a ratio inside the floors is untouched"
+        );
+        // 41 columns leave 38: too few for two floors of 24, so each half gets 19.
+        assert_eq!(widths(1, 41, 24), (19, 19));
+        assert_eq!(widths(9999, 41, 24), (19, 19));
+        assert_eq!(MultipaneSplit::floor(3, 24), 1);
+        assert_eq!(MultipaneSplit::floor(1, 24), 0);
+    }
+
+    /// `min_cells` arrived after `CreateMultipane` was already on the wire, so a request that
+    /// does not name it still parses, with no floor beyond the one cell a half always keeps.
+    #[test]
+    fn a_create_request_without_a_floor_still_parses() {
+        let request = CreateMultipane {
+            children: [1, 2].map(|id| {
+                MultipaneChild::Existing(PaneId::Plugin(crate::internal_ids::PluginId::new(id)))
+            }),
+            placement: crate::data::OverlayPlacement::default(),
+            split: MultipaneSplit {
+                direction: MultipaneDirection::LeftRight,
+                ratio: 5000,
+            },
+            focus: None,
+            min_cells: 24,
+        };
+        let mut json = serde_json::to_value(&request).unwrap();
+        json.as_object_mut().unwrap().remove("min_cells");
+        let parsed: CreateMultipane = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            parsed,
+            CreateMultipane {
+                min_cells: 0,
+                ..request
+            }
+        );
     }
 }
 
@@ -139,6 +219,11 @@ pub struct CreateMultipane {
     pub split: MultipaneSplit,
     /// Child index to focus for the requesting client; None preserves current focus.
     pub focus: Option<usize>,
+    /// Fewest cells either half keeps along the split direction, whatever the ratio or a divider
+    /// drag asks for. When the container cannot hold two of these, the halves share it evenly.
+    /// 0 asks for no floor beyond the one cell a half always keeps.
+    #[serde(default)]
+    pub min_cells: u16,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UpdateMultipane {
@@ -162,6 +247,7 @@ pub enum MultipaneOperation {
         placement: crate::data::OverlayPlacement,
         split: MultipaneSplit,
         focus: Option<usize>,
+        min_cells: u16,
     },
     Get(MultipaneId),
     Update(UpdateMultipane),
