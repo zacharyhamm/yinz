@@ -239,7 +239,9 @@ fn tmux_mode() {
     right_terminal.output(PROMPT);
 
     let grid_snapshot = zellij.wait_until("right terminal opened via tmux mode", |grid_snapshot| {
-        grid_snapshot.status_bar_appears() && grid_snapshot.cursor_is_at(col(62).row(2))
+        grid_snapshot.status_bar_appears()
+            && grid_snapshot.cursor_is_at(col(62).row(2))
+            && tab_bar_shows_no_lone_pane_id(grid_snapshot)
     });
     assert_snapshot!(normalized(&grid_snapshot));
     zellij.quit();

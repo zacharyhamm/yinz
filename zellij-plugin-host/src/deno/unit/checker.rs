@@ -409,6 +409,30 @@ fn shipped_builtins_typecheck_offline() {
 }
 
 #[test]
+fn pane_frame_styles_match_the_serde_wire_values() {
+    use zellij_types::data::{Event, ModeInfo, PaneFrameStyle, PluginCommand};
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = "import type * as SDK from 'zellij:plugin';\n".to_owned();
+    for style in [
+        PaneFrameStyle::Full,
+        PaneFrameStyle::Titles,
+        PaneFrameStyle::None,
+    ] {
+        let mode = Event::ModeUpdate(ModeInfo {
+            pane_frame_style: Some(style),
+            ..Default::default()
+        });
+        let command = PluginCommand::SetPaneFrameStyle(style);
+        source.push_str(&format!(
+            "({}) satisfies SDK.Event;\n({}) satisfies SDK.CommandObject;\n",
+            serde_json::to_string(&mode).unwrap(),
+            serde_json::to_string(&command).unwrap()
+        ));
+    }
+    check_semantic_source(&dir.path().join("frame-styles.ts"), &source).unwrap();
+}
+
+#[test]
 fn embedded_module_graphs_keep_types_and_reject_unregistered_dependencies() {
     for (source, valid) in [
         ("import {view} from './workflow-view.ts'; import './agent-exit.ts'; view.attach({directory:'/work'});", true),

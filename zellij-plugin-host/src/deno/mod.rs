@@ -2256,6 +2256,12 @@ mod sdk_tests {
     include!("unit/completion_sdk.rs");
     include!("unit/consumer_sdk.rs");
     include!("unit/host_sdk.rs");
+    mod bar_parity {
+        include!("unit/bar_parity.rs");
+    }
+    mod tab_bar {
+        include!("unit/tab_bar.rs");
+    }
     mod status_bar {
         include!("unit/status_bar.rs");
     }

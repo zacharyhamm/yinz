@@ -433,7 +433,7 @@ export interface PluginConsole {
 }
 export type Direction = 'Left' | 'Right' | 'Up' | 'Down';
 export type Resize = 'Increase' | 'Decrease';
-export type PaneFrameStyle = 'Full' | 'Titles' | 'None';
+export type PaneFrameStyle = 'full' | 'titles' | 'none';
 export type InputMode = 'Normal' | 'Locked' | 'Resize' | 'Pane' | 'Tab' | 'Scroll' | 'EnterSearch' | 'Search' | 'RenameTab' | 'RenamePane' | 'Session' | 'Move' | 'Prompt' | 'Tmux' | 'Agent' | 'Select' | 'Notifications';
 export type KeyModifier = 'Ctrl' | 'Alt' | 'Shift' | 'Super';
 export type BareKey = 'PageDown' | 'PageUp' | 'Left' | 'Down' | 'Up' | 'Right' | 'Home' | 'End' | 'Backspace' | 'Delete' | 'Insert' | 'Tab' | 'Esc' | 'Enter' | 'CapsLock' | 'ScrollLock' | 'NumLock' | 'PrintScreen' | 'Pause' | 'Menu' | {F: number} | {Char: string};
