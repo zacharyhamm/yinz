@@ -15,9 +15,14 @@ impl Screen {
     pub fn update_pixel_dimensions(
         &mut self,
         client_id: ClientId,
-        pixel_dimensions: PixelDimensions,
+        mut pixel_dimensions: PixelDimensions,
     ) -> bool {
         let previous_character_cell_size = *self.character_cell_size.borrow();
+        let nonzero = |size: &SizeInPixels| size.width > 0 && size.height > 0;
+        // Geometry comes from the host terminal. Unknown/invalid sizes must not replace a
+        // valid cell: both graphics renderers use these dimensions as divisors.
+        pixel_dimensions.character_cell_size = pixel_dimensions.character_cell_size.filter(nonzero);
+        pixel_dimensions.text_area_size = pixel_dimensions.text_area_size.filter(nonzero);
         self.pixel_dimensions.merge(pixel_dimensions);
         if let Some(character_cell_size) = self.pixel_dimensions.character_cell_size {
             *self.character_cell_size.borrow_mut() = Some(character_cell_size);
@@ -32,7 +37,9 @@ impl Screen {
                 height: text_area_size.height / client_size.rows,
                 width: text_area_size.width / client_size.cols,
             };
-            *self.character_cell_size.borrow_mut() = Some(character_cell_size);
+            if nonzero(&character_cell_size) {
+                *self.character_cell_size.borrow_mut() = Some(character_cell_size);
+            }
         }
         *self.character_cell_size.borrow() != previous_character_cell_size
     }

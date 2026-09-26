@@ -1116,6 +1116,61 @@ fn character_cell_size_is_derived_from_the_reporting_client_size() {
 }
 
 #[test]
+fn invalid_pixel_reports_never_publish_zero_sized_cells() {
+    let client = ClientId::new(1);
+    let size = Size { cols: 80, rows: 20 };
+    let valid_cell = SizeInPixels {
+        height: 20,
+        width: 10,
+    };
+    for direct in [true, false] {
+        for invalid in [
+            SizeInPixels {
+                height: 0,
+                width: 1000,
+            },
+            SizeInPixels {
+                height: 400,
+                width: 0,
+            },
+            SizeInPixels {
+                height: 0,
+                width: 0,
+            },
+            SizeInPixels {
+                height: 1,
+                width: 1,
+            },
+        ] {
+            if direct && invalid.height == 1 && invalid.width == 1 {
+                continue; // A directly reported one-pixel cell is valid.
+            }
+            let report = |dimensions| PixelDimensions {
+                character_cell_size: direct.then_some(dimensions),
+                text_area_size: (!direct).then_some(dimensions),
+            };
+            let mut screen = create_new_screen(size, true, true);
+            screen.set_client_size(client, size);
+            assert!(!screen.update_pixel_dimensions(client, report(invalid)));
+            assert_eq!(*screen.character_cell_size.borrow(), None);
+
+            let valid_report = if direct {
+                valid_cell
+            } else {
+                SizeInPixels {
+                    height: 400,
+                    width: 800,
+                }
+            };
+            assert!(screen.update_pixel_dimensions(client, report(valid_report)));
+            assert_eq!(*screen.character_cell_size.borrow(), Some(valid_cell));
+            assert!(!screen.update_pixel_dimensions(client, report(invalid)));
+            assert_eq!(*screen.character_cell_size.borrow(), Some(valid_cell));
+        }
+    }
+}
+
+#[test]
 fn character_cell_size_is_not_derived_for_a_client_of_unknown_size() {
     let size = Size { cols: 80, rows: 20 };
     let mut screen = create_new_screen(size, true, true);

@@ -738,6 +738,32 @@ impl std::io::Read for VecDequeInputStream {
 
 pub struct WriteOutputStream<T>(pub Arc<Mutex<T>>);
 
+/// WASI writes allocate outside the guest's linear-memory budget. Bound a single
+/// render or host command even when the guest repeatedly writes the same small buffer.
+pub const MAX_PLUGIN_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone)]
+pub struct BoundedOutputStream(pub Arc<Mutex<VecDeque<u8>>>);
+
+impl Write for BoundedOutputStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut output = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("plugin stdout lock poisoned"))?;
+        if buf.len() > MAX_PLUGIN_OUTPUT_BYTES.saturating_sub(output.len()) {
+            return Err(std::io::Error::other(
+                "plugin stdout exceeds the 64 MiB limit",
+            ));
+        }
+        output.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl<T> Clone for WriteOutputStream<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -1220,6 +1246,31 @@ impl RunningPlugin {
 mod tests {
     use super::configuration_matches_for_reload;
     use zellij_types::input::layout::PluginUserConfiguration;
+
+    #[test]
+    fn guest_stdout_is_bounded_across_writes_and_reusable_after_reading() {
+        use super::{BoundedOutputStream, MAX_PLUGIN_OUTPUT_BYTES};
+        use std::{
+            collections::VecDeque,
+            io::Write,
+            sync::{Arc, Mutex},
+        };
+
+        let bytes = Arc::new(Mutex::new(VecDeque::new()));
+        let mut output = BoundedOutputStream(bytes.clone());
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..MAX_PLUGIN_OUTPUT_BYTES / chunk.len() {
+            output.write_all(&chunk).unwrap();
+        }
+        assert!(output.write_all(b"overflow").is_err());
+        assert_eq!(bytes.lock().unwrap().len(), MAX_PLUGIN_OUTPUT_BYTES);
+        bytes.lock().unwrap().clear();
+        output.write_all(b"next render").unwrap();
+        assert_eq!(
+            bytes.lock().unwrap().iter().copied().collect::<Vec<_>>(),
+            b"next render"
+        );
+    }
 
     #[test]
     fn reload_metadata_lookup_needs_no_guest_and_deduplicates_clients() {

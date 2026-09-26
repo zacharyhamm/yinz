@@ -83,22 +83,65 @@ impl State {
         let saved_len = previous.0;
         self.saved = key;
         let mut id = self.chat_id.take();
-        let written = history::save(
+        let previous_id = id;
+        let mut revision = self.chat_revision.take();
+        let mut written = history::save(
             &self.private_store(),
             &self.host_id,
             &mut id,
+            &mut revision,
             &self.messages,
             saved_len,
             self.reply_at,
             self.usage,
             self.plan,
         );
+        let forked = written.as_ref().is_err_and(WriteError::is_conflict);
+        if forked {
+            // Another pane or server saved this chat. Keep both authors' versions:
+            // the stale transcript gets a fresh id and a complete copy, never a retry
+            // with a newly fetched revision that would overwrite the winning save.
+            id = None;
+            revision = None;
+            written = history::save(
+                &self.private_store(),
+                &self.host_id,
+                &mut id,
+                &mut revision,
+                &self.messages,
+                0,
+                self.reply_at,
+                self.usage,
+                self.plan,
+            );
+        }
         self.chat_id = id;
-        if written.is_err() {
-            // Nothing to say it to, and nothing to do about it. Retried on the
-            // next change, because the fingerprint moved but the rows did not —
-            // which is the wrong way round, so put it back.
-            self.saved = previous;
+        self.chat_revision = revision;
+        if id.is_some() && id != previous_id {
+            let now = crate::transitions::now_secs();
+            let jobs: Vec<_> = self
+                .jobs
+                .iter()
+                .map(|job| crate::transitions::job_row(job, id, now))
+                .collect();
+            for row in jobs {
+                self.persist_job(row);
+            }
+        }
+        if let Err(error) = written {
+            // A failed fork must retry the whole transcript, since its new row has
+            // no message prefix yet. Keep the id and revision if allocation succeeded.
+            self.saved = if forked {
+                (0, 0, None, Plan::Off)
+            } else {
+                previous
+            };
+            self.log_global(
+                "archive_error",
+                serde_json::json!({"error": error.to_string()}),
+            );
+        } else if forked {
+            notify("Chat changed elsewhere; saved this conversation as a separate archive entry.");
         }
     }
 
@@ -604,6 +647,9 @@ impl State {
             self.switch_to_tab(self.tab_of_parked(index));
             return;
         }
+        let Ok(revision) = history::load_revision(&self.private_store(), id) else {
+            return;
+        };
         let Some(mut messages) = history::load(&self.private_store(), id) else {
             return;
         };
@@ -615,6 +661,9 @@ impl State {
         let Ok(plan) = history::load_plan(&self.private_store(), id) else {
             return;
         };
+        if history::load_revision(&self.private_store(), id) != Ok(revision) {
+            return;
+        }
         // The jobs the chat was armed with when hocus last ran come back with
         // it, and start counting down again from here.
         let jobs = self.take_held_jobs(id);
@@ -628,6 +677,7 @@ impl State {
         self.open_tab(Chat {
             messages,
             chat_id: Some(id),
+            chat_revision: Some(revision),
             usage,
             plan,
             jobs,

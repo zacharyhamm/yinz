@@ -440,8 +440,26 @@ impl RemoteReader {
                 return Ok(0);
             }
 
+            let conn = self.conn.clone();
+            let has_pending = conn.has_pending_writes();
             let async_fd = self.get_async_fd()?;
-            let mut guard = async_fd.readable().await?;
+            let mut guard = tokio::select! {
+                ready = async_fd.readable() => ready?,
+                ready = async_fd.writable(), if has_pending => {
+                    let mut ready = ready?;
+                    match conn.flush_pending() {
+                        Ok(true) => ready.clear_ready(),
+                        Ok(false) => {},
+                        Err(error) => {
+                            drop(ready);
+                            log::warn!("remote pane write failed ({error:#}); trying to reconnect");
+                            self.reconnect().await?;
+                        },
+                    }
+                    continue;
+                },
+                _ = conn.outbound_ready.notified() => continue,
+            };
             let mut chunk = [0u8; 65536];
             let read = guard.try_io(|inner| {
                 use std::io::Read;

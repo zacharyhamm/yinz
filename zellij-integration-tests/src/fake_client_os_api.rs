@@ -277,7 +277,9 @@ impl ServerConnection for FakeClientOsApi {
             std::time::Duration::from_millis(10),
         )?;
         let ipc_sender = IpcSenderWithContext::new(socket);
-        let ipc_receiver = ipc_sender.get_receiver();
+        let ipc_receiver = ipc_sender
+            .get_receiver()
+            .expect("failed to clone client socket");
         *self.send_instructions_to_server.lock().unwrap() = Some(ipc_sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(ipc_receiver);
         Ok(())

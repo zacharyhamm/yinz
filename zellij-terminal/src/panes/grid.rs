@@ -5072,7 +5072,6 @@ impl Perform for Grid {
                             self.changed_colors = Some([None; 256]);
                         }
                         self.changed_colors.as_mut().unwrap()[i as usize] = Some(c);
-                        return;
                     } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?') {
                         if let Some(index) = index {
                             // Forward palette-register queries to the

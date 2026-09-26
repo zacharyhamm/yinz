@@ -135,7 +135,7 @@ pub enum HostToServerMsg {
         host_pid: ProcessId,
         /// Where the supervisor bound its named socket, or `None` if binding
         /// failed. Binding is not fatal: it only powers `pty-host list|kill` and
-        /// (later) re-attach, so a long `$TMPDIR` or an unwritable runtime dir
+        /// (later) re-attach, so a long socket path or an unwritable runtime dir
         /// degrades those rather than breaking pane creation.
         control_socket: Option<PathBuf>,
     },
@@ -340,8 +340,8 @@ pub fn metadata_path(host_id: &SupervisorId) -> PathBuf {
 pub const SSH_CONTROL_PATH_RENAME_MARGIN: usize = 20;
 
 /// A `sockaddr_un.sun_path` is 104 bytes on macOS and 108 elsewhere. The default
-/// `ZELLIJ_SOCK_DIR` leaves plenty of room, but a long `$TMPDIR` fallback does
-/// not, so check before binding rather than failing obscurely inside `bind`.
+/// `ZELLIJ_SOCK_DIR` normally leaves room, but a long home or explicitly configured
+/// directory can overflow it, so check before binding rather than failing inside `bind`.
 ///
 /// `margin` reserves extra bytes beyond `path` itself — for a `ControlPath`, ssh binds
 /// a longer temp name first (see [`SSH_CONTROL_PATH_RENAME_MARGIN`]), so `path` alone

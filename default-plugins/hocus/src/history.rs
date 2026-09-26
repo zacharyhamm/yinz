@@ -197,12 +197,13 @@ pub fn save(
     backend: &impl Backend,
     host_id: &HostId,
     id: &mut Option<u64>,
+    revision: &mut Option<DataRevision>,
     messages: &[Message],
     saved_len: usize,
     reply_at: Option<usize>,
     usage: Option<TokenUsage>,
     plan: Plan,
-) -> Result<usize, String> {
+) -> Result<usize, WriteError> {
     let title = title(messages);
     let plan = match plan {
         Plan::Off => "Off",
@@ -219,8 +220,8 @@ pub fn save(
             // conversation happened, which matters now that an archive can span machines —
             // and it stays true afterwards, unlike the session, which a warp can change.
             // It is not part of any key: the id comes from the database, so two machines
-            // never mint the same one, and the `(chat_id, seq)` rewrite below stays a
-            // single-writer problem per chat.
+            // never mint the same one. Reopened chats can have multiple writers, so
+            // every later transcript batch guards this row's revision.
             let mut chat = Mutation::put("chat")
                 .set("title", title.clone())
                 .set("plan", plan)
@@ -229,14 +230,13 @@ pub fn save(
                 chat = chat.set(column, value);
             }
             let report = backend.apply(vec![chat.build()])?;
-            let new = report
-                .ids
-                .first()
-                .copied()
-                .ok_or("the store did not report an id for the new chat")?;
-            *id.insert(
-                u64::try_from(new.get()).map_err(|_| "the store returned a negative chat id")?,
-            )
+            let new = report.ids.first().copied().ok_or_else(|| {
+                WriteError::Failed("the store did not report an id for the new chat".into())
+            })?;
+            let new = u64::try_from(new.get())
+                .map_err(|_| WriteError::Failed("the store returned a negative chat id".into()))?;
+            *revision = Some(DataRevision::new(1));
+            *id.insert(new)
         },
     };
 
@@ -244,7 +244,14 @@ pub fn save(
     // only ever grows, so a chat with none to report has nothing to say about
     // the columns, and `set(None)` would write NULL over totals archived by
     // an earlier run.
+    let expected = revision
+        .ok_or_else(|| WriteError::Failed("the archived chat revision is missing".into()))?;
+    let next_revision = expected
+        .get()
+        .checked_add(1)
+        .ok_or_else(|| WriteError::Failed("the archived chat revision overflowed".into()))?;
     let mut chat = Mutation::update("chat", Pred::eq("id", chat_id as i64))
+        .expect_rev(expected)
         .set("title", title)
         .set("plan", plan);
     for (column, value) in usage.into_iter().flat_map(usage_columns) {
@@ -252,7 +259,9 @@ pub fn save(
     }
 
     let mut mutations = vec![
-        // Unconditional, and almost always matches nothing. It is the answer to
+        // Guard the chat before changing any message, in the same transaction.
+        chat.build(),
+        // Almost always matches nothing. It is the answer to
         // `pop_empty_placeholder`, which removes a message from the middle and
         // shifts every index after it — reachable because a save can happen
         // mid-stream. Without it the tail of a shortened transcript would
@@ -261,7 +270,6 @@ pub fn save(
             "chat_message",
             Pred::eq("chat_id", chat_id).and(Pred::gte("seq", messages.len())),
         ),
-        chat.build(),
     ];
 
     // A transcript that got *shorter* had a message taken out of the middle —
@@ -289,7 +297,23 @@ pub fn save(
     }
 
     backend.apply(mutations)?;
+    *revision = Some(DataRevision::new(next_revision));
     Ok(messages.len())
+}
+
+/// Read before the transcript and recheck after its final page and metadata. This
+/// prevents a multi-fetch load from combining two revisions and then overwriting one.
+pub fn load_revision(backend: &impl Backend, id: u64) -> Result<DataRevision, String> {
+    let rows = backend.fetch(
+        &FetchRequest::entity("chat")
+            .filter(Pred::eq("id", id))
+            .limit(1)
+            .select(["rev"]),
+    )?;
+    match rows.rows.first().and_then(|row| rows.get(row, "rev")) {
+        Some(DataValue::Int(revision)) if *revision > 0 => Ok(DataRevision::new(*revision)),
+        _ => Err("the archived chat revision is missing".into()),
+    }
 }
 
 /// The usage columns of a chat write. A cost the provider never reported is
@@ -614,10 +638,12 @@ pub fn import_legacy(backend: &impl Backend, host_id: &HostId) {
             continue;
         };
         let mut id = None;
+        let mut revision = None;
         if save(
             backend,
             host_id,
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -753,10 +779,12 @@ mod tests {
             }
         }
         let mut id = None;
+        let mut revision = None;
         let error = save(
             &NegativeId,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &[Message::user("question")],
             0,
             None,
@@ -764,7 +792,7 @@ mod tests {
             Plan::Off,
         )
         .unwrap_err();
-        assert_eq!(error, "the store returned a negative chat id");
+        assert_eq!(error.message(), "the store returned a negative chat id");
         assert_eq!(id, None);
     }
 
@@ -902,10 +930,12 @@ mod tests {
         );
 
         let mut id = None;
+        let mut revision = None;
         save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -949,10 +979,24 @@ mod tests {
             assert_eq!(messages[0].user_origin, UserOrigin::Unknown);
             messages.push(Message::user("Clear pane 3"));
             let mut id = Some(1);
+            if backend
+                .fetch(&FetchRequest::entity("chat"))
+                .unwrap()
+                .rows
+                .is_empty()
+            {
+                backend
+                    .apply(vec![Mutation::put("chat")
+                        .set("title", "old request")
+                        .build()])
+                    .unwrap();
+            }
+            let mut revision = Some(load_revision(&backend, 1).unwrap());
             save(
                 &backend,
                 &HostId::new(HOST),
                 &mut id,
+                &mut revision,
                 &messages,
                 0,
                 None,
@@ -989,6 +1033,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut old_id,
+            &mut None,
             &messages,
             0,
             None,
@@ -1004,10 +1049,12 @@ mod tests {
             cost_nanos: Some(1_500_000),
         };
         let mut id = None;
+        let mut revision = None;
         save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -1030,11 +1077,13 @@ mod tests {
             cost_nanos: Some(1_500_000),
         };
         let mut id = None;
+        let mut revision = None;
         let mut messages = vec![Message::user("one")];
         let saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -1049,6 +1098,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut Some(id),
+            &mut revision,
             &messages,
             saved,
             None,
@@ -1070,6 +1120,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut Some(id),
+            &mut revision,
             &messages,
             messages.len(),
             None,
@@ -1124,10 +1175,12 @@ mod tests {
             cost_nanos: None,
         };
         let mut id = None;
+        let mut revision = None;
         save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &[Message::user("one")],
             0,
             None,
@@ -1151,11 +1204,13 @@ mod tests {
     fn the_first_save_allocates_an_id_and_later_ones_keep_it() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let messages = vec![Message::user("one")];
         let saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -1170,6 +1225,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             saved,
             None,
@@ -1187,11 +1243,13 @@ mod tests {
     fn an_incremental_save_matches_a_whole_one() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let mut messages = vec![Message::user("one")];
         let mut saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -1206,6 +1264,7 @@ mod tests {
                 &backend,
                 &HostId::new(HOST),
                 &mut id,
+                &mut revision,
                 &messages,
                 saved,
                 None,
@@ -1223,11 +1282,13 @@ mod tests {
     fn a_reply_that_grows_in_place_is_rewritten() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("par")];
         let saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             Some(1),
@@ -1241,6 +1302,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             saved,
             Some(1),
@@ -1259,11 +1321,13 @@ mod tests {
     fn a_tool_appended_behind_the_placeholder_does_not_hide_the_reply() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let mut messages = vec![Message::user("ask"), Message::assistant("")];
         let saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             Some(1),
@@ -1278,6 +1342,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             saved,
             Some(1),
@@ -1298,6 +1363,7 @@ mod tests {
     fn a_transcript_that_gets_shorter_leaves_no_tail_behind() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let messages = vec![
             Message::user("one"),
             Message::assistant("two"),
@@ -1307,6 +1373,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             0,
             None,
@@ -1320,6 +1387,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &shorter,
             saved,
             None,
@@ -1336,10 +1404,12 @@ mod tests {
         let backend = backend();
         for text in ["first question", "second question"] {
             let mut id = None;
+            let mut revision = None;
             save(
                 &backend,
                 &HostId::new(HOST),
                 &mut id,
+                &mut revision,
                 &[Message::user(text)],
                 0,
                 None,
@@ -1360,10 +1430,12 @@ mod tests {
     fn a_title_is_rewritten_when_the_transcript_gains_a_question() {
         let backend = backend();
         let mut id = None;
+        let mut revision = None;
         let saved = save(
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &[Message::notice("hello")],
             0,
             None,
@@ -1378,6 +1450,7 @@ mod tests {
             &backend,
             &HostId::new(HOST),
             &mut id,
+            &mut revision,
             &messages,
             saved,
             None,

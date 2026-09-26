@@ -46,30 +46,36 @@ pub enum MessageToWorker {
     Exit,
 }
 
-pub fn plugin_worker(mut worker: RunningWorker) -> UnboundedSender<MessageToWorker> {
+pub fn plugin_worker(mut worker: RunningWorker) -> Result<UnboundedSender<MessageToWorker>> {
     let (sender, mut receiver): (
         UnboundedSender<MessageToWorker>,
         UnboundedReceiver<MessageToWorker>,
     ) = unbounded_channel();
-    zellij_bus::global_async_runtime::get_tokio_runtime().spawn({
-        async move {
-            loop {
-                match receiver.recv().await {
-                    Some(MessageToWorker::Message(message, payload)) => {
-                        if let Err(e) = worker.send_message(message, payload) {
-                            log::error!("Failed to send message to worker: {:?}", e);
-                        }
-                    },
-                    Some(MessageToWorker::Exit) => {
-                        break;
-                    },
-                    None => {
-                        log::error!("Failed to receive worker message on channel");
-                        break;
-                    },
-                }
+    // Guest callbacks are synchronous and can block. Keep them off the shared I/O
+    // runtime, whose four threads also drive downloads, timers and command replies.
+    std::thread::Builder::new()
+        .name(format!("plugin-worker-{}", worker.store.data().plugin_id))
+        .spawn(move || loop {
+            match receiver.blocking_recv() {
+                Some(MessageToWorker::Message(message, payload)) => {
+                    if let Err(e) = worker.send_message(message, payload) {
+                        Err::<(), _>(e)
+                            .context("failed to run plugin worker callback")
+                            .non_fatal();
+                    }
+                },
+                Some(MessageToWorker::Exit) => {
+                    break;
+                },
+                None => {
+                    break;
+                },
             }
-        }
-    });
-    sender
+        })
+        .context("failed to start plugin worker thread")?;
+    Ok(sender)
 }
+
+#[cfg(test)]
+#[path = "unit/plugin_worker_tests.rs"]
+mod tests;

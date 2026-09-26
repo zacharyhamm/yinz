@@ -1,6 +1,7 @@
 use crate::plugin_limits::PluginResourceLimits;
 use crate::plugin_map::{
-    PluginEnv, PluginMap, ResponseSink, RunningPlugin, VecDequeInputStream, WriteOutputStream,
+    BoundedOutputStream, PluginEnv, PluginMap, ResponseSink, RunningPlugin, VecDequeInputStream,
+    WriteOutputStream,
 };
 use crate::plugin_worker::{plugin_worker, RunningWorker};
 use crate::wasm_bridge::{LoadingContext, PluginCache, PluginCacheKey};
@@ -397,7 +398,7 @@ impl<'a> PluginLoader<'a> {
                     .with_context(err_context)?;
 
                 let worker = RunningWorker::new(store, instance, function_name);
-                let worker_sender = plugin_worker(worker);
+                let worker_sender = plugin_worker(worker)?;
                 workers.insert(function_name.into(), worker_sender);
             }
         }
@@ -741,7 +742,7 @@ impl<'a> PluginLoader<'a> {
         ctx.set_stdin(Box::new(ReadPipe::new(VecDequeInputStream(
             stdin_pipe.clone(),
         ))));
-        ctx.set_stdout(Box::new(WritePipe::new(WriteOutputStream(
+        ctx.set_stdout(Box::new(WritePipe::new(BoundedOutputStream(
             stdout_pipe.clone(),
         ))));
         ctx.set_stderr(Box::new(WritePipe::new(WriteOutputStream(Arc::new(

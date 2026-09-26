@@ -129,9 +129,13 @@ mod unix_only {
         pub static ref ZELLIJ_SOCK_DIR: PathBuf = {
             let mut ipc_dir = envs::get_socket_dir().map_or_else(
                 |_| {
-                    ZELLIJ_PROJ_DIR
+                    let dirs = directories::BaseDirs::new().expect(
+                        "Could not determine the home directory for Zellij sockets; set ZELLIJ_SOCKET_DIR",
+                    );
+                    // Keep the fallback short enough for Unix sockets, including on macOS.
+                    dirs
                         .runtime_dir()
-                        .map_or_else(|| ZELLIJ_TMP_DIR.clone(), |p| p.to_owned())
+                        .map_or_else(|| dirs.home_dir().join(".zellij/run"), |p| p.join("zellij"))
                 },
                 PathBuf::from,
             );
@@ -185,3 +189,7 @@ pub const CONFIG_OVERLAY_DIR_NAME: &str = "config.d";
 #[cfg(test)]
 #[path = "unit/cache_dir_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "unit/socket_dir_tests.rs"]
+mod socket_dir_tests;

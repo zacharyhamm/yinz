@@ -11,22 +11,17 @@ fn key(bare: BareKey) -> KeyWithModifier {
     KeyWithModifier::new(bare)
 }
 
-fn chat(id: u64, first: &str) -> Chat {
-    Chat {
-        messages: vec![Message::user(first)],
-        chat_id: Some(id),
-        ..Chat::default()
-    }
-}
-
 /// Three settled chats open, the middle one on screen: bar = [1, 2*, 3].
 fn three_tabs() -> State {
-    let mut state = ready_state();
-    settle(&mut state);
-    state.messages = vec![Message::user("two")];
-    state.chat_id = Some(2);
-    state.parked = vec![chat(1, "one"), chat(3, "three")];
-    state.chat_tab = 1;
+    let mut state = idle_state();
+    for (index, text) in ["one", "two", "three"].into_iter().enumerate() {
+        if index > 0 {
+            state.new_chat();
+        }
+        state.messages = vec![Message::user(text)];
+        state.flush_save();
+    }
+    state.switch_to_tab(1);
     state
 }
 
@@ -347,11 +342,6 @@ fn opening_a_chat_that_is_already_open_switches_to_its_tab() {
 #[test]
 fn opening_an_archived_chat_adds_a_tab_on_the_end() {
     let mut state = three_tabs();
-    // These tabs normally use synthetic IDs; archive restoration needs real rows.
-    state.chat_id = None;
-    for chat in &mut state.parked {
-        chat.chat_id = None;
-    }
     state.messages = vec![Message::user("was here"), Message::assistant("yes")];
     state.flush_save();
     let saved = state.chat_id.expect("the flush allocated an id");
@@ -379,11 +369,6 @@ fn opening_an_archived_chat_adds_a_tab_on_the_end() {
 #[test]
 fn opening_an_archived_chat_from_a_used_tab_keeps_the_tab() {
     let mut state = three_tabs();
-    // These tabs normally use synthetic IDs; archive restoration needs real rows.
-    state.chat_id = None;
-    for chat in &mut state.parked {
-        chat.chat_id = None;
-    }
     state.messages = vec![Message::user("was here"), Message::assistant("yes")];
     state.flush_save();
     let saved = state.chat_id.expect("the flush allocated an id");
@@ -525,7 +510,7 @@ fn closing_a_working_chat_stops_it() {
 fn closing_the_only_tab_leaves_a_fresh_empty_chat() {
     let mut state = ready_state();
     settle(&mut state);
-    state.chat_id = Some(1);
+    state.flush_save();
 
     state.close_tab(0);
     assert_eq!(state.chat_tab_count(), 1);
@@ -756,13 +741,14 @@ fn closing_a_tab_archives_its_queued_questions_as_notices() {
 
     // The only tab, mid-reply.
     let mut state = ready_state();
-    state.chat_id = Some(7);
+    state.flush_save();
+    let id = state.chat_id.expect("the initial transcript was archived");
     state
         .asks
         .push_back(Ask::text("and another", UserOrigin::Human));
     state.close_tab(0);
     assert!(state.messages.is_empty(), "reset in place");
-    let archived = history::load(&state.private_store(), 7).expect("archived");
+    let archived = history::load(&state.private_store(), id).expect("archived");
     let contents: Vec<&str> = archived.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(contents, ["hi", "unsent question: and another"]);
 }

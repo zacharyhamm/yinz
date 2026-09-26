@@ -169,10 +169,9 @@ fn build_command(
     (cmd, failover_cmd)
 }
 
-// How many non-Render messages a client's send queue holds before the server
-// gives up on the client. Control messages are small and individually
-// meaningful, so a client that stops draining them for this long has genuinely
-// gone away; disconnecting beats buffering without bound (and possibly having
+// How many ordered messages a client's send queue holds before the server
+// gives up on the client. Render deltas and control messages must be delivered
+// in order; disconnecting beats buffering without bound (and possibly having
 // the whole session OOM-killed on its behalf).
 #[cfg(not(test))]
 const SEND_QUEUE_CONTROL_CAPACITY: usize = 5000;
@@ -181,25 +180,21 @@ const SEND_QUEUE_CONTROL_CAPACITY: usize = 5000;
 #[cfg(test)]
 const SEND_QUEUE_CONTROL_CAPACITY: usize = 8;
 
-/// A per-client send queue that keeps at most one pending `Render` and at most
-/// one pending `PaneRenderUpdate` per pane.
+// Bound retained render allocations as well as message count: graphics uploads
+// can make a single render several MiB. The writer may hold one more in flight.
+#[cfg(not(test))]
+const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 1024;
+
+/// `Render` carries incremental terminal commands, including graphics uploads
+/// and title changes. Every frame must arrive in order, before a later Exit or
+/// SwitchSession. Only non-initial `PaneRenderUpdate`s without scrollback are
+/// replaceable snapshots; those keep one pending update per pane.
 ///
-/// A `Render` is an idempotent full-screen repaint, so when the client is not
-/// draining fast enough (or at all - a stalled terminal, a suspended process),
-/// older pending renders are pure backlog: replacing the pending one with the
-/// newest keeps the queue flat during output floods, means render volume can
-/// never disconnect a client, and lets a recovering client paint current state
-/// immediately instead of replaying thousands of stale frames. The same holds
-/// per pane for non-initial `PaneRenderUpdate`s, which are full-viewport
-/// snapshots: only the newest per pane is kept. Initial snapshots and
-/// scrollback-carrying updates are one-off responses rather than a stream of
-/// repaints, so they stay - like every other message - in a bounded FIFO (see
-/// `SEND_QUEUE_CONTROL_CAPACITY`).
-///
-/// The writer thread delivers queued control messages first and coalesced
-/// renders last: control messages are order-sensitive among themselves, while
-/// a coalesced render is latest-state and correct whenever it lands. This also
-/// guarantees a pane's initial snapshot (FIFO) precedes its coalesced updates.
+/// Ordered messages are bounded by `SEND_QUEUE_CONTROL_CAPACITY`, and queued
+/// render allocations by `SEND_QUEUE_RENDER_BYTE_CAPACITY`. A client that cannot
+/// keep up is disconnected so it can reattach with a complete repaint.
 /// A pending pane render may be delivered after a `SubscribedPaneClosed` for
 /// the same pane; clients must tolerate that race anyway, since pane closure
 /// always races in-flight updates.
@@ -211,21 +206,19 @@ struct CoalescingSendQueue {
 #[derive(Default)]
 struct SendQueueState {
     control: VecDeque<ServerToClientMsg>,
+    render_bytes: usize,
     pending_pane_renders: BTreeMap<zellij_types::data::PaneId, ServerToClientMsg>,
-    pending_render: Option<ServerToClientMsg>,
     closed: bool,
 }
 
 /// Which slot of the queue a message belongs in.
 enum SendQueueSlot {
-    FullRender,
     PaneRender(zellij_types::data::PaneId),
     Control,
 }
 
 fn slot_for(msg: &ServerToClientMsg) -> SendQueueSlot {
     match msg {
-        ServerToClientMsg::Render { .. } => SendQueueSlot::FullRender,
         ServerToClientMsg::PaneRenderUpdate {
             pane_id,
             is_initial: false,
@@ -241,7 +234,7 @@ enum SendQueuePush {
     Queued,
     /// The message was a render and replaced an older pending one.
     CoalescedRender,
-    /// The message was dropped: the control FIFO is at capacity.
+    /// The message was dropped: the ordered FIFO hit its count or render-byte limit.
     ControlQueueFull,
 }
 
@@ -259,10 +252,6 @@ impl CoalescingSendQueue {
             return SendQueuePush::Queued;
         }
         let outcome = match slot_for(&msg) {
-            SendQueueSlot::FullRender => match state.pending_render.replace(msg) {
-                Some(_) => SendQueuePush::CoalescedRender,
-                None => SendQueuePush::Queued,
-            },
             SendQueueSlot::PaneRender(pane_id) => {
                 match state.pending_pane_renders.insert(pane_id, msg) {
                     Some(_) => SendQueuePush::CoalescedRender,
@@ -272,6 +261,17 @@ impl CoalescingSendQueue {
             SendQueueSlot::Control => {
                 if state.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
                     return SendQueuePush::ControlQueueFull;
+                }
+                if let ServerToClientMsg::Render { content } = &msg {
+                    if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY - state.render_bytes {
+                        return SendQueuePush::ControlQueueFull;
+                    }
+                    state.render_bytes += content.capacity();
+                }
+                if let ServerToClientMsg::PaneRenderUpdate { pane_id, .. } = &msg {
+                    // This response includes a newer viewport. A pending snapshot
+                    // must not repaint older contents after it is delivered.
+                    state.pending_pane_renders.remove(pane_id);
                 }
                 state.control.push_back(msg);
                 SendQueuePush::Queued
@@ -285,12 +285,12 @@ impl CoalescingSendQueue {
         let mut state = self.state.lock().unwrap();
         loop {
             if let Some(msg) = state.control.pop_front() {
+                if let ServerToClientMsg::Render { content } = &msg {
+                    state.render_bytes -= content.capacity();
+                }
                 return Some(msg);
             }
             if let Some((_, msg)) = state.pending_pane_renders.pop_first() {
-                return Some(msg);
-            }
-            if let Some(msg) = state.pending_render.take() {
                 return Some(msg);
             }
             if state.closed {
@@ -306,17 +306,15 @@ impl CoalescingSendQueue {
     #[cfg(test)]
     fn len(&self) -> usize {
         let state = self.state.lock().unwrap();
-        state.control.len()
-            + state.pending_pane_renders.len()
-            + usize::from(state.pending_render.is_some())
+        state.control.len() + state.pending_pane_renders.len()
     }
 }
 
 // The ClientSender is in charge of sending messages to the client on a special thread
 // This is done so that when the unix socket buffer is full, we won't block the entire router
 // thread.
-// Renders are coalesced rather than buffered (see CoalescingSendQueue); if the bounded
-// control-message FIFO fills up regardless, we bubble up an error so that the router thread
+// Pane snapshots are coalesced (see CoalescingSendQueue); if the bounded
+// ordered-message FIFO fills up, we bubble up an error so that the router thread
 // will give up on this client and we'll stop sending messages to it.
 // If the client ever becomes responsive again, we'll send one final Disconnect message so it
 // knows what happened.
@@ -406,11 +404,12 @@ impl ClientSender {
         mut sender: IpcSenderWithContext<ServerToClientMsg>,
         live_writers: Arc<LiveWriters>,
         stream_fd: std::os::fd::OwnedFd,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let queue = Arc::new(CoalescingSendQueue::new());
         let writer_queue = queue.clone();
         live_writers.register();
-        std::thread::spawn(move || {
+        let finished_writers = live_writers.clone();
+        let worker = std::thread::Builder::new().name(format!("client-writer-{client_id}")).spawn(move || {
             let err_context = || format!("failed to send message to client {client_id}");
             let mut first_message = true;
             let mut first_render = true;
@@ -451,13 +450,17 @@ impl ClientSender {
             });
             // Last thing this thread does: from here on the socket has
             // everything it was ever going to get.
-            live_writers.deregister();
+            finished_writers.deregister();
         });
-        ClientSender {
+        if let Err(error) = worker {
+            live_writers.deregister();
+            return Err(error);
+        }
+        Ok(ClientSender {
             client_id,
             queue,
             stream_fd,
-        }
+        })
     }
     pub fn send_or_buffer(&self, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || {
@@ -1429,10 +1432,13 @@ impl ServerOsApi for ServerOsInputOutput {
         let receiver = IpcReceiverWithContext::new(stream);
         let sender = ClientSender::new(
             client_id,
-            receiver.get_sender(),
+            receiver
+                .get_sender()
+                .context("failed to duplicate client socket for writing")?,
             self.live_writers.clone(),
             stream_fd,
-        );
+        )
+        .context("failed to start client writer")?;
         self.client_senders
             .lock()
             .to_anyhow()

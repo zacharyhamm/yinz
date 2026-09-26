@@ -17,9 +17,8 @@ use tokio::io::unix::AsyncFd;
 
 use std::{
     collections::BTreeMap,
-    fs::File,
     io,
-    os::fd::{BorrowedFd, FromRawFd, IntoRawFd},
+    os::fd::{BorrowedFd, OwnedFd},
     os::unix::{
         io::{AsRawFd, RawFd},
         process::CommandExt,
@@ -64,38 +63,36 @@ pub use async_trait::async_trait;
 /// `Self::release_remote_terminal_for_warp`.
 const REMOTE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// An `AsyncReader` that wraps a `RawFd` using epoll via `AsyncFd`.
+/// An `AsyncReader` sharing the master descriptor with the transport and writes.
 ///
 /// Construction sets O_NONBLOCK but defers `AsyncFd` registration to the first
 /// `read()` call, because `AsyncFd::new()` requires a live Tokio reactor and
 /// `spawn_terminal` runs on the plain PTY thread (outside the runtime).
 struct RawFdAsyncReader {
-    /// Holds the file before reactor registration; `None` after promotion.
-    pending: Option<File>,
+    /// Holds the descriptor before reactor registration; `None` after promotion.
+    pending: Option<Arc<OwnedFd>>,
     /// Populated on first `read()` inside the Tokio runtime.
-    async_fd: Option<AsyncFd<File>>,
+    async_fd: Option<AsyncFd<Arc<OwnedFd>>>,
 }
 
 impl RawFdAsyncReader {
-    fn new(fd: RawFd) -> io::Result<Self> {
+    fn new(fd: Arc<OwnedFd>) -> io::Result<Self> {
         // Set O_NONBLOCK so AsyncFd can use epoll correctly
-        let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
-        let flags = fcntl(borrowed_fd, FcntlArg::F_GETFL)
-            .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
+        let flags =
+            fcntl(&fd, FcntlArg::F_GETFL).map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         let mut oflags = OFlag::from_bits_truncate(flags);
         oflags.insert(OFlag::O_NONBLOCK);
-        fcntl(borrowed_fd, FcntlArg::F_SETFL(oflags))
+        fcntl(&fd, FcntlArg::F_SETFL(oflags))
             .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
 
-        let file = unsafe { File::from_raw_fd(fd) };
         Ok(Self {
-            pending: Some(file),
+            pending: Some(fd),
             async_fd: None,
         })
     }
 
     /// Lazily register with the Tokio reactor on first use.
-    fn get_async_fd(&mut self) -> io::Result<&mut AsyncFd<File>> {
+    fn get_async_fd(&mut self) -> io::Result<&mut AsyncFd<Arc<OwnedFd>>> {
         if self.async_fd.is_none() {
             let file = self
                 .pending
@@ -205,7 +202,7 @@ fn handle_openpty(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-) -> Result<(RawFd, ProcessId)> {
+) -> Result<(OwnedFd, ProcessId)> {
     let err_context = |cmd: &RunCommand| {
         format!(
             "failed to open PTY for command '{}'",
@@ -276,7 +273,7 @@ fn handle_openpty(
         quit_cb(PaneId::Terminal(terminal_id), exit_status, cmd);
     });
 
-    Ok((master.into_raw_fd(), child_id))
+    Ok((master, child_id))
 }
 
 /// Spawns a new terminal from the parent terminal with [`termios`](termios::Termios)
@@ -288,7 +285,7 @@ fn handle_terminal(
     quit_cb: Box<dyn Fn(PaneId, Option<i32>, RunCommand) + Send>,
     child_state_cb: Option<ChildStateCb>,
     terminal_id: TerminalId,
-) -> Result<(RawFd, ProcessId)> {
+) -> Result<(OwnedFd, ProcessId)> {
     let err_context = || "failed to spawn child terminal".to_string();
 
     // Create a pipe to allow the child the communicate the shell's pid to its
@@ -305,7 +302,7 @@ fn handle_terminal(
                 terminal_id,
             )
             .with_context(err_context),
-            None => Err::<(i32, ProcessId), _>(e)
+            None => Err::<(OwnedFd, ProcessId), _>(e)
                 .context("failed to start pty")
                 .with_context(err_context)
                 .to_log(),
@@ -328,22 +325,24 @@ pub(crate) enum PaneTransport {
     Reserved,
     /// A pty master this server holds directly, whether it came from an
     /// in-process `openpty` or over `SCM_RIGHTS` from a local supervisor.
-    Local(RawFd),
+    /// Shared with the reader and in-flight writes so aborting a reader cannot
+    /// leave a recycled descriptor number in the transport table.
+    Local(Arc<OwnedFd>),
     /// A pty owned by a broker on another machine. There is no descriptor and no
     /// usable pid on this side; every operation is a frame on the connection.
     Remote(Arc<RemoteConn>),
 }
 
 impl PaneTransport {
-    /// The local master descriptor, if this pane has one.
+    /// An owning reference to the local master descriptor, if this pane has one.
     ///
     /// Only for operations that are genuinely fd-shaped and have no meaning
     /// otherwise. Prefer matching exhaustively where a non-local pane needs its
     /// own answer rather than "no fd".
-    fn local_fd(&self) -> Option<RawFd> {
+    fn local_fd(&self) -> Option<Arc<OwnedFd>> {
         match self {
             PaneTransport::Reserved | PaneTransport::Remote(_) => None,
-            PaneTransport::Local(fd) => Some(*fd),
+            PaneTransport::Local(fd) => Some(fd.clone()),
         }
     }
 
@@ -659,7 +658,11 @@ impl UnixPtyBackend {
                     Ok(pending) => {
                         let spawned =
                             pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
-                        let master_fd = spawned.master.into_raw_fd();
+                        let master_fd = Arc::new(spawned.master);
+                        let async_reader = Box::new(
+                            RawFdAsyncReader::new(master_fd.clone())
+                                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
+                        ) as Box<dyn AsyncReader>;
                         self.terminal_id_to_transport
                             .lock()
                             .to_anyhow()?
@@ -668,10 +671,6 @@ impl UnixPtyBackend {
                             .lock()
                             .to_anyhow()?
                             .insert(terminal_id, spawned.handle);
-                        let async_reader = Box::new(
-                            RawFdAsyncReader::new(master_fd)
-                                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
-                        ) as Box<dyn AsyncReader>;
                         return Ok((async_reader, spawned.child_pid));
                     },
                     Err(e) => {
@@ -705,14 +704,15 @@ impl UnixPtyBackend {
             self.child_state_cb(),
             terminal_id,
         )?;
+        let pid_primary = Arc::new(pid_primary);
+        let async_reader = Box::new(
+            RawFdAsyncReader::new(pid_primary.clone())
+                .map_err(|e| anyhow::anyhow!("failed to create async reader: {}", e))?,
+        ) as Box<dyn AsyncReader>;
         self.terminal_id_to_transport
             .lock()
             .to_anyhow()?
             .insert(terminal_id, PaneTransport::Local(pid_primary));
-        let async_reader = Box::new(
-            RawFdAsyncReader::new(pid_primary)
-                .map_err(|e| anyhow::anyhow!("failed to create async reader: {}", e))?,
-        ) as Box<dyn AsyncReader>;
         Ok((async_reader, child_pid))
     }
 
@@ -745,8 +745,14 @@ impl UnixPtyBackend {
         match transports.get(&terminal_id) {
             Some(PaneTransport::Local(fd)) => {
                 if cols > 0 && rows > 0 {
-                    set_terminal_size_using_fd(*fd, cols, rows, width_in_pixels, height_in_pixels)
-                        .with_context(err_context)?;
+                    set_terminal_size_using_fd(
+                        fd.as_raw_fd(),
+                        cols,
+                        rows,
+                        width_in_pixels,
+                        height_in_pixels,
+                    )
+                    .with_context(err_context)?;
                 }
             },
             Some(PaneTransport::Remote(conn)) => {
@@ -780,7 +786,7 @@ impl UnixPtyBackend {
         // the return is how many bytes were *accepted*, and a short count means
         // "ask again", never "written".
         enum Target {
-            Local(RawFd),
+            Local(Arc<OwnedFd>),
             Remote(Arc<RemoteConn>),
         }
         let target = match self
@@ -790,7 +796,7 @@ impl UnixPtyBackend {
             .with_context(err_context)?
             .get(&terminal_id)
         {
-            Some(PaneTransport::Local(fd)) => Target::Local(*fd),
+            Some(PaneTransport::Local(fd)) => Target::Local(fd.clone()),
             Some(PaneTransport::Remote(conn)) => Target::Remote(conn.clone()),
             // The pane is already visible while its remote transport starts;
             // input typed into the loading screen is intentionally discarded.
@@ -801,7 +807,7 @@ impl UnixPtyBackend {
         };
 
         match target {
-            Target::Local(fd) => try_write_to_fd(fd, buf).with_context(err_context),
+            Target::Local(fd) => try_write_to_fd(fd.as_raw_fd(), buf).with_context(err_context),
             Target::Remote(conn) => conn.write_input(buf).with_context(err_context),
         }
     }
@@ -816,9 +822,7 @@ impl UnixPtyBackend {
             .with_context(err_context)?
             .get(&terminal_id)
         {
-            Some(PaneTransport::Local(fd)) => {
-                termios::tcdrain(unsafe { BorrowedFd::borrow_raw(*fd) }).with_context(err_context)
-            },
+            Some(PaneTransport::Local(fd)) => termios::tcdrain(fd).with_context(err_context),
             // "Wait until the kernel has handed every queued byte to the
             // terminal" does not survive the trip: the queue that matters is on
             // the far side, and answering would cost a round trip on the pty
@@ -838,9 +842,7 @@ impl UnixPtyBackend {
             .ok()?
             .get(&terminal_id)?
             .local_fd()?;
-        unistd::tcgetpgrp(unsafe { BorrowedFd::borrow_raw(fd) })
-            .ok()
-            .map(|pgid| pgid.as_raw())
+        unistd::tcgetpgrp(fd).ok().map(|pgid| pgid.as_raw())
     }
 
     pub fn kill(&self, pid: ProcessId) -> Result<()> {
@@ -1096,10 +1098,8 @@ impl UnixPtyBackend {
     /// Give a pane's supervisor up without killing it, so another server can take
     /// it over. `clear_terminal_id` minus the `terminate_host`.
     ///
-    /// The master dup is deliberately not closed here: it belongs to the reader
-    /// task's `RawFdAsyncReader`, which closes it when the caller aborts that
-    /// task. Closing it here as well would race that drop into a double close of
-    /// a descriptor another pane may by then have been given.
+    /// The reader and transport share ownership of the master. Removing the
+    /// transport closes it only after all in-flight reads and writes release it.
     pub fn release_terminal_for_warp(
         &self,
         terminal_id: TerminalId,
@@ -1295,7 +1295,11 @@ impl UnixPtyBackend {
             session_name: zellij_runtime::envs::get_session_name().ok(),
         })?;
         let attached = pending.finish(terminal_exit_callback(quit_cb), self.child_state_cb());
-        let master_fd = attached.master.into_raw_fd();
+        let master_fd = Arc::new(attached.master);
+        let reader = Box::new(
+            RawFdAsyncReader::new(master_fd.clone())
+                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
+        ) as Box<dyn AsyncReader>;
         self.terminal_id_to_transport
             .lock()
             .to_anyhow()?
@@ -1304,10 +1308,6 @@ impl UnixPtyBackend {
             .lock()
             .to_anyhow()?
             .insert(terminal_id, attached.handle);
-        let reader = Box::new(
-            RawFdAsyncReader::new(master_fd)
-                .map_err(|e| anyhow!("failed to create async reader: {}", e))?,
-        ) as Box<dyn AsyncReader>;
         Ok(AdoptedTerminal {
             terminal_id,
             reader,
@@ -1339,12 +1339,17 @@ pub struct AdoptedTerminal {
 }
 
 #[cfg(test)]
+#[path = "unit/pty_descriptor_tests.rs"]
+mod pty_descriptor_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
     use nix::sys::termios;
+    use std::fs::File;
     use std::io::Read;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 
     nix::ioctl_read_bad!(tiocgwinsz, libc::TIOCGWINSZ, Winsize);
 
@@ -1487,7 +1492,6 @@ mod tests {
                 terminal_id,
             )
             .unwrap();
-            let master = unsafe { File::from_raw_fd(master) };
             assert_ne!(
                 fcntl(&master, FcntlArg::F_GETFD).unwrap() & libc::FD_CLOEXEC,
                 0,
@@ -1683,10 +1687,10 @@ mod tests {
                 .get(&id)
                 .unwrap()
             {
-                PaneTransport::Local(fd) => *fd,
+                PaneTransport::Local(fd) => fd.clone(),
                 _ => panic!("expected local PTY"),
             };
-            let applied = termios::tcgetattr(unsafe { BorrowedFd::borrow_raw(master) }).unwrap();
+            let applied = termios::tcgetattr(master).unwrap();
             assert_eq!(WireTermios::from_termios(&applied), snapshot);
             let outcome = tokio::time::timeout(Duration::from_secs(10), async {
                 let mut output = Vec::new();

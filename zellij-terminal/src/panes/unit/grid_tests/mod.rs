@@ -1160,6 +1160,25 @@ mod vttest;
 mod wide_chars;
 
 #[test]
+fn search_retries_overlapping_prefixes_in_rows_and_wrapped_tails() {
+    for (content, needle, width, count, start, end) in [
+        ("aaab", "aab", 8, 1, (0, 1), (0, 4)),
+        ("aaab", "aab", 2, 1, (0, 1), (1, 2)),
+        ("ababc", "abc", 8, 1, (0, 2), (0, 5)),
+        ("ababc", "abc", 3, 1, (0, 2), (1, 2)),
+        ("aab aab", "aab", 4, 2, (0, 0), (0, 3)),
+        ("aabaab", "aab", 3, 2, (0, 0), (0, 3)),
+    ] {
+        let mut grid = create_grid_with_size_and_raw(4, width, content.as_bytes());
+        grid.set_search_string(needle);
+        let selections = &grid.search_results.selections;
+        assert_eq!(selections.len(), count, "{needle:?} in {content:?}");
+        assert_eq!(selections[0].start, Position::new(start.0, start.1));
+        assert_eq!(selections[0].end, Position::new(end.0, end.1));
+    }
+}
+
+#[test]
 fn searching_erased_wrapped_rows_does_not_index_empty_continuations() {
     for content in ["abcdx\x1b[2K", "abcdefghx\x1b[2K\x1b[A\x1b[2K"] {
         let mut grid = create_grid_with_size_and_raw(4, 4, content.as_bytes());

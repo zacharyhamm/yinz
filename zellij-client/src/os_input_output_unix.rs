@@ -80,13 +80,13 @@ impl Iterator for BlockingSignalIterator {
 pub(crate) fn setup_ipc(
     socket: interprocess::local_socket::Stream,
     _path: &Path,
-) -> (
+) -> io::Result<(
     IpcSenderWithContext<zellij_ipc::ipc::ClientToServerMsg>,
     IpcReceiverWithContext<zellij_ipc::ipc::ServerToClientMsg>,
-) {
+)> {
     let sender = IpcSenderWithContext::new(socket);
-    let receiver = sender.get_receiver();
-    (sender, receiver)
+    let receiver = sender.get_receiver()?;
+    Ok((sender, receiver))
 }
 
 pub(crate) fn enable_mouse_support(stdout: &mut dyn Write) -> Result<()> {

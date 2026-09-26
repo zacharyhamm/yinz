@@ -2,7 +2,9 @@
 //! is exactly what the test wrote. Each `download` future completes when its exchange does, so
 //! only the stalled-transfer regression waits for the client's timeout.
 
-use super::{build_client, parse_content_range, ContentRange, Downloader, DownloaderError};
+use super::{
+    build_client, parse_content_range, ContentRange, Downloader, DownloaderError, MAX_LAYOUT_BYTES,
+};
 use isahc::error::ErrorKind;
 use isahc::http::StatusCode;
 use std::path::{Path, PathBuf};
@@ -700,6 +702,33 @@ async fn download_without_cache_returns_a_successful_body() {
     let body = Downloader::download_without_cache(&url).await.unwrap();
 
     assert_eq!(body, "layout {}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn layout_downloads_enforce_the_body_limit_without_content_length() {
+    for blocking in [false, true] {
+        for length in [MAX_LAYOUT_BYTES, MAX_LAYOUT_BYTES + 1] {
+            let (url, _requests) =
+                serve(vec![Exchange::new("HTTP/1.1 200 OK", &vec![b'x'; length])]).await;
+            let result = if blocking {
+                let url = url.clone();
+                tokio::task::spawn_blocking(move || {
+                    Downloader::download_without_cache_blocking(&url)
+                })
+                .await
+                .unwrap()
+            } else {
+                Downloader::download_without_cache(&url).await
+            };
+            if length == MAX_LAYOUT_BYTES {
+                assert_eq!(result.unwrap().len(), length);
+            } else {
+                assert!(
+                    matches!(result, Err(DownloaderError::LayoutTooLarge { url: failed_url }) if failed_url == url)
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

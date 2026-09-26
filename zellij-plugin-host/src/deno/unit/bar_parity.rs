@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    plugin_map::{RunningPlugin, VecDequeInputStream, WriteOutputStream},
+    plugin_map::{BoundedOutputStream, RunningPlugin, VecDequeInputStream},
     test_env::test_env,
     zellij_exports::{wasi_read_bytes, wasi_write_object},
 };
@@ -81,7 +81,7 @@ impl Pair {
         wasi.stdin(Box::new(ReadPipe::new(VecDequeInputStream(
             env.stdin_pipe.clone(),
         ))));
-        wasi.stdout(Box::new(WritePipe::new(WriteOutputStream(
+        wasi.stdout(Box::new(WritePipe::new(BoundedOutputStream(
             env.stdout_pipe.clone(),
         ))));
         wasi.inherit_stderr();

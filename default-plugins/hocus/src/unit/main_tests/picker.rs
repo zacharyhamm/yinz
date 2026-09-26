@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn unicode_case_expansions_and_contractions_complete_without_hiding_the_match() {
+    for (title, filter, completed) in [
+        ("İstanbul", "İ", "İstanbul"),
+        ("İstanbul", "i", "i\u{307}stanbul"),
+        ("Kelvin", "k", "kelvin"),
+        ("İ €uro", "€", "€uro"),
+    ] {
+        let mut state = picker_state(&[title]);
+        type_filter(&mut state, filter);
+        state.picker_key(KeyWithModifier::new(BareKey::Tab));
+        assert_eq!(picker(&state).filter, completed);
+        assert_eq!(visible_texts(&state), [title]);
+    }
+}
+
+#[test]
 fn the_picker_selection_stops_at_both_ends() {
     let mut state = picker_state(&["first", "second"]);
     state.picker_key(KeyWithModifier::new(BareKey::Up));

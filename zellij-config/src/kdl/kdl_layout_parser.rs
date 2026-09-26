@@ -244,13 +244,15 @@ impl<'a> KdlLayoutParser<'a> {
                 )),
             }
         } else if let Some(size) = kdl_get_int_property_or_child_value!(kdl_node, "size") {
-            if size == 0 {
+            if size <= 0 {
                 return Err(kdl_parsing_error!(
                     "size should be greater than 0".to_string(),
                     kdl_node
                 ));
             }
-            Ok(Some(SplitSize::Fixed(size as usize)))
+            Ok(Some(SplitSize::Fixed(usize::try_from(size).map_err(
+                |_| kdl_parsing_error!("size is out of range".to_owned(), kdl_node),
+            )?)))
         } else if let Some(node) = kdl_property_or_child_value_node!(kdl_node, "size") {
             Err(kdl_parsing_error!(
                 "size should be a fixed number (eg. 1) or a quoted percent (eg. \"50%\")"
@@ -300,7 +302,9 @@ impl<'a> KdlLayoutParser<'a> {
                     kdl_node
                 ));
             }
-            Ok(Some(PercentOrFixed::Fixed(size as usize)))
+            Ok(Some(PercentOrFixed::Fixed(usize::try_from(size).map_err(
+                |_| kdl_parsing_error!(format!("{value_name} is out of range"), kdl_node),
+            )?)))
         } else if let Some(node) = kdl_property_or_child_value_node!(kdl_node, value_name) {
             Err(kdl_parsing_error!(
                 format!(
@@ -2122,19 +2126,27 @@ impl<'a> KdlLayoutParser<'a> {
         let max_panes = kdl_get_int_property_or_child_value!(layout_node, "max_panes");
         let min_panes = kdl_get_int_property_or_child_value!(layout_node, "min_panes");
         let exact_panes = kdl_get_int_property_or_child_value!(layout_node, "exact_panes");
+        let count = |value: i64| {
+            usize::try_from(value).map_err(|_| {
+                kdl_parsing_error!(
+                    "pane constraints must be non-negative numbers in range".to_owned(),
+                    layout_node
+                )
+            })
+        };
         let mut constraint_count = 0;
         let mut constraint = None;
         if let Some(max_panes) = max_panes {
             constraint_count += 1;
-            constraint = Some(LayoutConstraint::MaxPanes(max_panes as usize));
+            constraint = Some(LayoutConstraint::MaxPanes(count(max_panes)?));
         }
         if let Some(min_panes) = min_panes {
             constraint_count += 1;
-            constraint = Some(LayoutConstraint::MinPanes(min_panes as usize));
+            constraint = Some(LayoutConstraint::MinPanes(count(min_panes)?));
         }
         if let Some(exact_panes) = exact_panes {
             constraint_count += 1;
-            constraint = Some(LayoutConstraint::ExactPanes(exact_panes as usize));
+            constraint = Some(LayoutConstraint::ExactPanes(count(exact_panes)?));
         }
         if constraint_count > 1 {
             return Err(kdl_parsing_error!(

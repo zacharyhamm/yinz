@@ -230,7 +230,7 @@ impl SearchResult {
                     }
                     if end_found {
                         let mut selection = Selection::default();
-                        selection.start(start.unwrap());
+                        selection.start(start.take().unwrap());
                         selection.end(Position::new(ridx as i32, (hidx + 1) as u16));
                         res.push(selection);
                         nidx = 0;
@@ -243,13 +243,16 @@ impl SearchResult {
                     nidx += 1;
                 }
             } else {
-                // Chars don't match. Start searching the needle from the beginning
-                start = None;
-                nidx = 0;
-                if matches!(source, SearchSource::Tail(..)) {
-                    // When searching the tail and we find a mismatch, just quit right now
-                    break;
+                // Retry immediately after the failed start: the matched prefix can contain
+                // another start ("aab" in "aaab"), even when the mismatch is in a wrapped row.
+                if let Some(failed_start) = start.take() {
+                    ridx = orig_ridx;
+                    hidx = failed_start.column();
+                    source = SearchSource::Main(row);
+                    tailit = tail.iter();
+                    haystack_char = row.columns[hidx].character;
                 }
+                nidx = 0;
             }
 
             hidx += 1;

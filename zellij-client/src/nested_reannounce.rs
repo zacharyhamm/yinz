@@ -78,7 +78,14 @@ impl NestedReannounce {
     }
 
     pub fn stop(&self) {
+        // Serialize the predicate change with the worker entering its wait.
+        // An atomic alone can lose this wakeup after the announce budget is spent.
+        let _scheduler = self.scheduler.lock().unwrap();
         self.stop.store(true, Ordering::Relaxed);
         self.wakeup.notify_all();
     }
 }
+
+#[cfg(test)]
+#[path = "unit/nested_reannounce_tests.rs"]
+mod tests;

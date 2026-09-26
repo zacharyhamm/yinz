@@ -183,6 +183,7 @@ fn a_server_that_acknowledges_close_but_keeps_the_pane_hits_the_deadline() {
         };
         let _ = receiver
             .get_sender::<ServerToClientMsg>()
+            .unwrap()
             .send_server_msg(response);
     });
     let result =
