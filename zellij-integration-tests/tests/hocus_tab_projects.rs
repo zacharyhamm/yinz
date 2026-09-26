@@ -114,7 +114,7 @@ fn a_tab_is_named_after_the_project_its_agent_is_in() {
 }
 
 #[test]
-fn a_lone_shell_gets_a_project_name_after_tab_creation() {
+fn a_lone_pane_title_takes_priority_over_its_project() {
     let folder = tempfile::tempdir().expect("shell folder");
     let layout = format!(
         r#"layout {{
@@ -139,14 +139,6 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
             .is_some_and(|bar| bar.contains("Tab #1"))
     });
 
-    assert_eq!(
-        zellij.run_cli_action(CliAction::RenamePane {
-            name: "quiet-command".into(),
-            pane_id: Some(shell.terminal_id().to_string()),
-        }),
-        0
-    );
-    wait_for_tab(&zellij, "quiet-command", &["Tab #1"]);
     mutate_store(
         &zellij,
         "project_remember",
@@ -165,13 +157,21 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
         },
     );
     assert_eq!(
+        zellij.run_cli_action(CliAction::RenamePane {
+            name: "quiet-command".into(),
+            pane_id: Some(shell.terminal_id().to_string()),
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "quiet-command", &["quiet-shell-project"]);
+    assert_eq!(
         zellij.run_cli_action(CliAction::RenameTab {
             name: "my-explicit-name".into(),
             tab_id: None,
         }),
         0
     );
-    wait_for_tab(&zellij, "my-explicit-name", &["quiet-shell-project"]);
+    wait_for_tab(&zellij, "my-explicit-name", &["quiet-command"]);
     mutate_store(
         &zellij,
         "project_forget",
@@ -190,8 +190,8 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
     );
     wait_for_tab(
         &zellij,
-        "renamed-project",
-        &["my-explicit-name", "quiet-command"],
+        "quiet-command",
+        &["my-explicit-name", "renamed-project"],
     );
     assert_eq!(
         zellij.run_cli_action(CliAction::RenameTab {
@@ -200,7 +200,7 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
         }),
         0
     );
-    wait_for_tab(&zellij, "another-name", &["renamed-project"]);
+    wait_for_tab(&zellij, "another-name", &["quiet-command"]);
     assert_eq!(
         zellij.run_cli_action(CliAction::RenameTab {
             name: String::new(),
@@ -208,13 +208,21 @@ fn a_lone_shell_gets_a_project_name_after_tab_creation() {
         }),
         0
     );
-    wait_for_tab(&zellij, "renamed-project", &["another-name"]);
+    wait_for_tab(&zellij, "quiet-command", &["another-name"]);
+    assert_eq!(
+        zellij.run_cli_action(CliAction::RenamePane {
+            name: String::new(),
+            pane_id: Some(shell.terminal_id().to_string()),
+        }),
+        0
+    );
+    wait_for_tab(&zellij, "renamed-project", &["quiet-command"]);
     mutate_store(
         &zellij,
         "project_forget",
         serde_json::json!({"name": "renamed-project"}),
     );
-    wait_for_tab(&zellij, "quiet-command", &["renamed-project"]);
+    wait_for_tab(&zellij, "Tab #1", &["renamed-project"]);
 }
 
 #[test]
@@ -285,6 +293,14 @@ fn hidden_panes_keep_naming_the_tab_and_follow_cwd_changes() {
         0
     );
     let editor = zellij.expect_pty_spawn();
+    wait_for_tab(&zellij, "EDITING SCROLLBACK", &["hidden-alpha"]);
+    assert_eq!(
+        zellij.run_cli_action(CliAction::RenamePane {
+            name: String::new(),
+            pane_id: Some(editor.terminal_id().to_string()),
+        }),
+        0
+    );
     wait_for_tab(
         &zellij,
         &format!("[{}] hidden-alpha", editor.terminal_id()),

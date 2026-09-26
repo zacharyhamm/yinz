@@ -276,8 +276,8 @@ impl Screen {
     /// Names are chosen in this order:
     ///
     /// 1. An explicit tab name.
-    /// 2. The project the tab is working on, when a plugin has told us of one.
-    /// 3. A lone pane that lends its own title (see [`Tab::lent_pane_title`]).
+    /// 2. A lone pane that lends its own title (see [`Tab::lent_pane_title`]).
+    /// 3. The project the tab is working on, when a plugin has told us of one.
     /// 4. The default or layout name the tab was born with.
     ///
     /// Explicit and default names are stored on the tab. The other two are worked out afresh
@@ -360,9 +360,9 @@ impl Screen {
 
     /// The project name a tab shows, before any `#1`/`#2` is worked out.
     ///
-    /// An explicit tab name is authoritative; a pane title is only a fallback.
+    /// An explicit tab name or a lone pane's explicit title takes priority.
     fn tab_project_name(&self, tab: &Tab) -> Option<&str> {
-        if !tab.tab_name_is_automatic() {
+        if !tab.tab_name_is_automatic() || tab.lent_pane_title().is_some() {
             return None;
         }
         self.tab_projects.get(&tab.id).map(String::as_str)
