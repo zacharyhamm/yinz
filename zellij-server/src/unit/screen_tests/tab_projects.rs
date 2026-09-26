@@ -397,9 +397,9 @@ fn the_last_tab_on_a_project_goes_back_to_the_plain_name() {
     assert_eq!(name_of(&screen, TabId::new(1)), "hocus");
 }
 
-/// A lone-pane title is the fallback when no current project names the tab.
+/// A lone pane's explicit title is more specific than its project name.
 #[test]
-fn a_project_outranks_a_lone_pane_title() {
+fn a_lone_pane_title_outranks_the_project() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     // Only a tab that draws pane titles has one to lend.
@@ -413,9 +413,66 @@ fn a_project_outranks_a_lone_pane_title() {
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
     set_projects(&mut screen, &[]);
     assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
+}
+
+#[test]
+fn a_lone_agent_panes_full_title_outranks_the_project() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    let tab_id = TabId::new(0);
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    new_tab(&mut screen, 1, tab_id);
+    new_tab(&mut screen, 2, TabId::new(1));
+    set_projects(&mut screen, &[(0, "hocus"), (1, "hocus")]);
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Titles);
+    screen
+        .with_pane(pane_id, |pane| {
+            pane.handle_pty_bytes(b"\x1b]0;codex\x07".to_vec());
+            pane.set_title_prefix(Some("hocus:topic".to_owned()));
+        })
+        .expect("TEST");
+
+    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
+    assert_eq!(name_of(&screen, TabId::new(1)), "hocus");
+
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .rename_by_user("notes".to_owned());
+    assert_eq!(name_of(&screen, tab_id), "[1] notes");
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .rename_by_user(String::new());
+    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
+
+    let second_pane_id = PaneId::Terminal(TerminalId::new(3));
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .new_pane(
+            second_pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(ClientId::new(1)),
+            None,
+        )
+        .expect("TEST");
+    assert_eq!(name_of(&screen, tab_id), "hocus #1");
+    assert_eq!(name_of(&screen, TabId::new(1)), "hocus #2");
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .close_pane(second_pane_id, false, None);
+    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
 }
 
 /// A second pane means no title is being lent, so the project names the tab.
@@ -478,9 +535,9 @@ fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
     );
 }
 
-/// A titled, retained exited pane keeps the project name and exit marker.
+/// A titled, retained exited pane keeps lending its title and exit marker.
 #[test]
-fn a_pane_that_exits_with_a_title_keeps_the_project_name() {
+fn a_pane_that_exits_with_a_title_still_lends_it() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     let tab = screen.get_tab_by_id_mut(TabId::new(0)).unwrap();
@@ -499,7 +556,10 @@ fn a_pane_that_exits_with_a_title_keeps_the_project_name() {
 
     set_projects(&mut screen, &[(0, "hocus")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus [ EXITED ] ");
+    assert_eq!(
+        name_of(&screen, TabId::new(0)),
+        "[1] cargo test [ EXITED ] "
+    );
     set_projects(&mut screen, &[]);
     assert_eq!(
         name_of(&screen, TabId::new(0)),
@@ -618,6 +678,43 @@ fn a_long_project_name_is_cut_rather_than_the_exit_marker() {
         name
     );
     assert!(name.width() <= 40, "{:?} is {} columns", name, name.width());
+}
+
+#[test]
+fn a_long_lent_pane_title_keeps_the_width_limit_and_exit_marker() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    let tab_id = TabId::new(0);
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    new_tab(&mut screen, 1, tab_id);
+    set_projects(&mut screen, &[(0, "hocus")]);
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Titles);
+    screen
+        .with_pane(pane_id, |pane| {
+            pane.rename("界".repeat(40).into_bytes());
+            pane.set_title_prefix(Some("hocus:topic".to_owned()));
+        })
+        .expect("TEST");
+
+    for exited in [false, true] {
+        if exited {
+            screen.get_tab_by_id_mut(tab_id).unwrap().hold_pane(
+                pane_id,
+                Some(2),
+                false,
+                RunCommand::default(),
+            );
+        }
+        let name = name_of(&screen, tab_id);
+        assert!(name.starts_with("[1] hocus:topic: "), "{name:?}");
+        assert!(name.contains('…'), "{name:?}");
+        assert!(name.width() <= 40, "{name:?} is {} columns", name.width());
+        if exited {
+            assert!(name.ends_with(" [ EXIT CODE: 2 ] "), "{name:?}");
+        }
+    }
 }
 
 /// A name the user typed is cut the same way. It was not before - only the lent title was.
