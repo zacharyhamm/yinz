@@ -311,56 +311,132 @@ fn daemon_conversations_follow_their_uis_not_the_daemons_pane() {
 
 #[tokio::test]
 async fn bridge_registers_before_delivering_replies_and_preserves_the_protocol() {
+    for (close_from_ui, wait_for_ack) in
+        [(true, true), (false, true), (true, false), (false, false)]
+    {
+        let root = tempfile::tempdir().unwrap();
+        let registration = registration(root.path(), "aaaaaaaaaaaa");
+        let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (backend_stream, server_stream) = tokio::io::duplex(4096);
+        let requests = [
+            r#"{ "id":0,"method":"initialize","params":{"clientInfo":{"name":"test","version":"1"}},"extra":true }"#,
+            r#"{"method":"initialized","extra":[1,2]}"#,
+            r#"{"id":1,"method":"thread/start","params":{"cwd":"/same-directory"},"extra":"preserved"}"#,
+        ];
+        let replies = [
+            r#"{ "id":0,"result":{"userAgent":"test"},"extra":true }"#,
+            r#"{"method":"turn/started","params":{"threadId":"worker"},"extra":[1,2]}"#,
+            r#"{"id":1,"result":{"thread":{"id":"thread-a"},"extra":"preserved"}}"#,
+        ];
+        let serve = async {
+            let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
+            relay(ui, backend_stream, &registration).await.unwrap();
+        };
+        let backend = async {
+            let mut ws = tokio_tungstenite::accept_async(server_stream)
+                .await
+                .unwrap();
+            ws.send(Message::Ping(b"backend".to_vec().into()))
+                .await
+                .unwrap();
+            // The UI request can arrive before the relay processes the backend ping.
+            let mut pong_received = false;
+            for (request, reply) in requests.iter().zip(replies) {
+                loop {
+                    let message = ws.next().await.unwrap().unwrap();
+                    if let Message::Pong(payload) = message {
+                        assert_eq!(&payload[..], b"backend");
+                        pong_received = true;
+                    } else {
+                        assert_eq!(message, Message::text(*request));
+                        break;
+                    }
+                }
+                ws.send(Message::text(reply)).await.unwrap();
+            }
+            if !pong_received {
+                assert_eq!(
+                    ws.next().await.unwrap().unwrap(),
+                    Message::Pong(b"backend".to_vec().into())
+                );
+            }
+            if !close_from_ui {
+                ws.close(None).await.unwrap();
+                if !wait_for_ack {
+                    return;
+                }
+            }
+            assert!(matches!(
+                ws.next().await.unwrap().unwrap(),
+                Message::Close(_)
+            ));
+        };
+        let client = async {
+            let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", ui_stream)
+                .await
+                .unwrap();
+            ws.send(Message::Ping(b"ui".to_vec().into())).await.unwrap();
+            assert_eq!(
+                ws.next().await.unwrap().unwrap(),
+                Message::Pong(b"ui".to_vec().into())
+            );
+            for (request, reply) in requests.iter().zip(replies) {
+                ws.send(Message::text(*request)).await.unwrap();
+                assert_eq!(ws.next().await.unwrap().unwrap(), Message::text(reply));
+            }
+            assert!(binding_for(root.path(), "thread-a").unwrap().is_some());
+            assert!(binding_for(root.path(), "worker").unwrap().is_none());
+            if close_from_ui {
+                ws.close(None).await.unwrap();
+                if !wait_for_ack {
+                    return;
+                }
+            }
+            assert!(matches!(
+                ws.next().await.unwrap().unwrap(),
+                Message::Close(_)
+            ));
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(serve, backend, client)
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn bridge_reports_a_rejected_backend_handshake() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     let root = tempfile::tempdir().unwrap();
     let registration = registration(root.path(), "aaaaaaaaaaaa");
-    let program = root.path().join("codex");
-    zellij_test_support::write_warm_script(
-        &program,
-        r#"#!/bin/sh
-[ "$1 $2" = 'app-server proxy' ] || exit 1
-IFS= read -r request
-printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-a"},"extra":"preserved"}}'
-IFS= read -r request
-printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-a"}}'
-cat >/dev/null
-"#,
-    );
-    let socket = registration.dir.path().join("test.sock");
-    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
+    let (backend_stream, mut server_stream) = tokio::io::duplex(4096);
     let serve = async {
-        let (stream, _) = listener.accept().await.unwrap();
-        proxy(stream, &program, &registration).await.unwrap();
+        let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
+        let error = relay(ui, backend_stream, &registration).await.unwrap_err();
+        assert!(format!("{error:#}").contains("establish Codex daemon WebSocket connection"));
+        assert!(format!("{error:#}").contains("403"));
     };
-    let client = async {
-        let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
-        let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
+    let backend = async {
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(server_stream.read_u8().await.unwrap());
+        }
+        server_stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
             .await
             .unwrap();
-        ws.send(Message::text(
-            r#"{"id":1,"method":"thread/start","params":{"cwd":"/same-directory"}}"#,
-        ))
-        .await
-        .unwrap();
-        let reply = ws.next().await.unwrap().unwrap().into_text().unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&reply).unwrap()["result"]["extra"],
-            "preserved"
-        );
-        assert!(binding_for(root.path(), "thread-a").unwrap().is_some());
-        ws.send(Message::text(
-            r#"{"id":2,"method":"turn/start","params":{"threadId":"thread-a"}}"#,
-        ))
-        .await
-        .unwrap();
-        let reply = ws.next().await.unwrap().unwrap().into_text().unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&reply).unwrap()["method"],
-            "turn/started"
-        );
-        ws.close(None).await.unwrap();
+    };
+    let client = async {
+        let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", ui_stream)
+            .await
+            .unwrap();
+        let _ = ws.next().await;
     };
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        tokio::join!(serve, client)
+        tokio::join!(serve, backend, client)
     })
     .await
     .unwrap();
