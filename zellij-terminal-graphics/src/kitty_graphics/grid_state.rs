@@ -1,6 +1,6 @@
 use super::parser::{DecodedImage, KittyCommand, KittyError, KittyErrorCode, MAX_RELATIVE_DEPTH};
 use super::store::{InternalImageId, KittyImageStore, DEFAULT_FRAME_GAP_MS};
-use crate::panes::sixel::PixelRect;
+use crate::sixel::PixelRect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

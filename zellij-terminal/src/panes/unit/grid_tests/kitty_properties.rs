@@ -7,7 +7,7 @@
 //! exist, and that no input makes the pane panic.
 
 use super::*;
-use crate::panes::kitty_graphics::test_support::{apc_b64, apc_raw, parse_replies};
+use crate::panes::kitty_test_support::{apc_b64, apc_raw, parse_replies};
 use hegel::generators;
 
 /// A control string built from real protocol keys and a mix of sensible and hostile values, so

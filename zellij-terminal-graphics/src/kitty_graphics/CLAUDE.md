@@ -7,11 +7,36 @@ expected-red set in modules ending `_red`; all nine deviations are now closed an
 skipped** — `cargo x test` and `cargo x integration-test` are both fully green.
 
 Write new conformance tests against the spec the same way, and quote the sentence being tested.
-The module doc comment of `zellij-terminal/src/panes/kitty_graphics/mod.rs` records what was closed
-and — more importantly — the twelve judgement calls that are deliberately pinned as-is, where the
-spec does not say enough to call the behaviour wrong or two of its rules pull against each other.
-Read those before changing anything they cover; the most load-bearing is that animation stores and
-composes real frames but has no playback clock.
+The module doc comment of `zellij-terminal-graphics/src/kitty_graphics/mod.rs` records what was
+closed and — more importantly — the twelve judgement calls that are deliberately pinned as-is,
+where the spec does not say enough to call the behaviour wrong or two of its rules pull against
+each other. Read those before changing anything they cover; the most load-bearing is that
+animation stores and composes real frames but has no playback clock.
+
+## Where the suite lives
+
+The protocol engine (parser, store, `KittyGrid` placements, placeholders, replies) and Sixel are
+in `zellij-terminal-graphics`, which knows nothing of the terminal grid. `Grid` and its `kitty_*`
+methods, and the output that re-encodes images for the host, stay in `zellij-terminal`, so the
+suite is split the same way:
+
+* Protocol level: `zellij-terminal-graphics/src/kitty_graphics/unit/`
+  (`cargo x test -p zellij-terminal-graphics`).
+* Grid and host-emission levels: `zellij-terminal/src/panes/unit/grid_tests/kitty_*.rs` and
+  `zellij-terminal/src/output/unit/output_kitty_spec_tests.rs` (`cargo x test -p zellij-terminal`).
+* Whole app: `zellij-integration-tests/tests/kitty_graphics*.rs`.
+
+The fixtures and the reply grammar are `kitty_graphics/test_support.rs`, behind the crate's
+`test-support` feature. `zellij-terminal` reaches it through `panes::kitty_test_support`, which
+adds the helpers that drive a `Grid`, and `zellij-integration-tests/src/kitty_protocol.rs`
+re-exports the builders and `KittyReply` for the whole-app tests. A change to the reply grammar
+is therefore one change for every level.
+
+`zellij-integration-tests` enables `test-support` as a normal dependency, so workspace-wide builds
+(`cargo check --workspace`, `cargo x lint`) turn it on everywhere, and the fixtures then also show
+up as `panes::test_support` in `zellij-terminal` and `zellij-panes` through their
+`kitty_graphics::*` globs. Do not import them from there. The zellij binary builds this crate
+without the feature.
 
 ## Plugin panes
 

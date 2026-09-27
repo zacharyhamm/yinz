@@ -3,7 +3,7 @@
 (U=1) plus a grid of U+10EEEE placeholder cells, each cell's row/column carried by combining
 diacritics and its image id by the cell's foreground colour.
 
-See `zellij-terminal/src/panes/kitty_graphics/placeholders.rs` for the encoding this mirrors.
+See `zellij-terminal-graphics/src/kitty_graphics/placeholders.rs` for the encoding this mirrors.
 """
 import sys
 from kittygfx import apc, emit, make_png, gradient_h

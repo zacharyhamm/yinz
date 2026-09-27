@@ -33,9 +33,7 @@
 //! placements from the viewport).
 
 use super::*;
-use crate::panes::kitty_graphics::test_support::{
-    placeholder_cells, PlaceholderCell, PlaceholderColor,
-};
+use crate::panes::kitty_test_support::{placeholder_cells, PlaceholderCell, PlaceholderColor};
 
 fn rgb(width: usize, height: usize) -> Vec<u8> {
     rgb_raster(width, height)

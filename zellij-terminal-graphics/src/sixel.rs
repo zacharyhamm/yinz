@@ -1,4 +1,3 @@
-use crate::output::SixelImageChunk;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -9,6 +8,20 @@ use sixel_tokenizer::SixelEvent;
 use std::fmt::Debug;
 
 use zellij_types::pane_size::SizeInPixels;
+
+/// The pixel rectangle of a stored sixel image to draw at a viewport cell, as
+/// [`SixelGrid::changed_sixel_chunks_in_viewport`] hands it to `zellij-terminal`'s output. Lives
+/// here rather than in the output so this crate needs nothing from the terminal emulator.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SixelImageChunk {
+    pub cell_x: usize,
+    pub cell_y: usize,
+    pub sixel_image_pixel_x: usize,
+    pub sixel_image_pixel_y: usize,
+    pub sixel_image_pixel_width: usize,
+    pub sixel_image_pixel_height: usize,
+    pub sixel_image_id: usize,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct PixelRect {

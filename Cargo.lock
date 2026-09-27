@@ -6580,6 +6580,7 @@ dependencies = [
  "zellij-runtime",
  "zellij-server",
  "zellij-session",
+ "zellij-terminal-graphics",
  "zellij-test-support",
  "zellij-types",
 ]
@@ -7033,21 +7034,33 @@ name = "zellij-terminal"
 version = "0.45.0"
 dependencies = [
  "base64",
- "flate2",
  "hegeltest",
  "insta",
  "lazy_static",
- "libc",
  "log",
- "png",
  "regex",
- "sixel-image",
- "sixel-tokenizer",
  "tempfile",
  "unicode-width 0.2.2",
  "vte 0.15.0",
  "zellij-ipc",
  "zellij-runtime",
+ "zellij-terminal-graphics",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-terminal-graphics"
+version = "0.45.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "hegeltest",
+ "libc",
+ "png",
+ "sixel-image",
+ "sixel-tokenizer",
+ "tempfile",
+ "vte 0.15.0",
  "zellij-types",
 ]
 

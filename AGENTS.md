@@ -94,7 +94,8 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
   `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
   `zellij-plugin-location/`, `zellij-ipc/`, or `default-plugins/hocus-data/`
   (linked by both the hocus plugins and `zellij-plugin-host`).
-- Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
+- Render paths in `zellij-panes/`, `zellij-terminal/` or
+  `zellij-terminal-graphics/`, key encoding in
   `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
   `zellij-tab/`, `zellij-pty/`), or `zellij-plugin-host/` and
   `zellij-plugin-authoring/`.
@@ -150,6 +151,7 @@ escalation on the first attempt.
 | `zellij-swamp/` | Managed Swamp servers and the workflow client |
 | `zellij-codex/` | Codex conversation-to-pane binding for `zellij hocus codex` |
 | `zellij-terminal/` | Terminal emulation, graphics, output, host queries |
+| `zellij-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `zellij_terminal::panes::{kitty_graphics, sixel}` |
 | `zellij-client/` | Input handling and terminal I/O |
 | `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
 | `zellij-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `zellij_runtime::plugin_location` |
@@ -230,7 +232,7 @@ Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
 - Before changing the Deno runtime or SDK, read
   [its local instructions](zellij-plugin-host/src/deno/CLAUDE.md).
 - For Kitty graphics conformance, read
-  [the graphics instructions](zellij-terminal/src/panes/kitty_graphics/CLAUDE.md).
+  [the graphics instructions](zellij-terminal-graphics/src/kitty_graphics/CLAUDE.md).
 - For render benchmarks, use [the bench skill](.agents/skills/bench/SKILL.md).
 - `zellij hocus hooks install` connects Claude/Codex state hooks to
   `zellij action agent-report`, updating `PaneInfo.agent` and notifying plugins.

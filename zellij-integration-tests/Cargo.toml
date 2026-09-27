@@ -19,6 +19,8 @@ zellij-ipc = { workspace = true }
 zellij-session = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
+# The kitty conformance suite's command builders and reply grammar, for `kitty_protocol`.
+zellij-terminal-graphics = { workspace = true, features = ["test-support"] }
 zellij-client = { path = "../zellij-client", version = "0.45.0" }
 zellij-server = { path = "../zellij-server", version = "0.45.0" }
 anyhow = { workspace = true }

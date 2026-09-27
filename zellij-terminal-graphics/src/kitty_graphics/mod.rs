@@ -12,6 +12,12 @@
 //! cargo x integration-test  # ditto, whole-app
 //! ```
 //!
+//! The suite spans three crates. The protocol level is this crate's `kitty_graphics/unit/`. The
+//! grid and host-emission levels are `zellij-terminal`'s `panes/unit/grid_tests/kitty_*.rs` and
+//! `output/unit/output_kitty_spec_tests.rs`; the `grid_tests::`, `kitty_spec::` and
+//! `kitty_relative_placement::` paths below are there, as is `Grid`. The whole-app level is
+//! `zellij-integration-tests/tests/kitty_graphics*.rs`.
+//!
 //! All nine deviations have been closed. The last two were relative placements
 //! (`grid_tests::kitty_relative_placement`) and animation (`grid_tests::kitty_animation`); before
 //! them, the `t=t` deletion policy, the effect of `ESC[3J` on graphics, the derived axis when
@@ -101,9 +107,11 @@ pub use placeholders::*;
 pub use replies::*;
 pub use store::*;
 
-/// Shared fixtures for the conformance suite. Deliberately outside the glob re-exports above so
-/// its `KittyReply` cannot collide with the protocol types.
-#[cfg(test)]
+// Shared fixtures for the conformance suite. Deliberately outside the glob re-exports above so
+// its `KittyReply` cannot collide with the protocol types. Behind the `test-support` feature for
+// the suite's levels in other crates. A plain comment rather than `///`: rustdoc resolves an outer
+// doc's links from this module, and would then fail on the links in `test_support`'s own `//!` doc.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -289,10 +289,10 @@ fn the_payload_of_every_transmitted_chunk_is_valid_base64() {
 #[test]
 fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_resized_strips() {
     use crate::panes::grid::Grid;
-    use crate::panes::kitty_graphics::test_support::{
+    use crate::panes::kitty_graphics::KittyApcInterceptor;
+    use crate::panes::kitty_test_support::{
         apc_b64, feed_bytes, placeholder_cells, PlaceholderCell, PlaceholderColor,
     };
-    use crate::panes::kitty_graphics::KittyApcInterceptor;
     use crate::panes::sixel::SixelImageStore;
     use crate::panes::LinkHandler;
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
