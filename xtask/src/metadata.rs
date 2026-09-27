@@ -118,6 +118,14 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and
+/// the CLI cross-check their wire formats against the plugin API in tests, but must not wait on its
+/// generated code to build.
+const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
+    ("zellij-ipc", &["zellij-plugin-api"]),
+    ("zellij-cli", &["zellij-plugin-api"]),
+];
+
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
     let packages = metadata["packages"]
         .as_array()
@@ -148,6 +156,16 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
                     dependency["target"]
                 );
             }
+            let dev_only = DEV_ONLY_DEPENDENCIES
+                .iter()
+                .any(|(source, targets)| source == name && targets.contains(&target));
+            if dev_only && dependency["kind"] != "dev" {
+                anyhow::bail!(
+                    "{name} may depend on {target} only as a dev-dependency (kind: {}, target: {})",
+                    dependency["kind"],
+                    dependency["target"]
+                );
+            }
         }
     }
     anyhow::ensure!(
@@ -167,7 +185,12 @@ mod tests {
         let mut metadata = json!({
             "packages": LIBRARY_DEPENDENCIES.iter().map(|(name, allowed)| json!({
                 "id": name, "name": name,
-                "dependencies": allowed.iter().map(|target| json!({"name": target, "kind": null, "target": null})).collect::<Vec<_>>()
+                "dependencies": allowed.iter().map(|target| {
+                    let dev_only = DEV_ONLY_DEPENDENCIES
+                        .iter()
+                        .any(|(source, targets)| source == name && targets.contains(target));
+                    json!({"name": target, "kind": if dev_only { json!("dev") } else { json!(null) }, "target": null})
+                }).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),
             "workspace_members": LIBRARY_DEPENDENCIES.iter().map(|(name, _)| name).collect::<Vec<_>>()
         });
@@ -204,6 +227,32 @@ mod tests {
                         .unwrap_err()
                         .to_string()
                         .contains(&format!("{source} may not depend on {destination}")));
+                }
+            }
+            metadata["packages"][index]["dependencies"] = original;
+        }
+
+        for (source, targets) in DEV_ONLY_DEPENDENCIES {
+            let index = metadata["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|p| p["name"] == *source)
+                .unwrap();
+            let original = metadata["packages"][index]["dependencies"].clone();
+            for destination in *targets {
+                metadata["packages"][index]["dependencies"] =
+                    json!([{"name": destination, "kind": "dev", "target": null}]);
+                validate_dependency_boundaries(&metadata).unwrap();
+                for kind in [json!(null), json!("build")] {
+                    metadata["packages"][index]["dependencies"] =
+                        json!([{"name": destination, "kind": kind, "target": null}]);
+                    assert!(validate_dependency_boundaries(&metadata)
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!(
+                            "{source} may depend on {destination} only as a dev-dependency"
+                        )));
                 }
             }
             metadata["packages"][index]["dependencies"] = original;

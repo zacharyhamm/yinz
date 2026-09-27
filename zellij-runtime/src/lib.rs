@@ -29,6 +29,8 @@ mod home_unix;
 pub mod host_identity;
 #[cfg(not(target_family = "wasm"))]
 pub mod logging;
+#[cfg(not(target_family = "wasm"))]
+pub mod own_binary;
 #[cfg(unix)]
 pub mod owned_dir;
 #[cfg(not(target_family = "wasm"))]

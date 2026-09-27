@@ -2037,9 +2037,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",
- "zellij-plugin-api",
  "zellij-plugin-host",
- "zellij-runtime",
  "zellij-tile",
  "zellij-types",
 ]
@@ -2090,7 +2088,6 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "url",
- "zellij-runtime",
  "zellij-storage",
  "zellij-tile",
  "zellij-tile-markdown",

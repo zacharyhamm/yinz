@@ -10,8 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zellij-config = { workspace = true }
-zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 
 [dev-dependencies]
+# The preset tests parse the default config and name its actions.
+zellij-config = { workspace = true }
+zellij-types = { workspace = true }
