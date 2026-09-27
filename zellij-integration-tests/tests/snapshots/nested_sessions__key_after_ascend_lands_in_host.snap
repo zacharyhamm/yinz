@@ -1,9 +1,10 @@
 ---
 source: zellij-integration-tests/tests/nested_sessions.rs
+assertion_line: 742
 expression: normalized(&host_end_state)
 ---
  Zellij (test)  Tab #1  + 
-                         [0] test-1                        │                         [1] Pane #2
+                      [0] Zellij:test-1                    │                         [1] Pane #2
  Zellij (test)  Tab #1  +      Alt <[]>  VERTICAL  │$
           [0] Pane #1        │         [1] Pane #2         │
 $                            │                             │

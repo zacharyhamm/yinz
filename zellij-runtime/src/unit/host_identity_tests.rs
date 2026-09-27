@@ -170,3 +170,11 @@ fn a_minted_id_is_valid_and_unique() {
     assert!(is_valid_host_id(&one), "minted {:?} is not valid", one);
     assert_ne!(one, mint());
 }
+
+#[test]
+fn display_hostnames_keep_only_the_first_label() {
+    assert_eq!(short_hostname("box.example.com").as_deref(), Some("box"));
+    assert_eq!(short_hostname("box").as_deref(), Some("box"));
+    assert_eq!(short_hostname(""), None);
+    assert_eq!(short_hostname(".local"), None);
+}
