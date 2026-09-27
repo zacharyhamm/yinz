@@ -3469,9 +3469,7 @@ pub fn check_report(
     let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
     let path = plugin_authoring::resolve_plugin_file(dir.path(), name)?;
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
-    Ok(zellij_plugin_host::plugin_authoring::check_source(
-        &path, source, mode,
-    ))
+    Ok(zellij_plugin_authoring::check_source(&path, source, mode))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(test)))]

@@ -28,7 +28,7 @@ pub fn check_plugin_report(
                 .join("\n")
         );
     }
-    let source = crate::deno::read_authoring_source(path)?;
+    let source = crate::limits::read_source(path)?;
     let report = check_source(
         path,
         &source,
@@ -71,7 +71,7 @@ pub fn check_source(
                 path.file_name()
                     .ok_or_else(|| anyhow::anyhow!("missing plugin filename"))?,
             );
-            let mut report = crate::deno::analysis::check(&staged, source, mode);
+            let mut report = crate::analysis::check(&staged, source, mode);
             for diagnostic in &mut report.diagnostics {
                 *diagnostic =
                     diagnostic.replace(&*staged.to_string_lossy(), &path.to_string_lossy());
@@ -83,7 +83,7 @@ pub fn check_source(
             ..Default::default()
         });
     }
-    crate::deno::analysis::check(path, source, mode)
+    crate::analysis::check(path, source, mode)
 }
 
 /// A plugin written, and the copy kept of whatever it replaced.
@@ -171,7 +171,7 @@ pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
     if path.is_symlink() || path.parent().is_some_and(Path::is_symlink) {
         anyhow::bail!("refusing to format through a symlink");
     }
-    let source = crate::deno::read_authoring_source(path)?;
+    let source = crate::limits::read_source(path)?;
     let report = check_source(
         path,
         &source,

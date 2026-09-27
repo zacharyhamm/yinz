@@ -240,6 +240,10 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-plugin-authoring",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-process",
                 build: false,
             },

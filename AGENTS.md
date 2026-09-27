@@ -95,7 +95,7 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
   `zellij-plugin-location/`, or `zellij-ipc/`.
 - Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
   `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
-  `zellij-pty/`), or `zellij-plugin-host/`.
+  `zellij-pty/`), or `zellij-plugin-host/` and `zellij-plugin-authoring/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
@@ -141,6 +141,7 @@ escalation on the first attempt.
 | `zellij-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
 | `zellij-routing/` | Action dispatch and completion waits |
 | `zellij-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
+| `zellij-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
 | `zellij-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
 | `zellij-firecracker-provider/` | The `zellij-firecracker` VM provider (Linux only) |
 | `zellij-swamp/` | Managed Swamp servers and the workflow client |

@@ -22,6 +22,11 @@ pub const SYSTEM_DEFAULT_CONFIG_DIR: &str = "/etc/zellij";
 pub const SYSTEM_DEFAULT_DATA_DIR_PREFIX: &str = system_default_data_dir();
 
 pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
+/// Maximum protobuf frame length, excluding its four-byte length prefix. `zellij_ipc` re-exports
+/// it for the socket transport; the plugin compilation worker bounds its requests and responses
+/// with it without linking that transport. Available on wasm so plugins can check replies before
+/// handing them to the host.
+pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
 
 /// Legacy flat metadata path. Read current metadata through `SessionCheckpoint`.
 pub fn session_info_cache_file_name(session_name: &SessionName) -> PathBuf {

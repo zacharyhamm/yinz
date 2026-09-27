@@ -15,13 +15,13 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
+use zellij_plugin_authoring::worker::PLUGIN_TEST_WORKER_ARG as ARG;
 use zellij_runtime::errors::prelude::*;
 use zellij_types::{
     authoring::{PluginTestKind, PluginTestOptions, PluginTestReport, PluginTestResult},
     data::PermissionType,
 };
 
-const ARG: &str = "--plugin-test-worker";
 const OUTPUT_LIMIT: usize = 32 * 1024;
 
 pub fn binary() -> Result<PathBuf> {
