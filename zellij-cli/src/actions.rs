@@ -119,7 +119,7 @@ pub fn actions_from_cli(
                 })?;
 
                 #[cfg(not(target_family = "wasm"))]
-                let bytes = zellij_runtime::keys::serialize_kitty(&key)
+                let bytes = zellij_key_codec::keys::serialize_kitty(&key)
                     .map(|s| s.into_bytes())
                     .unwrap_or_default();
 

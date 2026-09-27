@@ -20,7 +20,7 @@ use seq_scan::{
 };
 use serde::{Deserialize, Serialize};
 use zellij_ipc::nested_session;
-use zellij_runtime::vendored::termwiz::input::{InputEvent, InputParser};
+use zellij_key_codec::vendored::termwiz::input::{InputEvent, InputParser};
 
 /// Describe the terminal implementation of synchronised output
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

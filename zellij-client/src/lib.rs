@@ -59,12 +59,12 @@ use crate::{
     os_input_output::ClientOsApi, stdin_handler::stdin_loop,
 };
 use zellij_cli::args::CliArgs;
+use zellij_key_codec::vendored::termwiz::input::InputEvent;
 use zellij_runtime::channels;
 use zellij_runtime::channels::ChannelWithContext;
 use zellij_runtime::channels::SenderWithContext;
 use zellij_runtime::envs;
 use zellij_runtime::errors::ErrorInstruction;
-use zellij_runtime::vendored::termwiz::input::InputEvent;
 use zellij_types::diagnostics::ClientContext;
 use zellij_types::keys::{KeyModifier, KeyWithModifier};
 use {

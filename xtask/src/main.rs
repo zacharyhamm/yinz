@@ -160,6 +160,18 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-plugin-location",
+                build: false,
+            },
+            WorkspaceMember {
+                crate_name: "zellij-downloader",
+                build: false,
+            },
+            WorkspaceMember {
+                crate_name: "zellij-key-codec",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-storage",
                 build: false,
             },

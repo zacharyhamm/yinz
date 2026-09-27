@@ -82,7 +82,6 @@ pub use super::generated_api::api::{
     pane_frame_style::PaneFrameStyle as ProtobufPaneFrameStyle,
     resize::{Resize as ProtobufResize, ResizeDirection as ProtobufResizeDirection},
 };
-use zellij_runtime::errors::prelude::*;
 use zellij_types::geometry::SplitSize;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
 use zellij_types::geometry::{PercentOrFixed, SplitDirection};
@@ -807,7 +806,7 @@ impl TryFrom<ProtobufAction> for Action {
                             .transpose()?
                             .map(|c| c.inner().clone());
                         let run_plugin_or_alias =
-                            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                            zellij_plugin_location::run_plugin_or_alias_from_url(
                                 payload.plugin_url.as_str(),
                                 &configuration,
                                 None,
@@ -838,14 +837,13 @@ impl TryFrom<ProtobufAction> for Action {
                         .map(PluginUserConfiguration::try_from)
                         .transpose()?
                         .map(|c| c.inner().clone());
-                    let run_plugin_or_alias =
-                        zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                            payload.plugin_url.as_str(),
-                            &configuration,
-                            None,
-                            None,
-                        )
-                        .map_err(|_| "Malformed LaunchOrFocusPlugin payload")?;
+                    let run_plugin_or_alias = zellij_plugin_location::run_plugin_or_alias_from_url(
+                        payload.plugin_url.as_str(),
+                        &configuration,
+                        None,
+                        None,
+                    )
+                    .map_err(|_| "Malformed LaunchOrFocusPlugin payload")?;
                     let should_float = payload.should_float;
                     let _move_to_focused_tab = payload.move_to_focused_tab; // not actually used in
                                                                             // this action
@@ -963,14 +961,13 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::NewTiledPluginPane) => {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::NewTiledPluginPanePayload(payload)) => {
-                        let run_plugin =
-                            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                                payload.plugin_url.as_str(),
-                                &None,
-                                None,
-                                None,
-                            )
-                            .map_err(|_| "Malformed NewTiledPluginPane payload")?;
+                        let run_plugin = zellij_plugin_location::run_plugin_or_alias_from_url(
+                            payload.plugin_url.as_str(),
+                            &None,
+                            None,
+                            None,
+                        )
+                        .map_err(|_| "Malformed NewTiledPluginPane payload")?;
                         let pane_name = payload.pane_name;
                         let skip_plugin_cache = payload.skip_plugin_cache;
                         Ok(Action::NewTiledPluginPane {
@@ -988,14 +985,13 @@ impl TryFrom<ProtobufAction> for Action {
             Some(ProtobufActionName::NewFloatingPluginPane) => {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::NewFloatingPluginPanePayload(payload)) => {
-                        let run_plugin =
-                            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
-                                payload.plugin_url.as_str(),
-                                &None,
-                                None,
-                                None,
-                            )
-                            .map_err(|_| "Malformed NewFloatingPluginPane payload")?;
+                        let run_plugin = zellij_plugin_location::run_plugin_or_alias_from_url(
+                            payload.plugin_url.as_str(),
+                            &None,
+                            None,
+                            None,
+                        )
+                        .map_err(|_| "Malformed NewFloatingPluginPane payload")?;
                         let pane_name = payload.pane_name;
                         let skip_plugin_cache = payload.skip_plugin_cache;
                         Ok(Action::NewFloatingPluginPane {
@@ -1015,7 +1011,7 @@ impl TryFrom<ProtobufAction> for Action {
                 match protobuf_action.optional_payload {
                     Some(OptionalPayload::StartOrReloadPluginPayload(payload)) => {
                         let run_plugin_or_alias =
-                            zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                            zellij_plugin_location::run_plugin_or_alias_from_url(
                                 payload.as_str(),
                                 &None,
                                 None,
@@ -2278,7 +2274,7 @@ impl TryFrom<Action> for ProtobufAction {
 }
 
 /// The configuration a `LaunchOrFocusPluginPayload` carries next to its plugin URL: a plugin's
-/// own, or the alias's own - the one the decoder hands back to `zellij_runtime::plugin_location::run_plugin_or_alias_from_url`,
+/// own, or the alias's own - the one the decoder hands back to `zellij_plugin_location::run_plugin_or_alias_from_url`,
 /// so an alias that was given none does not come back with an empty one.
 fn plugin_configuration_payload(
     plugin: &RunPluginOrAlias,
@@ -3916,7 +3912,7 @@ pub(crate) mod tests {
         }
 
         /// A plugin named only by `string plugin_url` (`NewPluginPanePayload`,
-        /// `start_or_reload_plugin_payload`) comes back through `zellij_runtime::plugin_location::run_plugin_or_alias_from_url`
+        /// `start_or_reload_plugin_payload`) comes back through `zellij_plugin_location::run_plugin_or_alias_from_url`
         /// with no configuration at all.
         fn plugin_by_url_alone(plugin: RunPluginOrAlias) -> RunPluginOrAlias {
             match plugin {

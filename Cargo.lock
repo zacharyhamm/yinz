@@ -6343,6 +6343,7 @@ dependencies = [
  "zellij-cli",
  "zellij-client",
  "zellij-config",
+ "zellij-downloader",
  "zellij-ipc",
  "zellij-plugin-api",
  "zellij-process",
@@ -6416,6 +6417,7 @@ dependencies = [
  "uuid",
  "zellij-config",
  "zellij-ipc",
+ "zellij-key-codec",
  "zellij-plugin-api",
  "zellij-runtime",
  "zellij-session",
@@ -6447,6 +6449,7 @@ dependencies = [
  "zellij-cli",
  "zellij-config",
  "zellij-ipc",
+ "zellij-key-codec",
  "zellij-runtime",
  "zellij-types",
 ]
@@ -6475,8 +6478,25 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "zellij-downloader",
  "zellij-runtime",
  "zellij-types",
+]
+
+[[package]]
+name = "zellij-downloader"
+version = "0.45.0"
+dependencies = [
+ "curl-sys",
+ "isahc",
+ "log",
+ "openssl-sys",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -6529,6 +6549,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zellij-key-codec"
+version = "0.45.0"
+dependencies = [
+ "bitflags 2.11.0",
+ "hegeltest",
+ "zellij-types",
+]
+
+[[package]]
 name = "zellij-panes"
 version = "0.45.0"
 dependencies = [
@@ -6550,6 +6579,7 @@ dependencies = [
  "zellij-bus",
  "zellij-config",
  "zellij-ipc",
+ "zellij-key-codec",
  "zellij-runtime",
  "zellij-terminal",
  "zellij-tile",
@@ -6567,7 +6597,7 @@ dependencies = [
  "serde_json",
  "strum 0.28.0",
  "strum_macros 0.28.0",
- "zellij-runtime",
+ "zellij-plugin-location",
  "zellij-types",
 ]
 
@@ -6611,7 +6641,9 @@ dependencies = [
  "wasmi_wasi",
  "zellij-bus",
  "zellij-config",
+ "zellij-downloader",
  "zellij-ipc",
+ "zellij-key-codec",
  "zellij-plugin-api",
  "zellij-process",
  "zellij-routing",
@@ -6622,6 +6654,17 @@ dependencies = [
  "zellij-test-support",
  "zellij-tile",
  "zellij-tile-markdown",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-plugin-location"
+version = "0.45.0"
+dependencies = [
+ "log",
+ "percent-encoding",
+ "shellexpand",
+ "url",
  "zellij-types",
 ]
 
@@ -6680,31 +6723,25 @@ version = "0.45.0"
 dependencies = [
  "anyhow",
  "backtrace",
- "bitflags 2.11.0",
  "colored",
  "crossbeam",
- "curl-sys",
  "directories",
  "hegeltest",
- "isahc",
  "lazy_static",
  "libc",
  "log",
  "log4rs",
  "miette 7.6.0",
  "nix",
- "openssl-sys",
- "percent-encoding",
  "serde",
  "serde_json",
  "shellexpand",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "tokio-stream",
- "tokio-util",
  "url",
  "uuid",
+ "zellij-plugin-location",
  "zellij-types",
 ]
 

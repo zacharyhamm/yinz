@@ -22,6 +22,7 @@ signal-hook = { workspace = true }
 uuid = { workspace = true }
 zellij-cli = { workspace = true }
 zellij-config = { workspace = true }
+zellij-downloader = { workspace = true }
 zellij-plugin-api = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-session = { workspace = true }
@@ -106,6 +107,9 @@ members = [
     "zellij-storage",
     "zellij-types",
     "zellij-runtime",
+    "zellij-plugin-location",
+    "zellij-downloader",
+    "zellij-key-codec",
     "zellij-tile",
     "zellij-tile-markdown",
     "zellij-tile-utils",
@@ -156,6 +160,10 @@ zellij-config = { path = "zellij-config", version = "0.45.0" }
 zellij-storage = { path = "zellij-storage", version = "0.45.0" }
 zellij-types = { path = "zellij-types", version = "0.45.0" }
 zellij-runtime = { path = "zellij-runtime", version = "0.45.0" }
+zellij-plugin-location = { path = "zellij-plugin-location", version = "0.45.0" }
+# Default features off: the root package's `vendored_curl` feature decides how libcurl is linked.
+zellij-downloader = { path = "zellij-downloader", version = "0.45.0", default-features = false }
+zellij-key-codec = { path = "zellij-key-codec", version = "0.45.0" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }
@@ -248,7 +256,7 @@ pkg-fmt = "tgz"
 
 [features]
 default = ["vendored_curl"]
-vendored_curl = ["zellij-runtime/vendored_curl"]
+vendored_curl = ["zellij-downloader/vendored_curl"]
 unstable = ["zellij-client/unstable"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
 # libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.

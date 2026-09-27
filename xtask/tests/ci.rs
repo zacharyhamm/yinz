@@ -57,7 +57,10 @@ fn gate_runs_integration_and_aggregates_failures() {
     }
     let libraries = [
         "zellij-types",
+        "zellij-plugin-location",
         "zellij-runtime",
+        "zellij-downloader",
+        "zellij-key-codec",
         "zellij-storage",
         "zellij-config",
         "zellij-plugin-api",

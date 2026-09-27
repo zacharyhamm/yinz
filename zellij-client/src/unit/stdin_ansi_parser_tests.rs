@@ -941,7 +941,7 @@ fn kitty_kbd_event_does_not_wedge_subsequent_forward_reply() {
 }
 
 use crate::keyboard_parser::{KittyKeyboardParser, KittyParseOutcome};
-use zellij_runtime::vendored::termwiz::input::{
+use zellij_key_codec::vendored::termwiz::input::{
     InputEvent, InputParser, KeyCode, KeyEvent, Modifiers,
 };
 use zellij_types::keys::BareKey;

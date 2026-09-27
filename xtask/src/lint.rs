@@ -79,7 +79,7 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
     ),
     // vendored from termwiz; its doc comments are not ours to reflow
     (
-        "zellij-runtime/src/vendored/termwiz/input.rs",
+        "zellij-key-codec/src/vendored/termwiz/input.rs",
         "clippy::doc_lazy_continuation",
     ),
     // the store's test files run once per engine, so one file is deliberately two modules

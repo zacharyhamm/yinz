@@ -1,6 +1,6 @@
 //! Layout loading and parsing. Pure layout models live in zellij-types.
 #[cfg(not(target_family = "wasm"))]
-use zellij_runtime::downloader::Downloader;
+use zellij_downloader::Downloader;
 use {
     crate::config::Config, crate::config::ConfigError, zellij_runtime::home::default_layout_dir,
     zellij_runtime::home::find_default_config_dir, zellij_types::data::LayoutInfo,
