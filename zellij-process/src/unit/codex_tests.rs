@@ -15,7 +15,7 @@ fn writable_root_overrides_bypass_the_bridge_in_every_config_spelling() {
         ("other.sandbox_workspace_write.writable_roots=[]", true),
         ("sandbox_workspace_write.writable_roots_extra=[]", true),
     ] {
-        assert!(bridge_eligible(&["--model".into(), value.into()]));
+        assert!(bridge_options(&["--model".into(), value.into()]).is_some());
         for args in [
             vec!["-c".into(), value.into()],
             vec!["--config".into(), value.into()],
@@ -23,10 +23,10 @@ fn writable_root_overrides_bypass_the_bridge_in_every_config_spelling() {
             vec![format!("-c={value}")],
             vec![format!("--config={value}")],
         ] {
-            assert_eq!(bridge_eligible(&args), expected, "{args:?}");
+            assert_eq!(bridge_options(&args).is_some(), expected, "{args:?}");
             let mut literal = vec!["--".into()];
             literal.extend(args);
-            assert!(bridge_eligible(&literal), "{literal:?}");
+            assert!(bridge_options(&literal).is_some(), "{literal:?}");
         }
     }
 }
@@ -92,7 +92,7 @@ fn bridge_eligibility_consumes_options_before_identifying_commands() {
     ];
     for (args, expected) in cases {
         let args: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
-        assert_eq!(bridge_eligible(&args), *expected, "{args:?}");
+        assert_eq!(bridge_options(&args).is_some(), *expected, "{args:?}");
     }
     for utility in [
         "agents",
@@ -127,10 +127,125 @@ fn bridge_eligibility_consumes_options_before_identifying_commands() {
         "help",
     ] {
         assert!(
-            !bridge_eligible(&["-c".into(), "model=example".into(), utility.into()]),
+            bridge_options(&["-c".into(), "model=example".into(), utility.into()]).is_none(),
             "{utility}"
         );
     }
+}
+
+#[test]
+fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
+    const TEST: &str =
+        "codex::tests::launcher_forwards_its_directory_unless_overridden_or_bypassed";
+    const ARGS_ENV: &str = "ZELLIJ_TEST_CODEX_ARGS";
+    const OUTPUT_ENV: &str = "ZELLIJ_TEST_CODEX_OUTPUT";
+    if let Ok(args) = std::env::var(ARGS_ENV) {
+        let args: Vec<String> = serde_json::from_str(&args).unwrap();
+        assert_eq!(launch(Path::new("../codex"), &args).unwrap(), 23);
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("launcher with spaces");
+    std::fs::create_dir(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let output = root.path().join("arguments");
+    zellij_test_support::write_warm_script(
+        &root.path().join("codex"),
+        "[ \"$1\" = app-server ] && exit 0\nprintf '%s\\0' \"$@\" > \"$ZELLIJ_TEST_CODEX_OUTPUT\"\nexit 23\n",
+    );
+    // expected_cd: None bypasses the bridge, Some(true) preserves an explicit override.
+    let cases: &[(&[&str], bool, Option<bool>)] = &[
+        (&[], true, Some(false)),
+        (&["prompt with spaces"], true, Some(false)),
+        (&["resume", "--last"], true, Some(false)),
+        (&["fork", "thread-id"], true, Some(false)),
+        (&["--cd", "../explicit with spaces"], true, Some(true)),
+        (&["--cd=../explicit with spaces"], true, Some(true)),
+        (&["-C", "../explicit with spaces"], true, Some(true)),
+        (&["-C../explicit with spaces"], true, Some(true)),
+        (&["-C=../explicit with spaces"], true, Some(true)),
+        (&["resume", "--last", "--cd", "../other"], true, Some(true)),
+        (&["fork", "thread-id", "-C../other"], true, Some(true)),
+        (&["--cd=../other", "resume", "--last"], true, Some(true)),
+        (&["--", "--cd=literal prompt"], true, Some(false)),
+        (&["--", "-C"], true, Some(false)),
+        (&["resume", "--", "--cd"], true, Some(false)),
+        (&["--model=--cd", "prompt"], true, None),
+        (&["--config", "model='--cd'"], true, Some(false)),
+        (&["prompt"], false, None),
+        (&["--cd", "../other"], false, None),
+        (&["exec", "prompt"], true, None),
+        (&["--remote=unix:///custom"], true, None),
+        (&["--no-daemon"], true, None),
+        (&["--add-dir", "../other"], true, None),
+        (&["--help"], true, None),
+        (&["--cd"], true, None),
+        (&["--cd="], true, None),
+        (&["-C="], true, None),
+        (&["--cd", "--", "prompt"], true, None),
+    ];
+    for (args, pane, expected_cd) in cases {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .current_dir(&cwd)
+            .env(ARGS_ENV, serde_json::to_string(args).unwrap())
+            .env(OUTPUT_ENV, &output)
+            .env("ZELLIJ_PANE_ID", if *pane { "15" } else { "" })
+            .env_remove("ZELLIJ_PANE_REF")
+            .env_remove("ZELLIJ_REMOTE_PANE_TOKEN")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{args:?}: {}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+        let actual = std::fs::read_to_string(&output).unwrap();
+        let mut actual: Vec<_> = actual.split_terminator('\0').collect();
+        if let Some(has_cd) = expected_cd {
+            assert_eq!(actual[0], "--remote", "{args:?}");
+            assert!(actual[1].starts_with("unix://"), "{args:?}");
+            actual.drain(..2);
+            if !has_cd {
+                assert_eq!(actual[0], "--cd", "{args:?}");
+                assert_eq!(Path::new(actual[1]), cwd, "{args:?}");
+                actual.drain(..2);
+            }
+        }
+        assert_eq!(&actual, args, "{args:?}");
+    }
+}
+
+#[test]
+fn launcher_reports_an_unresolvable_working_directory() {
+    const TEST: &str = "codex::tests::launcher_reports_an_unresolvable_working_directory";
+    const CHILD_ENV: &str = "ZELLIJ_TEST_CODEX_DELETED_CWD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        std::fs::remove_dir(std::env::current_dir().unwrap()).unwrap();
+        let error = launch(Path::new("/usr/bin/true"), &[]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("resolve Codex launcher working directory"));
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST])
+        .env(CHILD_ENV, "1")
+        .env("ZELLIJ_PANE_ID", "15")
+        .current_dir(root.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
 
 #[test]
