@@ -70,6 +70,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-ipc",
         "zellij-session",
         "zellij-cli",
+        "zellij-terminal-graphics",
         "zellij-terminal",
         "zellij-process",
         "zellij-swamp",

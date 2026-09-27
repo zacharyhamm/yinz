@@ -758,7 +758,7 @@ fn build_three_kitty_placements(
     assert_eq!(grid.kitty_placement_count(), 3);
 }
 
-use crate::panes::kitty_graphics::test_support::{self, KittyReply};
+use crate::panes::kitty_test_support::{self as test_support, KittyReply};
 
 /// A terminal grid wired up the way `TerminalPane` wires one, so a conformance test can send
 /// graphics commands and read back the replies the application would see.

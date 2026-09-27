@@ -1,15 +1,16 @@
 //! Shared fixtures for the kitty graphics conformance suite.
 //!
-//! Every level of the suite that lives inside `zellij-server` — the `kitty_graphics/unit/` tests,
-//! the grid tests under `panes/unit/grid_tests/`, and the host-emission tests under
-//! `output/unit/` — reaches this module through `crate::panes::kitty_graphics::test_support`.
+//! Every level of the suite uses this module. The protocol tests under `kitty_graphics/unit/`
+//! reach it directly. `zellij-terminal`'s grid tests under `panes/unit/grid_tests/` and
+//! host-emission tests under `output/unit/` reach it through that crate's
+//! `panes::kitty_test_support`, which adds the helpers that drive a `Grid`. The whole-app tests
+//! reach its command builders and [`KittyReply`] through
+//! `zellij-integration-tests/src/kitty_protocol.rs`. Both of those crates enable the
+//! `test-support` feature.
 //!
-//! The whole-app tests in `zellij-integration-tests` cannot: that crate depends on
-//! `zellij-server`, `#[cfg(test)]` items are not in the rlib, and the reverse dependency edge
-//! would be a cycle. Its byte-level subset is duplicated in
-//! `zellij-integration-tests/src/kitty_protocol.rs`; keep the two reply grammars in step. The one
-//! deliberate difference is that this parser panics on a malformed reply while that one skips it,
-//! because that one reads a live pty stream from inside polling predicates.
+//! The one deliberate difference between the levels is that [`parse_replies`] here panics on a
+//! malformed reply while `kitty_protocol::parse_replies` skips it, because that one reads a live
+//! pty stream from inside polling predicates. Both parse each reply with [`KittyReply::parse`].
 //!
 //! Naming mirrors kitty's own `graphics_tests.py` so ported assertions stay recognisable:
 //! `apc_b64` is its `send_command`, [`KittyReply`] is its `Response`, and [`byte_block`] is its
@@ -191,92 +192,6 @@ pub fn unwrap_apc(bytes: &[u8]) -> &[u8] {
         .strip_prefix(b"\x1b_G".as_slice())
         .and_then(|rest| rest.strip_suffix(b"\x1b\\".as_slice()))
         .expect("not an APC sequence")
-}
-
-// ---- grid-level helpers ----
-
-/// Drive bytes through the interceptor exactly as `TerminalPane::handle_pty_bytes` does: kitty
-/// APCs are captured and handed to the grid, everything else reaches vte.
-pub fn feed_bytes(
-    grid: &mut crate::panes::grid::Grid,
-    vte_parser: &mut vte::Parser,
-    interceptor: &mut super::interceptor::KittyApcInterceptor,
-    bytes: &[u8],
-) {
-    use super::interceptor::InterceptorResult;
-    for byte in bytes {
-        match interceptor.advance(*byte) {
-            InterceptorResult::Forward(forwarded) => {
-                vte_parser.advance(grid, forwarded.as_slice());
-            },
-            InterceptorResult::Swallow => {},
-            InterceptorResult::Captured(command) => {
-                grid.handle_kitty_apc(&command);
-            },
-        }
-    }
-}
-
-/// Send one graphics command and return the replies it produced, draining the grid's outbound
-/// queue first so only this command's replies are returned. kitty's `send_command`.
-pub fn send_kitty(
-    grid: &mut crate::panes::grid::Grid,
-    vte_parser: &mut vte::Parser,
-    interceptor: &mut super::interceptor::KittyApcInterceptor,
-    control: &str,
-    payload: &[u8],
-) -> Vec<KittyReply> {
-    grid.pending_messages_to_pty.clear();
-    feed_bytes(grid, vte_parser, interceptor, &apc_b64(control, payload));
-    drain_replies(grid)
-}
-
-/// [`send_kitty`] with the payload already base64-encoded. Chunked uploads have to split the
-/// *encoded* stream on a four-character boundary; encoding each raw slice separately only happens
-/// to reassemble when every slice but the last is a multiple of three bytes.
-pub fn send_kitty_raw(
-    grid: &mut crate::panes::grid::Grid,
-    vte_parser: &mut vte::Parser,
-    interceptor: &mut super::interceptor::KittyApcInterceptor,
-    control: &str,
-    payload_b64: &str,
-) -> Vec<KittyReply> {
-    grid.pending_messages_to_pty.clear();
-    feed_bytes(
-        grid,
-        vte_parser,
-        interceptor,
-        &apc_raw(control, payload_b64.as_bytes()),
-    );
-    drain_replies(grid)
-}
-
-/// [`send_kitty`], asserting the command produced at most one reply.
-pub fn send_kitty_one(
-    grid: &mut crate::panes::grid::Grid,
-    vte_parser: &mut vte::Parser,
-    interceptor: &mut super::interceptor::KittyApcInterceptor,
-    control: &str,
-    payload: &[u8],
-) -> Option<KittyReply> {
-    let replies = send_kitty(grid, vte_parser, interceptor, control, payload);
-    assert!(
-        replies.len() <= 1,
-        "expected at most one reply to {:?}, got {:?}",
-        control,
-        replies
-    );
-    replies.into_iter().next()
-}
-
-/// Take everything the grid has queued for the application and parse it as replies.
-pub fn drain_replies(grid: &mut crate::panes::grid::Grid) -> Vec<KittyReply> {
-    let queued: Vec<u8> = grid
-        .pending_messages_to_pty
-        .drain(..)
-        .flatten()
-        .collect::<Vec<u8>>();
-    parse_replies(&queued)
 }
 
 // ---- deterministic payloads ----

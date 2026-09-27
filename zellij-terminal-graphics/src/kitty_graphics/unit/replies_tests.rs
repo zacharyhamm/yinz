@@ -13,7 +13,7 @@
 use super::super::parser::{KittyCommandParser, KittyError, KittyErrorCode};
 use super::super::replies::{format_kitty_error, format_kitty_reply};
 use super::super::test_support::{apc_b64, unwrap_apc, KittyReply, KittyReplyParseError};
-use crate::panes::kitty_graphics::grid_state::KittyReplyData;
+use crate::kitty_graphics::grid_state::KittyReplyData;
 
 fn reply_data(
     image_id: Option<u32>,

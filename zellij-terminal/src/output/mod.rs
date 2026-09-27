@@ -1829,17 +1829,7 @@ pub struct CharacterChunk {
 }
 
 pub use crate::panes::kitty_graphics::grid_state::KittyImageChunk;
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SixelImageChunk {
-    pub cell_x: usize,
-    pub cell_y: usize,
-    pub sixel_image_pixel_x: usize,
-    pub sixel_image_pixel_y: usize,
-    pub sixel_image_pixel_width: usize,
-    pub sixel_image_pixel_height: usize,
-    pub sixel_image_id: usize,
-}
+pub use crate::panes::sixel::SixelImageChunk;
 
 impl CharacterChunk {
     #[allow(clippy::too_many_arguments)]

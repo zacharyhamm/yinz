@@ -1,6 +1,6 @@
 use super::{crop_rgba, scale_rgba, KittyGrid, KittyPlacement, KittyVerticalAnchor};
-use crate::panes::kitty_graphics::store::KittyImageStore;
-use crate::panes::sixel::PixelRect;
+use crate::kitty_graphics::store::KittyImageStore;
+use crate::sixel::PixelRect;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

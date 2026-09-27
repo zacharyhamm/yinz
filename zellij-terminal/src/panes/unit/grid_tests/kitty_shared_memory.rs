@@ -5,9 +5,9 @@
 //! the data from the memory object and then unlink and close it on POSIX". It is the fastest
 //! medium for large images, and the only one that does not push the whole raster through the tty.
 //!
-//! The parser-level cases live in `kitty_graphics/unit/parser_spec_tests.rs`; what these add is
-//! that the transfer works through a real grid and that the resulting image behaves like any
-//! other.
+//! The parser-level cases live in `zellij-terminal-graphics`'s
+//! `kitty_graphics/unit/parser_spec_tests.rs`; what these add is that the transfer works through
+//! a real grid and that the resulting image behaves like any other.
 //!
 //! Linux only: `/dev/shm` is the POSIX shm namespace there, so the fixture is a plain file write.
 //! The implementation is portable POSIX; a macOS fixture needs `shm_open` through `libc`.

@@ -2,7 +2,7 @@
 
 Stdlib only (no Pillow) — PNGs are hand-built with zlib, since that's all a demo image needs.
 Run these against a real terminal (inside zellij, or against any kitty-protocol host) to see
-escape sequences reach `zellij-terminal/src/panes/kitty_graphics`. They print nothing but the
+escape sequences reach `zellij-terminal-graphics/src/kitty_graphics`. They print nothing but the
 raw protocol on stdout, so redirecting to a file gives you replayable fixtures too.
 """
 import base64

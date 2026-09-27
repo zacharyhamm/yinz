@@ -79,9 +79,15 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-session",
         ],
     ),
+    ("zellij-terminal-graphics", &["zellij-types"]),
     (
         "zellij-terminal",
-        &["zellij-types", "zellij-runtime", "zellij-ipc"],
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-ipc",
+            "zellij-terminal-graphics",
+        ],
     ),
     (
         "zellij-process",

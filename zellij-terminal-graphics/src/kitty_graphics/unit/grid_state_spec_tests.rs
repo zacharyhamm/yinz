@@ -110,7 +110,7 @@ impl Model {
     fn place(
         &mut self,
         id: u32,
-        internal: crate::panes::kitty_graphics::store::InternalImageId,
+        internal: crate::kitty_graphics::store::InternalImageId,
         command: &KittyCommand,
     ) -> Result<Option<(u16, u16)>, KittyError> {
         self.kitty.place(

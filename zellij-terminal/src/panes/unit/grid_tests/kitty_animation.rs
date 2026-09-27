@@ -22,7 +22,7 @@
 //! What this terminal deliberately does not have is a playback *clock*: `s=2`/`s=3` and the `z`
 //! gaps are validated and recorded, but nothing advances a frame on its own. Client-driven
 //! animation works; terminal-driven animation is inert. See the judgement calls in
-//! `kitty_graphics/mod.rs`.
+//! `zellij-terminal-graphics/src/kitty_graphics/mod.rs`.
 
 use super::*;
 

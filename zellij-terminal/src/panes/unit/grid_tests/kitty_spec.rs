@@ -6,10 +6,10 @@
 //! actions") and from kitty's `test_image_put`, `test_graphics_put_with_pixel_offsets`,
 //! `test_gr_scroll`, `test_gr_reset` and `test_gr_delete`.
 //!
-//! The layers below this one are covered in `kitty_graphics/unit/`; what is specific here is the
-//! interaction with the cursor, the scrollback, erase commands and the alternate screen.
-//! Deviations live in the three `kitty_*_red.rs` feature files, indexed in the module doc of
-//! `kitty_graphics/mod.rs`.
+//! The layers below this one are covered in `zellij-terminal-graphics`'s `kitty_graphics/unit/`;
+//! what is specific here is the interaction with the cursor, the scrollback, erase commands and
+//! the alternate screen. Deviations live in the three `kitty_*_red.rs` feature files, indexed in
+//! the module doc of `zellij-terminal-graphics/src/kitty_graphics/mod.rs`.
 
 use super::*;
 

@@ -26,7 +26,7 @@ fn the_table_matches_the_fixture_the_conformance_suite_encodes_with() {
     // The suite's `placeholder_cells` builds its input from its own prefix of the table; if the
     // two ever drift, every placeholder test would be encoding values this code decodes
     // differently.
-    let fixture = crate::panes::kitty_graphics::test_support::ROWCOLUMN_DIACRITICS;
+    let fixture = crate::kitty_graphics::test_support::ROWCOLUMN_DIACRITICS;
     assert_eq!(fixture.as_slice(), &ROWCOLUMN_DIACRITICS[..fixture.len()]);
 }
 
