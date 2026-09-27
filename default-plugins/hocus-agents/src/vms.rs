@@ -640,11 +640,24 @@ impl State {
                 if self.vms.user_request_out() {
                     return true;
                 }
-                let Some(identity) = self.vms.selected_lease().map(|lease| lease.identity()) else {
+                let Some(lease) = self.vms.selected_lease() else {
                     return false;
                 };
+                let identity = lease.identity();
                 // No y/n that could not be honoured: the divider says why nothing happens.
                 if self.vms.owner.is_none() {
+                    return true;
+                }
+                if c != 'x' && lease.entry.worktree.is_none() {
+                    self.record_outcome(
+                        if c == 's' { Operation::Sync } else { Operation::Changes },
+                        identity,
+                        false,
+                        "No host worktree is linked to this VM. Copy needed files out before closing it."
+                            .into(),
+                    );
+                    self.vms.details = true;
+                    self.vms.scroll = 0;
                     return true;
                 }
                 match c {
@@ -733,11 +746,13 @@ impl State {
             },
         }
         if lease.is_some() && owner {
-            sheet.extend([
-                row("x", "close lease and panes (asks first)"),
-                row("s", "sync guest → host (asks first)"),
-                row("c", "count guest paths changed since the last sync"),
-            ]);
+            sheet.push(row("x", "close lease and panes (asks first)"));
+            if lease.is_some_and(|lease| lease.entry.worktree.is_some()) {
+                sheet.extend([
+                    row("s", "sync guest → host (asks first)"),
+                    row("c", "count guest paths changed since the last sync"),
+                ]);
+            }
         }
         if !owner {
             // Named here as on the divider: it is what makes the rest of this tab's keys work.
@@ -1343,7 +1358,6 @@ impl State {
                 false => vec!["Ctrl-r refresh"],
             };
         };
-        let actions = ["x close", "s sync", "c changes"];
         let mut hints = vec![];
         match (self.vms.details, self.vms.pane.is_some()) {
             // Agents' word for going to a pane, short enough for a narrow divider; the sheet
@@ -1359,7 +1373,10 @@ impl State {
             (false, _) if lease.panes.is_empty() => hints.push("Enter details"),
             (false, _) => hints.push("Enter panes"),
         }
-        hints.extend(actions);
+        hints.push("x close");
+        if lease.entry.worktree.is_some() {
+            hints.extend(["s sync", "c changes"]);
+        }
         if self.vms.details {
             hints.push("PgUp/PgDn scroll");
         }
@@ -1594,12 +1611,10 @@ fn vm_question(operation: Operation, lease: &vms::Lease, sharing: &[&str]) -> Ve
     let name = &lease.entry.name;
     let session = &lease.entry.session;
     if operation != Operation::Close {
-        let worktree = lease
-            .entry
-            .worktree
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "—".into());
+        let Some(worktree) = lease.entry.worktree.as_ref() else {
+            return vec!["No host worktree is linked to this VM; no files will be copied.".into()];
+        };
+        let worktree = worktree.display();
         return vec![
             format!(
                 "Merge {name}'s guest changes into host worktree {worktree} (session \
@@ -1623,9 +1638,14 @@ fn vm_question(operation: Operation, lease: &vms::Lease, sharing: &[&str]) -> Ve
             }
         )
     };
-    let after = match sharing.is_empty() {
-        true => "No other session holds this VM: it stops and merges its worktree back.".into(),
-        false => format!("VM keeps running for: {}", sharing.join(", ")),
+    let after = match (sharing.is_empty(), lease.entry.worktree.is_some()) {
+        (true, true) => {
+            "No other session holds this VM: it stops and merges its worktree back.".into()
+        },
+        (true, false) => "No other session holds this VM: it stops and deletes its guest disk. \
+                         No host worktree is linked; copy needed files out before closing."
+            .into(),
+        (false, _) => format!("VM keeps running for: {}", sharing.join(", ")),
     };
     vec![
         format!("Close {name} in session {session}? y/n"),
@@ -1784,6 +1804,9 @@ mod tests {
         state.vms.owner = Some(PluginId::new(1));
         state.vms.visible = true;
         state.vms.snapshot = serde_json::from_str(r#"{"vms":[{"session":"one","name":"api","state":"running","vm_id":"physical","panes":[{"id":12,"title":"shell","agent":false}]},{"session":"two","name":"api","state":"running","vm_id":"physical"},{"session":"three","name":"api","state":"running","vm_id":"different"}],"recoveries":[{"path":"/keep/disk","reason":"merge failed","retained_at":123}]}"#).unwrap();
+        for lease in &mut state.vms.snapshot.vms {
+            lease.entry.worktree = Some("/repo".into());
+        }
         state.vms.loaded = true;
         state
     }
@@ -2163,6 +2186,39 @@ mod tests {
                 .session,
             "three"
         );
+    }
+
+    #[test]
+    fn bare_vms_explain_disk_deletion_and_do_not_offer_worktree_sync() {
+        let mut state = state();
+        for lease in &mut state.vms.snapshot.vms {
+            lease.entry.worktree = None;
+        }
+        state.vm_key(key(BareKey::Char('x')));
+        assert!(details(&state).contains("VM keeps running for: two"));
+        assert!(!details(&state).contains("deletes its guest disk"));
+        state.vm_key(key(BareKey::Esc));
+
+        state.vms.selected = 2;
+        state.vm_key(key(BareKey::Char('x')));
+        let text = details(&state);
+        assert!(text.contains("deletes its guest disk"));
+        assert!(text.contains("copy needed files out before closing"));
+        assert!(!text.contains("merges its worktree back"));
+        state.vm_key(key(BareKey::Esc));
+
+        for action in ['s', 'c'] {
+            state.vm_key(key(BareKey::Char(action)));
+            assert!(state.vms.confirming.is_none());
+            assert!(state.vms.pending.is_none() && state.vms.queued.is_none());
+            assert!(details(&state).contains("No host worktree is linked to this VM"));
+        }
+        assert!(!state.vm_hints(false).contains(&"s sync"));
+        assert!(!state.vm_hints(false).contains(&"c changes"));
+        assert!(!state
+            .vm_key_sheet()
+            .iter()
+            .any(|(key, _)| key == "s" || key == "c"));
     }
     #[test]
     fn vm_tabs_preserve_agent_reader_selection_and_both_scroll_positions() {

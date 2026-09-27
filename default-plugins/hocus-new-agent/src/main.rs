@@ -179,11 +179,7 @@ impl Default for State {
             // same request said two ways.
             .field(PROMPT, "Prompt (optional)", TextInput::empty())
             .checkbox(FIRECRACKER, "Run in Firecracker", Checkbox::new(false))
-            .field(
-                FIRECRACKER_IMAGE,
-                "Firecracker image (optional)",
-                TextInput::empty(),
-            )
+            .field(FIRECRACKER_IMAGE, "Firecracker image", TextInput::empty())
             .checkbox(
                 CREATE_BRANCH,
                 "Create and switch branch",
@@ -1199,7 +1195,7 @@ impl State {
     ///
     /// The error wins the row: it is the thing the user has to act on. The note says what
     /// is being forked, or why this is the New agent form, and can wait for the error to
-    /// be cleared. The prompt's size comes last and is worked out afresh every render
+    /// be cleared. Field guidance and then the prompt's size come last, worked out every render
     /// rather than kept as a note, so an edit or a resize is reflected at once and a
     /// prompt that comes to fit takes it away.
     fn status(&self, cols: usize) -> Option<Text> {
@@ -1208,7 +1204,17 @@ impl State {
             (None, Some(note)) => Some(Text::new(note)),
             (None, None) => {
                 let form = self.dialog.form();
-                prompt_is_cut(form, cols).then(|| Text::new(prompt_summary(form.text(PROMPT))))
+                let hint = match form.focused_id() {
+                    Some(FIRECRACKER) => Some("First use: zellij-firecracker setup"),
+                    Some(FIRECRACKER_IMAGE) if form.checked(FIRECRACKER) => {
+                        Some("Blank uses the default VM image")
+                    },
+                    Some(FIRECRACKER_IMAGE) => Some("Used only with Run in Firecracker"),
+                    _ => None,
+                };
+                hint.map(Text::new).or_else(|| {
+                    prompt_is_cut(form, cols).then(|| Text::new(prompt_summary(form.text(PROMPT))))
+                })
             },
         }
     }
@@ -1392,7 +1398,11 @@ fn spec(form: &Form) -> launch::Spec {
         permission_mode: selected_agent_option(form, PERMISSION_MODE),
         prompt: Some(form.text(PROMPT).to_owned()),
         firecracker,
-        firecracker_image: Some(form.text(FIRECRACKER_IMAGE).to_owned()),
+        // Keep a typed image in the form when switching back to local, but do not
+        // send an inactive VM option to the launcher.
+        firecracker_image: form
+            .checked(FIRECRACKER)
+            .then(|| form.text(FIRECRACKER_IMAGE).to_owned()),
         // No branch is how `launch` is told to leave the repository alone, which is
         // exactly what an unchecked box means.
         branch,
@@ -1672,20 +1682,54 @@ mod tests {
         assert!(matches!(checkout, GitCheckout::NewWorktree { .. }));
     }
 
-    /// The two checks `launch::plan` makes of the Firecracker fields, shown in
-    /// the status row like every other refusal rather than reaching the host.
     #[test]
-    fn an_image_without_a_vm_is_refused_on_submit() {
+    fn switching_back_to_local_ignores_the_image_and_keeps_it_for_next_time() {
         let mut state = State::default();
         state.set_text(BRANCH, "topic");
         state.changed(BRANCH);
+        state.set_checked(FIRECRACKER, true);
+        state.changed(FIRECRACKER);
         state.set_text(FIRECRACKER_IMAGE, "rust");
         state.changed(FIRECRACKER_IMAGE);
-        assert!(state.submit());
         assert_eq!(
-            state.error.as_deref(),
-            Some("firecracker_image needs a firecracker_vm")
+            spec(state.dialog.form()).firecracker_image.as_deref(),
+            Some("rust")
         );
+
+        state.set_checked(FIRECRACKER, false);
+        state.changed(FIRECRACKER);
+        assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "rust");
+        assert_eq!(spec(state.dialog.form()).firecracker_image, None);
+        assert!(request(state.dialog.form()).unwrap().0.target.is_local());
+
+        state.set_checked(FIRECRACKER, true);
+        state.changed(FIRECRACKER);
+        assert!(matches!(
+            request(state.dialog.form()).unwrap().0.target,
+            PaneTarget::Firecracker { image: Some(image), .. } if image == "rust"
+        ));
+    }
+
+    #[test]
+    fn firecracker_fields_explain_setup_defaults_and_inactive_images() {
+        let mut state = State::default();
+        for (field, enabled, expected) in [
+            (FIRECRACKER, false, "First use: zellij-firecracker setup"),
+            (
+                FIRECRACKER_IMAGE,
+                false,
+                "Used only with Run in Firecracker",
+            ),
+            (FIRECRACKER_IMAGE, true, "Blank uses the default VM image"),
+        ] {
+            state.set_checked(FIRECRACKER, enabled);
+            state.dialog.form_mut().focus_on(field);
+            assert_eq!(
+                status(&state, narrowest_inside()).as_deref(),
+                Some(expected)
+            );
+            assert!(expected.chars().count() <= narrowest_inside());
+        }
     }
 
     #[test]

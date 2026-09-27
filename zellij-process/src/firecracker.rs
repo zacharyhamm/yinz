@@ -663,14 +663,16 @@ fn read_available(
     }
 }
 
+pub const NOT_CONFIGURED: &str = "Firecracker is not configured. Run zellij-firecracker setup \
+    from your project directory, then start a new Zellij session to load the provider. \
+    For a custom provider, set firecracker_provider to its absolute executable path. \
+    See docs/FIRECRACKER.md for installation";
+
 pub fn provider_from_options(
     path: Option<&Path>,
     timeout_secs: Option<zellij_types::units::ElapsedSeconds>,
 ) -> Result<Provider> {
-    let path = path.context(
-        "Firecracker is not configured: set firecracker_provider in your Zellij config to the \
-         absolute path of a provider executable to use VMs",
-    )?;
+    let path = path.context(NOT_CONFIGURED)?;
     Provider::new(
         path.to_path_buf(),
         Duration::from_secs(timeout_secs.map(|seconds| seconds.get()).unwrap_or(90)),

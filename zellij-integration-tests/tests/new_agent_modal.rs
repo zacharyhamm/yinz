@@ -225,12 +225,10 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
     zellij.quit();
 }
 
-/// The Firecracker switch and image row, and the check that pairs them: an image
-/// names what a VM boots from, so one typed while the switch is off is refused
-/// in the modal's status row
-/// rather than reaching the host as a pane that cannot start.
+/// Changing a VM launch back to local preserves the image field for later without
+/// making that unused setting block the local agent.
 #[test]
-fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
+fn switching_back_to_local_after_typing_a_vm_image_starts_a_local_agent() {
     // A tall terminal lets this check the modal's requested size rather than scrolling.
     let mut zellij = TestRunner::new(Size {
         cols: 120,
@@ -257,11 +255,21 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
     let (column, row) = position_of(&snapshot, "Create and switch branch");
     zellij.send_stdin(&sgr_press(column + 1, row + 1));
     zellij.send_stdin(&sgr_release(column + 1, row + 1));
-    zellij.wait_until("the branch checkbox is off", |snapshot| {
+    let snapshot = zellij.wait_until("the branch checkbox is off", |snapshot| {
         snapshot
             .text
             .lines()
             .any(|line| line.contains("Create and switch branch") && line.contains("[ ]"))
+    });
+
+    let (column, row) = position_of(&snapshot, "Run in Firecracker");
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+    let snapshot = zellij.wait_until("the VM checkbox is on", |snapshot| {
+        snapshot
+            .text
+            .lines()
+            .any(|line| line.contains("Run in Firecracker") && line.contains("[x]"))
     });
 
     // A click into a text field is enough to start typing in it.
@@ -278,11 +286,33 @@ fn an_image_without_a_vm_is_refused_in_the_modals_status_row() {
             .any(|line| line.contains("Firecracker image") && line.contains("rust"))
     });
 
+    let (column, row) = position_of(&snapshot, "Run in Firecracker");
+    zellij.send_stdin(&sgr_press(column + 1, row + 1));
+    zellij.send_stdin(&sgr_release(column + 1, row + 1));
+    let snapshot = zellij.wait_until("the VM checkbox is off", |snapshot| {
+        snapshot
+            .text
+            .lines()
+            .any(|line| line.contains("Run in Firecracker") && line.contains("[ ]"))
+    });
+    assert!(snapshot
+        .text
+        .lines()
+        .any(|line| line.contains("Firecracker image") && line.contains("rust")));
+
     let (column, row) = position_of(&snapshot, "Create agent");
     zellij.send_stdin(&sgr_press(column + 1, row + 1));
     zellij.send_stdin(&sgr_release(column + 1, row + 1));
-    zellij.wait_until("the modal refused the image", |snapshot| {
-        snapshot.contains("firecracker_image needs a firecracker_vm")
+    let agent = zellij.expect_pty_spawn();
+    let Some(zellij_types::input::command::TerminalAction::RunCommand(command)) =
+        agent.terminal_action()
+    else {
+        panic!("the modal must start an agent command");
+    };
+    assert_eq!(command.target, zellij_types::command::PaneTarget::Local);
+    agent.output(b"LOCAL AGENT\r\n");
+    zellij.wait_until("the modal closes onto the local agent", |snapshot| {
+        snapshot.contains("LOCAL AGENT") && !snapshot.contains("Create agent")
     });
 
     zellij.quit();
