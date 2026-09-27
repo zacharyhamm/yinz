@@ -6620,7 +6620,6 @@ name = "zellij-panes"
 version = "0.45.0"
 dependencies = [
  "ansi_term",
- "anyhow",
  "base64",
  "hegeltest",
  "insta",
@@ -6628,11 +6627,8 @@ dependencies = [
  "kasuari",
  "kdl",
  "log",
- "nix",
  "png",
- "tempfile",
  "unicode-width 0.2.2",
- "uuid",
  "vte 0.15.0",
  "zellij-bus",
  "zellij-config",
@@ -6872,6 +6868,7 @@ dependencies = [
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",
+ "zellij-tab",
  "zellij-terminal",
  "zellij-test-support",
  "zellij-tile-utils",
@@ -7003,6 +7000,32 @@ dependencies = [
  "zellij-project-config",
  "zellij-runtime",
  "zellij-test-support",
+]
+
+[[package]]
+name = "zellij-tab"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "hegeltest",
+ "insta",
+ "interprocess",
+ "kdl",
+ "log",
+ "nix",
+ "tempfile",
+ "unicode-width 0.2.2",
+ "uuid",
+ "vte 0.15.0",
+ "zellij-bus",
+ "zellij-config",
+ "zellij-ipc",
+ "zellij-key-codec",
+ "zellij-panes",
+ "zellij-runtime",
+ "zellij-terminal",
+ "zellij-types",
 ]
 
 [[package]]

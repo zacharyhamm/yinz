@@ -1,0 +1,43 @@
+[package]
+name = "zellij-tab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The zellij server's tab: pane composition, focus, swap layouts, mouse and pane groups"
+
+[features]
+# Test helpers on `Tab` and `CopyOptions` that `zellij-screen`'s screen tests drive. Its normal
+# dependency enables this feature for consistent build and test selection.
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
+# The tab tests drive the pane layer's test helpers too. `test-support` sits on the normal
+# dependency, as zellij-screen's does, so that `build`, `run`, unit tests and lint all resolve the
+# same feature set for zellij-panes.
+zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
+zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
+zellij-key-codec = { workspace = true }
+zellij-runtime = { workspace = true }
+zellij-types = { workspace = true }
+anyhow = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+log = { workspace = true }
+unicode-width = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["process", "signal"] }
+
+[dev-dependencies]
+zellij-config = { workspace = true }
+zellij-ipc = { workspace = true }
+hegeltest = "0.29.3"
+insta = "1.48"
+interprocess = { workspace = true }
+kdl = { workspace = true }
+tempfile = "3.2.0"
+vte = { workspace = true }

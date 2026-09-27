@@ -1,4 +1,5 @@
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
+use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TextAroundPosition};
 use crate::panes::kitty_graphics::{
     InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
 };
@@ -13,7 +14,6 @@ use crate::panes::{
 };
 use crate::pty::VteBytes;
 use crate::route::NotificationEnd;
-use crate::tab::{AdjustedInput, GuestChoiceIndicator, Pane, TextAroundPosition};
 use crate::ClientId;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};

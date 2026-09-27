@@ -164,6 +164,19 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "zellij-tab",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-key-codec",
+            "zellij-config",
+            "zellij-ipc",
+            "zellij-terminal",
+            "zellij-bus",
+            "zellij-panes",
+        ],
+    ),
+    (
         "zellij-plugin-host",
         &[
             "zellij-terminal",
@@ -202,6 +215,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-bus",
             "zellij-routing",
             "zellij-panes",
+            "zellij-tab",
             "zellij-tile-utils",
             "zellij-test-support",
         ],
@@ -224,11 +238,13 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// the CLI cross-check their wire formats against the plugin API in tests, but must not wait on its
 /// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
 /// assert on IPC messages and recorded events, but neither thread names those crates otherwise.
+/// The tab's tests parse KDL layouts and stand up client IPC channels, which the tab never does.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-ipc", &["zellij-plugin-api"]),
     ("zellij-cli", &["zellij-plugin-api"]),
     ("zellij-screen", &["zellij-cli", "zellij-test-support"]),
     ("zellij-pty", &["zellij-ipc", "zellij-storage"]),
+    ("zellij-tab", &["zellij-config", "zellij-ipc"]),
 ];
 
 /// The package that composes the concrete backends into the running program.
@@ -439,6 +455,9 @@ mod tests {
             ("zellij-client", "zellij-server-os"),
             ("zellij-integration-tests", "zellij-server-os"),
             ("zellij-panes", "zellij-routing"),
+            ("zellij-panes", "zellij-tab"),
+            ("zellij-tab", "zellij-routing"),
+            ("zellij-tab", "zellij-server-os"),
             ("zellij-routing", "zellij-plugin-host"),
             ("zellij-routing", "zellij-server"),
             ("zellij-routing", "zellij-panes"),

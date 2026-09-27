@@ -1,8 +1,8 @@
 use crate::output::CharacterChunk;
+use crate::pane::GuestChoiceIndicator;
 use crate::panes::{
     AnsiCode, CharacterStyles, RcCharacterStyles, TerminalCharacter, EMPTY_TERMINAL_CHARACTER,
 };
-use crate::tab::GuestChoiceIndicator;
 use crate::ui::boundaries::boundary_type;
 use crate::ui::hint_text::{
     exit_code_segments, hover_segments, rerun_segments, resize_segments, suspended_marker_segments,

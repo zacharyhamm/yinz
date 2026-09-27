@@ -80,6 +80,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-routing",
         "zellij-plugin-host",
         "zellij-panes",
+        "zellij-tab",
         "zellij-screen",
         "zellij-pty",
         "hocus",

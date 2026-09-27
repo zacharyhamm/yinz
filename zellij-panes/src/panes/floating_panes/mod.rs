@@ -3,9 +3,9 @@ use zellij_types::data::PaneInfo;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, ResizeStrategy};
 use zellij_types::position::Position;
 
+use crate::pane::{pane_info_for_pane, Pane};
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
-use crate::tab::{pane_info_for_pane, Pane};
 use crate::ui::damage::CellRect;
 use floating_pane_grid::FloatingPaneGrid;
 

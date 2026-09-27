@@ -1,8 +1,8 @@
 use zellij_types::pane_size::{Offset, Viewport};
 
 use crate::output::CharacterChunk;
+use crate::pane::Pane;
 use crate::panes::terminal_character::{TerminalCharacter, EMPTY_TERMINAL_CHARACTER, RESET_STYLES};
-use crate::tab::Pane;
 use ansi_term::Colour::{Fixed, RGB};
 use std::collections::HashMap;
 use zellij_runtime::errors::prelude::*;

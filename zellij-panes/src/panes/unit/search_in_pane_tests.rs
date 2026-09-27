@@ -1,8 +1,8 @@
 use super::super::TerminalPane;
+use crate::pane::Pane;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
-use crate::tab::Pane;
 use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;

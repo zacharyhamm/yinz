@@ -1,5 +1,5 @@
 use crate::{
-    channels::SenderWithContext, plugins::PluginInstruction, route::NotificationEnd, tab::Pane,
+    channels::SenderWithContext, pane::Pane, plugins::PluginInstruction, route::NotificationEnd,
     ClientId,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
