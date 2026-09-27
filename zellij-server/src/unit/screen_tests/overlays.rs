@@ -7489,3 +7489,79 @@ fn multipane_children_receive_visibility_after_transfer_hide_and_reveal() {
         .unwrap();
     assert_visible(false);
 }
+
+#[test]
+fn pane_tabs_lazy_children_receive_only_owning_tab_input_and_one_mode_update() {
+    use zellij_types::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+
+    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    let (sender, receiver) = channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(sender));
+    let client = ClientId::new(1);
+    let owner = TabId::new(0);
+    new_tab(&mut screen, 1, owner);
+    let first = PluginId::new(100);
+    let child = PluginId::new(101);
+    let tab = screen.tabs.get_mut(&owner).unwrap();
+    tab.new_pane(
+        PaneId::Plugin(first),
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::Floating(None),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let layout = PaneTabsLayout {
+        active: 0,
+        tabs: ["First", "Child"]
+            .map(|label| PaneTabDescriptor {
+                label: label.into(),
+                location: "zellij:strider".into(),
+                initial_cwd: None,
+                configuration: BTreeMap::new(),
+            })
+            .to_vec(),
+    };
+    let info = tab
+        .mount_pane_tabs(PaneId::Plugin(first), layout, 0, client)
+        .unwrap();
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    assert!(receiver.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::LoadPaneTab { tab_id, .. } if tab_id == owner)));
+    let run = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "zellij:strider",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    tab.pane_tab_loaded(info.id, 1, 1, Ok((child, run)))
+        .unwrap();
+    new_tab(&mut screen, 2, TabId::new(1));
+    let targets = screen.targeted_plugin_ids(client, EventType::InputReceived);
+    assert!(!targets.contains(&child));
+    assert!(!targets.contains(&first));
+    screen.go_to_tab(TabNumber::new(1), client).unwrap();
+    let targets = screen.targeted_plugin_ids(client, EventType::InputReceived);
+    assert!(targets.contains(&child));
+    receiver.try_iter().for_each(drop);
+    screen.change_mode(InputMode::Locked, None, client).unwrap();
+    let targets = receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events,
+            _ => vec![],
+        })
+        .filter_map(|(plugin, target_client, event)| {
+            (target_client == Some(client) && matches!(event, Event::ModeUpdate(_)))
+                .then_some(plugin)
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(targets.iter().filter(|target| **target == child).count(), 1);
+}

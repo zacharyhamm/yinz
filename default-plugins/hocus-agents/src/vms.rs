@@ -198,7 +198,7 @@ impl State {
         self.vms.busy = false;
         self.vms.list_expired = false;
         self.vms.confirming = None;
-        if owner.is_some() {
+        if owner.is_some() && !self.native_tabs {
             // Request the owner's visibility after verifying it, even if its first update
             // arrived before this manifest.
             self.send_selection();
@@ -2136,7 +2136,7 @@ mod tests {
         assert!(state.vms.pending.as_ref().unwrap().request_id > id);
         state.vms.pending_deadline_ms = 0;
         state.vms.visible = false;
-        state.surface = Surface::Agents;
+        // This retained VM instance expires pending work even while another child is selected.
         assert!(state.update(Event::Timer(FractionalSeconds::new(0.0))));
         assert!(state.vms.pending.is_none());
     }

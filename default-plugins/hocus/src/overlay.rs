@@ -339,6 +339,16 @@ pub(crate) struct Panel {
 }
 
 impl State {
+    fn panel_child_plugin(&self) -> Option<PluginId> {
+        self.panel_tabs
+            .as_ref()
+            .and_then(|tabs| match tabs.pane_id {
+                PaneId::Plugin(id) => Some(id),
+                _ => None,
+            })
+            .or(self.agents_plugin)
+    }
+
     pub(crate) fn is_panel(&self) -> bool {
         self.own_is_floating == Some(true)
     }
@@ -398,7 +408,7 @@ impl State {
                 override_user_placement,
             })
         } else {
-            let agents = if let Some(agents) = self.agents_plugin {
+            let agents = if let Some(agents) = self.panel_child_plugin() {
                 if self.agents_tab_index != self.own_tab_index {
                     return None;
                 }
@@ -547,10 +557,16 @@ impl State {
             Err("multipanes require the zellij host".into())
         };
         if let Ok(Some(info)) = result {
-            self.agents_plugin = info.children.iter().find_map(|pane| match pane {
-                PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
-                _ => None,
-            });
+            self.agents_plugin = self
+                .panel_tabs
+                .as_ref()
+                .and(self.agents_plugin)
+                .or_else(|| {
+                    info.children.iter().find_map(|pane| match pane {
+                        PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
+                        _ => None,
+                    })
+                });
             self.agents_tab_index = self.own_tab_index;
             self.multipane = Some(info);
             self.panel.placed_rect = self.reported_panel();
@@ -694,16 +710,23 @@ impl State {
     }
 
     fn hand_keyboard_to_agents(&mut self, stop: &'static str) -> bool {
-        let Some(agents_id) = self.agents_plugin.filter(|_| self.is_panel()) else {
+        let Some(agents_id) = self.panel_child_plugin().filter(|_| self.is_panel()) else {
             return false;
         };
         let pane = PaneId::Plugin(agents_id);
         self.reset_ring_stop();
-        focus_pane_with_id(pane, false, false);
+        if let Some(tabs) = &self.panel_tabs {
+            let _ = focus_pane_tabs(tabs.id, stop == hocus_proto::wire::STOP_TABS);
+        } else {
+            focus_pane_with_id(pane, false, false);
+        }
         pipe_message_to_plugin(
-            MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_TAKE).with_args(BTreeMap::from([
-                (hocus_proto::wire::PANEL_STOP.to_owned(), stop.to_owned()),
-            ])),
+            MessageToPlugin::new(hocus_proto::wire::AGENT_STRIP_TAKE)
+                .with_destination_plugin_id(agents_id)
+                .with_args(BTreeMap::from([(
+                    hocus_proto::wire::PANEL_STOP.to_owned(),
+                    stop.to_owned(),
+                )])),
         );
         self.note_ring_focus(pane, stop);
         true

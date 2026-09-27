@@ -50,6 +50,7 @@ fn serialize_and_deserialize_session_info_with_data() {
     let panes_list = vec![
         PaneInfo {
             multipane: None,
+            pane_tabs: None,
             host: None,
             target: Default::default(),
             agent: None,
@@ -83,6 +84,7 @@ fn serialize_and_deserialize_session_info_with_data() {
         },
         PaneInfo {
             multipane: None,
+            pane_tabs: None,
             host: None,
             target: Default::default(),
             agent: None,

@@ -2715,10 +2715,12 @@ fn test_client_messages() {
             tiled_layout: None,
             floating_layouts: vec![
                 FloatingPaneLayout {
+                    pane_tabs: None,
                     name: Some("first floating layout".to_owned()),
                     ..Default::default()
                 },
                 FloatingPaneLayout {
+                    pane_tabs: None,
                     name: Some("third floating layout".to_owned()),
                     height: Some(PercentOrFixed::Percent(10)),
                     width: Some(PercentOrFixed::Fixed(20)),
@@ -5049,4 +5051,38 @@ fn originating_plugin_generation_roundtrips_and_defaults_for_legacy_records() {
             .unwrap(),
         generated
     );
+}
+
+#[test]
+fn pane_tabs_layout_decoding_validates_nested_and_floating_children() {
+    use crate::client_server_contract::client_server_contract as wire;
+    for json in [
+        r#"{"tabs":[],"active":0}"#,
+        r#"{"tabs":[{"label":"First","location":"zellij:strider"}],"active":1}"#,
+        r#"{"tabs":[{"label":" ","location":"zellij:strider"}],"active":0}"#,
+        r#"{"tabs":[{"label":"First","location":" "}],"active":0}"#,
+    ] {
+        let mut tiled =
+            wire::TiledPaneLayout::from(zellij_types::input::layout::TiledPaneLayout::default());
+        tiled.pane_tabs_json = Some(json.into());
+        assert!(zellij_types::input::layout::TiledPaneLayout::try_from(tiled.clone()).is_err());
+        let mut parent =
+            wire::TiledPaneLayout::from(zellij_types::input::layout::TiledPaneLayout::default());
+        parent.children = vec![tiled];
+        assert!(zellij_types::input::layout::TiledPaneLayout::try_from(parent).is_err());
+        let mut floating = wire::FloatingPaneLayout::from(
+            zellij_types::input::layout::FloatingPaneLayout::default(),
+        );
+        floating.pane_tabs_json = Some(json.into());
+        assert!(zellij_types::input::layout::FloatingPaneLayout::try_from(floating).is_err());
+    }
+    let json = r#"{"tabs":[{"label":"First","location":"zellij:strider"}],"active":0}"#;
+    let mut tiled =
+        wire::TiledPaneLayout::from(zellij_types::input::layout::TiledPaneLayout::default());
+    tiled.pane_tabs_json = Some(json.into());
+    assert!(zellij_types::input::layout::TiledPaneLayout::try_from(tiled).is_ok());
+    let mut floating =
+        wire::FloatingPaneLayout::from(zellij_types::input::layout::FloatingPaneLayout::default());
+    floating.pane_tabs_json = Some(json.into());
+    assert!(zellij_types::input::layout::FloatingPaneLayout::try_from(floating).is_ok());
 }

@@ -2444,7 +2444,7 @@ impl MouseHandler {
             .map(|_| ())
     }
 
-    fn get_pane_at<'a>(
+    pub(super) fn get_pane_at<'a>(
         tab: &'a mut Tab,
         point: &Position,
         search_selectable: bool,

@@ -390,13 +390,12 @@ impl State {
     /// one another client opened, one the user opened by hand - and the panel's own list,
     /// which a `PaneUpdate` can name before the `SessionUpdate` does.
     ///
-    /// Empty while hocus knows of no list at all, which `strip_messages` answers with a
-    /// broadcast: a hocus reloaded under an open list has no id yet and must still feed it.
+    /// A newly loaded list receives its first strip through the greeting or session manifest.
     pub(crate) fn strip_recipients(&self) -> BTreeSet<PluginId> {
         self.agent_lists().chain(self.agents_plugin).collect()
     }
 
-    /// `AGENT_STRIP` addressed to each of `recipients`, or broadcast when there are none.
+    /// `AGENT_STRIP` addressed to each of `recipients`.
     ///
     /// An unaddressed pipe reaches every plugin in the session, and every one of them -
     /// each tab bar and status bar, the store, the daemon - decoded a JSON strip it had
@@ -420,9 +419,6 @@ impl State {
             },
         };
         let message = MessageToPlugin::new(wire::AGENT_STRIP).with_payload(payload);
-        if recipients.is_empty() {
-            return vec![message];
-        }
         recipients
             .into_iter()
             .map(|id| message.clone().with_destination_plugin_id(id))
@@ -438,8 +434,10 @@ impl State {
     /// does that, together with the placement that has to follow.
     pub(crate) fn answer_strip_hello(&mut self, source: &PipeSource) -> Vec<MessageToPlugin> {
         let mut recipients = self.strip_recipients();
-        if let (PipeSource::Plugin(sender), false) = (source, recipients.is_empty()) {
-            recipients.insert(*sender);
+        if let PipeSource::Plugin(sender) = source {
+            if self.listed_as_agent_list(*sender) != Some(false) {
+                recipients.insert(*sender);
+            }
         }
         let strip = self.current_strip();
         let messages = self.strip_messages(&strip, recipients);
@@ -473,16 +471,26 @@ impl State {
     /// for any other plugin, and `None` while it has not listed `id` at all - a list that has
     /// just loaded speaks before the `SessionUpdate` that names it.
     pub(crate) fn listed_as_agent_list(&self, id: PluginId) -> Option<bool> {
-        self.plugin_instances
-            .get(&id)
-            .map(|plugin| plugin.location == AGENT_LIST_LOCATION)
+        self.plugin_instances.get(&id).map(|plugin| {
+            plugin.location == AGENT_LIST_LOCATION
+                && plugin
+                    .configuration
+                    .get("view")
+                    .is_none_or(|view| view == "agents")
+        })
     }
 
     /// Every hocus-agents instance the session lists.
     pub(crate) fn agent_lists(&self) -> impl Iterator<Item = PluginId> + '_ {
         self.plugin_instances
             .iter()
-            .filter(|(_, plugin)| plugin.location == AGENT_LIST_LOCATION)
+            .filter(|(_, plugin)| {
+                plugin.location == AGENT_LIST_LOCATION
+                    && plugin
+                        .configuration
+                        .get("view")
+                        .is_none_or(|view| view == "agents")
+            })
             .map(|(id, _)| *id)
     }
 

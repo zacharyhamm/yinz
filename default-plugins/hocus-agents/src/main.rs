@@ -155,6 +155,8 @@
 #[path = "unit/attention.rs"]
 mod attention_tests;
 mod swamp;
+#[cfg(test)]
+#[path = "../../hocus-todos/src/todos.rs"]
 mod todos;
 mod vms;
 use std::collections::BTreeMap;
@@ -164,6 +166,7 @@ use hocus_proto::agents::{self, now_ms, Strip, StripRow, Summaries};
 use hocus_proto::envelope;
 use hocus_proto::launch;
 use hocus_proto::markdown;
+use hocus_proto::panel_text::{divider_line, scroll_readout, wrap_words};
 use hocus_proto::tabs::{self, TabCell};
 use hocus_proto::wire;
 use unicode_width::UnicodeWidthStr;
@@ -171,12 +174,19 @@ use zellij_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
+    native_tabs: bool,
+    mount_pending: bool,
+    pane_tabs: Option<PaneTabsId>,
     own_plugin_id: PluginId,
+    own_client_id: ClientId,
+    initial_cwd: std::path::PathBuf,
+    bar_focused: Vec<ClientId>,
     surface: Surface,
     tabs_focused: bool,
     tab_cells: Vec<TabCell<Surface>>,
     age_minute: i64,
     vms: vms::View,
+    #[cfg(test)]
     todos: todos::View,
     swamp: swamp::View,
     /// The strip as hocus last sent it.
@@ -651,6 +661,28 @@ enum Surface {
 }
 
 impl Surface {
+    fn subscriptions(self) -> Vec<EventType> {
+        let mut events = vec![
+            EventType::Key,
+            EventType::Mouse,
+            EventType::PastedText,
+            EventType::PaneTabsUpdate,
+            EventType::Timer,
+            EventType::Visible,
+            EventType::PaneUpdate,
+        ];
+        match self {
+            Surface::Vms => events.push(EventType::SessionUpdate),
+            Surface::Swamp => events.extend([
+                EventType::PermissionRequestResult,
+                EventType::RunCommandResult,
+                EventType::WebRequestResult,
+            ]),
+            Surface::Agents | Surface::Todos => {},
+        }
+        events
+    }
+
     fn step(self, delta: isize) -> Self {
         let index: usize = match self {
             Self::Agents => 0,
@@ -673,39 +705,64 @@ const POLL_TICK_SECS: f64 = 2.0;
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        subscribe(&[
-            EventType::Key,
-            EventType::Mouse,
-            // A bracketed paste never reaches us as keys: the host buffers the bytes between the
-            // markers and hands them over whole, and drops them entirely if we are not
-            // subscribed here - which used to make every paste into the panel's boxes vanish.
-            EventType::PastedText,
-            EventType::PluginDataChanged,
-            EventType::PermissionRequestResult,
-            EventType::Timer,
-            EventType::SessionUpdate,
-            EventType::RunCommandResult,
-            EventType::WebRequestResult,
-            EventType::Visible,
-            EventType::PaneUpdate,
-        ]);
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
+        self.native_tabs = true;
+        self.surface = match configuration.get("view").map(String::as_str) {
+            Some("vms") => Surface::Vms,
+            Some("swamp") => Surface::Swamp,
+            _ => Surface::Agents,
+        };
+        subscribe(&self.surface.subscriptions());
         set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
         set_selectable(true);
         set_self_mouse_selection_support(true);
         let ids = get_plugin_ids();
         self.own_plugin_id = ids.plugin_id;
-        self.open_todos(ids.initial_cwd.to_string_lossy().into_owned());
-        rename_plugin_pane(self.own_plugin_id, "agents");
+        self.own_client_id = ids.client_id;
+        self.initial_cwd = ids.initial_cwd;
+        rename_plugin_pane(
+            self.own_plugin_id,
+            match self.surface {
+                Surface::Vms => "VMs",
+                Surface::Swamp => "Swamp",
+                _ => "Agents",
+            },
+        );
+        if !configuration.contains_key("view") {
+            self.mount_pending = true;
+            self.mount_composition();
+        }
+        if self.surface == Surface::Swamp {
+            self.activate_swamp();
+        }
         // Unconditional, and before there are any rows: what this first one carries
         // is the plugin id, which is how hocus tells "the agents pane is focused"
         // from "some other plugin pane is". The pane it names follows with the
         // strip, a moment later.
-        self.send_selection();
-        self.say_hello_to_hocus();
+        if self.surface == Surface::Agents {
+            self.send_selection();
+            self.say_hello_to_hocus();
+        }
     }
 
     fn update(&mut self, event: Event) -> bool {
+        let is_key = matches!(event, Event::Key(_));
+        let is_input = matches!(
+            event,
+            Event::Key(_) | Event::Mouse(_) | Event::PastedText(_)
+        );
+        if is_input && self.native_tabs {
+            #[cfg(not(test))]
+            let client = {
+                let client = get_plugin_ids().client_id;
+                self.own_client_id = client;
+                client
+            };
+            #[cfg(test)]
+            let client = self.own_client_id;
+            self.tabs_focused = self.bar_focused.contains(&client);
+        }
+        let had_bar = self.tabs_focused;
         let selection = self.selection_key();
         let revision = self.selected_revision();
         let rendered = match event {
@@ -716,7 +773,31 @@ impl ZellijPlugin for State {
                 self.swamp_web_result(status, &headers, &body, &context)
             },
             Event::PermissionRequestResult(status) => self.swamp_permission(status),
-            Event::Visible(visible) => self.swamp_visibility(visible),
+            Event::Visible(visible) => {
+                if !visible {
+                    self.end_visit();
+                }
+                if self.surface == Surface::Vms {
+                    self.vms.visible = visible;
+                }
+                self.surface == Surface::Swamp && self.swamp_visibility(visible)
+            },
+            Event::PaneTabsUpdate(tabs) => {
+                if let Some(tabs) = tabs.iter().find(|tabs| {
+                    tabs.tabs
+                        .iter()
+                        .any(|slot| slot.plugin_id == Some(self.own_plugin_id))
+                }) {
+                    self.pane_tabs = Some(tabs.id);
+                    self.bar_focused = tabs.bar_focused.clone();
+                    self.tabs_focused = self.bar_focused.contains(&self.own_client_id);
+                } else {
+                    self.pane_tabs = None;
+                    self.bar_focused.clear();
+                    self.tabs_focused = false;
+                }
+                false
+            },
             Event::PaneUpdate(manifest) => {
                 // Read here rather than in `swamp_panes`, which looks the pane up for its own
                 // polling: whether this pane is shown and has the keys is the whole panel's
@@ -725,15 +806,41 @@ impl ZellijPlugin for State {
                 let keys = own_pane(&manifest, self.own_plugin_id).is_some_and(|pane| {
                     self.own_pane_changed(!pane.is_suppressed, pane.is_focused)
                 });
-                self.swamp_panes(&manifest) || keys
+                self.pane_tabs = own_pane(&manifest, self.own_plugin_id)
+                    .and_then(|pane| pane.pane_tabs.as_ref().map(|tabs| tabs.id))
+                    .or(self.pane_tabs);
+                if self.mount_pending && own_pane(&manifest, self.own_plugin_id).is_some() {
+                    if self.pane_tabs.is_none() {
+                        self.mount_composition();
+                    } else {
+                        self.mount_pending = false;
+                    }
+                }
+                if self.native_tabs && self.surface == Surface::Vms {
+                    self.vms.visible = own_pane(&manifest, self.own_plugin_id)
+                        .is_some_and(|pane| !pane.is_suppressed);
+                }
+                (self.surface == Surface::Swamp && self.swamp_panes(&manifest)) || keys
             },
             Event::SessionUpdate(sessions, _) => self.vm_sessions(&sessions),
+            #[cfg(test)]
             Event::PluginDataChanged { watch_id, rows, .. } => {
                 self.todo_rows_changed(watch_id, rows)
             },
             Event::Key(key) => self.on_key(key),
             Event::PastedText(text) => self.on_paste(&text),
-            Event::Mouse(mouse_event) => self.on_mouse(mouse_event),
+            Event::Mouse(mouse_event) => self.on_mouse(if self.native_tabs {
+                match mouse_event {
+                    Mouse::LeftClick(y, x) => Mouse::LeftClick(y + 1, x),
+                    Mouse::RightClick(y, x) => Mouse::RightClick(y + 1, x),
+                    Mouse::Hold(y, x) => Mouse::Hold(y + 1, x),
+                    Mouse::Release(y, x) => Mouse::Release(y + 1, x),
+                    Mouse::Hover(y, x) => Mouse::Hover(y + 1, x),
+                    other => other,
+                }
+            } else {
+                mouse_event
+            }),
             // The ages in the history half are drawn from the clock, so nothing the pane
             // receives can tell it they have moved on. Re-armed whatever the answer, so the
             // column keeps ticking; a redraw only where an age is actually on screen, so a
@@ -741,11 +848,12 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
                 let now = now_ms();
-                let vm_changed = self.poll_vms();
+                let vm_changed = self.surface == Surface::Vms && self.poll_vms();
                 // The other requests here with a deadline: a triage handed to hocus that was
                 // never acknowledged, a search nobody answered and a summary nobody wrote all
                 // stop claiming to be on their way.
-                let triage_expired = self.expire_swamp_triage(now);
+                let triage_expired =
+                    self.surface == Surface::Swamp && self.expire_swamp_triage(now);
                 let search_expired = self.expire_search(now);
                 let summary_expired = self.expire_summary_ask(now);
                 let minute = now / 60_000;
@@ -767,8 +875,20 @@ impl ZellijPlugin for State {
             self.leave_row();
             self.pending_history_revision = self.selected_revision();
         }
-        if moved || revision != self.selected_revision() {
+        if self.surface == Surface::Agents && (moved || revision != self.selected_revision()) {
             self.send_selection();
+        }
+        if self.native_tabs && is_key && self.tabs_focused && !had_bar {
+            if let Some(id) = self.pane_tabs {
+                let _ = focus_pane_tabs(id, true);
+            }
+        }
+        if self.native_tabs && is_key {
+            self.bar_focused
+                .retain(|client| *client != self.own_client_id);
+            if self.tabs_focused {
+                self.bar_focused.push(self.own_client_id);
+            }
         }
         rendered
     }
@@ -785,7 +905,9 @@ impl ZellijPlugin for State {
             // the message opened nothing - but a hocus that reloaded has forgotten our id, and
             // `send_selection` on load is the only other thing that ever tells it. Answering here
             // is what stops a reloaded hocus being unable to place or hide the list beside it.
-            self.send_selection();
+            if self.surface == Surface::Agents {
+                self.send_selection();
+            }
             return false;
         }
         if pipe_message.name == wire::AGENT_STRIP_TAKE {
@@ -904,7 +1026,9 @@ impl ZellijPlugin for State {
             self.load_run(run, fingerprint);
             return true;
         }
-        if pipe_message.name != wire::AGENT_STRIP {
+        if (self.native_tabs && self.surface != Surface::Agents)
+            || pipe_message.name != wire::AGENT_STRIP
+        {
             return false;
         }
         let Some(strip) = pipe_message
@@ -929,6 +1053,26 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if self.native_tabs {
+            #[cfg(not(test))]
+            let client = get_plugin_ids().client_id;
+            #[cfg(test)]
+            let client = self.own_client_id;
+            self.tabs_focused = self.bar_focused.contains(&client);
+        }
+        CONTENT_OFFSET.with(|offset| offset.set(usize::from(!self.native_tabs)));
+        if self.native_tabs {
+            rename_plugin_pane(
+                self.own_plugin_id,
+                match self.surface {
+                    Surface::Vms if self.vms.has_error() => "VMs!",
+                    Surface::Vms => "VMs",
+                    Surface::Swamp if self.swamp.has_error() => "Swamp!",
+                    Surface::Swamp => "Swamp",
+                    _ => "Agents",
+                },
+            );
+        }
         self.last_rows = rows;
         self.last_cols = cols;
         self.last_footer_row = None;
@@ -936,7 +1080,8 @@ impl ZellijPlugin for State {
         // Settled before anything is drawn, because the surface's share of the pane - what is
         // left under the tab bar and above the footer - is what the cursor is placed in.
         let footer = self.footer_hint();
-        let body_rows = rows.saturating_sub(1 + usize::from(footer.is_some()));
+        let body_rows =
+            rows.saturating_sub(usize::from(!self.native_tabs) + usize::from(footer.is_some()));
         // Host commands must precede drawing; keep the dropdown output until
         // after the issue list so it paints over the rows beneath it. Nothing of the
         // surface's is drawn under the key sheet, so neither is its dropdown.
@@ -948,7 +1093,19 @@ impl ZellijPlugin for State {
         let form_cursor = swamp_form
             .as_ref()
             .and_then(|buffer| buffer.cursor.flatten());
-        show_cursor(self.text_cursor(form_cursor, body_rows, cols));
+        show_cursor(
+            self.text_cursor(form_cursor, body_rows, cols)
+                .map(|(x, y)| {
+                    (
+                        x,
+                        if form_cursor.is_some() {
+                            y
+                        } else {
+                            y.saturating_sub(usize::from(self.native_tabs))
+                        },
+                    )
+                }),
+        );
         if rows <= 1 || cols == 0 {
             // Forget the hidden geometry, but keep selections and scrolls for when it returns.
             self.last_window_start = 0;
@@ -959,6 +1116,7 @@ impl ZellijPlugin for State {
             self.last_reader_rows = 0;
             self.last_reader_max_scroll = 0;
             self.vms.clear_dimensions();
+            #[cfg(test)]
             self.todos.clear_dimensions();
             self.swamp.clear_dimensions();
         }
@@ -1004,7 +1162,7 @@ impl ZellijPlugin for State {
             ],
             cols,
         );
-        for cell in &self.tab_cells {
+        for cell in self.tab_cells.iter().filter(|_| !self.native_tabs) {
             print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
         }
         if let Some(hint) = footer {
@@ -1035,6 +1193,7 @@ impl ZellijPlugin for State {
                 }
                 return;
             },
+            #[cfg(test)]
             Surface::Todos => {
                 self.render_todos(rows, cols);
                 return;
@@ -1044,6 +1203,8 @@ impl ZellijPlugin for State {
                 return;
             },
             Surface::Agents => {},
+            #[cfg(not(test))]
+            Surface::Todos => {},
         }
         // The reader is the whole pane rather than a third region: an event long enough to
         // need it is long enough to want the room, and the list it covers is still exactly
@@ -1322,8 +1483,15 @@ fn list_text(row: &StripRow, selected: bool, live: bool, columns: &Columns, now:
 }
 
 // Every content coordinate is relative to the row below the permanent tab bar.
+thread_local! { static CONTENT_OFFSET: std::cell::Cell<usize> = const { std::cell::Cell::new(1) }; }
 fn paint(text: Text, x: usize, y: usize, width: Option<usize>, height: Option<usize>) {
-    print_text_with_coordinates(text, x, y + 1, width, height);
+    print_text_with_coordinates(
+        text,
+        x,
+        y + CONTENT_OFFSET.with(|offset| offset.get()),
+        width,
+        height,
+    );
 }
 
 /// The rule between the two halves: a label naming what is below it, the rest of the row ruled
@@ -1400,51 +1568,6 @@ enum Hint {
     Instead(String),
 }
 
-/// The row the divider draws, never wider than `cols`.
-///
-/// Split out from the drawing because it is the one line in the pane that has to fit three
-/// things onto a row rather than one, and a string is what a test can measure.
-///
-/// A label is text from anywhere - a todo, a run's title, a refusal - and one carrying a line
-/// feed or an escape would move the terminal's cursor rather than print: a line feed on the
-/// pane's last row scrolls the whole pane up. So every control character is drawn as a space.
-fn divider_line(label: &str, above: usize, below: usize, cols: usize) -> String {
-    let label: String = label
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect();
-    let position = scroll_readout(above, below);
-    // The readout shares the row with the label, so it is taken out of the label's room rather
-    // than out of the rule: how far back the history is wound is worth more than the last few
-    // characters of a kind, and this is the only place that knows both.
-    let label = agents::fit_label(label, cols.saturating_sub(position.width()));
-    let mut line = match label.is_empty() {
-        true => "──".to_owned(),
-        false => format!("─ {label} "),
-    };
-    let rule = cols
-        .saturating_sub(line.width())
-        .saturating_sub(position.width());
-    line.push_str(&"─".repeat(rule));
-    line.push_str(&position);
-    line
-}
-
-/// The scroll position [`divider_line`] draws at the right-hand end of the rule: both ends of
-/// it, so a half wound back into the past says how far and how much is still ahead of it. No
-/// scrollbar: nothing in the tree draws one.
-///
-/// One function for every surface that fits a label into what the readout leaves of the row,
-/// so the room they fit to and the readout drawn cannot disagree.
-fn scroll_readout(above: usize, below: usize) -> String {
-    match (above, below) {
-        (0, 0) => String::new(),
-        (above, 0) => format!(" ↑{above} "),
-        (0, below) => format!(" ↓{below} "),
-        (above, below) => format!(" ↑{above} ↓{below} "),
-    }
-}
-
 /// How the pane divides: `(list_rows, history_rows)`, with the divider on the row between
 /// them. `history_rows` is `0` on a pane too short to be split, which is the one case the
 /// halves are not permanent - a list squeezed to nothing shows neither.
@@ -1506,6 +1629,41 @@ impl Predecessors {
 }
 
 impl State {
+    fn composition_tabs(&self) -> Vec<PaneTabDescriptor> {
+        [
+            ("Agents", "hocus-agents", "agents"),
+            ("Todos", "hocus-todos", ""),
+            ("VMs", "hocus-agents", "vms"),
+            ("Swamp", "hocus-agents", "swamp"),
+        ]
+        .into_iter()
+        .map(|(label, plugin, view)| PaneTabDescriptor {
+            label: label.into(),
+            location: format!("zellij:{plugin}"),
+            initial_cwd: Some(self.initial_cwd.clone()),
+            configuration: if view.is_empty() {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("view".into(), view.into())])
+            },
+        })
+        .collect()
+    }
+
+    fn mount_composition(&mut self) {
+        let tabs = self.composition_tabs();
+        self.pane_tabs = mount_pane_tabs(
+            PaneId::Plugin(self.own_plugin_id),
+            PaneTabsLayout { tabs, active: 0 },
+            0,
+        )
+        .ok()
+        .flatten()
+        .map(|tabs| tabs.id);
+
+        self.mount_pending = self.pane_tabs.is_none();
+    }
+
     /// The key hints on the pane's bottom row, or `None` where there is no such row.
     ///
     /// Three owners. The key sheet, while it is up, says how to shut it, on every surface: it
@@ -1733,9 +1891,12 @@ impl State {
         }
         let mut rows = match self.surface {
             Surface::Agents => return self.agents_key_sheet(),
+            #[cfg(test)]
             Surface::Todos => self.todo_key_sheet(),
             Surface::Vms => self.vm_key_sheet(),
             Surface::Swamp => self.swamp_key_sheet(),
+            #[cfg(not(test))]
+            Surface::Todos => vec![],
         };
         rows.extend(sheet(PANEL_KEYS));
         rows
@@ -1973,9 +2134,16 @@ impl State {
     /// of where the caret would go, which a pane too narrow to draw the box in has nowhere to
     /// put - and a box too narrow to see is still the box the next key is typed into.
     fn typing(&self) -> bool {
-        self.box_ahead_of_the_bar()
-            || (self.surface == Surface::Todos
-                && matches!(self.todos.mode, todos::Mode::Input { .. }))
+        #[cfg(not(test))]
+        {
+            self.box_ahead_of_the_bar()
+        }
+        #[cfg(test)]
+        {
+            self.box_ahead_of_the_bar()
+                || (self.surface == Surface::Todos
+                    && matches!(self.todos.mode, todos::Mode::Input { .. }))
+        }
     }
 
     /// The Agents search box as it is drawn in `cols` columns, and the column its caret is in.
@@ -2035,9 +2203,12 @@ impl State {
         }
         match self.surface {
             Surface::Vms => self.cancel_vm_confirmation(),
+            #[cfg(test)]
             Surface::Todos => self.cancel_todo_question(),
             Surface::Agents => self.confirming_resume = None,
             Surface::Swamp => {},
+            #[cfg(not(test))]
+            Surface::Todos => {},
         }
         self.surface = surface;
         if surface == Surface::Vms {
@@ -2176,6 +2347,47 @@ impl State {
         if self.surface == Surface::Swamp && self.swamp.is_editing() {
             return self.swamp_key(key);
         }
+        // A burst can already be queued in the child when it yields to the native bar.
+        // Route those keys through the same host actions instead of changing this fixed view.
+        if self.native_tabs && self.tabs_focused {
+            match key.bare_key {
+                BareKey::Left | BareKey::Right if key.has_no_modifiers() => {
+                    run_action(
+                        if key.bare_key == BareKey::Left {
+                            actions::Action::PreviousPaneTab
+                        } else {
+                            actions::Action::NextPaneTab
+                        },
+                        BTreeMap::new(),
+                    );
+                    return true;
+                },
+                BareKey::Tab if key.has_modifiers(&[KeyModifier::Shift]) => {
+                    self.tabs_focused = false;
+                    if let Some(id) = self.pane_tabs {
+                        let _ = focus_pane_tabs(id, false);
+                    }
+                    self.yield_to_chat(wire::STOP_INPUT);
+                    return true;
+                },
+                _ => {
+                    self.keys_to_the_list();
+                    if let Some(id) = self.pane_tabs {
+                        let _ = focus_pane_tabs(id, false);
+                    }
+                    if matches!(
+                        key.bare_key,
+                        BareKey::Tab
+                            | BareKey::Esc
+                            | BareKey::Enter
+                            | BareKey::Down
+                            | BareKey::Char('j')
+                    ) {
+                        return true;
+                    }
+                },
+            }
+        }
         // Whether this key took the keys off the bar, which is a redraw whatever the key goes on
         // to do: the bar's highlight and its footer come down.
         let mut left_bar = false;
@@ -2219,7 +2431,10 @@ impl State {
             }
         }
         let answered = match self.surface {
+            #[cfg(not(test))]
+            Surface::Todos => false,
             Surface::Swamp => self.swamp_key(key),
+            #[cfg(test)]
             Surface::Todos => self.todo_key(key),
             Surface::Vms => self.vm_key(key),
             Surface::Agents => {
@@ -2762,6 +2977,7 @@ impl State {
         // into it (`typing`), so a paste is too - it is typing, and takes the keys down off
         // the bar with it, as a typed letter does. `todo_paste` takes nothing but that box,
         // so the bar still turns away every other paste.
+        #[cfg(test)]
         if self.surface == Surface::Todos && self.todo_paste(text) {
             self.tabs_focused = false;
             return true;
@@ -2899,7 +3115,19 @@ impl State {
             return true;
         }
         if self.surface == Surface::Swamp && self.swamp.has_filter_editor() {
-            return self.swamp_filter_mouse(mouse_event);
+            let mouse = if self.native_tabs {
+                match mouse_event {
+                    Mouse::LeftClick(y, x) => Mouse::LeftClick(y - 1, x),
+                    Mouse::RightClick(y, x) => Mouse::RightClick(y - 1, x),
+                    Mouse::Hold(y, x) => Mouse::Hold(y - 1, x),
+                    Mouse::Release(y, x) => Mouse::Release(y - 1, x),
+                    Mouse::Hover(y, x) => Mouse::Hover(y - 1, x),
+                    other => other,
+                }
+            } else {
+                mouse_event
+            };
+            return self.swamp_filter_mouse(mouse);
         }
         if self.last_rows <= 1 || self.mouse_position.is_some_and(|(line, _)| line == 0) {
             return false;
@@ -2922,6 +3150,13 @@ impl State {
         let mouse_event = match mouse_event {
             Mouse::LeftClick(line, column) => {
                 left_bar = std::mem::take(&mut self.tabs_focused);
+                if left_bar {
+                    self.bar_focused
+                        .retain(|client| *client != self.own_client_id);
+                    if let Some(id) = self.pane_tabs {
+                        let _ = focus_pane_tabs(id, false);
+                    }
+                }
                 Mouse::LeftClick(line - 1, column)
             },
             // The drag and the release that follow a press are shifted with it, so a surface
@@ -2941,9 +3176,12 @@ impl State {
     fn content_mouse(&mut self, mouse_event: Mouse, keys_were_here: bool) -> bool {
         match self.surface {
             Surface::Swamp => return self.swamp_mouse(mouse_event),
+            #[cfg(test)]
             Surface::Todos => return self.todo_mouse(mouse_event),
             Surface::Vms => return self.vm_mouse(mouse_event, keys_were_here),
             Surface::Agents => {},
+            #[cfg(not(test))]
+            Surface::Todos => {},
         }
         // With the reader up there is one thing on screen and the wheel is its. A click never
         // closes it - a stray click losing the user's place in a long event is worse than a
@@ -3367,6 +3605,7 @@ impl State {
         self.confirming_resume = None;
         // The key sheet is about the moment it was asked for, like the questions are.
         self.key_sheet_scroll = None;
+        #[cfg(test)]
         self.todos_end_visit();
         self.cancel_vm_confirmation();
     }
@@ -3413,6 +3652,8 @@ impl State {
     /// `Tab`, `Enter`, `↓`, `j` and `Esc` on the bar do, and what a click on a tab does.
     fn keys_to_the_list(&mut self) {
         self.tabs_focused = false;
+        self.bar_focused
+            .retain(|client| *client != self.own_client_id);
         match self.surface {
             Surface::Agents => self.focus = Focus::List,
             Surface::Vms => self.vms.details = false,
@@ -3440,6 +3681,7 @@ impl State {
         match self.surface {
             // Swamp's boxes take the keys ahead of the bar, so the bar does not hide them.
             Surface::Swamp => form_cursor.or_else(|| self.swamp_query_cursor(rows, cols)),
+            #[cfg(test)]
             Surface::Todos if self.keys_here() => self.todo_input_cursor(rows, cols),
             // The search box is the Agents surface's first row - the pane's second, under the
             // tab bar - and it too takes the keys ahead of the bar.
@@ -4956,6 +5198,16 @@ impl State {
         let tabs_focused = stop == Some(hocus_proto::vms::STOP_TABS);
         let tabs_changed = self.tabs_focused != tabs_focused;
         self.tabs_focused = tabs_focused;
+        self.bar_focused
+            .retain(|client| *client != self.own_client_id);
+        if tabs_focused {
+            self.bar_focused.push(self.own_client_id);
+        }
+        if self.native_tabs {
+            if let Some(id) = self.pane_tabs {
+                let _ = focus_pane_tabs(id, tabs_focused);
+            }
+        }
         if self.surface == Surface::Vms {
             self.vms.details = stop == Some(wire::STOP_HISTORY) && self.vms.last_details_rows > 0;
             return true;
@@ -5059,50 +5311,6 @@ fn single_line(text: &str) -> String {
         line.push_str(piece);
     }
     line
-}
-
-/// `text` broken into lines of at most `width` columns, between words where it can be and
-/// through a word only where one is wider than the line. Plain text, not markdown: a refusal
-/// quotes paths and messages, whose `*` and `_` mean nothing.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let mut word = word.to_owned();
-        loop {
-            let needed = match line.is_empty() {
-                true => word.width(),
-                false => line.width() + 1 + word.width(),
-            };
-            if needed <= width {
-                if !line.is_empty() {
-                    line.push(' ');
-                }
-                line.push_str(&word);
-                break;
-            }
-            if !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
-                continue;
-            }
-            // A word too wide for a line of its own: as much of it as fits, and the rest on
-            // the next.
-            let head = agents::cut_to_width(word.clone(), width);
-            let taken = head.chars().count().max(1);
-            lines.push(word.chars().take(taken).collect());
-            word = word.chars().skip(taken).collect();
-            if word.is_empty() {
-                break;
-            }
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 /// Whether `run` answers the `s` `ask` is waiting on: it is the run of the row asked about, and
@@ -5332,6 +5540,45 @@ fn step(rows: &[StripRow], selected: usize, motion: Motion) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_tabs_descriptors_keep_originating_cwd_on_retries() {
+        let origin = std::path::PathBuf::from("/tmp/hocus-origin");
+        assert_ne!(origin, std::env::current_dir().unwrap());
+        let state = State {
+            initial_cwd: origin.clone(),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            let tabs = state.composition_tabs();
+            assert_eq!(tabs.len(), 4);
+            assert!(tabs
+                .iter()
+                .all(|tab| tab.initial_cwd.as_ref() == Some(&origin)));
+        }
+    }
+
+    #[test]
+    fn fixed_views_subscribe_only_to_their_own_services() {
+        for surface in [Surface::Agents, Surface::Vms, Surface::Swamp] {
+            let subscriptions = surface.subscriptions();
+            assert_eq!(
+                subscriptions.contains(&EventType::SessionUpdate),
+                surface == Surface::Vms
+            );
+            assert_eq!(
+                subscriptions.contains(&EventType::RunCommandResult),
+                surface == Surface::Swamp
+            );
+            assert_eq!(
+                subscriptions.contains(&EventType::WebRequestResult),
+                surface == Surface::Swamp
+            );
+            assert!(!subscriptions.contains(&EventType::PluginDataChanged));
+            assert!(subscriptions.contains(&EventType::Visible));
+            assert!(subscriptions.contains(&EventType::PastedText));
+        }
+    }
 
     /// The row an `s` is waiting on, if any.
     fn asked(state: &State) -> Option<&str> {
@@ -7501,6 +7748,32 @@ mod tests {
             Some("run:claude:session-1"),
             "the question stays armed and on screen"
         );
+    }
+
+    #[test]
+    fn native_bar_focus_uses_the_sending_client() {
+        let mut state = State {
+            native_tabs: true,
+            surface: Surface::Vms,
+            own_client_id: ClientId::new(1),
+            bar_focused: vec![ClientId::new(1)],
+            ..Default::default()
+        };
+        let shift_tab = KeyWithModifier::new(BareKey::Tab).with_shift_modifier();
+        state.update(Event::Key(shift_tab.clone()));
+        assert_eq!(state.ring_yields, [wire::STOP_INPUT]);
+        assert!(state.bar_focused.is_empty());
+
+        state.bar_focused.push(ClientId::new(1));
+        state.own_client_id = ClientId::new(2);
+        state.update(Event::Key(shift_tab));
+        assert_eq!(state.ring_yields, [wire::STOP_INPUT]);
+        assert_eq!(state.bar_focused, [ClientId::new(1), ClientId::new(2)]);
+
+        state.pane_tabs = Some(PaneTabsId(7));
+        state.update(Event::PaneTabsUpdate(vec![]));
+        assert_eq!(state.pane_tabs, None);
+        assert!(state.bar_focused.is_empty());
     }
 
     /// The bar answers its own keys and hands every other one back to the surface, which then

@@ -2142,13 +2142,15 @@ impl State {
                 .map_or((rows - 1, 0), |(row, x, _, _)| (*row, *x));
             let width = cols.min(32);
             let x = x.min(cols - width);
-            let y = row + 1;
+            let y = row + usize::from(!self.native_tabs);
             editor.row = Some(Rect::new(x, y, width, 1));
-            return Some(
-                editor
-                    .form
-                    .render_buffer_with_overlay(x, y, width, 1, rows + 1),
-            );
+            return Some(editor.form.render_buffer_with_overlay(
+                x,
+                y,
+                width,
+                1,
+                rows + usize::from(!self.native_tabs),
+            ));
         }
         None
     }
@@ -3460,6 +3462,46 @@ mod tests {
             assert!(state.swamp.opened.is_none());
             assert_eq!(state.swamp.requests.len(), expected_count);
         }
+    }
+
+    #[test]
+    fn native_filter_mouse_routes_content_rows_to_the_form() {
+        let mut state = loaded();
+        state.native_tabs = true;
+        state.render(14, 80);
+        let (row, x, _, _) = *state
+            .swamp
+            .filter_cells
+            .iter()
+            .find(|cell| cell.3 == 's')
+            .unwrap();
+        state.update(Event::Mouse(Mouse::LeftClick(row as isize, x)));
+        state.render(14, 80);
+        state.update(Event::Mouse(Mouse::Release(row as isize, x)));
+        let rect = state
+            .swamp
+            .filter
+            .as_ref()
+            .unwrap()
+            .form
+            .overlay_rect()
+            .unwrap();
+        let y = rect.y as isize + 1;
+        state.update(Event::Mouse(Mouse::LeftClick(y, rect.x)));
+        state.update(Event::Mouse(Mouse::Release(y, rect.x)));
+        assert_eq!(STATUSES[state.swamp.status], "open");
+        assert!(!state.swamp.is_editing());
+
+        reply(&mut state, SEARCH);
+        key(&mut state, BareKey::Char('s'));
+        state.render(14, 80);
+        let count = state.swamp.requests.len();
+        state.update(Event::Mouse(Mouse::LeftClick(
+            state.swamp.last_body_top as isize,
+            79,
+        )));
+        assert!(!state.swamp.is_editing());
+        assert_eq!(state.swamp.requests.len(), count);
     }
 
     #[test]

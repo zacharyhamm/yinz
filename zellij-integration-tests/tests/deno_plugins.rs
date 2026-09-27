@@ -997,3 +997,124 @@ export default {
     assert!(list().iter().all(|pane| pane.get("multipane").is_none()));
     zellij.quit();
 }
+
+#[test]
+fn native_pane_tabs_mix_wasm_and_typescript_and_retain_hidden_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("tab-child.ts");
+    let failing = directory.path().join("later.ts");
+    fs::write(
+        &plugin,
+        r#"
+import {definePlugin, zellij} from 'zellij:plugin';
+let count = 0, hides = 0, hidden = false, updates = 0;
+export default definePlugin({
+  async load() {
+    await zellij.waitForPermissions(['ReadApplicationState']);
+    zellij.subscribe(['Key', 'Visible', 'PaneUpdate']);
+  },
+  update(event) {
+    if (event.Key?.bare_key?.Char === 'c') { zellij.host.closeSelf(); return false; }
+    if (event.Key) count++;
+    if (typeof event.Visible === 'boolean') hidden = !event.Visible;
+    if (event.Visible === false) hides++;
+    if (event.PaneUpdate && hidden) updates++;
+    return true;
+  },
+  render() { return `TYPESCRIPT keys=${count} hides=${hides} hidden_updates=${updates}`; }
+});
+"#,
+    )
+    .unwrap();
+    let mut zellij = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            r#"
+layout {{
+    pane tabbed=true {{
+        pane name="Wasm" {{ plugin location="file:{}"; }}
+        pane name="TypeScript" {{ plugin location="file:{}"; }}
+        pane name="Retry" {{ plugin location="file:{}"; }}
+    }}
+}}
+"#,
+            zellij_integration_tests::test_env::fixture_plugin_path().display(),
+            plugin.display(),
+            failing.display()
+        )))
+        .start();
+    zellij.wait_until("Wasm requests its own permissions", |grid| {
+        grid.contains("[Wasm]") && grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("native bar over Wasm content", |grid| {
+        grid.contains("[Wasm]") && grid.contains("Received events")
+    });
+    zellij.run_cli_action(CliAction::NextPaneTab);
+    zellij.wait_until("selected child requests its own permissions", |grid| {
+        grid.contains("[TypeScript]") && grid.contains("Allow? (y/n)")
+    });
+    zellij.send_stdin(b"y");
+    zellij.wait_until("TypeScript loaded in the selected slot", |grid| {
+        grid.contains("TYPESCRIPT keys=0")
+    });
+    zellij.send_stdin(b"x");
+    zellij.wait_until("content input reaches TypeScript", |grid| {
+        grid.contains("TYPESCRIPT keys=1")
+    });
+    zellij.run_cli_action(CliAction::PreviousPaneTab);
+    zellij.wait_until("Wasm retained", |grid| {
+        grid.contains("[Wasm]") && grid.contains("Received events")
+    });
+    zellij.run_cli_action(CliAction::NextPaneTab);
+    zellij.wait_until(
+        "hidden child retained its state and received visibility",
+        |grid| grid.contains("TYPESCRIPT keys=1 hides=1") && !grid.contains("hidden_updates=0"),
+    );
+    zellij.run_cli_action(CliAction::FocusPaneTabs);
+    zellij.send_stdin(b"\x1b[D");
+    zellij.wait_until("bar focus preserves input isolation", |grid| {
+        grid.contains("[Wasm]")
+    });
+    zellij.send_stdin(b"\x1b[C");
+    zellij.wait_until("bar input did not reach content", |grid| {
+        grid.contains("TYPESCRIPT keys=1 hides=2")
+    });
+    zellij.send_stdin(b"\r");
+    zellij.send_stdin(b"c");
+    zellij.wait_until(
+        "a child can close without removing its fixed slot",
+        |grid| grid.contains("[TypeScript]") && grid.contains("Closed (r: reopen)"),
+    );
+    zellij.send_stdin(b"r");
+    zellij.wait_until("closed child reopens as a fresh instance", |grid| {
+        grid.contains("TYPESCRIPT keys=0")
+    });
+    zellij.run_cli_action(CliAction::NextPaneTab);
+    zellij.wait_until(
+        "a failed child exposes retry without losing the bar",
+        |grid| grid.contains("[Retry]") && grid.contains("r: retry"),
+    );
+    fs::write(
+        &failing,
+        "export default { render() { return 'RETRY SUCCEEDED'; } };
+",
+    )
+    .unwrap();
+    zellij.send_stdin(b"r");
+    zellij.wait_until("retry replaces the failed load attempt", |grid| {
+        grid.contains("RETRY SUCCEEDED")
+    });
+    zellij.run_cli_action(CliAction::PreviousPaneTab);
+    let peer = zellij.attach_client(TERMINAL_SIZE);
+    peer.wait_until("new client sees the shared selection", |grid| {
+        grid.contains("[TypeScript]")
+    });
+    zellij.run_cli_action(CliAction::PreviousPaneTab);
+    peer.wait_until("selection changes for both clients", |grid| {
+        grid.contains("[Wasm]")
+    });
+    peer.quit();
+    zellij.quit();
+}

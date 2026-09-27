@@ -29,6 +29,7 @@
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
 mod multipanes;
+mod pane_tabs;
 
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
@@ -556,6 +557,7 @@ type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
+    reported_pane_tabs: Vec<zellij_types::pane_tabs::PaneTabsInfo>,
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
     /// An optional maximal amount of panes allowed per [`Tab`] in this [`Screen`] instance.
@@ -1290,6 +1292,7 @@ impl Screen {
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
+            reported_pane_tabs: vec![],
             bus,
             max_panes,
             pixel_dimensions: Default::default(),
@@ -3020,7 +3023,9 @@ impl Screen {
     fn close_self_instruction(&self, plugin: PluginId, client: ClientId) -> ScreenInstruction {
         let id = PaneId::Plugin(plugin);
         let composed = self.tab_containing_pane(id).is_some_and(|tab| {
-            tab.multipane_info(id).is_some() && tab.stands_in_for_a_pane(id).is_none()
+            tab.multipane_info(id).is_some()
+                && tab.stands_in_for_a_pane(id).is_none()
+                && tab.pane_tabs_of(id).is_none()
         });
         ScreenInstruction::ClosePane(id, composed.then_some(client), None, None)
     }
@@ -4520,7 +4525,8 @@ impl Screen {
                             focused_clients,
                             default_fg,
                             default_bg,
-                        ),
+                        )
+                        .with_pane_tabs(p.pane_tabs()),
                     )
                 })
                 .collect();
@@ -4566,7 +4572,8 @@ impl Screen {
                         focused_clients,
                         default_fg,
                         default_bg,
-                    ),
+                    )
+                    .with_pane_tabs(p.pane_tabs()),
                 )
             })
             .collect();
@@ -5177,6 +5184,27 @@ fn replay_pending_plugin_events(
                         "Could not replay pending plugin cursor for missing plugin {plugin_id}"
                     );
                 }
+                screen.render()?;
+            },
+            ScreenInstruction::PaneTabs {
+                command,
+                client_id,
+                response,
+            } => {
+                let result = screen
+                    .pane_tabs_command(command, client_id)
+                    .map_err(|error| error.to_string());
+                let _ = response.send(result);
+                screen.render()?;
+            },
+            ScreenInstruction::PaneTabLoaded {
+                id,
+                index,
+                generation,
+                result,
+                client_id: _,
+            } => {
+                screen.pane_tab_loaded(id, index, generation, result)?;
                 screen.render()?;
             },
             ScreenInstruction::Multipane {

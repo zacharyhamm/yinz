@@ -3733,6 +3733,7 @@ pub(crate) fn check_event_permission(
     let permission = match EventType::from(event) {
         EventType::ModeUpdate
         | EventType::TabUpdate
+        | EventType::PaneTabsUpdate
         | EventType::PaneUpdate
         | EventType::SessionUpdate
         | EventType::CopyToClipboard

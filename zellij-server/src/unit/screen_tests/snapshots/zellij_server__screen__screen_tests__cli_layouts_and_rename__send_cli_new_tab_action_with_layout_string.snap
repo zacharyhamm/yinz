@@ -1,6 +1,6 @@
 ---
 source: zellij-server/src/screen/../unit/screen_tests/cli_layouts_and_rename.rs
-assertion_line: 57
+assertion_line: 51
 expression: output
 ---
 NewTab(
@@ -8,10 +8,12 @@ NewTab(
     None,
     Some(
         TiledPaneLayout {
+            pane_tabs: None,
             children_split_direction: Horizontal,
             name: None,
             children: [
                 TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [],
@@ -35,6 +37,7 @@ NewTab(
                     default_bg: None,
                 },
                 TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [],
@@ -58,6 +61,7 @@ NewTab(
                     default_bg: None,
                 },
                 TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [],

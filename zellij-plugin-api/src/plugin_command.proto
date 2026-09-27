@@ -269,6 +269,7 @@ enum CommandName {
   CheckPlugin = 289;
   TestPlugin = 290;
   CancelPluginTest = 291;
+  PaneTabs = 295;
   CreateMultipane = 292;
   UpdateMultipane = 293;
   ReplaceMultipaneChild = 294;
@@ -280,6 +281,7 @@ message PluginCommand {
   reserved 108, 109, 110, 164, 165, 167, 173, 187;
   CommandName name = 1;
   oneof payload {
+    string pane_tabs_payload = 236;
     string create_multipane_payload = 233;
     string update_multipane_payload = 234;
     string replace_multipane_child_payload = 235;
@@ -2084,3 +2086,5 @@ message TestPluginPayload {
 }
 
 message MultipaneResponse { string json = 1; }
+
+message PaneTabsResponse { string json = 1; }

@@ -394,6 +394,22 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 }
                 swamp_request(env, directory, id, operation, payload);
             },
+            PluginCommand::PaneTabs(command) => {
+                let (response, receive) = crossbeam::channel::bounded(1);
+                env.senders
+                    .send_to_screen(ScreenInstruction::PaneTabs {
+                        command,
+                        client_id: env.client_id,
+                        response,
+                    })
+                    .context("failed to send pane tabs command")?;
+                let result = receive.recv().context("pane tabs response disconnected")?;
+                let response = zellij_plugin_api::plugin_command::ProtobufPaneTabsResponse {
+                    json: serde_json::to_string(&result)
+                        .context("failed to encode pane tabs response")?,
+                };
+                wasi_write_object(env, &response.encode_to_vec())?;
+            },
             command @ (PluginCommand::CreateMultipane(_)
             | PluginCommand::UpdateMultipane(_)
             | PluginCommand::ReplaceMultipaneChild(_)) => multipanes::dispatch(env, command)?,
@@ -1115,6 +1131,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             ),
         },
         (PermissionStatus::Denied, permission) => {
+            if matches!(command, PluginCommand::PaneTabs(_)) {
+                let result: zellij_types::pane_tabs::PaneTabsResponse =
+                    Err(format!("Permission denied: {permission:?}"));
+                let response = zellij_plugin_api::plugin_command::ProtobufPaneTabsResponse {
+                    json: serde_json::to_string(&result)
+                        .context("failed to encode pane tabs denial")?,
+                };
+                return wasi_write_object(env, &response.encode_to_vec());
+            }
             if matches!(
                 command,
                 PluginCommand::CreateMultipane(_)
@@ -8148,6 +8173,21 @@ pub(crate) fn check_command_permission(
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);
     }
+    if matches!(
+        command,
+        PluginCommand::PaneTabs(zellij_types::pane_tabs::PaneTabsCommand::Mount { .. })
+    ) && !plugin_env
+        .permissions
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|permissions| permissions.contains(&PermissionType::OpenTerminalsOrPlugins))
+    {
+        return (
+            PermissionStatus::Denied,
+            Some(PermissionType::OpenTerminalsOrPlugins),
+        );
+    }
     let children: &[zellij_types::multipane::MultipaneChild] = match command {
         PluginCommand::CreateMultipane(request) => &request.children,
         PluginCommand::ReplaceMultipaneChild(request) => std::slice::from_ref(&request.child),
@@ -8352,6 +8392,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::SetFloatingPanePinned
         | CommandType::StackPanes
         | CommandType::ChangeFloatingPanesCoordinates
+        | CommandType::PaneTabs
         | CommandType::CreateMultipane
         | CommandType::UpdateMultipane
         | CommandType::ReplaceMultipaneChild
@@ -8847,6 +8888,51 @@ mod permission_tests {
             Some(PermissionType::MessageAndLaunchOtherPlugins)
         );
         assert_eq!(command_permission(CommandType::PostMessageToPlugin), None);
+    }
+
+    #[test]
+    fn pane_tabs_mount_requires_application_state_and_plugin_launch_permissions() {
+        use zellij_types::pane_tabs::*;
+        let env = crate::test_env::test_env();
+        let command = PluginCommand::PaneTabs(PaneTabsCommand::Mount {
+            pane_id: PaneId::Plugin(PluginId::new(1)),
+            existing: 0,
+            layout: PaneTabsLayout {
+                active: 0,
+                tabs: vec![PaneTabDescriptor {
+                    label: "Files".into(),
+                    location: "zellij:strider".into(),
+                    initial_cwd: None,
+                    configuration: BTreeMap::new(),
+                }],
+            },
+        });
+        for (permissions, expected) in [
+            (
+                vec![PermissionType::ChangeApplicationState],
+                (
+                    PermissionStatus::Denied,
+                    Some(PermissionType::OpenTerminalsOrPlugins),
+                ),
+            ),
+            (
+                vec![PermissionType::OpenTerminalsOrPlugins],
+                (
+                    PermissionStatus::Denied,
+                    Some(PermissionType::ChangeApplicationState),
+                ),
+            ),
+            (
+                vec![
+                    PermissionType::ChangeApplicationState,
+                    PermissionType::OpenTerminalsOrPlugins,
+                ],
+                (PermissionStatus::Granted, None),
+            ),
+        ] {
+            *env.permissions.lock().unwrap() = Some(permissions.into_iter().collect());
+            assert_eq!(check_command_permission(&env, &command), expected);
+        }
     }
 
     #[test]

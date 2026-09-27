@@ -20,6 +20,7 @@ export interface EventPayloads {
   PermissionRequestResult: PermissionStatus; SessionUpdate: [SessionInfo[], [string, Duration][]];
   RunCommandResult: [number | null, number[], number[], StringMap]; WebRequestResult: [number, StringMap, number[], StringMap];
   RunCommandOutput: {data: Uint8Array; stderr: boolean; context: StringMap};
+  PaneTabsUpdate: PaneTabsInfo[];
   PaneOutput: {pane_id: number; data: Uint8Array; context: StringMap};
   WebRequestStreamChunk: {stream_id: string; chunk: number[]; done: boolean; error: string | null};
   CommandPaneOpened: [number, StringMap]; CommandPaneExited: [number, number | null, StringMap]; PaneClosed: PaneId;
@@ -290,6 +291,7 @@ export interface CommandArgs {
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
   RegisterDefaultKeybindings: string; ListClients: undefined; ChangeHostFolder: string;
   SetFloatingPanePinned: [PaneId, boolean]; StackPanes: PaneId[]; ChangeFloatingPanesCoordinates: [PaneId, FloatingPaneCoordinates][];
+  PaneTabs: PaneTabsCommand;
   CreateMultipane: CreateMultipane;
   UpdateMultipane: UpdateMultipane;
   ReplaceMultipaneChild: ReplaceMultipaneChild;
@@ -378,6 +380,7 @@ export interface CommandReplies {
   OpenTerminalNearPlugin: PaneId | null; OpenTerminalFloatingNearPlugin: PaneId | null; OpenTerminalInPlaceOfPlugin: PaneId | null;
   OpenTerminalPaneInPlaceOfPaneId: PaneId | null; OpenEditPaneInPlaceOfPaneId: PaneId | null;
   OpenCommandPane: PaneId | null; OpenCommandPaneFloating: PaneId | null; OpenCommandPaneInPlace: PaneId | null; OpenCommandPaneBackground: PaneId | null;
+  PaneTabs: PaneTabsInfo | null;
   CreateMultipane: MultipaneInfo; UpdateMultipane: MultipaneInfo; ReplaceMultipaneChild: MultipaneInfo;
   OpenCommandPaneNearPlugin: PaneId | null; OpenCommandPaneOverlay: PaneId | null; OpenCommandPaneFloatingNearPlugin: PaneId | null;
   OpenCommandPaneInPlaceOfPlugin: PaneId | null; OpenCommandPaneInPlaceOfPaneId: PaneId | null; OpenPluginPaneFloating: PaneId | null;
@@ -466,6 +469,24 @@ export interface FsEntry {path: string; metadata: FileMetadata | null;}
 export interface Position {line: Integer; column: Integer;}
 export interface CellCoordinates {x: Integer; y: Integer;}
 export interface PaneContents {lines_above_viewport: string[]; lines_below_viewport: string[]; viewport: string[]; selected_text: {start: Position; end: Position} | null; cursor: CellCoordinates | null; last_output_ms_ago: Integer | null; is_scrolled: boolean;}
+export type PaneTabsId = number;
+export interface PaneTabDescriptor { label: string; location: string; configuration: StringMap; initial_cwd?: string | null; }
+export type PaneTabLoadState = "Unloaded" | "Loading" | "PermissionPending" | "Ready" | { Failed: string };
+export interface PaneTabInfo { descriptor: PaneTabDescriptor; plugin_id: number | null; state: PaneTabLoadState; }
+export interface PaneTabsInfo { id: PaneTabsId; pane_id: PaneId; tabs: PaneTabInfo[]; active: number; bar_focused: number[]; }
+export interface PaneTabsLayout { tabs: PaneTabDescriptor[]; active?: number; }
+export type PaneTabsCommand = { Mount: { pane_id: PaneId; layout: PaneTabsLayout; existing: number } }
+  | { Select: { id: PaneTabsId; index: number } } | { Focus: { id: PaneTabsId; bar: boolean } }
+  | { Retry: { id: PaneTabsId; index: number } } | { CloseChild: { id: PaneTabsId; index: number } }
+  | { Close: { id: PaneTabsId } };
+
+export interface Zellij {
+  mountPaneTabs(paneId: PaneId, layout: PaneTabsLayout, existing?: number): PaneTabsInfo | null;
+  selectPaneTab(id: PaneTabsId, index: number): PaneTabsInfo | null;
+  focusPaneTabs(id: PaneTabsId, bar?: boolean): PaneTabsInfo | null;
+  retryPaneTab(id: PaneTabsId, index: number): PaneTabsInfo | null;
+}
+
 export type MultipaneId = number;
 export interface MultipaneSplit { direction: "LeftRight" | "TopBottom"; ratio: number; }
 export type MultipaneChild = { Existing: PaneId } | { Terminal: CommandToRun } | { Plugin: { url: string; configuration: StringMap } };
@@ -475,6 +496,7 @@ export interface UpdateMultipane { id: MultipaneId; coordinates?: FloatingPaneCo
 export interface ReplaceMultipaneChild { id: MultipaneId; slot: 0 | 1; child: MultipaneChild; }
 
 export interface PaneInfo {
+  pane_tabs?: PaneTabsInfo | null;
   multipane?: MultipaneInfo | null;
   id: number; is_plugin: boolean; is_focused: boolean; is_fullscreen: boolean; is_floating: boolean; is_suppressed: boolean; is_stack_list_member: boolean;
   title: string; exited: boolean; exit_status: number | null; is_held: boolean; restart_error: string | null;
@@ -652,7 +674,7 @@ export interface ActionPayloads {
   TogglePanePinnedByPaneId: ActionPane; FocusPaneByPaneId: ActionPane; UndoRenameTabByTabId: ActionTab; ToggleActiveSyncTabByTabId: ActionTab;
   ToggleFloatingPanesByTabId: ActionTab; PreviousSwapLayoutByTabId: ActionTab; NextSwapLayoutByTabId: ActionTab; MoveTabByTabId: ActionTab & {direction: Direction};
 }
-export type UnitAction = 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
+export type UnitAction = 'FocusPaneTabs' | 'PreviousPaneTab' | 'NextPaneTab' | 'Quit' | 'FocusNextPane' | 'FocusPreviousPane' | 'FocusLastPane' | 'SwitchFocus' | 'MovePaneBackwards' | 'ClearScreen'
   | 'DumpLayout' | 'SaveSession' | 'ScrollUp' | 'ScrollDown' | 'ScrollToBottom' | 'ScrollToTop' | 'ScrollToPreviousPrompt' | 'ScrollToNextPrompt'
   | 'SelectCommandAtScrollPosition' | 'CopyLastCommandOutput' | 'SwapTextSelectionEnds' | 'ActivateNotification' | 'ToggleNotificationDetail' | 'PageScrollUp' | 'PageScrollDown' | 'HalfPageScrollUp' | 'HalfPageScrollDown'
   | 'ToggleFocusFullscreen' | 'ToggleFocusNoUiFullscreen' | 'TogglePaneFrames' | 'ToggleActiveSyncTab' | 'TogglePaneEmbedOrFloating' | 'ToggleFloatingPanes'

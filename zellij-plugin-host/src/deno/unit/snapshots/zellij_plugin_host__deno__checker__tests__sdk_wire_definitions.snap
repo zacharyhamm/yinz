@@ -1,6 +1,6 @@
 ---
 source: zellij-plugin-host/src/deno/unit/checker.rs
-assertion_line: 955
+assertion_line: 965
 expression: wire
 ---
 commands
@@ -272,6 +272,7 @@ SetPaneSubtitle = 288;
 CheckPlugin = 289;
 TestPlugin = 290;
 CancelPluginTest = 291;
+PaneTabs = 295;
 CreateMultipane = 292;
 UpdateMultipane = 293;
 ReplaceMultipaneChild = 294;
@@ -282,6 +283,7 @@ reserved "check_lua_plugin_payload";
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
 CommandName name = 1;
 oneof payload {
+string pane_tabs_payload = 236;
 string create_multipane_payload = 233;
 string update_multipane_payload = 234;
 string replace_multipane_child_payload = 235;
@@ -1737,6 +1739,7 @@ string options_json = 2;
 string request_id = 3;
 }
 message MultipaneResponse { string json = 1; }
+message PaneTabsResponse { string json = 1; }
 events
 syntax = "proto3";
 import "input_mode.proto";
@@ -1805,6 +1808,7 @@ AgentEvent = 58;
 ModifiersHeld = 59;
 RunCommandOutput = 60;
 PaneOutput = 61;
+PaneTabsUpdate = 62;
 }
 message EventNameList {
 repeated EventType event_types = 1;
@@ -1813,6 +1817,7 @@ message Event {
 reserved 27, 28, 37, 41;
 EventType name = 1;
 oneof payload {
+string pane_tabs_update_payload = 59;
 ModeUpdatePayload mode_update_payload = 2;
 TabUpdatePayload tab_update_payload = 3;
 PaneUpdatePayload pane_update_payload = 4;
@@ -2247,6 +2252,7 @@ optional command.PaneTarget target = 33;
 bool is_stack_list_member = 34;
 optional string restart_error = 35;
 optional MultipaneInfo multipane = 36;
+optional string pane_tabs_json = 37;
 }
 message AgentInfo {
 string kind = 1;
@@ -2670,6 +2676,7 @@ string cwd = 4;
 }
 }
 message TiledPaneLayout {
+optional string pane_tabs_json = 15;
 SplitDirection children_split_direction = 1;
 optional string name = 2;
 repeated TiledPaneLayout children = 3;
@@ -2686,6 +2693,7 @@ optional string pane_initial_contents = 13;
 bool user_named = 14;
 }
 message FloatingPaneLayout {
+optional string pane_tabs_json = 13;
 optional string name = 1;
 optional PercentOrFixed height = 2;
 optional PercentOrFixed width = 3;
@@ -3054,6 +3062,9 @@ SetDarkTheme = 101;
 SetLightTheme = 102;
 ToggleTheme = 103;
 FocusLastPane = 104;
+FocusPaneTabs = 123;
+PreviousPaneTab = 124;
+NextPaneTab = 125;
 SetPaneFrameStyle = 105;
 ToggleFocusNoUiFullscreen = 106;
 FocusHostSession = 107;

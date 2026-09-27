@@ -554,6 +554,7 @@ plugins {
     // is no conversation beside it. Shared for the same reason hocus is: the strip it
     // draws is pushed by the one hocus instance, and there is one panel per
     // session. Sized by hocus's `width`, `height` and `split`, above.
+    hocus-todos location="zellij:hocus-todos"
     hocus-agents location="zellij:hocus-agents" {
         shared true
     }

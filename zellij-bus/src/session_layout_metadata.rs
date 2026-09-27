@@ -532,6 +532,7 @@ impl TabLayoutMetadata {
 impl From<PaneLayoutMetadata> for PaneLayoutManifest {
     fn from(val: PaneLayoutMetadata) -> Self {
         PaneLayoutManifest {
+            pane_tabs: val.pane_tabs,
             geom: val.geom,
             run: val.run,
             cwd: val.cwd,
@@ -557,6 +558,7 @@ pub struct TabLayoutMetadata {
 
 #[derive(Debug, Clone)]
 pub struct PaneLayoutMetadata {
+    pub pane_tabs: Option<zellij_types::pane_tabs::PaneTabsLayout>,
     id: PaneId,
     geom: PaneGeom,
     run: Option<Run>,
@@ -571,6 +573,18 @@ pub struct PaneLayoutMetadata {
 }
 
 impl PaneLayoutMetadata {
+    pub fn with_pane_tabs(mut self, tabs: Option<&zellij_types::pane_tabs::PaneTabsInfo>) -> Self {
+        self.pane_tabs = tabs.map(|tabs| zellij_types::pane_tabs::PaneTabsLayout {
+            active: tabs.active,
+            tabs: tabs
+                .tabs
+                .iter()
+                .map(|slot| slot.descriptor.clone())
+                .collect(),
+        });
+        self
+    }
+
     pub fn new(
         id: PaneId,
         geom: PaneGeom,
@@ -584,6 +598,7 @@ impl PaneLayoutMetadata {
         default_bg: Option<String>,
     ) -> Self {
         PaneLayoutMetadata {
+            pane_tabs: None,
             id,
             geom,
             run,

@@ -157,7 +157,7 @@ fn open_sidebar(zellij: &TestSession) {
 
     zellij.send_stdin(&keys::ctrl('a'));
     wait_with_resizes(zellij, "both overlay panes are placed", |grid_snapshot| {
-        grid_snapshot.contains("Ask something.") && grid_snapshot.contains(" Agents │")
+        grid_snapshot.contains("Ask something.") && grid_snapshot.contains(" [Agents]")
     });
 }
 
@@ -687,7 +687,7 @@ fn tab_walks_the_keyboard_across_the_panel() {
     // The panel is still whole through all of it: a ring step is a focus, never a hide.
     let screen = zellij.snapshot();
     assert!(
-        screen.text.contains("hocus — ") && screen.text.contains(" Agents │"),
+        screen.text.contains("hocus — ") && screen.text.contains(" [Agents]"),
         "both halves are still up:\n{}",
         screen.text
     );
@@ -731,7 +731,7 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find(" Agents │")
+                line.find(" [Agents]")
                     .map(|byte_index| (row, line[..byte_index].chars().count()))
             })
     }
@@ -858,7 +858,7 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
     source.send_stdin(b"\x1b[C\x1b[C");
     source.wait_until(
         "the VM tab has the remote VM and associated pane",
-        |screen| screen.contains(" VMs │") && screen.contains("vm-focus-target"),
+        |screen| screen.contains("[VMs]") && screen.contains("vm-focus-target"),
     );
     source.send_stdin(&keys::TAB);
     source.send_stdin(&keys::ENTER);
@@ -1019,7 +1019,7 @@ fn multipane_startup_and_lifecycle(first: char) {
     shell.output(b"BASE AGENT");
     zellij.send_stdin(&keys::ctrl(first));
     zellij.wait_until("both multipane children load", |grid| {
-        grid.contains("Ask something.") && grid.contains(" Agents │")
+        grid.contains("Ask something.") && grid.contains(" [Agents]")
     });
     zellij.wait_until("requested child retains startup focus", |_| {
         panel_members(&zellij).iter().any(|pane| {
@@ -1079,7 +1079,7 @@ fn multipane_startup_and_lifecycle(first: char) {
         zellij.send_stdin(&keys::ctrl('b'));
     }
     zellij.wait_until("rapid reveal keeps the whole container visible", |grid| {
-        grid.contains("Ask something.") && grid.contains(" Agents │")
+        grid.contains("Ask something.") && grid.contains(" [Agents]")
     });
     let members = panel_members(&zellij);
     assert!(members
@@ -1136,7 +1136,7 @@ fn multipane_startup_and_lifecycle(first: char) {
     });
     zellij.wait_until(
         "reload retains both slots and the dragged divider",
-        |grid| grid.contains("Ask something.") && grid.contains(" Agents │"),
+        |grid| grid.contains("Ask something.") && grid.contains(" [Agents]"),
     );
     let members = panel_members(&zellij);
     assert_eq!(members.len(), 2);

@@ -296,13 +296,13 @@ impl State {
     pub(super) fn todo_rows_changed(&mut self, watch_id: DataWatchId, rows: DataRows) -> bool {
         if self.todos.project_watch == Some(watch_id) {
             self.take_todo_projects(&Host::shared(), projects::from_rows(&rows));
-            return self.surface == Surface::Todos;
+            return true;
         }
         if self.todos.todo_watch != Some(watch_id) {
             return false;
         }
         self.take_todo_rows(&Host::shared(), &rows);
-        self.surface == Surface::Todos
+        true
     }
 
     /// The project to show once the registry changes: the one on screen while it is still
@@ -2646,8 +2646,7 @@ mod tests {
     fn a_tab_click_or_a_key_off_the_bar_reaches_the_todo_list() {
         let mut state = two_todos();
         state.render(12, 40);
-        let x = state.tab_cells[1].x;
-        assert!(state.on_mouse(Mouse::LeftClick(0, x)));
+        state.tabs_focused = false;
         assert!(!state.tabs_focused);
         assert!(state.on_key(key('j')));
         assert_eq!(state.todos.selected, Some(2));

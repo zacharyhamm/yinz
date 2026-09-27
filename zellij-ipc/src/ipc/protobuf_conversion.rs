@@ -1465,6 +1465,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             FocusLastPaneAction,
             FocusNextPaneAction,
             FocusPaneByPaneIdAction,
+            FocusPaneTabsAction,
             FocusPluginPaneWithIdAction,
             FocusPreviousPaneAction,
             FocusTerminalPaneWithIdAction,
@@ -1505,6 +1506,8 @@ impl TryFrom<zellij_types::input::actions::Action>
             NewTabAction,
             NewTiledPaneAction,
             NewTiledPluginPaneAction,
+            NextPaneTabAction,
+
             NextSwapLayoutAction,
             NextSwapLayoutByTabIdAction,
             NoOpAction,
@@ -1517,6 +1520,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             PaneIdWithPlugin,
             PaneNameInputAction,
             PasteAction,
+            PreviousPaneTabAction,
             PreviousSwapLayoutAction,
             PreviousSwapLayoutByTabIdAction,
             QueryTabNamesAction,
@@ -1652,6 +1656,15 @@ impl TryFrom<zellij_types::input::actions::Action>
             },
             zellij_types::input::actions::Action::FocusPreviousPane => {
                 ActionType::FocusPreviousPane(FocusPreviousPaneAction {})
+            },
+            zellij_types::input::actions::Action::FocusPaneTabs => {
+                ActionType::FocusPaneTabs(FocusPaneTabsAction {})
+            },
+            zellij_types::input::actions::Action::PreviousPaneTab => {
+                ActionType::PreviousPaneTab(PreviousPaneTabAction {})
+            },
+            zellij_types::input::actions::Action::NextPaneTab => {
+                ActionType::NextPaneTab(NextPaneTabAction {})
             },
             zellij_types::input::actions::Action::FocusLastPane => {
                 ActionType::FocusLastPane(FocusLastPaneAction {})
@@ -2742,6 +2755,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             ActionType::FocusPreviousPane(_) => {
                 Ok(zellij_types::input::actions::Action::FocusPreviousPane)
             },
+            ActionType::FocusPaneTabs(_) => Ok(zellij_types::input::actions::Action::FocusPaneTabs),
+            ActionType::PreviousPaneTab(_) => {
+                Ok(zellij_types::input::actions::Action::PreviousPaneTab)
+            },
+            ActionType::NextPaneTab(_) => Ok(zellij_types::input::actions::Action::NextPaneTab),
             ActionType::FocusLastPane(_) => Ok(zellij_types::input::actions::Action::FocusLastPane),
             ActionType::SwitchFocus(_) => Ok(zellij_types::input::actions::Action::SwitchFocus),
             ActionType::MoveFocus(move_focus_action) => {
@@ -5064,6 +5082,10 @@ impl From<zellij_types::input::layout::TiledPaneLayout>
 {
     fn from(layout: zellij_types::input::layout::TiledPaneLayout) -> Self {
         Self {
+            pane_tabs_json: layout
+                .pane_tabs
+                .as_ref()
+                .and_then(|tabs| serde_json::to_string(tabs).ok()),
             children_split_direction: split_direction_to_proto_i32(layout.children_split_direction),
             name: layout.name,
             children: layout.children.into_iter().map(|c| c.into()).collect(),
@@ -5089,6 +5111,10 @@ impl From<zellij_types::input::layout::FloatingPaneLayout>
 {
     fn from(layout: zellij_types::input::layout::FloatingPaneLayout) -> Self {
         Self {
+            pane_tabs_json: layout
+                .pane_tabs
+                .as_ref()
+                .and_then(|tabs| serde_json::to_string(tabs).ok()),
             name: layout.name,
             height: layout.height.map(|h| h.into()),
             width: layout.width.map(|w| w.into()),
@@ -5508,6 +5534,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::TiledPaneLay
         });
 
         Ok(TiledPaneLayout {
+            pane_tabs: layout
+                .pane_tabs_json
+                .as_deref()
+                .map(|json| {
+                    let tabs: zellij_types::pane_tabs::PaneTabsLayout =
+                        serde_json::from_str(json).context("invalid pane tabs layout")?;
+                    tabs.validate().map_err(|error| anyhow!(error))?;
+                    Ok::<_, anyhow::Error>(tabs)
+                })
+                .transpose()?,
             children_split_direction,
             name: layout.name,
             children: children?,
@@ -5545,6 +5581,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::FloatingPane
         let y = layout.y.map(|y| y.try_into()).transpose()?;
 
         Ok(zellij_types::input::layout::FloatingPaneLayout {
+            pane_tabs: layout
+                .pane_tabs_json
+                .as_deref()
+                .map(|json| {
+                    let tabs: zellij_types::pane_tabs::PaneTabsLayout =
+                        serde_json::from_str(json).context("invalid pane tabs layout")?;
+                    tabs.validate().map_err(|error| anyhow!(error))?;
+                    Ok::<_, anyhow::Error>(tabs)
+                })
+                .transpose()?,
             name: layout.name,
             height,
             width,

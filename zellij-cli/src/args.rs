@@ -1080,6 +1080,12 @@ pub enum CliAction {
     },
     /// Change focus to the last focused frame
     FocusLastPane,
+    /// Focus the native pane tab bar.
+    FocusPaneTabs,
+    /// Select the previous plugin in the current pane tabs.
+    PreviousPaneTab,
+    /// Select the next plugin in the current pane tabs.
+    NextPaneTab,
     /// Move the focused pane in the specified direction. [right|left|up|down]
     MoveFocus {
         direction: Direction,

@@ -265,6 +265,14 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for the SessionUpdate Event"),
             },
+            Ok(ProtobufEventType::PaneTabsUpdate) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::PaneTabsUpdatePayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::PaneTabsUpdate)
+                        .map_err(|_| "Malformed PaneTabsUpdate payload")
+                },
+                _ => Err("Malformed PaneTabsUpdate payload"),
+            },
             Ok(ProtobufEventType::PaneOutput) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::PaneOutputPayload(p)) => Ok(Event::PaneOutput {
                     pane_id: p.pane_id,
@@ -1069,6 +1077,12 @@ impl TryFrom<Event> for ProtobufEvent {
                     payload: Some(event::Payload::SessionUpdatePayload(session_update_payload)),
                 })
             },
+            Event::PaneTabsUpdate(tabs) => Ok(ProtobufEvent {
+                name: ProtobufEventType::PaneTabsUpdate as i32,
+                payload: Some(ProtobufEventPayload::PaneTabsUpdatePayload(
+                    serde_json::to_string(&tabs).map_err(|_| "Failed to encode PaneTabsUpdate")?,
+                )),
+            }),
             Event::PaneOutput {
                 pane_id,
                 data,
@@ -2281,6 +2295,12 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
     type Error = &'static str;
     fn try_from(protobuf_pane_info: ProtobufPaneInfo) -> Result<Self, &'static str> {
         Ok(PaneInfo {
+            pane_tabs: protobuf_pane_info
+                .pane_tabs_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| "Invalid pane tabs metadata")?,
             multipane: protobuf_pane_info
                 .multipane
                 .map(TryInto::try_into)
@@ -2362,6 +2382,12 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
     type Error = &'static str;
     fn try_from(pane_info: PaneInfo) -> Result<Self, &'static str> {
         Ok(ProtobufPaneInfo {
+            pane_tabs_json: pane_info
+                .pane_tabs
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| "Failed to encode pane tabs metadata")?,
             multipane: pane_info.multipane.clone().map(Into::into),
             id: pane_info.id.legacy_parts().0,
             is_plugin: pane_info.is_plugin(),
@@ -2720,6 +2746,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FileSystemDelete => EventType::FileSystemDelete,
             ProtobufEventType::PermissionRequestResult => EventType::PermissionRequestResult,
             ProtobufEventType::SessionUpdate => EventType::SessionUpdate,
+            ProtobufEventType::PaneTabsUpdate => EventType::PaneTabsUpdate,
             ProtobufEventType::PaneOutput => EventType::PaneOutput,
             ProtobufEventType::RunCommandOutput => EventType::RunCommandOutput,
             ProtobufEventType::RunCommandResult => EventType::RunCommandResult,
@@ -2785,6 +2812,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FileSystemDelete => ProtobufEventType::FileSystemDelete,
             EventType::PermissionRequestResult => ProtobufEventType::PermissionRequestResult,
             EventType::SessionUpdate => ProtobufEventType::SessionUpdate,
+            EventType::PaneTabsUpdate => ProtobufEventType::PaneTabsUpdate,
             EventType::PaneOutput => ProtobufEventType::PaneOutput,
             EventType::RunCommandOutput => ProtobufEventType::RunCommandOutput,
             EventType::RunCommandResult => ProtobufEventType::RunCommandResult,
@@ -3394,6 +3422,7 @@ fn serialize_session_update_event_with_non_default_values() {
     index_in_pane_group_2.insert(ClientId::new(3), 1);
     let panes_list = vec![
         PaneInfo {
+            pane_tabs: None,
             multipane: None,
             host: Some("firecracker:review".to_owned()),
             target: PaneTarget::Firecracker {
@@ -3431,6 +3460,7 @@ fn serialize_session_update_event_with_non_default_values() {
             cwd: Some("/work/hocus".to_owned()),
         },
         PaneInfo {
+            pane_tabs: None,
             multipane: None,
             host: None,
             target: Default::default(),

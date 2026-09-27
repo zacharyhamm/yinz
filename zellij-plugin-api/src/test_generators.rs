@@ -623,6 +623,7 @@ pub(crate) fn tiled_pane_layouts(tc: &hegel::TestCase) -> TiledPaneLayout {
 
 fn tiled_pane_layouts_of_depth(tc: &hegel::TestCase, depth: usize) -> TiledPaneLayout {
     TiledPaneLayout {
+        pane_tabs: None,
         children_split_direction: tc.draw(generators::sampled_from(vec![
             SplitDirection::Horizontal,
             SplitDirection::Vertical,
@@ -652,6 +653,7 @@ fn tiled_pane_layouts_of_depth(tc: &hegel::TestCase, depth: usize) -> TiledPaneL
 
 pub(crate) fn floating_pane_layouts(tc: &hegel::TestCase) -> FloatingPaneLayout {
     FloatingPaneLayout {
+        pane_tabs: None,
         name: optional_strings(tc),
         height: optional_percents_or_fixed(tc),
         width: optional_percents_or_fixed(tc),
@@ -813,6 +815,9 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::FocusNextPane => Action::FocusNextPane,
         ActionKind::FocusPreviousPane => Action::FocusPreviousPane,
+        ActionKind::FocusPaneTabs => Action::FocusPaneTabs,
+        ActionKind::PreviousPaneTab => Action::PreviousPaneTab,
+        ActionKind::NextPaneTab => Action::NextPaneTab,
         ActionKind::FocusLastPane => Action::FocusLastPane,
         ActionKind::SwitchFocus => Action::SwitchFocus,
         ActionKind::MoveFocus => Action::MoveFocus {
@@ -2008,6 +2013,12 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::StackPanes => PluginCommand::StackPanes(pane_ids(tc)),
         CommandType::ChangeFloatingPanesCoordinates => {
             PluginCommand::ChangeFloatingPanesCoordinates(pane_ids_with_coordinates(tc))
+        },
+        CommandType::PaneTabs => {
+            PluginCommand::PaneTabs(zellij_types::pane_tabs::PaneTabsCommand::Select {
+                id: zellij_types::pane_tabs::PaneTabsId(tc.draw(generators::integers::<u64>())),
+                index: 0,
+            })
         },
         CommandType::CreateMultipane => {
             PluginCommand::CreateMultipane(zellij_types::multipane::CreateMultipane {

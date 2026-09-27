@@ -46,6 +46,9 @@ pub enum ContextType {
     strum_macros::VariantNames,
 )]
 pub enum ScreenContext {
+    PaneTabsAction,
+    PaneTabs,
+    PaneTabLoaded,
     HandlePtyBytes,
     PluginBytes,
     Render,
@@ -407,6 +410,7 @@ pub enum PtyContext {
     strum_macros::VariantNames,
 )]
 pub enum PluginContext {
+    LoadPaneTab,
     ArrangePanesByProject,
     Load,
     LoadBackgroundPlugin,

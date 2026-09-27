@@ -743,6 +743,19 @@ pub enum ScreenInstruction {
     TogglePanePinned(ClientId, Option<NotificationEnd>),
     SetFloatingPanePinned(PaneId, bool),
     StackPanes(Vec<PaneId>, ClientId, Option<NotificationEnd>),
+    PaneTabsAction(i8, ClientId, Option<NotificationEnd>),
+    PaneTabs {
+        command: zellij_types::pane_tabs::PaneTabsCommand,
+        client_id: ClientId,
+        response: crossbeam::channel::Sender<zellij_types::pane_tabs::PaneTabsResponse>,
+    },
+    PaneTabLoaded {
+        id: zellij_types::pane_tabs::PaneTabsId,
+        index: usize,
+        generation: u64,
+        result: Result<(PluginId, RunPluginOrAlias), String>,
+        client_id: ClientId,
+    },
     Multipane {
         operation: zellij_types::multipane::MultipaneOperation,
         client_id: ClientId,

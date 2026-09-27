@@ -222,6 +222,9 @@ fn serialize_tiled_pane(
         }
         tiled_pane_node.set_children(tiled_pane_node_children);
     }
+    if let Some(tabs) = &layout.pane_tabs {
+        serialize_pane_tabs(tabs, &mut tiled_pane_node);
+    }
     tiled_pane_node
 }
 
@@ -721,6 +724,9 @@ fn serialize_floating_pane(
     serialize_args(args, &mut floating_pane_node_children);
     serialize_plugin(plugin, plugin_config, &mut floating_pane_node_children);
     floating_pane_node.set_children(floating_pane_node_children);
+    if let Some(tabs) = &layout.pane_tabs {
+        serialize_pane_tabs(tabs, &mut floating_pane_node);
+    }
     floating_pane_node
 }
 
@@ -803,6 +809,7 @@ fn tiled_pane_layout_from_manifest(
         })
         .unwrap_or((None, None, false, None, None, None, None, None));
     TiledPaneLayout {
+        pane_tabs: manifest.and_then(|m| m.pane_tabs.clone()),
         split_size,
         run,
         borderless,
@@ -1210,6 +1217,7 @@ pub(crate) fn get_floating_panes_layout_from_panegeoms(
                 }
             }
             FloatingPaneLayout {
+                pane_tabs: m.pane_tabs.clone(),
                 name: m.title.clone(),
                 height: Some(m.geom.rows.into()),
                 width: Some(m.geom.cols.into()),
@@ -1479,6 +1487,46 @@ fn get_split_sizes(constraints: &Vec<Constraint>) -> Vec<Option<SplitSize>> {
         split_sizes.push(split_size);
     }
     split_sizes
+}
+
+fn serialize_pane_tabs(tabs: &zellij_types::pane_tabs::PaneTabsLayout, node: &mut KdlNode) {
+    node.entries_mut().push(KdlEntry::new_prop("tabbed", true));
+    node.entries_mut()
+        .push(KdlEntry::new_prop("selected", tabs.active as i64));
+    let mut children = node.children().cloned().unwrap_or_default();
+    children
+        .nodes_mut()
+        .retain(|node| node.name().value() != "plugin");
+    for tab in &tabs.tabs {
+        let mut child = KdlNode::new("pane");
+        child
+            .entries_mut()
+            .push(KdlEntry::new_prop("name", tab.label.clone()));
+        let mut plugin = KdlNode::new("plugin");
+        plugin
+            .entries_mut()
+            .push(KdlEntry::new_prop("location", tab.location.clone()));
+        if let Some(cwd) = &tab.initial_cwd {
+            plugin.entries_mut().push(KdlEntry::new_prop(
+                "cwd",
+                cwd.to_string_lossy().into_owned(),
+            ));
+        }
+        if !tab.configuration.is_empty() {
+            let mut config = KdlDocument::new();
+            for (key, value) in &tab.configuration {
+                let mut entry = KdlNode::new(key.clone());
+                entry.entries_mut().push(KdlEntry::new(value.clone()));
+                config.nodes_mut().push(entry);
+            }
+            plugin.set_children(config);
+        }
+        let mut content = KdlDocument::new();
+        content.nodes_mut().push(plugin);
+        child.set_children(content);
+        children.nodes_mut().push(child);
+    }
+    node.set_children(children);
 }
 
 #[cfg(test)]
@@ -2521,6 +2569,63 @@ mod tests {
         let kdl = serialize_session_layout(global_layout_manifest).unwrap();
         assert_snapshot!(kdl.0);
     }
+    #[test]
+    fn pane_tabs_serialize_descriptors_configuration_and_selected_index() {
+        use zellij_types::pane_tabs::*;
+        let legacy: PaneTabDescriptor = serde_json::from_str(
+            r#"{"label":"Files","location":"zellij:strider","configuration":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.initial_cwd, None);
+        let tabs = PaneTabsLayout {
+            active: 1,
+            tabs: vec![
+                PaneTabDescriptor {
+                    label: "Files".into(),
+                    location: "zellij:strider".into(),
+                    initial_cwd: Some(PathBuf::from("/tmp/files")),
+                    configuration: BTreeMap::new(),
+                },
+                PaneTabDescriptor {
+                    label: "VMs!".into(),
+                    location: "zellij:hocus-agents".into(),
+                    initial_cwd: None,
+                    configuration: BTreeMap::from([("view".into(), "vms".into())]),
+                },
+            ],
+        };
+        let pane = PaneLayoutManifest {
+            pane_tabs: Some(tabs.clone()),
+            geom: PaneGeom {
+                rows: Dimension::fixed(24),
+                cols: Dimension::fixed(80),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for floating in [false, true] {
+            let mut tab = TabLayoutManifest::default();
+            if floating {
+                tab.floating_panes.push(pane.clone());
+            } else {
+                tab.tiled_panes.push(pane.clone());
+            }
+            let (raw, _) = serialize_session_layout(GlobalLayoutManifest {
+                tabs: vec![("tabs".into(), tab)],
+                ..Default::default()
+            })
+            .unwrap();
+            let restored = zellij_config::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+            let (_, tiled, floats) = &restored.tabs[0];
+            let actual = if floating {
+                floats[0].pane_tabs.as_ref()
+            } else {
+                tiled.children[0].pane_tabs.as_ref()
+            };
+            assert_eq!(actual, Some(&tabs), "{raw}");
+        }
+    }
+
     #[test]
     fn can_serialize_tab_with_a_single_tiled_pane() {
         use zellij_types::input::command::RunCommand;

@@ -1,5 +1,6 @@
 ---
 source: zellij-cli/src/setup.rs
+assertion_line: 690
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -366,6 +367,19 @@ Config {
                     {
                         "shared": "true",
                     },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "hocus-todos": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Zellij(
+                    PluginTag(
+                        "hocus-todos",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
                 ),
                 initial_cwd: None,
                 relative_path: None,

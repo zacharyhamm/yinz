@@ -47,6 +47,15 @@ pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
+    LoadPaneTab {
+        id: zellij_types::pane_tabs::PaneTabsId,
+        index: usize,
+        generation: u64,
+        descriptor: zellij_types::pane_tabs::PaneTabDescriptor,
+        client_id: ClientId,
+        tab_id: TabId,
+        size: Size,
+    },
     Load(
         Option<bool>,   // should float
         bool,           // should be opened in place

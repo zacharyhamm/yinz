@@ -1,6 +1,6 @@
 ---
 source: zellij-config/src/./unit/layout_test.rs
-assertion_line: 2651
+assertion_line: 3037
 expression: "normalize_layout_debug(format!(\"{layout:#?}\"))"
 ---
 Layout {
@@ -8,10 +8,12 @@ Layout {
         (
             None,
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -35,6 +37,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -58,6 +61,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -81,6 +85,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -104,6 +109,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -140,6 +146,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -167,6 +174,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -194,6 +202,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -230,6 +239,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -283,10 +293,12 @@ Layout {
     template: Some(
         (
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -310,6 +322,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -333,6 +346,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -356,6 +370,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -379,6 +394,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -415,6 +431,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -442,6 +459,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -469,6 +487,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -505,6 +524,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],

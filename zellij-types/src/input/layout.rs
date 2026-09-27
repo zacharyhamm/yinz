@@ -743,6 +743,8 @@ pub struct TabLayoutInfo {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct FloatingPaneLayout {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_tabs: Option<crate::pane_tabs::PaneTabsLayout>,
     pub name: Option<String>,
     pub height: Option<PercentOrFixed>,
     pub width: Option<PercentOrFixed>,
@@ -762,6 +764,7 @@ pub struct FloatingPaneLayout {
 impl FloatingPaneLayout {
     pub fn new() -> Self {
         FloatingPaneLayout {
+            pane_tabs: None,
             name: None,
             height: None,
             width: None,
@@ -779,11 +782,23 @@ impl FloatingPaneLayout {
         }
     }
     pub fn add_cwd_to_layout(&mut self, cwd: &Path) {
+        if let Some(tabs) = &mut self.pane_tabs {
+            for tab in &mut tabs.tabs {
+                tab.add_cwd(cwd);
+            }
+        }
         match self.run.as_mut() {
             Some(run) => run.add_cwd(cwd),
             None => {
                 self.run = Some(Run::Cwd(cwd.to_path_buf()));
             },
+        }
+        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run) {
+            if let Some(selected) = tabs.tabs.get(tabs.active) {
+                *plugin = plugin
+                    .clone()
+                    .with_initial_cwd(selected.initial_cwd.clone());
+            }
         }
     }
     pub fn add_start_suspended(&mut self, start_suspended: Option<bool>) {
@@ -796,6 +811,7 @@ impl FloatingPaneLayout {
 impl From<&TiledPaneLayout> for FloatingPaneLayout {
     fn from(pane_layout: &TiledPaneLayout) -> Self {
         FloatingPaneLayout {
+            pane_tabs: pane_layout.pane_tabs.clone(),
             name: pane_layout.name.clone(),
             run: pane_layout.run.clone(),
             focus: pane_layout.focus,
@@ -806,6 +822,8 @@ impl From<&TiledPaneLayout> for FloatingPaneLayout {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct TiledPaneLayout {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_tabs: Option<crate::pane_tabs::PaneTabsLayout>,
     pub children_split_direction: SplitDirection,
     pub name: Option<String>,
     pub children: Vec<TiledPaneLayout>,
@@ -1063,11 +1081,23 @@ impl TiledPaneLayout {
         }
     }
     pub fn add_cwd_to_layout(&mut self, cwd: &Path) {
+        if let Some(tabs) = &mut self.pane_tabs {
+            for tab in &mut tabs.tabs {
+                tab.add_cwd(cwd);
+            }
+        }
         match self.run.as_mut() {
             Some(run) => run.add_cwd(cwd),
             None => {
                 self.run = Some(Run::Cwd(cwd.to_path_buf()));
             },
+        }
+        if let (Some(tabs), Some(Run::Plugin(plugin))) = (&self.pane_tabs, &mut self.run) {
+            if let Some(selected) = tabs.tabs.get(tabs.active) {
+                *plugin = plugin
+                    .clone()
+                    .with_initial_cwd(selected.initial_cwd.clone());
+            }
         }
         for child in self.children.iter_mut() {
             child.add_cwd_to_layout(cwd);

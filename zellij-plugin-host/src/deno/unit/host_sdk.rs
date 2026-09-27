@@ -510,3 +510,28 @@ fn small_helpers_match_the_prelude_and_the_shim() {
       check(JSON.stringify(commands) === JSON.stringify(expected), JSON.stringify(commands));
     "#);
 }
+
+#[test]
+fn pane_tabs_sdk_helpers_use_the_shared_command_and_decode_the_shared_reply() {
+    use prost::Message;
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      bind({load() {
+        zellij.mountPaneTabs({Plugin:7}, {tabs:[{label:'Files',location:'zellij:strider',configuration:{cwd:'/work'}}]});
+        zellij.selectPaneTab(1, 0);
+        zellij.focusPaneTabs(1);
+        zellij.retryPaneTab(1, 0);
+      }}); bridge('load',{},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const tabs=sent.map(([c])=>c.PaneTabs).filter(Boolean);
+      check(tabs.length===4 && tabs[0].Mount.existing===0);
+      check(tabs[0].Mount.layout.tabs[0].configuration.cwd==='/work');
+      check(tabs[1].Select.index===0 && tabs[2].Focus.bar && tabs[3].Retry.id===1);
+    "#);
+    let reply = zellij_plugin_api::plugin_command::ProtobufPaneTabsResponse { json: r#"{"Ok":null}"#.into() };
+    assert!(matches!(crate::response::decode_response(zellij_types::data::CommandType::PaneTabs, &reply.encode_to_vec()).unwrap(), Ok(crate::response::DecodedResponse::Json(serde_json::Value::Null))));
+    let denied = zellij_plugin_api::plugin_command::ProtobufPaneTabsResponse { json: r#"{"Err":"Permission denied"}"#.into() };
+    assert!(crate::response::decode_response(zellij_types::data::CommandType::PaneTabs, &denied.encode_to_vec()).unwrap().is_err());
+}

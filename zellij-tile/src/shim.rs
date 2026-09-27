@@ -3549,6 +3549,38 @@ fn multipane_response(command: PluginCommand) -> zellij_types::multipane::Multip
     serde_json::from_str(&response.json).map_err(|error| error.to_string())?
 }
 
+/// Mount a fixed plugin tab list, retaining the existing pane in its slot.
+pub fn mount_pane_tabs(
+    pane_id: PaneId,
+    layout: zellij_types::pane_tabs::PaneTabsLayout,
+    existing: usize,
+) -> zellij_types::pane_tabs::PaneTabsResponse {
+    pane_tabs(zellij_types::pane_tabs::PaneTabsCommand::Mount {
+        pane_id,
+        layout,
+        existing,
+    })
+}
+pub fn select_pane_tab(
+    id: zellij_types::pane_tabs::PaneTabsId,
+    index: usize,
+) -> zellij_types::pane_tabs::PaneTabsResponse {
+    pane_tabs(zellij_types::pane_tabs::PaneTabsCommand::Select { id, index })
+}
+pub fn focus_pane_tabs(
+    id: zellij_types::pane_tabs::PaneTabsId,
+    bar: bool,
+) -> zellij_types::pane_tabs::PaneTabsResponse {
+    pane_tabs(zellij_types::pane_tabs::PaneTabsCommand::Focus { id, bar })
+}
+pub fn pane_tabs(
+    command: zellij_types::pane_tabs::PaneTabsCommand,
+) -> zellij_types::pane_tabs::PaneTabsResponse {
+    let response: zellij_plugin_api::plugin_command::ProtobufPaneTabsResponse =
+        call(PluginCommand::PaneTabs(command))?;
+    serde_json::from_str(&response.json).map_err(|error| error.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

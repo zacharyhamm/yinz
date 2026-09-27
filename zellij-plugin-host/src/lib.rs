@@ -184,6 +184,55 @@ pub fn plugin_thread_main(
         };
         zellij_runtime::errors::add_call(&mut err_ctx, ContextType::Plugin((&event).into()));
         match event {
+            PluginInstruction::LoadPaneTab {
+                id,
+                index,
+                generation,
+                descriptor,
+                client_id,
+                tab_id,
+                size,
+            } => {
+                let result = (|| {
+                    let plugin = zellij_runtime::plugin_location::run_plugin_or_alias_from_url(
+                        &descriptor.location,
+                        &Some(descriptor.configuration),
+                        None,
+                        descriptor.initial_cwd.clone(),
+                    )
+                    .map_err(|error| anyhow!(error))?;
+                    let mut plugin = match descriptor.initial_cwd {
+                        Some(cwd) => plugin.with_initial_cwd(Some(cwd)),
+                        None => plugin,
+                    };
+                    plugin.populate_run_plugin_if_needed(&plugin_aliases);
+                    let cwd = plugin.get_initial_cwd();
+                    let (plugin_id, _) = wasm_bridge.load_plugin(
+                        &plugin.get_run_plugin(),
+                        Some(tab_id),
+                        size,
+                        cwd.clone(),
+                        false,
+                        Some(client_id),
+                    )?;
+                    bus.senders.send_to_pty(PtyInstruction::ReportPluginCwd(
+                        plugin_id,
+                        cwd.unwrap_or_else(|| zellij_cwd.clone()),
+                    ))?;
+                    Ok::<_, anyhow::Error>((plugin_id, plugin))
+                })()
+                .map_err(|error| error.to_string());
+                bus.senders
+                    .send_to_screen(ScreenInstruction::PaneTabLoaded {
+                        id,
+                        index,
+                        generation,
+                        result,
+                        client_id,
+                    })
+                    .context("failed to place pane tab plugin")
+                    .non_fatal();
+            },
             PluginInstruction::Load(
                 should_float,
                 should_be_open_in_place,

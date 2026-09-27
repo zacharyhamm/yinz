@@ -1,6 +1,6 @@
 ---
 source: zellij-config/src/./unit/layout_test.rs
-assertion_line: 1791
+assertion_line: 2101
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -8,10 +8,12 @@ Layout {
         (
             None,
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -61,10 +63,12 @@ Layout {
     template: Some(
         (
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],

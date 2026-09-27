@@ -1,5 +1,6 @@
 use super::generated_api::api::plugin_command as generated;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
+pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
 pub use super::generated_api::api::{
     action::{Action as ProtobufAction, PaneIdAndShouldFloat, SwitchToModePayload},
     event::{
@@ -2492,6 +2493,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     _ => Err("Mismatched payload for ChangeFloatingPanesCoordinates"),
                 }
             },
+            Some(CommandName::PaneTabs) => match protobuf_plugin_command.payload {
+                Some(Payload::PaneTabsPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::PaneTabs)
+                    .map_err(|_| "Invalid PaneTabs payload"),
+                _ => Err("Mismatched PaneTabs payload"),
+            },
             Some(CommandName::CreateMultipane) => match protobuf_plugin_command.payload {
                 Some(Payload::CreateMultipanePayload(json)) => serde_json::from_str(&json)
                     .map(PluginCommand::CreateMultipane)
@@ -4981,6 +4988,12 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                                 })
                                 .collect(),
                     },
+                )),
+            }),
+            PluginCommand::PaneTabs(request) => Ok(ProtobufPluginCommand {
+                name: CommandName::PaneTabs as i32,
+                payload: Some(Payload::PaneTabsPayload(
+                    serde_json::to_string(&request).map_err(|_| "Failed to encode PaneTabs")?,
                 )),
             }),
             PluginCommand::CreateMultipane(request) => Ok(ProtobufPluginCommand {
@@ -7947,6 +7960,7 @@ mod tests {
         fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
             Some(match command {
                 carried @ (PluginCommand::Subscribe(_)
+                | PluginCommand::PaneTabs(..)
                 | PluginCommand::CreateMultipane(..)
                 | PluginCommand::UpdateMultipane(..)
                 | PluginCommand::ReplaceMultipaneChild(..)

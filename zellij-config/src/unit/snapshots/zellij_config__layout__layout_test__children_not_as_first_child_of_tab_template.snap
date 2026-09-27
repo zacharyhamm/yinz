@@ -1,6 +1,6 @@
 ---
 source: zellij-config/src/./unit/layout_test.rs
-assertion_line: 1080
+assertion_line: 1390
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -10,14 +10,17 @@ Layout {
                 "my tab",
             ),
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Vertical,
                         name: None,
                         children: [
                             TiledPaneLayout {
+                                pane_tabs: None,
                                 children_split_direction: Horizontal,
                                 name: None,
                                 children: [],
@@ -37,10 +40,12 @@ Layout {
                                 default_bg: None,
                             },
                             TiledPaneLayout {
+                                pane_tabs: None,
                                 children_split_direction: Horizontal,
                                 name: None,
                                 children: [
                                     TiledPaneLayout {
+                                        pane_tabs: None,
                                         children_split_direction: Horizontal,
                                         name: None,
                                         children: [],
@@ -60,6 +65,7 @@ Layout {
                                         default_bg: None,
                                     },
                                     TiledPaneLayout {
+                                        pane_tabs: None,
                                         children_split_direction: Horizontal,
                                         name: None,
                                         children: [],
@@ -111,6 +117,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -150,14 +157,17 @@ Layout {
         (
             None,
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Vertical,
                         name: None,
                         children: [
                             TiledPaneLayout {
+                                pane_tabs: None,
                                 children_split_direction: Horizontal,
                                 name: None,
                                 children: [],
@@ -195,6 +205,7 @@ Layout {
                         default_bg: None,
                     },
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -236,6 +247,7 @@ Layout {
     template: Some(
         (
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [],
