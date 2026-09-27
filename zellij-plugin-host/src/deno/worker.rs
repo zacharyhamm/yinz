@@ -96,7 +96,7 @@ fn request(path: &Path, source: &str, declarations: bool, operation: Operation) 
                 if inside_worker() {
                     std::env::current_exe().ok()
                 } else {
-                    zellij_bus::os_input_output_unix::server_binary().cloned()
+                    zellij_bus::os_input_output::server_binary().cloned()
                 }
             })
             .context("resolve server executable")?;

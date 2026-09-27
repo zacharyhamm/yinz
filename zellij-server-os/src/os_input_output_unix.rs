@@ -1,5 +1,6 @@
-use crate::os_input_output::{command_exists, AsyncReader};
+use crate::os_input_output::command_exists;
 use crate::PaneId;
+use zellij_bus::os_input_output::{AdoptedTerminal, AsyncReader};
 use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 
@@ -404,7 +405,7 @@ fn try_write_to_fd(fd: RawFd, buf: &[u8]) -> Result<usize> {
     Ok(written)
 }
 
-pub use zellij_runtime::own_binary::server_binary;
+use zellij_runtime::own_binary::server_binary;
 
 impl UnixPtyBackend {
     pub fn new() -> Result<Self, io::Error> {
@@ -1305,25 +1306,6 @@ impl UnixPtyBackend {
             child_exit_status: attached.status.child_exit_status,
         })
     }
-}
-
-/// A supervisor this server has just taken over, and everything the caller needs
-/// to give it a pane.
-pub struct AdoptedTerminal {
-    pub terminal_id: TerminalId,
-    pub reader: Box<dyn AsyncReader>,
-    /// `None` for a pane adopted from another machine. Its child's pid is
-    /// meaningful only there, and recording one here would put it in
-    /// `id_to_child_pid`, where every consumer would act on it locally.
-    pub child_pid: Option<ProcessId>,
-    /// The command the supervisor is running, for rebuilding a `quit_cb` that
-    /// holds or closes the pane the way the original did.
-    pub cmd: RunCommand,
-    /// Output produced while nobody was attached, to be replayed into the pane
-    /// before any live bytes.
-    pub buffered: Vec<u8>,
-    /// `Some` if the child has already exited — the pane should arrive held.
-    pub child_exit_status: Option<Option<i32>>,
 }
 
 #[cfg(test)]

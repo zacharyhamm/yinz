@@ -1,0 +1,19 @@
+//! The zellij server's operating-system backend.
+//!
+//! [`ServerOsInputOutput`] implements `zellij_bus::os_input_output::ServerOsApi` over real ptys,
+//! pane supervisors, remote brokers, Firecracker VMs and the client sockets' writer threads. Only
+//! the binary constructs it; every library crate and test sees it through the trait.
+
+mod os_input_output;
+mod os_input_output_unix;
+
+pub use os_input_output::{
+    get_server_os_input, get_server_os_input_from_termios_arg, get_server_os_input_with_termios,
+    ServerOsInputOutput,
+};
+
+// The moved files keep their `crate::` paths to shared items through these imports, as they had
+// them at `zellij-bus`'s root.
+use zellij_process::{firecracker, pty_host};
+use zellij_types::internal_ids::{ClientId, TerminalId};
+use zellij_types::pane_id::PaneId;

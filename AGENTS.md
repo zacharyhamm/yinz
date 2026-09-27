@@ -134,7 +134,8 @@ escalation on the first attempt.
 |---|---|
 | `zellij-server/` | Screen, client routing, pty scheduling, server thread |
 | `zellij-panes/` | Panes, frames, tabs, layout application |
-| `zellij-bus/` | Thread instructions, senders, OS API, background jobs, recorder |
+| `zellij-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
+| `zellij-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
 | `zellij-routing/` | Action dispatch and completion waits |
 | `zellij-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
 | `zellij-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
