@@ -549,14 +549,12 @@ fn url_safe_segments(tc: &hegel::TestCase) -> String {
 }
 
 pub(crate) fn run_plugin_locations(tc: &hegel::TestCase) -> RunPluginLocation {
-    match tc.draw(generators::integers::<u8>().max_value(2)) {
-        0 => {
-            let segments = up_to(tc, 3, url_safe_segments).join("/");
-            let root = if booleans(tc) { "/" } else { "" };
-            RunPluginLocation::File(PathBuf::from(format!("{root}{segments}")))
-        },
-        1 => RunPluginLocation::Zellij(PluginTag::new(url_safe_segments(tc))),
-        _ => RunPluginLocation::Remote(format!("https://example.com/{}", url_safe_segments(tc))),
+    if booleans(tc) {
+        let segments = up_to(tc, 3, url_safe_segments).join("/");
+        let root = if booleans(tc) { "/" } else { "" };
+        RunPluginLocation::File(PathBuf::from(format!("{root}{segments}")))
+    } else {
+        RunPluginLocation::Zellij(PluginTag::new(url_safe_segments(tc)))
     }
 }
 
@@ -574,8 +572,8 @@ pub(crate) fn run_plugins(tc: &hegel::TestCase) -> RunPlugin {
 
 /// An alias is whatever `zellij_plugin_location::run_plugin_or_alias_from_url` could not parse as a plugin URL, and the
 /// plugin wire sends one back through that same parse as `string plugin_url` - so a name that
-/// reads as a `zellij:`, `file:` or `http(s):` URL would come back as that plugin instead. The
-/// prefix keeps the scheme, if the text forms one, from being any of those.
+/// reads as a `zellij:` or `file:` URL would come back as that plugin instead, and an `http(s):`
+/// one would be refused. The prefix keeps the scheme, if the text forms one, from being any of those.
 pub(crate) fn plugin_aliases(tc: &hegel::TestCase) -> PluginAlias {
     PluginAlias {
         name: format!("alias-{}", strings(tc)),
@@ -713,7 +711,7 @@ pub(crate) fn commands_or_plugins(tc: &hegel::TestCase) -> CommandOrPlugin {
 }
 
 pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
-    match tc.draw(generators::integers::<u8>().max_value(3)) {
+    match tc.draw(generators::integers::<u8>().max_value(2)) {
         0 => LayoutInfo::BuiltIn(strings(tc)),
         1 => LayoutInfo::File(
             strings(tc),
@@ -730,7 +728,6 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
                 update_time: strings(tc),
             },
         ),
-        2 => LayoutInfo::Url(strings(tc)),
         _ => LayoutInfo::Stringified(strings(tc)),
     }
 }

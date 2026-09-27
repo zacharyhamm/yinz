@@ -457,7 +457,7 @@ export interface MessageToPlugin {plugin_url: string | null; destination_plugin_
 export interface ConnectToSession {name: string | null; tab_position: number | null; pane_id?: [number, boolean] | null; layout: LayoutInfo | null; cwd: string | null;}
 export type GitCheckout = 'Current' | {NewBranch: {branch: string; base: string}} | {NewWorktree: {branch: string; base: string; path: string}};
 export interface ProjectPaneGroup {identity: string; name: string; configuration_root: string | null; pane_ids: number[];}
-export type LayoutInfo = {BuiltIn: string} | {File: [string, LayoutMetadata]} | {Url: string} | {Stringified: string};
+export type LayoutInfo = {BuiltIn: string} | {File: [string, LayoutMetadata]} | {Stringified: string};
 export interface LayoutMetadata {tabs: TabMetadata[]; creation_time: string; update_time: string;}
 export interface TabMetadata {panes: PaneMetadata[]; name: string | null;}
 export interface PaneMetadata {name: string | null; is_plugin: boolean; is_builtin_plugin: boolean;}
@@ -594,7 +594,7 @@ export interface RunCommandAction {
   originating_plugin?: OriginatingPlugin | null; use_terminal_title?: boolean; target?: PaneTarget; remote_default_shell?: boolean;
 }
 export interface RunCommand extends Omit<RunCommandAction, 'cmd' | 'direction'> {command: string; workflow_owner?: string | null;}
-export interface RunPlugin { _allow_exec_host_cmd?: boolean; location: {File: string} | {Zellij: string} | {Remote: string}; configuration: StringMap; initial_cwd: string | null; relative_path?: string | null;}
+export interface RunPlugin { _allow_exec_host_cmd?: boolean; location: {File: string} | {Zellij: string}; configuration: StringMap; initial_cwd: string | null; relative_path?: string | null;}
 export type RunPluginOrAlias = {RunPlugin: RunPlugin} | {Alias: {name: string; configuration: StringMap | null; initial_cwd: string | null; run_plugin: RunPlugin | null}};
 export type Run = {plugin: RunPluginOrAlias} | {command: RunCommand} | {EditFile: [string, Integer | null, string | null]} | {Cwd: string};
 export interface TiledPaneLayout {

@@ -208,8 +208,8 @@ pub enum ConfigError {
     PluginsError(#[from] PluginsConfigError),
     #[error("{0}")]
     ConversionError(#[from] ConversionError),
-    #[error("{0}")]
-    DownloadError(String),
+    #[error("remote layouts are not supported ('{0}'): download the file and pass its local path")]
+    RemoteLayoutUnsupported(String),
     #[error("failed to block on async task")]
     Async(#[from] std::io::Error),
     #[error("unsupported configuration format: {0}; use config.kdl")]
@@ -1176,10 +1176,6 @@ pub fn load_layout_and_config(
         (layout_info, chosen_layout)
     };
     match layout_info {
-        Some(zellij_types::data::LayoutInfo::Url(ref layout_url)) => {
-            crate::layout::from_url(layout_url, config)
-                .map(|(_layout, config)| (layout_info, config))
-        },
         Some(zellij_types::data::LayoutInfo::Stringified(ref raw_layout)) => {
             crate::layout::from_stringified_layout(raw_layout, config)
                 .map(|(_layout, config)| (layout_info, config))

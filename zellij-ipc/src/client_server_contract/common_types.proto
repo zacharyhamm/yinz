@@ -916,10 +916,11 @@ message LayoutInfo {
   oneof layout_type {
     string file_path = 1;
     string builtin_name = 2;
-    string url = 3;
     string stringified = 4;
   }
   optional LayoutMetadata layout_metadata = 5;
+  reserved 3;
+  reserved "url";
 }
 
 message LayoutMetadata {
@@ -1378,7 +1379,8 @@ enum RunPluginLocation {
   RUN_PLUGIN_LOCATION_UNSPECIFIED = 0;
   RUN_PLUGIN_LOCATION_FILE = 1;
   RUN_PLUGIN_LOCATION_ZELLIJ = 2;
-  RUN_PLUGIN_LOCATION_REMOTE = 3;
+  reserved 3;
+  reserved "RUN_PLUGIN_LOCATION_REMOTE";
 }
 
 message RunPluginLocationData {
@@ -1386,8 +1388,9 @@ message RunPluginLocationData {
   oneof location_data {
     string file_path = 2;      // For FILE
     PluginTag zellij_tag = 3;  // For ZELLIJ
-    string remote_url = 4;     // For REMOTE
   }
+  reserved 4;
+  reserved "remote_url";
 }
 
 message PluginTag {

@@ -2,7 +2,7 @@ use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 // Global tokio runtime for async I/O operations
-// Shared between plugin downloads, timers, and action completion tracking
+// Shared between timers and action completion tracking
 static TOKIO_RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
 pub fn get_tokio_runtime() -> &'static Runtime {

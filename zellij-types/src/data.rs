@@ -983,7 +983,6 @@ impl From<RunPlugin> for PluginInfo {
 pub enum LayoutInfo {
     BuiltIn(String),
     File(String, LayoutMetadata),
-    Url(String),
     Stringified(String),
 }
 
@@ -1148,7 +1147,6 @@ impl LayoutInfo {
         match self {
             LayoutInfo::BuiltIn(name) => name,
             LayoutInfo::File(name, _) => name,
-            LayoutInfo::Url(url) => url,
             LayoutInfo::Stringified(layout) => layout,
         }
     }
@@ -1156,7 +1154,6 @@ impl LayoutInfo {
         match self {
             LayoutInfo::BuiltIn(_name) => true,
             LayoutInfo::File(_name, _) => false,
-            LayoutInfo::Url(_url) => false,
             LayoutInfo::Stringified(_stringified) => false,
         }
     }

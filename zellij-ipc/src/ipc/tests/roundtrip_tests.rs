@@ -2423,29 +2423,6 @@ fn test_client_messages() {
             layout_source: None,
             tiled_layout: Some(TiledPaneLayout {
                 run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
-                    location: RunPluginLocation::Remote("my_remote_url".to_owned()),
-                    ..Default::default()
-                }))),
-                ..Default::default()
-            }),
-            floating_layouts: vec![],
-            swap_tiled_layouts: None,
-            swap_floating_layouts: None,
-            tab_name: None,
-            should_change_focus_to_new_tab: false,
-            cwd: None,
-            initial_panes: None,
-            first_pane_unblock_condition: None,
-        },
-        terminal_id: Some(zellij_types::internal_ids::TerminalId::new(1)),
-        client_id: Some(ClientId::new(100)),
-        is_cli_client: true,
-    });
-    test_client_roundtrip!(ClientToServerMsg::Action {
-        action: Action::NewTab {
-            layout_source: None,
-            tiled_layout: Some(TiledPaneLayout {
-                run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                     configuration: PluginUserConfiguration::new(demo_context.clone()),
                     ..Default::default()
                 }))),
@@ -4528,15 +4505,6 @@ fn test_server_messages() {
                     update_time: "0".to_owned()
                 }
             )),
-            cwd: Some(PathBuf::from("/path/to/cwd")),
-        }
-    });
-    test_server_roundtrip!(ServerToClientMsg::SwitchSession {
-        connect_to_session: SessionConnection {
-            name: Some("new_session_name".to_owned().into()),
-            tab_position: Some(TabNumber::new(5)),
-            pane_id: Some(PaneId::from_legacy(5, true)),
-            layout: Some(LayoutInfo::Url("https://example.com/layout.kdl".to_owned())),
             cwd: Some(PathBuf::from("/path/to/cwd")),
         }
     });

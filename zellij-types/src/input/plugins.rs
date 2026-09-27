@@ -27,12 +27,12 @@ pub enum PluginsConfigError {
     DuplicatePlugins(PluginTag),
     #[error("Failed to parse url: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
-    #[error("Only 'file:', 'http(s):' and 'zellij:' url schemes are supported for plugin lookup. '{0}' does not match either.")]
+    #[error("Only 'file:' and 'zellij:' url schemes are supported for plugin lookup. '{0}' does not match either.")]
     InvalidUrlScheme(Url),
     #[error("Could not find plugin at the path: '{0:?}'")]
     InvalidPluginLocation(PathBuf),
-    #[error("remote script plugins are not supported ('{0}'): download the file and load it with file:<path>")]
-    RemoteScriptPlugin(Url),
+    #[error("remote plugins are not supported ('{0}'): load a local plugin with file:<path>")]
+    RemotePluginUnsupported(Url),
     #[error("Lua plugins are no longer supported ({0}); migrate to TypeScript or Wasm")]
     UnsupportedLuaPlugin(String),
 }

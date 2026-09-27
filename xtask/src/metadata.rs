@@ -26,19 +26,13 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         "zellij-runtime",
         &["zellij-types", "zellij-plugin-location"],
     ),
-    ("zellij-downloader", &[]),
     ("zellij-key-codec", &["zellij-types"]),
     ("zellij-host-protocol", &["zellij-types"]),
     ("zellij-storage", &["zellij-types", "zellij-runtime"]),
     ("zellij-project-config", &["zellij-types", "zellij-runtime"]),
     (
         "zellij-config",
-        &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-downloader",
-            "zellij-project-config",
-        ],
+        &["zellij-types", "zellij-runtime", "zellij-project-config"],
     ),
     ("zellij-deno-builtins", &["zellij-runtime"]),
     (
@@ -184,7 +178,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-terminal",
             "zellij-types",
             "zellij-runtime",
-            "zellij-downloader",
             "zellij-key-codec",
             "zellij-storage",
             "zellij-config",
@@ -502,7 +495,7 @@ mod tests {
             ("zellij-routing", "zellij-server"),
             ("zellij-routing", "zellij-panes"),
             // Authoring reads its two constants from the runtime so Hocus's native tests do not
-            // build configuration or the downloader.
+            // build configuration.
             ("zellij-plugin-authoring", "zellij-config"),
         ] {
             let index = metadata["packages"]

@@ -1,6 +1,4 @@
 //! Layout loading and parsing. Pure layout models live in zellij-types.
-#[cfg(not(target_family = "wasm"))]
-use zellij_downloader::Downloader;
 use {
     crate::config::Config, crate::config::ConfigError, zellij_runtime::home::default_layout_dir,
     zellij_runtime::home::find_default_config_dir, zellij_types::data::LayoutInfo,
@@ -100,7 +98,6 @@ pub fn from_layout_info(
     layout_dir: &Option<PathBuf>,
     layout_info: LayoutInfo,
 ) -> Result<Layout, ConfigError> {
-    let mut should_start_layout_commands_suspended = false;
     let (path_to_raw_layout, raw_layout, raw_swap_layouts) = match layout_info {
         LayoutInfo::File(layout_name_without_extension, _layout_metadata) => {
             let layout_dir = layout_dir.clone().or_else(default_layout_dir);
@@ -116,17 +113,9 @@ pub fn from_layout_info(
                 crate::layout::stringified_from_default_assets(&PathBuf::from(layout_name))?;
             (Some(path_to_layout), stringified_layout, swap_layouts)
         },
-        LayoutInfo::Url(url) => {
-            should_start_layout_commands_suspended = true;
-            (
-                Some(url.clone()),
-                crate::layout::stringified_from_url(&url)?,
-                None,
-            )
-        },
         LayoutInfo::Stringified(stringified_layout) => (None, stringified_layout, None),
     };
-    let mut layout = crate::kdl::layout::from_kdl(
+    let layout = crate::kdl::layout::from_kdl(
         &raw_layout,
         path_to_raw_layout,
         raw_swap_layouts
@@ -134,11 +123,6 @@ pub fn from_layout_info(
             .map(|(r, f)| (r.as_str(), f.as_str())),
         None,
     );
-    if should_start_layout_commands_suspended {
-        if let Some(l) = layout.iter_mut().next() {
-            l.recursively_add_start_suspended_including_template(Some(true))
-        }
-    }
     layout
 }
 pub fn from_layout_info_with_config(
@@ -146,7 +130,6 @@ pub fn from_layout_info_with_config(
     layout_info: &LayoutInfo,
     config: Option<Config>,
 ) -> Result<(Layout, Config), ConfigError> {
-    let mut should_start_layout_commands_suspended = false;
     let (path_to_raw_layout, raw_layout, raw_swap_layouts) = match layout_info {
         LayoutInfo::File(layout_name_without_extension, _layout_metadata) => {
             let layout_dir = layout_dir.clone().or_else(default_layout_dir);
@@ -162,17 +145,9 @@ pub fn from_layout_info_with_config(
                 crate::layout::stringified_from_default_assets(&PathBuf::from(layout_name))?;
             (Some(path_to_layout), stringified_layout, swap_layouts)
         },
-        LayoutInfo::Url(url) => {
-            should_start_layout_commands_suspended = true;
-            (
-                Some(url.clone()),
-                crate::layout::stringified_from_url(url)?,
-                None,
-            )
-        },
         LayoutInfo::Stringified(stringified_layout) => (None, stringified_layout.clone(), None),
     };
-    let mut layout = crate::kdl::layout::from_kdl(
+    let layout = crate::kdl::layout::from_kdl(
         &raw_layout,
         path_to_raw_layout,
         raw_swap_layouts
@@ -180,11 +155,6 @@ pub fn from_layout_info_with_config(
             .map(|(r, f)| (r.as_str(), f.as_str())),
         None,
     );
-    if should_start_layout_commands_suspended {
-        if let Some(l) = layout.iter_mut().next() {
-            l.recursively_add_start_suspended_including_template(Some(true))
-        }
-    }
     let config = Config::from_kdl(&raw_layout, config)?; // this merges the two config, with
     layout.map(|l| (l, config))
 }
@@ -213,17 +183,6 @@ pub fn stringified_from_path_or_default(
             layout_dir.as_ref(),
         ),
     }
-}
-#[cfg(not(target_family = "wasm"))]
-pub fn stringified_from_url(url: &str) -> Result<String, ConfigError> {
-    Downloader::download_without_cache_blocking(url)
-        .map_err(|e| ConfigError::DownloadError(format!("{}", e)))
-}
-#[cfg(target_family = "wasm")]
-pub fn stringified_from_url(_url: &str) -> Result<String, ConfigError> {
-    // silently fail - this should not happen in plugins and legacy architecture is hard
-    let raw_layout = String::new();
-    Ok(raw_layout)
 }
 pub fn from_path_without_config(layout_path: &Path) -> Result<Layout, ConfigError> {
     // (path_to_layout as String, stringified_layout, Option<path_to_swap_layout as String, stringified_swap_layout>)
@@ -256,15 +215,6 @@ pub fn from_path_or_default(
     let config = Config::from_kdl(&raw_layout, Some(config))?; // this merges the two config, with
     Ok((layout, config))
 }
-#[cfg(not(target_family = "wasm"))]
-pub fn from_url(url: &str, config: Config) -> Result<(Layout, Config), ConfigError> {
-    let raw_layout = Downloader::download_without_cache_blocking(url)
-        .map_err(|e| ConfigError::DownloadError(format!("{}", e)))?;
-    let mut layout = crate::kdl::layout::from_kdl(&raw_layout, Some(url.into()), None, None)?;
-    layout.recursively_add_start_suspended_including_template(Some(true));
-    let config = Config::from_kdl(&raw_layout, Some(config))?; // this merges the two config, with
-    Ok((layout, config))
-}
 pub fn from_stringified_layout(
     stringified_layout: &str,
     config: Config,
@@ -272,12 +222,6 @@ pub fn from_stringified_layout(
     let layout = crate::kdl::layout::from_kdl(stringified_layout, None, None, None)?;
     let config = Config::from_kdl(stringified_layout, Some(config))?; // this merges the two config, with
     Ok((layout, config))
-}
-#[cfg(target_family = "wasm")]
-pub fn from_url(_url: &str, _config: Config) -> Result<(Layout, Config), ConfigError> {
-    Err(ConfigError::DownloadError(
-        "Unsupported platform, cannot download layout from the web".to_owned(),
-    ))
 }
 pub fn from_path_or_default_without_config(
     layout_path: Option<&PathBuf>,
@@ -339,6 +283,7 @@ pub fn stringified_from_dir(
     layout: &PathBuf,
     layout_dir: Option<&PathBuf>,
 ) -> Result<StringifiedLayout, ConfigError> {
+    reject_remote_layout(layout)?;
     match layout_dir {
         Some(dir) => {
             let layout_path = &dir.join(layout);
@@ -359,7 +304,27 @@ pub fn stringified_from_dir(
         },
     }
 }
+/// Layouts are never downloaded. A url reaches the loaders as a path, often joined onto a
+/// cwd or layout dir (`/cwd/https://host/x.kdl`), so look for the scheme at any component
+/// and name the url rather than failing on a missing file.
+fn reject_remote_layout(layout_path: &Path) -> Result<(), ConfigError> {
+    let path = layout_path.to_string_lossy();
+    let url_start = ["https://", "http://"].iter().find_map(|scheme| {
+        if path.starts_with(scheme) {
+            Some(0)
+        } else {
+            path.find(&format!("/{scheme}")).map(|slash| slash + 1)
+        }
+    });
+    match url_start {
+        Some(start) => Err(ConfigError::RemoteLayoutUnsupported(
+            path[start..].to_owned(),
+        )),
+        None => Ok(()),
+    }
+}
 pub fn stringified_from_path(layout_path: &Path) -> Result<StringifiedLayout, ConfigError> {
+    reject_remote_layout(layout_path)?;
     let mut layout_file = File::open(layout_path)
         .or_else(|_| File::open(layout_path.with_extension("kdl")))
         .map_err(|e| ConfigError::IoPath(e, layout_path.into()))?;
@@ -578,9 +543,7 @@ pub fn layout_info_from_cli(
         .clone()
         .unwrap_or(PathBuf::from("default"));
 
-    if layout_path.starts_with("http://") || layout_path.starts_with("https://") {
-        Some(LayoutInfo::Url(layout_path.display().to_string()))
-    } else if layout_path.extension().is_some() || layout_path.components().count() > 1 {
+    if layout_path.extension().is_some() || layout_path.components().count() > 1 {
         let layout_dir = cwd;
         let file_path = layout_dir.join(layout_path);
         Some(LayoutInfo::File(
@@ -626,9 +589,7 @@ pub fn layout_info_from_config(
         .clone()
         .unwrap_or(PathBuf::from("default"));
 
-    if layout_path.starts_with("http://") || layout_path.starts_with("https://") {
-        Some(LayoutInfo::Url(layout_path.display().to_string()))
-    } else if layout_path.extension().is_some() || layout_path.components().count() > 1 {
+    if layout_path.extension().is_some() || layout_path.components().count() > 1 {
         let layout_dir = layout_dir.clone().or_else(default_layout_dir)?;
         let file_path = layout_dir.join(layout_path);
         Some(LayoutInfo::File(

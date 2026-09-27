@@ -491,7 +491,6 @@ plugins {
 load_plugins {
     "zellij:link"
     // "file:/path/to/my-plugin.wasm"
-    // "https://example.com/my-plugin.wasm"
 }
 
 // Plugins to run at a hook point - a moment zellij hands control to a plugin.

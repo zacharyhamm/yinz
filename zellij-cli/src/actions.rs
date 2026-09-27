@@ -937,9 +937,8 @@ pub fn actions_from_cli(
                 let layout_source_name = "layout-string".to_owned();
                 let path_to_raw_layout = layout_source_name.clone();
                 let swap_layouts: Option<(String, String)> = None;
-                let should_start_layout_commands_suspended = false;
                 let raw_layout_for_error = raw_layout.clone();
-                let mut layout = zellij_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
+                let layout = zellij_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
                         let stringified_error = match e {
                             ConfigError::KdlError(kdl_error) => {
                                 let error = kdl_error.add_src(layout_source_name.clone(), raw_layout_for_error);
@@ -971,9 +970,6 @@ pub fn actions_from_cli(
                         };
                         stringified_error
                     })?;
-                if should_start_layout_commands_suspended {
-                    layout.recursively_add_start_suspended_including_template(Some(true));
-                }
                 let mut tabs = layout.tabs();
                 if !tabs.is_empty() {
                     let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
@@ -1033,34 +1029,18 @@ pub fn actions_from_cli(
                     .or_else(|| config.and_then(|c| c.options.layout_dir))
                     .or_else(|| get_layout_dir(find_default_config_dir()));
 
-                let mut should_start_layout_commands_suspended = false;
-                let layout_source_name;
-                let (path_to_raw_layout, raw_layout, swap_layouts) = if let Some(layout_url) =
-                    layout_path
-                        .to_str()
-                        .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-                {
-                    should_start_layout_commands_suspended = true;
-                    layout_source_name = layout_url.to_owned();
-                    (
-                        layout_url.to_owned(),
-                        zellij_config::layout::stringified_from_url(layout_url)
-                            .map_err(|e| format!("Failed to load layout: {}", e))?,
-                        None,
-                    )
-                } else {
-                    layout_source_name = layout_path
-                        .as_path()
-                        .as_os_str()
-                        .to_string_lossy()
-                        .to_string();
+                let layout_source_name = layout_path
+                    .as_path()
+                    .as_os_str()
+                    .to_string_lossy()
+                    .to_string();
+                let (path_to_raw_layout, raw_layout, swap_layouts) =
                     zellij_config::layout::stringified_from_path_or_default(
                         Some(&layout_path),
                         layout_dir,
                     )
-                    .map_err(|e| format!("Failed to load layout: {}", e))?
-                };
-                let mut layout = zellij_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
+                    .map_err(|e| format!("Failed to load layout: {}", e))?;
+                let layout = zellij_config::layout::from_str(&raw_layout, path_to_raw_layout, swap_layouts.as_ref().map(|(f, p)| (f.as_str(), p.as_str())), cwd).map_err(|e| {
                         let stringified_error = match e {
                             ConfigError::KdlError(kdl_error) => {
                                 let error = kdl_error.add_src(layout_source_name.clone(), raw_layout);
@@ -1092,9 +1072,6 @@ pub fn actions_from_cli(
                         };
                         stringified_error
                     })?;
-                if should_start_layout_commands_suspended {
-                    layout.recursively_add_start_suspended_including_template(Some(true));
-                }
                 let mut tabs = layout.tabs();
                 if !tabs.is_empty() {
                     let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
@@ -1186,35 +1163,22 @@ pub fn actions_from_cli(
                 .or_else(|| config.and_then(|c| c.options.layout_dir))
                 .or_else(|| get_layout_dir(find_default_config_dir()));
 
-            // Load layout from string, URL, or file path
+            // Load layout from string or file path
             let layout_source_name;
             let (path_to_raw_layout, raw_layout, swap_layouts) = if let Some(raw) = layout_string {
                 layout_source_name = "layout-string".to_owned();
                 (layout_source_name.clone(), raw, None)
             } else if let Some(layout_path) = &layout {
-                if let Some(layout_url) = layout_path
-                    .to_str()
-                    .filter(|l| l.starts_with("http://") || l.starts_with("https://"))
-                {
-                    layout_source_name = layout_url.to_owned();
-                    (
-                        layout_url.to_owned(),
-                        zellij_config::layout::stringified_from_url(layout_url)
-                            .map_err(|e| format!("Failed to load layout from URL: {}", e))?,
-                        None,
-                    )
-                } else {
-                    layout_source_name = layout_path
-                        .as_path()
-                        .as_os_str()
-                        .to_string_lossy()
-                        .to_string();
-                    zellij_config::layout::stringified_from_path_or_default(
-                        Some(layout_path),
-                        layout_dir,
-                    )
-                    .map_err(|e| format!("Failed to load layout: {}", e))?
-                }
+                layout_source_name = layout_path
+                    .as_path()
+                    .as_os_str()
+                    .to_string_lossy()
+                    .to_string();
+                zellij_config::layout::stringified_from_path_or_default(
+                    Some(layout_path),
+                    layout_dir,
+                )
+                .map_err(|e| format!("Failed to load layout: {}", e))?
             } else {
                 return Err("Either layout or layout-string must be provided".to_string());
             };

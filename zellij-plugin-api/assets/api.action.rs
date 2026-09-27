@@ -35,7 +35,7 @@ pub struct PluginUserConfiguration {
 pub struct RunPluginLocationData {
     #[prost(enumeration="RunPluginLocation", tag="1")]
     pub location_type: i32,
-    #[prost(oneof="run_plugin_location_data::LocationData", tags="2, 3, 4")]
+    #[prost(oneof="run_plugin_location_data::LocationData", tags="2, 3")]
     pub location_data: ::core::option::Option<run_plugin_location_data::LocationData>,
 }
 /// Nested message and enum types in `RunPluginLocationData`.
@@ -47,8 +47,6 @@ pub mod run_plugin_location_data {
         FilePath(::prost::alloc::string::String),
         #[prost(message, tag="3")]
         ZellijTag(super::PluginTag),
-        #[prost(string, tag="4")]
-        RemoteUrl(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -965,7 +963,6 @@ pub enum RunPluginLocation {
     Unspecified = 0,
     File = 1,
     Zellij = 2,
-    Remote = 3,
 }
 impl RunPluginLocation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -977,7 +974,6 @@ impl RunPluginLocation {
             RunPluginLocation::Unspecified => "RUN_PLUGIN_LOCATION_UNSPECIFIED",
             RunPluginLocation::File => "RUN_PLUGIN_LOCATION_FILE",
             RunPluginLocation::Zellij => "RUN_PLUGIN_LOCATION_ZELLIJ",
-            RunPluginLocation::Remote => "RUN_PLUGIN_LOCATION_REMOTE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -986,7 +982,6 @@ impl RunPluginLocation {
             "RUN_PLUGIN_LOCATION_UNSPECIFIED" => Some(Self::Unspecified),
             "RUN_PLUGIN_LOCATION_FILE" => Some(Self::File),
             "RUN_PLUGIN_LOCATION_ZELLIJ" => Some(Self::Zellij),
-            "RUN_PLUGIN_LOCATION_REMOTE" => Some(Self::Remote),
             _ => None,
         }
     }

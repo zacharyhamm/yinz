@@ -24,7 +24,6 @@ thiserror = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-zellij-downloader = { workspace = true }
 notify = { workspace = true }
 # The config and layout watchers use tokio::sync::mpsc.
 tokio = { workspace = true, features = ["sync"] }

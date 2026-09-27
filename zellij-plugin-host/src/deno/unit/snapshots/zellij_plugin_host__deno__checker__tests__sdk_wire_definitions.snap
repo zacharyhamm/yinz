@@ -2630,15 +2630,17 @@ enum RunPluginLocation {
 RUN_PLUGIN_LOCATION_UNSPECIFIED = 0;
 RUN_PLUGIN_LOCATION_FILE = 1;
 RUN_PLUGIN_LOCATION_ZELLIJ = 2;
-RUN_PLUGIN_LOCATION_REMOTE = 3;
+reserved 3;
+reserved "RUN_PLUGIN_LOCATION_REMOTE";
 }
 message RunPluginLocationData {
 RunPluginLocation location_type = 1;
 oneof location_data {
 string file_path = 2;
 PluginTag zellij_tag = 3;
-string remote_url = 4;
 }
+reserved 4;
+reserved "remote_url";
 }
 message PluginTag {
 string tag = 1;

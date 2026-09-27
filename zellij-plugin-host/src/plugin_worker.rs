@@ -52,7 +52,7 @@ pub fn plugin_worker(mut worker: RunningWorker) -> Result<UnboundedSender<Messag
         UnboundedReceiver<MessageToWorker>,
     ) = unbounded_channel();
     // Guest callbacks are synchronous and can block. Keep them off the shared I/O
-    // runtime, whose four threads also drive downloads, timers and command replies.
+    // runtime, whose four threads also drive timers and command replies.
     std::thread::Builder::new()
         .name(format!("plugin-worker-{}", worker.store.data().plugin_id))
         .spawn(move || loop {

@@ -5274,7 +5274,6 @@ checksum = "66a539a9ad6d5d281510d5bd368c973d636c02dbf8a67300bfb6b950696ad7df"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",
@@ -6329,15 +6328,16 @@ dependencies = [
  "anyhow",
  "clap",
  "console 0.15.0",
+ "curl-sys",
  "dialoguer",
  "humantime",
  "insta",
  "interprocess",
- "isahc",
  "log",
  "miette 7.6.0",
  "names",
  "nix",
+ "openssl-sys",
  "rand 0.10.2",
  "regex",
  "serde",
@@ -6354,7 +6354,6 @@ dependencies = [
  "zellij-client",
  "zellij-codex",
  "zellij-config",
- "zellij-downloader",
  "zellij-firecracker-provider",
  "zellij-ipc",
  "zellij-plugin-api",
@@ -6509,7 +6508,6 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
- "zellij-downloader",
  "zellij-project-config",
  "zellij-runtime",
  "zellij-types",
@@ -6521,22 +6519,6 @@ version = "0.45.0"
 dependencies = [
  "include_dir",
  "zellij-runtime",
-]
-
-[[package]]
-name = "zellij-downloader"
-version = "0.45.0"
-dependencies = [
- "curl-sys",
- "isahc",
- "log",
- "openssl-sys",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "url",
 ]
 
 [[package]]
@@ -6571,9 +6553,11 @@ dependencies = [
  "async-trait",
  "base64",
  "crossbeam",
+ "curl-sys",
  "insta",
  "interprocess",
  "log",
+ "openssl-sys",
  "regex",
  "serde_json",
  "tempfile",
@@ -6583,7 +6567,6 @@ dependencies = [
  "zellij-client",
  "zellij-config",
  "zellij-deno-builtins",
- "zellij-downloader",
  "zellij-ipc",
  "zellij-runtime",
  "zellij-server",
@@ -6690,7 +6673,6 @@ dependencies = [
  "deno_core",
  "deno_error",
  "hegeltest",
- "highway",
  "hocus-data",
  "insta",
  "kdl",
@@ -6719,7 +6701,6 @@ dependencies = [
  "zellij-bus",
  "zellij-config",
  "zellij-deno-builtins",
- "zellij-downloader",
  "zellij-ipc",
  "zellij-key-codec",
  "zellij-plugin-api",

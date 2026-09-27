@@ -160,7 +160,6 @@ escalation on the first attempt.
 | `zellij-client/` | Input handling and terminal I/O |
 | `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
 | `zellij-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `zellij_runtime::plugin_location` |
-| `zellij-downloader/` | Plugin and layout downloads; owns the `vendored_curl` libcurl/OpenSSL build |
 | `zellij-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `zellij-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
 | `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | Config, plugin wire API, transport |

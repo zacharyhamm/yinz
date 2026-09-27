@@ -175,11 +175,7 @@ export function pluginKeys(km: Keymap, alias: string): Key[] {
           if ("Alias" in p) return p.Alias.name === alias;
           const location = p.RunPlugin.location;
           const url =
-            "Zellij" in location
-              ? `zellij:${location.Zellij}`
-              : "File" in location
-                ? `file:${location.File}`
-                : location.Remote;
+            "Zellij" in location ? `zellij:${location.Zellij}` : `file:${location.File}`;
           return url === alias;
         }),
       )

@@ -22,7 +22,6 @@ signal-hook = { workspace = true }
 uuid = { workspace = true }
 zellij-cli = { workspace = true }
 zellij-config = { workspace = true }
-zellij-downloader = { workspace = true }
 zellij-plugin-api = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-session = { workspace = true }
@@ -52,7 +51,10 @@ serde_json = { workspace = true }
 suggest = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-isahc = { workspace = true }
+# Static libcurl and OpenSSL for the isahc clients in zellij-bus and zellij-swamp, enabled by
+# `vendored_curl`. Nothing here uses them directly.
+openssl-sys = { workspace = true, optional = true }
+curl-sys = { workspace = true, optional = true }
 # Only the `#[ignore]`d e2e suite uses this, and it drags in libssh2 + OpenSSL. Cargo does not
 # allow optional dev-dependencies, so it is an optional normal dependency instead, enabled by
 # the `e2e` feature that also compiles the module using it.
@@ -126,7 +128,6 @@ members = [
     "zellij-types",
     "zellij-runtime",
     "zellij-plugin-location",
-    "zellij-downloader",
     "zellij-key-codec",
     "zellij-host-protocol",
     "zellij-tile",
@@ -183,8 +184,6 @@ zellij-storage = { path = "zellij-storage", version = "0.45.0" }
 zellij-types = { path = "zellij-types", version = "0.45.0" }
 zellij-runtime = { path = "zellij-runtime", version = "0.45.0" }
 zellij-plugin-location = { path = "zellij-plugin-location", version = "0.45.0" }
-# Default features off: the root package's `vendored_curl` feature decides how libcurl is linked.
-zellij-downloader = { path = "zellij-downloader", version = "0.45.0", default-features = false }
 zellij-key-codec = { path = "zellij-key-codec", version = "0.45.0" }
 zellij-host-protocol = { path = "zellij-host-protocol", version = "0.45.0" }
 zellij-codex = { path = "zellij-codex", version = "0.45.0" }
@@ -207,6 +206,9 @@ fuzzy-matcher = { version = "0.3.7", default-features = false }
 humantime = { version = "2.1.0", default-features = false }
 interprocess = { version = "2.2", default-features = false, features = ["tokio"] }
 isahc = { version = "1.7.2", default-features = false, features = ["http2", "text-decoding"] }
+# The static libcurl and OpenSSL that the root package's `vendored_curl` feature links into isahc.
+openssl-sys = { version = "0.9.93", default-features = false, features = ["vendored"] }
+curl-sys = { version = "0.4", default-features = false, features = ["force-system-lib-on-osx", "ssl"] }
 kdl = { version = "4.5.0", default-features = false, features = ["span"] }
 lazy_static = { version = "1.4.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["std"] }
@@ -288,7 +290,7 @@ pkg-fmt = "tgz"
 
 [features]
 default = ["vendored_curl"]
-vendored_curl = ["zellij-downloader/vendored_curl"]
+vendored_curl = ["dep:openssl-sys", "dep:curl-sys", "curl-sys/static-curl"]
 unstable = ["zellij-client/unstable"]
 # The dockerized end-to-end suite. Off by default so an ordinary `cargo test` does not build
 # libssh2 and OpenSSL for five `#[ignore]`d tests; `cargo x ci e2e` turns it on.

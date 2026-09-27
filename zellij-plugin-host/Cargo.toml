@@ -15,7 +15,6 @@ vte = { workspace = true }
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
 zellij-config = { workspace = true }
-zellij-downloader = { workspace = true }
 zellij-deno-builtins = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-key-codec = { workspace = true }
@@ -35,7 +34,6 @@ crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-
 deno_core = "=0.405.0"
 deno_ast = { version = "=0.53.3", features = ["transpiling"] }
 deno_error = "0.7"
-highway = { version = "=1.2.0", default-features = false, features = ["std"] }
 kdl = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }

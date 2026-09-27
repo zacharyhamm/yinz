@@ -171,10 +171,6 @@ pub fn get_layout_display_info(layout: &DisplayLayout) -> (String, Option<&Layou
                 let name = path.split('/').next_back().unwrap_or(path).to_string();
                 (name, Some(metadata))
             },
-            LayoutInfo::Url(url) => {
-                let name = url.split('/').next_back().unwrap_or(url).to_string();
-                (name, None)
-            },
             LayoutInfo::Stringified(_) => ("raw".to_string(), None),
         },
         DisplayLayout::Error { name, .. } => (name.clone(), None),
