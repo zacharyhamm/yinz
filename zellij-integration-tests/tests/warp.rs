@@ -1022,3 +1022,130 @@ fn a_stack_with_a_hidden_editor_restores_after_id_remapping_and_source_shutdown(
     });
     assert!(!arrived_first.is_exited() && !arrived_subject.is_exited());
 }
+
+#[test]
+fn held_warp_preserves_state_until_explicit_restart() {
+    for first_run in [true, false] {
+        for mode in ["pane", "tab", "rollback"] {
+            let whole_tab = mode != "pane";
+            let (receiver, _receiver_shell) = start_with_a_shell();
+            let layout = format!(
+                r#"layout {{
+                tab focus=true {{
+                pane
+                pane name="saved held task" command="codex" cwd="/tmp" start_suspended={first_run}
+                pane size=1 borderless=true {{ plugin location="zellij:status-bar"; }}
+                }}
+                tab {{ pane; }}
+            }}"#
+            );
+            let sender = start(Some(&layout));
+            let live = sender.expect_pty_spawn();
+            live.output(PROMPT);
+            sender.wait_until("custom layout to load", |grid| {
+                grid.contains("saved held task")
+            });
+            let list = |session: &TestSession| {
+                let (code, output) = session.run_cli_action_reporting(CliAction::ListPanes {
+                    tab: false,
+                    command: false,
+                    state: true,
+                    geometry: true,
+                    all: true,
+                    json: true,
+                });
+                assert_eq!(code, 0, "{output}");
+                serde_json::from_str::<Vec<serde_json::Value>>(&output).unwrap()
+            };
+            if !first_run {
+                let terminal = sender.expect_pty_spawn();
+                terminal.output(b"KEPT SCROLLBACK\r\n");
+                sender.wait_until("command output before exit", |grid| {
+                    grid.contains("KEPT SCROLLBACK")
+                });
+                terminal.exit(Some(17));
+            }
+            let spare = sender.expect_pty_spawn();
+            spare.output(PROMPT);
+            sender.wait_until("held command ready to transfer", |_| {
+                list(&sender)
+                    .iter()
+                    .any(|pane| pane["title"] == "saved held task" && pane["is_held"] == true)
+            });
+            let before = list(&sender)
+                .into_iter()
+                .find(|pane| pane["title"] == "saved held task")
+                .unwrap();
+            let id =
+                zellij_types::internal_ids::TerminalId::new(before["id"].as_u64().unwrap() as u32);
+            report_waiting_agent(&sender, id);
+            let before = list(&sender)
+                .into_iter()
+                .find(|pane| pane["title"] == "saved held task")
+                .unwrap();
+            if mode == "rollback" {
+                live.fail_warp(WarpFailure::UnadoptableOnce);
+            }
+            let (code, output) = if whole_tab {
+                sender.run_cli_action_reporting(CliAction::WarpTab {
+                    to_session: Some(receiver.session_name().to_owned()),
+                    from_session: None,
+                    tab_id: Some(zellij_types::internal_ids::TabId::new(0)),
+                })
+            } else {
+                warp_pane_by_id(&sender, &receiver, id)
+            };
+            if mode == "rollback" {
+                assert_ne!(code, 0, "{output}");
+                assert!(output.contains("back in this session"), "{output}");
+            } else {
+                assert_eq!(code, 0, "{mode}, first_run={first_run}: {output}");
+            }
+            let receiver = if mode == "rollback" {
+                &sender
+            } else {
+                &receiver
+            };
+            receiver.wait_until("held command to arrive", |_| {
+                list(receiver)
+                    .iter()
+                    .any(|pane| pane["title"] == "saved held task" && pane["is_held"] == true)
+            });
+            let arrived = list(receiver)
+                .into_iter()
+                .find(|pane| pane["title"] == "saved held task")
+                .unwrap();
+            for field in ["is_held", "exited", "exit_status", "agent"] {
+                assert_eq!(arrived[field], before[field], "{field}: {arrived}");
+            }
+            if !first_run {
+                receiver.wait_until("held scrollback to arrive", |grid| {
+                    grid.contains("KEPT SCROLLBACK")
+                });
+            }
+            if whole_tab {
+                let adopted = receiver.expect_adopted_pty();
+                assert!(!adopted.is_exited());
+            }
+            let focused = receiver.attach_client_with_focus(
+                TERMINAL_SIZE,
+                Some(zellij_types::data::PaneId::Terminal(
+                    zellij_types::internal_ids::TerminalId::new(
+                        arrived["id"].as_u64().unwrap() as u32
+                    ),
+                )),
+            );
+            focused.wait_until("held pane focused for explicit restart", |grid| {
+                grid.contains("saved held task")
+            });
+            focused.send_stdin(b"\r");
+            let started = receiver.expect_pty_spawn();
+            started.wait_for_command("codex");
+            assert_eq!(started.run_command().cwd, Some("/tmp".into()));
+            started.output(b"EXPLICIT RESTART\r\n");
+            focused.wait_until("explicit restart output", |grid| {
+                grid.contains("EXPLICIT RESTART")
+            });
+        }
+    }
+}

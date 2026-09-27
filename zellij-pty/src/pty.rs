@@ -825,13 +825,20 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     .context("failed to close tabs")?;
             },
             PtyInstruction::ReleaseTerminalForWarp {
+                held,
                 terminal_id,
                 to_session,
                 placement,
                 client_id,
                 deadline,
             } => {
-                let released = release_pane_for_warp(&mut pty, terminal_id, &to_session, deadline);
+                let released = if let Some(held) = held {
+                    pty.drain_held_reader_for_warp(terminal_id, deadline)
+                        .map(|_| ReleasedPane::Held(held))
+                        .map_err(|e| format!("{e:#}"))
+                } else {
+                    release_pane_for_warp(&mut pty, terminal_id, &to_session, deadline)
+                };
                 // Screen hears about this either way: it has a pane sitting in
                 // limbo and has to either send it on or put it back.
                 let _ = pty
@@ -897,11 +904,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let _ = response_channel.send(result);
             },
             PtyInstruction::ReleaseTerminalsForWarp {
+                held,
                 tab_index,
                 terminal_ids,
                 deadline,
             } => {
-                let released = release_tab_for_warp(&mut pty, terminal_ids, deadline);
+                let released =
+                    release_tab_with_held_for_warp(&mut pty, terminal_ids, held, deadline);
                 // Screen hears about this either way: it has a tab full of panes
                 // in limbo and has to either send them on or put them back.
                 let _ = pty
@@ -2090,15 +2099,30 @@ impl Pty {
                 if let Some(exit_status) = terminal.child_exit_status {
                     let pane_id = PaneId::Terminal(terminal.terminal_id);
                     let hold_on_close = terminal.cmd.hold_on_close;
-                    let instruction = terminal_exit_instruction(
-                        pane_id,
-                        exit_status,
-                        terminal.cmd,
-                        hold_on_close,
-                    );
+                    let instruction = if let Some(held) = &terminal.held {
+                        ScreenInstruction::RestoreHeldPane(
+                            pane_id,
+                            zellij_types::data::HeldTerminal {
+                                command: terminal.cmd,
+                                ..held.clone()
+                            },
+                        )
+                    } else {
+                        terminal_exit_instruction(pane_id, exit_status, terminal.cmd, hold_on_close)
+                    };
                     self.bus
                         .senders
                         .send_to_screen(instruction)
+                        .with_context(err_context)?;
+                }
+                if terminal.held.is_some() {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::SetPaneAgent(
+                            PaneId::Terminal(terminal.terminal_id),
+                            terminal.agent,
+                            None,
+                        ))
                         .with_context(err_context)?;
                 }
             }
@@ -2745,6 +2769,33 @@ impl Pty {
         Ok(())
     }
 
+    fn check_held_can_be_warped(&self, id: TerminalId) -> Result<()> {
+        if self.reruns.contains_key(&id) || self.pending_remote_spawns.contains(&id) {
+            return Err(anyhow!(
+                "terminal_{id} is restarting; retry after it has started"
+            ));
+        }
+        Ok(())
+    }
+
+    /// An exited child's reader may still have final output for Screen. Join it
+    /// without cancelling; on timeout, keep the handle and let a later warp retry.
+    fn drain_held_reader_for_warp(&mut self, id: TerminalId, deadline: Instant) -> Result<()> {
+        let err_context = || format!("failed to drain terminal_{id} for transfer");
+        self.check_held_can_be_warped(id)
+            .with_context(err_context)?;
+        refuse_if_nobody_is_waiting(deadline).with_context(err_context)?;
+        if let Some(handle) = self.task_handles.get_mut(&id) {
+            let joined = async_runtime()
+                .block_on(async { tokio::time::timeout_at(deadline.into(), handle).await })
+                .with_context(|| format!("terminal_{id} output is still draining; retry"))?;
+            self.task_handles.remove(&id);
+            joined
+                .with_context(|| format!("terminal_{id} output reader failed during transfer"))?;
+        }
+        Ok(())
+    }
+
     /// Whether this pane could be released for a warp, without releasing it.
     ///
     /// Separate from the release so a whole tab can be asked before any of it is
@@ -2860,6 +2911,34 @@ impl Pty {
     /// calls is identical, which is the point — the pane that arrives is an
     /// ordinary pane either way.
     pub(crate) fn adopt_terminal(&mut self, pane: &WarpedPane) -> Result<AdoptedPane> {
+        if let Some(held) = &pane.held {
+            if pane.remote.is_some()
+                || !pane.control_socket.as_os_str().is_empty()
+                || pane.group.is_some()
+            {
+                return Err(anyhow!("held terminal also specifies a process handoff"));
+            }
+            let terminal_id = self.reserve_terminal_id()?;
+            let mut cmd = held.command.clone();
+            cmd.originating_plugin = None;
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::UpdatePaneHost(
+                    terminal_id,
+                    cmd.display_host(),
+                    cmd.target
+                        .firecracker_worktree()
+                        .map(|path| path.to_path_buf()),
+                ))
+                .context("failed to report held terminal host")
+                .non_fatal();
+            return Ok(AdoptedPane {
+                terminal_id,
+                cmd,
+                buffered: vec![],
+                child_exit_status: (!held.first_run).then_some(held.exit_status),
+            });
+        }
         let err_context = || match &pane.remote {
             Some(remote) => format!(
                 "failed to adopt the pane running on {} as {}",
@@ -3003,7 +3082,16 @@ impl Pty {
                 .chain(payload.floating_panes.iter())
                 .map(|pane| pane.host_id.to_string())
                 .collect();
-            for adopted in tiled.iter().chain(floating.iter()) {
+            for (adopted, pane) in tiled
+                .iter()
+                .zip(&payload.tiled_panes)
+                .chain(floating.iter().zip(&payload.floating_panes))
+            {
+                if pane.held.is_some() {
+                    self.close_pane(PaneId::Terminal(adopted.terminal_id))
+                        .non_fatal();
+                    continue;
+                }
                 if let Err(e) = self.release_terminal_for_warp(
                     adopted.terminal_id,
                     Instant::now() + GIVE_BACK_BUDGET,
@@ -3988,6 +4076,71 @@ fn wait_for_reader_to_stop(terminal_id: TerminalId, handle: JoinHandle<()>) {
              being cancelled; continuing teardown anyway"
         );
     }
+}
+
+fn release_tab_with_held_for_warp(
+    pty: &mut Pty,
+    mut terminal_ids: Vec<TerminalId>,
+    held: HashMap<TerminalId, zellij_types::data::HeldTerminal>,
+    deadline: Instant,
+) -> Vec<(TerminalId, std::result::Result<ReleasedPane, String>)> {
+    // Revalidate before releasing any live terminal. Screen has frozen restart input
+    // for these held panes; asynchronous spawns must also have finished.
+    let refusal = terminal_ids
+        .iter()
+        .find_map(|id| {
+            let check = if held.contains_key(id) {
+                pty.check_held_can_be_warped(*id)
+            } else {
+                pty.check_terminal_can_be_warped(*id)
+            };
+            check
+                .err()
+                .map(|e| (Some(*id), format!("terminal_{id} cannot be moved: {e:#}")))
+        })
+        .or_else(|| {
+            refuse_if_nobody_is_waiting(deadline)
+                .err()
+                .map(|e| (None, format!("{e:#}")))
+        })
+        .or_else(|| {
+            terminal_ids
+                .iter()
+                .filter(|id| held.contains_key(id))
+                .find_map(|id| {
+                    pty.drain_held_reader_for_warp(*id, deadline)
+                        .err()
+                        .map(|e| (Some(*id), format!("{e:#}")))
+                })
+        });
+    if let Some((culprit, reason)) = refusal {
+        // Screen enriches the first refusal with that pane's title and state.
+        terminal_ids.sort_by_key(|id| Some(*id) != culprit);
+        return terminal_ids
+            .into_iter()
+            .map(|id| (id, Err(reason.clone())))
+            .collect();
+    }
+    let live = terminal_ids
+        .iter()
+        .filter(|id| !held.contains_key(id))
+        .copied()
+        .collect();
+    let mut released: HashMap<_, _> = release_tab_for_warp(pty, live, deadline)
+        .into_iter()
+        .collect();
+    terminal_ids
+        .into_iter()
+        .map(|id| {
+            let result = match held.get(&id) {
+                Some(held) => Ok(ReleasedPane::Held(held.clone())),
+                None => released
+                    .remove(&id)
+                    .unwrap_or_else(|| Err(format!("terminal_{id} was not released"))),
+            };
+            (id, result)
+        })
+        .collect()
 }
 
 /// Give up a whole tab's supervisors for a warp, or say why not.

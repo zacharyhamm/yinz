@@ -204,6 +204,7 @@ pub struct ReleasedRemotePane {
 /// assuming a local supervisor.
 #[derive(Debug, Clone)]
 pub enum ReleasedPane {
+    Held(zellij_types::data::HeldTerminal),
     Local(ReleasedPtyHost),
     Remote(ReleasedRemotePane),
 }
@@ -215,6 +216,7 @@ impl ReleasedPane {
     /// lives with the type rather than at either call site.
     pub fn recovery_id(&self) -> String {
         match self {
+            ReleasedPane::Held(_) => "held terminal".into(),
             ReleasedPane::Local(local) => local.host_id.to_string(),
             ReleasedPane::Remote(remote) => format!("{}:{}", remote.host, remote.pane_token),
         }
@@ -223,6 +225,7 @@ impl ReleasedPane {
     /// The command that gets this pane back.
     pub fn recovery_command(&self) -> String {
         match self {
+            ReleasedPane::Held(_) => String::new(),
             ReleasedPane::Local(local) => recovery_command(&local.host_id, None),
             ReleasedPane::Remote(remote) => recovery_command(
                 &SupervisorId::default(),

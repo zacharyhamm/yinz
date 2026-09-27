@@ -51,6 +51,103 @@ pub(super) const PANE_WARP_SCREEN_RESERVE: std::time::Duration =
     std::time::Duration::from_millis(500);
 
 impl Screen {
+    pub(super) fn restore_held_pane(
+        &mut self,
+        id: PaneId,
+        held: &zellij_types::data::HeldTerminal,
+    ) -> bool {
+        for tab in self.tabs.values_mut() {
+            if let Some(pane) = tab.get_pane_with_id_mut(id) {
+                pane.hold(held.exit_status, held.first_run, held.command.clone());
+                return true;
+            }
+        }
+        false
+    }
+
+    // Screen owns held state. Freeze restart input until the release reply is processed;
+    // a restart already accepted by Screen is no longer held and takes the supervisor path.
+    fn prepare_held_warp(
+        &mut self,
+        ids: &[TerminalId],
+        supported: bool,
+    ) -> Result<HashMap<TerminalId, zellij_types::data::HeldTerminal>, String> {
+        let mut held = HashMap::new();
+        for id in ids {
+            if let Some(pane) = self
+                .tabs
+                .values()
+                .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(*id)))
+            {
+                if let Some(state) = pane.held_for_warp() {
+                    if !supported {
+                        return Err(format!("terminal_{id} ({:?}, held): destination does not support held terminal transfers", pane.current_title()));
+                    }
+                    held.insert(*id, state);
+                }
+            }
+        }
+        for id in held.keys() {
+            for tab in self.tabs.values_mut() {
+                if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Terminal(*id)) {
+                    pane.set_warp_pending(true);
+                }
+            }
+        }
+        Ok(held)
+    }
+
+    fn warp_failure(&self, id: TerminalId, reason: String) -> String {
+        let pane = self
+            .tabs
+            .values()
+            .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(id)));
+        match pane {
+            Some(pane) => format!(
+                "terminal_{id} ({:?}, {}): {reason}",
+                pane.current_title(),
+                if pane.is_held() { "held" } else { "live" }
+            ),
+            None => format!("terminal_{id}: {reason}"),
+        }
+    }
+
+    fn validate_held_release(&self, id: TerminalId, released: &ReleasedPane) -> Result<(), String> {
+        if let ReleasedPane::Held(held) = released {
+            let current = self
+                .tabs
+                .values()
+                .find_map(|tab| tab.get_pane_with_id(PaneId::Terminal(id)))
+                .and_then(|pane| pane.held_for_warp());
+            if current.as_ref() != Some(held) {
+                return Err(
+                    self.warp_failure(id, "held state changed during transfer; retry".into())
+                );
+            }
+        }
+        Ok(())
+    }
+
+    // Run after transfer handling: only surviving held panes can resume here. Live panes
+    // keep their queued replacements until normal exit handling fires their hooks.
+    fn finish_held_warp(&mut self, ids: impl IntoIterator<Item = TerminalId>) {
+        for id in ids {
+            let pane_id = PaneId::Terminal(id);
+            let pending = self.tab_containing_pane_mut(pane_id).and_then(|tab| {
+                if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                    pane.set_warp_pending(false);
+                    if pane.is_held() {
+                        return tab.take_pending_respawn(pane_id);
+                    }
+                }
+                None
+            });
+            if let Some((command, keep_scrollback)) = pending {
+                self.run_command_in_pane_with_id(id, command, keep_scrollback);
+            }
+        }
+    }
+
     /// The pty thread has released a tab's panes for a warp (a whole tab, or a companion group
     /// that was asked for as one): hand them to the caller still waiting, or strand them
     /// visibly if nobody is.
@@ -59,6 +156,7 @@ impl Screen {
         tab_index: TabId,
         released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
     ) {
+        let terminal_ids: Vec<_> = released.iter().map(|(id, _)| *id).collect();
         // Asked before the tab is taken apart rather than after.
         // `take_released_tab_for_warp` is what closes the tab, so a
         // caller found to be gone on the far side of it has already
@@ -77,6 +175,7 @@ impl Screen {
                     .take_released_tab_for_warp(tab_index, released, prepared)
                     .map(|group| {
                         Box::new(zellij_types::data::WarpedPane {
+                            held: None,
                             group: Some(group),
                             ..Default::default()
                         })
@@ -92,6 +191,9 @@ impl Screen {
             } else {
                 for (terminal_id, released) in released {
                     if let Ok(released) = released {
+                        if matches!(released, ReleasedPane::Held(_)) {
+                            continue;
+                        }
                         self.bus
                             .senders
                             .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
@@ -103,6 +205,7 @@ impl Screen {
                     }
                 }
             }
+            self.finish_held_warp(terminal_ids);
             return;
         }
         let still_waiting = match self.pending_tab_warps.remove(&tab_index) {
@@ -143,6 +246,9 @@ impl Screen {
             );
             for (terminal_id, released) in released {
                 if let Ok(released) = released {
+                    if matches!(released, ReleasedPane::Held(_)) {
+                        continue;
+                    }
                     self.bus
                         .senders
                         .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
@@ -155,6 +261,7 @@ impl Screen {
                 }
             }
         }
+        self.finish_held_warp(terminal_ids);
     }
 
     /// Starts a tab warp: refuses it outright if it cannot proceed, otherwise asks the pty thread
@@ -163,6 +270,7 @@ impl Screen {
     pub(super) fn warp_tab(
         &mut self,
         supports_companions: bool,
+        supports_held: bool,
         tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,
@@ -199,11 +307,19 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(TAB_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                let held = match self.prepare_held_warp(&terminal_ids, supports_held) {
+                    Ok(held) => held,
+                    Err(reason) => {
+                        let _ = response_channel.send(Err(reason));
+                        return Ok(());
+                    },
+                };
                 self.pending_tab_warps
                     .insert(tab_index, (response_channel, prepared, deadline));
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalsForWarp {
+                        held,
                         tab_index,
                         terminal_ids,
                         deadline,
@@ -262,17 +378,20 @@ impl Screen {
              still running and can be recovered with `zellij pty-host adopt <id>`"
             );
             if let Ok(released) = released {
-                self.bus
-                    .senders
-                    .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
-                        terminal_id,
-                        why: "this pane was moved to another session, but nothing took it"
-                            .to_owned(),
-                        recovery: Some(released.recovery_command()),
-                    })
-                    .non_fatal();
+                if !matches!(released, ReleasedPane::Held(_)) {
+                    self.bus
+                        .senders
+                        .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                            terminal_id,
+                            why: "this pane was moved to another session, but nothing took it"
+                                .to_owned(),
+                            recovery: Some(released.recovery_command()),
+                        })
+                        .non_fatal();
+                }
             }
         }
+        self.finish_held_warp([terminal_id]);
     }
 
     /// Starts a pane warp: refuses it outright if it cannot proceed, otherwise asks the pty
@@ -281,6 +400,7 @@ impl Screen {
     pub(super) fn warp_pane(
         &mut self,
         supports_companions: bool,
+        supports_held: bool,
         pane_id: Option<PaneId>,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -309,11 +429,19 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(TAB_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                let held = match self.prepare_held_warp(&terminal_ids, supports_held) {
+                    Ok(held) => held,
+                    Err(reason) => {
+                        let _ = response_channel.send(Err(reason));
+                        return Ok(());
+                    },
+                };
                 self.pending_pane_groups
                     .insert(tab_index, (response_channel, prepared, deadline));
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalsForWarp {
+                        held,
                         tab_index,
                         terminal_ids,
                         deadline,
@@ -340,11 +468,19 @@ impl Screen {
                 let deadline = deadline
                     .checked_sub(PANE_WARP_SCREEN_RESERVE)
                     .unwrap_or_else(Instant::now);
+                let held = match self.prepare_held_warp(&[terminal_id], supports_held) {
+                    Ok(held) => held,
+                    Err(reason) => {
+                        let _ = response_channel.send(Err(reason));
+                        return Ok(());
+                    },
+                };
                 self.pending_warps
                     .insert(terminal_id, (response_channel, deadline));
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalForWarp {
+                        held: held.get(&terminal_id).cloned(),
                         terminal_id,
                         to_session,
                         placement,
@@ -686,6 +822,10 @@ impl Screen {
     /// definition.
     fn warp_address(released: ReleasedPane) -> Result<WarpAddress, String> {
         match released {
+            ReleasedPane::Held(held) => Ok(WarpAddress {
+                held: Some(held),
+                ..Default::default()
+            }),
             ReleasedPane::Local(local) => {
                 let Some(control_socket) = local.control_socket else {
                     // No address to hand out. The pty thread refuses this before
@@ -700,12 +840,14 @@ impl Screen {
                     ));
                 };
                 Ok(WarpAddress {
+                    held: None,
                     host_id: local.host_id,
                     control_socket,
                     remote: None,
                 })
             },
             ReleasedPane::Remote(remote) => Ok(WarpAddress {
+                held: None,
                 // Both empty on purpose rather than filled with something
                 // plausible: they name a local supervisor socket, and reading
                 // them for a remote pane is a mistake `remote` being `Some` is
@@ -729,7 +871,9 @@ impl Screen {
         terminal_id: TerminalId,
         released: Result<ReleasedPane, String>,
     ) -> Result<Box<WarpedPane>, String> {
-        let address = Self::warp_address(released?)?;
+        let released = released.map_err(|reason| self.warp_failure(terminal_id, reason))?;
+        self.validate_held_release(terminal_id, &released)?;
+        let address = Self::warp_address(released)?;
         let pane_id = PaneId::Terminal(terminal_id);
         let scrollback_lines = self.scrollback_lines_to_serialize;
         let tab = self
@@ -743,6 +887,7 @@ impl Screen {
             .get_pane_with_id(pane_id)
             .ok_or_else(|| "warp pane vanished".to_owned())?;
         let payload = Box::new(WarpedPane {
+            held: address.held,
             group: None,
             host_id: address.host_id,
             control_socket: address.control_socket,
@@ -757,6 +902,12 @@ impl Screen {
         });
         let removed = tab.extract_warp_panes(&[pane_id]);
         for pane in removed {
+            if payload.held.is_some() {
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ClosePane(pane.pid(), None))
+                    .non_fatal();
+            }
             self.notify_warp_departure(pane.pid());
         }
         self.clear_nested_guest(pane_id);
@@ -947,6 +1098,36 @@ impl Screen {
         released: Vec<(TerminalId, Result<ReleasedPane, String>)>,
         prepared: PreparedTabWarp,
     ) -> Result<Box<WarpedTab>, String> {
+        // PTY release failures already strand every detached peer. Check those first
+        // so a concurrent held-state change does not send duplicate recovery notices.
+        for (terminal_id, result) in &released {
+            if let Err(reason) = result {
+                return Err(self.warp_failure(*terminal_id, reason.clone()));
+            }
+        }
+        for (terminal_id, result) in &released {
+            if let Ok(pane) = result {
+                if let Err(reason) = self.validate_held_release(*terminal_id, pane) {
+                    // Keep every release address until validation finishes: live peers
+                    // before and after this held pane have already been detached.
+                    for (terminal_id, result) in &released {
+                        if let Ok(pane @ (ReleasedPane::Local(_) | ReleasedPane::Remote(_))) =
+                            result
+                        {
+                            self.bus
+                                .senders
+                                .send_to_pty(PtyInstruction::StrandPaneAfterWarp {
+                                    terminal_id: *terminal_id,
+                                    why: reason.clone(),
+                                    recovery: Some(pane.recovery_command()),
+                                })
+                                .non_fatal();
+                        }
+                    }
+                    return Err(reason);
+                }
+            }
+        }
         let mut addresses: HashMap<TerminalId, WarpAddress> = HashMap::new();
         for (terminal_id, released) in released {
             // The refusal `warp_address` can produce is worded for one pane, and
@@ -955,7 +1136,8 @@ impl Screen {
             // which case that thread has already told every pane in the tab what
             // happened to it — this is the reason travelling back to the caller,
             // not the pane's only account of itself.
-            addresses.insert(terminal_id, Self::warp_address(released?)?);
+            let released = released.map_err(|reason| self.warp_failure(terminal_id, reason))?;
+            addresses.insert(terminal_id, Self::warp_address(released)?);
         }
 
         // The budget is shared out only now, because only now is it known how
@@ -976,6 +1158,7 @@ impl Screen {
             }
             .unwrap_or_default();
             WarpedPane {
+                held: address.held,
                 group: None,
                 host_id: address.host_id,
                 control_socket: address.control_socket,
@@ -1010,6 +1193,13 @@ impl Screen {
         let removed = tab.extract_warp_panes(&prepared.slots);
         for pane in removed {
             let id = pane.pid();
+            if matches!(id, PaneId::Terminal(t) if addresses.get(&t).is_some_and(|a| a.held.is_some()))
+            {
+                self.bus
+                    .senders
+                    .send_to_pty(PtyInstruction::ClosePane(id, None))
+                    .non_fatal();
+            }
             self.notify_warp_departure(id);
             if let PaneId::Plugin(plugin_id) = id {
                 self.drop_quit_notice(plugin_id);
@@ -1097,7 +1287,7 @@ impl Screen {
     pub(super) fn place_adopted_pane(
         &mut self,
         terminal_id: TerminalId,
-        payload: WarpedPane,
+        mut payload: WarpedPane,
         placement: WarpPlacement,
         client_id: ClientId,
         cmd: RunCommand,
@@ -1111,7 +1301,12 @@ impl Screen {
         // status, rather than pretending to run — but only if it would have been
         // held in the session it came from. Otherwise it is closed below, exactly
         // as the supervisor's replayed exit would close it through `quit_cb`.
-        let hold_for_command = held_command_on_exit(&cmd, child_exit_status);
+        // An exited held pane is restored below. Creating it as first-run would install
+        // a startup banner that overwrites its transferred scrollback on resize.
+        let hold_for_command = match &payload.held {
+            Some(held) => held.first_run.then(|| cmd.clone()),
+            None => held_command_on_exit(&cmd, child_exit_status),
+        };
         let focus_client = match placement {
             WarpPlacement::FocusedTab => self.connected_client_to_act_for(client_id),
             _ => None,
@@ -1172,12 +1367,6 @@ impl Screen {
                 .with_context(err_context)?;
         }
 
-        if let Some(agent) = payload.agent {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
-                .with_context(err_context)?;
-        }
         if let Some(caption) = payload.caption {
             self.bus
                 .senders
@@ -1205,12 +1394,38 @@ impl Screen {
                 .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, buffered))
                 .with_context(err_context)?;
         }
+        // A supervisor's replayed exit must override the agent's pre-handoff state.
+        // Already-held panes instead restore their metadata after held state below.
+        if payload.held.is_none() {
+            if let Some(agent) = payload.agent.take() {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
+                    .with_context(err_context)?;
+            }
+        }
         if let Some(exit_status) = child_exit_status {
             let hold_on_close = cmd.hold_on_close;
-            let instruction = terminal_exit_instruction(pane_id, exit_status, cmd, hold_on_close);
+            let instruction = if let Some(held) = payload.held {
+                ScreenInstruction::RestoreHeldPane(
+                    pane_id,
+                    zellij_types::data::HeldTerminal {
+                        command: cmd,
+                        ..held
+                    },
+                )
+            } else {
+                terminal_exit_instruction(pane_id, exit_status, cmd, hold_on_close)
+            };
             self.bus
                 .senders
                 .send_to_screen(instruction)
+                .with_context(err_context)?;
+        }
+        if let Some(agent) = payload.agent {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
                 .with_context(err_context)?;
         }
         Ok(())
@@ -1371,6 +1586,7 @@ impl Screen {
                 let mut replay = pane.contents.map(String::into_bytes).unwrap_or_default();
                 replay.extend(adopted.buffered);
                 AdoptedTabTerminal {
+                    held: pane.held,
                     terminal_id: adopted.terminal_id,
                     cmd: adopted.cmd,
                     agent: pane.agent,

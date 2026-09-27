@@ -158,6 +158,7 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
     let adopt_pane = |cmd| ProtoAction {
         action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            held: None,
             group: None,
             host_id: String::new(),
             control_socket: String::new(),
@@ -1029,6 +1030,42 @@ fn test_client_messages() {
         tab_number_to_focus: None,
         pane_to_focus: None,
     });
+    for first_run in [true, false] {
+        let pane = WarpedPane {
+            held: Some(zellij_types::data::HeldTerminal {
+                command: zellij_types::input::command::RunCommand {
+                    command: "/usr/bin/true".into(),
+                    cwd: Some("/tmp".into()),
+                    ..Default::default()
+                },
+                first_run,
+                exit_status: (!first_run).then_some(17),
+            }),
+            title: Some("saved task".into()),
+            contents: Some("saved scrollback".into()),
+            ..Default::default()
+        };
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::AdoptPane {
+                payload: Box::new(pane.clone()),
+                placement: WarpPlacement::FocusedTab
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+        test_client_roundtrip!(ClientToServerMsg::Action {
+            action: Action::AdoptTab {
+                payload: Box::new(WarpedTab {
+                    tiled_panes: vec![pane],
+                    ..Default::default()
+                })
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
+    }
     // --- Action ---
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::Quit,
@@ -1075,6 +1112,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                held: None,
                 group: None,
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
@@ -1110,6 +1148,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                held: None,
                 group: None,
                 host_id: SupervisorId::new(String::new()),
                 control_socket: PathBuf::new(),
@@ -1145,6 +1184,7 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                held: None,
                 group: None,
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                 control_socket: PathBuf::from("/run/user/1000/zellij/pty/a3f1c2d4e5b6.sock"),
@@ -1239,6 +1279,7 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
+                        held: None,
                         group: None,
                         host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
                         control_socket: PathBuf::from(
@@ -1256,6 +1297,7 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
+                        held: None,
                         group: None,
                         host_id: SupervisorId::new(String::new()),
                         control_socket: PathBuf::new(),
@@ -1282,6 +1324,7 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
+                    held: None,
                     group: None,
                     host_id: SupervisorId::new("c5f3e4d6a7b8".to_owned()),
                     control_socket: PathBuf::from("/run/user/1000/zellij/pty/c5f3e4d6a7b8.sock"),
@@ -4422,7 +4465,12 @@ fn test_server_messages() {
     });
     test_server_roundtrip!(ServerToClientMsg::UnblockInputThread);
     test_server_roundtrip!(ServerToClientMsg::Connected {
-        warp_companions: true
+        warp_companions: true,
+        warp_held_terminals: false,
+    });
+    test_server_roundtrip!(ServerToClientMsg::Connected {
+        warp_companions: true,
+        warp_held_terminals: true
     });
     test_server_roundtrip!(ServerToClientMsg::QueryTerminalSize);
     test_server_roundtrip!(ServerToClientMsg::ConfigFileUpdated);
@@ -4980,6 +5028,7 @@ fn warp_companion_relationships_roundtrip_and_reject_malformed_groups() {
     let message = |payload| ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                held: None,
                 group: Some(Box::new(payload)),
                 ..Default::default()
             }),
@@ -5098,4 +5147,14 @@ fn pane_tabs_layout_decoding_validates_nested_and_floating_children() {
         wire::FloatingPaneLayout::from(zellij_types::input::layout::FloatingPaneLayout::default());
     floating.pane_tabs_json = Some(json.into());
     assert!(zellij_types::input::layout::FloatingPaneLayout::try_from(floating).is_ok());
+}
+
+#[test]
+fn warp_held_capability_defaults_to_false_for_older_destinations() {
+    use crate::client_server_contract::client_server_contract::ConnectedMsg;
+    use prost::Message;
+    // An older server sends only field 1 (companion support).
+    let connected = ConnectedMsg::decode(&b"\x08\x01"[..]).unwrap();
+    assert!(connected.warp_companions);
+    assert!(!connected.warp_held_terminals);
 }

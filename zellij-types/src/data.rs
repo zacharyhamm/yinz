@@ -2188,6 +2188,9 @@ pub enum WarpPlacement {
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    /// A terminal waiting for explicit user action; no process is started on arrival.
+    #[serde(default)]
+    pub held: Option<HeldTerminal>,
     /// A visible pane and its companions, using the same handoff as a tab.
     #[serde(default)]
     pub group: Option<Box<WarpedTab>>,
@@ -2218,6 +2221,14 @@ pub struct WarpedPane {
     /// The agent record belongs to the running process, so it moves with it.
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+}
+
+/// Saved state for a terminal that is not running.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct HeldTerminal {
+    pub command: RunCommand,
+    pub first_run: bool,
+    pub exit_status: Option<i32>,
 }
 
 /// How to pick a remote pane back up from the broker that has been holding it.

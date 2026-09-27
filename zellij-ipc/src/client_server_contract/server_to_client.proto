@@ -43,6 +43,7 @@ message ExitMsg {
 
 message ConnectedMsg {
   bool warp_companions = 1;
+  bool warp_held_terminals = 2;
   // Empty message
 }
 

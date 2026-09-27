@@ -21,6 +21,7 @@ tokio = { workspace = true }
 [dev-dependencies]
 zellij-ipc = { workspace = true }
 zellij-storage = { workspace = true }
+zellij-test-support = { path = "../zellij-test-support" }
 async-trait = { version = "0.1.50", default-features = false }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
 interprocess = { workspace = true }

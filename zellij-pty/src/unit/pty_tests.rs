@@ -3286,6 +3286,7 @@ fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
     let process = zellij_types::internal_ids::ProcessId::new(4242);
     let adopted = pty
         .adopt_terminal(&WarpedPane {
+            held: None,
             group: None,
             host_id: SupervisorId::new("supervisor"),
             control_socket: PathBuf::from("/unused"),
@@ -3847,4 +3848,312 @@ fn a_layout_override_and_a_new_tab_abandon_the_same_panes() {
     let override_layout = run(true);
     assert_eq!(new_tab, override_layout);
     assert_eq!(new_tab.0, vec![TerminalId::new(0), TerminalId::new(1)]);
+}
+
+#[test]
+fn warp_held_release_drains_final_output_before_acknowledging() {
+    for batch in [false, true] {
+        let mock = MockOsApi::new();
+        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock.clone());
+        let live = TerminalId::new(3);
+        let held_id = TerminalId::new(8);
+        set_warpable_terminal(&mut pty, live);
+        let held = zellij_types::data::HeldTerminal {
+            command: RunCommand::default(),
+            first_run: false,
+            exit_status: Some(0),
+        };
+        let (ready_tx, ready_rx) = crossbeam::channel::bounded(1);
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let senders = pty.bus.senders.clone();
+        let reader = async_runtime().spawn(async move {
+            ready_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            senders
+                .send_to_screen(ScreenInstruction::PtyBytes(
+                    held_id,
+                    b"final output".to_vec(),
+                ))
+                .unwrap();
+        });
+        let reader_abort = reader.abort_handle();
+        pty.task_handles.insert(held_id, reader);
+        ready_rx
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+
+        let (to_pty, pty_rx) = channels::unbounded();
+        let to_pty = SenderWithContext::new(to_pty);
+        let mut bus = Bus::new(
+            vec![pty_rx],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            pty.bus.os_input.take(),
+        );
+        bus.senders = pty.bus.senders.clone();
+        pty.bus = bus;
+        let thread = std::thread::spawn(move || pty_thread_main(pty, Box::default()).unwrap());
+        let request = |deadline| {
+            if batch {
+                PtyInstruction::ReleaseTerminalsForWarp {
+                    tab_index: TabId::new(0),
+                    terminal_ids: vec![live, held_id],
+                    held: HashMap::from([(held_id, held.clone())]),
+                    deadline,
+                }
+            } else {
+                PtyInstruction::ReleaseTerminalForWarp {
+                    terminal_id: held_id,
+                    held: Some(held.clone()),
+                    to_session: "elsewhere".into(),
+                    placement: zellij_types::data::WarpPlacement::FocusedTab,
+                    client_id: CLIENT_1,
+                    deadline,
+                }
+            }
+        };
+        // Keep the reader gated through two attempts. A second refusal proves the
+        // first timeout retained its handle rather than detaching the unfinished task.
+        for _ in 0..2 {
+            to_pty
+                .send(request(Instant::now() + Duration::from_secs(1)))
+                .unwrap();
+            let (reply, _) = screen_rx
+                .recv_timeout(zellij_test_support::default_timeout())
+                .unwrap();
+            let results = match reply {
+                ScreenInstruction::PaneReleasedForWarp { released, .. } => {
+                    vec![(held_id, released)]
+                },
+                ScreenInstruction::TabReleasedForWarp { released, .. } => released,
+                other => panic!("unexpected instruction: {other:?}"),
+            };
+            assert!(results
+                .iter()
+                .all(|(_, r)| r.as_ref().unwrap_err().contains("output is still draining")));
+            assert!(
+                !reader_abort.is_finished(),
+                "timeout must not abort the reader"
+            );
+            assert!(
+                mock.release_attempts().is_empty(),
+                "live peers must remain attached"
+            );
+        }
+        to_pty.send(request(test_warp_deadline())).unwrap();
+        finish_tx.send(()).unwrap();
+        let (bytes, _) = screen_rx
+            .recv_timeout(zellij_test_support::default_timeout())
+            .unwrap();
+        assert!(matches!(bytes, ScreenInstruction::PtyBytes(id, bytes)
+            if id == held_id && bytes == b"final output"));
+        let reply = loop {
+            let (instruction, _) = screen_rx
+                .recv_timeout(zellij_test_support::default_timeout())
+                .unwrap();
+            if !matches!(instruction, ScreenInstruction::UpdatePaneHost(..)) {
+                break instruction;
+            }
+        };
+        match reply {
+            ScreenInstruction::PaneReleasedForWarp { released, .. } => assert!(released.is_ok()),
+            ScreenInstruction::TabReleasedForWarp { released, .. } => {
+                assert!(released.iter().all(|(_, r)| r.is_ok()));
+            },
+            other => panic!("unexpected instruction: {other:?}"),
+        }
+        assert!(reader_abort.is_finished());
+        assert_eq!(
+            mock.release_attempts(),
+            if batch { vec![live] } else { vec![] }
+        );
+        to_pty.send(PtyInstruction::Exit).unwrap();
+        thread.join().unwrap();
+    }
+}
+
+#[test]
+fn warp_held_reader_joins_remove_completed_handles_and_refuse_failed_tasks() {
+    for failure in ["none", "cancelled", "panicked"] {
+        let mock = MockOsApi::new();
+        let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+        let held_id = TerminalId::new(8);
+        let reader = async_runtime().spawn(async move {
+            match failure {
+                "cancelled" => std::future::pending::<()>().await,
+                "panicked" => panic!("injected reader failure"),
+                _ => {},
+            }
+        });
+        if failure == "cancelled" {
+            reader.abort();
+        }
+        pty.task_handles.insert(held_id, reader);
+        let result = pty.drain_held_reader_for_warp(held_id, test_warp_deadline());
+        if failure == "none" {
+            result.unwrap();
+            pty.drain_held_reader_for_warp(held_id, test_warp_deadline())
+                .unwrap();
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("output reader failed"));
+        }
+        assert!(!pty.task_handles.contains_key(&held_id));
+        assert!(mock.release_attempts().is_empty());
+    }
+}
+
+#[test]
+fn warp_held_terminals_need_no_supervisor_and_do_not_spawn_on_adoption() {
+    use zellij_types::data::HeldTerminal;
+    for first_run in [true, false] {
+        for (target, expected_host, expected_worktree) in [
+            (PaneTarget::Local, None, None),
+            (
+                PaneTarget::ssh("build-box").unwrap(),
+                Some("build-box"),
+                None,
+            ),
+            (
+                PaneTarget::firecracker("vm", None, Some(std::path::Path::new("/worktree")))
+                    .unwrap(),
+                Some("firecracker:vm"),
+                Some(PathBuf::from("/worktree")),
+            ),
+            (
+                PaneTarget::firecracker("vm", None, None).unwrap(),
+                Some("firecracker:vm"),
+                None,
+            ),
+        ] {
+            let mock = MockOsApi::new();
+            let (mut pty, _, screen) = make_pty_with_screen_receiver(mock.clone());
+            let live = TerminalId::new(3);
+            let held_id = TerminalId::new(8);
+            set_warpable_terminal(&mut pty, live);
+            mock.refuse_to_warp(held_id, "no supervisor");
+            let held = HeldTerminal {
+                command: RunCommand {
+                    command: "/usr/bin/true".into(),
+                    cwd: Some("/tmp".into()),
+                    originating_plugin: Some(step_origin("source")),
+                    target,
+                    ..Default::default()
+                },
+                first_run,
+                exit_status: (!first_run).then_some(17),
+            };
+            let released = release_tab_with_held_for_warp(
+                &mut pty,
+                vec![live, held_id],
+                HashMap::from([(held_id, held.clone())]),
+                test_warp_deadline(),
+            );
+            assert!(released.iter().all(|(_, result)| result.is_ok()));
+            assert_eq!(mock.release_attempts(), vec![live]);
+            let adopted = pty
+                .adopt_terminal(&WarpedPane {
+                    held: Some(held.clone()),
+                    ..Default::default()
+                })
+                .unwrap();
+            let mut expected_command = held.command;
+            expected_command.originating_plugin = None;
+            assert_eq!(adopted.cmd, expected_command);
+            assert_eq!(
+                adopted.child_exit_status,
+                (!first_run).then_some(held.exit_status)
+            );
+            let hosts: Vec<_> = screen
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::UpdatePaneHost(id, host, worktree)
+                        if id == adopted.terminal_id =>
+                    {
+                        Some((host, worktree))
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                hosts,
+                vec![(expected_host.map(str::to_owned), expected_worktree)]
+            );
+            assert!(adopted.buffered.is_empty());
+            assert!(!pty.task_handles.contains_key(&adopted.terminal_id));
+            assert!(!pty.id_to_child_pid.contains_key(&adopted.terminal_id));
+            assert!(pty.pending_remote_spawns.is_empty());
+            assert!(mock.resolved_spawns.lock().unwrap().is_empty());
+            assert!(mock.rerun_commands().is_empty());
+        }
+    }
+}
+
+#[test]
+fn warp_revalidates_pending_restarts_before_releasing_any_pane() {
+    let mock = MockOsApi::new();
+    let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+    let live = TerminalId::new(3);
+    let held_id = TerminalId::new(8);
+    set_warpable_terminal(&mut pty, live);
+    pty.reruns.insert(
+        held_id,
+        RerunState {
+            generation: 1,
+            queued: VecDeque::new(),
+        },
+    );
+    let held = zellij_types::data::HeldTerminal {
+        command: RunCommand::default(),
+        first_run: true,
+        exit_status: None,
+    };
+    let released = release_tab_with_held_for_warp(
+        &mut pty,
+        vec![live, held_id],
+        HashMap::from([(held_id, held)]),
+        test_warp_deadline(),
+    );
+    assert!(released.iter().all(|(_, result)| result
+        .as_ref()
+        .unwrap_err()
+        .contains("terminal_8 is restarting")));
+    assert!(mock.release_attempts().is_empty());
+    assert!(pty.task_handles.contains_key(&live));
+}
+
+#[test]
+fn warp_adoption_failure_cleans_up_held_reservations() {
+    let mock = MockOsApi::new();
+    let (mut pty, _, _) = make_pty_with_screen_receiver(mock.clone());
+    let held = zellij_types::data::HeldTerminal {
+        command: RunCommand::default(),
+        first_run: true,
+        exit_status: None,
+    };
+    let payload = WarpedTab {
+        tiled_panes: vec![
+            WarpedPane {
+                held: Some(held.clone()),
+                ..Default::default()
+            },
+            // An invalid handoff fails after the first reservation was acquired.
+            WarpedPane {
+                held: Some(held),
+                control_socket: "/invalid".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(pty.adopt_tab(&payload).is_err());
+    assert_eq!(mock.cleared_terminal_ids.lock().unwrap().len(), 1);
+    assert!(mock.release_attempts().is_empty());
+    assert!(mock.rerun_commands().is_empty());
 }

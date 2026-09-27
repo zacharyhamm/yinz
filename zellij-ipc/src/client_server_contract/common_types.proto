@@ -977,6 +977,7 @@ message WarpPaneAction {
 // the supervisor over its own socket, so only the terminal's presentation state
 // travels here.
 message AdoptPaneAction {
+  optional HeldTerminal held = 11;
   optional AdoptTabAction group = 9;
   string host_id = 1;
   string control_socket = 2;
@@ -998,6 +999,7 @@ message AdoptPaneAction {
 // pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
 // its place decided by the layout.
 message WarpedPane {
+  optional HeldTerminal held = 10;
   optional AdoptTabAction group = 8;
   string host_id = 1;
   string control_socket = 2;
@@ -1019,6 +1021,12 @@ message WarpedPane {
 // Carries the command, which the local path does not need to: an adopting
 // server learns a local pane's command from its supervisor's attach
 // acknowledgement, but a broker's answer to a resume carries none.
+message HeldTerminal {
+  RunCommandAction command = 1;
+  bool first_run = 2;
+  optional int32 exit_status = 3;
+}
+
 message RemotePaneHandoff {
   // The ssh destination the pane was opened against.
   string host = 1;

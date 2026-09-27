@@ -685,6 +685,20 @@ pub trait Pane {
     fn scroll_position(&self) -> (usize, usize) {
         (0, 0)
     }
+    fn set_warp_pending(&mut self, _pending: bool) {}
+    fn held_for_warp(&self) -> Option<zellij_types::data::HeldTerminal> {
+        if !self.is_held() {
+            return None;
+        }
+        let Some(Run::Command(command)) = self.invoked_with() else {
+            return None;
+        };
+        Some(zellij_types::data::HeldTerminal {
+            command: command.clone(),
+            first_run: !self.exited(),
+            exit_status: self.exit_status(),
+        })
+    }
     fn is_held(&self) -> bool {
         false
     }

@@ -487,9 +487,13 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
                     payload,
                 })
             },
-            ServerToClientMsg::Connected { warp_companions } => {
-                server_to_client_msg::Message::Connected(ConnectedMsg { warp_companions })
-            },
+            ServerToClientMsg::Connected {
+                warp_companions,
+                warp_held_terminals,
+            } => server_to_client_msg::Message::Connected(ConnectedMsg {
+                warp_companions,
+                warp_held_terminals,
+            }),
             ServerToClientMsg::Log { lines } => {
                 server_to_client_msg::Message::Log(LogMsg { lines })
             },
@@ -611,6 +615,7 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
             Some(server_to_client_msg::Message::Connected(msg)) => {
                 Ok(ServerToClientMsg::Connected {
                     warp_companions: msg.warp_companions,
+                    warp_held_terminals: msg.warp_held_terminals,
                 })
             },
             Some(server_to_client_msg::Message::Log(log)) => {
@@ -1283,6 +1288,7 @@ fn warped_pane_to_protobuf(
     pane: &zellij_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
+        held: pane.held.as_ref().map(held_to_protobuf),
         group: pane.group.as_deref().map(warped_tab_to_protobuf),
         host_id: pane.host_id.clone().into_string(),
         control_socket: pane.control_socket.to_string_lossy().to_string(),
@@ -1299,6 +1305,7 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<zellij_types::data::WarpedPane> {
     Ok(zellij_types::data::WarpedPane {
+        held: pane.held.map(held_from_protobuf).transpose()?,
         group: pane
             .group
             .map(pane_group_from_protobuf)
@@ -1312,6 +1319,29 @@ fn warped_pane_from_protobuf(
         borderless: pane.borderless,
         remote: pane.remote.and_then(remote_handoff_from_protobuf),
         agent: pane.agent.map(agent_info_from_proto).transpose()?,
+    })
+}
+
+fn held_to_protobuf(
+    held: &zellij_types::data::HeldTerminal,
+) -> crate::client_server_contract::client_server_contract::HeldTerminal {
+    crate::client_server_contract::client_server_contract::HeldTerminal {
+        command: Some(run_command_to_protobuf(&held.command)),
+        first_run: held.first_run,
+        exit_status: held.exit_status,
+    }
+}
+
+fn held_from_protobuf(
+    held: crate::client_server_contract::client_server_contract::HeldTerminal,
+) -> Result<zellij_types::data::HeldTerminal> {
+    Ok(zellij_types::data::HeldTerminal {
+        command: held
+            .command
+            .and_then(run_command_from_protobuf)
+            .context("held terminal has no valid command")?,
+        first_run: held.first_run,
+        exit_status: held.exit_status,
     })
 }
 
@@ -2089,6 +2119,7 @@ impl TryFrom<zellij_types::input::actions::Action>
             }),
             zellij_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
+                    held: payload.held.as_ref().map(held_to_protobuf),
                     group: payload.group.as_deref().map(warped_tab_to_protobuf),
                     host_id: payload.host_id.clone().into_string(),
                     control_socket: payload.control_socket.to_string_lossy().to_string(),
@@ -3158,6 +3189,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(zellij_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(zellij_types::data::WarpedPane {
+                        held: adopt_pane_action
+                            .held
+                            .clone()
+                            .map(held_from_protobuf)
+                            .transpose()?,
                         group: adopt_pane_action
                             .group
                             .clone()

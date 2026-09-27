@@ -288,6 +288,7 @@ pub fn adopt_payload(host_id: &str) -> Result<WarpedPane> {
         ));
     }
     Ok(WarpedPane {
+        held: None,
         group: None,
         host_id: entry.status.host_id.clone(),
         control_socket: entry.path,
@@ -437,6 +438,7 @@ fn warped_pane_from_entry(
         ));
     }
     Ok(WarpedPane {
+        held: None,
         group: None,
         // No local supervisor to name. See `WarpedPane::remote`.
         host_id: SupervisorId::default(),

@@ -858,8 +858,8 @@ fn a_release_that_failed_leaves_the_pane_where_it_was() {
 
     assert_eq!(
         result.expect_err("a pane that was not released cannot be serialized"),
-        "pane 1 has no pty-host supervisor",
-        "the reason has to reach the caller unreworded",
+        "terminal_1 (\"Pane #1\", live): pane 1 has no pty-host supervisor",
+        "the reason includes the typed pane identity, title and state",
     );
     assert!(
         screen.tabs.values().any(|tab| tab
@@ -1159,6 +1159,7 @@ fn a_tab_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .to_screen
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
+            supports_held: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
@@ -1250,6 +1251,7 @@ fn a_tab_is_not_taken_apart_when_its_release_lands_inside_screens_own_reserve() 
         .to_screen
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
+            supports_held: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: response_tx,
@@ -1329,6 +1331,7 @@ fn a_pane_is_not_taken_apart_for_a_caller_that_has_already_given_up() {
         .to_screen
         .send(ScreenInstruction::WarpPane {
             supports_companions: true,
+            supports_held: true,
             pane_id: Some(PaneId::Terminal(crate::TerminalId::new(1))),
             to_session: "elsewhere".to_owned().into(),
             placement: zellij_types::data::WarpPlacement::NewTab,
@@ -1411,6 +1414,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
             .to_screen
             .send(ScreenInstruction::WarpTab {
                 supports_companions: true,
+                supports_held: true,
                 tab_id: Some(TabId::new(0)),
                 client_id,
                 response_channel,
@@ -1459,6 +1463,7 @@ fn a_refused_duplicate_tab_warp_does_not_strand_the_still_attached_panes() {
         .to_screen
         .send(ScreenInstruction::WarpTab {
             supports_companions: true,
+            supports_held: true,
             tab_id: Some(TabId::new(0)),
             client_id,
             response_channel: crossbeam::channel::unbounded().0,
@@ -3342,6 +3347,7 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
             mock.to_screen
                 .send(ScreenInstruction::WarpTab {
                     supports_companions: false,
+                    supports_held: true,
                     tab_id: Some(TabId::new(0)),
                     client_id,
                     response_channel: tx,
@@ -3358,6 +3364,7 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
             mock.to_screen
                 .send(ScreenInstruction::WarpPane {
                     supports_companions: scenario == "expired group",
+                    supports_held: true,
                     pane_id: Some(PaneId::Terminal(TerminalId::new(9))),
                     to_session: "elsewhere".to_owned().into(),
                     placement: zellij_types::data::WarpPlacement::FocusedTab,
@@ -3462,4 +3469,747 @@ fn companion_capability_refusal_and_expired_group_preserve_every_pane() {
         );
         mock.teardown(vec![thread]);
     }
+}
+
+#[test]
+fn warp_held_revalidation_recovers_every_released_peer() {
+    for group in [false, true] {
+        for held_first in [false, true] {
+            for failure in ["changed", "closed", "pty failure"] {
+                let mut screen = screen_with_an_editor_on_a_hidden_stack_list_member();
+                let held_id = TerminalId::new(1);
+                let preserved_id = PaneId::Terminal(TerminalId::new(3));
+                for id in [PaneId::Terminal(held_id), preserved_id] {
+                    screen
+                        .tabs
+                        .get_mut(&TAB_0)
+                        .unwrap()
+                        .get_pane_with_id_mut(id)
+                        .unwrap()
+                        .hold(Some(17), false, RunCommand::default());
+                }
+                let (tab_id, ids, prepared) = if group {
+                    screen
+                        .prepare_pane_group(Some(PaneId::Terminal(held_id)), ClientId::new(1))
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    screen
+                        .check_tab_can_be_warped(Some(TAB_0), ClientId::new(1))
+                        .unwrap()
+                };
+                let held: HashMap<_, _> = ids
+                    .iter()
+                    .filter_map(|id| {
+                        screen.tabs[&tab_id]
+                            .get_pane_with_id(PaneId::Terminal(*id))
+                            .unwrap()
+                            .held_for_warp()
+                            .map(|held| (*id, held))
+                    })
+                    .collect();
+                assert_eq!(held.len(), 2);
+                let mut released: Vec<_> = ids
+                    .into_iter()
+                    .map(|id| {
+                        let pane = match held.get(&id) {
+                            Some(held) => ReleasedPane::Held(held.clone()),
+                            None => ReleasedPane::Local(ReleasedPtyHost {
+                                host_id: format!("host-{id}").into(),
+                                host_pid: ProcessId::new(1),
+                                control_socket: Some(format!("/tmp/warp-{id}.sock").into()),
+                            }),
+                        };
+                        (id, Ok(pane))
+                    })
+                    .collect();
+                let expected: HashMap<_, _> = released
+                    .iter()
+                    .filter(|(id, _)| !held.contains_key(id))
+                    .map(|(id, result)| (*id, result.as_ref().unwrap().recovery_command()))
+                    .collect();
+                assert_eq!(expected.len(), 2);
+                released.sort_by_key(|(id, _)| (*id == held_id) != held_first);
+                let tab = screen.tabs.get_mut(&tab_id).unwrap();
+                if failure == "closed" {
+                    tab.close_pane(PaneId::Terminal(held_id), false, None);
+                } else {
+                    tab.get_pane_with_id_mut(PaneId::Terminal(held_id))
+                        .unwrap()
+                        .hold(Some(23), false, RunCommand::default());
+                }
+                if failure == "pty failure" {
+                    released
+                        .iter_mut()
+                        .find(|(id, _)| *id == TerminalId::new(2))
+                        .unwrap()
+                        .1 = Err("release failed".into());
+                }
+                let remaining = tab.get_all_pane_ids();
+                let (to_pty, receiver) = channels::unbounded();
+                screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+                let error = screen
+                    .take_released_tab_for_warp(tab_id, released, prepared)
+                    .unwrap_err();
+                assert!(error.contains(if failure == "pty failure" {
+                    "release failed"
+                } else {
+                    "held state changed"
+                }));
+                let recovery: HashMap<_, _> = receiver
+                    .try_iter()
+                    .map(|(instruction, _)| match instruction {
+                        PtyInstruction::StrandPaneAfterWarp {
+                            terminal_id,
+                            recovery,
+                            why,
+                        } => {
+                            assert!(why.contains("held state changed"));
+                            (terminal_id, recovery.unwrap())
+                        },
+                        other => panic!("unexpected instruction: {other:?}"),
+                    })
+                    .collect();
+                if failure == "pty failure" {
+                    assert!(recovery.is_empty(), "PTY already recovered detached peers");
+                } else {
+                    assert_eq!(recovery, expected);
+                }
+                let tab = &screen.tabs[&tab_id];
+                assert_eq!(tab.get_all_pane_ids(), remaining);
+                assert_eq!(
+                    tab.get_pane_with_id(preserved_id).unwrap().held_for_warp(),
+                    Some(held[&TerminalId::new(3)].clone())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
+    use zellij_types::agent::{AgentInfo, AgentSource, AgentState};
+    for state in [AgentState::Busy, AgentState::Waiting] {
+        for kind in ["live", "exited held", "first run held", "close"] {
+            let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+            new_tab(&mut screen, 1, TAB_0);
+            let pane_id = PaneId::Terminal(TERMINAL_50);
+            add_pane_to_tab(&mut screen, TAB_0, pane_id, false);
+            let cmd = RunCommand {
+                command: "codex".into(),
+                hold_on_close: kind != "close",
+                ..Default::default()
+            };
+            let held = kind
+                .contains("held")
+                .then(|| zellij_types::data::HeldTerminal {
+                    command: cmd.clone(),
+                    first_run: kind == "first run held",
+                    exit_status: Some(3),
+                });
+            let agent = AgentInfo {
+                kind: "codex".into(),
+                state,
+                source: AgentSource::Reported,
+                detail: Some("working".into()),
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd: Some("/work".into()),
+                session_id: Some("session".into()),
+                run_id: Some("run".into()),
+            };
+            let (to_screen, receiver) = channels::unbounded();
+            screen.bus.senders.to_screen = Some(SenderWithContext::new(to_screen));
+            screen
+                .place_adopted_pane(
+                    TERMINAL_50,
+                    WarpedPane {
+                        agent: Some(agent.clone()),
+                        held: held.clone(),
+                        ..Default::default()
+                    },
+                    zellij_types::data::WarpPlacement::FocusedTab,
+                    ClientId::new(1),
+                    cmd,
+                    vec![],
+                    (kind != "first run held").then_some(Some(3)),
+                )
+                .unwrap();
+            // Apply the queued state changes in order, using the same pane methods as Screen.
+            for (instruction, _) in receiver.try_iter() {
+                let tab = screen.tabs.get_mut(&TAB_0).unwrap();
+                match instruction {
+                    ScreenInstruction::SetPaneAgent(id, agent, _) => {
+                        tab.set_pane_agent(id, agent);
+                    },
+                    ScreenInstruction::HoldPane(id, status, cmd) => {
+                        tab.hold_pane(id, status, false, cmd);
+                    },
+                    ScreenInstruction::RestoreHeldPane(id, held) => {
+                        screen.restore_held_pane(id, &held);
+                    },
+                    ScreenInstruction::ClosePane(id, _, _, status) => {
+                        tab.close_pane(id, false, status);
+                    },
+                    ScreenInstruction::NewPane(id, _, Some(cmd), ..) => {
+                        tab.hold_pane(id, None, true, cmd);
+                    },
+                    _ => {},
+                }
+            }
+            let pane = screen.tabs[&TAB_0].get_pane_with_id(pane_id);
+            if kind == "close" {
+                assert!(pane.is_none());
+            } else {
+                let pane = pane.unwrap();
+                let mut expected = agent;
+                if held.is_none() {
+                    expected.state = AgentState::Exited;
+                    expected.detail = None;
+                }
+                assert!(pane.is_held());
+                assert_eq!(pane.agent_info(), Some(&expected), "{kind}");
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
+    for first_run in [true, false] {
+        for kind in ["pane", "tab", "companion"] {
+            let mut screen = if kind == "companion" {
+                screen_with_a_scrollback_editor_open()
+            } else {
+                let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+                new_tab(&mut screen, 1, TabId::new(0));
+                new_tab(&mut screen, 2, TabId::new(1));
+                screen
+            };
+            let pane_id = PaneId::Terminal(TerminalId::new(1));
+            let command = RunCommand {
+                command: "/usr/bin/true".into(),
+                cwd: Some("/tmp".into()),
+                ..Default::default()
+            };
+            let pane = screen
+                .tabs
+                .get_mut(&TAB_0)
+                .unwrap()
+                .get_pane_with_id_mut(pane_id)
+                .unwrap();
+            pane.hold((!first_run).then_some(17), first_run, command.clone());
+            pane.rename(b"saved task".to_vec());
+            pane.handle_pty_bytes(b"saved scrollback\r\n".to_vec());
+            let expected = pane.held_for_warp().unwrap();
+            let (to_pty, pty) = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+            let payload = if kind == "pane" {
+                let (tx, rx) = crossbeam::channel::bounded(1);
+                screen
+                    .warp_pane(
+                        true,
+                        true,
+                        Some(pane_id),
+                        "elsewhere".into(),
+                        zellij_types::data::WarpPlacement::FocusedTab,
+                        ClientId::new(1),
+                        tx,
+                        warp_deadline(),
+                    )
+                    .unwrap();
+                let held = pty
+                    .try_iter()
+                    .find_map(|(i, _)| match i {
+                        PtyInstruction::ReleaseTerminalForWarp { held, .. } => held,
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(
+                    screen
+                        .tabs
+                        .get_mut(&TAB_0)
+                        .unwrap()
+                        .get_pane_with_id_mut(pane_id)
+                        .unwrap()
+                        .rerun()
+                        .is_none(),
+                    "restart waits until the transfer finishes"
+                );
+                screen.pane_released_for_warp(TerminalId::new(1), Ok(ReleasedPane::Held(held)));
+                *rx.recv().unwrap().unwrap()
+            } else {
+                let (tx, rx) = crossbeam::channel::bounded(1);
+                if kind == "tab" {
+                    screen
+                        .warp_tab(
+                            true,
+                            true,
+                            Some(TAB_0),
+                            ClientId::new(1),
+                            tx,
+                            warp_deadline(),
+                        )
+                        .unwrap();
+                    let (tab_index, terminal_ids, held) = pty
+                        .try_iter()
+                        .find_map(|(i, _)| match i {
+                            PtyInstruction::ReleaseTerminalsForWarp {
+                                tab_index,
+                                terminal_ids,
+                                held,
+                                ..
+                            } => Some((tab_index, terminal_ids, held)),
+                            _ => None,
+                        })
+                        .unwrap();
+                    screen.tab_released_for_warp(
+                        tab_index,
+                        terminal_ids
+                            .into_iter()
+                            .map(|id| (id, Ok(ReleasedPane::Held(held[&id].clone()))))
+                            .collect(),
+                    );
+                    rx.recv().unwrap().unwrap().tiled_panes.remove(0)
+                } else {
+                    let (tx, rx) = crossbeam::channel::bounded(1);
+                    screen
+                        .warp_pane(
+                            true,
+                            true,
+                            Some(PaneId::Terminal(TerminalId::new(9))),
+                            "elsewhere".into(),
+                            zellij_types::data::WarpPlacement::FocusedTab,
+                            ClientId::new(1),
+                            tx,
+                            warp_deadline(),
+                        )
+                        .unwrap();
+                    let (tab_index, terminal_ids, held) = pty
+                        .try_iter()
+                        .find_map(|(i, _)| match i {
+                            PtyInstruction::ReleaseTerminalsForWarp {
+                                tab_index,
+                                terminal_ids,
+                                held,
+                                ..
+                            } => Some((tab_index, terminal_ids, held)),
+                            _ => None,
+                        })
+                        .unwrap();
+                    screen.tab_released_for_warp(
+                        tab_index,
+                        terminal_ids
+                            .into_iter()
+                            .map(|id| {
+                                (
+                                    id,
+                                    Ok(match held.get(&id) {
+                                        Some(held) => ReleasedPane::Held(held.clone()),
+                                        None => ReleasedPane::Local(ReleasedPtyHost {
+                                            host_id: "live".into(),
+                                            host_pid: ProcessId::new(1),
+                                            control_socket: Some("/live".into()),
+                                        }),
+                                    }),
+                                )
+                            })
+                            .collect(),
+                    );
+                    let group = rx.recv().unwrap().unwrap().group.unwrap();
+                    group
+                        .tiled_panes
+                        .into_iter()
+                        .chain(group.floating_panes)
+                        .find(|p| p.held.is_some())
+                        .unwrap()
+                }
+            };
+            assert_eq!(payload.held, Some(expected));
+            assert!(payload.contents.unwrap().contains("saved scrollback"));
+            assert!(screen
+                .tabs
+                .values()
+                .all(|tab| tab.get_pane_with_id(pane_id).is_none()));
+        }
+    }
+}
+
+#[test]
+fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
+    use zellij_types::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
+    use zellij_types::input::hooks::HookPoint;
+
+    for kind in ["pane", "tab", "companion"] {
+        for outcome in ["refused", "timeout", "success"] {
+            for first_run in [true, false] {
+                for keep_scrollback in [true, false] {
+                    let mut screen = if kind == "pane" {
+                        let mut screen =
+                            create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+                        new_tab(&mut screen, 1, TAB_0);
+                        new_tab(&mut screen, 2, TabId::new(1));
+                        screen
+                    } else {
+                        screen_with_a_scrollback_editor_open()
+                    };
+                    let terminal_id = TerminalId::new(1);
+                    let pane_id = PaneId::Terminal(terminal_id);
+                    let live_id = TerminalId::new(if kind == "pane" { 2 } else { 9 });
+                    let pane = screen
+                        .tabs
+                        .get_mut(&TAB_0)
+                        .unwrap()
+                        .get_pane_with_id_mut(pane_id)
+                        .unwrap();
+                    pane.hold((!first_run).then_some(17), first_run, RunCommand::default());
+                    if !first_run {
+                        pane.handle_pty_bytes(b"saved scrollback\r\n".to_vec());
+                    }
+                    let replacement = RunCommand {
+                        command: "codex".into(),
+                        args: vec!["replacement".into()],
+                        originating_plugin: Some(OriginatingPlugin::new(
+                            zellij_types::internal_ids::PluginId::new(2),
+                            ClientId::new(1),
+                            std::collections::BTreeMap::from([(
+                                HOCUS_AGENT_PANE_CONTEXT.into(),
+                                "true".into(),
+                            )]),
+                        )),
+                        ..Default::default()
+                    };
+                    let (to_pty, pty) = channels::unbounded();
+                    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty.clone()));
+                    for tab in screen.tabs.values_mut() {
+                        tab.senders.to_pty = Some(SenderWithContext::new(to_pty.clone()));
+                    }
+                    let (to_plugin, plugin) = channels::unbounded();
+                    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+                    let (pane_tx, pane_rx) = crossbeam::channel::bounded(1);
+                    let (tab_tx, tab_rx) = crossbeam::channel::bounded(1);
+                    let deadline = if outcome == "timeout" {
+                        std::time::Instant::now()
+                    } else {
+                        warp_deadline()
+                    };
+                    if kind == "tab" {
+                        screen
+                            .warp_tab(true, true, Some(TAB_0), ClientId::new(1), tab_tx, deadline)
+                            .unwrap();
+                    } else {
+                        screen
+                            .warp_pane(
+                                true,
+                                true,
+                                Some(if kind == "companion" {
+                                    PaneId::Terminal(live_id)
+                                } else {
+                                    pane_id
+                                }),
+                                "elsewhere".into(),
+                                zellij_types::data::WarpPlacement::FocusedTab,
+                                ClientId::new(1),
+                                pane_tx,
+                                deadline,
+                            )
+                            .unwrap();
+                    }
+                    let released = pty
+                        .try_iter()
+                        .find_map(|(instruction, _)| match instruction {
+                            PtyInstruction::ReleaseTerminalForWarp { held, .. } => {
+                                Some(vec![(terminal_id, Ok(ReleasedPane::Held(held.unwrap())))])
+                            },
+                            PtyInstruction::ReleaseTerminalsForWarp {
+                                terminal_ids, held, ..
+                            } => Some(
+                                terminal_ids
+                                    .into_iter()
+                                    .map(|id| {
+                                        (
+                                            id,
+                                            Ok(match held.get(&id) {
+                                                Some(held) => ReleasedPane::Held(held.clone()),
+                                                None => ReleasedPane::Local(ReleasedPtyHost {
+                                                    host_id: "live".into(),
+                                                    host_pid: ProcessId::new(1),
+                                                    control_socket: Some("/live".into()),
+                                                }),
+                                            }),
+                                        )
+                                    })
+                                    .collect(),
+                            ),
+                            _ => None,
+                        })
+                        .unwrap();
+                    screen.run_command_in_pane_with_id(
+                        terminal_id,
+                        replacement.clone(),
+                        keep_scrollback,
+                    );
+                    screen.run_command_in_pane_with_id(
+                        live_id,
+                        replacement.clone(),
+                        keep_scrollback,
+                    );
+                    assert!(pty.try_recv().is_err(), "replacement waits for release");
+                    let released = released
+                        .into_iter()
+                        .map(|(id, result)| {
+                            (
+                                id,
+                                if outcome == "refused" && id == terminal_id {
+                                    Err("injected refusal".into())
+                                } else {
+                                    result
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if kind == "pane" {
+                        screen.pane_released_for_warp(
+                            terminal_id,
+                            released.into_iter().next().unwrap().1,
+                        );
+                    } else {
+                        screen.tab_released_for_warp(TAB_0, released);
+                    }
+                    let response = if kind == "tab" {
+                        tab_rx.try_recv().map(|result| result.map(|_| ()))
+                    } else {
+                        pane_rx.try_recv().map(|result| result.map(|_| ()))
+                    };
+                    if outcome == "timeout" {
+                        assert!(response.is_err());
+                    } else {
+                        assert_eq!(response.unwrap().is_ok(), outcome == "success");
+                    }
+                    let reruns: Vec<_> = pty
+                        .try_iter()
+                        .filter_map(|(instruction, _)| match instruction {
+                            PtyInstruction::ReRunCommandInPane(id, command, _) => {
+                                Some((id, command))
+                            },
+                            _ => None,
+                        })
+                        .collect();
+                    let hooks: Vec<_> = plugin
+                        .try_iter()
+                        .filter_map(|(instruction, _)| match instruction {
+                            PluginInstruction::RunHook { point, .. } => Some(point),
+                            _ => None,
+                        })
+                        .collect();
+                    if outcome == "success" {
+                        assert!(reruns.is_empty(), "no source replacement after transfer");
+                        assert!(hooks.is_empty());
+                        assert!(screen
+                            .tabs
+                            .values()
+                            .all(|tab| tab.get_pane_with_id(pane_id).is_none()));
+                    } else {
+                        assert_eq!(reruns, vec![(pane_id, replacement.clone())]);
+                        assert_eq!(hooks, vec![HookPoint::AgentStart]);
+                        let tab = screen.tabs.get_mut(&TAB_0).unwrap();
+                        let pane = tab.get_pane_with_id(pane_id).unwrap();
+                        assert!(!pane.is_held());
+                        assert_eq!(
+                            pane.dump_screen(true, None).contains("saved scrollback"),
+                            keep_scrollback && !first_run,
+                            "{kind}, {outcome}, first_run={first_run}"
+                        );
+                        assert!(tab.take_pending_respawn(pane_id).is_none());
+                        let live_pane = PaneId::Terminal(live_id);
+                        let tab = screen
+                            .tabs
+                            .values_mut()
+                            .find(|tab| tab.get_pane_with_id(live_pane).is_some())
+                            .unwrap();
+                        assert_eq!(
+                            tab.take_pending_respawn(live_pane),
+                            Some((replacement, keep_scrollback))
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_old_destination_and_failed_release_leave_held_panes_restartable() {
+    for supported in [false, true] {
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+        new_tab(&mut screen, 8, TAB_0);
+        new_tab(&mut screen, 2, TabId::new(1));
+        let pane_id = PaneId::Terminal(TerminalId::new(8));
+        screen
+            .tabs
+            .get_mut(&TAB_0)
+            .unwrap()
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .hold(None, true, RunCommand::default());
+        let (to_pty, pty) = channels::unbounded();
+        screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        screen
+            .warp_tab(
+                true,
+                supported,
+                Some(TAB_0),
+                ClientId::new(1),
+                tx,
+                warp_deadline(),
+            )
+            .unwrap();
+        if supported {
+            screen.tab_released_for_warp(
+                TAB_0,
+                vec![(TerminalId::new(8), Err("injected failure".into()))],
+            );
+        } else {
+            assert!(pty
+                .try_iter()
+                .all(|(i, _)| !matches!(i, PtyInstruction::ReleaseTerminalsForWarp { .. })));
+        }
+        let error = rx.recv().unwrap().unwrap_err();
+        assert!(supported || error.contains("terminal_8"), "{error}");
+        assert!(screen
+            .tabs
+            .get_mut(&TAB_0)
+            .unwrap()
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .rerun()
+            .is_some());
+    }
+}
+
+#[test]
+fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        false,
+        false,
+    );
+    let (to_plugin, _plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    new_tab(&mut screen, 99, TabId::new(1));
+    let plugin = RunPluginOrAlias::RunPlugin(
+        zellij_runtime::plugin_location::run_plugin_from_url("zellij:status-bar").unwrap(),
+    );
+    let command = RunCommand {
+        command: "/usr/bin/true".into(),
+        hold_on_start: true,
+        ..Default::default()
+    };
+    screen
+        .new_tab(TAB_0, (vec![], vec![]), None, Some(ClientId::new(1)))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout {
+                children: vec![
+                    TiledPaneLayout::default(),
+                    TiledPaneLayout {
+                        run: Some(Run::Command(command.clone())),
+                        ..Default::default()
+                    },
+                    TiledPaneLayout {
+                        run: Some(Run::Plugin(plugin.clone())),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            vec![],
+            vec![
+                (TerminalId::new(1), None),
+                (TerminalId::new(8), Some(command.clone())),
+            ],
+            vec![],
+            HashMap::from([(plugin.clone(), vec![crate::PluginId::new(8)])]),
+            TAB_0,
+            true,
+            ClientId::new(1),
+            None,
+        )
+        .unwrap();
+    let (to_pty, pty) = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    screen
+        .warp_tab(
+            true,
+            true,
+            Some(TAB_0),
+            ClientId::new(1),
+            tx,
+            warp_deadline(),
+        )
+        .unwrap();
+    let (ids, held) = pty
+        .try_iter()
+        .find_map(|(i, _)| match i {
+            PtyInstruction::ReleaseTerminalsForWarp {
+                terminal_ids, held, ..
+            } => Some((terminal_ids, held)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[&TerminalId::new(8)].command, command);
+    screen.tab_released_for_warp(
+        TAB_0,
+        ids.into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Ok(match held.get(&id) {
+                        Some(held) => ReleasedPane::Held(held.clone()),
+                        None => ReleasedPane::Local(ReleasedPtyHost {
+                            host_id: "live".into(),
+                            host_pid: ProcessId::new(1),
+                            control_socket: Some("/live".into()),
+                        }),
+                    }),
+                )
+            })
+            .collect(),
+    );
+    let payload = rx.recv().unwrap().unwrap();
+    assert_eq!(payload.tiled_panes.len(), 2);
+    assert_eq!(
+        payload
+            .tiled_panes
+            .iter()
+            .filter(|p| p.held.is_some())
+            .count(),
+        1
+    );
+    assert!(
+        payload
+            .tiled_layout
+            .extract_run_instructions()
+            .contains(&Some(Run::Plugin(plugin))),
+        "{:?}",
+        payload.tiled_layout
+    );
+    let closed: Vec<_> = pty
+        .try_iter()
+        .filter_map(|(i, _)| match i {
+            PtyInstruction::ClosePane(id, _) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert!(closed.contains(&PaneId::Terminal(TerminalId::new(8))));
+    assert!(closed.contains(&PaneId::Plugin(crate::PluginId::new(8))));
+    assert!(!closed.contains(&PaneId::Terminal(TerminalId::new(1))));
 }
