@@ -11,11 +11,12 @@
 //! 2. `Pane::render` - `Grid::render` reads the dirty lines back out as `CharacterChunk`s.
 //! 3. `Output::serialize` - the chunks for every pane become one ANSI string per client.
 //!
-//! `Screen` and `Tab` are not constructible from outside the crate (`mod screen` and
-//! `mod thread_bus` are private), so this builds the same fleet-of-panes-into-one-`Output` shape
-//! that `Tab::render_with_inactive_clients` does, mirroring the chunk plumbing in
-//! `zellij-panes/src/ui/pane_contents_and_ui.rs`. Pane frames are not drawn (`FrameParams` lives
-//! in the private `ui` module), which matches a `pane_frames false` session; frames are chrome
+//! `Screen` is private to zellij-screen (its only export is `screen_thread_main`), and a `Tab`
+//! needs the `ThreadSenders` that zellij-server keeps crate-private, so this builds the same
+//! fleet-of-panes-into-one-`Output` shape that `Tab::render_with_inactive_clients` does,
+//! mirroring the chunk plumbing in `zellij-panes/src/ui/pane_contents_and_ui.rs`. Pane frames are
+//! not drawn (zellij-server does not re-export `ui`, where `FrameParams` lives), which matches a
+//! `pane_frames false` session; frames are chrome
 //! redrawn only when a pane's boundaries change, so they are not part of the steady-state cost
 //! this measures anyway.
 //!
@@ -44,7 +45,7 @@ const SURFACE: Size = Size {
 };
 
 /// Bytes handed to *each* pane per iteration. A real pty read is up to 64KiB
-/// (`zellij-server/src/terminal_bytes.rs`), and a render covers whatever arrived inside one 10ms
+/// (`zellij-pty/src/terminal_bytes.rs`), and a render covers whatever arrived inside one 10ms
 /// debounce window, so this is a plausible per-pane-per-frame budget for a chatty program.
 const BYTES_PER_PANE: usize = 8 * 1024;
 
@@ -380,7 +381,7 @@ impl PaneFleet {
     fn ingest(&mut self, chunks: &[Vec<u8>]) {
         // The clone is deliberate and belongs inside the timed region: `handle_pty_bytes` takes
         // its bytes by value, and the real pipeline pays exactly one `Vec` allocation per pty read
-        // to hand them over (`bytes.to_vec()` in `zellij-server/src/terminal_bytes.rs`).
+        // to hand them over (`bytes.to_vec()` in `zellij-pty/src/terminal_bytes.rs`).
         for (pane, chunk) in self.panes.iter_mut().zip(chunks) {
             pane.handle_pty_bytes(chunk.clone());
         }

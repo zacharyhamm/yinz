@@ -1,0 +1,41 @@
+---
+source: zellij-screen/src/screen/../unit/screen_tests/break_and_move_panes.rs
+assertion_line: 1135
+expression: "format!(\"{:#?}\", spawn_in_place_instruction)"
+---
+Some(
+    SpawnInPlaceTerminal(
+        Some(
+            OpenFile(
+                OpenFilePayload {
+                    path: "/some/file.txt",
+                    line_number: None,
+                    cwd: Some(
+                        ".",
+                    ),
+                    originating_plugin: None,
+                },
+            ),
+        ),
+        Some(
+            "Editing: /some/file.txt",
+        ),
+        true,
+        ClientId(
+            ClientId(
+                10,
+            ),
+        ),
+        Some(
+            NotificationEnd {
+                channel: None,
+                exit_status: None,
+                unblock_condition: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                error_message: None,
+                stdout_message: None,
+            },
+        ),
+    ),
+)

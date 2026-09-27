@@ -70,7 +70,7 @@ Default to tests for the changed crate or behavior:
 ```sh
 cargo x test -p zellij-server
 cargo x test some_test_name
-cargo x test -E 'test(/^screen_tests::/)'
+cargo x test -p zellij-screen -E 'test(/^screen::screen_tests::tabs::/)'
 cargo x integration-test -E 'test(resize)' -j 16
 ```
 
@@ -94,7 +94,8 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
   `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
   `zellij-plugin-location/`, or `zellij-ipc/`.
 - Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
-  `zellij-key-codec/`, screen/tab/pty plumbing, or `zellij-plugin-host/`.
+  `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
+  `zellij-pty/`), or `zellij-plugin-host/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
@@ -110,7 +111,7 @@ escalation on the first attempt.
 - Use `zellij-test-support`'s `Watched<T>::wait_until(what, timeout, predicate)`
   instead of sleeps. Screen and plugin instruction logs already use it.
 - Wait for render **content**, not `snapshots.last()` or a render count. See
-  `wait_for_settled_render` in `zellij-server/src/unit/screen_tests/mod.rs`.
+  `wait_for_settled_render` in `zellij-screen/src/unit/screen_tests/mod.rs`.
   Count renders only when the test controls a batch with a fixed count, and
   explain why scheduling cannot change it in a comment.
 - Use `zellij_test_support::write_warm_script` for executable stubs. The first
@@ -132,7 +133,9 @@ escalation on the first attempt.
 
 | Path | Purpose |
 |---|---|
-| `zellij-server/` | Screen, client routing, pty scheduling, server thread |
+| `zellij-server/` | Session bootstrap, client routing, server thread |
+| `zellij-screen/` | Screen thread: tabs, focus, overlays, rendering to clients |
+| `zellij-pty/` | Pty thread: spawning and supervising pane processes |
 | `zellij-panes/` | Panes, frames, tabs, layout application |
 | `zellij-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
 | `zellij-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |

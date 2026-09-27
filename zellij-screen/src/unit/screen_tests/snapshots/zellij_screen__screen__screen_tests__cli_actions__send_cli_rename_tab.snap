@@ -1,0 +1,5 @@
+---
+source: zellij-screen/src/./unit/screen_tests.rs
+expression: "format!(\"{:#?}\", plugin_rename_tab_instruction)"
+---
+None

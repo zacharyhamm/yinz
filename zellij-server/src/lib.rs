@@ -28,29 +28,23 @@ use zellij_types::style::default_palette;
 pub use zellij_bus::background_jobs;
 pub(crate) use zellij_bus::global_async_runtime;
 pub use zellij_bus::nested_guest;
-pub mod notifications;
-pub(crate) use zellij_panes::pane_groups;
 pub(crate) use zellij_plugin_host as plugins;
 pub use zellij_plugin_host::deno::testing as plugin_testing;
 use zellij_plugin_host::get_engine;
 #[doc(hidden)]
 pub use zellij_plugin_host::run_compilation_worker;
 mod locked_escape;
+pub(crate) use zellij_bus::pty;
 pub use zellij_plugin_host::plugin_authoring;
-mod pty;
 #[cfg(unix)]
 pub use zellij_process::pty_host;
 mod client_router;
 pub(crate) use zellij_bus::pty_writer;
 mod route;
-mod screen;
+pub(crate) use zellij_bus::screen;
 pub(crate) use zellij_bus::server_instruction::ServerInstruction;
-pub(crate) use zellij_bus::session_layout_metadata;
 pub(crate) use zellij_bus::session_recorder;
-mod terminal_bytes;
 pub(crate) use zellij_bus::thread_bus;
-pub(crate) use zellij_bus::warp;
-pub(crate) use zellij_panes::ui;
 
 use background_jobs::{background_jobs_main, BackgroundJob};
 use log::info;
@@ -146,11 +140,12 @@ use crate::{
     os_input_output::ServerOsApi,
     panes::PaneId,
     plugins::{plugin_thread_main, PluginInstruction},
-    pty::{get_default_shell, pty_thread_main, Pty, PtyInstruction},
-    screen::{screen_thread_main, ScreenInstruction},
+    pty::{get_default_shell, PtyInstruction},
+    screen::ScreenInstruction,
     thread_bus::{Bus, ThreadSenders},
 };
 use route::{route_thread_main, NotificationEnd};
+use zellij_pty::{pty_thread_main, Pty};
 use zellij_runtime::channels;
 use zellij_runtime::channels::ChannelWithContext;
 use zellij_runtime::channels::{SenderWithContext, Shutdown};
@@ -159,6 +154,7 @@ use zellij_runtime::errors::FatalError;
 use zellij_runtime::home::default_layout_dir;
 use zellij_runtime::home::get_default_data_dir;
 use zellij_runtime::home::user_plugin_dir_or_default;
+use zellij_screen::screen_thread_main;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::keys::KeyWithModifier;
 use zellij_types::style::Style;

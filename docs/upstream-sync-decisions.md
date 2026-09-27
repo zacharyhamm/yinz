@@ -15,7 +15,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: The fork already has scroll-mode sync on focus (`zellij-server/src/screen/input_modes.rs`, `sync_scroll_mode_on_focus`) with tests. The upstream change only adds a preference toggle, at the cost of ~60 LOC across 9 files, a new `Options` protobuf field, and ~12 snapshot updates. Nobody on the fork has asked to turn the sync off.
+- Reason: The fork already has scroll-mode sync on focus (`zellij-screen/src/screen/input_modes.rs`, `sync_scroll_mode_on_focus`) with tests. The upstream change only adds a preference toggle, at the cost of ~60 LOC across 9 files, a new `Options` protobuf field, and ~12 snapshot updates. Nobody on the fork has asked to turn the sync off.
 - Reconsider only if: A fork user wants scroll-mode sync disabled, or the user reopens this decision. If adapted, copy the `mouse_scroll_resize` plumbing site for site and take only the early-return hunk in `input_modes.rs`; the `None` mode_info fallback is redundant because `zellij-server/src/lib.rs` sends `ChangeMode` right after `AddClient`.
 
 ## 2026-08-28 — Start a session with an initial command (`zellij attach -c name -- cmd`)
@@ -51,7 +51,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Not applicable. The fork sizes every tab to one session-wide surface (`zellij-server/src/screen/tab_layout.rs`, `tab_surface_size` ignores the tab id and returns `session_size()`), so a vacated tab cannot change size and a client cannot be larger than the tab it lands in. Upstream's per-tab sizing model is a deliberate fork divergence. The upstream `clients.rs` tests would fail by design.
+- Reason: Not applicable. The fork sizes every tab to one session-wide surface (`zellij-screen/src/screen/tab_layout.rs`, `tab_surface_size` ignores the tab id and returns `session_size()`), so a vacated tab cannot change size and a client cannot be larger than the tab it lands in. Upstream's per-tab sizing model is a deliberate fork divergence. The upstream `clients.rs` tests would fail by design.
 - Reconsider only if: The fork adopts per-tab sizing, or the user reopens this decision.
 
 ## 2026-08-28 — Warning cleanups: `from_i32` migration, `Path` import cfg, doubled `#[test]`, dead `stacked_pane_list` field, `base64` API
