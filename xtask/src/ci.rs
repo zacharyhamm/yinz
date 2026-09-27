@@ -76,83 +76,84 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
     }
 
     let _pd = sh.push_dir(project_root);
-    build_musl_release(sh).context(err_context)?;
-    link_e2e_binary().context(err_context)
+    let binary = build_linux_release(sh).context(err_context)?;
+    link_e2e_binary(&binary).context(err_context)
 }
 
-/// Put the musl binary where the container looks for it.
-///
-/// `remote_runner.rs` runs `/usr/src/zellij/zellij`, which is `target/zellij`
-/// through the bind mount — but `build_musl_release` writes to
-/// `target/<triple>/release/zellij`. A symlink bridges the two.
-///
-/// It has to be written the way the *container* reads it, not the way this
-/// process does: the target is the absolute in-container path, which resolves to
-/// nothing on the host. So this cannot check the link for validity, only replace
-/// it, and `symlink` rather than `sh.copy_file` because the point is to follow
-/// each rebuild without one.
-fn link_e2e_binary() -> anyhow::Result<()> {
+/// Keep the path used in E2E snapshots stable across architectures.
+fn link_e2e_binary(binary: &Path) -> anyhow::Result<()> {
     let link = crate::target_dir().join("zellij");
-    let target = format!("/usr/src/zellij/{}/release/zellij", musl_target());
-
-    // `symlink` refuses to overwrite, and an existing link may point at the
-    // wrong triple after a move between machines.
     match std::fs::remove_file(&link) {
         Ok(()) => {},
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
         Err(e) => return Err(e).with_context(|| format!("failed to remove {}", link.display())),
     }
-    std::os::unix::fs::symlink(&target, &link)
-        .with_context(|| format!("failed to link {} -> {target}", link.display()))
+    std::os::unix::fs::symlink(binary, &link)
+        .with_context(|| format!("failed to link {} -> {}", link.display(), binary.display()))
 }
 
-/// The musl triple a container on this host runs natively.
-///
-/// Matching the host arch is what keeps the container off emulation — arm64 on
-/// Apple Silicon, amd64 on Intel and on Linux CI.
-pub fn musl_target() -> &'static str {
-    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "aarch64-unknown-linux-musl"
-    } else {
-        "x86_64-unknown-linux-musl"
+fn linux_target(arch: &str) -> anyhow::Result<&'static str> {
+    match arch {
+        "x86_64" => Ok("x86_64-unknown-linux-gnu"),
+        "aarch64" => Ok("aarch64-unknown-linux-gnu"),
+        _ => anyhow::bail!("the Debian test builder does not support {arch}"),
     }
 }
 
-/// A statically linked release binary for the container to run.
-///
-/// Shared by the e2e suite and the remote-pane suite: both need a Linux binary
-/// built from this tree, and both get it into their container through a bind
-/// mount of `target/` rather than a copy.
-pub fn build_musl_release(sh: &Shell) -> anyhow::Result<()> {
-    let target = musl_target();
-    // On macOS: use cargo-zigbuild which handles musl cross-compilation for any arch without
-    //   needing a separate linker toolchain.
-    //   Install with: cargo install cargo-zigbuild && brew install zig
-    // On Linux: cross-compile for musl.
-    if cfg!(target_os = "macos") {
-        crate::cargo().and_then(|cargo| {
-            if which::which("cargo-zigbuild").is_err() {
-                eprintln!("!! 'cargo-zigbuild' wasn't found but is needed on macOS.");
-                eprintln!("!! Please install it with:");
-                eprintln!("!!   cargo install cargo-zigbuild");
-                eprintln!("!!   brew install zig");
-                return Err(anyhow::anyhow!("couldn't find 'cargo-zigbuild'"));
-            }
-            cmd!(sh, "rustup target add {target}")
-                .run()
-                .map_err(anyhow::Error::new)?;
-            cmd!(sh, "{cargo} zigbuild --release --target {target}")
-                .run()
-                .map_err(anyhow::Error::new)
-        })
+/// Build in the same Debian release as the test guests, including on macOS.
+/// Return the artifact path relative to target/ for all three test suites.
+pub fn build_linux_release(sh: &Shell) -> anyhow::Result<PathBuf> {
+    let target = linux_target(std::env::consts::ARCH)?;
+    let platform = if std::env::consts::ARCH == "aarch64" {
+        "linux/arm64"
     } else {
-        crate::cargo().and_then(|cargo| {
-            cmd!(sh, "{cargo} build --release --target {target}")
-                .run()
-                .map_err(anyhow::Error::new)
-        })
-    }
+        "linux/amd64"
+    };
+    let project = crate::project_root()
+        .canonicalize()
+        .context("failed to resolve checkout")?;
+    let _pd = sh.push_dir(&project);
+    let target_dir = crate::target_dir();
+    sh.create_dir(&target_dir)
+        .context("failed to create target directory")?;
+    let target_dir = target_dir
+        .canonicalize()
+        .context("failed to resolve target directory")?;
+    let cache = target_dir.join("linux-build");
+    sh.create_dir(cache.join("home"))
+        .context("failed to create builder home")?;
+    sh.create_dir(cache.join("cargo"))
+        .context("failed to create builder Cargo cache")?;
+    let project_mount = format!("{}:{}", project.display(), project.display());
+    // Mount at its real path as well: target/ may be an absolute or relative symlink.
+    let target_mount = format!("{}:{}", target_dir.display(), target_dir.display());
+    let home = format!("HOME={}", cache.join("home").display());
+    let cargo_home = format!("CARGO_HOME={}", cache.join("cargo").display());
+    let user = format!("{}:{}", unsafe { libc::getuid() }, unsafe {
+        libc::getgid()
+    });
+    let image = "zellij-test-builder:trixie-slim";
+    cmd!(
+        sh,
+        "docker build --platform {platform} -t {image} -f docker/linux-builder.Dockerfile docker"
+    )
+    .run()
+    .context("failed to build the Debian test builder; Docker is required")?;
+    let binary = Path::new(target).join("release/zellij");
+    let executable = target_dir.join(&binary);
+    // Podman also exposes a `docker` CLI; keep its rootless mapping aligned with --user.
+    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {project_mount} -v {target_mount} -w {project} -e {home} -e {cargo_home} {image} cargo build --locked --release --target {target} --bin zellij")
+        .env("PODMAN_USERNS", "keep-id")
+        .run().context("failed to build the GNU/Linux test binary in Debian")?;
+    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {target_mount} {image} {executable} --version")
+        .env("PODMAN_USERNS", "keep-id")
+        .run().context("the built binary cannot start in Debian trixie-slim")?;
+    Ok(binary)
 }
+
+#[cfg(test)]
+#[path = "unit/ci.rs"]
+mod tests;
 
 /// Native release build: builds plugins, generates protobufs, and runs
 /// `cargo build --release` without cross-compilation.

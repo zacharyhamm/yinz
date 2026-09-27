@@ -28,18 +28,17 @@ fn dir() -> PathBuf {
 fn build(sh: &Shell) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
-    let target = crate::ci::musl_target();
 
-    println!(">> Building the provider and static guest binary");
+    println!(">> Building the provider and Debian GNU guest binary");
     cmd!(sh, "{cargo} build --bin zellij-firecracker").run()?;
-    cmd!(sh, "{cargo} build --release --target {target} --bin zellij").run()?;
+    let binary = crate::ci::build_linux_release(sh)?;
 
     let test_dir = dir();
     for name in ["config", "data", "cache", "state", "runtime"] {
         fs::create_dir_all(test_dir.join(name))?;
     }
     let provider = crate::target_dir().join("debug/zellij-firecracker");
-    let guest = crate::target_dir().join(target).join("release/zellij");
+    let guest = crate::target_dir().join(binary);
     let image = test_dir.join("data/zellij/firecracker");
     let project = crate::project_root();
     cmd!(
