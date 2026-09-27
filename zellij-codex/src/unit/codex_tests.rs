@@ -135,8 +135,7 @@ fn bridge_eligibility_consumes_options_before_identifying_commands() {
 
 #[test]
 fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
-    const TEST: &str =
-        "codex::tests::launcher_forwards_its_directory_unless_overridden_or_bypassed";
+    const TEST: &str = "tests::launcher_forwards_its_directory_unless_overridden_or_bypassed";
     const ARGS_ENV: &str = "ZELLIJ_TEST_CODEX_ARGS";
     const OUTPUT_ENV: &str = "ZELLIJ_TEST_CODEX_OUTPUT";
     if let Ok(args) = std::env::var(ARGS_ENV) {
@@ -221,7 +220,7 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
 
 #[test]
 fn launcher_reports_an_unresolvable_working_directory() {
-    const TEST: &str = "codex::tests::launcher_reports_an_unresolvable_working_directory";
+    const TEST: &str = "tests::launcher_reports_an_unresolvable_working_directory";
     const CHILD_ENV: &str = "ZELLIJ_TEST_CODEX_DELETED_CWD";
     if std::env::var_os(CHILD_ENV).is_some() {
         std::fs::remove_dir(std::env::current_dir().unwrap()).unwrap();
@@ -253,7 +252,7 @@ fn registry_and_a_session_named_codex_coexist() {
     const CHILD_ENV: &str = "ZELLIJ_TEST_CODEX_REGISTRY";
     const THREAD_ENV: &str = "ZELLIJ_TEST_CODEX_THREAD";
     const SOCKETS_ENV: &str = "ZELLIJ_TEST_CODEX_SOCKETS";
-    const TEST: &str = "codex::tests::registry_and_a_session_named_codex_coexist";
+    const TEST: &str = "tests::registry_and_a_session_named_codex_coexist";
     if std::env::var_os(CHILD_ENV).is_none() {
         for source in ["fallback", "runtime", "override"] {
             let root = tempfile::tempdir().unwrap();

@@ -25,6 +25,7 @@ zellij-storage = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
+zellij-swamp = { workspace = true }
 zellij-tile = { path = "../zellij-tile" }
 zellij-tile-markdown = { path = "../zellij-tile-markdown" }
 anyhow = { workspace = true }

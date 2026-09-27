@@ -408,7 +408,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         .context("start Codex pane bridge")?
         .block_on(async {
             let path = registration.dir.path().join("ui.sock");
-            crate::pty_host::protocol::check_socket_path_length(&path, 0)?;
+            zellij_process::pty_host::protocol::check_socket_path_length(&path, 0)?;
             let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
             let mut command = tokio::process::Command::new(program);
             command
@@ -532,9 +532,11 @@ fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
         if reference.len() != 12 || !reference.bytes().all(|b| b.is_ascii_hexdigit()) {
             return false;
         }
-        let Ok(status) = crate::pty_host::client::query(&crate::pty_host::protocol::socket_path(
-            &zellij_types::internal_ids::SupervisorId::new(reference.clone()),
-        )) else {
+        let Ok(status) = zellij_process::pty_host::client::query(
+            &zellij_process::pty_host::protocol::socket_path(
+                &zellij_types::internal_ids::SupervisorId::new(reference.clone()),
+            ),
+        ) else {
             return false;
         };
         let Some(child) = status.child_pid else {
@@ -619,7 +621,7 @@ fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
             && process
                 .cmd()
                 .get(1)
-                .is_some_and(|arg| arg == crate::pty_host::PTY_HOST_FLAG)
+                .is_some_and(|arg| arg == zellij_process::pty_host::PTY_HOST_FLAG)
             && process
                 .exe()
                 .and_then(|exe| exe.canonicalize().ok())

@@ -18,7 +18,7 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 
 # Opt-in real service test deliberately queues longer than the 90s dispatch timeout.
 [[profile.unit.overrides]]
-filter = 'test(=swamp::refresh_tests::refreshes_local_extensions_once_after_active_work_and_preserves_suspension)'
+filter = 'package(zellij-swamp) & test(=refresh_tests::refreshes_local_extensions_once_after_active_work_and_preserves_suspension)'
 slow-timeout = { period = "60s", terminate-after = 3 }
 
 # Bootstrap holds the shared schema advisory lock; its deliberate stall must not time out

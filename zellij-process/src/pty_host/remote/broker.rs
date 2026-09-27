@@ -26,6 +26,7 @@ use zellij_types::internal_ids::ProcessId;
 use zellij_types::internal_ids::TerminalId;
 
 use zellij_runtime::errors::prelude::*;
+use zellij_runtime::shared::ensure_secure_dir;
 use {zellij_runtime::consts::VERSION, zellij_runtime::consts::ZELLIJ_SOCK_DIR};
 
 use super::protocol::{
@@ -35,7 +36,7 @@ use super::protocol::{
 use super::session::{orphan_timeout, PaneRegistry, PaneSession, ResumeStep};
 use crate::pty_host::client::{self as pty_host_client, SpawnParams};
 use crate::pty_host::protocol::{check_socket_path_length, SpawnFailureKind, WireWinsize};
-use crate::pty_host::{ensure_secure_dir, secure_socket};
+use crate::pty_host::secure_socket;
 
 /// A socket shared by the several things that need to write to it: the output
 /// pump, the child-exit callback, and the control pump.
