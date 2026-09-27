@@ -6394,12 +6394,12 @@ dependencies = [
  "url",
  "uuid",
  "zellij-config",
+ "zellij-host-protocol",
  "zellij-ipc",
  "zellij-process",
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",
- "zellij-terminal",
  "zellij-test-support",
  "zellij-types",
 ]
@@ -6553,6 +6553,13 @@ dependencies = [
  "zellij-process",
  "zellij-runtime",
  "zellij-session",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-host-protocol"
+version = "0.45.0"
+dependencies = [
  "zellij-types",
 ]
 
@@ -6863,6 +6870,7 @@ dependencies = [
  "zellij-bus",
  "zellij-cli",
  "zellij-config",
+ "zellij-host-protocol",
  "zellij-ipc",
  "zellij-panes",
  "zellij-routing",
@@ -7042,6 +7050,7 @@ dependencies = [
  "tempfile",
  "unicode-width 0.2.2",
  "vte 0.15.0",
+ "zellij-host-protocol",
  "zellij-ipc",
  "zellij-runtime",
  "zellij-terminal-graphics",

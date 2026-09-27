@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use unicode_width::UnicodeWidthChar;
 use zellij_runtime::errors::prelude::*;
-use zellij_types::internal_ids::{PluginId, TerminalId};
+use zellij_types::internal_ids::PluginId;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 use zellij_types::style::{HostTerminalThemeMode, Style};
 use {
@@ -56,88 +56,13 @@ const MAX_TRACKED_NOTIFICATION_IDS: usize = 256;
 const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
 const MAX_DCS_PAYLOAD_BYTES: usize = 1024 * 1024;
 
-/// A desktop notification an application asked for, in the protocol it used.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingNotification {
-    /// kitty's protocol. `payload` is the semicolon-joined params after `99`, `terminator` is
-    /// `\x07` or `\x1b\\`, `wants_report` whether the app asked for an activation report, and
-    /// `display` the assembled title and body once the notification is complete (`None` for an
-    /// unfinished chunk or a control request that shows nothing).
-    Osc99 {
-        payload: String,
-        terminator: String,
-        wants_report: bool,
-        display: Option<(String, String)>,
-    },
-    /// The legacy iTerm2 protocol: a body and nothing else.
-    Osc9 { body: String },
-    /// The urxvt/rxvt protocol: `notify;title;body`.
-    Osc777 { title: String, body: String },
-}
-
-impl PendingNotification {
-    pub fn title_and_body(&self) -> (String, String) {
-        match self {
-            PendingNotification::Osc99 { display, .. } => display.clone().unwrap_or_default(),
-            PendingNotification::Osc9 { body } => (String::new(), body.clone()),
-            PendingNotification::Osc777 { title, body } => (title.clone(), body.clone()),
-        }
-    }
-}
-
-/// The `p=` key of an OSC 99 escape: what the payload is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Osc99PayloadType {
-    Title,
-    Body,
-    Close,
-    Query,
-    Alive,
-    Other,
-}
-
-impl Osc99PayloadType {
-    pub fn from_metadata_value(value: &str) -> Self {
-        match value {
-            "title" => Osc99PayloadType::Title,
-            "body" => Osc99PayloadType::Body,
-            "close" => Osc99PayloadType::Close,
-            "?" => Osc99PayloadType::Query,
-            "alive" => Osc99PayloadType::Alive,
-            _ => Osc99PayloadType::Other,
-        }
-    }
-    /// A request the app expects an answer to, rather than something to show.
-    pub fn is_control_request(&self) -> bool {
-        matches!(
-            self,
-            Osc99PayloadType::Close | Osc99PayloadType::Query | Osc99PayloadType::Alive
-        )
-    }
-}
-
-/// Splits an OSC 99 payload into its metadata (before the first `;`) and the rest.
-pub(crate) fn split_osc99_payload(payload: &str) -> (&str, &str) {
-    match payload.find(';') {
-        Some(idx) => (
-            payload.get(..idx).unwrap_or_default(),
-            payload.get(idx + 1..).unwrap_or_default(),
-        ),
-        None => (payload, ""),
-    }
-}
-
-/// The `key=value` pairs of an OSC 99 metadata section.
-pub(crate) fn parse_osc99_metadata(metadata: &str) -> BTreeMap<&str, &str> {
-    metadata
-        .split(':')
-        .filter_map(|kv| kv.split_once('='))
-        .collect()
-}
-
-fn action_wants_report(action_value: &str) -> bool {
-    action_value.split(',').any(|value| value == "report")
-}
+// The notification wire types live with the rest of the pane/host protocol. The pub re-exports
+// keep `panes::grid::{namespace_notification_id, PendingNotification}` working for the panes and
+// the screen; the rest is only used here, by the OSC 99 dispatch and the `NotificationTracker`.
+use zellij_host_protocol::notifications::{
+    action_wants_report, parse_osc99_metadata, split_osc99_payload, Osc99PayloadType,
+};
+pub use zellij_host_protocol::notifications::{namespace_notification_id, PendingNotification};
 
 #[derive(Debug, Clone, Default)]
 struct NotificationAssembly {
@@ -244,58 +169,6 @@ impl NotificationTracker {
             Some((assembly.title, assembly.body))
         }
     }
-}
-
-/// Rewrites OSC 99 metadata for multiplexer forwarding:
-///
-/// 1. Namespaces the `i=` value as `i=p<pane_id>[r].<original_id>` so responses can be routed
-///    back to the originating pane. The `r` flag records that the app asked for `a=report`
-///    (`wants_report`, remembered per id by the pane's `NotificationTracker`), so the response
-///    is handed back to it; without the flag the response is only used for focus routing.
-///    If no `i=` key is present, one is added with an empty original id.
-///
-/// 2. Ensures `a=...,report` is present on notifications so the host terminal sends the
-///    activation response back to Zellij (needed for pane focus routing). An escape without an
-///    `a=` gets the protocol's default `a=focus,report`; control requests (`p=?`, `close`,
-///    `alive`) are left without one, as they are not something the host reports on.
-pub fn namespace_notification_id(
-    metadata: &str,
-    pane_id: TerminalId,
-    wants_report: bool,
-) -> String {
-    let flags = if wants_report { "r" } else { "" };
-    let mut found_id = false;
-    let mut found_action = false;
-    let mut payload_type = Osc99PayloadType::Title;
-    let mut parts: Vec<String> = Vec::new();
-    for kv in metadata.split(':') {
-        if kv.is_empty() {
-            continue;
-        }
-        if let Some(id_value) = kv.strip_prefix("i=") {
-            found_id = true;
-            parts.push(format!("i=p{}{}.{}", pane_id, flags, id_value));
-        } else if let Some(action_value) = kv.strip_prefix("a=") {
-            found_action = true;
-            if action_wants_report(action_value) {
-                parts.push(kv.to_owned());
-            } else {
-                parts.push(format!("a={},report", action_value));
-            }
-        } else {
-            if let Some(payload_value) = kv.strip_prefix("p=") {
-                payload_type = Osc99PayloadType::from_metadata_value(payload_value);
-            }
-            parts.push(kv.to_owned());
-        }
-    }
-    if !found_id {
-        parts.insert(0, format!("i=p{}{}.", pane_id, flags));
-    }
-    if !found_action && !payload_type.is_control_request() {
-        parts.push("a=focus,report".to_owned());
-    }
-    parts.join(":")
 }
 
 use vte::{Params, Perform};

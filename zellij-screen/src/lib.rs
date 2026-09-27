@@ -5,7 +5,7 @@
 //! plugin and server threads only through the instructions on `zellij_bus`, and never names the
 //! plugin runtime or the session bootstrap.
 
-pub(crate) mod notifications;
+pub(crate) use zellij_host_protocol::notifications;
 mod screen;
 
 pub use screen::screen_thread_main;

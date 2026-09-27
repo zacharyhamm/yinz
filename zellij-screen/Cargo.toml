@@ -17,6 +17,7 @@ zellij-tab = { path = "../zellij-tab", version = "0.45.0", features = ["test-sup
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-config = { workspace = true }
+zellij-host-protocol = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-session = { workspace = true }

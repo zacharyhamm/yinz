@@ -92,7 +92,8 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
 - Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
   `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
-  `zellij-plugin-location/`, `zellij-ipc/`, or `default-plugins/hocus-data/`
+  `zellij-plugin-location/`, `zellij-ipc/`, `zellij-host-protocol/`, or
+  `default-plugins/hocus-data/`
   (linked by both the hocus plugins and `zellij-plugin-host`).
 - Render paths in `zellij-panes/`, `zellij-terminal/` or
   `zellij-terminal-graphics/`, key encoding in
@@ -157,6 +158,7 @@ escalation on the first attempt.
 | `zellij-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `zellij_runtime::plugin_location` |
 | `zellij-downloader/` | Plugin and layout downloads; owns the `vendored_curl` libcurl/OpenSSL build |
 | `zellij-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
+| `zellij-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
 | `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | Config, plugin wire API, transport |
 | `zellij-project-config/` | Project workflow settings in `.zellij/swamp-workflows.kdl` |
 | `zellij-deno-builtins/` | Embedded TypeScript builtin plugin sources |

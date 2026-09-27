@@ -28,6 +28,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ),
     ("zellij-downloader", &[]),
     ("zellij-key-codec", &["zellij-types"]),
+    ("zellij-host-protocol", &["zellij-types"]),
     ("zellij-storage", &["zellij-types", "zellij-runtime"]),
     ("zellij-project-config", &["zellij-types", "zellij-runtime"]),
     (
@@ -84,6 +85,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         "zellij-terminal",
         &[
             "zellij-types",
+            "zellij-host-protocol",
             "zellij-runtime",
             "zellij-ipc",
             "zellij-terminal-graphics",
@@ -135,7 +137,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-config",
             "zellij-ipc",
             "zellij-session",
-            "zellij-terminal",
+            "zellij-host-protocol",
             "zellij-process",
             "zellij-test-support",
         ],
@@ -218,6 +220,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-session",
             "zellij-cli",
             "zellij-terminal",
+            "zellij-host-protocol",
             "zellij-bus",
             "zellij-routing",
             "zellij-panes",
@@ -453,6 +456,7 @@ mod tests {
         for (source, destination) in [
             ("zellij-types", "zellij-cli"),
             ("zellij-bus", "zellij-routing"),
+            ("zellij-bus", "zellij-terminal"),
             ("zellij-bus", "zellij-server-os"),
             ("zellij-panes", "zellij-server-os"),
             ("zellij-routing", "zellij-server-os"),

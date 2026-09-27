@@ -9,6 +9,7 @@ description = "Terminal emulation and output serialization for Zellij"
 workspace = true
 
 [dependencies]
+zellij-host-protocol = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-terminal-graphics = { workspace = true }
