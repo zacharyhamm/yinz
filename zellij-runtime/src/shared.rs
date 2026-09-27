@@ -22,18 +22,33 @@ pub fn set_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<(
 use crate::envs::get_session_name;
 use crate::errors::prelude::*;
 
+/// The OSC 0 sequence that sets the host terminal's title for a focused pane.
+///
+/// Always leads with this machine's hostname — the same name the tab bar prints in its top-left
+/// corner — so a window attached to a session over SSH says which machine it is on.
 pub fn make_terminal_title(pane_title: &str) -> String {
-    let title = format!(
-        "{}{}",
-        get_session_name()
-            .map(|n| if pane_title.is_empty() {
-                n.to_string()
-            } else {
-                format!("{} | ", n)
-            })
-            .unwrap_or_default(),
-        pane_title
-    );
+    let hostname = crate::host_identity::host_display_name();
+    let session_name = get_session_name().ok();
+    format_terminal_title(
+        &hostname,
+        session_name.as_ref().map(|name| name.as_str()),
+        pane_title,
+    )
+}
+
+/// [`make_terminal_title`] with its inputs passed in: `hostname:session | pane title`, leaving
+/// out whichever parts are empty.
+fn format_terminal_title(hostname: &str, session_name: Option<&str>, pane_title: &str) -> String {
+    let location = [hostname, session_name.unwrap_or_default()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(":");
+    let title = [location.as_str(), pane_title]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
     format!(
         "\u{1b}]0;{}\u{07}",
         zellij_types::text::clean_string_from_control_and_linebreak(&title)

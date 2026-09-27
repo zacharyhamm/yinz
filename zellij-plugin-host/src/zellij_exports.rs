@@ -15,7 +15,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     process,
-    sync::{atomic, OnceLock},
+    sync::atomic,
     thread,
     time::{Duration, Instant},
 };
@@ -1327,36 +1327,13 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
         ))
 }
 
-/// Short hostname (first DNS label) of the machine running this server, for UI display.
-/// Empty if the host cannot be queried. Cached, since it can't change under us.
-///
-/// `ZELLIJ_HOSTNAME` overrides it. The tests need this: every snapshot of the tab bar would
-/// otherwise record whichever machine recorded it, and none of them would match anywhere else.
-fn host_display_name() -> String {
-    static HOSTNAME: OnceLock<String> = OnceLock::new();
-    HOSTNAME
-        .get_or_init(|| {
-            std::env::var("ZELLIJ_HOSTNAME")
-                .ok()
-                .filter(|hostname| !hostname.is_empty())
-                .or_else(|| {
-                    nix::unistd::gethostname()
-                        .ok()
-                        .and_then(|hostname| hostname.into_string().ok())
-                })
-                .map(|hostname| hostname.split('.').next().unwrap_or(&hostname).to_owned())
-                .unwrap_or_default()
-        })
-        .clone()
-}
-
 fn get_plugin_ids(env: &mut PluginEnv) {
     let ids = PluginIds {
         plugin_id: env.plugin_id,
         zellij_pid: ProcessId::new(process::id()),
         initial_cwd: env.plugin_cwd.clone(),
         client_id: env.client_id,
-        hostname: host_display_name(),
+        hostname: zellij_runtime::host_identity::host_display_name(),
         host_id: zellij_runtime::host_identity::host_id(),
     };
     ProtobufPluginIds::try_from(ids)

@@ -44,7 +44,7 @@ hegeltest = "0.29.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-nix = { workspace = true, features = ["user", "term"] }
+nix = { workspace = true, features = ["hostname", "user", "term"] }
 
 [features]
 vendored_curl = ["isahc/static-curl", "dep:openssl-sys", "dep:curl-sys"]

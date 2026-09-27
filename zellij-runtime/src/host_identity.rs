@@ -173,6 +173,50 @@ pub fn host_id() -> HostId {
         .clone()
 }
 
+/// The environment variable that overrides [`host_display_name`].
+pub const HOSTNAME_ENV: &str = "ZELLIJ_HOSTNAME";
+
+/// The first DNS label of `hostname`, or `None` if nothing is left.
+fn short_hostname(hostname: &str) -> Option<String> {
+    hostname
+        .split('.')
+        .next()
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(unix)]
+fn system_hostname() -> Option<String> {
+    nix::unistd::gethostname()
+        .ok()
+        .and_then(|hostname| hostname.into_string().ok())
+}
+
+#[cfg(not(unix))]
+fn system_hostname() -> Option<String> {
+    None
+}
+
+/// Short hostname (first DNS label) of the machine running this server, for UI display: the tab
+/// bar's prefix and the host terminal's title. Empty if the host cannot be queried. Cached, since
+/// it can't change under us.
+///
+/// `ZELLIJ_HOSTNAME` overrides it. The tests need this: every snapshot of the tab bar would
+/// otherwise record whichever machine recorded it, and none of them would match anywhere else.
+pub fn host_display_name() -> String {
+    static HOSTNAME: OnceLock<String> = OnceLock::new();
+    HOSTNAME
+        .get_or_init(|| {
+            std::env::var(HOSTNAME_ENV)
+                .ok()
+                .filter(|hostname| !hostname.is_empty())
+                .or_else(system_hostname)
+                .and_then(|hostname| short_hostname(&hostname))
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
 #[cfg(test)]
 #[path = "unit/host_identity_tests.rs"]
 mod host_identity_tests;

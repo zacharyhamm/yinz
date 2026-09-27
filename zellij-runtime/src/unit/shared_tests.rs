@@ -13,3 +13,22 @@ fn terminal_titles_cannot_terminate_the_osc_or_inject_terminal_commands() {
     assert!(!payload.contains('\u{2028}'));
     assert!(make_terminal_title("plain title").ends_with("plain title\x07"));
 }
+
+#[test]
+fn terminal_titles_lead_with_the_hostname() {
+    let osc = |title: &str| format!("\x1b]0;{title}\x07");
+    assert_eq!(
+        format_terminal_title("box", Some("main"), "vim"),
+        osc("box:main | vim")
+    );
+    assert_eq!(
+        format_terminal_title("box", Some("main"), ""),
+        osc("box:main")
+    );
+    assert_eq!(format_terminal_title("box", None, "vim"), osc("box | vim"));
+    assert_eq!(format_terminal_title("box", None, ""), osc("box"));
+    assert_eq!(
+        format_terminal_title("", Some("main"), "vim"),
+        osc("main | vim")
+    );
+}

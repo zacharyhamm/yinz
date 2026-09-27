@@ -4,7 +4,7 @@ use insta::assert_snapshot;
 use zellij_integration_tests::{
     col, composite_contains_settled_guest_grid, guest_ascended_bar_settled,
     host_descended_bar_settled, host_descended_bar_with_ascend_keys_settled, keys, normalized,
-    tab_bar_shows_no_lone_pane_id, wait_for_settled_composite, GridSnapshot,
+    tab_bar_shows_no_lone_pane_id, test_env, wait_for_settled_composite, GridSnapshot,
     NestedDepthThreeHarness, NestedHarness, PROMPT, TERMINAL_SIZE,
 };
 use zellij_ipc::nested_session::NestedSessionMessage;
@@ -869,7 +869,9 @@ fn descend_and_ascend_work_at_depth_three() {
                 .is_some_and(|first_line| first_line.contains(&inner_session_name))
             && composite_contains_settled_guest_grid(middle_grid, &inner_grid)
     };
-    let settled_outer_tab_title = format!("{} | {}", inner_session_name, inner_session_name);
+    // Terminal titles lead with `host:session`.
+    let inner_title = format!("{}:{}", test_env::TEST_HOSTNAME, inner_session_name);
+    let settled_outer_tab_title = format!("{inner_title} | {inner_title}");
     let outer_settled = |outer_grid: &GridSnapshot| {
         host_descended_bar_settled(outer_grid)
             && outer_grid
