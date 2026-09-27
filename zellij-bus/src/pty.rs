@@ -58,6 +58,15 @@ pub fn held_command_on_exit(
         .map(|_| command.clone())
 }
 
+/// The shell a pane runs when neither the command nor the config names one: `$SHELL`, or
+/// `/bin/sh` when that is unset.
+pub fn get_default_shell() -> PathBuf {
+    PathBuf::from(std::env::var("SHELL").unwrap_or_else(|_| {
+        log::warn!("Cannot read SHELL env, falling back to use /bin/sh");
+        "/bin/sh".to_string()
+    }))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientTabIndexOrPaneId {
     ClientId(ClientId),

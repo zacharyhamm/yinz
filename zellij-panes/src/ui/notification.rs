@@ -1,9 +1,9 @@
 //! Toast notifications: short, self-dismissing messages drawn in a corner of the viewport, over
 //! whatever happens to be there.
 //!
-//! Notifications are composited by [`crate::screen::Screen::render_to_clients`] after every pane
-//! (tiled, floating and global) has rendered, so they always paint on top - see
-//! `render_notifications` there.
+//! Notifications are composited by `Screen::render_to_clients` in zellij-screen after every pane
+//! (tiled and floating) has rendered, so they always paint on top - see `render_notifications`
+//! there.
 
 use std::time::Duration;
 use zellij_types::internal_ids::NotificationId;

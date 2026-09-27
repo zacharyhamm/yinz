@@ -16,7 +16,7 @@
 //! Everything under a tab: the `Pane` trait and its terminal and plugin implementations, the
 //! tiled, floating and overlay pane managers, frames and boundaries, `Tab` itself and its layout
 //! applier, and pane groups. Talks to the other server threads only through [`zellij_bus`]; the
-//! screen, which owns the tabs, sits above this crate in `zellij-server`.
+//! screen, which owns the tabs, sits above this crate in `zellij-screen`.
 
 pub mod pane_groups;
 pub mod panes;

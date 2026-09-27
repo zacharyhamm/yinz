@@ -1270,7 +1270,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                         // This occurs for example when declaring the session name inside a layout
                         // file and then, from within this session, trying to open a new zellij
                         // session with the same layout. This causes an infinite recursion in the
-                        // `zellij_server::terminal_bytes::listen` task, flooding the server and
+                        // `zellij_pty::terminal_bytes::listen` task, flooding the server and
                         // clients with infinite `Render` requests.
                         if *session_name == val {
                             eprintln!("You are trying to attach to the current session (\"{}\"). Zellij does not support nesting a session in itself.", session_name);

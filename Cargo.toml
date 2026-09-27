@@ -106,6 +106,8 @@ members = [
     "zellij-firecracker-provider",
     "zellij-swamp",
     "zellij-terminal",
+    "zellij-screen",
+    "zellij-pty",
     "zellij-server",
     "zellij-config",
     "zellij-project-config",

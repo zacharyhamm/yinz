@@ -1,0 +1,6 @@
+---
+source: zellij-screen/src/screen/../unit/screen_tests/cli_actions.rs
+assertion_line: 1232
+expression: "format!(\"{:?}\", *received_pty_instructions.lock())"
+---
+[UpdateActivePane(Some(Terminal(TerminalId(0))), ClientId(1)), UpdateActivePane(Some(Terminal(TerminalId(0))), ClientId(1)), SpawnTerminal(None, None, Tiled { direction: None, borderless: Some(false) }, false, ClientId(ClientId(10)), Some(NotificationEnd { channel: None, exit_status: None, unblock_condition: None, affected_pane_id: None, affected_tab_id: None, error_message: None, stdout_message: None }), false), Exit]
