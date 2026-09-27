@@ -32,6 +32,7 @@ tokio = { workspace = true }
 vte = { workspace = true }
 
 [dev-dependencies]
+zellij-deno-builtins = { workspace = true }
 zellij-test-support = { path = "../zellij-test-support" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }

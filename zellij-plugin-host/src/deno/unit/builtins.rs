@@ -35,7 +35,7 @@ fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     };
 
     let source =
-        zellij_config::consts::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
+        zellij_deno_builtins::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
     let configured = vec![
         ContextMenuItem::new("Copy", vec![]).with_id(ContextMenuItemId::new(0)),
         ContextMenuItem::separator().with_id(ContextMenuItemId::new(1)),
@@ -164,7 +164,7 @@ fn the_shipped_context_menu_hook_opens_a_link_with_the_opener_the_machine_has() 
     use zellij_types::diagnostics::ErrorContext;
 
     let source =
-        zellij_config::consts::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
+        zellij_deno_builtins::builtin_deno_plugin("context-menu").expect("the hook is a builtin");
     let (to_background_jobs, background_jobs) =
         zellij_runtime::channels::unbounded::<(BackgroundJob, ErrorContext)>();
     let mut env = test_env();
@@ -513,7 +513,7 @@ fn grant_requested_permissions(plugin: &mut DenoPlugin) {
 
 #[test]
 fn every_embedded_typescript_builtin_loads_and_renders() {
-    for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
+    for (name, source) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
         let directory = tempfile::tempdir().unwrap();
         let mut env = test_env();
         env.data_access = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
@@ -557,7 +557,7 @@ fn embedded_builtin_loads_without_a_working_directory() {
     std::env::set_current_dir(directory.path()).unwrap();
     directory.close().unwrap();
     assert!(std::env::current_dir().is_err());
-    let source = zellij_config::consts::builtin_deno_plugin("context-menu").unwrap();
+    let source = zellij_deno_builtins::builtin_deno_plugin("context-menu").unwrap();
     let mut plugin = load_builtin("context-menu", source, test_env()).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     assert!(plugin.render(1, 80).unwrap().is_empty());
@@ -566,7 +566,7 @@ fn embedded_builtin_loads_without_a_working_directory() {
 #[test]
 fn shipped_context_menu_passes_the_typescript_checker() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../zellij-config/assets/plugins/context-menu.ts");
+        .join("../zellij-deno-builtins/assets/plugins/context-menu.ts");
     check_plugin(&path).unwrap();
 }
 
@@ -583,7 +583,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
     use zellij_types::pane_id::PaneId;
 
     let source =
-        zellij_config::consts::builtin_deno_plugin("agent-policy").expect("the hook is a builtin");
+        zellij_deno_builtins::builtin_deno_plugin("agent-policy").expect("the hook is a builtin");
     let (to_screen, screen_receiver) =
         zellij_runtime::channels::unbounded::<(ScreenInstruction, ErrorContext)>();
     let mut env = test_env();
@@ -697,7 +697,7 @@ export default {load() {
 "#, env()).unwrap();
     legacy.load(&BTreeMap::new()).unwrap();
     drop(legacy);
-    let source = zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap();
+    let source = zellij_deno_builtins::builtin_deno_plugin("swamp-bridge").unwrap();
     for _ in 0..2 {
         let mut bridge = load_builtin("swamp-bridge", source, env()).unwrap();
         bridge.load(&BTreeMap::new()).unwrap();
@@ -815,7 +815,7 @@ fn run_scenario(name: &str, source: &str) {
 
 #[test]
 fn swamp_subtitle_uses_history_and_clears_placement_on_restart_or_close() {
-    let bridge = builtin_body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap());
+    let bridge = builtin_body(zellij_deno_builtins::builtin_deno_plugin("swamp-bridge").unwrap());
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';
 const subtitles = new Map<string, string | null>(), messages: string[] = [], handlers: Record<string, any> = {};
@@ -942,7 +942,7 @@ async function scenario() {
 #[test]
 fn swamp_subtitle_loading_refresh_failure_and_detachment_reach_the_view() {
     let view = builtin_body(include_str!(
-        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+        "../../../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
     ));
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';
@@ -996,7 +996,7 @@ async function scenario() {
 #[test]
 fn workflow_manual_scrolling_only_resumes_following_the_final_stream() {
     let view = builtin_body(include_str!(
-        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+        "../../../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
     ));
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';
@@ -1047,7 +1047,7 @@ function scenario() {
 #[test]
 fn workflow_reports_and_returning_from_a_step_land_at_the_bottom() {
     let view = builtin_body(include_str!(
-        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+        "../../../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
     ));
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';
@@ -1100,7 +1100,7 @@ async function scenario() {
 #[test]
 fn a_returned_view_stays_at_the_bottom_while_a_report_loads_above_it() {
     let view = builtin_body(include_str!(
-        "../../../../zellij-config/assets/plugins/workflow-view.ts"
+        "../../../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
     ));
     let source = r#"
 import real, {definePlugin} from 'zellij:plugin';

@@ -24,41 +24,18 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus-store",
 ];
 
-/// TypeScript builtins are compiled into the server and transpiled by its worker.
-pub const BUILTIN_DENO_PLUGINS: &[(&str, &str)] = &[
-    ("tab-bar", include_str!("../assets/plugins/tab-bar.ts")),
-    (
-        "status-bar",
-        include_str!("../assets/plugins/status-bar.ts"),
-    ),
-    (
-        "context-menu",
-        include_str!("../assets/plugins/context-menu.ts"),
-    ),
-    (
-        "agent-policy",
-        include_str!("../assets/plugins/agent-policy.ts"),
-    ),
-    (
-        "swamp-bridge",
-        include_str!("../assets/plugins/swamp-bridge.ts"),
-    ),
-    (
-        "swamp-workflow",
-        include_str!("../assets/plugins/swamp-workflow.ts"),
-    ),
-    (
-        "agent-exit",
-        include_str!("../assets/plugins/agent-exit.ts"),
-    ),
+/// The TypeScript builtins. Only their tags live here: the sources are compiled into the plugin
+/// host from `zellij-deno-builtins`, so editing one does not rebuild this crate or anything that
+/// depends on it. The plugin host's tests hold the two lists equal.
+pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
+    "tab-bar",
+    "status-bar",
+    "context-menu",
+    "agent-policy",
+    "swamp-bridge",
+    "swamp-workflow",
+    "agent-exit",
 ];
-
-pub fn builtin_deno_plugin(name: &str) -> Option<&'static str> {
-    BUILTIN_DENO_PLUGINS
-        .iter()
-        .find(|(tag, _)| *tag == name)
-        .map(|(_, source)| *source)
-}
 
 /// The checkout's freshly built debug plugins, baked in at compile time from this crate's
 /// manifest dir. Searched *before* any installed copy: a `cargo x run` or `cargo test` on the
@@ -78,6 +55,3 @@ pub const BUILTIN_PLUGIN_RELEASE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/wasm32-wasip1/release"
 );
-
-/// Module sources and adjacent tests shipped with TypeScript builtins.
-pub static BUILTIN_DENO_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/plugins");

@@ -6465,7 +6465,6 @@ dependencies = [
  "include_dir",
  "insta",
  "kdl",
- "libc",
  "log",
  "miette 7.6.0",
  "notify",
@@ -6479,8 +6478,16 @@ dependencies = [
  "url",
  "uuid",
  "zellij-downloader",
+ "zellij-project-config",
  "zellij-runtime",
  "zellij-types",
+]
+
+[[package]]
+name = "zellij-deno-builtins"
+version = "0.45.0"
+dependencies = [
+ "include_dir",
 ]
 
 [[package]]
@@ -6518,6 +6525,7 @@ dependencies = [
  "zellij-cli",
  "zellij-client",
  "zellij-config",
+ "zellij-deno-builtins",
  "zellij-ipc",
  "zellij-runtime",
  "zellij-server",
@@ -6641,6 +6649,7 @@ dependencies = [
  "wasmi_wasi",
  "zellij-bus",
  "zellij-config",
+ "zellij-deno-builtins",
  "zellij-downloader",
  "zellij-ipc",
  "zellij-key-codec",
@@ -6699,6 +6708,19 @@ dependencies = [
  "zellij-runtime",
  "zellij-session",
  "zellij-test-support",
+ "zellij-types",
+]
+
+[[package]]
+name = "zellij-project-config"
+version = "0.45.0"
+dependencies = [
+ "kdl",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zellij-runtime",
  "zellij-types",
 ]
 
@@ -6874,8 +6896,8 @@ dependencies = [
  "strum 0.28.0",
  "strum_macros 0.28.0",
  "unicode-width 0.2.2",
- "zellij-config",
  "zellij-plugin-api",
+ "zellij-project-config",
  "zellij-runtime",
  "zellij-types",
 ]

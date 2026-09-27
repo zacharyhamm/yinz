@@ -22,7 +22,7 @@ pub mod kdl;
 pub mod layout;
 pub mod permission;
 pub mod plugins;
-pub mod project_config;
+pub use zellij_project_config as project_config;
 pub mod screen_config;
 pub mod theme;
 

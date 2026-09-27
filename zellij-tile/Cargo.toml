@@ -11,7 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zellij-config = { workspace = true }
+zellij-project-config = { workspace = true }
 zellij-plugin-api = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }

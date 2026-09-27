@@ -137,7 +137,7 @@ fn deno_bridge_forwards_answer_admission_progress() {
 
 fn consumer(runtime: &mut JsRuntime, name: &str) {
     let builtin = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../zellij-config/assets/plugins/{name}.ts"));
+        .join(format!("../zellij-deno-builtins/assets/plugins/{name}.ts"));
     let path = if builtin.exists() { builtin } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../example-plugins/{name}.ts"))
     };

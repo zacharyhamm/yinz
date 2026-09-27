@@ -100,7 +100,7 @@ pub fn install(sh: &Shell, builtins: &Path) -> Result<()> {
 
 pub fn plugin_files() -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for folder in ["zellij-config/assets/plugins", "example-plugins"] {
+    for folder in ["zellij-deno-builtins/assets/plugins", "example-plugins"] {
         for entry in std::fs::read_dir(crate::project_root().join(folder))? {
             let path = entry?.path();
             if path.extension().is_some_and(|ext| ext == "ts")

@@ -586,10 +586,22 @@ mod tests {
             let gitdir = std::path::PathBuf::from(
                 git(root, &["rev-parse", "--absolute-git-dir"]).trim_end_matches('\n'),
             );
+            // libtest names a test by its path below the crate root, so derive it rather than
+            // spell it out: a stale name matches nothing and the child never takes the lock.
+            let test = format!(
+                "{}::config_writes_recover_after_process_exit_without_worktree_artifacts",
+                module_path!().split_once("::").unwrap().1
+            );
             let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "project_config::tests::config_writes_recover_after_process_exit_without_worktree_artifacts", "--nocapture"])
-                .env("ZELLIJ_TEST_CONFIG_LOCK", gitdir.join("swamp-workflows.kdl.lock"))
-                .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+                .args(["--exact", &test, "--nocapture"])
+                .env(
+                    "ZELLIJ_TEST_CONFIG_LOCK",
+                    gitdir.join("swamp-workflows.kdl.lock"),
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
             let ready = std::io::BufReader::new(child.stdout.take().unwrap())
                 .lines()
                 .any(|line| line.unwrap().contains("config lock acquired"));

@@ -100,6 +100,8 @@ members = [
     "zellij-terminal",
     "zellij-server",
     "zellij-config",
+    "zellij-project-config",
+    "zellij-deno-builtins",
     "zellij-plugin-api",
     "zellij-ipc",
     "zellij-session",
@@ -157,6 +159,8 @@ zellij-session = { path = "zellij-session", version = "0.45.0" }
 zellij-ipc = { path = "zellij-ipc", version = "0.45.0" }
 zellij-plugin-api = { path = "zellij-plugin-api", version = "0.45.0" }
 zellij-config = { path = "zellij-config", version = "0.45.0" }
+zellij-project-config = { path = "zellij-project-config", version = "0.45.0" }
+zellij-deno-builtins = { path = "zellij-deno-builtins", version = "0.45.0" }
 zellij-storage = { path = "zellij-storage", version = "0.45.0" }
 zellij-types = { path = "zellij-types", version = "0.45.0" }
 zellij-runtime = { path = "zellij-runtime", version = "0.45.0" }
