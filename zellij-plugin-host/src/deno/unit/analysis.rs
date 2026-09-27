@@ -1,4 +1,5 @@
 use super::*;
+use zellij_plugin_authoring::analysis::check;
 
 #[test]
 fn literal_grants_use_sdk_bindings_and_ignore_shadowed_names_comments_and_imported_code() {

@@ -45,6 +45,15 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &["zellij-types", "zellij-plugin-location"],
     ),
     (
+        "zellij-plugin-authoring",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-config",
+            "zellij-plugin-api",
+        ],
+    ),
+    (
         "zellij-ipc",
         &["zellij-types", "zellij-runtime", "zellij-plugin-api"],
     ),
@@ -166,6 +175,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-config",
             "zellij-deno-builtins",
             "zellij-plugin-api",
+            "zellij-plugin-authoring",
             "zellij-ipc",
             "zellij-session",
             "zellij-process",
@@ -227,6 +237,21 @@ const COMPOSITION_ROOT: &str = "zellij";
 /// concrete backends that every other crate reaches only through a trait, so this rule covers
 /// every workspace member, including those `LIBRARY_DEPENDENCIES` does not list.
 const ROOT_ONLY_DEPENDENCIES: &[&str] = &["zellij-server-os"];
+
+/// Crates that must build no JavaScript or Wasm engine and nothing that links one.
+/// `zellij-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
+/// and Hocus's native tests check plugin sources through it without waiting for the plugin host.
+const ENGINE_FREE: &[&str] = &["zellij-plugin-authoring", "hocus"];
+const ENGINES: &[&str] = &[
+    "deno_core",
+    "deno_ast",
+    "v8",
+    "wasmi",
+    "zellij-plugin-host",
+    "zellij-bus",
+    "zellij-process",
+    "zellij-terminal",
+];
 
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
     let packages = metadata["packages"]
@@ -292,6 +317,50 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
         !workspace.iter().any(|p| p["name"] == "zellij-utils"),
         "zellij-utils must not be reintroduced"
     );
+    validate_engine_free(&workspace)
+}
+
+/// Checks each `ENGINE_FREE` crate's dependencies of every kind, then the normal and build
+/// dependencies of each workspace crate it builds. Only direct edges from workspace crates are
+/// visible in `--no-deps` metadata.
+fn validate_engine_free(workspace: &[&Value]) -> anyhow::Result<()> {
+    for root in ENGINE_FREE {
+        let mut pending = vec![*root];
+        let mut seen = Vec::new();
+        while let Some(name) = pending.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name);
+            let package = workspace
+                .iter()
+                .find(|p| p["name"] == name)
+                .with_context(|| {
+                    format!("Engine-free crate {name} is missing from the workspace")
+                })?;
+            for dependency in package["dependencies"]
+                .as_array()
+                .context("Missing dependencies in Cargo metadata")?
+            {
+                if name != *root && dependency["kind"] == "dev" {
+                    continue;
+                }
+                let target = dependency["name"]
+                    .as_str()
+                    .context("Missing dependency name")?;
+                if ENGINES.contains(&target) {
+                    anyhow::bail!(
+                        "{root} may not build {target}, a dependency of {name} (kind: {}, target: {})",
+                        dependency["kind"],
+                        dependency["target"]
+                    );
+                }
+                if let Some(next) = workspace.iter().find(|p| p["name"] == target) {
+                    pending.push(next["name"].as_str().context("Missing package name")?);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -300,8 +369,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
+    /// Every library with all its allowed edges, and Hocus with its authoring dev-dependency.
+    fn allowed_workspace() -> Value {
         let mut metadata = json!({
             "packages": LIBRARY_DEPENDENCIES.iter().map(|(name, allowed)| json!({
                 "id": name, "name": name,
@@ -314,6 +383,20 @@ mod tests {
             })).collect::<Vec<_>>(),
             "workspace_members": LIBRARY_DEPENDENCIES.iter().map(|(name, _)| name).collect::<Vec<_>>()
         });
+        metadata["packages"].as_array_mut().unwrap().push(json!({
+            "id": "hocus", "name": "hocus",
+            "dependencies": [{"name": "zellij-plugin-authoring", "kind": "dev", "target": null}]
+        }));
+        metadata["workspace_members"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("hocus"));
+        metadata
+    }
+
+    #[test]
+    fn boundaries_cover_all_dependency_kinds_targets_and_aliases() {
+        let mut metadata = allowed_workspace();
         validate_dependency_boundaries(&metadata).unwrap();
         // Members `LIBRARY_DEPENDENCIES` does not list, including the composition root, which may
         // depend on the root-only crates under every kind and target.
@@ -405,6 +488,46 @@ mod tests {
                 }
             }
             metadata["packages"][index]["dependencies"] = original;
+        }
+    }
+
+    #[test]
+    fn engine_free_crates_reject_engines_directly_and_through_workspace_crates() {
+        let allowed = allowed_workspace();
+        const AUTHORING: &str = "zellij-plugin-authoring";
+        for (source, destination, kind, rejected_for) in [
+            ("hocus", "zellij-plugin-host", "dev", Some("hocus")),
+            ("hocus", "deno_core", "build", Some("hocus")),
+            (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
+            (AUTHORING, "v8", "normal", Some(AUTHORING)),
+            ("zellij-config", "deno_ast", "build", Some(AUTHORING)),
+            ("zellij-types", "zellij-bus", "normal", Some(AUTHORING)),
+            // A dependency's dev-dependencies are not built.
+            ("zellij-config", "deno_core", "dev", None),
+        ] {
+            let mut metadata = allowed.clone();
+            let package = metadata["packages"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|p| p["name"] == source)
+                .unwrap();
+            package["dependencies"].as_array_mut().unwrap().push(json!({
+                "name": destination, "rename": "innocent_alias", "optional": true,
+                "kind": if kind == "normal" { json!(null) } else { json!(kind) },
+                "target": "cfg(unix)"
+            }));
+            let workspace: Vec<_> = metadata["packages"].as_array().unwrap().iter().collect();
+            let result = validate_engine_free(&workspace);
+            match rejected_for {
+                Some(root) => assert!(
+                    result.unwrap_err().to_string().contains(&format!(
+                        "{root} may not build {destination}, a dependency of {source}"
+                    )),
+                    "{source} -> {destination} ({kind})"
+                ),
+                None => result.unwrap(),
+            }
         }
     }
 }

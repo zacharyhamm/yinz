@@ -1,4 +1,5 @@
 //! Parsed entrypoint analysis; nothing here executes guest code or follows imports for grants.
+//! It runs in the compilation worker; `zellij_plugin_authoring::analysis::check` is its client.
 use super::loader;
 use deno_ast::swc::{
     ast::*,
@@ -12,18 +13,6 @@ use zellij_types::{
     data::PermissionType,
     plugin_data::{validate_namespace, RESERVED_ATTR_NAMES, SHARED_NAMESPACE_PREFIX},
 };
-
-pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> PluginCheckReport {
-    let result = if mode == PluginCheckMode::Syntax {
-        super::worker::analyze(path, source)
-    } else {
-        super::worker::check(path, source, mode)
-    };
-    result.unwrap_or_else(|error| PluginCheckReport {
-        diagnostics: vec![format!("{error:#}")],
-        ..Default::default()
-    })
-}
 
 pub(super) fn check_authoring(
     path: &Path,

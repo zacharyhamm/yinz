@@ -44,7 +44,10 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   TypeScript line. Module initialization must complete without a pending top-level `await`.
 - **Parsing happens in a subprocess** (`worker.rs`): SWC's recursively allocated native ASTs may
   only be parsed, inspected, transpiled or dropped in a disposable `--deno-compilation-worker`
-  process with a 30 s deadline, so a pathological source cannot take the server down. The
+  process with a 30 s deadline, so a pathological source cannot take the server down.
+  `worker.rs` here is only that process's entry point. The request/response types and the
+  client that spawns, feeds, bounds and reaps it are in `zellij-plugin-authoring/src/worker.rs`,
+  shared by both sides, so change the wire format there. The
   content-keyed transpile cache in `loader.rs` (path, source digest, declarations mode) is what
   keeps that from being one spawn per module per client per reload; compiled-in builtins are
   pinned in it, the rest is LRU-bounded. Errors are not cached.
@@ -57,6 +60,14 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   Oxlint/tsgolint. `authoring/` owns the shared policies, hashes and licenses; xtask installs the
   tools independently of Wasm builtins. `Syntax` stays lightweight; `Format` and `Prepare`
   return formatted source. The worker deadline covers the complete process group.
+- **The authoring entry points link no engine.** `zellij-plugin-authoring` holds what the CLI,
+  `PluginCommand::CheckPlugin` and Hocus's native tests call (`check_source`, `write`,
+  `format_file`, `log_tail`), the analysis client and the source-size budget. It reaches
+  analysis, the checker and strict authoring only through the worker, so it must not depend on
+  `deno_core`, `deno_ast` or this crate; `ENGINE_FREE` in `xtask/src/metadata.rs` enforces that
+  for it and for Hocus. Anything needing V8 or SWC belongs on the worker side, here.
+  `zellij_plugin_host::plugin_authoring` re-exports it for the server and the CLI. Its
+  `test-support` feature is the worker spawn counter this crate's tests assert against.
 - **Events keep their serde shape.** `update(event)` and `on(type, payload, raw)` receive the
   externally tagged Rust enum as JSON - positional tuples, `null` in absent slots - with two
   deliberate exceptions built in Rust: `PaneRenderReport` is re-keyed `terminal_3` (`event.rs`),
@@ -83,7 +94,9 @@ JSON fake host in-process; `unit/checker.rs` compiles TypeScript fixtures - seri
 values included, and every ```` ```ts ```` block of the guide - against `sdk.d.ts`;
 `unit/analysis.rs` covers inferred grants and the lint rules; `unit/limits.rs` exhausts budgets
 in supervised subprocesses; `unit/loader.rs` and `unit/worker.rs` cover confinement, the cache
-and the compilation subprocess; `unit/builtins.rs` loads every shipped builtin and reference
+and containment in the compilation subprocess, while the worker transport's deadlines, frame
+limits and reaping are tested in `zellij-plugin-authoring/src/unit/worker.rs` beside
+`plugin_authoring.rs`'s own tests; `unit/builtins.rs` loads every shipped builtin and reference
 example; `../unit/plugin_tests/deno_plugins.rs` drives a real plugin thread; and
 `zellij-integration-tests/tests/deno_plugins.rs` runs whole sessions. Hocus serves the guide and
 `sdk.d.ts` through `hocus/src/plugin_docs.rs`, whose tests hold every `##` heading of the guide

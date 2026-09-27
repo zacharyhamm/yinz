@@ -55,7 +55,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         fs::write(assets.join(generated), "").unwrap();
         fs::create_dir_all(root.path().join(src)).unwrap();
     }
-    let libraries = [
+    let crates = [
         "zellij-types",
         "zellij-plugin-location",
         "zellij-runtime",
@@ -66,6 +66,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-config",
         "zellij-deno-builtins",
         "zellij-plugin-api",
+        "zellij-plugin-authoring",
         "zellij-ipc",
         "zellij-session",
         "zellij-cli",
@@ -81,11 +82,12 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-panes",
         "zellij-screen",
         "zellij-pty",
+        "hocus",
     ];
     let metadata = root.path().join("metadata.json");
     fs::write(&metadata, serde_json::json!({
-        "packages": libraries.iter().map(|name| serde_json::json!({"id": name, "name": name, "dependencies": []})).collect::<Vec<_>>(),
-        "workspace_members": libraries
+        "packages": crates.iter().map(|name| serde_json::json!({"id": name, "name": name, "dependencies": []})).collect::<Vec<_>>(),
+        "workspace_members": crates
     }).to_string()).unwrap();
     let cargo = root.path().join("cargo-stub");
     fs::write(

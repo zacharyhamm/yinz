@@ -28,7 +28,7 @@ regex = { workspace = true, features = ["unicode-case"] }
 unicode-width = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-zellij-plugin-host = { path = "../../zellij-plugin-host" }
+zellij-plugin-authoring = { workspace = true }
 tempfile = { workspace = true }
 # The Jev calibration harness posts real Decisions requests; see unit/main_tests/jev_calibration.rs.
 isahc = { workspace = true }

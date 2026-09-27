@@ -2037,7 +2037,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width 0.2.2",
- "zellij-plugin-host",
+ "zellij-plugin-authoring",
  "zellij-tile",
  "zellij-types",
 ]
@@ -6649,6 +6649,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zellij-plugin-authoring"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zellij-config",
+ "zellij-plugin-api",
+ "zellij-runtime",
+ "zellij-types",
+]
+
+[[package]]
 name = "zellij-plugin-host"
 version = "0.45.0"
 dependencies = [
@@ -6693,6 +6708,7 @@ dependencies = [
  "zellij-ipc",
  "zellij-key-codec",
  "zellij-plugin-api",
+ "zellij-plugin-authoring",
  "zellij-process",
  "zellij-routing",
  "zellij-runtime",

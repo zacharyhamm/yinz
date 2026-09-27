@@ -8,8 +8,11 @@ use std::sync::{
 };
 use zellij_runtime::errors::prelude::*;
 
+#[cfg(test)]
+pub(super) use zellij_plugin_authoring::limits::MAX_SOURCE_BYTES;
+pub(super) use zellij_plugin_authoring::limits::{check_source, read_source};
+
 const GIB: usize = 1024 * 1024 * 1024;
-pub(super) const MAX_SOURCE_BYTES: usize = zellij_config::plugins::MAX_DENO_SOURCE_BYTES;
 pub(super) const MAX_GRAPH_BYTES: usize = zellij_ipc::MAX_IPC_FRAME_LEN;
 
 pub(super) struct Limits {
@@ -242,28 +245,6 @@ pub(super) fn op_zellij_encode<'s>(
     allocation
         .into_array(scope)
         .map_err(|error| JsErrorBox::generic(format!("{error:#}")))
-}
-
-pub(super) fn check_source(path: &std::path::Path, source: &str) -> Result<()> {
-    if source.len() > MAX_SOURCE_BYTES {
-        bail!(
-            "Deno plugin {} exceeds 8 MiB source-file budget",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-pub(crate) fn read_source(path: &std::path::Path) -> Result<String> {
-    use std::io::Read;
-    let mut source = String::new();
-    std::fs::File::open(path)
-        .with_context(|| format!("open Deno module {}", path.display()))?
-        .take(MAX_SOURCE_BYTES as u64 + 1)
-        .read_to_string(&mut source)
-        .with_context(|| format!("read Deno module {}", path.display()))?;
-    check_source(path, &source)?;
-    Ok(source)
 }
 
 #[cfg(test)]

@@ -101,6 +101,7 @@ members = [
     "zellij-routing",
     "zellij-panes",
     "zellij-plugin-host",
+    "zellij-plugin-authoring",
     "zellij-process",
     "zellij-codex",
     "zellij-firecracker-provider",
@@ -168,6 +169,7 @@ zellij-cli = { path = "zellij-cli", version = "0.45.0" }
 zellij-session = { path = "zellij-session", version = "0.45.0" }
 zellij-ipc = { path = "zellij-ipc", version = "0.45.0" }
 zellij-plugin-api = { path = "zellij-plugin-api", version = "0.45.0" }
+zellij-plugin-authoring = { path = "zellij-plugin-authoring", version = "0.45.0" }
 zellij-config = { path = "zellij-config", version = "0.45.0" }
 zellij-project-config = { path = "zellij-project-config", version = "0.45.0" }
 zellij-deno-builtins = { path = "zellij-deno-builtins", version = "0.45.0" }

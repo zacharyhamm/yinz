@@ -23,7 +23,7 @@ mod host_bridge;
 pub mod logging_pipe;
 mod pinned_executor;
 mod pipes;
-pub mod plugin_authoring;
+pub use zellij_plugin_authoring as plugin_authoring;
 mod plugin_limits;
 mod plugin_loader;
 mod plugin_map;
