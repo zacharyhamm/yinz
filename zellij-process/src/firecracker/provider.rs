@@ -315,7 +315,16 @@ impl LockedState {
 
 pub fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
-    match args.as_slice() {
+    run_cli(&args)
+}
+
+fn run_cli(args: &[String]) -> Result<()> {
+    if let Some(help) = cli_help(args) {
+        println!("{help}");
+        return Ok(());
+    }
+    validate_cli_arguments(args)?;
+    match args {
         [] => serve_request(),
         [command, rest @ ..] if command == "setup" => setup(rest),
         [command] if command == "doctor" => doctor(),
@@ -339,9 +348,154 @@ pub fn main() -> Result<()> {
             network_remove_cli(rest)
         },
         _ => Err(anyhow!(
-            "usage: zellij-firecracker [setup | doctor | image build | network setup|apply|remove|teardown]"
+            "unknown command; run 'zellij-firecracker --help' for usage"
         )),
     }
+}
+
+fn cli_help(args: &[String]) -> Option<&'static str> {
+    let command = if args.first().is_some_and(|arg| arg == "help") {
+        &args[1..]
+    } else if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+        || matches!(args, [group] if group == "image" || group == "network")
+    {
+        args
+    } else {
+        return None;
+    };
+    Some(match command.first().map(String::as_str) {
+        Some("setup") => {
+            "Usage: zellij-firecracker setup [OPTIONS]
+
+Prepare this Linux host and build or reuse a VM image. Run as your normal user;
+setup asks before installing the provider and uses sudo for host networking.
+
+  --project DIR        Project directory (default: current directory)
+                       Uses .zellij/firecracker-image.sh when present to install tools
+  --name NAME          Image to build/reuse and set as default (default: zellij-dev)
+  --zellij PATH        Guest Zellij binary (default: beside provider, then PATH)
+  --disk-size-gib N     Maximum virtual disk size in GiB (default: 64)
+  --rebuild            Replace the image; existing VMs keep their current disks
+  -h, --help           Show this help
+
+Without a project recipe, builds Ubuntu with Zellij and Git; add a recipe for agent tools.
+Existing images are reused unless --rebuild is supplied.
+Start a new Zellij session after setup to load the provider."
+        },
+        Some("image") => {
+            "Usage: zellij-firecracker image build [OPTIONS]
+
+Build an Ubuntu image with Zellij. Run as your normal user. Downloads are cached.
+
+  --name NAME          Save as a named image; otherwise build the default image
+  --project DIR        Run DIR/.zellij/firecracker-image.sh inside the guest root
+  --customize FILE     Run this script instead (cannot combine with --project)
+  --zellij PATH        Guest Zellij binary (default: beside provider, then PATH)
+  --output DIR         Image directory (default: Zellij data directory/firecracker)
+  --disk-size-gib N     Maximum virtual disk size in GiB (default: 8)
+  -h, --help           Show this help
+
+Example: zellij-firecracker image build --name dev --project . --disk-size-gib 64
+Replaces an image with the same name after a successful build. Existing VMs keep
+their current disks. Run 'zellij-firecracker setup' to also configure the host."
+        },
+        Some("network") => {
+            "Usage: sudo zellij-firecracker network setup --user USER [OPTIONS]
+       sudo zellij-firecracker network teardown --user USER
+
+Prepare a per-user network and restore it at boot, or remove that network.
+The provider must be installed as a root-owned executable under /usr.
+
+  --subnet CIDR        Aligned IPv4 /24 (default: derived from the user's UID)
+  --taps N             VM slots, 1 to 253 (default: 16)
+  --dns IPV4           Guest DNS server (default: 1.1.1.1)
+  -h, --help           Show this help
+
+Service commands: network apply --uid UID [--config FILE]
+                  network remove --config FILE [--uid UID]"
+        },
+        Some("doctor") => {
+            "Usage: zellij-firecracker doctor
+
+Check this user's image, KVM access, Firecracker, networking and required tools.
+Run 'zellij-firecracker setup' first to configure a new host."
+        },
+        _ => {
+            "Usage: zellij-firecracker COMMAND [OPTIONS]
+
+  setup                Prepare the host and a VM image (start here)
+  doctor               Check whether this user can launch VMs
+  image build          Build or replace an image
+  network setup        Configure host networking with sudo
+  network teardown     Remove host networking with sudo
+
+Run 'zellij-firecracker COMMAND --help' for options and defaults.
+Quick start: zellij-firecracker setup
+Start a new Zellij session to load the provider, then open this project with file sync:
+  zellij action new-pane --firecracker dev --firecracker-worktree \"$PWD\"
+
+With no arguments, serves the provider protocol on stdin."
+        },
+    })
+}
+
+fn validate_cli_arguments(args: &[String]) -> Result<()> {
+    let (rest, values, flags): (&[String], &[&str], &[&str]) = match args {
+        [command, rest @ ..] if command == "setup" => (
+            rest,
+            &["--project", "--name", "--zellij", "--disk-size-gib"],
+            &["--rebuild"],
+        ),
+        [group, command, rest @ ..]
+            if group == "image" && matches!(command.as_str(), "build" | "build-inner") =>
+        {
+            (
+                rest,
+                &[
+                    "--project",
+                    "--customize",
+                    "--name",
+                    "--zellij",
+                    "--output",
+                    "--disk-size-gib",
+                ],
+                &[],
+            )
+        },
+        [group, command, rest @ ..] if group == "image" && command == "customize-inner" => {
+            (rest, &["--root"], &[])
+        },
+        [group, command, rest @ ..] if group == "network" => match command.as_str() {
+            "setup" => (rest, &["--user", "--subnet", "--taps", "--dns"], &[]),
+            "teardown" => (rest, &["--user"], &[]),
+            "apply" | "remove" => (rest, &["--uid", "--config"], &[]),
+            _ => return Ok(()),
+        },
+        [command, rest @ ..] if command == "doctor" => (rest, &[], &[]),
+        _ => return Ok(()),
+    };
+    let mut seen = HashSet::new();
+    let mut remaining = rest.iter();
+    while let Some(argument) = remaining.next() {
+        if !seen.insert(argument) {
+            return Err(anyhow!("{argument} was supplied more than once"));
+        }
+        if values.contains(&argument.as_str()) {
+            remaining
+                .next()
+                .filter(|value| !value.starts_with('-') && !value.is_empty())
+                .with_context(|| {
+                    format!("{argument} requires a value; run this command with --help")
+                })?;
+        } else if !flags.contains(&argument.as_str()) {
+            return Err(anyhow!(
+                "unknown argument {argument:?}; run this command with --help"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn serve_request() -> Result<()> {
@@ -1009,9 +1163,13 @@ fn image_path(config: &Config, image: Option<&str>) -> Result<PathBuf> {
         None => config.rootfs.clone(),
     };
     path.is_file().then_some(path.clone()).with_context(|| {
+        let command = match image {
+            Some(image) => format!("zellij-firecracker setup --name {}", shell_quote(image)),
+            None => "zellij-firecracker setup".to_owned(),
+        };
         format!(
-            "Firecracker image {} does not exist; build it explicitly",
-            path.display()
+            "Firecracker image {} does not exist. From your project directory, run: {command}",
+            path.display(),
         )
     })
 }
@@ -3353,6 +3511,12 @@ fn retain_recovery(
                 retained_at: timestamp,
             })?,
         )?;
+        eprintln!(
+            "VM disk retained at {} for {} days. Run zellij firecracker list to find retained disks; \
+             see docs/FIRECRACKER.md for recovery steps.",
+            destination.display(),
+            RECOVERY_RETENTION.as_secs() / (24 * 60 * 60),
+        );
     }
     cleanup_recovery_resources(state);
     Ok(())
@@ -3554,9 +3718,13 @@ fn config_path() -> PathBuf {
 
 fn load_config() -> Result<Config> {
     let path = config_path();
-    let config: Config = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
+    let config: Config = serde_json::from_slice(&fs::read(&path).with_context(|| {
+        format!(
+            "failed to read Firecracker config {}; for first-time setup, run \
+                 zellij-firecracker setup from your project directory",
+            path.display()
+        )
+    })?)
     .with_context(|| format!("invalid provider config {}", path.display()))?;
     validate_config(&config)?;
     Ok(config)
@@ -3704,6 +3872,7 @@ fn setup(args: &[String]) -> Result<()> {
 trait SetupRuntime {
     fn project(&mut self, project: &Path) -> Result<PathBuf>;
     fn zellij(&mut self, explicit: Option<&Path>) -> Result<PathBuf>;
+    fn preflight(&mut self, options: &SetupOptions) -> Result<()>;
     fn provider(&mut self) -> Result<(PathBuf, PathBuf)>;
     fn network(&mut self, provider: &Path) -> Result<()>;
     /// Returns the image the step built or reused, so that `config` can make it this
@@ -3733,7 +3902,20 @@ impl SetupRuntime for RealSetup {
     }
 
     fn zellij(&mut self, explicit: Option<&Path>) -> Result<PathBuf> {
-        resolve_zellij(explicit)
+        let zellij = resolve_zellij(explicit)?;
+        check_zellij_binary(&zellij)?;
+        Ok(zellij)
+    }
+
+    fn preflight(&mut self, options: &SetupOptions) -> Result<()> {
+        check_kvm()?;
+        require_commands(&["sudo", "ip", "iptables", "systemctl"])?;
+        require_commands(RUNTIME_COMMANDS)?;
+        if should_build_image(options.rebuild, setup_image_status(&options.image).is_ok()) {
+            require_commands(IMAGE_COMMANDS)?;
+            require_commands(&["firecracker"])?;
+        }
+        Ok(())
     }
 
     fn provider(&mut self) -> Result<(PathBuf, PathBuf)> {
@@ -3794,14 +3976,19 @@ impl SetupRuntime for RealSetup {
 fn setup_with(options: &SetupOptions, runtime: &mut impl SetupRuntime) -> Result<()> {
     let project = runtime.project(&options.project)?;
     let zellij = runtime.zellij(options.zellij.as_deref())?;
+    runtime.preflight(options)?;
     let (current_provider, provider) = runtime.provider()?;
     runtime.network(&provider)?;
     let image = runtime.image(options, &project, &zellij, &current_provider)?;
     runtime.config(&provider, &image)?;
     runtime.doctor(&provider)?;
     println!(
-        "Firecracker setup is ready. Use image {:?} for this project.",
-        options.image
+        "Firecracker setup is ready. Default image: {}.\n\
+         Start a new Zellij session to load the provider, then open this project with file sync:\n  \
+         zellij action new-pane --firecracker dev --firecracker-image {} --firecracker-worktree {}",
+        options.image,
+        options.image,
+        shell_quote(&project.to_string_lossy())
     );
     Ok(())
 }
@@ -3836,9 +4023,18 @@ where
 {
     if should_build_image(options.rebuild, image_status(&options.image).is_ok()) {
         let mut command = Command::new(current_provider);
+        command.args(["image", "build", "--name", &options.image]);
+        let recipe = project.join(".zellij/firecracker-image.sh");
+        if recipe.is_file() {
+            command.arg("--project").arg(project);
+        } else {
+            println!(
+                "No recipe at {}. Building Ubuntu with Zellij, Git and file sync; agent and project tools are not included.\n\
+                 To add tools, create this script and rerun setup --rebuild.",
+                recipe.display()
+            );
+        }
         command
-            .args(["image", "build", "--name", &options.image, "--project"])
-            .arg(project)
             .arg("--zellij")
             .arg(zellij)
             .args(["--disk-size-gib", &options.disk_size_gib.to_string()]);
@@ -3895,10 +4091,26 @@ fn parse_setup_options(args: &[String]) -> Result<SetupOptions> {
         }
     }
     validate_firecracker_vm_name(&options.image).map_err(|error| anyhow!(error))?;
-    if options.disk_size_gib == 0 {
-        return Err(anyhow!("--disk-size-gib must be greater than zero"));
-    }
+    disk_size_bytes(options.disk_size_gib)?;
     Ok(options)
+}
+
+fn disk_size_bytes(gib: u64) -> Result<u64> {
+    gib.checked_mul(1024 * 1024 * 1024)
+        .filter(|bytes| *bytes > 0 && i64::try_from(*bytes).is_ok())
+        .context("--disk-size-gib must be greater than zero and fit in a signed 64-bit file size")
+}
+
+fn check_zellij_binary(path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to read Zellij binary {}", path.display()))?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err(anyhow!(
+            "--zellij must name an executable file, got {}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_zellij(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -4515,44 +4727,58 @@ fn check_image_paths(config: &Config) -> Result<()> {
     Ok(())
 }
 
+const RUNTIME_COMMANDS: &[&str] = &["cp", "git", "rsync", "ssh", "ssh-keyscan", "unshare"];
+const IMAGE_COMMANDS: &[&str] = &[
+    "chroot",
+    "curl",
+    "mkfs.ext4",
+    "sha256sum",
+    "ssh-keygen",
+    "unshare",
+    "unsquashfs",
+];
+
+fn require_commands(commands: &[&str]) -> Result<()> {
+    let missing: Vec<_> = commands
+        .iter()
+        .copied()
+        .filter(|command| find_in_path(Path::new(command)).is_none())
+        .collect();
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "required commands are not on PATH: {}. Install the host prerequisites listed in docs/FIRECRACKER.md, then rerun this command",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn check_kvm() -> Result<()> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .map(drop)
+        .context(
+            "cannot open /dev/kvm for this user. Use a Linux host with hardware virtualization enabled; \
+             if permission is denied, join the kvm group and log in again. See docs/FIRECRACKER.md",
+        )
+}
+
 fn doctor() -> Result<()> {
     let config = load_config()?;
     check_image_paths(&config)?;
     let network = load_network(&config)?;
-    if !OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/kvm")
-        .is_ok()
-    {
-        return Err(anyhow!(
-            "/dev/kvm is not readable and writable by this user"
-        ));
-    }
+    check_kvm()?;
     for slot in 0..network.taps {
         let tap = format!("{}{slot:02}", network.tap_prefix);
         if !interface_exists(&tap) {
-            return Err(anyhow!("network TAP {tap} is missing"));
+            return Err(anyhow!(
+                "network TAP {tap} is missing; run 'sudo zellij-firecracker network setup --user $USER'"
+            ));
         }
     }
-    for command in [
-        "chroot",
-        "cp",
-        "curl",
-        "git",
-        "iptables",
-        "mkfs.ext4",
-        "rsync",
-        "sha256sum",
-        "ssh",
-        "ssh-keyscan",
-        "unshare",
-        "unsquashfs",
-    ] {
-        if find_in_path(Path::new(command)).is_none() {
-            return Err(anyhow!("required command {command:?} is not on PATH"));
-        }
-    }
+    require_commands(RUNTIME_COMMANDS)?;
     let output = Command::new(&config.firecracker)
         .arg("--version")
         .output()
@@ -4613,6 +4839,8 @@ fn image_build_namespace_args() -> Vec<&'static str> {
 }
 
 fn image_build(args: &[String]) -> Result<()> {
+    // Resolve inputs before entering a namespace or downloading anything.
+    let options = image_build_options(args)?;
     if env::var_os("ZELLIJ_FIRECRACKER_IMAGE_INNER").is_none() && unsafe { libc::geteuid() } != 0 {
         let exe = env::current_exe().context("failed to find zellij-firecracker")?;
         let status = Command::new("unshare")
@@ -4629,11 +4857,23 @@ fn image_build(args: &[String]) -> Result<()> {
             .then_some(())
             .context("the Firecracker image build failed");
     }
-    image_build_inner(args)
+    build_image(options)
 }
 
 fn image_build_inner(args: &[String]) -> Result<()> {
-    let zellij = option_path(args, "--zellij")?.unwrap_or_else(|| PathBuf::from("zellij"));
+    build_image(image_build_options(args)?)
+}
+
+struct ImageBuildOptions {
+    zellij: PathBuf,
+    output: PathBuf,
+    image: Option<String>,
+    customize: Option<PathBuf>,
+    disk_bytes: u64,
+    firecracker: PathBuf,
+}
+
+fn image_build_options(args: &[String]) -> Result<ImageBuildOptions> {
     let output = option_path(args, "--output")?.unwrap_or_else(data_dir);
     let image = option_value(args, "--name")?;
     if let Some(image) = image {
@@ -4648,7 +4888,7 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         .or_else(|| project.map(|project| project.join(".zellij/firecracker-image.sh")));
     if customize.as_ref().is_some_and(|path| !path.is_file()) {
         return Err(anyhow!(
-            "Firecracker customization script does not exist: {}",
+            "Firecracker customization script does not exist: {}. Create it to install project tools, or omit --project/--customize to build a base Ubuntu image with Zellij",
             customize.as_deref().unwrap().display()
         ));
     }
@@ -4656,8 +4896,39 @@ fn image_build_inner(args: &[String]) -> Result<()> {
         .map(|value| value.parse::<u64>().context("invalid --disk-size-gib"))
         .transpose()?
         .unwrap_or(8);
+    let disk_bytes = disk_size_bytes(disk_gib)?;
+    let zellij = resolve_zellij(option_path(args, "--zellij")?.as_deref())?;
+    check_zellij_binary(&zellij)?;
+    require_commands(IMAGE_COMMANDS)?;
+    let firecracker = find_in_path(Path::new("firecracker"))
+        .context("firecracker is not installed; install it as described in docs/FIRECRACKER.md")?
+        .canonicalize()
+        .context("failed to resolve the Firecracker binary")?;
+    Ok(ImageBuildOptions {
+        zellij,
+        output,
+        image: image.map(str::to_owned),
+        customize,
+        disk_bytes,
+        firecracker,
+    })
+}
+
+fn build_image(options: ImageBuildOptions) -> Result<()> {
+    let ImageBuildOptions {
+        zellij,
+        output,
+        image,
+        customize,
+        disk_bytes,
+        firecracker,
+    } = options;
     ensure_secure_dir(&output)?;
+    let output = output
+        .canonicalize()
+        .context("failed to resolve the image output directory")?;
     ensure_secure_dir(&cache_dir())?;
+    println!("Preparing Ubuntu and kernel downloads (verified downloads are reused).");
     let kernel = download_verified(KERNEL_URL, KERNEL_SHA256, "vmlinux-6.1.182")?;
     let squashfs = download_verified(ROOTFS_URL, ROOTFS_SHA256, "ubuntu-24.04.squashfs")?;
     let private_key = output.join("id_ed25519");
@@ -4679,11 +4950,6 @@ fn image_build_inner(args: &[String]) -> Result<()> {
             .arg(&squashfs),
         "failed to unpack the Firecracker rootfs",
     )?;
-    let zellij = if zellij.is_absolute() {
-        zellij
-    } else {
-        find_in_path(&zellij).with_context(|| format!("could not find {}", zellij.display()))?
-    };
     warn_if_guest_cannot_run(&zellij, &root);
     let guest_zellij = root.join(GUEST_ZELLIJ.trim_start_matches('/'));
     fs::copy(&zellij, &guest_zellij).context("failed to install Zellij in the guest")?;
@@ -4741,14 +5007,26 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
         wants.join("zellij-firecracker-network.service"),
     )?;
     fs::create_dir_all(root.join("workspace"))?;
-    if let Some(customize) = customize {
+    {
         let guest_script = root.join(GUEST_CUSTOMIZE_SCRIPT.trim_start_matches('/'));
-        fs::copy(&customize, &guest_script).with_context(|| {
-            format!(
-                "failed to stage Firecracker customization script {}",
+        if let Some(customize) = customize {
+            println!(
+                "Installing project tools from {}. This can take several minutes.",
                 customize.display()
-            )
-        })?;
+            );
+            fs::copy(&customize, &guest_script).with_context(|| {
+                format!(
+                    "failed to stage Firecracker customization script {}",
+                    customize.display()
+                )
+            })?;
+        } else {
+            println!("Installing Git, HTTPS certificates and rsync for project file sync. This can take several minutes.");
+            fs::write(
+                &guest_script,
+                "#!/bin/sh\nset -eu\napt-get update\napt-get install -y --no-install-recommends ca-certificates git rsync\napt-get clean\nrm -rf /var/lib/apt/lists/*\n",
+            ).context("failed to stage base image setup")?;
+        }
         fs::set_permissions(&guest_script, fs::Permissions::from_mode(0o755))?;
         stage_apt_directories(&root)?;
         let apt_override = write_apt_build_overrides(&root)?;
@@ -4788,19 +5066,18 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             fs::remove_file(path)?;
         }
     }
-    let rootfs = match image {
-        Some(image) => {
-            let images = output.join("images");
-            ensure_secure_dir(&images)?;
-            images.join(format!("{image}.ext4"))
-        },
+    let images = output.join("images");
+    ensure_secure_dir(&images)?;
+    let rootfs = match image.as_deref() {
+        Some(image) => images.join(format!("{image}.ext4")),
         None => output.join("ubuntu-24.04.ext4"),
     };
+    println!("Writing the VM image to {}.", rootfs.display());
     // The image and kernel are built beside their destinations and moved into place only
     // once everything that can fail has passed: a rebuild that dies half-way must leave the
     // image VMs are cloning right now, and the kernel they boot, as they were.
     let staged_image = stage_file(&rootfs, |partial| {
-        File::create(partial)?.set_len(disk_gib * 1024 * 1024 * 1024)?;
+        File::create(partial)?.set_len(disk_bytes)?;
         run(
             Command::new("mkfs.ext4")
                 .args(["-q", "-F", "-d"])
@@ -4815,8 +5092,6 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             .map(drop)
             .context("failed to copy the kernel")
     })?;
-    let firecracker =
-        find_in_path(Path::new("firecracker")).context("firecracker is not installed")?;
     ensure_secure_dir(&config_dir())?;
     let config_path = config_path();
     let config = if config_path.exists() {
@@ -4831,7 +5106,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
         Config {
             firecracker,
             kernel: kernel_destination,
-            rootfs,
+            rootfs: rootfs.clone(),
             images_dir: output.join("images"),
             ssh_private_key: private_key,
             vcpu_count: default_vcpus(),
@@ -4849,8 +5124,15 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
     staged_image.commit()?;
     write_json_atomically(&config_path, &config)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
-    println!("Wrote image and key to {}", output.display());
+    println!("Image ready: {}", rootfs.display());
     println!("Wrote provider config to {}", config_path.display());
+    println!("Check host readiness: zellij-firecracker doctor");
+    println!(
+        "Inside Zellij, open the current project with file sync:\n  zellij action new-pane --firecracker dev{} --firecracker-worktree \"$PWD\"",
+        image
+            .map(|image| format!(" --firecracker-image {image}"))
+            .unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -6133,11 +6415,16 @@ fn find_in_path_from(program: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[path = "unit/provider_cli.rs"]
+mod cli_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum SetupStage {
+        Preflight,
         Provider,
         Network,
         Image,
@@ -6179,6 +6466,10 @@ mod tests {
 
         fn zellij(&mut self, _explicit: Option<&Path>) -> Result<PathBuf> {
             Ok(PathBuf::from("/bin/zellij"))
+        }
+
+        fn preflight(&mut self, _options: &SetupOptions) -> Result<()> {
+            self.stage(SetupStage::Preflight)
         }
 
         fn provider(&mut self) -> Result<(PathBuf, PathBuf)> {
@@ -6314,6 +6605,7 @@ mod tests {
     #[test]
     fn setup_runs_provider_network_image_config_and_doctor_in_order() {
         let expected = vec![
+            SetupStage::Preflight,
             SetupStage::Provider,
             SetupStage::Network,
             SetupStage::Image,
@@ -6340,7 +6632,10 @@ mod tests {
 
     #[test]
     fn setup_reuses_valid_images_and_rebuilds_with_exact_arguments() {
-        let project = Path::new("/workspace/project");
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path();
+        fs::create_dir(project.join(".zellij")).unwrap();
+        fs::write(project.join(".zellij/firecracker-image.sh"), "#!/bin/sh\n").unwrap();
         let zellij = Path::new("/build/zellij");
         let provider = Path::new("/build/zellij-firecracker");
         let mut commands = vec![];
@@ -6393,7 +6688,7 @@ mod tests {
                 "--name",
                 "zellij-dev",
                 "--project",
-                "/workspace/project",
+                project.to_str().unwrap(),
                 "--zellij",
                 "/build/zellij",
                 "--disk-size-gib",
@@ -6470,7 +6765,12 @@ mod tests {
             config.images_dir.join("zellij-dev.ext4")
         );
         // A VM that names no image still gets a precise error where it is actually used.
-        assert!(image_path(&config, None).is_err());
+        let error = image_path(&config, None).unwrap_err().to_string();
+        assert!(error.contains("zellij-firecracker setup"), "{error}");
+        let error = image_path(&config, Some("missing"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("setup --name 'missing'"), "{error}");
 
         config.rootfs = PathBuf::from("relative.ext4");
         assert!(validate_config(&config).is_err());

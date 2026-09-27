@@ -226,7 +226,8 @@ def teardown():
         step('release', release_files)
         step('kill-session', lambda: run(binary, 'kill-session', session))
         step('workflow server stop', lambda: run(binary, 'workflow', 'server', 'stop'))
-        deadline = time.monotonic() + 10
+        # The shared SSH bootstrap master expires after ControlPersist=60 seconds.
+        deadline = time.monotonic() + (70 if args.firecracker_only else 10)
         while True:
             survivors = fixture_processes()
             supervisors = json.loads(run(binary, 'pty-host', 'list', '--json').stdout)
@@ -939,10 +940,16 @@ try:
         launch('conflict-vm', sourcePane=conflict['pane'], firecracker=vm_name)
         def conflict_failed():
             runs = swamp('workflow', 'history', 'search', '--input', 'launch=conflict-vm')['results']
-            return runs if any(r['status'] == 'failed' for r in runs) and not any(r['status'] == 'running' for r in runs) else None
+            # Recoverable step errors suspend the workflow; a pending question alone is not a sync failure.
+            blocked = any(r['status'] in ('failed', 'suspended')
+                          and r['workflowName'] == '@hammz/zellij-review-integration'
+                          and r.get('failedStep') == 'sync'
+                          and r.get('failureReason') == 'Original VM has unresolved changes or sync conflicts'
+                          for r in runs)
+            return runs if blocked and not any(r['status'] == 'running' for r in runs) else None
         failed_runs = until('sync conflict blocks preparation', conflict_failed)
         for item in failed_runs:
-            if item['status'] == 'failed':
+            if item['status'] in ('failed', 'suspended'):
                 swamp('report', 'get', '@swamp/workflow-summary', '--workflow', item['workflowName'])
         assert bridge(method='lookup', work='conflict-vm', key='worker') is None
         assert (topic / 'file').read_text() == 'host conflict\n'

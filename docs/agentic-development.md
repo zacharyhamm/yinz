@@ -76,6 +76,7 @@ Cursor requires an explicit model when an effort is selected. Unsupported combin
 Duplicate and fork still start fresh conversations in the source pane's location.
 They now use the shared launch planner, which supplies Claude's state hooks on local and SSH launches.
 Firecracker launches continue to use the hooks installed in the guest.
+See [Firecracker VMs](FIRECRACKER.md) for installation, images, launch, sync, and recovery.
 
 Pane replacement now replays terminal output that arrives before the replacement is placed.
 Buffered output is applied before newer output, so a fast startup cannot leave a blank replacement or reverse its first output chunks.
