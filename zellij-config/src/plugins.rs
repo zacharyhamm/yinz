@@ -137,14 +137,6 @@ impl PluginConfig {
                     None
                 }
             },
-            RunPluginLocation::Remote(_) => Some(PluginConfig {
-                path: PathBuf::new(),
-                _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
-                location: run_plugin.location.clone(),
-                initial_userspace_configuration: run_plugin.configuration.clone(),
-                initial_cwd: run_plugin.initial_cwd.clone(),
-                relative_path: None,
-            }),
         }
     }
     /// A representative builtin, for callers that want to show where builtins are looked for

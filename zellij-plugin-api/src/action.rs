@@ -3099,7 +3099,6 @@ impl TryFrom<ProtobufRunPluginLocationData> for RunPluginLocation {
         match protobuf.location_data {
             Some(LocationData::FilePath(path)) => Ok(RunPluginLocation::File(PathBuf::from(path))),
             Some(LocationData::ZellijTag(tag)) => Ok(RunPluginLocation::Zellij(tag.try_into()?)),
-            Some(LocationData::RemoteUrl(url)) => Ok(RunPluginLocation::Remote(url)),
             None => Err("RunPluginLocationData must have location_data"),
         }
     }
@@ -3120,10 +3119,6 @@ impl TryFrom<RunPluginLocation> for ProtobufRunPluginLocationData {
             RunPluginLocation::Zellij(tag) => (
                 ProtobufRunPluginLocationType::Zellij as i32,
                 Some(LocationData::ZellijTag(tag.try_into()?)),
-            ),
-            RunPluginLocation::Remote(url) => (
-                ProtobufRunPluginLocationType::Remote as i32,
-                Some(LocationData::RemoteUrl(url)),
             ),
         };
         Ok(ProtobufRunPluginLocationData {

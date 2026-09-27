@@ -26,7 +26,6 @@ impl DisplayLayout {
                 LayoutInfo::File(path, _) => {
                     path.split('/').next_back().unwrap_or(path).to_string()
                 },
-                LayoutInfo::Url(url) => url.split('/').next_back().unwrap_or(url).to_string(),
                 LayoutInfo::Stringified(_) => "raw".to_string(),
             },
             DisplayLayout::Error { name, .. } => name.clone(),

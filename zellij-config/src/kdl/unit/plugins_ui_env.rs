@@ -37,10 +37,10 @@ fn plugins_to_string() {
 }
 
 #[test]
-fn plugins_to_string_with_file_and_web() {
+fn plugins_to_string_with_file() {
     let fake_config = r##"
         plugins {
-            tab-bar location="https://foo.com/plugin.wasm"
+            tab-bar location="zellij:tab-bar"
             filepicker location="file:/path/to/my/plugin.wasm" {
                 cwd "/"
             }

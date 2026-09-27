@@ -101,16 +101,10 @@ pub fn parse_plugin_location_with_relative(
             };
             Ok((RunPluginLocation::File(expand_plugin_path(path)), relative))
         },
-        "https" | "http" => {
-            // A remote url is downloaded and handed to wasmtime under a hashed, extensionless
-            // name, so a script would fail there with a wasm parse error that names nothing.
-            // Refuse it here, before any download and everywhere a plugin url is read: config,
-            // layouts, hooks, the CLI and a plugin loading another.
-            if is_script_plugin_path(url.path()) {
-                return Err(PluginsConfigError::RemoteScriptPlugin(url));
-            }
-            Ok((RunPluginLocation::Remote(url.as_str().to_owned()), None))
-        },
+        // Plugins are never downloaded. Refuse remote urls here, everywhere a plugin url is
+        // read (config, layouts, hooks, the CLI and a plugin loading another), rather than
+        // letting them fall through to an alias lookup that names nothing.
+        "https" | "http" => Err(PluginsConfigError::RemotePluginUnsupported(url)),
         _ => Err(PluginsConfigError::InvalidUrlScheme(url)),
     }
 }
@@ -124,55 +118,30 @@ fn expand_plugin_path(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Whether a url path names a Deno plugin by extension, as `PluginConfig::runtime` reads
-/// a local one. The query is not part of the path, so `plugin.ts?v=1` is a script too.
-fn is_script_plugin_path(path: &str) -> bool {
-    matches!(
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str()),
-        Some("js" | "mjs" | "ts" | "mts")
-    )
-}
-
 #[cfg(test)]
-mod remote_script_tests {
+mod remote_plugin_tests {
     use super::*;
 
     #[test]
-    fn remote_script_urls_are_refused_before_download() {
+    fn remote_plugin_urls_are_refused() {
         for url in [
-            "https://example.com/plugin.ts",
-            "https://example.com/dir/plugin.mjs",
+            "https://example.com/plugin.wasm",
+            "http://example.com/plugin",
             "https://example.com/plugin.ts?v=1",
         ] {
             let error = parse_plugin_location_with_relative(url, None).unwrap_err();
             assert!(
-                matches!(error, PluginsConfigError::RemoteScriptPlugin(_)),
+                matches!(error, PluginsConfigError::RemotePluginUnsupported(_)),
                 "{url}: {error:?}"
             );
             let message = error.to_string();
             assert!(
-                message.contains("download the file") && message.contains(url),
+                message.contains("remote plugins are not supported") && message.contains(url),
                 "{message}"
             );
+            // Not mistaken for an alias named after the url.
+            assert!(run_plugin_or_alias_from_url(url, &None, None, None).is_err());
         }
-        for url in [
-            "https://example.com/plugin.wasm",
-            "https://example.com/plugin",
-            "https://example.com/ts/",
-        ] {
-            let (location, relative) = parse_plugin_location_with_relative(url, None).unwrap();
-            assert_eq!(location, RunPluginLocation::Remote(url.to_owned()), "{url}");
-            assert_eq!(relative, None);
-        }
-        // Local scripts are unaffected: the extension chooses their runtime later.
-        assert!(matches!(
-            parse_plugin_location_with_relative("file:plugin.ts", None)
-                .unwrap()
-                .0,
-            RunPluginLocation::File(_)
-        ));
     }
 }
 
@@ -180,7 +149,7 @@ mod remote_script_tests {
 mod retired_script_tests {
     use super::*;
     #[test]
-    fn lua_urls_fail_before_aliases_or_downloads() {
+    fn lua_urls_fail_before_aliases() {
         for url in [
             "old.lua",
             "/tmp/old.lua",

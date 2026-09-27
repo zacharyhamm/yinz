@@ -1104,8 +1104,8 @@ pub fn new_tabs_with_layout(layout: &str) -> Vec<TabId> {
 
 /// Provide a LayoutInfo to be applied to the current session in a new tab. If the layout has multiple tabs, they will all be opened.
 /// File layouts are confined to the layout directory and require `OpenFiles`, `RunCommands` and
-/// `OpenTerminalsOrPlugins`; URL layouts additionally require `WebAccess`. Stringified and
-/// built-in layouts require only the capabilities they actually start.
+/// `OpenTerminalsOrPlugins`. Stringified and built-in layouts require only the capabilities
+/// they actually start.
 pub fn new_tabs_with_layout_info<L: AsRef<LayoutInfo>>(layout_info: L) -> Vec<TabId> {
     let plugin_command = PluginCommand::NewTabsWithLayoutInfo(layout_info.as_ref().clone());
     or_default(call_as::<NewTabsResponse, ProtobufNewTabsResponse>(

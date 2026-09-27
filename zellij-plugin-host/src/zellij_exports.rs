@@ -4269,15 +4269,6 @@ fn ensure_layout_info_permissions(env: &PluginEnv, layout_info: &LayoutInfo) -> 
                 ],
             )
         },
-        LayoutInfo::Url(_) => ensure_plugin_permissions(
-            env,
-            [
-                PermissionType::OpenFiles,
-                PermissionType::RunCommands,
-                PermissionType::OpenTerminalsOrPlugins,
-                PermissionType::WebAccess,
-            ],
-        ),
         LayoutInfo::BuiltIn(_) | LayoutInfo::Stringified(_) => {
             let layout =
                 zellij_config::layout::from_layout_info(&env.layout_dir, layout_info.clone())

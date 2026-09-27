@@ -42,4 +42,5 @@ serde_json = { workspace = true }
 # Unused in code. `x integration-test` builds the zellij binary first, and the root package's
 # default `vendored_curl` links libcurl statically. Asking for it here too tests the libcurl the
 # binary ships and lets the suite reuse that build of libcurl, OpenSSL and every crate above them.
-zellij-downloader = { workspace = true, features = ["vendored_curl"] }
+openssl-sys = { workspace = true }
+curl-sys = { workspace = true, features = ["static-curl"] }

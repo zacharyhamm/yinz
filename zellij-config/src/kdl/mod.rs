@@ -1242,10 +1242,9 @@ pub fn load_plugins_to_kdl(
 
     if add_comments {
         load_plugins.set_leading(format!(
-            "\n{}\n{}\n{}\n",
+            "\n{}\n{}\n",
             "// Plugins to load in the background when a new session starts",
             "// eg. \"file:/path/to/my-plugin.wasm\" or \"file:/path/to/my-plugin.ts\"",
-            "// eg. \"https://example.com/my-plugin.wasm\" (remote urls load wasm plugins only)",
         ));
     }
     load_plugins

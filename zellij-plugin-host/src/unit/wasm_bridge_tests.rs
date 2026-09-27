@@ -2936,7 +2936,7 @@ fn failed_loads_and_cancelled_loading_contexts_release_temporary_data() {
     }
     let context = test.context(2, 1, "export default {}");
     let path = context.plugin_own_data_dir.clone();
-    drop(context); // A download/queued load cancelled before instantiation.
+    drop(context); // A queued load cancelled before instantiation.
     assert!(!path.exists());
 }
 

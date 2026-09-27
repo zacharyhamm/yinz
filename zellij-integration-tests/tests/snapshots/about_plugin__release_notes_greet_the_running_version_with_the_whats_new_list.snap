@@ -7,6 +7,7 @@ $
                ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
                │                                                                                        │
+               │                                                                                        │
                │       Hi there, welcome to Zellij 0.45.0!                                              │
                │                                                                                        │
                │       What's new?                                                                      │
@@ -16,9 +17,8 @@ $
                │       4. New UI                                                                        │
                │       5. Focus Last Pane and Fullscreen Floating Panes                                 │
                │                                                                                        │
-               │       Full Changelog: https://github.com/zellij-org/zellij/releases/tag/v0.45.0        │
-               │                                                                                        │
                │       Please support the Zellij developer <3: https://github.com/sponsors/imsnif       │
+               │                                                                                        │
                │                                                                                        │
                │                                                                                        │
                │                                                                                        │

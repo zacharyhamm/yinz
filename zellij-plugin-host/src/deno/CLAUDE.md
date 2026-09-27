@@ -38,8 +38,8 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   relative imports within the compiled `zellij-deno-builtins/assets/plugins` tree, including
   shared and nested modules, with no filesystem fallback. `zellij:workflow-view` remains an alias
   to the embedded `workflow-view.ts`; the checker and strict authoring use the same module graph.
-  Remote, npm, JSR and `node:` specifiers are refused, and so is a remote `https://…/plugin.ts`
-  URL, before download (`zellij_runtime::plugin_location`). Sources are bounded before parsing
+  Remote, npm, JSR and `node:` specifiers are refused, and so is any `http(s)://` plugin URL
+  (`zellij_runtime::plugin_location`). Sources are bounded before parsing
   (8 MiB a file, 64 MiB a graph). Each instance keeps its source maps, so diagnostics name the
   TypeScript line. Module initialization must complete without a pending top-level `await`.
 - **Parsing happens in a subprocess** (`worker.rs`): SWC's recursively allocated native ASTs may

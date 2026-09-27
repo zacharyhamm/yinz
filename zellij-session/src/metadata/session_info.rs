@@ -192,7 +192,6 @@ pub fn to_string(value: &SessionInfo) -> anyhow::Result<String> {
         let (layout_name, layout_source) = match layout_info {
             LayoutInfo::File(name, _layout_metadata) => (name.clone(), "file"),
             LayoutInfo::BuiltIn(name) => (name.clone(), "built-in"),
-            LayoutInfo::Url(url) => (url.clone(), "url"),
             LayoutInfo::Stringified(_stringified) => ("stringified-layout".to_owned(), "N/A"),
         };
         let mut layout_node = KdlNode::new(layout_name.to_string());

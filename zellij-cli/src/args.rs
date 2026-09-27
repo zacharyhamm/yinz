@@ -829,7 +829,7 @@ pub enum Sessions {
     /// Returns: Created pane ID (format: plugin_<id>)
     #[clap(visible_alias = "p")]
     Plugin {
-        /// Plugin URL, can either start with http(s), file: or zellij:
+        /// Plugin URL, can either start with file: or zellij:
         #[clap(last(true), required(true))]
         url: String,
 
@@ -961,7 +961,7 @@ pub enum Sessions {
     },
     /// Send data to one or more plugins, launch them if they are not running.
     #[clap(override_usage(
-r#"
+        r#"
 zellij pipe [OPTIONS] [--] <PAYLOAD>
 
 * Send data to a specific plugin:
@@ -974,8 +974,9 @@ zellij pipe --name my_pipe_name -- my_arbitrary_data
 
 * Pipe data into this command's STDIN and get output from the plugin on this command's STDOUT
 
-tail -f /tmp/my-live-logfile | zellij pipe --name logs --plugin https://example.com/my-plugin.wasm | wc -l
-"#))]
+tail -f /tmp/my-live-logfile | zellij pipe --name logs --plugin file:/path/to/my-plugin.wasm | wc -l
+"#
+    ))]
     Pipe {
         /// The name of the pipe
         #[clap(short, long, value_parser, display_order(1))]
@@ -1776,7 +1777,7 @@ zellij action pipe --name my_pipe_name -- my_arbitrary_data
 
 * Pipe data into this command's STDIN and get output from the plugin on this command's STDOUT
 
-tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin https://example.com/my-plugin.wasm | wc -l
+tail -f /tmp/my-live-logfile | zellij action pipe --name logs --plugin file:/path/to/my-plugin.wasm | wc -l
 "#))]
     Pipe {
         /// The name of the pipe

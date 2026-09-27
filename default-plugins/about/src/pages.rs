@@ -111,23 +111,6 @@ impl Page {
                     })),
                 ]));
         page.with_paragraph(vec![ComponentLine::new(vec![
-            ActiveComponent::new(TextOrCustomRender::Text(Text::new("Full Changelog: "))),
-            ActiveComponent::new(TextOrCustomRender::Text(changelog_link_unselected(
-                zellij_version.clone(),
-            )))
-            .with_hover(TextOrCustomRender::CustomRender(
-                Box::new(changelog_link_selected(zellij_version.clone())),
-                Box::new(changelog_link_selected_len(zellij_version.clone())),
-            ))
-            .with_left_click_action(ClickAction::new_open_link(
-                format!(
-                    "https://github.com/zellij-org/zellij/releases/tag/v{}",
-                    zellij_version.clone()
-                ),
-                link_executable.clone(),
-            )),
-        ])])
-        .with_paragraph(vec![ComponentLine::new(vec![
             ActiveComponent::new(TextOrCustomRender::Text(support_the_developer_text())),
             ActiveComponent::new(TextOrCustomRender::Text(sponsors_link_text_unselected()))
                 .with_hover(TextOrCustomRender::CustomRender(
@@ -996,30 +979,6 @@ impl Page {
             current_y += rendered_rows + 1; // 1 for the line space between components
         }
     }
-}
-
-fn changelog_link_unselected(version: String) -> Text {
-    let full_changelog_text = format!(
-        "https://github.com/zellij-org/zellij/releases/tag/v{}",
-        version
-    );
-    Text::new(full_changelog_text)
-}
-
-fn changelog_link_selected(version: String) -> Box<dyn Fn(usize, usize) -> usize> {
-    Box::new(move |x, y| {
-        print!(
-            "\u{1b}[{};{}H\u{1b}[m\u{1b}[1;4mhttps://github.com/zellij-org/zellij/releases/tag/v{}",
-            y + 1,
-            x + 1,
-            version
-        );
-        51 + version.chars().count()
-    })
-}
-
-fn changelog_link_selected_len(version: String) -> Box<dyn Fn() -> usize> {
-    Box::new(move || 51 + version.chars().count())
 }
 
 fn sponsors_link_text_unselected() -> Text {

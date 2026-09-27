@@ -3937,7 +3937,6 @@ impl From<zellij_types::data::LayoutInfo>
             zellij_types::data::LayoutInfo::File(path, metadata) => {
                 (LayoutType::FilePath(path), Some(metadata.into()))
             },
-            zellij_types::data::LayoutInfo::Url(url) => (LayoutType::Url(url), None),
             zellij_types::data::LayoutInfo::Stringified(content) => {
                 (LayoutType::Stringified(content), None)
             },
@@ -3969,7 +3968,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::LayoutInfo>
                     .unwrap_or_default();
                 Ok(zellij_types::data::LayoutInfo::File(path, layout_metadata))
             },
-            Some(LayoutType::Url(url)) => Ok(zellij_types::data::LayoutInfo::Url(url)),
             Some(LayoutType::Stringified(content)) => {
                 Ok(zellij_types::data::LayoutInfo::Stringified(content))
             },
@@ -5267,10 +5265,6 @@ impl From<zellij_types::input::layout::RunPluginLocation>
                     },
                 )),
             },
-            zellij_types::input::layout::RunPluginLocation::Remote(url) => Self {
-                location_type: ProtoRunPluginLocation::Remote as i32,
-                location_data: Some(LocationData::RemoteUrl(url)),
-            },
         }
     }
 }
@@ -5813,13 +5807,6 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPluginLoc
                     ))
                 } else {
                     Err(anyhow!("Zellij location type but wrong data variant"))
-                }
-            },
-            x if x == ProtoRunPluginLocation::Remote as i32 => {
-                if let LocationData::RemoteUrl(url) = location_data {
-                    Ok(zellij_types::input::layout::RunPluginLocation::Remote(url))
-                } else {
-                    Err(anyhow!("Remote location type but wrong data variant"))
                 }
             },
             _ => Err(anyhow!(

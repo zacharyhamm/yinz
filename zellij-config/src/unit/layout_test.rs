@@ -2899,9 +2899,6 @@ fn run_plugin_location_parsing() {
             pane {
                 plugin location="filepicker"
             }
-            pane {
-                plugin location="https://example.com/plugin.wasm"
-            }
         }
     "#;
     let layout =
@@ -2966,17 +2963,6 @@ fn run_plugin_location_parsing() {
                         run: Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias {
                             name: "filepicker".to_owned(),
                             configuration: Some(PluginUserConfiguration::default()),
-                            ..Default::default()
-                        }))),
-                        ..Default::default()
-                    },
-                    TiledPaneLayout {
-                        run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location: RunPluginLocation::Remote(String::from(
-                                "https://example.com/plugin.wasm",
-                            )),
-                            configuration: Default::default(),
                             ..Default::default()
                         }))),
                         ..Default::default()
@@ -3739,4 +3725,43 @@ fn floating_pane_tabs_keep_their_child_cwds() {
         panic!("selected plugin")
     };
     assert_eq!(plugin.get_initial_cwd(), tabs.tabs[1].initial_cwd);
+}
+
+#[test]
+fn remote_layouts_are_refused() {
+    let url = "https://example.com/layout.kdl";
+    let refused = |result: Result<StringifiedLayout, crate::config::ConfigError>| match result {
+        Err(crate::config::ConfigError::RemoteLayoutUnsupported(named)) => {
+            assert_eq!(named, url);
+        },
+        other => panic!("expected RemoteLayoutUnsupported, got {other:?}"),
+    };
+    refused(stringified_from_path_or_default(
+        Some(&PathBuf::from(url)),
+        None,
+    ));
+    // The CLI joins a url onto its cwd before it reaches a loader.
+    let cwd = PathBuf::from("/some/cwd");
+    let Some(LayoutInfo::File(joined, _)) =
+        layout_info_from_cli(&None, &Some(PathBuf::from(url)), cwd)
+    else {
+        panic!("a url is resolved as a file path")
+    };
+    refused(stringified_from_dir(&PathBuf::from(&joined), None));
+    refused(stringified_from_path_or_default(
+        Some(&PathBuf::from(&joined)),
+        None,
+    ));
+    let error = from_layout_info(&None, LayoutInfo::File(joined, Default::default()))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("remote layouts are not supported"),
+        "{error}"
+    );
+    // A local path that merely mentions http is left alone.
+    assert!(!matches!(
+        stringified_from_path(Path::new("/tmp/http-layouts/missing.kdl")),
+        Err(crate::config::ConfigError::RemoteLayoutUnsupported(_))
+    ));
 }

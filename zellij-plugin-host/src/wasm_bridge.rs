@@ -8,14 +8,12 @@ use crate::plugin_map::{
     AtomicEvent, PluginEnv, PluginMap, RunningPlugin, RunningPluginEntry, Subscriptions,
 };
 use crate::{PipeStateChange, PluginRenderAsset};
-use zellij_bus::global_async_runtime::get_tokio_runtime;
 use zellij_bus::plugins::{PipeCompletion, PipeRequestId, PluginInstanceId};
 use zellij_types::internal_ids::QueueJobId;
 use zellij_types::internal_ids::TabId;
 
 use crate::plugin_worker::MessageToWorker;
 use crate::queues::{CancelResult, FinishedJob, QueuedJob, Queues};
-use highway::{HighwayHash, PortableHash};
 use log::info;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -30,7 +28,6 @@ use tokio::sync::mpsc::Sender;
 use url::Url;
 use wasmi::{Engine, Module};
 use zellij_config::permission::PermissionCache;
-use zellij_downloader::Downloader;
 use zellij_runtime::owned_dir::OwnedDir;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::geometry::FloatingPaneCoordinates;
@@ -208,9 +205,6 @@ impl LoadingContext {
             client_cancellations: wasm_bridge.client_cancellations.clone(),
         })
     }
-    pub fn update_plugin_path(&mut self, new_path: PathBuf) {
-        self.plugin_config.path = new_path;
-    }
 }
 
 pub type PluginCacheKey = (PathBuf, Option<PathBuf>);
@@ -279,7 +273,6 @@ pub struct WasmBridge {
     default_keybinds: Keybinds,
     keybinds: HashMap<ClientId, Keybinds>,
     base_modes: HashMap<ClientId, InputMode>,
-    downloader: Downloader,
     previous_pane_render_report: Option<PaneRenderReport>,
     /// The last `HostTerminalThemeChanged` broadcast to every plugin, replayed
     /// to a plugin that subscribes to it after the fact so it does not wait
@@ -417,7 +410,6 @@ impl WasmBridge {
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
         let plugin_cache: Arc<Mutex<HashMap<PluginCacheKey, Module>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let downloader = Downloader::new(ZELLIJ_CACHE_DIR.to_path_buf());
         let max_threads = num_cpus::get().clamp(4, 16);
         let plugin_executor = Arc::new(PinnedExecutor::new(
             max_threads,
@@ -466,7 +458,6 @@ impl WasmBridge {
             default_keybinds,
             keybinds: HashMap::new(),
             base_modes: HashMap::new(),
-            downloader,
             previous_pane_render_report: None,
             last_host_terminal_theme_mode: None,
             last_session_save_time: Arc::new(Mutex::new(None)),
@@ -552,11 +543,8 @@ impl WasmBridge {
                 let zellij_cwd = cwd.unwrap_or_else(|| self.zellij_cwd.clone());
                 let unloaded_while_loading = self.unloaded_while_loading.clone();
 
-                // Check if we need to download (async I/O required)
-                let needs_download = matches!(plugin.location, RunPluginLocation::Remote(_));
-
                 let load_id = self.begin_plugin_load(plugin_id);
-                let mut loading_context = LoadingContext::new(
+                let loading_context = LoadingContext::new(
                     self,
                     Some(zellij_cwd.clone()),
                     plugin.clone(), // TODO: rename to plugin_config
@@ -566,178 +554,67 @@ impl WasmBridge {
                     size,
                 )?;
 
-                if needs_download {
-                    let downloader = self.downloader.clone();
-                    get_tokio_runtime().spawn(async move {
-                        let _ = senders.send_to_background_jobs(
-                            BackgroundJob::AnimatePluginLoading(plugin_id),
-                        );
-                        let mut loading_indication = LoadingIndication::new(plugin_name.clone());
+                let _ =
+                    senders.send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
+                let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
-                        // Only an optimisation - the check that counts is the locked one below.
-                        if unloaded_while_loading.lock().unwrap().contains(&plugin_id) {
-                            log::info!(
-                                "plugin {plugin_id} was unloaded before its download, skipping it"
-                            );
-                        } else if let RunPluginLocation::Remote(url) = &plugin.location {
-                            let file_name: String = PortableHash::default()
-                                .hash128(url.as_bytes())
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect();
-
-                            let downloaded = downloader
-                                .download(url, Some(&file_name))
-                                .await
-                                .with_context(|| format!("failed to download plugin from {url}"));
-                            match downloaded {
-                                Ok(plugin_path) => loading_context.update_plugin_path(plugin_path),
-                                Err(e) => {
-                                    handle_plugin_loading_failure(
-                                        &senders,
-                                        Some(load_id),
-                                        plugin_id,
-                                        &mut loading_indication,
-                                        e,
-                                        Some(client_id),
-                                    );
-                                    return;
-                                },
-                            }
-                        }
-
-                        let loader_executor = plugin_executor.clone();
-                        let accepted = plugin_executor.execute_plugin_load(
+                let accepted = self.plugin_executor.execute_plugin_load(
+                    plugin_id,
+                    move |senders,
+                          plugin_map,
+                          connected_clients,
+                          plugin_cache: PluginCache,
+                          engine: Engine| {
+                        let mut plugin_map = plugin_map.lock().unwrap();
+                        if load_was_cancelled(
+                            &unloaded_while_loading,
                             plugin_id,
-                            move |senders: ThreadSenders,
-                                  plugin_map: Arc<Mutex<PluginMap>>,
-                                  connected_clients: Arc<Mutex<Vec<ClientId>>>,
-                                  plugin_cache: PluginCache,
-                                  engine| {
-                                let mut plugin_map = plugin_map.lock().unwrap();
-                                if load_was_cancelled(
-                                    &unloaded_while_loading,
-                                    plugin_id,
-                                    &senders,
-                                    &loader_executor,
-                                ) {
-                                    return;
-                                }
-                                match PluginLoader::new(
-                                    skip_cache,
-                                    loading_context,
-                                    senders.clone(),
-                                    engine.clone(),
-                                    plugin_cache.clone(),
-                                    &mut plugin_map,
-                                    connected_clients.clone(),
-                                )
-                                .start_plugin()
-                                {
-                                    Ok(_) => {
-                                        let plugin_list = plugin_map.list_plugins();
-                                        handle_plugin_successful_loading(
-                                            &senders,
-                                            plugin_id,
-                                            plugin_list,
-                                        );
-                                    },
-                                    Err(e) => handle_plugin_loading_failure(
-                                        &senders,
-                                        Some(load_id),
-                                        plugin_id,
-                                        &mut loading_indication,
-                                        e,
-                                        Some(client_id),
-                                    ),
-                                }
-
-                                let _ =
-                                    senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
-                                        load_id,
-                                        plugin_ids: vec![plugin_id],
-                                        done_receiving_permissions: false,
-                                    });
+                            &senders,
+                            &plugin_executor,
+                        ) {
+                            return;
+                        }
+                        match PluginLoader::new(
+                            skip_cache,
+                            loading_context,
+                            senders.clone(),
+                            engine.clone(),
+                            plugin_cache.clone(),
+                            &mut plugin_map,
+                            connected_clients.clone(),
+                        )
+                        .start_plugin()
+                        {
+                            Ok(_) => {
+                                let plugin_list = plugin_map.list_plugins();
+                                handle_plugin_successful_loading(&senders, plugin_id, plugin_list);
                             },
-                        );
-                        if !accepted {
-                            handle_plugin_loading_failure(
+                            Err(e) => handle_plugin_loading_failure(
                                 &senders,
                                 Some(load_id),
                                 plugin_id,
-                                &mut LoadingIndication::new(plugin_id.to_string()),
-                                "Plugin executor rejected loading",
-                                None,
-                            );
+                                &mut loading_indication,
+                                e,
+                                Some(client_id),
+                            ),
                         }
-                    });
-                } else {
-                    let _ = senders
-                        .send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
-                    let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
-                    let accepted = self.plugin_executor.execute_plugin_load(
+                        let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
+                            load_id,
+                            plugin_ids: vec![plugin_id],
+                            done_receiving_permissions: false,
+                        });
+                    },
+                );
+                if !accepted {
+                    handle_plugin_loading_failure(
+                        &self.senders,
+                        Some(load_id),
                         plugin_id,
-                        move |senders,
-                              plugin_map,
-                              connected_clients,
-                              plugin_cache: PluginCache,
-                              engine: Engine| {
-                            let mut plugin_map = plugin_map.lock().unwrap();
-                            if load_was_cancelled(
-                                &unloaded_while_loading,
-                                plugin_id,
-                                &senders,
-                                &plugin_executor,
-                            ) {
-                                return;
-                            }
-                            match PluginLoader::new(
-                                skip_cache,
-                                loading_context,
-                                senders.clone(),
-                                engine.clone(),
-                                plugin_cache.clone(),
-                                &mut plugin_map,
-                                connected_clients.clone(),
-                            )
-                            .start_plugin()
-                            {
-                                Ok(_) => {
-                                    let plugin_list = plugin_map.list_plugins();
-                                    handle_plugin_successful_loading(
-                                        &senders,
-                                        plugin_id,
-                                        plugin_list,
-                                    );
-                                },
-                                Err(e) => handle_plugin_loading_failure(
-                                    &senders,
-                                    Some(load_id),
-                                    plugin_id,
-                                    &mut loading_indication,
-                                    e,
-                                    Some(client_id),
-                                ),
-                            }
-
-                            let _ = senders.send_to_plugin(PluginInstruction::ApplyCachedEvents {
-                                load_id,
-                                plugin_ids: vec![plugin_id],
-                                done_receiving_permissions: false,
-                            });
-                        },
+                        &mut LoadingIndication::new(plugin_id.to_string()),
+                        "Plugin executor rejected loading",
+                        None,
                     );
-                    if !accepted {
-                        handle_plugin_loading_failure(
-                            &self.senders,
-                            Some(load_id),
-                            plugin_id,
-                            &mut LoadingIndication::new(plugin_id.to_string()),
-                            "Plugin executor rejected loading",
-                            None,
-                        );
-                    }
                 }
 
                 self.next_plugin_id += 1;

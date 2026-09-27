@@ -10,5 +10,5 @@ plugins {
     filepicker location="file:/path/to/my/plugin.wasm" {
         cwd "/"
     }
-    tab-bar location="https://foo.com/plugin.wasm"
+    tab-bar location="zellij:tab-bar"
 }

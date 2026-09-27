@@ -1858,11 +1858,6 @@ impl TryFrom<LayoutInfo> for ProtobufLayoutInfo {
                 name,
                 layout_metadata: None,
             }),
-            LayoutInfo::Url(name) => Ok(ProtobufLayoutInfo {
-                source: "url".to_owned(),
-                name,
-                layout_metadata: None,
-            }),
             LayoutInfo::Stringified(stringified_layout) => Ok(ProtobufLayoutInfo {
                 source: "stringified".to_owned(),
                 name: stringified_layout.clone(),
@@ -1885,7 +1880,6 @@ impl TryFrom<ProtobufLayoutInfo> for LayoutInfo {
                 Ok(LayoutInfo::File(protobuf_layout_info.name, layout_metadata))
             },
             "built-in" => Ok(LayoutInfo::BuiltIn(protobuf_layout_info.name)),
-            "url" => Ok(LayoutInfo::Url(protobuf_layout_info.name)),
             "stringified" => Ok(LayoutInfo::Stringified(protobuf_layout_info.name)),
             _ => Err("Unknown source for layout"),
         }
@@ -3500,7 +3494,7 @@ fn serialize_session_update_event_with_non_default_values() {
     plugins.insert(
         zellij_types::internal_ids::PluginId::new(1),
         PluginInfo {
-            location: "https://example.com/my-plugin.wasm".to_owned(),
+            location: "file:/path/to/my-plugin.wasm".to_owned(),
             configuration: plugin_configuration,
         },
     );
