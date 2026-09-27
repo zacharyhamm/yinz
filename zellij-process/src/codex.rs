@@ -264,8 +264,14 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
     Ok(())
 }
 
+#[derive(Default)]
+struct BridgeOptions {
+    has_cd: bool,
+}
+
 // Only known, unambiguous UI arguments may acquire an implicit --remote endpoint.
-fn bridge_eligible(args: &[String]) -> bool {
+fn bridge_options(args: &[String]) -> Option<BridgeOptions> {
+    let mut options = BridgeOptions::default();
     let mut args = args.iter().map(String::as_str);
     let mut first_positional = true;
     let mut resume_or_fork = false;
@@ -286,7 +292,7 @@ fn bridge_eligible(args: &[String]) -> bool {
                     (arg.len() > 2).then(|| arg[2..].trim_start_matches('=')),
                 )
             } else {
-                return false;
+                return None;
             };
             match option {
                 "--config" | "-c" | "--model" | "-m" | "--profile" | "-p" | "--sandbox" | "-s"
@@ -294,14 +300,15 @@ fn bridge_eligible(args: &[String]) -> bool {
                 | "--local-provider" => {
                     let value = inline_value.or_else(|| args.next());
                     if value.is_none_or(|value| value.is_empty() || value.starts_with('-')) {
-                        return false;
+                        return None;
                     }
                     if matches!(option, "--config" | "-c")
                         && value.and_then(|value| value.split_once('=').map(|(key, _)| key.trim()))
                             == Some("sandbox_workspace_write.writable_roots")
                     {
-                        return false;
+                        return None;
                     }
+                    options.has_cd |= matches!(option, "--cd" | "-C");
                 },
                 "--oss"
                 | "--full-auto"
@@ -316,7 +323,7 @@ fn bridge_eligible(args: &[String]) -> bool {
                     if resume_or_fork && inline_value.is_none() => {},
                 // Includes --add-dir (unsupported with --remote), explicit endpoints,
                 // standalone launches, help, and variadic --image arguments.
-                _ => return false,
+                _ => return None,
             }
         } else if first_positional {
             first_positional = false;
@@ -351,12 +358,12 @@ fn bridge_eligible(args: &[String]) -> bool {
                 | "responses-api-proxy"
                 | "stdio-to-uds"
                 | "cloud"
-                | "help" => return false,
+                | "help" => return None,
                 _ => {},
             }
         }
     }
-    true
+    Some(options)
 }
 
 /// Run the ordinary Codex UI through a pane-aware connection to its shared daemon.
@@ -365,21 +372,27 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         .iter()
         .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
         .collect();
-    if ![
-        "ZELLIJ_PANE_REF",
-        "ZELLIJ_PANE_ID",
-        "ZELLIJ_REMOTE_PANE_TOKEN",
-    ]
-    .iter()
-    .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
-        || !bridge_eligible(args)
-    {
+    let options = bridge_options(args).filter(|_| {
+        [
+            "ZELLIJ_PANE_REF",
+            "ZELLIJ_PANE_ID",
+            "ZELLIJ_REMOTE_PANE_TOKEN",
+        ]
+        .iter()
+        .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
+    });
+    let Some(options) = options else {
         return Command::new(program)
             .args(args)
             .status()
             .map(exit_code)
             .context("run Codex");
-    }
+    };
+    let cwd = if options.has_cd {
+        None
+    } else {
+        Some(std::env::current_dir().context("resolve Codex launcher working directory")?)
+    };
     let registration = Registration::new(&directory(), env)?;
     let status = Command::new(program)
         .args(["app-server", "daemon", "start"])
@@ -397,9 +410,15 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             let path = registration.dir.path().join("ui.sock");
             crate::pty_host::protocol::check_socket_path_length(&path, 0)?;
             let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
-            let mut ui = tokio::process::Command::new(program)
+            let mut command = tokio::process::Command::new(program);
+            command
                 .arg("--remote")
-                .arg(format!("unix://{}", path.display()))
+                .arg(format!("unix://{}", path.display()));
+            // A shared daemon may have started in a different pane's working directory.
+            if let Some(cwd) = &cwd {
+                command.arg("--cd").arg(cwd);
+            }
+            let mut ui = command
                 .args(args)
                 .kill_on_drop(true)
                 .spawn()
