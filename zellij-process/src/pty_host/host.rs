@@ -56,6 +56,7 @@ use nix::{
     unistd::Pid,
 };
 use zellij_runtime::errors::prelude::*;
+use zellij_runtime::shared::ensure_secure_dir;
 use {zellij_runtime::consts::VERSION, zellij_types::input::command::RunCommand};
 
 use super::fdpass::{self, send_fd};
@@ -63,7 +64,7 @@ use super::protocol::{
     self, read_msg, write_msg, AttachRefusal, HostStatus, HostToServerMsg, ServerToHostMsg,
     SpawnFailureKind, WireTermios, WireWinsize, PROTOCOL_VERSION,
 };
-use super::{ensure_secure_dir, secure_socket};
+use super::secure_socket;
 
 /// How much detached output to keep. Only reached when no server is attached, so
 /// this is a bound on memory for an orphaned pane, not a scrollback setting.

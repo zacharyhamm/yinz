@@ -79,10 +79,36 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &[
             "zellij-types",
             "zellij-runtime",
-            "zellij-config",
             "zellij-ipc",
-            "zellij-session",
             "zellij-test-support",
+        ],
+    ),
+    (
+        "zellij-swamp",
+        &[
+            "zellij-runtime",
+            "zellij-project-config",
+            "zellij-test-support",
+        ],
+    ),
+    (
+        "zellij-codex",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-session",
+            "zellij-process",
+            "zellij-test-support",
+        ],
+    ),
+    (
+        "zellij-firecracker-provider",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-config",
+            "zellij-session",
+            "zellij-process",
         ],
     ),
     (
@@ -132,6 +158,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-ipc",
             "zellij-session",
             "zellij-process",
+            "zellij-swamp",
             "zellij-bus",
             "zellij-routing",
             "zellij-tile",

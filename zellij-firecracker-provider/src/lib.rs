@@ -3,13 +3,14 @@
 //! No daemon: each protocol invocation takes one file lock, reconciles the
 //! small state directory, and leaves the Firecracker process running on its
 //! own. The privileged part is a one-time pool of user-owned TAP devices.
+//!
+//! This is the implementation of the `zellij-firecracker` binary. The Zellij server drives
+//! it through the JSON-over-stdio protocol in `zellij_process::firecracker`. The provider
+//! also writes a managed fragment into Zellij's config during setup, and asks a VM's owning
+//! session, over IPC, to close that VM's panes. Linux only: on other targets the crate is
+//! empty.
+#![cfg(target_os = "linux")]
 
-use super::{
-    vm_id, worktree_vm_name, EnsureResponse, Identity, RecoveryEntry, VmEntry, WorktreeIdentity,
-    PROGRESS_PREFIX, PROTOCOL_VERSION,
-};
-use crate::pty_host::ensure_secure_dir;
-use crate::pty_host::remote::ssh::SshOptions;
 use highway::{HighwayHash, Key, PortableHash};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,9 +37,16 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use zellij_config::config::Config as ZellijConfig;
+use zellij_process::firecracker::{
+    vm_id, worktree_vm_name, EnsureResponse, Request, WorktreeIdentity, PROGRESS_PREFIX,
+    PROTOCOL_VERSION,
+};
+use zellij_process::pty_host::remote::ssh::SshOptions;
 use zellij_runtime::errors::prelude::*;
 use zellij_runtime::home::{xdg_config_dir, xdg_data_dir};
+use zellij_runtime::shared::ensure_secure_dir;
 use zellij_types::command::validate_firecracker_vm_name;
+use zellij_types::firecracker::{Identity, RecoveryEntry, VmEntry};
 use {zellij_runtime::consts::ZELLIJ_CACHE_DIR, zellij_runtime::consts::ZELLIJ_PROJ_DIR};
 
 const CONFIG_ENV: &str = "ZELLIJ_FIRECRACKER_CONFIG";
@@ -94,8 +102,6 @@ const CHROOT_DEVICES: [&str; 6] = [
     "/dev/urandom",
     "/dev/tty",
 ];
-
-use super::Request;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
@@ -6454,6 +6460,10 @@ mod cli_tests;
 mod tests {
     use super::*;
 
+    /// How long a test thread waits on another for a step whose subject is not the clock.
+    /// The same budget as `zellij_process::firecracker`'s tests give a stub provider.
+    const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum SetupStage {
         Preflight,
@@ -11185,9 +11195,7 @@ mod tests {
                 let state_path = &vm.path;
                 let replacement = &replacement;
                 let replace = scope.spawn(move || {
-                    closing_rx
-                        .recv_timeout(super::super::AMPLE_TIMEOUT)
-                        .unwrap();
+                    closing_rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
                     let lock = File::open(lock_path).unwrap();
                     assert_eq!(
                         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
@@ -11218,9 +11226,7 @@ mod tests {
                             ("work", "review", Duration::from_secs(15))
                         );
                         closing_tx.send(()).unwrap();
-                        contended_rx
-                            .recv_timeout(super::super::AMPLE_TIMEOUT)
-                            .unwrap();
+                        contended_rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
                         assert_eq!(fs::read(&vm.path).unwrap(), before);
                         if succeeds {
                             Ok(())

@@ -137,7 +137,10 @@ escalation on the first attempt.
 | `zellij-bus/` | Thread instructions, senders, OS API, background jobs, recorder |
 | `zellij-routing/` | Action dispatch and completion waits |
 | `zellij-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
-| `zellij-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker |
+| `zellij-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
+| `zellij-firecracker-provider/` | The `zellij-firecracker` VM provider (Linux only) |
+| `zellij-swamp/` | Managed Swamp servers and the workflow client |
+| `zellij-codex/` | Codex conversation-to-pane binding for `zellij hocus codex` |
 | `zellij-terminal/` | Terminal emulation, graphics, output, host queries |
 | `zellij-client/` | Input handling and terminal I/O |
 | `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
@@ -197,7 +200,7 @@ Postgres, one database can serve multiple machines.
 ## Swamp integration
 
 Zellij manages local Swamp servers and runs project-owned Swamp workflows
-through `zellij workflow`. The supervisor is in `zellij-process/src/swamp.rs`.
+through `zellij workflow`. The supervisor is in `zellij-swamp/src/lib.rs`.
 
 Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
 

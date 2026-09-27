@@ -1,0 +1,22 @@
+[package]
+name = "zellij-firecracker-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The zellij-firecracker VM provider behind Zellij's Firecracker panes (Linux only)"
+
+[lints]
+workspace = true
+
+[dependencies]
+zellij-config = { workspace = true }
+zellij-process = { path = "../zellij-process", version = "0.45.0" }
+zellij-runtime = { workspace = true }
+zellij-session = { workspace = true }
+zellij-types = { workspace = true }
+anyhow = { workspace = true }
+highway = { version = "=1.2.0", default-features = false, features = ["std"] }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

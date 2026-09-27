@@ -13,14 +13,12 @@
 // test comment 3
 // test comment 4
 // test comment 5
-//! Terminal process supervision, local and remote transport, and VM providers.
+//! Terminal process supervision, local and remote transport, and the VM provider client.
 pub use zellij_types::internal_ids::{ClientId, PluginId, TerminalId};
 
-pub mod codex;
 pub mod command;
 pub mod firecracker;
 pub mod pty_host;
-pub mod swamp;
 
 use async_trait::async_trait;
 use std::io;

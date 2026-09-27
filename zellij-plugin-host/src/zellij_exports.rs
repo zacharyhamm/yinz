@@ -2849,7 +2849,7 @@ fn spawn_agent(
                 get_tokio_runtime().spawn_blocking(move || {
                     if let Ok(config) = zellij_config::project_config::access(&warm_folder, None) {
                         if config.error.is_none() && config.config.workflow.is_some() {
-                            zellij_process::swamp::prewarm(&config.root).non_fatal();
+                            zellij_swamp::prewarm(&config.root).non_fatal();
                         }
                     }
                 });
@@ -3752,24 +3752,24 @@ fn swamp_request(
             let payload: serde_json::Value = serde_json::from_str(&payload).context("invalid Swamp request payload")?;
             let progress = |payload| emit(serde_json::json!({"type":"managed.progress","id":id,"payload":payload}));
             if operation == "managed.endpoint" {
-                let value = zellij_process::swamp::public_endpoint(&root)?;
+                let value = zellij_swamp::public_endpoint(&root)?;
                 emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
             } else if operation == "workflow.get" {
                 let workflow = payload["workflowIdOrName"].as_str().context("workflow is required")?;
-                let value = zellij_process::swamp::definitions::get(root, workflow, &progress).await?;
+                let value = zellij_swamp::definitions::get(root, workflow, &progress).await?;
                 emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
             } else if matches!(operation.as_str(), "workflow.edit" | "workflow.delete") {
-                let value = zellij_process::swamp::definitions::change(root, &operation, payload, &progress).await?;
+                let value = zellij_swamp::definitions::change(root, &operation, payload, &progress).await?;
                 emit(serde_json::json!({"type":operation,"id":id,"payload":{"data":value}}));
             } else if operation == "workflow.cancel" {
                 let warm = root.clone();
                 let warm_id = id.clone();
-                tokio::task::spawn_blocking(move || zellij_process::swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
+                tokio::task::spawn_blocking(move || zellij_swamp::prewarm_request(&warm, &warm_id)).await.context("Swamp startup failed")??;
                 let run = payload["runId"].as_str().context("cancellation requires a run ID")?.to_owned();
-                let value = zellij_process::swamp::cancel(root, run).await?;
+                let value = zellij_swamp::cancel(root, run).await?;
                 emit(serde_json::json!({"type":"workflow.cancel", "id":id, "payload":{"data":value}}));
             } else {
-                let mut events = zellij_process::swamp::request(root, id.clone(), operation, payload).await?;
+                let mut events = zellij_swamp::request(root, id.clone(), operation, payload).await?;
                 while let Some(frame) = events.recv().await { emit(frame); }
             }
             Ok(())

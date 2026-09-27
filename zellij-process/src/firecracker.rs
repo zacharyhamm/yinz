@@ -17,10 +17,9 @@ use std::{
 use zellij_runtime::errors::prelude::*;
 use zellij_types::command::validate_firecracker_vm_name;
 
-#[cfg(target_os = "linux")]
-pub mod provider;
-
-const PROTOCOL_VERSION: u32 = 2;
+/// The version both ends of the pipe speak: this client and the provider the
+/// `zellij-firecracker` binary runs, in the `zellij-firecracker-provider` crate.
+pub const PROTOCOL_VERSION: u32 = 2;
 const MAX_OUTPUT: usize = 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// A stderr line the provider writes to say what it is doing. Any output resets
@@ -37,7 +36,8 @@ pub const PROGRESS_PREFIX: &str = "progress: ";
 #[cfg(test)]
 pub(crate) const AMPLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn vm_id(session: &str, name: &str) -> String {
+/// The provider's stable, path-free id for the VM `name` of `session`.
+pub fn vm_id(session: &str, name: &str) -> String {
     let mut hasher = PortableHash::new(Key::default());
     hasher.append(session.as_bytes());
     hasher.append(&[0]);
@@ -60,7 +60,7 @@ pub struct Provider {
 /// reads, which is what the `Cow`s are for - one definition serves both ends of the pipe.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
-pub(crate) enum Request<'a> {
+pub enum Request<'a> {
     Ensure {
         version: u32,
         session: Cow<'a, str>,
@@ -119,9 +119,8 @@ pub(crate) enum Request<'a> {
     },
 }
 
-#[cfg(target_os = "linux")]
 impl Request<'_> {
-    pub(crate) fn version(&self) -> u32 {
+    pub fn version(&self) -> u32 {
         match self {
             Self::Ensure { version, .. }
             | Self::Stop { version, .. }
@@ -140,7 +139,7 @@ impl Request<'_> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct WorktreeIdentity {
+pub struct WorktreeIdentity {
     pub path: PathBuf,
     pub head: String,
     pub branch: Option<String>,

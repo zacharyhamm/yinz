@@ -9,11 +9,9 @@ description = "Terminal process supervision and transport for Zellij"
 workspace = true
 
 [dependencies]
-zellij-config = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
-zellij-session = { workspace = true }
 sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
 anyhow = { workspace = true }
 async-trait = { version = "0.1.50", default-features = false }
@@ -22,8 +20,6 @@ highway = { version = "=1.2.0", default-features = false, features = ["std"] }
 log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde-saphyr = { version = "0.0.28", default-features = false, features = ["deserialize"] }
-tempfile = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 close_fds = "0.3.2"
@@ -31,11 +27,9 @@ libc = { workspace = true }
 nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 signal-hook = { workspace = true }
 sha2 = { workspace = true }
-isahc = { workspace = true }
-futures-util = { version = "0.3", features = ["sink"] }
-tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
-tokio-native-tls = "0.3"
+futures-util = { version = "0.3" }
 
 [dev-dependencies]
 hegeltest = "0.29.3"
+tempfile = { workspace = true }
 zellij-test-support = { path = "../zellij-test-support" }

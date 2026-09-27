@@ -30,6 +30,9 @@ zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-storage = { workspace = true }
 zellij-process = { path = "zellij-process", version = "0.45.0" }
+zellij-codex = { workspace = true }
+zellij-firecracker-provider = { workspace = true }
+zellij-swamp = { workspace = true }
 tokio = { workspace = true }
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
@@ -97,6 +100,9 @@ members = [
     "zellij-panes",
     "zellij-plugin-host",
     "zellij-process",
+    "zellij-codex",
+    "zellij-firecracker-provider",
+    "zellij-swamp",
     "zellij-terminal",
     "zellij-server",
     "zellij-config",
@@ -168,6 +174,9 @@ zellij-plugin-location = { path = "zellij-plugin-location", version = "0.45.0" }
 # Default features off: the root package's `vendored_curl` feature decides how libcurl is linked.
 zellij-downloader = { path = "zellij-downloader", version = "0.45.0", default-features = false }
 zellij-key-codec = { path = "zellij-key-codec", version = "0.45.0" }
+zellij-codex = { path = "zellij-codex", version = "0.45.0" }
+zellij-firecracker-provider = { path = "zellij-firecracker-provider", version = "0.45.0" }
+zellij-swamp = { path = "zellij-swamp", version = "0.45.0" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }

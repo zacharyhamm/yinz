@@ -33,6 +33,7 @@ use zellij_types::internal_ids::TerminalId;
 
 use serde::Deserialize;
 use zellij_runtime::errors::prelude::*;
+use zellij_runtime::shared::ensure_secure_dir;
 use {zellij_runtime::consts::ZELLIJ_SOCK_DIR, zellij_types::input::command::RunCommand};
 
 use super::conn::{Reconnected, Reconnector, RemoteConn};
@@ -41,7 +42,6 @@ use super::protocol::{
     self, BrokerToServerMsg, Frame, RemotePaneEntry, ResumeRefusal, ServerToBrokerMsg,
     REMOTE_PROTOCOL_VERSION,
 };
-use crate::pty_host::ensure_secure_dir;
 use crate::pty_host::protocol::{
     check_socket_path_length, SpawnFailureKind, WireWinsize, SSH_CONTROL_PATH_RENAME_MARGIN,
 };
@@ -365,7 +365,7 @@ struct SshReconnector {
 }
 
 impl SshOptions {
-    pub(crate) fn args(&self) -> Vec<String> {
+    pub fn args(&self) -> Vec<String> {
         let mut args = vec![];
         if let Some(path) = &self.identity_file {
             // `-i` takes its whole argument as the path, so it needs no quoting.

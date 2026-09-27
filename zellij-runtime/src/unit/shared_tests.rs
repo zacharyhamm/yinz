@@ -32,3 +32,20 @@ fn terminal_titles_lead_with_the_hostname() {
         osc("main | vim")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn secure_dirs_are_created_with_missing_parents_and_owner_only_access() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("missing").join("nested").join("sockets");
+    ensure_secure_dir(&dir).unwrap();
+    assert!(dir.is_dir());
+    assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o7777, 0o700);
+
+    // A second call tightens a directory that already exists with looser access.
+    set_permissions(&dir, 0o755).unwrap();
+    ensure_secure_dir(&dir).unwrap();
+    assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o7777, 0o700);
+}

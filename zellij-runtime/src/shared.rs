@@ -22,6 +22,13 @@ pub fn set_permissions(_path: &std::path::Path, _mode: u32) -> std::io::Result<(
 use crate::envs::get_session_name;
 use crate::errors::prelude::*;
 
+/// Create `path` with any missing parents, then make it accessible to its owner only.
+pub fn ensure_secure_dir(path: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    set_permissions(path, 0o700).with_context(|| format!("failed to secure {}", path.display()))
+}
+
 /// The OSC 0 sequence that sets the host terminal's title for a focused pane.
 ///
 /// Always leads with this machine's hostname — the same name the tab bar prints in its top-left

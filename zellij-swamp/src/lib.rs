@@ -739,7 +739,7 @@ pub fn supervise(root: PathBuf) -> Result<()> {
     {
         return Err(anyhow!("installed Swamp cannot resume inline model types; use a compatible build and run extensions/tests/serve_compatibility.ts"));
     }
-    let config = zellij_config::project_config::access_root(&root, None).map_err(|e| anyhow!(e))?;
+    let config = zellij_project_config::access_root(&root, None).map_err(|e| anyhow!(e))?;
     if let Some(error) = config.error {
         return Err(anyhow!(error));
     }

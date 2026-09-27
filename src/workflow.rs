@@ -30,7 +30,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             };
             println!(
                 "{}",
-                runtime.block_on(zellij_process::swamp::lifecycle(snapshot.root, action))?
+                runtime.block_on(zellij_swamp::lifecycle(snapshot.root, action))?
             );
         },
         Workflow::Run {
@@ -70,7 +70,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    runtime.block_on(zellij_process::swamp::call(
+                    runtime.block_on(zellij_swamp::call(
                         snapshot.root.clone(),
                         "workflow.history.get",
                         serde_json::json!({"workflowIdOrName":run})

@@ -69,17 +69,6 @@ pub(crate) fn process_group_terminated(child_pid: ProcessId) -> bool {
         .is_ok_and(|group| nix::sys::signal::kill(group, None) == Err(nix::errno::Errno::ESRCH))
 }
 
-pub(crate) fn ensure_secure_dir(
-    path: &std::path::Path,
-) -> zellij_runtime::errors::prelude::Result<()> {
-    use zellij_runtime::errors::prelude::*;
-
-    std::fs::create_dir_all(path)
-        .with_context(|| format!("failed to create {}", path.display()))?;
-    zellij_runtime::shared::set_permissions(path, 0o700)
-        .with_context(|| format!("failed to secure {}", path.display()))
-}
-
 fn secure_socket(path: &std::path::Path, mode: u32) -> zellij_runtime::errors::prelude::Result<()> {
     secure_socket_with(path, mode, zellij_runtime::shared::set_permissions)
 }
@@ -143,6 +132,7 @@ mod tests {
 
     use hegel::generators;
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    use zellij_runtime::shared::ensure_secure_dir;
 
     #[test]
     fn process_ids_cannot_signal_a_process_group_by_wrapping() {

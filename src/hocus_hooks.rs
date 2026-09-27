@@ -59,10 +59,10 @@ const OPENCODE_MARKER: &str = "hocus-opencode-plugin";
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let hooks = match command {
         Hocus::Codex { command, args } => {
-            std::process::exit(zellij_process::codex::launch(&command, &args)?);
+            std::process::exit(zellij_codex::launch(&command, &args)?);
         },
         Hocus::CodexReport => {
-            return zellij_process::codex::report(
+            return zellij_codex::report(
                 &std::env::current_exe().context("find this zellij binary")?,
             );
         },

@@ -6342,8 +6342,10 @@ dependencies = [
  "vte 0.15.0",
  "zellij-cli",
  "zellij-client",
+ "zellij-codex",
  "zellij-config",
  "zellij-downloader",
+ "zellij-firecracker-provider",
  "zellij-ipc",
  "zellij-plugin-api",
  "zellij-process",
@@ -6351,6 +6353,7 @@ dependencies = [
  "zellij-server",
  "zellij-session",
  "zellij-storage",
+ "zellij-swamp",
  "zellij-test-support",
  "zellij-types",
 ]
@@ -6455,6 +6458,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "zellij-codex"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "uuid",
+ "zellij-process",
+ "zellij-runtime",
+ "zellij-session",
+ "zellij-test-support",
+ "zellij-types",
+]
+
+[[package]]
 name = "zellij-config"
 version = "0.45.0"
 dependencies = [
@@ -6504,6 +6529,23 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "zellij-firecracker-provider"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "highway",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zellij-config",
+ "zellij-process",
+ "zellij-runtime",
+ "zellij-session",
+ "zellij-types",
 ]
 
 [[package]]
@@ -6659,6 +6701,7 @@ dependencies = [
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",
+ "zellij-swamp",
  "zellij-terminal",
  "zellij-test-support",
  "zellij-tile",
@@ -6688,25 +6731,19 @@ dependencies = [
  "futures-util",
  "hegeltest",
  "highway",
- "isahc",
  "libc",
  "log",
  "nix",
  "serde",
- "serde-saphyr",
  "serde_json",
  "sha2",
  "signal-hook",
  "sysinfo",
  "tempfile",
  "tokio",
- "tokio-native-tls",
- "tokio-tungstenite",
  "uuid",
- "zellij-config",
  "zellij-ipc",
  "zellij-runtime",
- "zellij-session",
  "zellij-test-support",
  "zellij-types",
 ]
@@ -6854,6 +6891,32 @@ dependencies = [
  "uuid",
  "vte 0.15.0",
  "zellij-types",
+]
+
+[[package]]
+name = "zellij-swamp"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "close_fds",
+ "futures-util",
+ "isahc",
+ "libc",
+ "log",
+ "nix",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite",
+ "uuid",
+ "zellij-project-config",
+ "zellij-runtime",
+ "zellij-test-support",
 ]
 
 [[package]]
