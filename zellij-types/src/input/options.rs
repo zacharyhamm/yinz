@@ -208,7 +208,7 @@ impl FromStr for NotificationPosition {
 pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 10;
 /// The floor a spawned agent pane's equal share of a tab must clear, as a terminal size:
 /// `agent_pane_min_columns` by `agent_pane_min_rows`, compared by area. See
-/// `Screen::agent_pane_target` in zellij-server for the rule these feed.
+/// `Screen::agent_pane_target` in zellij-screen for the rule these feed.
 pub const DEFAULT_AGENT_PANE_MIN_COLUMNS: usize = 80;
 pub const DEFAULT_AGENT_PANE_MIN_ROWS: usize = 24;
 

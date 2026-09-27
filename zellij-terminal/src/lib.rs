@@ -13,7 +13,9 @@
 // test comment 3
 // test comment 4
 // test comment 5
-//! Terminal emulation, graphics, and output serialization.
+//! Terminal emulation and output serialization. The graphics protocol engine lives in
+//! `zellij-terminal-graphics` and the host query types in `zellij-host-protocol`; both are
+//! re-exported here.
 pub use zellij_host_protocol::host_query;
 pub mod output;
 pub mod panes;
