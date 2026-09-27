@@ -66,13 +66,6 @@ fn stop_zellij(channel: &mut ssh2::Channel) {
     channel
         .write_all(b"rm -rf ~/.cache/zellij/permissions.kdl\n")
         .unwrap();
-    // create an arch-independent symlink so the binary path in snapshots is stable across
-    // x86_64 (CI) and aarch64 (Apple Silicon local dev)
-    channel
-        .write_all(
-            b"ln -sf /usr/src/zellij/$(uname -m)-unknown-linux-musl/release/zellij /usr/src/zellij/zellij\n",
-        )
-        .unwrap();
 }
 
 fn start_zellij(channel: &mut ssh2::Channel) {

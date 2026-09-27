@@ -66,8 +66,9 @@ const GUEST_SYNC_STAGING: &str = "/tmp/zellij-sync";
 const MERGE_ATTEMPTS: u32 = 3;
 const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/vmlinux-6.1.182";
 const KERNEL_SHA256: &str = "90f6c45a719c76c08f09ba5e80b4a7f1044e33152c92b9e45a22e87c0021bac5";
-const ROOTFS_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260826-761f88fbb951-0/x86_64/ubuntu-24.04.squashfs";
-const ROOTFS_SHA256: &str = "1e424bde9bfaaca5c74fcc2b1c78be6285ae515528ef4acc9e64ff78b4225b48";
+// Official Debian trixie-slim amd64 rootfs, pinned to the artifact commit and OCI layer digest.
+const ROOTFS_URL: &str = "https://raw.githubusercontent.com/debuerreotype/docker-debian-artifacts/8f962b15d7884a90e17876a9303cbac909d119aa/trixie/slim/oci/blobs/rootfs.tar.gz";
+const ROOTFS_SHA256: &str = "6b37362b3da78869050b894b799ad4df04f1f3b52774087db0d81151570244c8";
 /// Where the customization script is staged inside the guest root.
 const GUEST_CUSTOMIZE_SCRIPT: &str = "/tmp/zellij-firecracker-customize.sh";
 /// Where `image build` puts Zellij in the guest, and so where provisioning finds it. Named
@@ -380,14 +381,14 @@ setup asks before installing the provider and uses sudo for host networking.
   --rebuild            Replace the image; existing VMs keep their current disks
   -h, --help           Show this help
 
-Without a project recipe, builds Ubuntu with Zellij and Git; add a recipe for agent tools.
+Without a project recipe, builds Debian 13 slim with Zellij and Git; add a recipe for agent tools.
 Existing images are reused unless --rebuild is supplied.
 Start a new Zellij session after setup to load the provider."
         },
         Some("image") => {
             "Usage: zellij-firecracker image build [OPTIONS]
 
-Build an Ubuntu image with Zellij. Run as your normal user. Downloads are cached.
+Build a Debian 13 slim image with Zellij. Run as your normal user. Downloads are cached.
 
   --name NAME          Save as a named image; otherwise build the default image
   --project DIR        Run DIR/.zellij/firecracker-image.sh inside the guest root
@@ -4029,7 +4030,7 @@ where
             command.arg("--project").arg(project);
         } else {
             println!(
-                "No recipe at {}. Building Ubuntu with Zellij, Git and file sync; agent and project tools are not included.\n\
+                "No recipe at {}. Building Debian 13 slim with Zellij, Git and file sync; agent and project tools are not included.\n\
                  To add tools, create this script and rerun setup --rebuild.",
                 recipe.display()
             );
@@ -4349,7 +4350,7 @@ fn guest_incompatibility(binary: &ElfInfo, guest: &GuestLibs) -> Option<String> 
 /// Say so when the Zellij about to be installed cannot run in the guest being built. A
 /// static build runs in any guest; a dynamic one needs the guest's loader, its libraries and
 /// a glibc at least as new as the one it was built against, and a host newer than the
-/// guest's Ubuntu 24.04 fails inside the VM only, with nothing on this side to explain it.
+/// guest's Debian 13 fails inside the VM only, with nothing on this side to explain it.
 /// The staged `root` is what makes this answerable rather than a guess - the guest's own
 /// `libc.so.6` is right there to be read - which is also why nothing warns from `doctor`,
 /// where neither the binary that went into the image nor the image's contents are known.
@@ -4370,8 +4371,8 @@ fn warn_if_guest_cannot_run(zellij: &Path, root: &Path) {
     };
     eprintln!(
         "warning: {} cannot run in this guest image: {reason}, so every pane in the VM \
-         would fail to start. Build a static Zellij (cargo build --release --target \
-         x86_64-unknown-linux-musl --bin zellij) and pass it with --zellij",
+         would fail to start. Build Zellij in Debian 13 (cargo x firecracker-test --build) \
+         or pass a Debian 13 compatible GNU binary with --zellij",
         zellij.display()
     );
 }
@@ -4731,11 +4732,12 @@ const RUNTIME_COMMANDS: &[&str] = &["cp", "git", "rsync", "ssh", "ssh-keyscan", 
 const IMAGE_COMMANDS: &[&str] = &[
     "chroot",
     "curl",
+    "gzip",
     "mkfs.ext4",
     "sha256sum",
     "ssh-keygen",
     "unshare",
-    "unsquashfs",
+    "tar",
 ];
 
 fn require_commands(commands: &[&str]) -> Result<()> {
@@ -4789,7 +4791,7 @@ fn doctor() -> Result<()> {
     // Nothing here checks whether Zellij can run in the guest: `doctor` knows neither which
     // binary `--zellij` put in the image nor what the image contains, so the only Zellij it
     // could look at - the one beside the provider or on PATH - is one that may never enter a
-    // VM. `image build` has both in hand and warns there instead.
+    // VM. `image build` checks compatibility in the prepared guest before publishing it.
     //
     // Not fatal. `setup` runs this at the end, and someone who declined the offer must not
     // be told their host is broken for having done so.
@@ -4888,7 +4890,7 @@ fn image_build_options(args: &[String]) -> Result<ImageBuildOptions> {
         .or_else(|| project.map(|project| project.join(".zellij/firecracker-image.sh")));
     if customize.as_ref().is_some_and(|path| !path.is_file()) {
         return Err(anyhow!(
-            "Firecracker customization script does not exist: {}. Create it to install project tools, or omit --project/--customize to build a base Ubuntu image with Zellij",
+            "Firecracker customization script does not exist: {}. Create it to install project tools, or omit --project/--customize to build a base Debian 13 slim image with Zellij",
             customize.as_deref().unwrap().display()
         ));
     }
@@ -4928,9 +4930,9 @@ fn build_image(options: ImageBuildOptions) -> Result<()> {
         .canonicalize()
         .context("failed to resolve the image output directory")?;
     ensure_secure_dir(&cache_dir())?;
-    println!("Preparing Ubuntu and kernel downloads (verified downloads are reused).");
+    println!("Preparing Debian and kernel downloads (verified downloads are reused).");
     let kernel = download_verified(KERNEL_URL, KERNEL_SHA256, "vmlinux-6.1.182")?;
-    let squashfs = download_verified(ROOTFS_URL, ROOTFS_SHA256, "ubuntu-24.04.squashfs")?;
+    let archive = download_verified(ROOTFS_URL, ROOTFS_SHA256, "debian-trixie-slim.tar.gz")?;
     let private_key = output.join("id_ed25519");
     if !private_key.exists() {
         run(
@@ -4943,90 +4945,36 @@ fn build_image(options: ImageBuildOptions) -> Result<()> {
     fs::set_permissions(&private_key, fs::Permissions::from_mode(0o600))?;
     let temp = tempfile::tempdir().context("failed to create image staging directory")?;
     let root = temp.path().join("root");
+    fs::create_dir_all(&root).context("failed to create guest root directory")?;
     run(
-        Command::new("unsquashfs")
-            .args(["-d"])
-            .arg(&root)
-            .arg(&squashfs),
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&root),
         "failed to unpack the Firecracker rootfs",
     )?;
-    warn_if_guest_cannot_run(&zellij, &root);
     let guest_zellij = root.join(GUEST_ZELLIJ.trim_start_matches('/'));
     fs::copy(&zellij, &guest_zellij).context("failed to install Zellij in the guest")?;
     fs::set_permissions(&guest_zellij, fs::Permissions::from_mode(0o755))?;
-    let ssh_dir = root.join("root/.ssh");
-    ensure_secure_dir(&ssh_dir)?;
-    fs::copy(
-        private_key.with_extension("pub"),
-        ssh_dir.join("authorized_keys"),
-    )?;
-    fs::set_permissions(
-        ssh_dir.join("authorized_keys"),
-        fs::Permissions::from_mode(0o600),
-    )?;
-    let ssh_dropin = root.join("etc/ssh/sshd_config.d/99-zellij-firecracker.conf");
-    fs::write(
-        ssh_dropin,
-        "PermitRootLogin prohibit-password\nPasswordAuthentication no\nAllowStreamLocalForwarding yes\n",
-    )?;
-    let service_dropin = root.join("etc/systemd/system/ssh.service.d");
-    fs::create_dir_all(&service_dropin)?;
-    fs::write(
-        service_dropin.join("keys.conf"),
-        "[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n",
-    )?;
-    fs::write(
-        root.join("usr/local/bin/fcnet-setup.sh"),
-        r#"#!/bin/bash
-set -eu
-dev=$(ls /sys/class/net | grep -v '^lo$' | head -1)
-hex=$(cat "/sys/class/net/$dev/address" | cut -d: -f3-6 | tr ':' ' ')
-read -r a b c d <<< "$hex"
-ip=$(printf '%d.%d.%d.%d' "0x$a" "0x$b" "0x$c" "0x$d")
-gateway=$(sed -n 's/.*zellij_gateway=\([^ ]*\).*/\1/p' /proc/cmdline)
-dns=$(sed -n 's/.*zellij_dns=\([^ ]*\).*/\1/p' /proc/cmdline)
-ip addr add "$ip/24" dev "$dev"
-ip link set "$dev" up
-ip route replace default via "$gateway"
-printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
-"#,
-    )?;
-    fs::set_permissions(
-        root.join("usr/local/bin/fcnet-setup.sh"),
-        fs::Permissions::from_mode(0o755),
-    )?;
-    let network_service = root.join("etc/systemd/system/zellij-firecracker-network.service");
-    fs::write(
-        &network_service,
-        "[Unit]\nDescription=Configure Zellij Firecracker guest network\nAfter=network-pre.target\nBefore=network.target ssh.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/local/bin/fcnet-setup.sh\n\n[Install]\nWantedBy=multi-user.target\n",
-    )?;
-    let wants = root.join("etc/systemd/system/multi-user.target.wants");
-    fs::create_dir_all(&wants)?;
-    std::os::unix::fs::symlink(
-        "../zellij-firecracker-network.service",
-        wants.join("zellij-firecracker-network.service"),
-    )?;
-    fs::create_dir_all(root.join("workspace"))?;
     {
         let guest_script = root.join(GUEST_CUSTOMIZE_SCRIPT.trim_start_matches('/'));
+        println!("Installing Debian guest essentials. This can take several minutes.");
+        let project_script = root.join("tmp/zellij-firecracker-project.sh");
+        let mut script = String::from(GUEST_SETUP_SCRIPT);
         if let Some(customize) = customize {
-            println!(
-                "Installing project tools from {}. This can take several minutes.",
-                customize.display()
-            );
-            fs::copy(&customize, &guest_script).with_context(|| {
+            println!("Installing project tools from {}.", customize.display());
+            fs::copy(&customize, &project_script).with_context(|| {
                 format!(
                     "failed to stage Firecracker customization script {}",
                     customize.display()
                 )
             })?;
-        } else {
-            println!("Installing Git, HTTPS certificates and rsync for project file sync. This can take several minutes.");
-            fs::write(
-                &guest_script,
-                "#!/bin/sh\nset -eu\napt-get update\napt-get install -y --no-install-recommends ca-certificates git rsync\napt-get clean\nrm -rf /var/lib/apt/lists/*\n",
-            ).context("failed to stage base image setup")?;
+            script.push_str("\n/bin/sh /tmp/zellij-firecracker-project.sh\n");
         }
+        // A project recipe may install or disable SSH; these are required for every VM.
+        script.push_str("\nsystemctl enable ssh.service\nsystemctl set-default multi-user.target\napt-get clean\nrm -rf /var/lib/apt/lists/*\n");
+        fs::write(&guest_script, script).context("failed to stage guest setup")?;
         fs::set_permissions(&guest_script, fs::Permissions::from_mode(0o755))?;
         stage_apt_directories(&root)?;
         let apt_override = write_apt_build_overrides(&root)?;
@@ -5044,6 +4992,7 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
         let _ = fs::remove_file(&policy);
         let _ = fs::remove_file(&apt_override);
         let _ = fs::remove_file(&guest_script);
+        let _ = fs::remove_file(&project_script);
         result?;
         // The chroot's mounts live in a child's mount namespace and die with
         // it. If any survived, `mkfs.ext4 -d` below would walk them into the
@@ -5054,23 +5003,21 @@ printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
             ));
         }
     }
-    // Last, so that the customization script installing openssh-server cannot
-    // put its own `ssh-keygen -A` keys back: every VM generates its own at boot.
-    for entry in fs::read_dir(root.join("etc/ssh"))? {
-        let path = entry?.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("ssh_host_"))
-        {
-            fs::remove_file(path)?;
-        }
-    }
+    configure_guest(&root, &private_key)?;
+    warn_if_guest_cannot_run(&zellij, &root);
+    run(
+        Command::new("chroot")
+            .arg(&root)
+            .args([GUEST_ZELLIJ, "--version"])
+            .env_clear()
+            .envs(chroot_env_from(&env::vars().collect())),
+        "Zellij cannot run in the prepared Debian guest; build it with 'cargo x firecracker-test --build' or pass a Debian 13 compatible GNU binary with --zellij",
+    )?;
     let images = output.join("images");
     ensure_secure_dir(&images)?;
     let rootfs = match image.as_deref() {
         Some(image) => images.join(format!("{image}.ext4")),
-        None => output.join("ubuntu-24.04.ext4"),
+        None => output.join("debian-trixie-slim.ext4"),
     };
     println!("Writing the VM image to {}.", rootfs.display());
     // The image and kernel are built beside their destinations and moved into place only
@@ -5154,9 +5101,94 @@ fn write_apt_build_overrides(root: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+const GUEST_SETUP_SCRIPT: &str = "#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends systemd-sysv openssh-server iproute2 iputils-ping ca-certificates git rsync ncurses-base ncurses-term libgcc-s1 libstdc++6 libssl3t64 zlib1g
+";
+
+/// Apply VM settings after package installation and any project customization.
+fn configure_guest(root: &Path, private_key: &Path) -> Result<()> {
+    let ssh_dir = root.join("root/.ssh");
+    ensure_secure_dir(&ssh_dir)?;
+    fs::copy(
+        private_key.with_extension("pub"),
+        ssh_dir.join("authorized_keys"),
+    )?;
+    fs::set_permissions(
+        ssh_dir.join("authorized_keys"),
+        fs::Permissions::from_mode(0o600),
+    )?;
+    fs::create_dir_all(root.join("etc/ssh/sshd_config.d"))?;
+    let ssh_dropin = root.join("etc/ssh/sshd_config.d/99-zellij-firecracker.conf");
+    fs::write(
+        ssh_dropin,
+        "PermitRootLogin prohibit-password\nPasswordAuthentication no\nAllowStreamLocalForwarding yes\n",
+    )?;
+    let service_dropin = root.join("etc/systemd/system/ssh.service.d");
+    fs::create_dir_all(&service_dropin)?;
+    fs::write(
+        service_dropin.join("keys.conf"),
+        "[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n",
+    )?;
+    fs::write(
+        root.join("usr/local/bin/fcnet-setup.sh"),
+        r#"#!/bin/bash
+set -eu
+dev=$(ls /sys/class/net | grep -v '^lo$' | head -1)
+hex=$(cat "/sys/class/net/$dev/address" | cut -d: -f3-6 | tr ':' ' ')
+read -r a b c d <<< "$hex"
+ip=$(printf '%d.%d.%d.%d' "0x$a" "0x$b" "0x$c" "0x$d")
+gateway=$(sed -n 's/.*zellij_gateway=\([^ ]*\).*/\1/p' /proc/cmdline)
+dns=$(sed -n 's/.*zellij_dns=\([^ ]*\).*/\1/p' /proc/cmdline)
+ip addr add "$ip/24" dev "$dev"
+ip link set "$dev" up
+ip route replace default via "$gateway"
+printf 'nameserver %s\n' "$dns" > /etc/resolv.conf
+"#,
+    )?;
+    fs::set_permissions(
+        root.join("usr/local/bin/fcnet-setup.sh"),
+        fs::Permissions::from_mode(0o755),
+    )?;
+    let network_service = root.join("etc/systemd/system/zellij-firecracker-network.service");
+    fs::write(
+        &network_service,
+        "[Unit]\nDescription=Configure Zellij Firecracker guest network\nAfter=network-pre.target\nBefore=network.target ssh.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/local/bin/fcnet-setup.sh\n\n[Install]\nWantedBy=multi-user.target\n",
+    )?;
+    let wants = root.join("etc/systemd/system/multi-user.target.wants");
+    fs::create_dir_all(&wants)?;
+    std::os::unix::fs::symlink(
+        "../zellij-firecracker-network.service",
+        wants.join("zellij-firecracker-network.service"),
+    )?;
+    fs::create_dir_all(root.join("workspace"))?;
+    // Last, so that the customization script installing openssh-server cannot
+    // put its own `ssh-keygen -A` keys back: every VM generates its own at boot.
+    for entry in fs::read_dir(root.join("etc/ssh"))? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ssh_host_"))
+        {
+            fs::remove_file(path)?;
+        }
+    }
+    // Let systemd assign a fresh identity on each VM's first boot.
+    fs::write(root.join("etc/machine-id"), "")
+        .context("failed to clear the guest machine identity")?;
+    let dbus_id = root.join("var/lib/dbus/machine-id");
+    if dbus_id.exists() || dbus_id.is_symlink() {
+        fs::remove_file(&dbus_id).context("failed to clear the guest D-Bus identity")?;
+    }
+    Ok(())
+}
+
 /// The base rootfs is built for containers, so apt's spool directories have
 /// been stripped and apt refuses to download into them. Recreate them; they are
-/// standard on any Ubuntu system, so they stay in the finished image.
+/// standard on any Debian system, so they stay in the finished image.
 fn stage_apt_directories(root: &Path) -> Result<()> {
     for directory in [
         "var/cache/apt/archives/partial",

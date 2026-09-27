@@ -1,21 +1,20 @@
 ---
 source: src/tests/e2e/cases.rs
-assertion_line: 336
 expression: last_snapshot
 ---
- Zellij (e2e-test)  Tab #1  Tab #2  Tab #3  Tab #4  +        <ENTER> run, <ESC> drop to shell, <Ctrl-c> exit  
-                           Pane #1                         │                           Pane #2                          
+ Zellij (e2e-test)  Tab #1  [6] Tab #2  [7] Tab #3  +1 →  +  <ENTER> run, <ESC> drop to shell, <Ctrl-c> exit  
+                         [0] Pane #1                       │                         [1] Pane #2                        
 $                                                          │$                                                           
                                                            │                                                            
                                                            │                                                            
                                                            │                                                            
-                             ┌ Pane #4 ────────────────────────────────────── PIN [ ] ┐                                 
+                             ┌ [3] Pane #4 ────────────────────────────────── PIN [ ] ┐                                 
                              │$                                                       │                                 
-                             │ ┌ top ────────────────────────────────────────── PIN [ ] ┐                               
+                             │ ┌ [4] top ────────────────────────────────────── PIN [ ] ┐                               
                              │ │                                                        │                               
                              │ │                                                        │ ┐                             
                              │ │                                                        │ │─────────────────────────────
-                             │ │                  Waiting to run: top                   │ │ #3                          
+                             │ │                  Waiting to run: top                   │ │ne #3                        
                              │ │                                                        │ │                             
                              │ │    <ENTER> run, <ESC> drop to shell, <Ctrl-c> exit     │ │                             
                              └─│                                                        │ │                             
@@ -25,5 +24,5 @@ $                                                          │$
                                  └────────────────────────────────────────────────────────┘                             
                                                            │                                                            
                                                            │                                                            
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
  (FLOATING PANES VISIBLE): Press Ctrl p, <w> to hide.

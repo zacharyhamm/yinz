@@ -1,17 +1,11 @@
 ---
-version: "2.1"
 services:
   zellij-e2e:
-    image: ghcr.io/linuxserver/openssh-server
+    build:
+      context: ./docker
+      dockerfile: e2e-sshd.Dockerfile
     container_name: zellij-e2e
     hostname: zellij-e2e
-    environment:
-      PUID: 1000
-      PGID: 1000
-      TZ: Europe/Vienna
-      PASSWORD_ACCESS: true
-      USER_PASSWORD: test
-      USER_NAME: test
     volumes:
       - type: bind
         source: ./target

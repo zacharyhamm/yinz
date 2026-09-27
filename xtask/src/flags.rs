@@ -16,7 +16,7 @@ xflags::xflags! {
         cmd ci {
             /// end-to-end tests
             cmd e2e {
-                /// Build E2E binary of zellij
+                /// Build the E2E GNU binary in Debian slim (requires Docker)
                 optional --build
                 /// Run the E2E tests
                 optional --test
@@ -108,9 +108,9 @@ xflags::xflags! {
 
         /// Run the remote-pane tests, against a real sshd in a container
         cmd remote-test {
-            /// Build the musl binary and bring the containers up
+            /// Build the GNU binary in Debian slim (requires Docker) and bring the containers up
             optional --build
-            /// With --build on Linux, use a native debug binary instead of musl
+            /// With --build on Linux, use a native debug binary instead of the Debian build
             optional --native
             /// Run the tests
             optional --test
@@ -122,7 +122,7 @@ xflags::xflags! {
 
         /// Build and run the ignored tests against a real Firecracker VM
         cmd firecracker-test {
-            /// Build the guest image and provider
+            /// Build the guest image and provider (requires Docker)
             optional --build
             /// Run the tests with a temporary sudo-managed host network
             optional --test

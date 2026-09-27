@@ -34,7 +34,7 @@ services:
       ZELLIJ_REMOTE_GIT_REFRESH_SECS: "5"
     volumes:
       # The selected binary is linked at target/remote-test/zellij by the build.
-      # Its relative link works through this mount for both musl and native builds.
+      # Its relative link works through this mount for both Debian and native builds.
       - type: bind
         source: ./target
         target: /usr/src/zellij

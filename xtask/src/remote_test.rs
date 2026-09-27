@@ -7,7 +7,7 @@
 //!
 //! Three phases, mirroring `ci e2e`:
 //!
-//!   * `--build` — musl binary, generated keypair and ssh config, containers up
+//!   * `--build` — Debian GNU binary, generated keypair and ssh config, containers up
 //!     (`--build --native` uses a native debug binary on Linux)
 //!   * `--test`  — the `#[ignore]`d tests in `zellij-server/tests/`
 //!   * `--clean` — containers down, generated credentials removed
@@ -55,7 +55,7 @@ pub fn main(sh: &Shell, flags: flags::RemoteTest) -> anyhow::Result<()> {
         if !cfg!(target_os = "linux") {
             anyhow::bail!(
                 "'--native' requires a Linux host; use 'cargo x remote-test --build' \
-                 for the musl cross-build"
+                 for the Docker-based Debian build"
             );
         }
     }
@@ -96,11 +96,10 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
             .context("failed to build the native binary the container runs")?;
         PathBuf::from("debug/zellij")
     } else {
-        crate::status(">> Building the musl binary for the far machine");
-        println!(">> Building the musl binary for the far machine");
-        crate::ci::build_musl_release(sh)
-            .context("failed to build the binary the container runs")?;
-        Path::new(crate::ci::musl_target()).join("release/zellij")
+        crate::status(">> Building the Debian GNU binary for the far machine");
+        println!(">> Building the Debian GNU binary for the far machine");
+        crate::ci::build_linux_release(sh)
+            .context("failed to build the binary the container runs")?
     };
     let binary = crate::target_dir().join(&relative_binary);
     if !binary.exists() {

@@ -19,6 +19,9 @@ use std::path::Path;
 
 use super::remote_runner::{RemoteRunner, RemoteTerminal, Step};
 
+#[path = "unit/cases.rs"]
+mod unit;
+
 pub const QUIT: [u8; 1] = [17]; // ctrl-q
 pub const ESC: [u8; 1] = [27];
 pub const ENTER: [u8; 1] = [13]; // '\r'
@@ -101,6 +104,20 @@ fn account_for_races_in_snapshot(snapshot: String) -> String {
         .replace_all(&snapshot, "\n")
         .to_string();
     let snapshot = eol_arrow_replace.replace_all(&snapshot, "\n").to_string();
+    // The wall clock changes on every run. Include its leading padding so normalizing a
+    // single-digit day consumes the extra alignment space and preserves the line's width.
+    let clock =
+        Regex::new(r"(?m)( *\d{2}:\d{2}  [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2})( *)$").unwrap();
+    let snapshot = clock
+        .replace_all(&snapshot, |captures: &regex::Captures| {
+            format!(
+                "{:>width$}{}",
+                "00:00  Mon 01 Jan",
+                &captures[2],
+                width = captures[1].len()
+            )
+        })
+        .to_string();
 
     snapshot
 }
@@ -301,6 +318,17 @@ pub fn quit_and_resurrect_session() {
                         step_is_complete = true;
                     }
                     step_is_complete
+                },
+            })
+            .add_step(Step {
+                name: "Confirm quitting the session",
+                instruction: |mut remote_terminal: RemoteTerminal| -> bool {
+                    if remote_terminal.snapshot_contains("Quit Zellij?") {
+                        remote_terminal.send_key(b"\t\r");
+                        true
+                    } else {
+                        false
+                    }
                 },
             })
             .add_step(Step {

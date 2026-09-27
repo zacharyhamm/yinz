@@ -4,7 +4,7 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl git libssl-dev mold musl-tools \
+    build-essential ca-certificates curl git libssl-dev mold \
     nodejs npm openssh-client openssh-server pkg-config protobuf-compiler \
     ripgrep rsync
 
@@ -12,7 +12,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- \
     -y --profile minimal --default-toolchain stable
 export PATH="/root/.cargo/bin:/usr/local/bin:$PATH"
 rustup component add rustfmt clippy
-rustup target add wasm32-wasip1 x86_64-unknown-linux-musl
+rustup target add wasm32-wasip1
 cargo install cargo-nextest --locked
 
 npm install --global n

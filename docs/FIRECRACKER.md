@@ -26,7 +26,7 @@ uses sudo for provider installation and networking.
 
    ```sh
    sudo apt-get install curl git iproute2 iptables e2fsprogs rsync \
-       openssh-client squashfs-tools uidmap util-linux coreutils sudo
+       openssh-client tar gzip uidmap util-linux coreutils sudo
    test -r /dev/kvm && test -w /dev/kvm && echo "KVM access ready"
    ```
 
@@ -59,7 +59,8 @@ or the Zellij binary that runs in the guest.
 
 If `.zellij/firecracker-image.sh` exists in the project, setup runs it inside
 the image to install your development tools. Without it, setup creates a
-base Ubuntu image with Zellij, Git, and file sync tools. That base does not install coding agents.
+base Debian 13 slim image with Zellij, Git, and file sync tools.
+That base does not install coding agents.
 The [recipe in this checkout](../.zellij/firecracker-image.sh) installs Rust,
 build tools, Codex, and Claude Code. Image builds can take several minutes.
 
@@ -90,8 +91,16 @@ files are added. Use `--disk-size-gib N` to change the capacity. Each VM has
 its own writable disk. The default VM has 2 vCPUs and 2048 MiB of memory.
 
 Use `--zellij /absolute/path/to/zellij` to select the guest binary. It must run
-on Ubuntu 24.04. A host binary linked against newer glibc can fail in the guest.
-Use a compatible build or a static `x86_64-unknown-linux-musl` build in that case.
+on Debian 13. The image builder checks it after provisioning and runs
+`zellij --version` inside the prepared filesystem before publishing the image.
+From this checkout, `cargo x firecracker-test --build` builds a compatible GNU
+binary in Docker at `target/x86_64-unknown-linux-gnu/release/zellij`.
+Standalone image provisioning uses the downloaded Debian rootfs and does not
+require Docker.
+The rootfs comes from a commit-pinned [official Debian slim archive](https://github.com/debuerreotype/docker-debian-artifacts/tree/8f962b15d7884a90e17876a9303cbac909d119aa/trixie/slim), verified with SHA-256.
+
+New unnamed images use `debian-trixie-slim.ext4`. Existing configured images
+and running VMs stay unchanged until you explicitly rebuild their images.
 
 For additional images after setup:
 

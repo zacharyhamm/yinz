@@ -26,10 +26,21 @@ integration-test workers. Docker and VM suites run separately:
 | Command | Requirement |
 |---|---|
 | `cargo x remote-test` | Docker with a real SSH server |
-| `cargo x firecracker-test` | Real VM through `/dev/kvm` |
+| `cargo x firecracker-test` | Docker for the build, real VM through `/dev/kvm` |
 | `cargo x postgres-test` | Docker with Postgres |
 
 For each of these three suites, run `--build` before `--test`.
+
+Remote SSH, Firecracker, and the older E2E suite build GNU release binaries in
+Debian 13 slim through Docker. The builder matches the host architecture
+(x86_64 or ARM64); Firecracker requires x86_64 Linux. Cargo caches stay under
+`target/linux-build/`. Remote SSH also accepts `--build --native` on Linux for
+a debug build if the host binary runs with Debian 13's libraries.
+
+For the older E2E suite, run `cargo x ci e2e --build`, then
+`docker compose up -d --build`, then `cargo x ci e2e --test tests::e2e::`.
+The filter selects the five terminal tests and leaves Postgres to its own suite.
+The SSH fixture listens on localhost port 2222 with user/password `test`/`test`.
 
 **Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout plugin
 paths resolve at compile time to `<repo>/target/wasm32-wasip1/{debug,release}`.

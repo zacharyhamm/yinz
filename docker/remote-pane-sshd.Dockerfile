@@ -6,9 +6,8 @@
 # Writing our own sshd_config is the only way to *state* that requirement
 # instead of hoping some image's defaults happen to satisfy it.
 #
-# Runs the default static musl binary and the native Linux debug binary selected
-# by `cargo x remote-test --build --native`. Ubuntu 24.04 supplies glibc 2.39.
-FROM ubuntu:24.04
+# Matches the GNU builder; --native also works with compatible host libraries.
+FROM debian:trixie-slim
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -23,10 +22,11 @@ RUN apt-get update \
     locales \
     zlib1g \
     libgcc-s1 \
+    libstdc++6 \
+    libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
 
-# The locale-forwarding test sends this distinct locale. Ubuntu's login profile
-# replaces unavailable locales with C.UTF-8, hiding whether it crossed the wire.
+# The locale-forwarding test sends this distinct locale.
 RUN localedef -i en_US -f UTF-8 en_US.UTF-8
 
 # Host keys, once, at build time. The tests disable host-key checking anyway,
@@ -36,16 +36,14 @@ RUN ssh-keygen -A
 # uid 1000 to match the usual host user, so the bind-mounted `target/` is
 # readable without any chown dance.
 #
-# Replace Ubuntu's default account to make uid 1000 available. `*` is an unlocked
-# password hash that cannot match a password, leaving only key authentication.
+# `*` is an unlocked password hash that cannot match a password, leaving only key authentication.
 #
 # The login shell is deliberately *not* `/bin/sh`. A pane opened with no command
 # resolves its shell from this passwd entry, and `/bin/sh` is also the
 # last-resort fallback when that lookup finds nothing — so asserting on `-sh`
 # would pass even if the passwd entry were never read. `bash` is a shell only a
 # real lookup can produce.
-RUN if id ubuntu >/dev/null 2>&1; then userdel ubuntu; fi \
-    && useradd --create-home --user-group --uid 1000 --shell /bin/bash --password '*' test \
+RUN useradd --create-home --user-group --uid 1000 --shell /bin/bash --password '*' test \
     && mkdir -p /home/test/.ssh /run/sshd \
     && chown -R test:test /home/test/.ssh \
     && chmod 700 /home/test/.ssh

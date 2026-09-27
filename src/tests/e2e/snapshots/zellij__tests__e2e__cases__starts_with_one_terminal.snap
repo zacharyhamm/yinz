@@ -1,9 +1,8 @@
 ---
 source: src/tests/e2e/cases.rs
-assertion_line: 144
 expression: last_snapshot
 ---
- Zellij (e2e-test)  Tab #1  + 
+ Zellij (e2e-test)  [0] Tab #1  + 
 $ █                                                                                                                     
                                                                                                                         
                                                                                                                         
@@ -26,4 +25,4 @@ $ █
                                                                                                                         
                                                                                                                         
                                                                                                                         
- Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <e> AGENT  <q> QUIT 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
