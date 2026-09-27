@@ -9,7 +9,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::Message;
 use zellij_runtime::errors::prelude::*;
 
@@ -181,10 +181,10 @@ async fn proxy(
     program: &Path,
     registration: &Registration,
 ) -> Result<()> {
-    let mut ui = tokio_tungstenite::accept_async(stream)
+    let ui = tokio_tungstenite::accept_async(stream)
         .await
         .context("accept Codex UI connection")?;
-    // Codex owns daemon discovery and connection setup. The child only forwards JSONL;
+    // Codex owns daemon discovery and connection setup. The child forwards raw WebSocket bytes;
     // dropping it closes this UI's connection without stopping the shared server.
     let mut backend = tokio::process::Command::new(program)
         .args(["app-server", "proxy"])
@@ -194,33 +194,70 @@ async fn proxy(
         .kill_on_drop(true)
         .spawn()
         .context("connect to the Codex daemon")?;
-    let mut input = backend.stdin.take().context("open Codex daemon input")?;
-    let mut output =
-        BufReader::new(backend.stdout.take().context("open Codex daemon output")?).lines();
+    let input = backend.stdin.take().context("open Codex daemon input")?;
+    let output = backend.stdout.take().context("open Codex daemon output")?;
+    relay(ui, tokio::io::join(output, input), registration).await
+}
+
+async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
+    mut ui: tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
+    stream: S,
+    registration: &Registration,
+) -> Result<()> {
+    let (mut backend, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio_tungstenite::client_async("ws://localhost", stream),
+    )
+    .await
+    .context("timed out establishing Codex daemon WebSocket connection")?
+    .context("establish Codex daemon WebSocket connection")?;
     let mut conversations = Conversations::default();
     loop {
         tokio::select! {
             message = ui.next() => {
-                let Some(message) = message else { break };
+                let Some(message) = message else {
+                    backend.close(None).await.context("close Codex daemon connection")?;
+                    break;
+                };
                 match message.context("read Codex UI message")? {
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
                         conversations.request(&value, registration)?;
-                        input.write_all(text.as_bytes()).await.context("forward Codex request")?;
-                        input.write_all(b"\n").await.context("finish Codex request")?;
+                        backend.send(Message::Text(text)).await.context("forward Codex request")?;
                     },
-                    Message::Close(_) => break,
+                    Message::Close(frame) => {
+                        // Codex can drop the transport immediately after sending Close.
+                        ui.flush().await.context("acknowledge Codex UI closure").non_fatal();
+                        backend.close(frame).await.context("close Codex daemon connection")?;
+                        break;
+                    },
                     Message::Ping(_) | Message::Pong(_) => {
                         ui.flush().await.context("flush Codex connection control frame")?;
                     },
                     _ => return Err(anyhow!("Codex UI sent a non-text message")),
                 }
             },
-            line = output.next_line() => {
-                let Some(line) = line.context("read Codex daemon reply")? else { break };
-                let value: Value = serde_json::from_str(&line).context("parse Codex daemon reply")?;
-                conversations.response(&value, registration)?;
-                ui.send(Message::text(line)).await.context("forward Codex daemon reply")?;
+            message = backend.next() => {
+                let Some(message) = message else {
+                    ui.close(None).await.context("close Codex UI connection")?;
+                    break;
+                };
+                match message.context("read Codex daemon reply")? {
+                    Message::Text(text) => {
+                        let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
+                        conversations.response(&value, registration)?;
+                        ui.send(Message::Text(text)).await.context("forward Codex daemon reply")?;
+                    },
+                    Message::Close(frame) => {
+                        backend.flush().await.context("acknowledge Codex daemon closure").non_fatal();
+                        ui.close(frame).await.context("close Codex UI connection")?;
+                        break;
+                    },
+                    Message::Ping(_) | Message::Pong(_) => {
+                        backend.flush().await.context("flush Codex daemon control frame")?;
+                    },
+                    _ => return Err(anyhow!("Codex daemon sent a non-text message")),
+                }
             },
         }
     }
