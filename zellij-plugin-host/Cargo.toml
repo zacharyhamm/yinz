@@ -15,7 +15,9 @@ vte = { workspace = true }
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
 zellij-config = { workspace = true }
+zellij-downloader = { workspace = true }
 zellij-ipc = { workspace = true }
+zellij-key-codec = { workspace = true }
 zellij-plugin-api = { workspace = true }
 zellij-session = { workspace = true }
 zellij-storage = { workspace = true }

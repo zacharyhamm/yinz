@@ -3,7 +3,6 @@ use super::generated_api::api::style::{
     Palette as ProtobufPalette, RgbColorPayload as ProtobufRgbColorPayload, Style as ProtobufStyle,
     Styling as ProtobufStyling, ThemeHue as ProtobufThemeHue,
 };
-use zellij_runtime::errors::prelude::*;
 use zellij_types::data::PaletteColor;
 use zellij_types::style::{MultiplayerColors, Palette, Style, StyleDeclaration, Styling, ThemeHue};
 

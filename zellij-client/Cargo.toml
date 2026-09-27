@@ -16,6 +16,7 @@ workspace = true
 zellij-cli = { workspace = true }
 zellij-config = { workspace = true }
 zellij-ipc = { workspace = true }
+zellij-key-codec = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 anyhow = { workspace = true }

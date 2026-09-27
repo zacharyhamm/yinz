@@ -30,7 +30,7 @@ use tokio::sync::mpsc::Sender;
 use url::Url;
 use wasmi::{Engine, Module};
 use zellij_config::permission::PermissionCache;
-use zellij_runtime::downloader::Downloader;
+use zellij_downloader::Downloader;
 use zellij_runtime::owned_dir::OwnedDir;
 use zellij_storage::data_access::DataAccess;
 use zellij_types::geometry::FloatingPaneCoordinates;

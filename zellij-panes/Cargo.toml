@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
 zellij-ipc = { workspace = true }
+zellij-key-codec = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }

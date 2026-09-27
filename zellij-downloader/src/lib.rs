@@ -1,3 +1,4 @@
+//! Plugin downloads into a resumable cache, and layouts fetched from URLs.
 use isahc::http::header::{
     HeaderName, ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
 };

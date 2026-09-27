@@ -20,8 +20,6 @@ pub mod channels;
 #[cfg(not(target_family = "wasm"))]
 pub mod common_path;
 pub mod consts;
-#[cfg(not(target_family = "wasm"))]
-pub mod downloader;
 pub mod envs;
 pub mod errors;
 pub mod home;
@@ -36,10 +34,6 @@ pub mod owned_dir;
 #[cfg(not(target_family = "wasm"))]
 pub mod session_checkpoint;
 pub mod shared;
-pub mod vendored;
-
-#[cfg(not(target_family = "wasm"))]
-pub mod keys;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod host_terminal_env;
@@ -48,7 +42,9 @@ pub mod agent;
 #[cfg(unix)]
 pub mod termios;
 
-pub mod plugin_location;
+// Its own crate so the plugin wire API can parse plugin URLs without depending on the host
+// runtime; re-exported so the `zellij_runtime::plugin_location::` paths keep working.
+pub use zellij_plugin_location as plugin_location;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");

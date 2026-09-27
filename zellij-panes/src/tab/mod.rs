@@ -5445,7 +5445,7 @@ impl Tab {
                 },
                 Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
                     let mut plugin_updates = vec![];
-                    for key in zellij_runtime::keys::parse_keys(&adjusted_input) {
+                    for key in zellij_key_codec::keys::parse_keys(&adjusted_input) {
                         plugin_updates.push((Some(pid), client_id, Event::Key(key)));
                     }
                     self.senders

@@ -4,15 +4,15 @@ use crate::{
     stdin_ansi_parser::AnsiStdinInstruction, ClientId, ClientInstruction, CommandIsExecuting,
     InputInstruction,
 };
+use zellij_key_codec::keys::cast_termwiz_key;
+use zellij_key_codec::vendored::termwiz::input::InputEvent;
+use zellij_key_codec::vendored::termwiz::input::Modifiers;
+use zellij_key_codec::vendored::termwiz::input::MouseButtons;
+use zellij_key_codec::vendored::termwiz::input::MouseEvent as TermwizMouseEvent;
 use zellij_runtime::channels::Receiver;
 use zellij_runtime::channels::SenderWithContext;
 use zellij_runtime::channels::OPENCALLS;
 use zellij_runtime::errors::FatalError;
-use zellij_runtime::keys::cast_termwiz_key;
-use zellij_runtime::vendored::termwiz::input::InputEvent;
-use zellij_runtime::vendored::termwiz::input::Modifiers;
-use zellij_runtime::vendored::termwiz::input::MouseButtons;
-use zellij_runtime::vendored::termwiz::input::MouseEvent as TermwizMouseEvent;
 use zellij_types::diagnostics::ContextType;
 use zellij_types::diagnostics::ErrorContext;
 use zellij_types::keys::KeyWithModifier;

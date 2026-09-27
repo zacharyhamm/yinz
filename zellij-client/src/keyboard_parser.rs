@@ -114,7 +114,7 @@ fn resolve_shifted(key: KeyWithModifier, shifted_key_bytes: &[u8]) -> KeyWithMod
     if !key.has_only_modifiers(&[KeyModifier::Shift]) {
         return key;
     }
-    let shifted_bare_key = zellij_runtime::keys::bare_key_from_bytes_with_u(shifted_key_bytes);
+    let shifted_bare_key = zellij_key_codec::keys::bare_key_from_bytes_with_u(shifted_key_bytes);
     match (shifted_bare_key, key.bare_key) {
         (Some(shifted), _) => KeyWithModifier::new(shifted),
         // The terminal ignored `REPORT_ALTERNATE_KEYS`, or reported an empty shifted field. An
@@ -188,7 +188,7 @@ impl KittyKeyboardParser {
         match self.state {
             KittyKeysParsingState::DoneParsingWithU => {
                 // The modifier keys are checked before the general decode, because
-                // `zellij_runtime::keys::bare_key_from_bytes_with_u` would otherwise turn 57443 into a private-use
+                // `zellij_key_codec::keys::bare_key_from_bytes_with_u` would otherwise turn 57443 into a private-use
                 // `Char` and it would be typed into whatever pane has focus.
                 if let Some(modifier) = modifier_from_keycode(&self.number_bytes) {
                     let event = self.event_kind();
@@ -196,7 +196,7 @@ impl KittyKeyboardParser {
                     return KittyParseOutcome::ModifierKey { modifier, event };
                 }
                 let event = self.event_kind();
-                let result = zellij_runtime::keys::key_from_bytes_with_u(
+                let result = zellij_key_codec::keys::key_from_bytes_with_u(
                     &self.number_bytes,
                     &self.modifier_bytes,
                 )
@@ -209,7 +209,7 @@ impl KittyKeyboardParser {
             },
             KittyKeysParsingState::DoneParsingWithTilde => {
                 let event = self.event_kind();
-                let result = zellij_runtime::keys::key_from_bytes_with_tilde(
+                let result = zellij_key_codec::keys::key_from_bytes_with_tilde(
                     &self.number_bytes,
                     &self.modifier_bytes,
                 )
@@ -227,7 +227,7 @@ impl KittyKeyboardParser {
                 match self.number_bytes.last().copied() {
                     Some(last) if is_csi_final_letter(last) => {
                         let event = self.event_kind();
-                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
+                        let result = zellij_key_codec::keys::key_from_bytes_with_no_ending_byte(
                             &self.number_bytes,
                             &self.modifier_bytes,
                         );
@@ -249,7 +249,7 @@ impl KittyKeyboardParser {
                     Some(last) if is_csi_final_letter(last) => {
                         let event = self.event_kind();
                         let last_modifier = self.modifier_bytes.pop().unwrap();
-                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
+                        let result = zellij_key_codec::keys::key_from_bytes_with_no_ending_byte(
                             &[last_modifier],
                             &self.modifier_bytes,
                         );
@@ -270,7 +270,7 @@ impl KittyKeyboardParser {
                     Some(last) if is_csi_final_letter(last) => {
                         self.event_type_bytes.pop();
                         let event = self.event_kind();
-                        let result = zellij_runtime::keys::key_from_bytes_with_no_ending_byte(
+                        let result = zellij_key_codec::keys::key_from_bytes_with_no_ending_byte(
                             &[last],
                             &self.modifier_bytes,
                         );
@@ -470,7 +470,7 @@ mod props {
                 return;
             }
         }
-        let Some(serialized) = zellij_runtime::keys::serialize_kitty(&key) else {
+        let Some(serialized) = zellij_key_codec::keys::serialize_kitty(&key) else {
             // Not every keycode has a Kitty encoding; nothing to check.
             return;
         };
@@ -501,7 +501,7 @@ mod props {
     #[hegel::test]
     fn splitting_a_sequence_across_chunks_parses_the_same_key(tc: hegel::TestCase) {
         let key = tc.draw(keys_with_modifiers());
-        let Some(serialized) = zellij_runtime::keys::serialize_kitty(&key) else {
+        let Some(serialized) = zellij_key_codec::keys::serialize_kitty(&key) else {
             return;
         };
         let bytes = serialized.as_bytes();

@@ -549,7 +549,7 @@ impl Controller {
                     .parse()
                     .map_err(|error| anyhow!("{error}"))?;
                 self.send(ClientMsg::Key {
-                    raw_bytes: zellij_runtime::keys::serialize_non_kitty(&key)
+                    raw_bytes: zellij_key_codec::keys::serialize_non_kitty(&key)
                         .context("key has no terminal encoding")?
                         .into_bytes(),
                     key,

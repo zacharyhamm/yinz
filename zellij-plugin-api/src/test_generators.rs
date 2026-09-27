@@ -572,7 +572,7 @@ pub(crate) fn run_plugins(tc: &hegel::TestCase) -> RunPlugin {
     }
 }
 
-/// An alias is whatever `zellij_runtime::plugin_location::run_plugin_or_alias_from_url` could not parse as a plugin URL, and the
+/// An alias is whatever `zellij_plugin_location::run_plugin_or_alias_from_url` could not parse as a plugin URL, and the
 /// plugin wire sends one back through that same parse as `string plugin_url` - so a name that
 /// reads as a `zellij:`, `file:` or `http(s):` URL would come back as that plugin instead. The
 /// prefix keeps the scheme, if the text forms one, from being any of those.

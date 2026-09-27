@@ -21,10 +21,22 @@ pub fn check_dependency_boundaries(sh: &Shell) -> anyhow::Result<()> {
 
 const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-types", &[]),
-    ("zellij-runtime", &["zellij-types"]),
+    ("zellij-plugin-location", &["zellij-types"]),
+    (
+        "zellij-runtime",
+        &["zellij-types", "zellij-plugin-location"],
+    ),
+    ("zellij-downloader", &[]),
+    ("zellij-key-codec", &["zellij-types"]),
     ("zellij-storage", &["zellij-types", "zellij-runtime"]),
-    ("zellij-config", &["zellij-types", "zellij-runtime"]),
-    ("zellij-plugin-api", &["zellij-types", "zellij-runtime"]),
+    (
+        "zellij-config",
+        &["zellij-types", "zellij-runtime", "zellij-downloader"],
+    ),
+    (
+        "zellij-plugin-api",
+        &["zellij-types", "zellij-plugin-location"],
+    ),
     (
         "zellij-ipc",
         &["zellij-types", "zellij-runtime", "zellij-plugin-api"],
@@ -43,6 +55,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &[
             "zellij-types",
             "zellij-runtime",
+            "zellij-key-codec",
             "zellij-storage",
             "zellij-config",
             "zellij-plugin-api",
@@ -88,6 +101,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         &[
             "zellij-types",
             "zellij-runtime",
+            "zellij-key-codec",
             "zellij-config",
             "zellij-ipc",
             "zellij-terminal",
@@ -102,6 +116,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-terminal",
             "zellij-types",
             "zellij-runtime",
+            "zellij-downloader",
+            "zellij-key-codec",
             "zellij-storage",
             "zellij-config",
             "zellij-plugin-api",

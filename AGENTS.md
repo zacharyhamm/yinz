@@ -91,9 +91,9 @@ Nextest runs each test in a separate process; bare `cargo test` does not.
 Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
 - Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
-  `zellij-plugin-api/`, or `zellij-ipc/`.
-- Render paths in `zellij-panes/` or `zellij-terminal/`, screen/tab/pty plumbing,
-  or `zellij-plugin-host/`.
+  `zellij-plugin-api/`, `zellij-plugin-location/`, or `zellij-ipc/`.
+- Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
+  `zellij-key-codec/`, screen/tab/pty plumbing, or `zellij-plugin-host/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
@@ -140,6 +140,9 @@ escalation on the first attempt.
 | `zellij-terminal/` | Terminal emulation, graphics, output, host queries |
 | `zellij-client/` | Input handling and terminal I/O |
 | `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
+| `zellij-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `zellij_runtime::plugin_location` |
+| `zellij-downloader/` | Plugin and layout downloads; owns the `vendored_curl` libcurl/OpenSSL build |
+| `zellij-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | Config, plugin wire API, transport |
 | `zellij-session/`, `zellij-cli/` | Session lifecycle, serialization, CLI |
 | `zellij-tile/`, `zellij-tile-utils/` | Plugin-facing API |

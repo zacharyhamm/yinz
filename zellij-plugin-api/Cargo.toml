@@ -12,7 +12,7 @@ test-support = ["dep:hegeltest"]
 [dependencies]
 hegeltest = { version = "0.29.3", optional = true }
 zellij-types = { workspace = true }
-zellij-runtime = { workspace = true }
+zellij-plugin-location = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

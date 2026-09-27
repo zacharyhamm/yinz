@@ -9,6 +9,7 @@ workspace = true
 [dependencies]
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
+zellij-key-codec = { workspace = true }
 zellij-config = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-session = { workspace = true }

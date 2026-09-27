@@ -13,7 +13,7 @@ pub fn run_plugin_or_alias_from_url(
     alias_dict: Option<&PluginAliases>,
     cwd: Option<PathBuf>,
 ) -> Result<RunPluginOrAlias, String> {
-    match crate::plugin_location::parse_plugin_location_with_relative(url, cwd) {
+    match crate::parse_plugin_location_with_relative(url, cwd) {
         Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
             _allow_exec_host_cmd: false,
             location,
@@ -38,7 +38,7 @@ pub fn run_plugin_or_alias_from_url(
     }
 }
 pub fn run_plugin_from_url(url: &str) -> Result<RunPlugin, PluginsConfigError> {
-    let location = crate::plugin_location::parse_plugin_location(url, None)?;
+    let location = crate::parse_plugin_location(url, None)?;
     Ok(RunPlugin {
         location,
         ..Default::default()
@@ -48,8 +48,7 @@ pub fn parse_plugin_location(
     location: &str,
     cwd: Option<PathBuf>,
 ) -> Result<RunPluginLocation, PluginsConfigError> {
-    crate::plugin_location::parse_plugin_location_with_relative(location, cwd)
-        .map(|(location, _)| location)
+    crate::parse_plugin_location_with_relative(location, cwd).map(|(location, _)| location)
 }
 pub fn parse_plugin_location_with_relative(
     location: &str,

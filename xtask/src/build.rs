@@ -24,6 +24,7 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-storage/src",
     "zellij-types/src",
     "zellij-runtime/src",
+    "zellij-plugin-location/src",
 ];
 
 const PLUGIN_INPUT_FILES: &[&str] = &[
@@ -41,6 +42,7 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-storage/Cargo.toml",
     "zellij-types/Cargo.toml",
     "zellij-runtime/Cargo.toml",
+    "zellij-plugin-location/Cargo.toml",
 ];
 
 /// Build members of the zellij workspace.
@@ -573,7 +575,11 @@ mod tests {
                 .find(|package| directory_of(package) == dir)
                 .unwrap();
             for dependency in package["dependencies"].as_array().unwrap() {
-                if dependency["kind"] == "dev" {
+                // Plugins build only for wasm32-wasip1, so neither dev nor native-only edges
+                // reach a plugin's compile.
+                if dependency["kind"] == "dev"
+                    || dependency["target"] == r#"cfg(not(target_family = "wasm"))"#
+                {
                     continue;
                 }
                 if let Some(path) = dependency["path"].as_str() {

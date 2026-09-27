@@ -2003,7 +2003,7 @@ impl TerminalPane {
             // this terminal pane *is* operating in "kitty keys" mode - so we need to serialize the "non kitty"
             // key to a "kitty key"
             key.as_ref()
-                .and_then(zellij_runtime::keys::serialize_kitty)
+                .and_then(zellij_key_codec::keys::serialize_kitty)
                 .map(|s| AdjustedInput::WriteBytesToTerminal(s.as_bytes().to_vec()))
         }
     }
@@ -2089,7 +2089,7 @@ impl TerminalPane {
             // possible - if not possible (eg. with multiple modifiers), we'll return a None here
             // and write nothing to the terminal pane
             key.as_ref()
-                .and_then(zellij_runtime::keys::serialize_non_kitty)
+                .and_then(zellij_key_codec::keys::serialize_non_kitty)
                 .map(|s| AdjustedInput::WriteBytesToTerminal(s.as_bytes().to_vec()))
         } else {
             Some(AdjustedInput::WriteBytesToTerminal(raw_input_bytes))

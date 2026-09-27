@@ -66,7 +66,7 @@ pub fn bare_key_from_bytes_with_u(bytes: &[u8]) -> Option<BareKey> {
         _ => None,
     }
 }
-pub fn bare_key_from_bytes_with_tilde(bytes: &[u8]) -> Option<BareKey> {
+pub(crate) fn bare_key_from_bytes_with_tilde(bytes: &[u8]) -> Option<BareKey> {
     match str::from_utf8(bytes) {
         Ok("2") => Some(BareKey::Insert),
         Ok("3") => Some(BareKey::Delete),
@@ -101,7 +101,7 @@ pub fn bare_key_from_bytes_with_tilde(bytes: &[u8]) -> Option<BareKey> {
         _ => None,
     }
 }
-pub fn bare_key_from_bytes_with_no_ending_byte(bytes: &[u8]) -> Option<BareKey> {
+pub(crate) fn bare_key_from_bytes_with_no_ending_byte(bytes: &[u8]) -> Option<BareKey> {
     match str::from_utf8(bytes) {
         Ok("1D") | Ok("D") => Some(BareKey::Left),
         Ok("1C") | Ok("C") => Some(BareKey::Right),
@@ -134,7 +134,7 @@ bitflags::bitflags! {
     }
 }
 
-pub fn modifiers_from_bytes(bytes: &[u8]) -> BTreeSet<KeyModifier> {
+pub(crate) fn modifiers_from_bytes(bytes: &[u8]) -> BTreeSet<KeyModifier> {
     let modifier_flags = str::from_utf8(bytes)
         .ok() // convert to string: (eg. "16")
         .and_then(|s| s.parse::<u8>().ok()) // convert to u8: (eg. 16)

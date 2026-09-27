@@ -85,7 +85,6 @@ use {
     zellij_types::data::StyledText, zellij_types::data::TabInfo, zellij_types::data::TabMetadata,
 };
 
-use zellij_runtime::errors::prelude::*;
 use zellij_types::input::actions::Action;
 use zellij_types::input::hooks::HookPoint;
 
