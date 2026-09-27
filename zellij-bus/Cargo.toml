@@ -15,7 +15,7 @@ zellij-session = { workspace = true }
 zellij-storage = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
-zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
+zellij-host-protocol = { workspace = true }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
 ansi_term = { workspace = true }
 anyhow = { workspace = true }

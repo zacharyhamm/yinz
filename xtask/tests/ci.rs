@@ -61,6 +61,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-runtime",
         "zellij-downloader",
         "zellij-key-codec",
+        "zellij-host-protocol",
         "zellij-storage",
         "zellij-project-config",
         "zellij-config",

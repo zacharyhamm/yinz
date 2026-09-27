@@ -19,9 +19,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use zellij_config::screen_config::ScreenConfig;
+use zellij_host_protocol::notifications::PendingNotification;
 use zellij_ipc::ipc::PixelDimensions;
 use zellij_ipc::nested_session::NestedSessionMessage;
-use zellij_terminal::panes::grid::{Osc99PayloadType, PendingNotification};
 use zellij_types::agent::AgentInfo;
 use zellij_types::diagnostics::ScreenContext;
 use zellij_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
@@ -938,101 +938,12 @@ impl From<&ScreenInstruction> for ScreenContext {
     }
 }
 
-/// What the screen does with a host terminal's answer to a forwarded OSC 99 notification.
-pub struct NotificationResponse {
-    /// The terminal pane that sent the notification.
-    pub terminal_id: TerminalId,
-    /// Whether the answer is written to that pane's pty: control requests (`p=?`, `close`,
-    /// `alive`) are always answered, an activation report only if the app asked for one.
-    pub forward_to_pane: bool,
-    /// Whether the pane is focused: an activation (the user clicked the notification) focuses
-    /// it, an answer to a control request does not.
-    pub focus_pane: bool,
-    /// The complete OSC 99 sequence with the app's own identifier restored.
-    pub bytes: Vec<u8>,
-}
-
-/// Denormalizes a namespaced OSC 99 response.
-///
-/// Input bytes (the termwiz OperatingSystemCommand payload after stripping "99;"):
-/// e.g. b"i=p42.mynotif" or b"i=p42r.mynotif:p=close;some_data"
-///
-/// Parses the namespaced `i=p<N>[r].<original_id>` format (`r`: the app asked for
-/// `a=report`), restores the original identifier (`i=0`, the protocol's default, when the app
-/// never sent one) and, for a `p=alive` answer, keeps only the identifiers that belong to the
-/// asking pane, un-namespaced.
-pub fn denormalize_notification_response(payload: &[u8]) -> Option<NotificationResponse> {
-    let payload_str = str::from_utf8(payload).ok()?;
-
-    // Split into metadata and response payload on first ';'
-    let (metadata, response_payload) = match payload_str.find(';') {
-        Some(idx) => (
-            payload_str.get(..idx).unwrap_or_default(),
-            payload_str.get(idx..).unwrap_or_default(),
-        ),
-        None => (payload_str, ""),
-    };
-
-    // Find the i= key in colon-separated metadata
-    let mut terminal_id = None;
-    let mut app_wants_report = false;
-    let mut payload_type = Osc99PayloadType::Other;
-    let mut restored_parts = Vec::new();
-
-    for kv in metadata.split(':') {
-        if let Some(namespaced_value) = kv.strip_prefix("i=p") {
-            if let Some(dot_pos) = namespaced_value.find('.') {
-                let flags_part = namespaced_value.get(..dot_pos).unwrap_or_default();
-                let original_id = namespaced_value.get(dot_pos + 1..).unwrap_or_default();
-                let digits = flags_part
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(flags_part.len());
-                let pane_id_str = flags_part.get(..digits).unwrap_or_default();
-                let flag_chars = flags_part.get(digits..).unwrap_or_default();
-                if let Ok(pid) = pane_id_str.parse::<u32>() {
-                    terminal_id = Some(pid);
-                    app_wants_report = flag_chars.contains('r');
-                    if original_id.is_empty() {
-                        restored_parts.push("i=0".to_owned());
-                    } else {
-                        restored_parts.push(format!("i={}", original_id));
-                    }
-                    continue;
-                }
-            }
-        }
-        if let Some(payload_value) = kv.strip_prefix("p=") {
-            payload_type = Osc99PayloadType::from_metadata_value(payload_value);
-        }
-        restored_parts.push(kv.to_string());
-    }
-
-    let terminal_id = terminal_id?;
-    let response_payload = if payload_type == Osc99PayloadType::Alive {
-        let prefix_with_report = format!("p{}r.", terminal_id);
-        let prefix = format!("p{}.", terminal_id);
-        let alive_ids: Vec<&str> = response_payload
-            .trim_start_matches(';')
-            .split(',')
-            .filter_map(|id| {
-                id.strip_prefix(&prefix_with_report)
-                    .or_else(|| id.strip_prefix(&prefix))
-            })
-            .map(|id| if id.is_empty() { "0" } else { id })
-            .collect();
-        format!(";{}", alive_ids.join(","))
-    } else {
-        response_payload.to_owned()
-    };
-    let restored_metadata = restored_parts.join(":");
-    let full_response = format!("\x1b]99;{}{}\x1b\\", restored_metadata, response_payload);
-    Some(NotificationResponse {
-        terminal_id: TerminalId::new(terminal_id),
-        forward_to_pane: app_wants_report || payload_type.is_control_request(),
-        focus_pane: !payload_type.is_control_request(),
-        bytes: full_response.into_bytes(),
-    })
-}
+// The host's answer to a forwarded OSC 99 notification, which the screen routes back to the pane
+// on `DesktopNotificationResponse`. No caller names `NotificationResponse` today; it is re-exported
+// on purpose so the function's return type stays nameable from the same path.
+pub use zellij_host_protocol::notifications::{
+    denormalize_notification_response, NotificationResponse,
+};
 
 pub type InitialTitle = String;
 

@@ -126,6 +126,7 @@ members = [
     "zellij-plugin-location",
     "zellij-downloader",
     "zellij-key-codec",
+    "zellij-host-protocol",
     "zellij-tile",
     "zellij-tile-markdown",
     "zellij-tile-utils",
@@ -183,6 +184,7 @@ zellij-plugin-location = { path = "zellij-plugin-location", version = "0.45.0" }
 # Default features off: the root package's `vendored_curl` feature decides how libcurl is linked.
 zellij-downloader = { path = "zellij-downloader", version = "0.45.0", default-features = false }
 zellij-key-codec = { path = "zellij-key-codec", version = "0.45.0" }
+zellij-host-protocol = { path = "zellij-host-protocol", version = "0.45.0" }
 zellij-codex = { path = "zellij-codex", version = "0.45.0" }
 zellij-firecracker-provider = { path = "zellij-firecracker-provider", version = "0.45.0" }
 zellij-swamp = { path = "zellij-swamp", version = "0.45.0" }

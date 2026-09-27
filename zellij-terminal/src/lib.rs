@@ -14,7 +14,7 @@
 // test comment 4
 // test comment 5
 //! Terminal emulation, graphics, and output serialization.
-pub mod host_query;
+pub use zellij_host_protocol::host_query;
 pub mod output;
 pub mod panes;
 pub mod ui;
