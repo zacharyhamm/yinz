@@ -2070,6 +2070,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hocus-data"
+version = "0.45.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+ "zellij-storage",
+ "zellij-tile",
+]
+
+[[package]]
 name = "hocus-new-agent"
 version = "0.1.0"
 dependencies = [
@@ -2082,13 +2094,12 @@ dependencies = [
 name = "hocus-proto"
 version = "0.1.0"
 dependencies = [
+ "hocus-data",
  "serde",
  "serde_json",
  "swamp-lab",
- "tempfile",
  "unicode-width 0.2.2",
  "url",
- "zellij-storage",
  "zellij-tile",
  "zellij-tile-markdown",
  "zellij-types",
@@ -6676,7 +6687,7 @@ dependencies = [
  "deno_error",
  "hegeltest",
  "highway",
- "hocus-proto",
+ "hocus-data",
  "insta",
  "kdl",
  "lazy_static",

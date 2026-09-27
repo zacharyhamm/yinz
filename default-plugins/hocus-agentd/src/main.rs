@@ -3805,31 +3805,40 @@ fn answer_completion_with(
     }
 }
 
-fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> String {
-    use prost::Message;
-    use zellij_ipc::client_server_contract::client_server_contract::{
-        server_to_client_msg, CliPipeOutputMsg, ServerToClientMsg,
-    };
-    use zellij_ipc::MAX_IPC_FRAME_LEN;
+/// The largest frame the client/server transport carries: `zellij_ipc::MAX_IPC_FRAME_LEN`.
+///
+/// A copy rather than the dependency, together with [`cli_pipe_output_frame_len`]: those two
+/// were all this plugin took from `zellij-ipc`, and linking it compiled the whole client/server
+/// contract into the wasm build. A native test holds both to the real crate.
+const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
 
+/// What prost's `encoded_len` answers for the `ServerToClientMsg` that carries `output` to the
+/// CLI pipe `pipe_name`, computed from the contract's field layout instead of by building the
+/// frame: `CliPipeOutputMsg { string pipe_name = 1; string output = 2; }` as oneof variant 9.
+fn cli_pipe_output_frame_len(pipe_name: &str, output: &str) -> usize {
+    use prost::encoding::{encoded_len_varint, key_len};
+    const PIPE_NAME: u32 = 1;
+    const OUTPUT: u32 = 2;
+    const CLI_PIPE_OUTPUT: u32 = 9;
+
+    // A proto3 string at its default, the empty string, is not written at all.
+    let string_field = |tag: u32, value: &str| {
+        if value.is_empty() {
+            0
+        } else {
+            key_len(tag) + encoded_len_varint(value.len() as u64) + value.len()
+        }
+    };
+    let message = string_field(PIPE_NAME, pipe_name) + string_field(OUTPUT, output);
+    // A oneof variant is written even when the message in it is empty.
+    key_len(CLI_PIPE_OUTPUT) + encoded_len_varint(message as u64) + message
+}
+
+fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> String {
     let mut output = serde_json::to_string(reply).expect("a completion reply is serializable");
     let size = if let PipeSource::Cli(pipe_id) = source {
         output.push('\n');
-        let frame = ServerToClientMsg {
-            message: Some(server_to_client_msg::Message::CliPipeOutput(
-                CliPipeOutputMsg {
-                    pipe_name: pipe_id.clone(),
-                    output,
-                },
-            )),
-        };
-        let size = frame.encoded_len();
-        if let Some(server_to_client_msg::Message::CliPipeOutput(message)) = frame.message {
-            output = message.output;
-        } else {
-            unreachable!("constructed a CliPipeOutput frame");
-        }
-        size
+        cli_pipe_output_frame_len(pipe_id, &output)
     } else {
         output.len()
     };
@@ -10132,6 +10141,49 @@ mod tests {
             assert!(back.error.contains(&MAX_IPC_FRAME_LEN.to_string()));
             assert!(back.content.is_empty());
             assert!(back.tool_calls.is_empty());
+        }
+    }
+
+    /// The transport's limit and frame size are computed here rather than taken from
+    /// `zellij-ipc`, so the wasm build does not link it. This is what keeps the copy honest: the
+    /// real contract's encoder, on every side of each varint width a length prefix can take.
+    #[test]
+    fn cli_pipe_output_frame_len_matches_the_ipc_encoder() {
+        use prost::Message;
+        use zellij_ipc::client_server_contract::client_server_contract::{
+            server_to_client_msg, CliPipeOutputMsg, ServerToClientMsg,
+        };
+
+        assert_eq!(MAX_IPC_FRAME_LEN, zellij_ipc::MAX_IPC_FRAME_LEN);
+        let around = |width: usize| width.saturating_sub(3)..=width + 3;
+        let lengths: Vec<usize> = [0, 1]
+            .into_iter()
+            .chain(around(127))
+            .chain(around(16_383))
+            .chain(around(2_097_151))
+            .collect();
+        let pipe_names = [0, 1, 126, 127, 128, 16_384].map(|len| "p".repeat(len));
+        let mut outputs: Vec<String> = lengths.iter().map(|len| "x".repeat(*len)).collect();
+        // Lengths are bytes, not characters.
+        outputs.push("é\n".repeat(70));
+        for pipe_name in &pipe_names {
+            for output in &outputs {
+                let frame = ServerToClientMsg {
+                    message: Some(server_to_client_msg::Message::CliPipeOutput(
+                        CliPipeOutputMsg {
+                            pipe_name: pipe_name.clone(),
+                            output: output.clone(),
+                        },
+                    )),
+                };
+                assert_eq!(
+                    cli_pipe_output_frame_len(pipe_name, output),
+                    frame.encoded_len(),
+                    "pipe name of {} bytes, output of {} bytes",
+                    pipe_name.len(),
+                    output.len(),
+                );
+            }
         }
     }
 

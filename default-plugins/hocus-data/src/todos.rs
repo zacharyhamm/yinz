@@ -212,7 +212,7 @@ fn clean(items: Vec<Item>, depth: usize, next: &mut u64, seen: &mut BTreeSet<u64
 ///
 /// Public for the notes, whose title and body are cleaned the same way.
 pub fn clean_text(text: &str) -> Result<String, String> {
-    let text = crate::text::sanitize(text);
+    let text = zellij_tile::text::sanitize(text);
     let text = text.trim();
     if text.is_empty() {
         return Err("todo text must contain visible characters".to_owned());

@@ -138,6 +138,12 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 crate_name: "default-plugins/hocus-proto",
                 build: false,
             },
+            // The store seam, schemas and project/todo/note registry that hocus-proto
+            // re-exports and the plugin host links. A library, like hocus-proto.
+            WorkspaceMember {
+                crate_name: "default-plugins/hocus-data",
+                build: false,
+            },
             WorkspaceMember {
                 crate_name: "default-plugins/hocus-agentd",
                 build: true,
