@@ -92,7 +92,8 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
 - Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
   `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
-  `zellij-plugin-location/`, or `zellij-ipc/`.
+  `zellij-plugin-location/`, `zellij-ipc/`, or `default-plugins/hocus-data/`
+  (linked by both the hocus plugins and `zellij-plugin-host`).
 - Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
   `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
   `zellij-pty/`), or `zellij-plugin-host/` and `zellij-plugin-authoring/`.
@@ -158,6 +159,7 @@ escalation on the first attempt.
 | `zellij-session/`, `zellij-cli/` | Session lifecycle, serialization, CLI |
 | `zellij-tile/`, `zellij-tile-utils/` | Plugin-facing API |
 | `default-plugins/` | Builtin Wasm crates |
+| `default-plugins/hocus-data/` | Hocus store seam, entity schemas, project/todo/note registry; re-exported by `hocus-proto`, linked by the plugin host |
 | `zellij-integration-tests/` | Whole-app tests |
 | `src/tests/e2e/`, `zellij-server/tests/` | Docker E2E and remote-pane tests |
 | `docker/`, `docker-compose.postgres.yml` | Test containers |

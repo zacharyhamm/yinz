@@ -91,6 +91,7 @@ members = [
     "default-plugins/hocus-todos",
     "default-plugins/hocus-new-agent",
     "default-plugins/hocus-proto",
+    "default-plugins/hocus-data",
     "default-plugins/hocus-agentd",
     "default-plugins/hocus-store",
     "default-plugins/swamp-lab",

@@ -185,7 +185,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-tile",
             "zellij-tile-markdown",
             "zellij-test-support",
-            "hocus-proto",
+            "hocus-data",
         ],
     ),
     (
@@ -217,6 +217,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-bus",
         ],
     ),
+    ("hocus-data", &["zellij-tile", "zellij-storage"]),
 ];
 
 /// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and

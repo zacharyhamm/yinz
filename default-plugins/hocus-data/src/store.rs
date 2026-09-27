@@ -179,8 +179,8 @@ const LEGACY_HOST: &str = "";
 ///
 /// Adding the column was an `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''`, so every row
 /// written before it came out of the migration naming nobody. A reader that wants those rows
-/// counted as its own asks with this; one that does not — `agents::rows::owned_by`, `jobs` —
-/// spells the strict equality itself, and says why.
+/// counted as its own asks with this; one that does not — hocus-proto's
+/// `agents::rows::owned_by` and `jobs` — spells the strict equality itself, and says why.
 pub fn host_or_legacy(host_id: &HostId) -> Pred {
     Pred::eq("host_id", host_id).or(Pred::eq("host_id", LEGACY_HOST))
 }
@@ -210,10 +210,11 @@ pub fn import_marker_request(host_id: &HostId, what: &str) -> FetchRequest {
 /// had genuinely imported found no marker on its next launch and read its entire archive in a
 /// second time, with no dedupe key to collapse the duplicates.
 ///
-/// This is why the move is *not* the one `agents::rows::stale_unowned_delete_mutations` makes
-/// for latches and summaries, despite the shape being the same. An unowned latch is litter,
-/// worth nothing to whoever wrote it; an unowned import marker is the only record that somebody
-/// has already done an expensive, non-idempotent thing.
+/// This is why the move is *not* the one hocus-proto's
+/// `agents::rows::stale_unowned_delete_mutations` makes for latches and summaries, despite the
+/// shape being the same. An unowned latch is litter, worth nothing to whoever wrote it; an
+/// unowned import marker is the only record that somebody has already done an expensive,
+/// non-idempotent thing.
 ///
 /// The residual, accepted deliberately: a machine that joins a store already carrying a
 /// pre-host marker is told the import is done and will not read its own legacy files. That is
@@ -296,7 +297,7 @@ pub fn prompt_def() -> EntityDef {
     EntityDef::new("prompt", 1).attr(AttrDef::text("text").required())
 }
 
-/// A scheduled prompt, keyed by hocus's own job id. See `crate::jobs`.
+/// A scheduled prompt, keyed by hocus's own job id. See hocus-proto's `jobs`.
 ///
 /// `next_due_at` is a wall-clock second, written when the job is armed and
 /// when it fires — never per tick, so a countdown does not wake every watcher
@@ -312,8 +313,8 @@ pub fn job_def() -> EntityDef {
         // prompts into this session.
         //
         // The machine and not the session, because jobs are restored at load and the session
-        // name has not arrived yet — see `jobs::job_uid`. `zellij_session_name` is recorded
-        // beside it as attribution, not as part of the key.
+        // name has not arrived yet — see hocus-proto's `jobs::job_uid`. `zellij_session_name`
+        // is recorded beside it as attribution, not as part of the key.
         //
         // Empty on jobs armed before this existed. Those are left alone rather than adopted:
         // they name a server that is gone, and firing its old prompts at whoever upgrades first
@@ -393,11 +394,11 @@ pub fn agent_run_def() -> EntityDef {
         .attr(AttrDef::text("session_id").indexed().required().default(""))
         .attr(AttrDef::text("zellij_session_name").indexed())
         // The machine whose server recorded this run. Half of the run's owner, with
-        // `zellij_session_name` — see `agents::rows::Owner`. A run adopted after a warp is
-        // claimed by writing both, and the guarded close that hands it over names both, so a
-        // session called `main` on one machine cannot close a run belonging to `main` on
-        // another. Empty on every run written before the store could be shared between
-        // machines, which reads as "this one", and was true when there was only one.
+        // `zellij_session_name` — see hocus-proto's `agents::rows::Owner`. A run adopted after
+        // a warp is claimed by writing both, and the guarded close that hands it over names
+        // both, so a session called `main` on one machine cannot close a run belonging to
+        // `main` on another. Empty on every run written before the store could be shared
+        // between machines, which reads as "this one", and was true when there was only one.
         .attr(AttrDef::text("host_id").indexed().required().default(""))
         // Indexed so a listing can ask for one agent's runs. `cwd` deliberately is not a
         // column at all: it lives in `header`, and narrowing by project is a guest-side pass
@@ -430,9 +431,9 @@ pub fn agent_run_entry_def() -> EntityDef {
         .attr(AttrDef::text("run_id").indexed().required())
         // Attribution rather than key: a `run_id` is unique across machines either way — the
         // ordinary shape carries the agent's own session uuid, and the fallback for a hook
-        // that supplies none carries the machine (`agents::run_id`) — so entries do not
-        // collide. This is what lets a search over every machine's history say where a hit
-        // happened.
+        // that supplies none carries the machine (hocus-proto's `agents::run_id`) — so entries
+        // do not collide. This is what lets a search over every machine's history say where a
+        // hit happened.
         .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(AttrDef::int("revision").required())
         // The provider's own id for the event behind this entry, where it has one. Nullable:

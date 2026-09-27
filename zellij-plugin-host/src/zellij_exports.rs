@@ -2795,8 +2795,8 @@ fn spawn_agent(
             .unwrap_or_else(|| env.plugin_cwd.clone());
         apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
             env.data_access.plugin_data().fetch(
-                hocus_proto::store::SHARED,
-                &FetchRequest::entity("project").limit(hocus_proto::store::LIST_FETCH_LIMIT),
+                hocus_data::store::SHARED,
+                &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
             )
         })?;
         let cwd = cwd.map(|path| {
@@ -2890,9 +2890,9 @@ fn apply_project_worktree_dir(
             ))
         },
     };
-    let projects = hocus_proto::projects::from_rows(&rows);
-    let location = hocus_proto::location::Location::local(source.to_string_lossy());
-    let project = match hocus_proto::projects::for_cwd(&projects, &location) {
+    let projects = hocus_data::projects::from_rows(&rows);
+    let location = hocus_data::location::Location::local(source.to_string_lossy());
+    let project = match hocus_data::projects::for_cwd(&projects, &location) {
         Some(project) => Some(project),
         None if projects.is_empty() => None,
         None => {
@@ -2900,9 +2900,9 @@ fn apply_project_worktree_dir(
             let (primary, linked) = checkouts
                 .split_first()
                 .ok_or_else(|| "git could not find the primary worktree".to_owned())?;
-            hocus_proto::projects::for_cwd(
+            hocus_data::projects::for_cwd(
                 &projects,
-                &hocus_proto::location::Location::local(primary.path.to_string_lossy()),
+                &hocus_data::location::Location::local(primary.path.to_string_lossy()),
             )
             .or_else(|| {
                 let mut matches = projects.values().filter(|project| {
@@ -9222,7 +9222,7 @@ mod permission_tests {
 
     #[test]
     fn project_worktree_defaults_apply_from_primary_and_external_checkouts() {
-        use hocus_proto::{projects, store};
+        use hocus_data::{projects, store};
         let first = repository();
         let second = repository();
         let external = tempfile::tempdir().unwrap();
@@ -9305,7 +9305,7 @@ mod permission_tests {
 
     #[test]
     fn project_worktree_linked_defaults_follow_repository_membership() {
-        use hocus_proto::projects;
+        use hocus_data::projects;
         let repo = repository();
         let unrelated = repository();
         let external = tempfile::tempdir().unwrap();
@@ -9426,7 +9426,7 @@ mod permission_tests {
         .unwrap_err();
         assert!(error.contains("offline"));
         apply_project_worktree_dir(&mut checkout, None, "/unused".as_ref(), || {
-            Ok(hocus_proto::projects::to_rows(&Default::default()))
+            Ok(hocus_data::projects::to_rows(&Default::default()))
         })
         .unwrap();
     }

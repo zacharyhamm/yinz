@@ -20,8 +20,6 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-project-config/src",
     "zellij-plugin-api/src",
     "zellij-plugin-api/assets",
-    "zellij-ipc/src",
-    "zellij-ipc/assets",
     "zellij-storage/src",
     "zellij-types/src",
     "zellij-runtime/src",
@@ -40,7 +38,6 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-config/Cargo.toml",
     "zellij-project-config/Cargo.toml",
     "zellij-plugin-api/Cargo.toml",
-    "zellij-ipc/Cargo.toml",
     "zellij-storage/Cargo.toml",
     "zellij-types/Cargo.toml",
     "zellij-runtime/Cargo.toml",
@@ -216,9 +213,10 @@ pub(crate) const DEV_OPT_LEVEL: &str = "CARGO_PROFILE_DEV_OPT_LEVEL";
 ///
 /// `[profile.dev.package."*"] opt-level = 3` keeps `wasmi` and the host's dependencies fast in
 /// a dev build, but it deliberately excludes workspace members - and the plugins, `zellij-tile`,
-/// `zellij-plugin-api` and `hocus-proto` all are. Left at opt-level 0 with DWARF they are
-/// 20-100× slower under the interpreter on exactly the per-event decode path (a `--profile dev`
-/// install once cost hocus 74 s of keystroke latency), and a plugin test loads the same wasm.
+/// `zellij-plugin-api`, `hocus-proto` and `hocus-data` all are. Left at opt-level 0 with DWARF
+/// they are 20-100× slower under the interpreter on exactly the per-event decode path (a
+/// `--profile dev` install once cost hocus 74 s of keystroke latency), and a plugin test loads
+/// the same wasm.
 /// Setting these on the plugin build alone reaches only `target/wasm32-wasip1/debug`: the host
 /// build is untouched, and the `package."*"` override still wins for dependencies. Overflow
 /// checks and debug assertions stay on, so dev semantics do not change.

@@ -8,6 +8,9 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+# The store seam, the schemas and the project/todo/note registry, re-exported unchanged. Its
+# native build carries the store engine, which is what `store::Local` needs here.
+hocus-data = { path = "../hocus-data" }
 zellij-types = { workspace = true }
 zellij-tile = { path = "../../zellij-tile" }
 zellij-tile-markdown = { path = "../../zellij-tile-markdown" }
@@ -16,11 +19,3 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
-
-# The store engine, for `store::Local`. Not a dev-dependency: the crates that
-# link this one test against `Local` too, and a dev-dependency would not reach
-# them. Target-gated because `plugin_data_store` and `rusqlite` do not build for
-# wasm — which is the same reason the plugins get `store::Host` instead.
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-zellij-storage = { workspace = true }
-tempfile = { workspace = true }

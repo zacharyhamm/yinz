@@ -6,6 +6,10 @@
 //! drift apart on a message shape, or on a stored schema, which would otherwise
 //! show up only as a silent deserialize failure at runtime.
 //!
+//! The stored schemas, the store seam and the project, todo and note registry live in
+//! `hocus-data`, which the plugin host links on its own; they are re-exported here unchanged,
+//! so a plugin names them as `hocus_proto::store` and so on.
+//!
 //! [`store`] and [`launch`] are the two modules that reach the host, and both are
 //! arranged so that this stays true: the shim is behind a `wasm32`-only item, with a
 //! host-triple stub that fails loudly beside it, and everything either module decides
@@ -21,20 +25,16 @@ pub mod envelope;
 pub mod jobs;
 pub mod launch;
 pub mod llm;
-pub mod location;
 pub mod markdown;
-pub mod notes;
 pub mod panes;
-pub mod paths;
-pub mod projects;
 pub mod run_history;
-pub mod store;
 pub mod swamp;
 pub mod tabs;
 pub mod text;
-pub mod todos;
 pub mod wire;
 
 pub mod vms;
 
 pub mod panel_text;
+
+pub use hocus_data::{location, notes, paths, projects, store, todos};

@@ -83,6 +83,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-screen",
         "zellij-pty",
         "hocus",
+        "hocus-data",
     ];
     let metadata = root.path().join("metadata.json");
     fs::write(&metadata, serde_json::json!({

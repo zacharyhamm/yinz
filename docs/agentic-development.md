@@ -11,7 +11,7 @@ The implementation has five main parts:
 | Agent launcher | Select an agent, project, branch, worktree, and execution environment | `default-plugins/hocus-new-agent/src/main.rs`, `zellij-runtime/src/agent/launch.rs` |
 | State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/hocus-agentd/src/main.rs`, `default-plugins/hocus-proto/src/agents.rs` |
 | Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/hocus-agents/src/main.rs` |
-| Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/hocus-store/`, `default-plugins/hocus-proto/src/todos.rs`, `zellij-cli/src/notes_todos.rs` |
+| Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/hocus-store/`, `default-plugins/hocus-data/src/todos.rs`, `zellij-cli/src/notes_todos.rs` |
 | Development workflows | Run project-owned validation, review, repair, and integration steps | `zellij-deno-builtins/assets/plugins/workflow-view.ts`, `workflows/`, `extensions/models/` |
 
 Use the shipped keybindings to open **New agent** with `Ctrl e`, then `n`.
