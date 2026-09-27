@@ -3,11 +3,12 @@ name = "zellij-panes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The zellij server's panes, pane managers, frames and tabs"
+description = "The zellij server's panes, pane managers, frames and layout application"
 
 [features]
-# Test helpers on `Tab`, `CopyOptions` and `ContextMenuLayout` that `zellij-screen`'s screen
-# tests drive. Its normal dependency enables this feature for consistent build and test selection.
+# Test helpers on `TiledPanes`, `FloatingPanes` and `ContextMenuLayout` that `zellij-tab`'s tab
+# tests and `zellij-screen`'s screen tests drive. Their normal dependencies enable this feature for
+# consistent build and test selection.
 test-support = []
 
 [lints]
@@ -21,23 +22,17 @@ zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 ansi_term = { workspace = true }
-anyhow = { workspace = true }
-base64 = { version = "0.22", default-features = false, features = ["std"] }
 kasuari = { version = "0.4.12", default-features = false }
 log = { workspace = true }
 unicode-width = { workspace = true }
-uuid = { workspace = true }
 vte = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
 
 [dev-dependencies]
 zellij-config = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 interprocess = { workspace = true }
 kdl = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
 png = { version = "0.17.16", default-features = false }
-tempfile = "3.2.0"
 zellij-tile = { path = "../zellij-tile" }

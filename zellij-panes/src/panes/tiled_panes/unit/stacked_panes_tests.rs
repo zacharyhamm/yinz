@@ -1,4 +1,4 @@
-use crate::{panes::tiled_panes::StackedPanes, panes::PaneId, tab::Pane};
+use crate::{pane::Pane, panes::tiled_panes::StackedPanes, panes::PaneId};
 use insta::assert_snapshot;
 use std::cell::RefCell;
 use std::collections::HashMap;

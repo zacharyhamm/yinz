@@ -5,6 +5,7 @@ use zellij_types::internal_ids::PluginId;
 use zellij_types::mouse::{MouseEvent, MouseEventType};
 
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
+use crate::pane::{AdjustedInput, Pane};
 use crate::panes::{
     grid::Grid,
     kitty_graphics::{InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore},
@@ -14,7 +15,6 @@ use crate::panes::{
 };
 use crate::plugins::PluginInstruction;
 use crate::pty::VteBytes;
-use crate::tab::{AdjustedInput, Pane};
 use crate::ui::{
     loading_indication::LoadingIndication,
     pane_boundaries_frame::{FrameParams, PaneFrame},
@@ -82,7 +82,7 @@ macro_rules! get_or_create_grid {
 
 pub struct PluginPane {
     pub pid: PluginId,
-    pane_tabs_transfer: Option<crate::tab::pane_tabs::PaneTabsTransfer>,
+    pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
     pane_tabs: Option<zellij_types::pane_tabs::PaneTabsInfo>,
     pub pending_pane_tabs: Option<zellij_types::pane_tabs::PaneTabsLayout>,
     pub should_render: HashMap<ClientId, bool>,
@@ -574,7 +574,7 @@ impl Pane for PluginPane {
         }
         if self.tab_bar_rows() > 0 {
             if let Some(tabs) = &self.pane_tabs {
-                let mut characters: Vec<_> = crate::tab::pane_tabs::bar_cells(tabs, columns)
+                let mut characters: Vec<_> = crate::pane_tabs::bar_cells(tabs, columns)
                     .into_iter()
                     .filter(|(ch, _)| *ch != '\0')
                     .map(|(ch, index)| {
@@ -999,10 +999,10 @@ impl Pane for PluginPane {
             self.set_should_render(true);
         }
     }
-    fn take_pane_tabs_transfer(&mut self) -> Option<crate::tab::pane_tabs::PaneTabsTransfer> {
+    fn take_pane_tabs_transfer(&mut self) -> Option<crate::pane_tabs::PaneTabsTransfer> {
         self.pane_tabs_transfer.take()
     }
-    fn set_pane_tabs_transfer(&mut self, transfer: crate::tab::pane_tabs::PaneTabsTransfer) {
+    fn set_pane_tabs_transfer(&mut self, transfer: crate::pane_tabs::PaneTabsTransfer) {
         self.pane_tabs_transfer = Some(transfer);
     }
     fn take_pane_tabs_layout(&mut self) -> Option<zellij_types::pane_tabs::PaneTabsLayout> {

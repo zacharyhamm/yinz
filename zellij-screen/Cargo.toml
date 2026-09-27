@@ -10,9 +10,10 @@ workspace = true
 
 [dependencies]
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
-# `test-support` sits on the normal dependency, as it did on the server's, so that `build`, `run`,
-# unit tests and lint all resolve the same feature set for zellij-panes.
+# `test-support` sits on the normal dependencies, as it did on the server's, so that `build`, `run`,
+# unit tests and lint all resolve the same feature set for zellij-panes and zellij-tab.
 zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
+zellij-tab = { path = "../zellij-tab", version = "0.45.0", features = ["test-support"] }
 zellij-routing = { path = "../zellij-routing", version = "0.45.0" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-config = { workspace = true }

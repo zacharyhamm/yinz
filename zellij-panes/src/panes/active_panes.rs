@@ -1,4 +1,4 @@
-use crate::tab::Pane;
+use crate::pane::Pane;
 
 use crate::{os_input_output::ServerOsApi, panes::PaneId, ClientId};
 use std::collections::{BTreeMap, HashMap};

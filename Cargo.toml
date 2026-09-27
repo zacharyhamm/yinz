@@ -101,6 +101,7 @@ members = [
     "zellij-server-os",
     "zellij-routing",
     "zellij-panes",
+    "zellij-tab",
     "zellij-plugin-host",
     "zellij-plugin-authoring",
     "zellij-process",

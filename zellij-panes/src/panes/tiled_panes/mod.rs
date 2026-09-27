@@ -20,9 +20,9 @@ use tiled_pane_grid::{split, TiledPaneGrid, RESIZE_PERCENT};
 use crate::{
     os_input_output::ServerOsApi,
     output::Output,
+    pane::{pane_info_for_pane, Pane, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH},
     panes::{ActivePanes, PaneId},
     plugins::PluginInstruction,
-    tab::{pane_info_for_pane, Pane, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH},
     thread_bus::ThreadSenders,
     ui::boundaries::Boundaries,
     ui::pane_contents_and_ui::PaneContentsAndUi,
@@ -2517,8 +2517,8 @@ impl TiledPanes {
         }
     }
     /// The senders this container resizes through, for a test that needs to replace one.
-    #[cfg(test)]
-    pub(crate) fn senders_mut(&mut self) -> &mut ThreadSenders {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn senders_mut(&mut self) -> &mut ThreadSenders {
         &mut self.senders
     }
 

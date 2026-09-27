@@ -1,6 +1,6 @@
 use super::pane_resizer::PaneResizer;
+use crate::pane::Pane;
 use crate::panes::PaneId;
-use crate::tab::Pane;
 use crate::ui::pane_boundaries_frame::FrameParams;
 use crate::{
     output::{CharacterChunk, KittyImageChunk, SixelImageChunk},

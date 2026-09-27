@@ -18,7 +18,7 @@
 compile_error!("Zellij does not support Windows");
 
 pub use zellij_bus::os_input_output;
-pub use zellij_panes::{panes, tab};
+pub use zellij_panes::{pane, panes};
 pub use zellij_process::firecracker;
 pub use zellij_terminal::host_query;
 pub use zellij_terminal::output;

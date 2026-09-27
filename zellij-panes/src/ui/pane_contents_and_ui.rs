@@ -1,7 +1,7 @@
 use crate::output::{CharacterChunk, Output};
+use crate::pane::Pane;
 use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;
-use crate::tab::Pane;
 use crate::ui::boundaries::Boundaries;
 use crate::ui::pane_boundaries_frame::{FrameParams, OpeningRipple, StackListEntry};
 use crate::ClientId;

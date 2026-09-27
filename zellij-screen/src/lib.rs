@@ -17,7 +17,8 @@ pub(crate) use zellij_bus::{
     background_jobs, global_async_runtime, nested_guest, os_input_output, plugins, pty, pty_host,
     pty_writer, session_layout_metadata, thread_bus, warp, ServerInstruction,
 };
-pub(crate) use zellij_panes::{pane_groups, panes, tab, ui};
+pub(crate) use zellij_panes::{panes, ui};
+pub(crate) use zellij_tab::{pane_groups, tab};
 pub(crate) use zellij_terminal::{host_query, output};
 pub(crate) use zellij_types::internal_ids::{ClientId, TerminalId};
 

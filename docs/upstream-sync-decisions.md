@@ -33,7 +33,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask hocus popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`zellij-server/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
+- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask hocus popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`zellij-tab/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
 - Reconsider only if: The user reopens this decision. The upstream regression test can be lifted on its own at any time.
 
 ## 2026-08-28 — IPC: distinguish disconnect from an undecodable frame (`IpcReceiveError`, `try_recv_*`)

@@ -1,8 +1,8 @@
 use super::super::TerminalPane;
+use crate::pane::Pane;
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::LinkHandler;
-use crate::tab::Pane;
 use crate::ui::pane_boundaries_frame::FrameParams;
 use insta::assert_snapshot;
 use std::cell::RefCell;
@@ -1120,14 +1120,14 @@ fn press_key(
     pane: &mut TerminalPane,
     bare_key: zellij_types::keys::BareKey,
     client_id: ClientId,
-) -> Option<crate::tab::AdjustedInput> {
+) -> Option<crate::pane::AdjustedInput> {
     let key = zellij_types::keys::KeyWithModifier::new(bare_key);
     pane.adjust_input_to_terminal(&Some(key), vec![], false, Some(client_id))
 }
 
 #[test]
 fn an_ordinary_held_command_still_drops_to_a_shell_on_escape() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
 
     let mut pane = create_guest_modal_pane();
@@ -1178,7 +1178,7 @@ pub fn guest_modal_tab_is_ignored() {
 
 #[test]
 pub fn guest_modal_enter_confirms_selection() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId::new(1);
@@ -1195,7 +1195,7 @@ pub fn guest_modal_enter_confirms_selection() {
 
 #[test]
 pub fn guest_modal_digit_shortcuts() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId::new(1);
@@ -1211,7 +1211,7 @@ pub fn guest_modal_digit_shortcuts() {
 
 #[test]
 pub fn guest_modal_esc_descends() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
     let mut pane = create_guest_modal_pane();
     let client_id = ClientId::new(1);
@@ -1260,7 +1260,7 @@ pub fn guest_modal_no_modal_passes_input_through() {
     let outcome = press_key(&mut pane, BareKey::Char('x'), client_id);
     assert!(matches!(
         outcome,
-        Some(crate::tab::AdjustedInput::WriteBytesToTerminal(_))
+        Some(crate::pane::AdjustedInput::WriteBytesToTerminal(_))
     ));
 }
 
@@ -1502,7 +1502,7 @@ fn suspended_pane() -> TerminalPane {
 /// something out here are the only ones that do anything.
 #[test]
 fn a_suspended_pane_resumes_on_enter_and_swallows_everything_else() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
 
     let mut pane = suspended_pane();
@@ -1550,7 +1550,7 @@ fn holding_a_suspended_pane_clears_its_suspension() {
 /// our own resume.
 #[test]
 fn a_resumed_pane_forwards_input_again() {
-    use crate::tab::AdjustedInput;
+    use crate::pane::AdjustedInput;
     use zellij_types::keys::BareKey;
 
     let mut pane = suspended_pane();
@@ -1899,7 +1899,7 @@ fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     pane.hold(Some(7), false, command.clone());
     let held = pane.is_held.clone();
     let agent = pane.agent.clone();
-    let info = crate::tab::pane_info_for_pane(&pane.pid(), &pane, &HashMap::new());
+    let info = crate::pane::pane_info_for_pane(&pane.pid(), &pane, &HashMap::new());
     assert!(info.restart_error.as_deref().unwrap().contains("--unknown"));
     assert_eq!(pane.is_held, held);
     assert_eq!(pane.agent, agent);

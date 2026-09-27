@@ -1,9 +1,9 @@
 use super::*;
 use crate::os_input_output::{AsyncReader, ServerOsApi};
+use crate::pane::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::panes::kitty_graphics::KittyImageStore;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::{LinkHandler, PaneId, TerminalPane};
-use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use crate::PtyWriteInstruction;
 use interprocess::local_socket::Stream as LocalSocketStream;
 use std::path::PathBuf;

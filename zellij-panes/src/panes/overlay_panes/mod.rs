@@ -20,9 +20,9 @@ use {
     zellij_types::input::layout::RunPluginOrAlias,
 };
 
+use crate::pane::{pane_info_for_pane, Pane};
 use crate::panes::kitty_graphics::KittyHostSupport;
 use crate::resize_pty;
-use crate::tab::{pane_info_for_pane, Pane};
 use crate::ui::damage::CellRect;
 use crate::{
     os_input_output::ServerOsApi,

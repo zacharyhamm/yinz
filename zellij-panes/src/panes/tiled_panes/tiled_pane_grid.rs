@@ -1,8 +1,8 @@
 use super::is_inside_viewport;
 use super::pane_resizer::PaneResizer;
 use super::stacked_panes::StackedPanes;
-use crate::tab::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
-use crate::{panes::PaneId, tab::Pane};
+use crate::pane::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
+use crate::{pane::Pane, panes::PaneId};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
 use zellij_runtime::errors::prelude::*;

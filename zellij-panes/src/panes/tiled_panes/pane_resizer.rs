@@ -1,5 +1,5 @@
 use super::stacked_panes::StackedPanes;
-use crate::{panes::PaneId, tab::Pane};
+use crate::{pane::Pane, panes::PaneId};
 use kasuari::{Expression, Solver, Strength, Variable, WeightedRelation::EQ};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

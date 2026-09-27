@@ -96,7 +96,8 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
   (linked by both the hocus plugins and `zellij-plugin-host`).
 - Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
   `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
-  `zellij-pty/`), or `zellij-plugin-host/` and `zellij-plugin-authoring/`.
+  `zellij-tab/`, `zellij-pty/`), or `zellij-plugin-host/` and
+  `zellij-plugin-authoring/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
@@ -137,7 +138,8 @@ escalation on the first attempt.
 | `zellij-server/` | Session bootstrap, client routing, server thread |
 | `zellij-screen/` | Screen thread: tabs, focus, overlays, rendering to clients |
 | `zellij-pty/` | Pty thread: spawning and supervising pane processes |
-| `zellij-panes/` | Panes, frames, tabs, layout application |
+| `zellij-tab/` | `Tab`: pane composition, focus, pane tabs, swap layouts, mouse, pane groups, clipboard |
+| `zellij-panes/` | `Pane` trait, panes, pane managers, frames, layout application |
 | `zellij-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
 | `zellij-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
 | `zellij-routing/` | Action dispatch and completion waits |
