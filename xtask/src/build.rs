@@ -19,6 +19,9 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-config/assets",
     "zellij-plugin-api/src",
     "zellij-plugin-api/assets",
+    "zellij-ipc/src",
+    "zellij-ipc/assets",
+    "zellij-storage/src",
     "zellij-types/src",
     "zellij-runtime/src",
 ];
@@ -34,6 +37,8 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-tile-utils/Cargo.toml",
     "zellij-config/Cargo.toml",
     "zellij-plugin-api/Cargo.toml",
+    "zellij-ipc/Cargo.toml",
+    "zellij-storage/Cargo.toml",
     "zellij-types/Cargo.toml",
     "zellij-runtime/Cargo.toml",
 ];
@@ -536,6 +541,67 @@ mod tests {
     use std::ffi::OsStr;
     use std::fs::{self, FileTimes, OpenOptions};
     use std::time::{Duration, SystemTime};
+
+    /// Every workspace crate a plugin compiles against must feed the rebuild stamp, or an edit to
+    /// it leaves stale wasm behind. Plugin crates themselves are covered by `default-plugins`.
+    #[test]
+    fn plugin_inputs_cover_every_workspace_crate_the_plugins_build() {
+        let sh = Shell::new().unwrap();
+        let metadata = crate::metadata::get_cargo_metadata(&sh).unwrap();
+        let root = crate::project_root();
+        let packages = metadata["packages"].as_array().unwrap();
+        let directory_of = |package: &serde_json::Value| {
+            Path::new(package["manifest_path"].as_str().unwrap())
+                .parent()
+                .unwrap()
+                .strip_prefix(&root)
+                .unwrap()
+                .to_path_buf()
+        };
+        let mut pending: Vec<PathBuf> = packages
+            .iter()
+            .map(directory_of)
+            .filter(|dir| dir.starts_with("default-plugins"))
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(dir) = pending.pop() {
+            if !seen.insert(dir.clone()) {
+                continue;
+            }
+            let package = packages
+                .iter()
+                .find(|package| directory_of(package) == dir)
+                .unwrap();
+            for dependency in package["dependencies"].as_array().unwrap() {
+                if dependency["kind"] == "dev" {
+                    continue;
+                }
+                if let Some(path) = dependency["path"].as_str() {
+                    pending.push(Path::new(path).strip_prefix(&root).unwrap().to_path_buf());
+                }
+            }
+        }
+        for dir in seen
+            .iter()
+            .filter(|dir| !dir.starts_with("default-plugins"))
+        {
+            let dir = dir.to_str().unwrap();
+            assert!(
+                PLUGIN_INPUT_DIRS.contains(&format!("{dir}/src").as_str()),
+                "PLUGIN_INPUT_DIRS is missing {dir}/src"
+            );
+            assert!(
+                PLUGIN_INPUT_FILES.contains(&format!("{dir}/Cargo.toml").as_str()),
+                "PLUGIN_INPUT_FILES is missing {dir}/Cargo.toml"
+            );
+            if root.join(dir).join("assets").is_dir() {
+                assert!(
+                    PLUGIN_INPUT_DIRS.contains(&format!("{dir}/assets").as_str()),
+                    "PLUGIN_INPUT_DIRS is missing {dir}/assets"
+                );
+            }
+        }
+    }
 
     #[test]
     fn plugin_file_hash_tracks_build_inputs_not_mtimes_or_tests() {

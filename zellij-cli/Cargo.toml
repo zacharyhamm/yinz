@@ -10,7 +10,6 @@ workspace = true
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-config = { workspace = true }
-zellij-plugin-api = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-session = { workspace = true }
 anyhow = { workspace = true }

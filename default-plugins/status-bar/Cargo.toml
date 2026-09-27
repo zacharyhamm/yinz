@@ -10,8 +10,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zellij-config = { workspace = true }
-zellij-types = { workspace = true }
 ansi_term = { workspace = true }
 lazy_static = { workspace = true }
 rand = { workspace = true }
@@ -28,3 +26,6 @@ hegeltest = "0.29.3"
 insta = "1.48"
 # Only to name `RunPluginOrAlias`/`PluginAlias` in tests: they are the field types of
 # `Action::LaunchOrFocusPlugin`, but zellij-tile's prelude does not re-export them.
+zellij-types = { workspace = true }
+# Only for `Config` in test_support.rs.
+zellij-config = { workspace = true }
