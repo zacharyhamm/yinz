@@ -127,6 +127,7 @@ pub enum ScreenContext {
     CloseSelf,
     ClosePane,
     HoldPane,
+    RestoreHeldPane,
     SetPaneSuspended,
     UpdatePaneName,
     UpdatePaneCwd,

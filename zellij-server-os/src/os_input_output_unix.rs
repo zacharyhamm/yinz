@@ -1124,9 +1124,7 @@ impl UnixPtyBackend {
             .remove(&terminal_id)
             .ok_or_else(|| {
                 anyhow!(
-                    "pane {terminal_id} has no pty-host supervisor, so it cannot be moved to \
-                     another session — detachable panes are disabled, or this pane's supervisor \
-                     failed to start and it fell back to an in-process pty"
+                    "terminal_{terminal_id} has no transferable pty-host supervisor; its process cannot be safely moved"
                 )
             })?;
         let released = handle.release();
@@ -1187,9 +1185,7 @@ impl UnixPtyBackend {
         let hosts = self.terminal_id_to_host.lock().to_anyhow()?;
         let handle = hosts.get(&terminal_id).ok_or_else(|| {
             anyhow!(
-                "pane {terminal_id} has no pty-host supervisor, so it cannot be moved to \
-                 another session — detachable panes are disabled, or this pane's supervisor \
-                 failed to start and it fell back to an in-process pty"
+                "terminal_{terminal_id} has no transferable pty-host supervisor; its process cannot be safely moved"
             )
         })?;
         if handle.control_socket.is_none() {

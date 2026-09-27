@@ -165,6 +165,7 @@ fn a_server_that_acknowledges_close_but_keeps_the_pane_hits_the_deadline() {
         let response = match message {
             ClientToServerMsg::ConnStatus => ServerToClientMsg::Connected {
                 warp_companions: true,
+                warp_held_terminals: false,
             },
             ClientToServerMsg::Action {
                 action: Action::ListPanes { .. },

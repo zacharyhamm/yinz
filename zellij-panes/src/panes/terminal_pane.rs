@@ -160,6 +160,7 @@ pub struct TerminalPane {
     exclude_from_sync: bool,
     fake_cursor_locations: HashSet<(usize, usize)>, // (x, y) - these hold a record of previous fake cursors which we need to clear on render
     search_term: String,
+    warp_pending: bool,
     is_held: Option<(Option<i32>, IsFirstRun, RunCommand)>, // a "held" pane means that its command has either exited and the pane is waiting for a
     // possible user instruction to be re-run, or that the command has not yet been run
     /// The pane's root process is stopped — `^Z` sent it `SIGTSTP`.
@@ -1508,6 +1509,9 @@ impl Pane for TerminalPane {
             .as_ref()
             .and_then(|(exit_status, _, _)| *exit_status)
     }
+    fn set_warp_pending(&mut self, pending: bool) {
+        self.warp_pending = pending;
+    }
     fn is_held(&self) -> bool {
         self.is_held.is_some()
     }
@@ -1545,6 +1549,9 @@ impl Pane for TerminalPane {
         // if this is a command pane that has exited or is waiting to be rerun, will return the
         // command to spawn - its own, or the replacement - otherwise it is safe to assume this
         // is not the right sort of pane or that it is not in the right sort of state
+        if self.warp_pending {
+            return None;
+        }
         self.is_held.as_ref()?;
         let cleaned = if replacement.is_none() {
             match self.restart_command_args() {
@@ -1908,6 +1915,7 @@ impl TerminalPane {
             exclude_from_sync: false,
             fake_cursor_locations: HashSet::new(),
             search_term: String::new(),
+            warp_pending: false,
             is_held: None,
             suspended: false,
             banner: None,
@@ -2100,11 +2108,17 @@ impl TerminalPane {
     /// the one place that reads the agent record around the restart, so an exited agent
     /// coming back is an `agent_start` whichever road asked for it.
     fn handle_held_run(&self) -> Option<AdjustedInput> {
+        if self.warp_pending {
+            return None;
+        }
         self.is_held
             .as_ref()
             .map(|_| AdjustedInput::ReRunCommandInThisPane)
     }
     fn handle_held_drop_to_shell(&mut self) -> Option<AdjustedInput> {
+        if self.warp_pending {
+            return None;
+        }
         self.is_held.take().map(|(_, _, run_command)| {
             // Drop to shell in the same working directory as the command was run
             let working_dir = run_command.cwd.clone();

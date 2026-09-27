@@ -113,6 +113,7 @@ pub struct AdoptedTabPanes {
 /// One adopted terminal, waiting for the tab that will hold it.
 #[derive(Debug, Clone)]
 pub struct AdoptedTabTerminal {
+    pub held: Option<zellij_types::data::HeldTerminal>,
     pub terminal_id: TerminalId,
     pub cmd: RunCommand,
     pub agent: Option<AgentInfo>,
@@ -140,7 +141,10 @@ impl AdoptedTabTerminal {
     /// exited *and* that would have been held in its old session. One that would
     /// have closed there is closed here too (`Pty::apply_layout`).
     pub fn hold_for_command(&self) -> Option<RunCommand> {
-        held_command_on_exit(&self.cmd, self.child_exit_status)
+        match &self.held {
+            Some(held) => held.first_run.then(|| self.cmd.clone()),
+            None => held_command_on_exit(&self.cmd, self.child_exit_status),
+        }
     }
 }
 
@@ -303,6 +307,7 @@ pub enum PtyInstruction {
     /// every `PtyBytes` it ever emitted is already queued ahead of it, so what
     /// Screen serializes next is exactly what the user was looking at.
     ReleaseTerminalForWarp {
+        held: Option<zellij_types::data::HeldTerminal>,
         terminal_id: TerminalId,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -324,6 +329,7 @@ pub enum PtyInstruction {
     /// waits on before serializing the tab: N separate replies would mean N
     /// chances to serialize a tab that is only half released.
     ReleaseTerminalsForWarp {
+        held: std::collections::HashMap<TerminalId, zellij_types::data::HeldTerminal>,
         tab_index: TabId,
         terminal_ids: Vec<TerminalId>,
         /// The moment the warp's caller stops waiting for an answer.

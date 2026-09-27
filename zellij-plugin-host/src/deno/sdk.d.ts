@@ -619,7 +619,8 @@ export type NewPanePlacement = {NoPreference: {borderless: boolean | null}} | {T
   | {Stacked: {pane_id_to_stack_under: PaneId | null; borderless: boolean | null}} | {Overlay: OverlayPlacement};
 export interface OpenFilePayload {path: string; line_number: Integer | null; cwd: string | null; originating_plugin: OriginatingPlugin | null;}
 export interface MouseEvent {event_type: 'Press' | 'Release' | 'Motion'; left: boolean; right: boolean; middle: boolean; wheel_up: boolean; wheel_down: boolean; wheel_left?: boolean; wheel_right?: boolean; shift: boolean; alt: boolean; ctrl: boolean; position: Position;}
-export interface WarpedPane {host_id: string; control_socket: string; title: string | null; contents: string | null; borderless: boolean; remote: {host: string; pane_token: string; received: Integer; cmd: RunCommand} | null; agent?: AgentInfo | null;}
+export interface HeldTerminal {command: RunCommand; first_run: boolean; exit_status: number | null;}
+export interface WarpedPane {held?: HeldTerminal | null;host_id: string; control_socket: string; title: string | null; contents: string | null; borderless: boolean; remote: {host: string; pane_token: string; received: Integer; cmd: RunCommand} | null; agent?: AgentInfo | null;}
 export interface WarpedTab {name: string | null; tiled_layout: TiledPaneLayout; floating_layout: FloatingPaneLayout[]; tiled_panes: WarpedPane[]; floating_panes: WarpedPane[]; hide_floating_panes: boolean;}
 // ---- section: sdk_actions
 interface ActionPane {pane_id: PaneId;}

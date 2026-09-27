@@ -734,6 +734,7 @@ pub(crate) fn layout_infos(tc: &hegel::TestCase) -> LayoutInfo {
 
 pub(crate) fn warped_panes(tc: &hegel::TestCase) -> WarpedPane {
     WarpedPane {
+        held: None,
         group: None,
         host_id: SupervisorId::new(strings(tc)),
         control_socket: paths(tc),

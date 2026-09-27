@@ -225,6 +225,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-ipc",
             "zellij-session",
             "zellij-bus",
+            "zellij-test-support",
         ],
     ),
     ("hocus-data", &["zellij-tile", "zellij-storage"]),
@@ -233,7 +234,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and
 /// the CLI cross-check their wire formats against the plugin API in tests, but must not wait on its
 /// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
-/// assert on IPC messages and recorded events, but neither thread names those crates otherwise.
+/// assert on IPC messages and recorded events and wait with test-support's timeouts, but neither
+/// thread names those crates otherwise.
 /// The tab's tests parse KDL layouts and stand up client IPC channels, which the tab never does.
 /// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
 /// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
@@ -241,7 +243,10 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-ipc", &["zellij-plugin-api"]),
     ("zellij-cli", &["zellij-plugin-api"]),
     ("zellij-screen", &["zellij-cli", "zellij-test-support"]),
-    ("zellij-pty", &["zellij-ipc", "zellij-storage"]),
+    (
+        "zellij-pty",
+        &["zellij-ipc", "zellij-storage", "zellij-test-support"],
+    ),
     ("zellij-tab", &["zellij-config", "zellij-ipc"]),
     ("zellij-panes", &["zellij-config", "zellij-tile"]),
     ("zellij-deno-builtins", &["zellij-runtime"]),

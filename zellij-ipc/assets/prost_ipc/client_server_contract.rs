@@ -1615,6 +1615,8 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(message, optional, tag="11")]
+    pub held: ::core::option::Option<HeldTerminal>,
     #[prost(message, optional, tag="9")]
     pub group: ::core::option::Option<AdoptTabAction>,
     #[prost(string, tag="1")]
@@ -1647,6 +1649,8 @@ pub struct AdoptPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(message, optional, tag="10")]
+    pub held: ::core::option::Option<HeldTerminal>,
     #[prost(message, optional, tag="8")]
     pub group: ::core::option::Option<AdoptTabAction>,
     #[prost(string, tag="1")]
@@ -1676,6 +1680,16 @@ pub struct WarpedPane {
 /// Carries the command, which the local path does not need to: an adopting
 /// server learns a local pane's command from its supervisor's attach
 /// acknowledgement, but a broker's answer to a resume carries none.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HeldTerminal {
+    #[prost(message, optional, tag="1")]
+    pub command: ::core::option::Option<RunCommandAction>,
+    #[prost(bool, tag="2")]
+    pub first_run: bool,
+    #[prost(int32, optional, tag="3")]
+    pub exit_status: ::core::option::Option<i32>,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemotePaneHandoff {
@@ -3901,9 +3915,11 @@ pub struct ExitMsg {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ConnectedMsg {
-    /// Empty message
     #[prost(bool, tag="1")]
     pub warp_companions: bool,
+    /// Empty message
+    #[prost(bool, tag="2")]
+    pub warp_held_terminals: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

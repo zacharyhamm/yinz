@@ -1370,6 +1370,16 @@ pub fn screen_thread_main(
                     screen.retain_only_existing_panes_in_pane_groups();
                     screen.render()?;
                 },
+                ScreenInstruction::RestoreHeldPane(id, held) => {
+                    if !screen.restore_held_pane(id, &held) {
+                        pending
+                            .waiting_for_pane
+                            .entry(id)
+                            .or_default()
+                            .push(ScreenInstruction::RestoreHeldPane(id, held));
+                    }
+                    screen.log_and_report_session_state()?;
+                },
                 ScreenInstruction::HoldPane(id, exit_status, run_command) => {
                     let is_first_run = false;
                     let mut found = false;
@@ -2733,6 +2743,7 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::WarpPane {
                     supports_companions,
+                    supports_held,
                     pane_id,
                     to_session,
                     placement,
@@ -2742,6 +2753,7 @@ pub fn screen_thread_main(
                 } => {
                     screen.warp_pane(
                         supports_companions,
+                        supports_held,
                         pane_id,
                         to_session,
                         placement,
@@ -2784,6 +2796,7 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::WarpTab {
                     supports_companions,
+                    supports_held,
                     tab_id,
                     client_id,
                     response_channel,
@@ -2791,6 +2804,7 @@ pub fn screen_thread_main(
                 } => {
                     screen.warp_tab(
                         supports_companions,
+                        supports_held,
                         tab_id,
                         client_id,
                         response_channel,

@@ -475,6 +475,7 @@ pub(crate) struct PreparedTabWarp {
 /// shapes is meaningful: a local supervisor socket, or a broker and a token.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WarpAddress {
+    held: Option<zellij_types::data::HeldTerminal>,
     host_id: SupervisorId,
     control_socket: PathBuf,
     remote: Option<RemotePaneHandoff>,
@@ -5279,6 +5280,10 @@ fn replay_pending_plugin_events(
                     .non_fatal();
                 screen.log_and_report_session_state().non_fatal();
                 screen.retain_only_existing_panes_in_pane_groups();
+            },
+            ScreenInstruction::RestoreHeldPane(pane_id, held) => {
+                screen.restore_held_pane(pane_id, &held);
+                screen.log_and_report_session_state().non_fatal();
             },
             ScreenInstruction::HoldPane(pane_id, exit_status, run_command) => {
                 let is_first_run = false;

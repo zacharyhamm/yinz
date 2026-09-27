@@ -213,6 +213,8 @@ pub enum ScreenInstruction {
     ), // i32 -> optional exit
     // status
     HoldPane(PaneId, Option<i32>, RunCommand),
+    /// Restore a transferred hold without firing exit hooks or queued respawns.
+    RestoreHeldPane(PaneId, zellij_types::data::HeldTerminal),
     /// The pane's root process stopped (`true`) or started running again
     /// (`false`). Not a kind of hold: the pane keeps its screen contents and its
     /// pty, it just cannot be woken from inside itself.
@@ -550,6 +552,7 @@ pub enum ScreenInstruction {
     /// warp is going to fail should never leave its tab.
     WarpPane {
         supports_companions: bool,
+        supports_held: bool,
         pane_id: Option<PaneId>,
         to_session: SessionName,
         placement: WarpPlacement,
@@ -586,6 +589,7 @@ pub enum ScreenInstruction {
     /// refusal happens here, before a single supervisor is released.
     WarpTab {
         supports_companions: bool,
+        supports_held: bool,
         tab_id: Option<TabId>,
         client_id: ClientId,
         response_channel: crossbeam::channel::Sender<Result<Box<WarpedTab>, String>>,

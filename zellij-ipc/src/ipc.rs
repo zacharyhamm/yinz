@@ -241,6 +241,8 @@ pub enum ServerToClientMsg {
     },
     Connected {
         warp_companions: bool,
+        #[serde(default)]
+        warp_held_terminals: bool,
     },
     Log {
         lines: Vec<String>,

@@ -107,7 +107,7 @@ fn connect_to_session(
     Ok(IpcSenderWithContext::new(stream))
 }
 
-fn supports_warp_companions(session: &SessionName, timeout: Duration) -> Result<bool> {
+fn warp_capabilities(session: &SessionName, timeout: Duration) -> Result<(bool, bool)> {
     let mut probe = connect_to_session(session, timeout)?;
     probe.send_client_msg(ClientToServerMsg::ConnStatus)?;
     let mut receiver: IpcReceiverWithContext<ServerToClientMsg> = probe
@@ -115,9 +115,13 @@ fn supports_warp_companions(session: &SessionName, timeout: Duration) -> Result<
         .context("failed to set up warp capability reply")?;
     loop {
         match receiver.recv_server_msg().msg() {
-            Some((ServerToClientMsg::Connected { warp_companions }, _)) => {
-                return Ok(warp_companions)
-            },
+            Some((
+                ServerToClientMsg::Connected {
+                    warp_companions,
+                    warp_held_terminals,
+                },
+                _,
+            )) => return Ok((warp_companions, warp_held_terminals)),
             Some((ServerToClientMsg::UnblockInputThread, _)) => continue,
             _ => {
                 return Err(anyhow!(
@@ -258,8 +262,8 @@ pub fn warp_pane_to_session(
 
     // Reachability first, and the connection is kept: everything after this
     // point has released a supervisor.
-    let supports_companions =
-        supports_warp_companions(to_session, timeout).map_err(|e| format!("{e:#}"))?;
+    let (supports_companions, supports_held) =
+        warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
@@ -271,6 +275,7 @@ pub fn warp_pane_to_session(
     senders
         .send_to_screen(ScreenInstruction::WarpPane {
             supports_companions,
+            supports_held,
             pane_id,
             to_session: to_session.to_owned(),
             placement,
@@ -289,6 +294,11 @@ pub fn warp_pane_to_session(
 
     // From here the pane belongs to nobody until someone adopts it.
     let recovery = recovery_command(&payload);
+    let recovery = if recovery.is_empty() {
+        "The held terminal state could not be restored.".to_owned()
+    } else {
+        format!("The process is still running — recover it with `{recovery}`")
+    };
     let handed_off_at = std::time::Instant::now();
     match send_pane_to_session(&mut sender, payload.clone(), placement) {
         Ok(()) => {
@@ -305,8 +315,7 @@ pub fn warp_pane_to_session(
                 ),
                 Err(rollback_error) => format!(
                     "Could not move the pane to '{to_session}' ({e:#}), and could not take \
-                     it back either ({rollback_error}). The process is still running — \
-                     recover it with `{recovery}`"
+                     it back either ({rollback_error}). {recovery}"
                 ),
             })
         },
@@ -406,8 +415,8 @@ pub fn warp_tab_to_session(
         return Err(format!("this tab is already in session '{to_session}'"));
     }
 
-    let supports_companions =
-        supports_warp_companions(to_session, timeout).map_err(|e| format!("{e:#}"))?;
+    let (supports_companions, supports_held) =
+        warp_capabilities(to_session, timeout).map_err(|e| format!("{e:#}"))?;
     let mut sender = connect_to_session(to_session, timeout).map_err(|e| format!("{e:#}"))?;
 
     let (response_sender, response_receiver) = crossbeam::channel::unbounded();
@@ -418,6 +427,7 @@ pub fn warp_tab_to_session(
     senders
         .send_to_screen(ScreenInstruction::WarpTab {
             supports_companions,
+            supports_held,
             tab_id,
             client_id,
             response_channel: response_sender,
@@ -438,7 +448,16 @@ pub fn warp_tab_to_session(
         .iter()
         .chain(payload.floating_panes.iter())
         .map(recovery_command)
+        .filter(|command| !command.is_empty())
         .collect();
+    let recovery = if recoveries.is_empty() {
+        "The held terminal state could not be restored.".to_owned()
+    } else {
+        format!(
+            "The transferred processes are still running — recover them with: {}",
+            recoveries.join("; ")
+        )
+    };
     let handed_off_at = std::time::Instant::now();
     match send_tab_to_session(&mut sender, payload.clone()) {
         Ok(()) => {
@@ -455,9 +474,7 @@ pub fn warp_tab_to_session(
                 ),
                 Err(rollback_error) => format!(
                     "Could not move the tab to '{to_session}' ({e:#}), and could not take it \
-                     back either ({rollback_error}). The processes are still running — recover \
-                     them with: {}",
-                    recoveries.join("; ")
+                     back either ({rollback_error}). {recovery}"
                 ),
             })
         },
@@ -545,12 +562,16 @@ pub fn warp_tab_from_session(
 /// has to say the same thing when a pane is stranded without ever reaching a
 /// rollback.
 pub fn recovery_command(pane: &WarpedPane) -> String {
+    if pane.held.is_some() {
+        return String::new();
+    }
     if let Some(group) = &pane.group {
         return group
             .tiled_panes
             .iter()
             .chain(&group.floating_panes)
             .map(recovery_command)
+            .filter(|command| !command.is_empty())
             .collect::<Vec<_>>()
             .join("; ");
     }

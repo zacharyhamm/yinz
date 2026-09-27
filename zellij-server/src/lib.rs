@@ -1683,6 +1683,7 @@ pub fn start_server_impl(
                     client_id,
                     ServerToClientMsg::Connected {
                         warp_companions: true,
+                        warp_held_terminals: true,
                     },
                 );
                 log::info!(

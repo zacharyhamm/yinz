@@ -6786,6 +6786,7 @@ dependencies = [
  "zellij-runtime",
  "zellij-session",
  "zellij-storage",
+ "zellij-test-support",
  "zellij-types",
 ]
 
