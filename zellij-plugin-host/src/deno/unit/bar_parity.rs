@@ -203,7 +203,7 @@ impl Pair {
         let loader = Rc::new(
             loader::PluginModuleLoader::embedded(
                 name,
-                zellij_config::consts::builtin_deno_plugin(name).unwrap(),
+                zellij_deno_builtins::builtin_deno_plugin(name).unwrap(),
             )
             .unwrap(),
         );

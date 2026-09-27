@@ -209,9 +209,9 @@ pub fn run_named(
     allowed: Option<&[PermissionType]>,
     cancel: &AtomicBool,
 ) -> Result<PluginTestReport> {
-    if zellij_config::consts::builtin_deno_plugin(name).is_some() || name == "workflow-view" {
+    if zellij_deno_builtins::builtin_deno_plugin(name).is_some() || name == "workflow-view" {
         let root = tempfile::tempdir().context("unpack builtin tests")?;
-        zellij_config::consts::BUILTIN_DENO_FILES
+        zellij_deno_builtins::BUILTIN_DENO_FILES
             .extract(root.path())
             .context("extract builtin test sources")?;
         return run(

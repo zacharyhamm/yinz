@@ -504,7 +504,7 @@ load_plugins {
 //               agent_exit_code, agent_command.
 //
 // The default is a TypeScript plugin shipped with zellij. Your own is a plugin you
-// write into your plugin folder - `zellij-config/assets/plugins/agent-exit.ts`
+// write into your plugin folder - `zellij-deno-builtins/assets/plugins/agent-exit.ts`
 // is the reference implementation to read - and then bind here by name. See
 // docs/DENO_PLUGINS.md.
 hooks {

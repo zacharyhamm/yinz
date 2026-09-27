@@ -176,7 +176,15 @@ fn workspace_members() -> &'static Vec<WorkspaceMember> {
                 build: false,
             },
             WorkspaceMember {
+                crate_name: "zellij-project-config",
+                build: false,
+            },
+            WorkspaceMember {
                 crate_name: "zellij-config",
+                build: false,
+            },
+            WorkspaceMember {
+                crate_name: "zellij-deno-builtins",
                 build: false,
             },
             WorkspaceMember {

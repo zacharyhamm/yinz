@@ -29,10 +29,17 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-downloader", &[]),
     ("zellij-key-codec", &["zellij-types"]),
     ("zellij-storage", &["zellij-types", "zellij-runtime"]),
+    ("zellij-project-config", &["zellij-types", "zellij-runtime"]),
     (
         "zellij-config",
-        &["zellij-types", "zellij-runtime", "zellij-downloader"],
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-downloader",
+            "zellij-project-config",
+        ],
     ),
+    ("zellij-deno-builtins", &[]),
     (
         "zellij-plugin-api",
         &["zellij-types", "zellij-plugin-location"],
@@ -120,6 +127,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-key-codec",
             "zellij-storage",
             "zellij-config",
+            "zellij-deno-builtins",
             "zellij-plugin-api",
             "zellij-ipc",
             "zellij-session",

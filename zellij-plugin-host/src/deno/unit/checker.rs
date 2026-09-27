@@ -395,7 +395,7 @@ fn shim_reply_readers_independently_require_decoder_entries() {
 
 #[test]
 fn shipped_builtins_typecheck_offline() {
-    for (name, source) in zellij_config::consts::BUILTIN_DENO_PLUGINS {
+    for (name, source) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
         let loader = PluginModuleLoader::embedded(name, source).unwrap();
         check_loader(
             Path::new(name),

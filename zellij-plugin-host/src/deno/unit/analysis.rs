@@ -264,7 +264,7 @@ fn the_shipped_typescript_examples_are_quiet_and_the_builtins_analyse() {
     let mut checked = 0;
     for (directory, quiet) in [
         ("example-plugins", true),
-        ("zellij-config/assets/plugins", false),
+        ("zellij-deno-builtins/assets/plugins", false),
     ] {
         for entry in std::fs::read_dir(root.join(directory)).unwrap() {
             let path = entry.unwrap().path();

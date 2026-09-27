@@ -260,6 +260,6 @@ macro_rules! register_worker {
     };
 }
 
-pub use zellij_config::project_config;
+pub use zellij_project_config as project_config;
 
 pub mod text;

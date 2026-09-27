@@ -29,10 +29,10 @@ fn body(source: &str) -> String {
     }
 }
 fn fixture() -> String {
-    let bridge = body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap());
-    let exit = body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap());
+    let bridge = body(zellij_deno_builtins::builtin_deno_plugin("swamp-bridge").unwrap());
+    let exit = body(zellij_deno_builtins::builtin_deno_plugin("agent-exit").unwrap());
     let view = body(include_str!(
-        "../../zellij-config/assets/plugins/workflow-view.ts"
+        "../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
     ));
     format!(
         "{}\nconst view=(()=>{{{view}\nreturn view;}})();\nconst bridge=(()=>{{{bridge}}})();\nconst hook=(()=>{{{exit}}})();\n{}",
@@ -396,7 +396,7 @@ fn separate_workflow_fixture(root: &std::path::Path) -> (std::path::PathBuf, std
         format!(
             "{}\nexport default plugin((()=>{{\n{}\n}})());",
             include_str!("swamp_close_fixture.ts"),
-            body(zellij_config::consts::builtin_deno_plugin("swamp-bridge").unwrap())
+            body(zellij_deno_builtins::builtin_deno_plugin("swamp-bridge").unwrap())
         ),
     )
     .unwrap();
@@ -418,8 +418,8 @@ hook.load = async config => {{
 export default hook;
 "#,
             bridge_path.display(),
-            body(include_str!("../../zellij-config/assets/plugins/workflow-view.ts")),
-            body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap())
+            body(include_str!("../../zellij-deno-builtins/assets/plugins/workflow-view.ts")),
+            body(zellij_deno_builtins::builtin_deno_plugin("agent-exit").unwrap())
         ),
     )
     .unwrap();
@@ -924,9 +924,9 @@ hook.load = async config => {{
 export default hook;
 "#,
             body(include_str!(
-                "../../zellij-config/assets/plugins/workflow-view.ts"
+                "../../zellij-deno-builtins/assets/plugins/workflow-view.ts"
             )),
-            body(zellij_config::consts::builtin_deno_plugin("agent-exit").unwrap())
+            body(zellij_deno_builtins::builtin_deno_plugin("agent-exit").unwrap())
         ),
     )
     .unwrap();

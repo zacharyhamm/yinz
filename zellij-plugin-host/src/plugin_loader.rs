@@ -35,7 +35,7 @@ use {
     zellij_config::plugins::PluginConfig, zellij_config::plugins::PluginRuntime,
     zellij_runtime::consts::ZELLIJ_TMP_DIR, zellij_types::data::InputMode,
     zellij_types::input::command::TerminalAction, zellij_types::input::keybinds::Keybinds,
-    zellij_types::input::plugins::PluginAliases,
+    zellij_types::input::layout::RunPluginLocation, zellij_types::input::plugins::PluginAliases,
 };
 
 fn open_dir(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -79,6 +79,29 @@ fn plugin_cache_key(
         None
     };
     (plugin_config.path.clone(), builtin_plugins_dir)
+}
+
+/// A script plugin's source, and the file it was read from when there is one.
+///
+/// A TypeScript builtin is compiled in and served first, so a same-named file in the user's
+/// plugin folder can never shadow it. It has no file of its own, so no path comes back for it.
+/// Anything else is read from disk by `PluginConfig::resolve_source`.
+fn script_source(
+    plugin_config: &PluginConfig,
+    user_plugin_dir: Option<&Path>,
+) -> Result<(Option<PathBuf>, String)> {
+    match &plugin_config.location {
+        RunPluginLocation::Zellij(tag) if plugin_config.is_builtin_deno() => {
+            let tag = tag.to_string();
+            let source = zellij_deno_builtins::builtin_deno_plugin(&tag)
+                .with_context(|| format!("the TypeScript builtin '{tag}' is not compiled in"))?;
+            Ok((None, source.to_owned()))
+        },
+        _ => {
+            let (path, source) = plugin_config.resolve_source(user_plugin_dir)?;
+            Ok((Some(path), source))
+        },
+    }
 }
 
 /// Stop the guest at its next crossing of the host boundary once `PluginEnv::cancel` is set.
@@ -247,10 +270,9 @@ impl<'a> PluginLoader<'a> {
             )
         };
         self.loading_indication.override_previous_error();
-        let (resolved_path, source) = self
-            .plugin_config
-            .resolve_source(self.user_plugin_dir.as_deref())
-            .with_context(err_context)?;
+        let (resolved_source_path, source) =
+            script_source(&self.plugin_config, self.user_plugin_dir.as_deref())
+                .with_context(err_context)?;
 
         // Script plugins have no WASI layer, so they get no wasi context. The pipes go unused, but
         // `PluginEnv` is shared with the wasm runtime and they are cheap.
@@ -262,18 +284,15 @@ impl<'a> PluginLoader<'a> {
         // Which of the two candidate files was actually read - `location` cannot say, and a
         // reload arrives naming this path in full. `create_plugin_env` is shared with the wasm
         // runtime, so it is recorded here rather than threaded through as a parameter.
-        plugin_env.resolved_source_path = if self.plugin_config.builtin_deno_source().is_some() {
-            None
-        } else {
-            Some(resolved_path.clone())
-        };
+        plugin_env.resolved_source_path = resolved_source_path.clone();
         if let Some(mut metadata) = self.plugin_map.reload_metadata(self.plugin_id) {
             metadata.resolved_source_path = plugin_env.resolved_source_path.clone();
             self.plugin_map.remember_plugin(self.plugin_id, metadata);
         }
         let subscriptions = plugin_env.subscriptions.clone();
         let running = {
-            let path = resolved_path;
+            // A builtin runs under its bare tag, which is what its `path` holds.
+            let path = resolved_source_path.unwrap_or_else(|| self.plugin_config.path.clone());
             let client_cancel = if self.plugin_config.is_shared() {
                 Arc::default()
             } else {
@@ -755,15 +774,78 @@ impl<'a> PluginLoader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cached_module, plugin_cache_key, PluginLoader};
+    use super::{cached_module, plugin_cache_key, script_source, PluginLoader};
     use std::collections::HashMap;
     use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
     use wasmi::{Engine, Module};
-    use zellij_config::plugins::PluginConfig;
+    use zellij_config::plugins::{PluginConfig, PluginRuntime};
     use zellij_types::data::PluginTag;
     use {zellij_types::input::layout::RunPlugin, zellij_types::input::layout::RunPluginLocation};
+
+    fn builtin_plugin(name: &str) -> PluginConfig {
+        PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::Zellij(PluginTag::new(name)),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_builtin_beats_a_same_named_file_in_the_user_plugin_dir() {
+        let plugin_dir = tempfile::tempdir().unwrap();
+        std::fs::write(plugin_dir.path().join("agent-exit.ts"), "-- impostor").unwrap();
+
+        let (path, source) =
+            script_source(&builtin_plugin("agent-exit"), Some(plugin_dir.path())).unwrap();
+        assert_eq!(path, None, "a builtin has no file of its own");
+        assert!(
+            source.contains("Agent exited."),
+            "the compiled-in builtin must not be shadowed by a file"
+        );
+    }
+
+    /// Config knows the TypeScript builtins only by tag, and this crate compiles in their
+    /// sources, so the two lists are checked against each other here, where both are in reach.
+    #[test]
+    fn deno_builtins_resolve_from_embedded_source() {
+        for (name, source) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
+            assert!(
+                zellij_config::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(name),
+                "'{name}' is compiled in, but zellij-config's BUILTIN_DENO_PLUGIN_NAMES does not list it"
+            );
+            let plugin = builtin_plugin(name);
+            assert_eq!(plugin.runtime(), PluginRuntime::Deno);
+            assert!(plugin.is_builtin());
+            assert_eq!(
+                script_source(&plugin, Some(Path::new("/missing/plugins"))).unwrap(),
+                (None, (*source).to_owned())
+            );
+        }
+        for name in zellij_config::consts::BUILTIN_DENO_PLUGIN_NAMES {
+            assert!(
+                zellij_deno_builtins::builtin_deno_plugin(name).is_some(),
+                "zellij-config names '{name}' as a TypeScript builtin, but it is not compiled in"
+            );
+        }
+        let file = PluginConfig::from_run_plugin(&RunPlugin {
+            location: RunPluginLocation::File("context-menu.ts".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(file.runtime(), PluginRuntime::Deno);
+        assert!(!file.is_builtin());
+    }
+
+    #[test]
+    fn a_builtin_deno_plugin_serves_its_compiled_in_source() {
+        let (_path, source) = script_source(&builtin_plugin("agent-exit"), None).unwrap();
+        assert!(
+            source.contains("Agent exited."),
+            "the source comes from the embedded asset, not from disk"
+        );
+    }
 
     #[test]
     fn builtin_plugin_cache_key_includes_only_its_configured_source_directory() {

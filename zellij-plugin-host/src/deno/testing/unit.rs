@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn installed_builtin_unit_suites() {
-    for name in zellij_config::consts::BUILTIN_DENO_PLUGINS
+    for name in zellij_deno_builtins::BUILTIN_DENO_PLUGINS
         .iter()
         .map(|(name, _)| *name)
         .chain(["workflow-view"])

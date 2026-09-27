@@ -51,7 +51,7 @@ Symlink `target/` if needed. Builtin Wasm is not checked in.
 to override. `--profile dev` leaves the host unoptimized. Wasm in the debug
 artifact directory defaults to opt-level 2. `CARGO_PROFILE_DEV_OPT_LEVEL` and
 `CARGO_PROFILE_DEV_DEBUG` override its profile settings. Embedded TypeScript
-builtins live in `zellij-config/assets/plugins/`.
+builtins live in `zellij-deno-builtins/assets/plugins/`.
 
 ### Arguments and test selection
 
@@ -91,7 +91,8 @@ Nextest runs each test in a separate process; bare `cargo test` does not.
 Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
 - Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
-  `zellij-plugin-api/`, `zellij-plugin-location/`, or `zellij-ipc/`.
+  `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
+  `zellij-plugin-location/`, or `zellij-ipc/`.
 - Render paths in `zellij-panes/` or `zellij-terminal/`, key encoding in
   `zellij-key-codec/`, screen/tab/pty plumbing, or `zellij-plugin-host/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
@@ -144,6 +145,8 @@ escalation on the first attempt.
 | `zellij-downloader/` | Plugin and layout downloads; owns the `vendored_curl` libcurl/OpenSSL build |
 | `zellij-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
 | `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | Config, plugin wire API, transport |
+| `zellij-project-config/` | Project workflow settings in `.zellij/swamp-workflows.kdl` |
+| `zellij-deno-builtins/` | Embedded TypeScript builtin plugin sources |
 | `zellij-session/`, `zellij-cli/` | Session lifecycle, serialization, CLI |
 | `zellij-tile/`, `zellij-tile-utils/` | Plugin-facing API |
 | `default-plugins/` | Builtin Wasm crates |

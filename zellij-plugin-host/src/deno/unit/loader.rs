@@ -430,7 +430,7 @@ fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
         .unwrap();
     assert_eq!(
         loader.read_source(&url, false).unwrap(),
-        zellij_config::consts::BUILTIN_DENO_FILES
+        zellij_deno_builtins::BUILTIN_DENO_FILES
             .get_file("workflow-view.ts")
             .unwrap()
             .contents_utf8()

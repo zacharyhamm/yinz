@@ -311,7 +311,7 @@ pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<St
     let deno_builtin_tag = path
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .filter(|stem| zellij_config::consts::builtin_deno_plugin(stem).is_some())
+        .filter(|stem| zellij_config::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(stem))
         .map(|stem| format!("[deno:{stem}]"));
     let log = match std::fs::read_to_string(log_file) {
         Ok(log) => log,

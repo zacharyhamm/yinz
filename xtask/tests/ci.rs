@@ -20,7 +20,7 @@ fn gate_runs_integration_and_aggregates_failures() {
     )
     .unwrap();
     fs::create_dir_all(root.path().join("example-plugins")).unwrap();
-    fs::create_dir_all(root.path().join("zellij-config/assets/plugins")).unwrap();
+    fs::create_dir_all(root.path().join("zellij-deno-builtins/assets/plugins")).unwrap();
     fs::write(
         root.path().join("example-plugins/main.ts"),
         "export const value = 1;\n",
@@ -62,7 +62,9 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-downloader",
         "zellij-key-codec",
         "zellij-storage",
+        "zellij-project-config",
         "zellij-config",
+        "zellij-deno-builtins",
         "zellij-plugin-api",
         "zellij-ipc",
         "zellij-session",

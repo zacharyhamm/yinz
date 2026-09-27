@@ -7,9 +7,9 @@ license.workspace = true
 [lints]
 workspace = true
 [dependencies]
-libc = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
+zellij-project-config = { workspace = true }
 anyhow = { workspace = true }
 include_dir = { workspace = true }
 kdl = { workspace = true }

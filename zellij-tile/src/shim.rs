@@ -3477,9 +3477,7 @@ pub fn clear_pane_highlights(pane_id: PaneId) {
 }
 
 /// Read project workflow settings; requires ReadFiles.
-pub fn project_config_read(
-    directory: PathBuf,
-) -> Result<zellij_config::project_config::Snapshot, String> {
+pub fn project_config_read(directory: PathBuf) -> Result<zellij_project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigRead { directory })
 }
 
@@ -3488,7 +3486,7 @@ pub fn project_config_write(
     directory: PathBuf,
     source: String,
     expected: Option<String>,
-) -> Result<zellij_config::project_config::Snapshot, String> {
+) -> Result<zellij_project_config::Snapshot, String> {
     project_config_response(PluginCommand::ProjectConfigWrite {
         directory,
         source,
@@ -3498,7 +3496,7 @@ pub fn project_config_write(
 
 fn project_config_response(
     command: PluginCommand,
-) -> Result<zellij_config::project_config::Snapshot, String> {
+) -> Result<zellij_project_config::Snapshot, String> {
     let response: ProtobufFsReadResponse = call(command)?;
     match response.result {
         Some(fs_read_response::Result::Contents(contents)) => {

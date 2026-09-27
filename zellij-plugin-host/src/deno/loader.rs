@@ -110,7 +110,7 @@ impl PluginModuleLoader {
             None if url.scheme() == "zellij-builtin" => {
                 let path = self.module_path(url, declarations)?;
                 let relative = path.strip_prefix(EMBEDDED_ROOT)?;
-                zellij_config::consts::BUILTIN_DENO_FILES
+                zellij_deno_builtins::BUILTIN_DENO_FILES
                     .get_file(relative)
                     .and_then(|file| file.contents_utf8())
                     .with_context(|| format!("embedded module is not registered: {url}"))?
@@ -236,7 +236,7 @@ impl PluginModuleLoader {
         let relative = path.strip_prefix("/")?;
         media_type(relative, declarations)?;
         if url != self.entrypoint()
-            && zellij_config::consts::BUILTIN_DENO_FILES
+            && zellij_deno_builtins::BUILTIN_DENO_FILES
                 .get_file(relative)
                 .is_none()
         {

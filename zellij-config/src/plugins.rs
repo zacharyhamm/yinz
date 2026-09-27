@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::consts::BUILTIN_PLUGIN_DEBUG_DIR;
 #[cfg(not(target_family = "wasm"))]
 use crate::consts::BUILTIN_PLUGIN_RELEASE_DIR;
-use crate::consts::{builtin_deno_plugin, BUILTIN_PLUGIN_NAMES};
+use crate::consts::{BUILTIN_DENO_PLUGIN_NAMES, BUILTIN_PLUGIN_NAMES};
 use zellij_runtime::errors::prelude::*;
 use zellij_types::data::PluginTag;
 use {
@@ -115,9 +115,10 @@ impl PluginConfig {
             }),
             RunPluginLocation::Zellij(tag) => {
                 let tag = tag.to_string();
-                // Builtins resolve either to Wasm bytes or compiled-in TypeScript source.
+                // Builtins resolve either to Wasm bytes or TypeScript source the plugin host
+                // compiles in.
                 if BUILTIN_PLUGIN_NAMES.contains(&tag.as_str())
-                    || builtin_deno_plugin(&tag).is_some()
+                    || BUILTIN_DENO_PLUGIN_NAMES.contains(&tag.as_str())
                 {
                     Some(PluginConfig {
                         path: PathBuf::from(&tag),
@@ -333,7 +334,7 @@ impl PluginConfig {
     /// No new URL scheme is needed: `file:~/thing.ts` is enough.
     pub fn runtime(&self) -> PluginRuntime {
         // Builtin paths are bare tags; their registry selects the script runtime.
-        if self.builtin_deno_source().is_some() {
+        if self.is_builtin_deno() {
             return PluginRuntime::Deno;
         }
         match self.path.extension().and_then(|e| e.to_str()) {
@@ -342,10 +343,14 @@ impl PluginConfig {
         }
     }
 
-    pub fn builtin_deno_source(&self) -> Option<&'static str> {
+    /// Whether this is one of the TypeScript builtins. Their sources are compiled into the plugin
+    /// host from `zellij-deno-builtins`, so all this crate knows of them is their tags.
+    pub fn is_builtin_deno(&self) -> bool {
         match &self.location {
-            RunPluginLocation::Zellij(tag) => builtin_deno_plugin(&tag.to_string()),
-            _ => None,
+            RunPluginLocation::Zellij(tag) => {
+                BUILTIN_DENO_PLUGIN_NAMES.contains(&tag.to_string().as_str())
+            },
+            _ => false,
         }
     }
 
@@ -372,11 +377,17 @@ impl PluginConfig {
     /// *not* `self.path` and nothing else records which of the two candidates won. A reload names
     /// the file in full, so that path - not the location, which is the cwd-joined identity - is
     /// what `all_plugin_ids_for_plugin_location` has to match it against.
+    ///
+    /// A TypeScript builtin is refused. Its source is compiled into the plugin host, which serves
+    /// it without asking here, and a builtin has no file at all - its `path` is the bare tag - so
+    /// anything found on disk under that name could only be a file posing as it.
     pub fn resolve_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
-        if let Some(source) = self.builtin_deno_source() {
-            // A builtin has no file at all; its `path` is the bare tag. Handing it back keeps the
-            // signature honest, and nothing matches a builtin by file path.
-            return Ok((self.path.clone(), source.to_owned()));
+        if self.is_builtin_deno() {
+            return Err(anyhow!(
+                "'{}' is a TypeScript builtin; the plugin host compiles its source in, and no file \
+                 may stand in for it",
+                self.path.display()
+            ));
         }
 
         let mut tried = vec![self.path.clone()];
@@ -602,18 +613,25 @@ mod tests {
         );
     }
 
+    /// The plugin host serves a TypeScript builtin's compiled-in source before it would ever ask
+    /// for a file, so a request that reaches here anyway must fail rather than find a same-named
+    /// file posing as the builtin.
     #[test]
-    fn a_builtin_beats_a_same_named_file_in_the_user_plugin_dir() {
+    fn a_builtin_deno_tag_is_never_read_from_a_file() {
         let plugin_dir = tempdir().unwrap();
-        fs::write(plugin_dir.path().join("agent-exit.ts"), "-- impostor").unwrap();
-
-        let (_path, source) = builtin_plugin("agent-exit")
-            .resolve_source(Some(plugin_dir.path()))
-            .unwrap();
-        assert!(
-            source.contains("Agent exited."),
-            "the compiled-in builtin must not be shadowed by a file"
-        );
+        for name in crate::consts::BUILTIN_DENO_PLUGIN_NAMES {
+            fs::write(plugin_dir.path().join(name), "-- impostor").unwrap();
+            fs::write(plugin_dir.path().join(format!("{name}.ts")), "-- impostor").unwrap();
+            let plugin = builtin_plugin(name);
+            assert_eq!(plugin.runtime(), super::PluginRuntime::Deno);
+            assert!(plugin.is_builtin() && plugin.is_builtin_deno());
+            let error = plugin
+                .resolve_source(Some(plugin_dir.path()))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("TypeScript builtin"), "{error}");
+        }
+        assert!(!file_plugin("context-menu.ts").is_builtin_deno());
     }
 
     /// A typo is much harder to diagnose if the error names only one of the places looked in.
@@ -643,36 +661,6 @@ mod tests {
                 .resolve_source(None)
                 .unwrap(),
             (explicit, "-- standalone".to_owned())
-        );
-    }
-
-    #[test]
-    fn deno_builtins_resolve_from_embedded_source() {
-        for (name, source) in crate::consts::BUILTIN_DENO_PLUGINS {
-            let plugin = builtin_plugin(name);
-            assert_eq!(plugin.runtime(), super::PluginRuntime::Deno);
-            assert!(plugin.is_builtin());
-            assert_eq!(
-                plugin
-                    .resolve_source(Some(std::path::Path::new("/missing/plugins")))
-                    .unwrap()
-                    .1,
-                *source
-            );
-        }
-        assert_eq!(
-            file_plugin("context-menu.ts").runtime(),
-            super::PluginRuntime::Deno
-        );
-        assert!(!file_plugin("context-menu.ts").is_builtin());
-    }
-
-    #[test]
-    fn a_builtin_deno_plugin_serves_its_compiled_in_source() {
-        let (_path, source) = builtin_plugin("agent-exit").resolve_source(None).unwrap();
-        assert!(
-            source.contains("Agent exited."),
-            "the source comes from the embedded asset, not from disk"
         );
     }
 
