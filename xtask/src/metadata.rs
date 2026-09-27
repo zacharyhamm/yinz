@@ -126,6 +126,17 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "zellij-server-os",
+        &[
+            "zellij-types",
+            "zellij-runtime",
+            "zellij-ipc",
+            "zellij-process",
+            "zellij-bus",
+            "zellij-test-support",
+        ],
+    ),
+    (
         "zellij-routing",
         &["zellij-bus", "zellij-types", "zellij-runtime", "zellij-ipc"],
     ),
@@ -177,6 +188,14 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-cli", &["zellij-plugin-api"]),
 ];
 
+/// The package that composes the concrete backends into the running program.
+const COMPOSITION_ROOT: &str = "zellij";
+
+/// Crates only `COMPOSITION_ROOT` may depend on, under any dependency kind or target. They hold
+/// concrete backends that every other crate reaches only through a trait, so this rule covers
+/// every workspace member, including those `LIBRARY_DEPENDENCIES` does not list.
+const ROOT_ONLY_DEPENDENCIES: &[&str] = &["zellij-server-os"];
+
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
     let packages = metadata["packages"]
         .as_array()
@@ -188,6 +207,24 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
         .iter()
         .filter(|p| members.contains(&p["id"]))
         .collect();
+    for package in workspace.iter().filter(|p| p["name"] != COMPOSITION_ROOT) {
+        for dependency in package["dependencies"]
+            .as_array()
+            .context("Missing dependencies in Cargo metadata")?
+        {
+            let target = dependency["name"]
+                .as_str()
+                .context("Missing dependency name")?;
+            if ROOT_ONLY_DEPENDENCIES.contains(&target) {
+                anyhow::bail!(
+                    "{} may not depend on {target}; only {COMPOSITION_ROOT} may (kind: {}, target: {})",
+                    package["name"].as_str().context("Missing package name")?,
+                    dependency["kind"],
+                    dependency["target"]
+                );
+            }
+        }
+    }
     for (name, allowed) in LIBRARY_DEPENDENCIES {
         let package = workspace
             .iter()
@@ -246,16 +283,45 @@ mod tests {
             "workspace_members": LIBRARY_DEPENDENCIES.iter().map(|(name, _)| name).collect::<Vec<_>>()
         });
         validate_dependency_boundaries(&metadata).unwrap();
-        metadata["packages"].as_array_mut().unwrap().push(json!({
-            "id": "zellij-server", "name": "zellij-server", "dependencies": []
-        }));
-        metadata["workspace_members"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("zellij-server"));
+        // Members `LIBRARY_DEPENDENCIES` does not list, including the composition root, which may
+        // depend on the root-only crates under every kind and target.
+        let root_dependencies: Vec<_> = ROOT_ONLY_DEPENDENCIES
+            .iter()
+            .flat_map(|target| {
+                [json!(null), json!("build"), json!("dev")]
+                    .into_iter()
+                    .flat_map(move |kind| {
+                        [json!(null), json!("cfg(unix)")].into_iter().map(
+                            move |platform| json!({"name": target, "kind": kind, "target": platform}),
+                        )
+                    })
+            })
+            .collect();
+        for (name, dependencies) in [
+            (COMPOSITION_ROOT, root_dependencies),
+            ("zellij-server", vec![]),
+            ("zellij-client", vec![]),
+            ("zellij-integration-tests", vec![]),
+        ] {
+            metadata["packages"].as_array_mut().unwrap().push(json!({
+                "id": name, "name": name, "dependencies": dependencies
+            }));
+            metadata["workspace_members"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(name));
+        }
+        validate_dependency_boundaries(&metadata).unwrap();
         for (source, destination) in [
             ("zellij-types", "zellij-cli"),
             ("zellij-bus", "zellij-routing"),
+            ("zellij-bus", "zellij-server-os"),
+            ("zellij-panes", "zellij-server-os"),
+            ("zellij-routing", "zellij-server-os"),
+            ("zellij-plugin-host", "zellij-server-os"),
+            ("zellij-server", "zellij-server-os"),
+            ("zellij-client", "zellij-server-os"),
+            ("zellij-integration-tests", "zellij-server-os"),
             ("zellij-panes", "zellij-routing"),
             ("zellij-routing", "zellij-plugin-host"),
             ("zellij-routing", "zellij-server"),

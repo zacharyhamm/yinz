@@ -36,6 +36,7 @@ zellij-swamp = { workspace = true }
 tokio = { workspace = true }
 zellij-client = { path = "zellij-client/", version = "0.45.0" }
 zellij-server = { path = "zellij-server/", version = "0.45.0" }
+zellij-server-os = { path = "zellij-server-os", version = "0.45.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
@@ -96,6 +97,7 @@ members = [
     "zellij-client",
     "zellij-integration-tests",
     "zellij-bus",
+    "zellij-server-os",
     "zellij-routing",
     "zellij-panes",
     "zellij-plugin-host",

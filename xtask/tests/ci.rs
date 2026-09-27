@@ -75,6 +75,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         "zellij-codex",
         "zellij-firecracker-provider",
         "zellij-bus",
+        "zellij-server-os",
         "zellij-routing",
         "zellij-plugin-host",
         "zellij-panes",

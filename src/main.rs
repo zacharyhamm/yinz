@@ -38,7 +38,7 @@ fn main() {
             .nth(2)
             .expect("test server socket")
             .into();
-        let os = zellij_server::os_input_output::get_server_os_input().expect("test server OS");
+        let os = zellij_server_os::get_server_os_input().expect("test server OS");
         let owner_socket = socket.clone();
         std::thread::spawn(move || {
             use std::io::Read;

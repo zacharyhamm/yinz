@@ -13,7 +13,6 @@
 // test comment 3
 // test comment 4
 // test comment 5
-pub(crate) use zellij_bus::os_input_output_unix;
 
 #[cfg(target_os = "windows")]
 compile_error!("Zellij does not support Windows");

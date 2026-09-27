@@ -34,9 +34,8 @@ use zellij_runtime::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
 use zellij_runtime::envs;
-use zellij_server::{
-    os_input_output::get_server_os_input_from_termios_arg, start_server as start_server_impl,
-};
+use zellij_server::start_server as start_server_impl;
+use zellij_server_os::get_server_os_input_from_termios_arg;
 use {
     zellij_cli::args::CliArgs, zellij_cli::args::Command, zellij_cli::args::SessionCommand,
     zellij_cli::args::Sessions, zellij_cli::setup::Setup, zellij_config::config::Config,

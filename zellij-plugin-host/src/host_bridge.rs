@@ -14,7 +14,7 @@ pub(super) fn server_identity() -> Result<ServerIdentity> {
     static INCARNATION: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| uuid::Uuid::new_v4().to_string());
     Ok(ServerIdentity {
-        server_binary: zellij_bus::os_input_output_unix::server_binary()
+        server_binary: zellij_bus::os_input_output::server_binary()
             .context("cannot resolve server executable")?
             .to_string_lossy()
             .into_owned(),
