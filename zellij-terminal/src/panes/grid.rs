@@ -57,8 +57,8 @@ const MAX_NOTIFICATION_ASSEMBLY_BYTES: usize = 4096;
 const MAX_DCS_PAYLOAD_BYTES: usize = 1024 * 1024;
 
 // The notification wire types live with the rest of the pane/host protocol. The pub re-exports
-// keep `panes::grid::{namespace_notification_id, PendingNotification}` working for the panes and
-// the screen; the rest is only used here, by the OSC 99 dispatch and the `NotificationTracker`.
+// keep `panes::grid::{namespace_notification_id, PendingNotification}` working for the pane layer,
+// the screen and the tab tests; the rest is only used here, by the OSC 99 dispatch and the `NotificationTracker`.
 use zellij_host_protocol::notifications::{
     action_wants_report, parse_osc99_metadata, split_osc99_payload, Osc99PayloadType,
 };

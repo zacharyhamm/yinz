@@ -3805,12 +3805,11 @@ fn answer_completion_with(
     }
 }
 
-/// The largest frame the client/server transport carries: `zellij_ipc::MAX_IPC_FRAME_LEN`.
-///
-/// A copy rather than the dependency, together with [`cli_pipe_output_frame_len`]: those two
-/// were all this plugin took from `zellij-ipc`, and linking it compiled the whole client/server
-/// contract into the wasm build. A native test holds both to the real crate.
-const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
+/// The largest frame the client/server transport carries. It lives in `zellij-runtime`, which the
+/// wasm build already has through `zellij-tile`, so only [`cli_pipe_output_frame_len`] needs a
+/// local stand-in for `zellij-ipc`: linking that crate compiled the whole client/server contract
+/// into the wasm build. A native test holds the frame size to the real crate.
+use zellij_runtime::consts::MAX_IPC_FRAME_LEN;
 
 /// What prost's `encoded_len` answers for the `ServerToClientMsg` that carries `output` to the
 /// CLI pipe `pipe_name`, computed from the contract's field layout instead of by building the

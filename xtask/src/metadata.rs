@@ -168,7 +168,6 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-terminal",
             "zellij-bus",
             "zellij-tile",
-            "zellij-test-support",
         ],
     ),
     (
@@ -254,6 +253,7 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-screen", &["zellij-cli", "zellij-test-support"]),
     ("zellij-pty", &["zellij-ipc", "zellij-storage"]),
     ("zellij-tab", &["zellij-config", "zellij-ipc"]),
+    ("zellij-panes", &["zellij-config", "zellij-tile"]),
 ];
 
 /// The package that composes the concrete backends into the running program.
@@ -273,6 +273,8 @@ const ENGINES: &[&str] = &[
     "deno_ast",
     "v8",
     "wasmi",
+    "wasmi_core",
+    "wasmi_wasi",
     "zellij-plugin-host",
     "zellij-bus",
     "zellij-process",
@@ -530,6 +532,7 @@ mod tests {
             ("hocus", "deno_core", "build", Some("hocus")),
             (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
             (AUTHORING, "v8", "normal", Some(AUTHORING)),
+            (AUTHORING, "wasmi_wasi", "normal", Some(AUTHORING)),
             ("zellij-config", "deno_ast", "build", Some(AUTHORING)),
             ("zellij-types", "zellij-bus", "normal", Some(AUTHORING)),
             // A dependency's dev-dependencies are not built.

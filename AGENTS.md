@@ -93,14 +93,15 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 - Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
   `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
   `zellij-plugin-location/`, `zellij-ipc/`, `zellij-host-protocol/`, or
-  `default-plugins/hocus-data/`
-  (linked by both the hocus plugins and `zellij-plugin-host`).
-- Render paths in `zellij-panes/`, `zellij-terminal/` or
-  `zellij-terminal-graphics/`, key encoding in
-  `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
-  `zellij-tab/`, `zellij-pty/`), or `zellij-plugin-host/` and
-  `zellij-plugin-authoring/`.
+  `default-plugins/hocus-data/` (linked by the hocus plugins and the plugin host).
+- Render paths in `zellij-panes/`, `zellij-terminal/` or `zellij-terminal-graphics/`,
+  key encoding in `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
+  `zellij-tab/`, `zellij-pty/`), `zellij-plugin-host/`, or `zellij-plugin-authoring/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
+
+Whole-app tests use a fake OS backend, so for `zellij-server-os/` run
+`cargo x test -p zellij-server-os`, plus `cargo x remote-test` or
+`cargo x firecracker-test` when remote or VM spawning changes.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
 Full test and integration suites bind TCP and Unix sockets: use sandbox
@@ -151,7 +152,7 @@ escalation on the first attempt.
 | `zellij-firecracker-provider/` | The `zellij-firecracker` VM provider (Linux only) |
 | `zellij-swamp/` | Managed Swamp servers and the workflow client |
 | `zellij-codex/` | Codex conversation-to-pane binding for `zellij hocus codex` |
-| `zellij-terminal/` | Terminal emulation, graphics, output, host queries |
+| `zellij-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |
 | `zellij-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `zellij_terminal::panes::{kitty_graphics, sixel}` |
 | `zellij-client/` | Input handling and terminal I/O |
 | `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
@@ -164,6 +165,8 @@ escalation on the first attempt.
 | `zellij-deno-builtins/` | Embedded TypeScript builtin plugin sources |
 | `zellij-session/`, `zellij-cli/` | Session lifecycle, serialization, CLI |
 | `zellij-tile/`, `zellij-tile-utils/` | Plugin-facing API |
+| `zellij-tile-markdown/` | CommonMark to styled terminal lines for plugins |
+| `zellij-test-support/` | Condition waits and warm scripts for tests |
 | `default-plugins/` | Builtin Wasm crates |
 | `default-plugins/hocus-data/` | Hocus store seam, entity schemas, project/todo/note registry; re-exported by `hocus-proto`, linked by the plugin host |
 | `zellij-integration-tests/` | Whole-app tests |

@@ -32,8 +32,8 @@ adds the helpers that drive a `Grid`, and `zellij-integration-tests/src/kitty_pr
 re-exports the builders and `KittyReply` for the whole-app tests. A change to the reply grammar
 is therefore one change for every level.
 
-`zellij-integration-tests` enables `test-support` as a normal dependency, so workspace-wide builds
-(`cargo check --workspace`, `cargo x lint`) turn it on everywhere, and the fixtures then also show
+`zellij-integration-tests` enables `test-support` as a normal dependency, so `cargo check
+--workspace` turns it on everywhere (and `cargo x lint` through `--all-features`), and the fixtures then also show
 up as `panes::test_support` in `zellij-terminal` and `zellij-panes` through their
 `kitty_graphics::*` globs. Do not import them from there. The zellij binary builds this crate
 without the feature.

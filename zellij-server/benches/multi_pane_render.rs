@@ -11,14 +11,12 @@
 //! 2. `Pane::render` - `Grid::render` reads the dirty lines back out as `CharacterChunk`s.
 //! 3. `Output::serialize` - the chunks for every pane become one ANSI string per client.
 //!
-//! `Screen` is private to zellij-screen (its only export is `screen_thread_main`), and a `Tab`
-//! needs the `ThreadSenders` that zellij-server keeps crate-private, so this builds the same
-//! fleet-of-panes-into-one-`Output` shape that `Tab::render_with_inactive_clients` does,
-//! mirroring the chunk plumbing in `zellij-panes/src/ui/pane_contents_and_ui.rs`. Pane frames are
-//! not drawn (zellij-server does not re-export `ui`, where `FrameParams` lives), which matches a
-//! `pane_frames false` session; frames are chrome
-//! redrawn only when a pane's boundaries change, so they are not part of the steady-state cost
-//! this measures anyway.
+//! `Screen` is private to zellij-screen (its only export is `screen_thread_main`), and zellij-server
+//! does not depend on zellij-tab, so this builds the same fleet-of-panes-into-one-`Output` shape
+//! that `Tab::render_with_inactive_clients` does, mirroring the chunk plumbing in
+//! `zellij-panes/src/ui/pane_contents_and_ui.rs`. Pane frames are left out on purpose, matching a
+//! `pane_frames false` session: frames are chrome redrawn only when a pane's boundaries change, so
+//! they are not part of the steady-state cost this measures.
 //!
 //! Run with `cargo x bench`. See AGENTS.md for the baseline-comparison workflow.
 

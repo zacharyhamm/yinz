@@ -2051,6 +2051,7 @@ dependencies = [
  "serde",
  "serde_json",
  "zellij-ipc",
+ "zellij-runtime",
  "zellij-tile",
 ]
 

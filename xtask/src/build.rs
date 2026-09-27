@@ -20,7 +20,6 @@ const PLUGIN_INPUT_DIRS: &[&str] = &[
     "zellij-project-config/src",
     "zellij-plugin-api/src",
     "zellij-plugin-api/assets",
-    "zellij-storage/src",
     "zellij-types/src",
     "zellij-runtime/src",
     "zellij-plugin-location/src",
@@ -38,7 +37,6 @@ const PLUGIN_INPUT_FILES: &[&str] = &[
     "zellij-config/Cargo.toml",
     "zellij-project-config/Cargo.toml",
     "zellij-plugin-api/Cargo.toml",
-    "zellij-storage/Cargo.toml",
     "zellij-types/Cargo.toml",
     "zellij-runtime/Cargo.toml",
     "zellij-plugin-location/Cargo.toml",
@@ -606,6 +604,29 @@ mod tests {
                     "PLUGIN_INPUT_DIRS is missing {dir}/assets"
                 );
             }
+        }
+        // And nothing else: a crate no plugin builds would restamp every plugin on each edit.
+        let crate_of = |entry: &str| {
+            Path::new(entry)
+                .parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        };
+        for entry in PLUGIN_INPUT_DIRS
+            .iter()
+            .chain(
+                PLUGIN_INPUT_FILES
+                    .iter()
+                    .filter(|file| file.ends_with("/Cargo.toml")),
+            )
+            .filter(|entry| !entry.starts_with("default-plugins") && !entry.starts_with("xtask/"))
+        {
+            let dir = crate_of(entry).unwrap();
+            assert!(
+                seen.contains(&dir),
+                "{entry} is a plugin input, but no plugin builds {}",
+                dir.display()
+            );
         }
     }
 
