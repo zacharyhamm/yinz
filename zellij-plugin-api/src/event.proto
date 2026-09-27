@@ -91,6 +91,7 @@ enum EventType {
     ModifiersHeld = 59;
     RunCommandOutput = 60;
     PaneOutput = 61;
+    PaneTabsUpdate = 62;
 }
 
 message EventNameList {
@@ -101,6 +102,7 @@ message Event {
   reserved 27, 28, 37, 41;
   EventType name = 1;
   oneof payload {
+    string pane_tabs_update_payload = 59;
     ModeUpdatePayload mode_update_payload = 2;
     TabUpdatePayload tab_update_payload = 3;
     PaneUpdatePayload pane_update_payload = 4;
@@ -618,6 +620,7 @@ message PaneInfo {
     bool is_stack_list_member = 34;
     optional string restart_error = 35;
     optional MultipaneInfo multipane = 36;
+    optional string pane_tabs_json = 37;
 }
 
 message AgentInfo {

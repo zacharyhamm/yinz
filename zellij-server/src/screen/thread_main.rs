@@ -3359,6 +3359,43 @@ pub(crate) fn screen_thread_main(
                     screen.change_floating_panes_coordinates(pane_ids_and_coordinates);
                     let _ = screen.render();
                 },
+                ScreenInstruction::PaneTabsAction(step, client, _completion) => {
+                    screen.pane_tabs_action(step, client)?;
+                    screen.render()?;
+                },
+                ScreenInstruction::PaneTabs {
+                    command,
+                    client_id,
+                    response,
+                } => {
+                    let result = screen
+                        .pane_tabs_command(command, client_id)
+                        .map_err(|error| error.to_string());
+                    let _ = response.send(result);
+                    screen.render()?;
+                },
+                ScreenInstruction::PaneTabLoaded {
+                    id,
+                    index,
+                    generation,
+                    result,
+                    client_id: _,
+                } => {
+                    let plugin = result.as_ref().ok().map(|(plugin, _)| *plugin);
+                    screen.pane_tab_loaded(id, index, generation, result)?;
+                    if let Some(plugin) = plugin {
+                        let events = pending
+                            .waiting_for_pane
+                            .remove(&PaneId::Plugin(plugin))
+                            .unwrap_or_default();
+                        if screen.tab_containing_pane(PaneId::Plugin(plugin)).is_some() {
+                            super::replay_pending_plugin_events(&mut screen, events)?;
+                        } else {
+                            screen.cleanup_closed_pane(PaneId::Plugin(plugin));
+                        }
+                    }
+                    screen.render()?;
+                },
                 ScreenInstruction::Multipane {
                     operation,
                     client_id,

@@ -99,6 +99,7 @@ message PaneRun {
 }
 
 message TiledPaneLayout {
+  optional string pane_tabs_json = 15;
   SplitDirection children_split_direction = 1;
   optional string name = 2;
   repeated TiledPaneLayout children = 3;
@@ -116,6 +117,7 @@ message TiledPaneLayout {
 }
 
 message FloatingPaneLayout {
+  optional string pane_tabs_json = 13;
   optional string name = 1;
   optional PercentOrFixed height = 2;
   optional PercentOrFixed width = 3;
@@ -522,6 +524,10 @@ enum ActionName {
     SetLightTheme = 102;
     ToggleTheme = 103;
     FocusLastPane = 104;
+    FocusPaneTabs = 123;
+    PreviousPaneTab = 124;
+    NextPaneTab = 125;
+
     SetPaneFrameStyle = 105;
     ToggleFocusNoUiFullscreen = 106;
     FocusHostSession = 107;

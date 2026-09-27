@@ -116,6 +116,7 @@ pub struct PluginLoadWatch {
 /// without a pane and leaves the pane copies alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginInstance {
+    pub configuration: BTreeMap<String, String>,
     /// The `file:` (or other) location the plugin was loaded from.
     pub location: String,
     /// Whether some pane in the session is this plugin's.
@@ -965,6 +966,7 @@ pub struct State {
     /// pane is only known by its id — a title is a name the user can change, and a url
     /// cannot tell two instances apart.
     agents_plugin: Option<zellij_tile::prelude::PluginId>,
+    panel_tabs: Option<PaneTabsInfo>,
     /// Every `show`/`hide` this plugin asked the host for, as `(pane, shown)`.
     ///
     /// Test-only, for the same reason `last_placement` is: the host call has no reply off wasm,
@@ -1152,6 +1154,7 @@ impl Default for State {
             #[cfg(test)]
             last_placement: None,
             agents_plugin: None,
+            panel_tabs: None,
             #[cfg(test)]
             visibility_calls: Vec::new(),
             #[cfg(test)]

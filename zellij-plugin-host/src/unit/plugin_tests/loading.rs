@@ -716,3 +716,70 @@ pub fn a_background_plugin_loaded_before_its_client_attached_is_not_instantiated
          received the first event should have received the second one too"
     );
 }
+
+#[test]
+#[serial(plugin_tests)]
+fn pane_tabs_lazy_children_subscribe_as_foreground_plugins() {
+    use zellij_types::pane_tabs::{PaneTabDescriptor, PaneTabsId};
+
+    let temp_folder = tempdir().unwrap();
+    let (sender, screen_receiver, teardown) = create_plugin_thread(None, None);
+    let client_id = ClientId::new(1);
+    let log = Watched::new(vec![]);
+    let screen_thread = permissions_and_log_until_disconnect(
+        &log,
+        screen_receiver,
+        temp_folder.path().join("permissions.kdl"),
+        sender.clone(),
+        client_id,
+        PermissionStatus::Granted,
+    );
+    sender
+        .send(PluginInstruction::AddClient(client_id))
+        .unwrap();
+    sender
+        .send(PluginInstruction::LoadPaneTab {
+            id: PaneTabsId(7),
+            index: 1,
+            generation: 1,
+            descriptor: PaneTabDescriptor {
+                label: "Child".into(),
+                location: format!("file:{}", *PLUGIN_FIXTURE),
+                configuration: BTreeMap::from([("subscribe_mode_update".into(), "true".into())]),
+                initial_cwd: Some(temp_folder.path().to_path_buf()),
+            },
+            client_id,
+            tab_id: TabId::new(42),
+            size: Size {
+                cols: 121,
+                rows: 20,
+            },
+        })
+        .unwrap();
+    wait_for_permissions(&log);
+    sender
+        .send(PluginInstruction::Update(vec![(
+            None,
+            Some(client_id),
+            Event::InputReceived,
+        )]))
+        .unwrap();
+    wait_for_render_containing(&log, "InputReceived");
+    teardown();
+    screen_thread.join().unwrap();
+    let log = log.lock();
+    assert!(log.iter().any(|instruction| matches!(
+        instruction,
+        ScreenInstruction::PaneTabLoaded {
+            id: PaneTabsId(7),
+            result: Ok(_),
+            ..
+        }
+    )));
+    // Background registration would make this child receive unrelated-tab input and a
+    // second ModeUpdate in addition to the one sent by its owning tab.
+    assert!(!log.iter().any(|instruction| matches!(
+        instruction,
+        ScreenInstruction::UpdateBackgroundPluginSubscriptions(..)
+    )));
+}

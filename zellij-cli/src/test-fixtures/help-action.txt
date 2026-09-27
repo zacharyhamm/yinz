@@ -35,6 +35,9 @@ Commands:
                                     Plugins restart
   warp-tab                          Move a tab, with everything running in it, to another session
   focus-last-pane                   Change focus to the last focused frame
+  focus-pane-tabs                   Focus the native pane tab bar
+  previous-pane-tab                 Select the previous plugin in the current pane tabs
+  next-pane-tab                     Select the next plugin in the current pane tabs
   move-focus                        Move the focused pane in the specified direction.
                                     [right|left|up|down]
   move-focus-or-tab                 Move focus to the pane or tab (if on screen edge) in the

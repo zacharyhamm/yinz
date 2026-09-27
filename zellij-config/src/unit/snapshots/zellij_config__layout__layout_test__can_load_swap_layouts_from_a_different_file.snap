@@ -1,6 +1,6 @@
 ---
 source: zellij-config/src/./unit/layout_test.rs
-assertion_line: 2277
+assertion_line: 2587
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -9,10 +9,12 @@ Layout {
     template: Some(
         (
             TiledPaneLayout {
+                pane_tabs: None,
                 children_split_direction: Horizontal,
                 name: None,
                 children: [
                     TiledPaneLayout {
+                        pane_tabs: None,
                         children_split_direction: Horizontal,
                         name: None,
                         children: [],
@@ -57,10 +59,12 @@ Layout {
                 MaxPanes(
                     5,
                 ): TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],
@@ -104,14 +108,17 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [
                                 TiledPaneLayout {
+                                    pane_tabs: None,
                                     children_split_direction: Vertical,
                                     name: None,
                                     children: [
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [],
@@ -131,6 +138,7 @@ Layout {
                                             default_bg: None,
                                         },
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [],
@@ -184,6 +192,7 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],
@@ -245,10 +254,12 @@ Layout {
                 MaxPanes(
                     8,
                 ): TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],
@@ -292,14 +303,17 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [
                                 TiledPaneLayout {
+                                    pane_tabs: None,
                                     children_split_direction: Vertical,
                                     name: None,
                                     children: [
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [],
@@ -321,10 +335,12 @@ Layout {
                                             default_bg: None,
                                         },
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -344,6 +360,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -363,6 +380,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -382,6 +400,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -449,6 +468,7 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],
@@ -510,10 +530,12 @@ Layout {
                 MaxPanes(
                     12,
                 ): TiledPaneLayout {
+                    pane_tabs: None,
                     children_split_direction: Horizontal,
                     name: None,
                     children: [
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],
@@ -557,14 +579,17 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [
                                 TiledPaneLayout {
+                                    pane_tabs: None,
                                     children_split_direction: Vertical,
                                     name: None,
                                     children: [
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [],
@@ -586,10 +611,12 @@ Layout {
                                             default_bg: None,
                                         },
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -609,6 +636,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -628,6 +656,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -647,6 +676,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -682,10 +712,12 @@ Layout {
                                             default_bg: None,
                                         },
                                         TiledPaneLayout {
+                                            pane_tabs: None,
                                             children_split_direction: Horizontal,
                                             name: None,
                                             children: [
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -705,6 +737,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -724,6 +757,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -743,6 +777,7 @@ Layout {
                                                     default_bg: None,
                                                 },
                                                 TiledPaneLayout {
+                                                    pane_tabs: None,
                                                     children_split_direction: Horizontal,
                                                     name: None,
                                                     children: [],
@@ -810,6 +845,7 @@ Layout {
                             default_bg: None,
                         },
                         TiledPaneLayout {
+                            pane_tabs: None,
                             children_split_direction: Horizontal,
                             name: None,
                             children: [],

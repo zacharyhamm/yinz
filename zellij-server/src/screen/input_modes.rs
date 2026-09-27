@@ -317,7 +317,11 @@ impl Screen {
         // for every event type.
         if matches!(event_type, EventType::TabUpdate | EventType::PaneUpdate) {
             for tab in self.tabs.values() {
-                for plugin_id in tab.overlay_plugin_ids() {
+                // Retained pane-tab children keep their state subscriptions while hidden.
+                for plugin_id in tab.overlay_plugin_ids().into_iter().chain(
+                    tab.pane_tabs_infos()
+                        .flat_map(|tabs| tabs.tabs.into_iter().filter_map(|slot| slot.plugin_id)),
+                ) {
                     if !plugin_ids.contains(&plugin_id) {
                         plugin_ids.push(plugin_id);
                     }

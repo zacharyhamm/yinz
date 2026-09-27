@@ -362,6 +362,33 @@ pub fn route_action(
                 ))
                 .with_context(err_context)?;
         },
+        Action::FocusPaneTabs => {
+            senders
+                .send_to_screen(ScreenInstruction::PaneTabsAction(
+                    0,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::PreviousPaneTab => {
+            senders
+                .send_to_screen(ScreenInstruction::PaneTabsAction(
+                    -1,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
+        Action::NextPaneTab => {
+            senders
+                .send_to_screen(ScreenInstruction::PaneTabsAction(
+                    1,
+                    client_id,
+                    Some(NotificationEnd::new(completion_tx)),
+                ))
+                .with_context(err_context)?;
+        },
         Action::FocusLastPane => {
             senders
                 .send_to_screen(ScreenInstruction::FocusLastPane(

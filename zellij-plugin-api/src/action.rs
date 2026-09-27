@@ -191,6 +191,18 @@ impl TryFrom<ProtobufAction> for Action {
                 Some(_) => Err("FocusPreviousPane should not have a payload"),
                 None => Ok(Action::FocusPreviousPane),
             },
+            Some(ProtobufActionName::FocusPaneTabs) => match protobuf_action.optional_payload {
+                Some(_) => Err("FocusPaneTabs should not have a payload"),
+                None => Ok(Action::FocusPaneTabs),
+            },
+            Some(ProtobufActionName::PreviousPaneTab) => match protobuf_action.optional_payload {
+                Some(_) => Err("PreviousPaneTab should not have a payload"),
+                None => Ok(Action::PreviousPaneTab),
+            },
+            Some(ProtobufActionName::NextPaneTab) => match protobuf_action.optional_payload {
+                Some(_) => Err("NextPaneTab should not have a payload"),
+                None => Ok(Action::NextPaneTab),
+            },
             Some(ProtobufActionName::FocusLastPane) => match protobuf_action.optional_payload {
                 Some(_) => Err("FocusLastPane should not have a payload"),
                 None => Ok(Action::FocusLastPane),
@@ -1406,6 +1418,9 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::FocusPreviousPane as i32,
                 optional_payload: None,
             }),
+            Action::FocusPaneTabs => Ok(ProtobufAction { name: ProtobufActionName::FocusPaneTabs as i32, optional_payload: None }),
+            Action::PreviousPaneTab => Ok(ProtobufAction { name: ProtobufActionName::PreviousPaneTab as i32, optional_payload: None }),
+            Action::NextPaneTab => Ok(ProtobufAction { name: ProtobufActionName::NextPaneTab as i32, optional_payload: None }),
             Action::FocusLastPane => Ok(ProtobufAction {
                 name: ProtobufActionName::FocusLastPane as i32,
                 optional_payload: None,
@@ -3404,6 +3419,16 @@ impl TryFrom<ProtobufTiledPaneLayout> for TiledPaneLayout {
         });
         let run_instructions_to_ignore = vec![]; // Not serialized in protobuf
         Ok(TiledPaneLayout {
+            pane_tabs: protobuf
+                .pane_tabs_json
+                .as_deref()
+                .map(|json| {
+                    let tabs: zellij_types::pane_tabs::PaneTabsLayout =
+                        serde_json::from_str(json).map_err(|_| "Invalid pane tabs layout")?;
+                    tabs.validate()?;
+                    Ok::<_, &'static str>(tabs)
+                })
+                .transpose()?,
             children_split_direction,
             name: protobuf.name,
             children,
@@ -3439,6 +3464,12 @@ impl TryFrom<TiledPaneLayout> for ProtobufTiledPaneLayout {
         let run = internal.run.map(|r| r.try_into()).transpose()?;
         let focus = internal.focus.map(|f| f.to_string());
         Ok(ProtobufTiledPaneLayout {
+            pane_tabs_json: internal
+                .pane_tabs
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| "Failed to encode pane tabs layout")?,
             children_split_direction: children_split_direction as i32,
             name: internal.name,
             children,
@@ -3466,6 +3497,16 @@ impl TryFrom<ProtobufFloatingPaneLayout> for FloatingPaneLayout {
         let y = protobuf.y.map(|y| y.try_into()).transpose()?;
         let run = protobuf.run.map(|r| r.try_into()).transpose()?;
         Ok(FloatingPaneLayout {
+            pane_tabs: protobuf
+                .pane_tabs_json
+                .as_deref()
+                .map(|json| {
+                    let tabs: zellij_types::pane_tabs::PaneTabsLayout =
+                        serde_json::from_str(json).map_err(|_| "Invalid pane tabs layout")?;
+                    tabs.validate()?;
+                    Ok::<_, &'static str>(tabs)
+                })
+                .transpose()?,
             name: protobuf.name,
             height,
             width,
@@ -3493,6 +3534,12 @@ impl TryFrom<FloatingPaneLayout> for ProtobufFloatingPaneLayout {
         let y = internal.y.map(|y| y.try_into()).transpose()?;
         let run = internal.run.map(|r| r.try_into()).transpose()?;
         Ok(ProtobufFloatingPaneLayout {
+            pane_tabs_json: internal
+                .pane_tabs
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| "Failed to encode pane tabs layout")?,
             name: internal.name,
             height,
             width,
@@ -3631,6 +3678,35 @@ pub fn unblock_condition_from_i32(value: i32) -> Result<UnblockCondition, &'stat
 pub(crate) mod tests {
     use super::*;
     use zellij_types::input::options::PaneFrameStyle;
+
+    #[test]
+    fn pane_tabs_layout_decoding_validates_nested_and_floating_children() {
+        for json in [
+            r#"{"tabs":[],"active":0}"#,
+            r#"{"tabs":[{"label":"First","location":"zellij:strider"}],"active":1}"#,
+            r#"{"tabs":[{"label":" ","location":"zellij:strider"}],"active":0}"#,
+            r#"{"tabs":[{"label":"First","location":" "}],"active":0}"#,
+        ] {
+            let mut tiled = ProtobufTiledPaneLayout::try_from(TiledPaneLayout::default()).unwrap();
+            tiled.pane_tabs_json = Some(json.into());
+            assert!(TiledPaneLayout::try_from(tiled.clone()).is_err());
+            let mut parent = ProtobufTiledPaneLayout::try_from(TiledPaneLayout::default()).unwrap();
+            parent.children = vec![tiled];
+            assert!(TiledPaneLayout::try_from(parent).is_err());
+            let mut floating =
+                ProtobufFloatingPaneLayout::try_from(FloatingPaneLayout::default()).unwrap();
+            floating.pane_tabs_json = Some(json.into());
+            assert!(FloatingPaneLayout::try_from(floating).is_err());
+        }
+        let json = r#"{"tabs":[{"label":"First","location":"zellij:strider"}],"active":0}"#;
+        let mut tiled = ProtobufTiledPaneLayout::try_from(TiledPaneLayout::default()).unwrap();
+        tiled.pane_tabs_json = Some(json.into());
+        assert!(TiledPaneLayout::try_from(tiled).is_ok());
+        let mut floating =
+            ProtobufFloatingPaneLayout::try_from(FloatingPaneLayout::default()).unwrap();
+        floating.pane_tabs_json = Some(json.into());
+        assert!(FloatingPaneLayout::try_from(floating).is_ok());
+    }
 
     #[test]
     fn pane_ids_preserve_protobuf_bytes() {
@@ -3871,6 +3947,9 @@ pub(crate) mod tests {
                 | Action::Resize { .. }
                 | Action::FocusNextPane
                 | Action::FocusPreviousPane
+                | Action::FocusPaneTabs
+                | Action::PreviousPaneTab
+                | Action::NextPaneTab
                 | Action::FocusLastPane
                 | Action::SwitchFocus
                 | Action::MoveFocus { .. }

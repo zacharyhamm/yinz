@@ -1,0 +1,15 @@
+[package]
+name = "hocus-todos"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+zellij-tile = { path = "../../zellij-tile" }
+hocus-proto = { path = "../hocus-proto" }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

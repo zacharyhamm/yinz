@@ -16,6 +16,9 @@ test(
   async () => {
     const directory = failedWorkflow();
     session.start({ backgroundPlugins: ["zellij:swamp-bridge"] });
+    await session.waitFor("delivery schema created", () =>
+      session.catalog().some((entity) => entity.def.name === "delivery"),
+    );
     session.loadPlugin("zellij:agent-exit", {
       configuration: { agent_cwd: directory, agent_exit_token: "persisted-launch" },
     });

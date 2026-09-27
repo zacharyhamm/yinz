@@ -1,5 +1,6 @@
 ---
 source: zellij-config/src/kdl/./unit/config_options.rs
+assertion_line: 381
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -374,6 +375,7 @@ plugins {
     hocus-store location="zellij:hocus-store" {
         shared true
     }
+    hocus-todos location="zellij:hocus-todos"
     plugin-manager location="zellij:plugin-manager"
     session-manager location="zellij:session-manager"
     status-bar location="zellij:status-bar"

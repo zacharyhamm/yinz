@@ -6,6 +6,7 @@ mod copy_command;
 mod layout_applier;
 pub use layout_applier::arrangement_layout;
 mod mouse_handler;
+pub mod pane_tabs;
 mod swap_layouts;
 
 use crate::plugins::PluginId;
@@ -168,6 +169,7 @@ pub struct SuppressedPane {
 
 /// Everything a container needs when it crosses tabs, including panes hidden by replacements.
 pub struct OverlayTransfer {
+    pane_tabs: BTreeMap<zellij_types::pane_tabs::PaneTabsId, pane_tabs::PaneTabs>,
     container: crate::panes::OverlayPane,
     suppressed: SuppressedPanes,
     respawns: HashMap<PaneId, (RunCommand, bool)>,
@@ -337,6 +339,7 @@ pub struct Tab {
     // floating layer is down" can never mean "nothing on it is focused".
     overlay_panes: OverlayPanes,
     suppressed_panes: SuppressedPanes,
+    pane_tabs: BTreeMap<zellij_types::pane_tabs::PaneTabsId, pane_tabs::PaneTabs>,
     stacked_pane_list: Rc<RefCell<bool>>,
     reserved_top_rows: Rc<RefCell<HashMap<PaneId, usize>>>,
     stack_lists: HashMap<StackListId, StackList>,
@@ -977,6 +980,17 @@ pub trait Pane {
     /// Only relevant for terminal panes.
     fn set_title_prefix(&mut self, _prefix: Option<String>) {}
     fn set_subtitle(&mut self, _subtitle: Option<String>) {}
+    fn take_pane_tabs_transfer(&mut self) -> Option<pane_tabs::PaneTabsTransfer> {
+        None
+    }
+    fn set_pane_tabs_transfer(&mut self, _transfer: pane_tabs::PaneTabsTransfer) {}
+    fn take_pane_tabs_layout(&mut self) -> Option<zellij_types::pane_tabs::PaneTabsLayout> {
+        None
+    }
+    fn set_pane_tabs(&mut self, _tabs: Option<zellij_types::pane_tabs::PaneTabsInfo>) {}
+    fn pane_tabs(&self) -> Option<&zellij_types::pane_tabs::PaneTabsInfo> {
+        None
+    }
     fn subtitle(&self) -> Option<&str> {
         None
     }
@@ -1344,6 +1358,7 @@ impl Tab {
             floating_panes,
             overlay_panes,
             suppressed_panes: HashMap::new(),
+            pane_tabs: BTreeMap::new(),
             stacked_pane_list,
             reserved_top_rows,
             stack_lists: HashMap::new(),
@@ -3170,6 +3185,18 @@ impl Tab {
         Ok(())
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
+        let changed: Vec<_> = self
+            .pane_tabs
+            .iter_mut()
+            .filter_map(|(id, tabs)| {
+                let focused = tabs.info.bar_focused.contains(&client_id);
+                tabs.info.bar_focused.retain(|client| *client != client_id);
+                focused.then_some(*id)
+            })
+            .collect();
+        for id in changed {
+            self.refresh_pane_tabs(id).non_fatal();
+        }
         // The entry goes, as `drain_single_client` does: `add_client` supplies a fresh
         // `ModeInfo` on reattach, and one left behind per detach lived as long as the tab.
         self.mode_info.borrow_mut().remove(&client_id);
@@ -4121,12 +4148,17 @@ impl Tab {
                     );
                 }
                 if close_replaced_pane {
-                    if let Some(pid) = replaced_pane.as_ref().map(|p| p.pid()) {
-                        self.senders
-                            .send_to_pty(PtyInstruction::ClosePane(pid, None))
-                            .with_context(err_context)?;
+                    if let Some(replaced_pane) = replaced_pane {
+                        let pid = replaced_pane.pid();
+                        if self.pane_tabs_of(pid).is_some() {
+                            self.park_pane(replaced_pane);
+                            self.close_pane_explicitly(pid, None);
+                        } else {
+                            self.senders
+                                .send_to_pty(PtyInstruction::ClosePane(pid, None))
+                                .with_context(err_context)?;
+                        }
                     }
-                    drop(replaced_pane);
                 } else {
                     match replaced_pane {
                         Some(replaced_pane) => {
@@ -4200,7 +4232,13 @@ impl Tab {
                     self.track_stack_list_member_id_swap(old_pane_id, PaneId::Plugin(plugin_pid));
                 }
                 if close_replaced_pane {
-                    drop(replaced_pane);
+                    if let Some(replaced_pane) = replaced_pane {
+                        let pid = replaced_pane.pid();
+                        if self.pane_tabs_of(pid).is_some() {
+                            self.park_pane(replaced_pane);
+                            self.close_pane_explicitly(pid, None);
+                        }
+                    }
                 } else {
                     match replaced_pane {
                         Some(replaced_pane) => {
@@ -4254,6 +4292,11 @@ impl Tab {
         }
         if let Some(replaced_pane) = replaced_pane.take() {
             let pane_id = replaced_pane.pid();
+            if self.pane_tabs_of(pane_id).is_some() {
+                self.park_pane(replaced_pane);
+                self.close_pane_explicitly(pane_id, completion_tx);
+                return;
+            }
             let _ = self
                 .senders
                 .send_to_pty(PtyInstruction::ClosePane(pane_id, completion_tx));
@@ -5238,6 +5281,9 @@ impl Tab {
         completion_tx: Option<NotificationEnd>,
     ) -> Result<bool> {
         // returns true if we need to update the UI (eg. when a command pane is closed with ctrl-c)
+        if self.pane_tabs_input(pane_id, key_with_modifier, client_id)? {
+            return Ok(true);
+        }
         let err_context = || format!("failed to write to pane with id {pane_id:?}");
 
         let mut should_update_ui = false;
@@ -5784,6 +5830,22 @@ impl Tab {
     pub fn take_overlay_container(&mut self, pane_id: PaneId) -> Option<OverlayTransfer> {
         let container = self.overlay_panes.take_container(pane_id)?;
         let mut members: HashSet<_> = container.pane_ids().collect();
+        let tab_ids: Vec<_> = members
+            .iter()
+            .filter_map(|pane| self.pane_tabs_of(*pane))
+            .collect();
+        let mut pane_tabs = BTreeMap::new();
+        for id in tab_ids {
+            if let Some(tabs) = self.pane_tabs.remove(&id) {
+                members.extend(
+                    tabs.info
+                        .tabs
+                        .iter()
+                        .filter_map(|slot| slot.plugin_id.map(PaneId::Plugin)),
+                );
+                pane_tabs.insert(id, tabs);
+            }
+        }
         loop {
             let previous = members.len();
             for (id, pane) in &self.suppressed_panes {
@@ -5817,6 +5879,7 @@ impl Tab {
         self.set_should_clear_display_before_rendering();
         self.set_force_render();
         Some(OverlayTransfer {
+            pane_tabs,
             container,
             suppressed,
             respawns,
@@ -5826,6 +5889,7 @@ impl Tab {
     }
     pub fn accept_overlay_container(&mut self, transfer: OverlayTransfer) {
         let member = transfer.container.pane_ids().next();
+        self.pane_tabs.extend(transfer.pane_tabs);
         self.suppressed_panes.extend(transfer.suppressed);
         self.pending_command_respawns.extend(transfer.respawns);
         self.pending_vte_events.extend(transfer.pending_output);
@@ -5895,9 +5959,10 @@ impl Tab {
             .collect();
         for child in children {
             if !self.pane_is_overlay(child) {
-                let pane = self
+                let mut pane = self
                     .extract_pane(child, true)
                     .context("validated multipane child disappeared")?;
+                self.retain_pane_tabs_transfer(&mut pane);
                 self.overlay_panes.add_pane(
                     child,
                     pane,
@@ -5951,18 +6016,20 @@ impl Tab {
         self.set_force_render();
         true
     }
-    fn notify_overlay_plugins_of_visibility(&self, pane_id: PaneId) {
+    fn notify_overlay_plugins_of_visibility(&mut self, pane_id: PaneId) {
         let carry = self.overlay_panes.carry_of(&pane_id);
         let visible = self.tab_visible && !carry.hidden && !carry.awaiting_placement;
         let updates: Vec<_> = self
             .overlay_panes
             .members(&pane_id)
             .into_iter()
+            .filter(|id| self.pane_tabs_of(*id).is_none())
             .filter_map(|id| match id {
                 PaneId::Plugin(id) => Some((Some(id), None, Event::Visible(visible))),
                 _ => None,
             })
             .collect();
+        self.sync_pane_tabs().non_fatal();
         if !updates.is_empty() {
             self.senders
                 .send_to_plugin(PluginInstruction::Update(updates))
@@ -6128,6 +6195,34 @@ impl Tab {
         output: &mut Output,
         client_id_override: Option<ClientId>,
     ) -> Result<()> {
+        let transfers: Vec<_> = self
+            .get_all_pane_ids()
+            .into_iter()
+            .filter_map(|id| {
+                self.get_pane_with_id_mut(id)
+                    .and_then(|pane| pane.take_pane_tabs_transfer())
+            })
+            .collect();
+        for transfer in transfers {
+            self.pane_tabs.insert(transfer.tabs.info.id, transfer.tabs);
+            self.suppressed_panes.extend(transfer.children);
+        }
+        let client = self.connected_clients.borrow().iter().next().copied();
+        if let Some(client) = client {
+            let pending: Vec<_> = self
+                .get_all_pane_ids()
+                .into_iter()
+                .filter_map(|id| {
+                    self.get_pane_with_id_mut(id)
+                        .and_then(|pane| pane.take_pane_tabs_layout())
+                        .map(|layout| (id, layout))
+                })
+                .collect();
+            for (id, layout) in pending {
+                let existing = layout.active;
+                self.mount_pane_tabs(id, layout, existing, client)?;
+            }
+        }
         self.expire_pending_agent_escapes(Instant::now());
         for pane_id in self.get_all_pane_ids() {
             let clients = self
@@ -6139,6 +6234,7 @@ impl Tab {
                 pane.set_pending_agent_escape_clients(clients);
             }
         }
+        self.sync_pane_tabs()?;
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
         Ok(())
@@ -7621,6 +7717,19 @@ impl Tab {
         ignore_suppressed_panes: bool,
         exit_status: Option<i32>,
     ) {
+        if !ignore_suppressed_panes {
+            if let Some(tabs_id) = self.pane_tabs_of(id) {
+                if let Some(index) = self.pane_tabs[&tabs_id]
+                    .info
+                    .tabs
+                    .iter()
+                    .position(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(id))
+                {
+                    self.close_pane_tab_child(tabs_id, index).non_fatal();
+                    return;
+                }
+            }
+        }
         let id_stands_in_for_a_pane = self.stands_in_for_a_pane(id).is_some();
         if self.multipane_info(id).is_some() && !id_stands_in_for_a_pane {
             if let Some(command) = self.pane_run_command(id) {
@@ -7742,6 +7851,20 @@ impl Tab {
         }
     }
     pub fn extract_pane(
+        &mut self,
+        id: PaneId,
+        dont_swap_if_suppressed: bool,
+    ) -> Option<Box<dyn Pane>> {
+        let id = self
+            .pane_tabs_of(id)
+            .map(|tabs| self.pane_tabs[&tabs].info.pane_id)
+            .unwrap_or(id);
+        let mut pane = self.extract_pane_inner(id, dont_swap_if_suppressed)?;
+        self.attach_pane_tabs_transfer(&mut pane);
+        Some(pane)
+    }
+
+    fn extract_pane_inner(
         &mut self,
         id: PaneId,
         dont_swap_if_suppressed: bool,
@@ -7996,6 +8119,24 @@ impl Tab {
         let mut index = 0;
         while index < closed.len() {
             let current = closed[index];
+            if let Some(tabs_id) = self.pane_tabs_of(current) {
+                if let Some(tabs) = self.pane_tabs.remove(&tabs_id) {
+                    for pane in tabs
+                        .info
+                        .tabs
+                        .iter()
+                        .filter_map(|tab| tab.plugin_id.map(PaneId::Plugin))
+                        .chain([tabs.info.pane_id])
+                    {
+                        if !closed.contains(&pane) {
+                            closed.push(pane);
+                        }
+                        if let Some(child) = self.get_pane_with_id_mut(pane) {
+                            child.set_pane_tabs(None);
+                        }
+                    }
+                }
+            }
             if let Some(owning_container) = self
                 .multipane_info(current)
                 .and_then(|_| self.overlay_panes.take_container(current))
@@ -8679,6 +8820,9 @@ impl Tab {
         event: &MouseEvent,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
+        if self.pane_tabs_mouse(event, client_id)? {
+            return Ok(MouseEffect::state_changed());
+        }
         MouseHandler::handle_mouse_event(self, event, client_id, None)
     }
 
@@ -8690,6 +8834,9 @@ impl Tab {
         client_id: ClientId,
         passthrough_pane_id: Option<PaneId>,
     ) -> Result<MouseEffect> {
+        if self.pane_tabs_mouse(event, client_id)? {
+            return Ok(MouseEffect::state_changed());
+        }
         MouseHandler::handle_mouse_event(self, event, client_id, passthrough_pane_id)
     }
 
@@ -8798,11 +8945,14 @@ impl Tab {
         });
         let mut plugin_updates = vec![];
         for pid in tiled_pids.chain(floating_pids).chain(overlay_pids) {
-            plugin_updates.push((Some(pid), None, Event::Visible(visible)));
+            if self.pane_tabs_of(PaneId::Plugin(pid)).is_none() {
+                plugin_updates.push((Some(pid), None, Event::Visible(visible)));
+            }
         }
         self.senders
             .send_to_plugin(PluginInstruction::Update(plugin_updates))
             .with_context(|| format!("failed to set visibility of tab to {visible}"))?;
+        self.sync_pane_tabs()?;
         if !visible {
             self.mouse_hover_pane_id.clear();
             self.plugin_hover_pane_id.clear();
@@ -8831,6 +8981,9 @@ impl Tab {
                 };
                 active_pane.update_name(to_update);
             })?;
+        if let Some(id) = self.get_active_pane_id(client_id) {
+            self.update_pane_tab_label(id)?;
+        }
         Ok(())
     }
 
@@ -8859,12 +9012,15 @@ impl Tab {
             return Ok(false);
         }
         pane.rename(buf);
+        self.update_pane_tab_label(pane_id)?;
         Ok(true)
     }
 
     pub fn rename_active_pane(&mut self, buf: Vec<u8>, client_id: ClientId) -> Result<()> {
         if let Some(active_pane) = self.get_active_pane_or_floating_pane_mut(client_id) {
+            let id = active_pane.pid();
             active_pane.rename(buf);
+            self.update_pane_tab_label(id)?;
         }
         Ok(())
     }
@@ -9072,6 +9228,19 @@ impl Tab {
         pid: PluginId,
         loading_indication: LoadingIndication,
     ) {
+        if loading_indication.is_error() || loading_indication.ended {
+            self.pane_tab_load_state(
+                pid,
+                if loading_indication.is_error() {
+                    zellij_types::pane_tabs::PaneTabLoadState::Failed(
+                        "Plugin failed to load; focus the tab bar and press r to retry".into(),
+                    )
+                } else {
+                    zellij_types::pane_tabs::PaneTabLoadState::Ready
+                },
+            )
+            .non_fatal();
+        }
         if loading_indication.is_error() {
             // Failed initialization may never send geometry; show the diagnostic anyway.
             self.overlay_panes.finish_placement(PaneId::Plugin(pid));
@@ -9134,18 +9303,20 @@ impl Tab {
     /// the panes in `floating_panes` are concerned: overlays are drawn on their own layer and
     /// suppressed panes are not on screen either way. Nothing is sent while the tab itself is
     /// hidden - `visible(true)` reports the state the surface is in when the tab returns.
-    fn notify_floating_plugins_of_visibility(&self, visible: bool) {
+    fn notify_floating_plugins_of_visibility(&mut self, visible: bool) {
         if !self.tab_visible {
             return;
         }
         let plugin_updates: Vec<_> = self
             .floating_panes
             .pane_ids()
+            .filter(|id| self.pane_tabs_of(**id).is_none())
             .filter_map(|p| match p {
                 PaneId::Plugin(pid) => Some((Some(*pid), None, Event::Visible(visible))),
                 _ => None,
             })
             .collect();
+        self.sync_pane_tabs().non_fatal();
         if plugin_updates.is_empty() {
             return;
         }
@@ -9208,6 +9379,11 @@ impl Tab {
                     })
                     .map(|(pane_id, _)| *pane_id)
             })
+            .map(|pane| {
+                self.pane_tabs_of(pane)
+                    .map(|id| self.pane_tabs[&id].info.pane_id)
+                    .unwrap_or(pane)
+            })
     }
 
     pub fn can_replace_active_pane(&self, client_id: ClientId) -> bool {
@@ -9222,6 +9398,18 @@ impl Tab {
         should_be_in_place: bool,
         client_id: ClientId,
     ) -> Result<()> {
+        if let Some(id) = self.pane_tabs_of(pane_id) {
+            if self.pane_tabs[&id].info.pane_id != pane_id {
+                if let Some(index) = self.pane_tabs[&id]
+                    .info
+                    .tabs
+                    .iter()
+                    .position(|slot| slot.plugin_id.map(PaneId::Plugin) == Some(pane_id))
+                {
+                    self.select_pane_tab(id, index, client_id)?;
+                }
+            }
+        }
         // Revealing a suppressed pane explicitly makes it selectable below. Hidden stack
         // members retain their selectability when swapped into the visible slot.
         if self
@@ -9373,6 +9561,11 @@ impl Tab {
         }
     }
     pub fn suppress_pane(&mut self, pane_id: PaneId, _client_id: Option<ClientId>) {
+        let pane_id = self
+            .pane_tabs_of(pane_id)
+            .and_then(|id| self.pane_tabs_info(id))
+            .map(|tabs| tabs.pane_id)
+            .unwrap_or(pane_id);
         // this method places a pane in the suppressed pane with its own ID - this means we'll
         // not take it out of there when another pane is closed (eg. like happens with the
         // scrollback editor), but it has to take itself out on its own (eg. a plugin using the
@@ -9437,6 +9630,11 @@ impl Tab {
         }
     }
     pub fn unsuppress_or_expand_pane(&mut self, pane_id: PaneId, should_float_if_hidden: bool) {
+        let pane_id = self
+            .pane_tabs_of(pane_id)
+            .and_then(|id| self.pane_tabs_info(id))
+            .map(|tabs| tabs.pane_id)
+            .unwrap_or(pane_id);
         // removes a pane from being suppressed (hidden) but does not focus it
         if self.make_hidden_stack_list_member_visible(pane_id) {
             return;
@@ -9472,7 +9670,8 @@ impl Tab {
     ///
     /// Nothing brings it back on its own - it has to be asked for by name (a plugin's
     /// `show_self`, selecting a stack-list member).
-    pub fn park_pane(&mut self, pane: Box<dyn Pane>) {
+    pub fn park_pane(&mut self, mut pane: Box<dyn Pane>) {
+        self.retain_pane_tabs_transfer(&mut pane);
         self.suppressed_panes
             .insert(pane.pid(), SuppressedPane::parked(pane));
     }
@@ -9535,6 +9734,7 @@ impl Tab {
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.retain_pane_tabs_transfer(&mut pane);
         let err_context = || "failed to add overlay pane".to_string();
         if let Some(pinned) = coordinates.pinned {
             // an overlay is above every floating pane already, so pinning it means nothing - but
@@ -9572,6 +9772,7 @@ impl Tab {
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.retain_pane_tabs_transfer(&mut pane);
         let err_context = || "failed to add floating pane".to_string();
         // A pane that is an overlay by configuration is one wherever it came from, including the
         // paths that pass no coordinates at all (`focus_pane_with_id` taking a modal back out of
@@ -9660,6 +9861,7 @@ impl Tab {
         without_relayout: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.retain_pane_tabs_transfer(&mut pane);
         if self.tiled_panes.fullscreen_is_active() {
             self.tiled_panes.unset_fullscreen();
         }
@@ -9891,7 +10093,19 @@ impl Tab {
         permissions: Option<PluginPermission>,
     ) {
         let pane_id = PaneId::Plugin(pid);
-        if permissions.is_some() {
+        let in_tabs = self.pane_tabs_of(pane_id).is_some();
+        if in_tabs {
+            self.pane_tab_load_state(
+                pid,
+                if permissions.is_some() {
+                    zellij_types::pane_tabs::PaneTabLoadState::PermissionPending
+                } else {
+                    zellij_types::pane_tabs::PaneTabLoadState::Ready
+                },
+            )
+            .non_fatal();
+        }
+        if permissions.is_some() && !in_tabs {
             // Permission is needed before a plugin can send its placement.
             self.overlay_panes.finish_placement(pane_id);
             if self.overlay_panes.is_hidden(&pane_id) {
@@ -9906,7 +10120,7 @@ impl Tab {
         // as a floating pane for the moment, marked so that it is suppressed again once the user
         // has answered
         let should_focus_pane =
-            permissions.is_some() && self.suppressed_panes.contains_key(&pane_id);
+            permissions.is_some() && !in_tabs && self.suppressed_panes.contains_key(&pane_id);
         if let Some(plugin_pane) = self.get_pane_with_id_mut(pane_id) {
             if should_focus_pane {
                 plugin_pane.set_should_be_suppressed(true);
@@ -10608,12 +10822,14 @@ impl Tab {
     pub fn rename_pane_by_pane_id(&mut self, pane_id: PaneId, name: Vec<u8>) -> Result<()> {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.rename(name);
+            self.update_pane_tab_label(pane_id)?;
         }
         Ok(())
     }
     pub fn undo_rename_pane_by_pane_id(&mut self, pane_id: PaneId) {
         if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
             pane.load_pane_name();
+            self.update_pane_tab_label(pane_id).non_fatal();
         }
     }
     pub fn toggle_pane_pinned_by_pane_id(&mut self, pane_id: PaneId) {
@@ -10640,6 +10856,7 @@ pub fn pane_info_for_pane(
         .collect();
     let (default_fg, default_bg) = pane.get_pane_default_colors();
     let mut pane_info = PaneInfo {
+        pane_tabs: pane.pane_tabs().cloned(),
         pane_x: zellij_types::position::Column::new(pane.x()),
         pane_content_x: zellij_types::position::Column::new(pane.get_content_x()),
         pane_y: zellij_types::position::Row::new(pane.y()),

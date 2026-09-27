@@ -36,3 +36,5 @@ pub mod todos;
 pub mod wire;
 
 pub mod vms;
+
+pub mod panel_text;

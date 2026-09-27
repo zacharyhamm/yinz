@@ -8,6 +8,7 @@ fn workflow_state() -> State {
     state.plugin_instances.insert(
         PluginId::new(7),
         PluginInstance {
+            configuration: BTreeMap::new(),
             location: "zellij:swamp-bridge".into(),
             has_pane: true,
         },
@@ -192,6 +193,7 @@ fn workflow_calls_follow_parked_chats_and_require_the_active_project_and_bridge(
     state.plugin_instances.insert(
         PluginId::new(9),
         PluginInstance {
+            configuration: BTreeMap::new(),
             location: "zellij:swamp-bridge".into(),
             has_pane: false,
         },

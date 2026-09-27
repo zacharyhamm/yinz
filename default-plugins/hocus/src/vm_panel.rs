@@ -12,10 +12,28 @@ impl State {
         if self.vm_panel_owner != Some(self.own_plugin_id) {
             return None;
         }
-        self.agents_plugin.filter(|id| {
-            self.plugin_instances
-                .get(id)
-                .is_some_and(|plugin| plugin.location == AGENT_LIST_LOCATION && plugin.has_pane)
+        let member = self.panel_tabs.as_ref().and_then(|tabs| {
+            tabs.tabs
+                .iter()
+                .find(|slot| {
+                    slot.descriptor.location == AGENT_LIST_LOCATION
+                        && slot
+                            .descriptor
+                            .configuration
+                            .get("view")
+                            .is_some_and(|view| view == "vms")
+                })
+                .and_then(|slot| slot.plugin_id)
+        });
+        member.filter(|id| {
+            self.plugin_instances.get(id).is_some_and(|plugin| {
+                plugin.location == AGENT_LIST_LOCATION
+                    && plugin.has_pane
+                    && plugin
+                        .configuration
+                        .get("view")
+                        .is_some_and(|view| view == "vms")
+            })
         })
     }
 
@@ -268,10 +286,29 @@ fn vm_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn membership(id: u32) -> PaneTabsInfo {
+        PaneTabsInfo {
+            id: PaneTabsId(1),
+            pane_id: PaneId::Plugin(PluginId::new(id)),
+            active: 0,
+            bar_focused: vec![],
+            tabs: vec![PaneTabInfo {
+                descriptor: PaneTabDescriptor {
+                    label: "VMs".into(),
+                    location: AGENT_LIST_LOCATION.into(),
+                    initial_cwd: None,
+                    configuration: BTreeMap::from([("view".into(), "vms".into())]),
+                },
+                plugin_id: Some(PluginId::new(id)),
+                state: PaneTabLoadState::Ready,
+            }],
+        }
+    }
     fn state() -> State {
         let mut state = State {
             own_is_floating: Some(true),
             agents_plugin: Some(PluginId::new(7)),
+            panel_tabs: Some(membership(7)),
             ..Default::default()
         };
         state.on_sessions(vec![session()]);
@@ -292,7 +329,7 @@ mod tests {
                     PluginId::new(7),
                     PluginInfo {
                         location: "zellij:hocus-agents".into(),
-                        ..Default::default()
+                        configuration: BTreeMap::from([("view".into(), "vms".into())]),
                     },
                 ),
             ]),
@@ -384,6 +421,7 @@ mod tests {
         );
 
         state.on_sessions(vec![session()]);
+        state.panel_tabs = Some(membership(7));
         state.pipe(announcement(8, 7));
         state.on_vm_panel_request(message(8, 3));
         assert!(state.vm_panel_pending.is_none());
@@ -421,6 +459,7 @@ mod tests {
         state.on_sessions(vec![manifest]);
         state.on_vm_panel_request(message(7, 4));
         assert!(state.vm_panel_pending.is_none());
+        state.panel_tabs = Some(membership(9));
         state.on_vm_panel_request(message(9, 5));
         assert_eq!(state.vm_panel_pending.as_ref().unwrap().1.request_id, 5);
         state.on_sessions(vec![]);

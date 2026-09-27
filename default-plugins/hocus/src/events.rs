@@ -459,6 +459,7 @@ impl State {
             .iter()
             .map(|(id, plugin)| {
                 let instance = PluginInstance {
+                    configuration: plugin.configuration.clone(),
                     location: plugin.location.clone(),
                     has_pane: pane_ids.contains(id),
                 };
@@ -799,10 +800,35 @@ impl State {
             self.multipane = Some(info.clone());
             self.placed = true;
             self.panel.placed_rect = self.reported_panel();
-            self.agents_plugin = info.children.iter().find_map(|id| match id {
-                PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
-                _ => None,
-            });
+            let panel_child = info.children.iter().find(|id| **id != own_id).copied();
+            self.panel_tabs = panel_child
+                .and_then(|id| panes.iter().find(|pane| pane.id == id))
+                .and_then(|pane| pane.pane_tabs.clone());
+            self.agents_plugin = self
+                .panel_tabs
+                .as_ref()
+                .and_then(|tabs| {
+                    tabs.tabs
+                        .iter()
+                        .find(|slot| {
+                            slot.descriptor.location == "zellij:hocus-agents"
+                                && slot
+                                    .descriptor
+                                    .configuration
+                                    .get("view")
+                                    .is_some_and(|view| view == "agents")
+                        })
+                        .and_then(|slot| slot.plugin_id)
+                })
+                .or_else(|| {
+                    if self.panel_tabs.is_some() {
+                        return None;
+                    }
+                    info.children.iter().find_map(|id| match id {
+                        PaneId::Plugin(id) if *id != self.own_plugin_id => Some(*id),
+                        _ => None,
+                    })
+                });
             self.agents_tab_index = Some(tab_index);
         } else {
             if self.agents_plugin.is_none() {

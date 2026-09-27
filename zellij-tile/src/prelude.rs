@@ -32,3 +32,5 @@ pub use zellij_types::multipane::{
     CreateMultipane, MultipaneChild, MultipaneDirection, MultipaneId, MultipaneInfo,
     MultipaneSplit, ReplaceMultipaneChild, UpdateMultipane,
 };
+
+pub use zellij_types::pane_tabs::*;

@@ -270,3 +270,48 @@ fn session_names_preserve_strings_and_map_keys() {
     let action: crate::input::actions::Action = serde_json::from_str(json).unwrap();
     assert_eq!(serde_json::to_string(&action).unwrap(), json);
 }
+
+#[test]
+fn pane_tabs_cwd_propagation_tolerates_invalid_selection() {
+    use crate::input::layout::{
+        FloatingPaneLayout, PluginAlias, Run, RunPluginOrAlias, TiledPaneLayout,
+    };
+    use crate::pane_tabs::{PaneTabDescriptor, PaneTabsLayout};
+    use std::path::Path;
+
+    for tabs in [
+        vec![],
+        vec![PaneTabDescriptor {
+            label: "First".into(),
+            location: "zellij:strider".into(),
+            configuration: Default::default(),
+            initial_cwd: None,
+        }],
+    ] {
+        let pane_tabs = Some(PaneTabsLayout {
+            active: tabs.len(),
+            tabs,
+        });
+        let run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
+            "strider", &None, None,
+        ))));
+        let mut tiled = TiledPaneLayout {
+            pane_tabs: pane_tabs.clone(),
+            run: run.clone(),
+            ..Default::default()
+        };
+        tiled.add_cwd_to_layout(Path::new("/tmp/origin"));
+        let mut floating = FloatingPaneLayout {
+            pane_tabs,
+            run,
+            ..Default::default()
+        };
+        floating.add_cwd_to_layout(Path::new("/tmp/origin"));
+        for tabs in [tiled.pane_tabs.unwrap(), floating.pane_tabs.unwrap()] {
+            assert!(tabs
+                .tabs
+                .iter()
+                .all(|tab| tab.initial_cwd.as_deref() == Some(Path::new("/tmp/origin"))));
+        }
+    }
+}

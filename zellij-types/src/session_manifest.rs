@@ -23,6 +23,7 @@ pub struct TabLayoutManifest {
 
 #[derive(Default, Debug, Clone)]
 pub struct PaneLayoutManifest {
+    pub pane_tabs: Option<crate::pane_tabs::PaneTabsLayout>,
     pub geom: PaneGeom,
     pub run: Option<Run>,
     pub cwd: Option<PathBuf>,

@@ -10,7 +10,7 @@ use crate::panes::{
     kitty_graphics::{InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore},
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
-    FrameColorOverride, LinkHandler, PaneId,
+    FrameColorOverride, LinkHandler, PaneId, EMPTY_TERMINAL_CHARACTER,
 };
 use crate::plugins::PluginInstruction;
 use crate::pty::VteBytes;
@@ -82,6 +82,9 @@ macro_rules! get_or_create_grid {
 
 pub struct PluginPane {
     pub pid: PluginId,
+    pane_tabs_transfer: Option<crate::tab::pane_tabs::PaneTabsTransfer>,
+    pane_tabs: Option<zellij_types::pane_tabs::PaneTabsInfo>,
+    pub pending_pane_tabs: Option<zellij_types::pane_tabs::PaneTabsLayout>,
     pub should_render: HashMap<ClientId, bool>,
     pub selectable: bool,
     pub geom: PaneGeom,
@@ -129,6 +132,14 @@ pub struct PluginPane {
 }
 
 impl PluginPane {
+    fn tab_bar_rows(&self) -> usize {
+        usize::from(
+            self.pane_tabs.is_some()
+                && self.rows()
+                    > self.content_offset.top + self.content_offset.bottom + self.subtitle_rows(),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         pid: PluginId,
@@ -153,6 +164,9 @@ impl PluginPane {
         let initial_loading_message = loading_indication.to_string();
         let mut plugin = PluginPane {
             pid,
+            pane_tabs: None,
+            pane_tabs_transfer: None,
+            pending_pane_tabs: None,
             should_render: HashMap::new(),
             selectable: true,
             geom: position_and_size,
@@ -219,7 +233,7 @@ impl Pane for PluginPane {
         self.x() + self.content_offset.left
     }
     fn get_content_y(&self) -> usize {
-        self.y() + self.content_offset.top + self.subtitle_rows()
+        self.y() + self.content_offset.top + self.subtitle_rows() + self.tab_bar_rows()
     }
     fn get_content_columns(&self) -> usize {
         // content columns might differ from the pane's columns if the pane has a frame
@@ -231,7 +245,10 @@ impl Pane for PluginPane {
         // content rows might differ from the pane's rows if the pane has a frame
         // in that case they would be 2 less
         self.rows().saturating_sub(
-            self.content_offset.top + self.content_offset.bottom + self.subtitle_rows(),
+            self.content_offset.top
+                + self.content_offset.bottom
+                + self.subtitle_rows()
+                + self.tab_bar_rows(),
         )
     }
     fn reset_size_and_position_override(&mut self) {
@@ -351,7 +368,15 @@ impl Pane for PluginPane {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
         let Offset { top, left, .. } = self.content_offset;
-        let top = top + self.subtitle_rows();
+        let top = top + self.subtitle_rows() + self.tab_bar_rows();
+        if client_id.is_some_and(|client| {
+            self.pane_tabs.as_ref().is_some_and(|tabs| {
+                tabs.bar_focused.contains(&client)
+                    || tabs.tabs[tabs.active].plugin_id != Some(self.pid)
+            })
+        }) {
+            return None;
+        }
         if let Some((x, y)) = client_id
             .and_then(|client_id| self.grids.get(&client_id))
             .and_then(|grid| grid.text_selection_cursor())
@@ -517,31 +542,103 @@ impl Pane for PluginPane {
             Vec<KittyImageChunk>,
         )>,
     > {
-        if client_id.is_none() {
+        let Some(client_id) = client_id else {
+            return Ok(None);
+        };
+        if !self.should_render.get(&client_id).copied().unwrap_or(false) {
             return Ok(None);
         }
-        if let Some(client_id) = client_id {
-            if self.should_render.get(&client_id).copied().unwrap_or(false) {
-                let content_x = self.get_content_x();
-                let content_y = self.get_content_y();
-                let rows = self.get_content_rows();
-                let columns = self.get_content_columns();
-                if rows < 1 || columns < 1 {
-                    return Ok(None);
+        let content_x = self.get_content_x();
+        let content_y = self.get_content_y();
+        let rows = self.get_content_rows();
+        let columns = self.get_content_columns();
+        let mut rendered = (vec![], None, vec![], vec![]);
+        let selected_here = self
+            .pane_tabs
+            .as_ref()
+            .is_none_or(|tabs| tabs.tabs[tabs.active].plugin_id == Some(self.pid));
+        if selected_here && rows > 0 && columns > 0 {
+            if let Some(grid) = self.grids.get_mut(&client_id) {
+                rendered = grid
+                    .render(content_x, content_y, &self.style)?
+                    .unwrap_or(rendered);
+            }
+        } else {
+            for row in 0..rows {
+                rendered.0.push(CharacterChunk::new(
+                    vec![EMPTY_TERMINAL_CHARACTER; columns],
+                    content_x,
+                    content_y + row,
+                ));
+            }
+        }
+        if self.tab_bar_rows() > 0 {
+            if let Some(tabs) = &self.pane_tabs {
+                let mut characters: Vec<_> = crate::tab::pane_tabs::bar_cells(tabs, columns)
+                    .into_iter()
+                    .filter(|(ch, _)| *ch != '\0')
+                    .map(|(ch, index)| {
+                        use crate::panes::terminal_character::{AnsiCode, RESET_STYLES};
+                        let mut character = crate::panes::TerminalCharacter::new(ch);
+                        if index == tabs.active && tabs.bar_focused.contains(&client_id) {
+                            let colors = self.style.colors.text_selected;
+                            character.styles = RESET_STYLES
+                                .foreground(Some(AnsiCode::from(colors.base)))
+                                .background(Some(AnsiCode::from(colors.background)))
+                                .into();
+                        }
+                        character
+                    })
+                    .collect();
+                let length: usize = characters.iter().map(|ch| ch.width()).sum();
+                characters.extend(vec![
+                    EMPTY_TERMINAL_CHARACTER;
+                    columns.saturating_sub(length)
+                ]);
+                rendered
+                    .0
+                    .push(CharacterChunk::new(characters, content_x, content_y - 1));
+                if selected_here
+                    && rows > 0
+                    && matches!(
+                        tabs.tabs[tabs.active].state,
+                        zellij_types::pane_tabs::PaneTabLoadState::Failed(_)
+                    )
+                {
+                    let mut hint: Vec<_> = "r: retry"
+                        .chars()
+                        .take(columns)
+                        .map(crate::panes::TerminalCharacter::new)
+                        .collect();
+                    hint.resize(columns, EMPTY_TERMINAL_CHARACTER);
+                    rendered
+                        .0
+                        .push(CharacterChunk::new(hint, content_x, content_y + rows - 1));
                 }
-                if let Some(grid) = self.grids.get_mut(&client_id) {
-                    match grid.render(content_x, content_y, &self.style) {
-                        Ok(rendered_assets) => {
-                            self.should_render.insert(client_id, false);
-                            return Ok(rendered_assets);
+                if !selected_here && rows > 0 {
+                    let text = match &tabs.tabs[tabs.active].state {
+                        zellij_types::pane_tabs::PaneTabLoadState::Loading => "Loading…".to_owned(),
+                        zellij_types::pane_tabs::PaneTabLoadState::Failed(error) => {
+                            format!("{error} (r: retry)")
                         },
-                        e => return e,
-                    }
+                        _ => "Closed (r: reopen)".to_owned(),
+                    };
+                    rendered.0.push(CharacterChunk::new(
+                        zellij_types::text::clean_string_from_control_and_linebreak(&text)
+                            .chars()
+                            .take(columns)
+                            .map(crate::panes::TerminalCharacter::new)
+                            .collect(),
+                        content_x,
+                        content_y,
+                    ));
                 }
             }
         }
-        Ok(None)
+        self.should_render.insert(client_id, false);
+        Ok(Some(rendered))
     }
+
     fn render_frame(
         &mut self,
         client_id: ClientId,
@@ -901,6 +998,28 @@ impl Pane for PluginPane {
             }
             self.set_should_render(true);
         }
+    }
+    fn take_pane_tabs_transfer(&mut self) -> Option<crate::tab::pane_tabs::PaneTabsTransfer> {
+        self.pane_tabs_transfer.take()
+    }
+    fn set_pane_tabs_transfer(&mut self, transfer: crate::tab::pane_tabs::PaneTabsTransfer) {
+        self.pane_tabs_transfer = Some(transfer);
+    }
+    fn take_pane_tabs_layout(&mut self) -> Option<zellij_types::pane_tabs::PaneTabsLayout> {
+        self.pending_pane_tabs.take()
+    }
+    fn set_pane_tabs(&mut self, tabs: Option<zellij_types::pane_tabs::PaneTabsInfo>) {
+        if self.pane_tabs != tabs {
+            let had_bar = self.pane_tabs.is_some();
+            self.pane_tabs = tabs;
+            if had_bar != self.pane_tabs.is_some() {
+                self.resize_grids();
+            }
+            self.set_should_render(true);
+        }
+    }
+    fn pane_tabs(&self) -> Option<&zellij_types::pane_tabs::PaneTabsInfo> {
+        self.pane_tabs.as_ref()
     }
     fn subtitle(&self) -> Option<&str> {
         self.subtitle.as_deref()

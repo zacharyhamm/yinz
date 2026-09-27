@@ -3634,3 +3634,109 @@ fn firecracker_pane_properties_are_validated() {
         );
     }
 }
+
+#[test]
+fn pane_tabs_layout_validates_flat_named_plugins_and_selects_one_run() {
+    for invalid in [
+        "pane tabbed=true",
+        "pane selected=0",
+        "floating_panes { pane { pane name=\"Files\" { plugin location=\"zellij:strider\"; }; }; }",
+        "pane tabbed=true { pane name=\"shell\"; }",
+        "pane tabbed=true { pane { plugin location=\"zellij:strider\"; }; }",
+        "pane tabbed=true selected=2 { pane name=\"Files\" { plugin location=\"zellij:strider\"; }; }",
+        "pane tabbed=true { pane name=\"nested\" tabbed=true { pane name=\"Files\" { plugin location=\"zellij:strider\"; }; }; }",
+    ] {
+        let raw = format!("layout {{ {invalid}; }}");
+        assert!(crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(), "{raw}");
+    }
+    for prefix in ["", "floating_panes {"] {
+        let suffix = if prefix.is_empty() { "" } else { "};" };
+        let raw = format!(
+            r#"layout {{ {prefix}
+            pane tabbed=true selected=1 {{
+                pane name="Files" {{ plugin location="zellij:strider"; }}
+                pane name="Todos" {{ plugin location="zellij:hocus-todos"; }}
+            }}; {suffix}
+        }}"#
+        );
+        assert!(
+            crate::kdl::layout::from_kdl(&raw, None, None, None).is_ok(),
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn pane_tabs_templates_merge_selection_and_keep_child_cwds() {
+    let raw = r#"layout cwd="/project" {
+        pane_template name="views" tabbed=true selected=1 {
+            pane name="Files" { plugin location="strider" cwd="files"; }
+            pane name="Todos" { plugin location="zellij:hocus-todos" cwd="todos"; }
+        }
+        views
+        views selected=0
+    }"#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (tiled, _) = layout.template.unwrap();
+    for (pane, selected) in tiled.children.iter().zip([1, 0]) {
+        let tabs = pane.pane_tabs.as_ref().unwrap();
+        assert_eq!(tabs.active, selected);
+        assert_eq!(tabs.tabs[0].location, "strider");
+        assert_eq!(
+            tabs.tabs[0].initial_cwd,
+            Some(PathBuf::from("/project/files"))
+        );
+        assert_eq!(
+            tabs.tabs[1].initial_cwd,
+            Some(PathBuf::from("/project/todos"))
+        );
+        let Run::Plugin(plugin) = pane.run.as_ref().unwrap() else {
+            panic!("selected plugin")
+        };
+        assert_eq!(plugin.get_initial_cwd(), tabs.tabs[selected].initial_cwd);
+        assert!(pane.children.is_empty());
+    }
+    for invalid in ["selected=2", "tabbed=false", "selected=-1"] {
+        let raw = format!("layout {{ pane_template name=\"views\" tabbed=true selected=0 {{ pane name=\"Files\" {{ plugin location=\"zellij:strider\"; }} }} views {invalid}; }}");
+        assert!(
+            crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(),
+            "{raw}"
+        );
+    }
+    for invalid_child in [
+        "pane name=\"Command\" command=\"echo\"",
+        "pane name=\"Stack\" stacked=true { pane name=\"Child\" { plugin location=\"zellij:strider\"; } }",
+        "pane name=\"Nested\" tabbed=true { pane name=\"Child\" { plugin location=\"zellij:strider\"; } }",
+    ] {
+        let raw = format!("layout {{ pane_template name=\"views\" tabbed=true {{ {invalid_child}; }} views; }}");
+        assert!(crate::kdl::layout::from_kdl(&raw, None, None, None).is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn floating_pane_tabs_keep_their_child_cwds() {
+    let raw = r#"layout cwd="/project" {
+        floating_panes {
+            pane tabbed=true selected=1 {
+                pane name="Files" { plugin location="zellij:strider" cwd="files"; }
+                pane name="Todos" { plugin location="zellij:hocus-todos" cwd="todos"; }
+            }
+        }
+    }"#;
+    let layout = crate::kdl::layout::from_kdl(raw, None, None, None).unwrap();
+    let (_, floating) = layout.template.unwrap();
+    let pane = &floating[0];
+    let tabs = pane.pane_tabs.as_ref().unwrap();
+    assert_eq!(
+        tabs.tabs[0].initial_cwd,
+        Some(PathBuf::from("/project/files"))
+    );
+    assert_eq!(
+        tabs.tabs[1].initial_cwd,
+        Some(PathBuf::from("/project/todos"))
+    );
+    let Run::Plugin(plugin) = pane.run.as_ref().unwrap() else {
+        panic!("selected plugin")
+    };
+    assert_eq!(plugin.get_initial_cwd(), tabs.tabs[1].initial_cwd);
+}

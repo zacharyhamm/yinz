@@ -69,6 +69,7 @@ fn a_snapshot_rebuilds_the_strip() {
 #[test]
 fn project_changes_push_the_strip_immediately() {
     let mut state = state_with_tab(TabId::new(9));
+    list_plugin(&mut state, AGENTS_PANE, AGENT_LIST_LOCATION);
     poll(&mut state, vec![agent_in(3, "/work/hocus", TabId::new(9))]);
     assert!(matches!(
         &state.last_strip.rows[0],
@@ -98,6 +99,7 @@ fn project_changes_push_the_strip_immediately() {
 #[test]
 fn the_strip_carries_the_focused_pane_agent_or_not() {
     let mut state = state_with_tab(TabId::new(9));
+    list_plugin(&mut state, AGENTS_PANE, AGENT_LIST_LOCATION);
     let panes = vec![
         agent_in(3, "/work/hocus", TabId::new(9)),
         agent_in(7, "/work/hocus", TabId::new(9)),
@@ -578,6 +580,7 @@ fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) ->
 #[test]
 fn walking_between_agents_pushes_a_strip_of_identical_rows() {
     let mut state = state_with_tab(TabId::new(9));
+    list_plugin(&mut state, AGENTS_PANE, AGENT_LIST_LOCATION);
     let panes = vec![
         agent_in(3, "/work/hocus", TabId::new(9)),
         agent_in(7, "/work/hocus", TabId::new(9)),
@@ -597,6 +600,7 @@ fn walking_between_agents_pushes_a_strip_of_identical_rows() {
 #[test]
 fn walking_between_worktree_agents_keeps_both_branch_headers() {
     let mut state = idle_state();
+    list_plugin(&mut state, AGENTS_PANE, AGENT_LIST_LOCATION);
     settle(&mut state);
 
     let headers = |state: &State| -> Vec<String> {
@@ -742,6 +746,7 @@ fn list_plugin(state: &mut State, id: PluginId, location: &str) {
     state.plugin_instances.insert(
         id,
         PluginInstance {
+            configuration: BTreeMap::new(),
             location: location.to_owned(),
             has_pane: true,
         },
@@ -764,14 +769,22 @@ fn destinations(messages: Vec<MessageToPlugin>) -> Vec<Option<PluginId>> {
 /// The strip goes to the agent lists, not to every plugin in the session: each tab bar,
 /// status bar and daemon used to decode it too, on every focus change. Every list gets it -
 /// the panel's, one another client opened, one opened by hand - since while it was
-/// broadcast every one of them stayed live. With no list known it is still broadcast: a
-/// hocus reloaded under an open list must reach it.
+/// broadcast every one of them stayed live. New lists receive a targeted greeting reply.
 #[test]
 fn the_strip_goes_to_every_agent_list_and_nothing_else() {
     let mut state = state_with_summary(2);
     list_plugin(&mut state, PluginId::new(12), AGENT_LIST_LOCATION);
     list_plugin(&mut state, PluginId::new(13), AGENT_LIST_LOCATION);
     list_plugin(&mut state, PluginId::new(14), "zellij:tab-bar");
+    for (id, view) in [(15, "vms"), (16, "swamp")] {
+        list_plugin(&mut state, PluginId::new(id), AGENT_LIST_LOCATION);
+        state
+            .plugin_instances
+            .get_mut(&PluginId::new(id))
+            .unwrap()
+            .configuration
+            .insert("view".into(), view.into());
+    }
 
     let strip = state.current_strip();
     let recipients = state.strip_recipients();
@@ -787,10 +800,7 @@ fn the_strip_goes_to_every_agent_list_and_nothing_else() {
     state.agents_plugin = None;
     state.plugin_instances.clear();
     let recipients = state.strip_recipients();
-    assert_eq!(
-        destinations(state.strip_messages(&strip, recipients)),
-        [None]
-    );
+    assert!(state.strip_messages(&strip, recipients).is_empty());
 }
 
 /// The greeting feeds its sender and nothing more. Which list is the panel's is settled by
@@ -831,12 +841,12 @@ fn a_greeting_is_always_answered_to_its_sender() {
         "and once listed, only once"
     );
 
-    // With no list known, the one broadcast already reaches the greeter.
+    // An early greeting is addressed to its sender even before the session manifest.
     state.agents_plugin = None;
     state.plugin_instances.clear();
     assert_eq!(
         destinations(state.answer_strip_hello(&PipeSource::Plugin(PluginId::new(14)))),
-        [None]
+        [Some(PluginId::new(14))]
     );
 }
 

@@ -1,3 +1,4 @@
+use zellij_types::input::layout::RunPluginOrAlias;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::{
     command::PaneTarget,
@@ -98,7 +99,9 @@ impl<'a> KdlLayoutParser<'a> {
             || word == "firecracker_worktree"
     }
     fn is_a_valid_pane_property(&self, property_name: &str) -> bool {
-        property_name == "borderless"
+        property_name == "tabbed"
+            || property_name == "selected"
+            || property_name == "borderless"
             || property_name == "focus"
             || property_name == "name"
             || property_name == "size"
@@ -124,7 +127,12 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "firecracker_worktree"
     }
     fn is_a_valid_floating_pane_property(&self, property_name: &str) -> bool {
-        property_name == "borderless"
+        if property_name == "pane" {
+            return true;
+        }
+        property_name == "tabbed"
+            || property_name == "selected"
+            || property_name == "borderless"
             || property_name == "focus"
             || property_name == "name"
             || property_name == "plugin"
@@ -612,6 +620,90 @@ impl<'a> KdlLayoutParser<'a> {
         }
         Ok(run)
     }
+    fn parse_pane_tabs(
+        &self,
+        node: &KdlNode,
+        template: Option<&KdlNode>,
+        pane: &mut TiledPaneLayout,
+    ) -> Result<(), ConfigError> {
+        let tabbed = match kdl_get_bool_property_or_child_value_with_error!(node, "tabbed") {
+            Some(tabbed) => tabbed,
+            None => match template {
+                Some(template) => {
+                    kdl_get_bool_property_or_child_value_with_error!(template, "tabbed")
+                        .unwrap_or(false)
+                },
+                None => false,
+            },
+        };
+        let selected = kdl_get_property_or_child!(node, "selected").or_else(|| {
+            template.and_then(|template| kdl_get_property_or_child!(template, "selected"))
+        });
+        if !tabbed {
+            if selected.is_some() {
+                return Err(ConfigError::new_layout_kdl_error(
+                    "selected requires tabbed=true".into(),
+                    node.span().offset(),
+                    node.span().len(),
+                ));
+            }
+            return Ok(());
+        }
+        let invalid = || {
+            ConfigError::new_layout_kdl_error(
+            "A tabbed pane requires a nonempty, flat list of named plugin panes; commands, stacks and nested tabs are not supported".into(),
+            node.span().offset(), node.span().len())
+        };
+        if pane.children_are_stacked
+            || pane.run.is_some()
+            || pane.external_children_index.is_some()
+            || pane.children.is_empty()
+        {
+            return Err(invalid());
+        }
+        let active = match selected {
+            Some(entry) => entry.value().as_i64().ok_or_else(invalid)?,
+            None => 0,
+        };
+        let mut tabs = Vec::new();
+        for child in &pane.children {
+            let Some(Run::Plugin(plugin)) = &child.run else {
+                return Err(invalid());
+            };
+            if !child.children.is_empty() || child.pane_tabs.is_some() || child.children_are_stacked
+            {
+                return Err(invalid());
+            }
+            let label = child
+                .name
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .ok_or_else(invalid)?;
+            let configuration = match plugin {
+                RunPluginOrAlias::RunPlugin(plugin) => plugin.configuration.inner().clone(),
+                RunPluginOrAlias::Alias(alias) => alias
+                    .configuration
+                    .as_ref()
+                    .map(|config| config.inner().clone())
+                    .unwrap_or_default(),
+            };
+            tabs.push(zellij_types::pane_tabs::PaneTabDescriptor {
+                label,
+                location: plugin.location_string(),
+                configuration,
+                initial_cwd: plugin.get_initial_cwd(),
+            });
+        }
+        let layout = zellij_types::pane_tabs::PaneTabsLayout {
+            tabs,
+            active: usize::try_from(active).map_err(|_| invalid())?,
+        };
+        layout.validate().map_err(|_| invalid())?;
+        pane.run = pane.children[layout.active].run.clone();
+        pane.children.clear();
+        pane.pane_tabs = Some(layout);
+        Ok(())
+    }
     fn parse_pane_node(
         &self,
         kdl_node: &KdlNode,
@@ -672,7 +764,7 @@ impl<'a> KdlLayoutParser<'a> {
                     std::fs::read_to_string(parent_folder.join(contents_file)).ok()
                 })
         });
-        Ok(TiledPaneLayout {
+        let mut pane = TiledPaneLayout {
             borderless,
             focus,
             name,
@@ -688,7 +780,9 @@ impl<'a> KdlLayoutParser<'a> {
             default_fg,
             default_bg,
             ..Default::default()
-        })
+        };
+        self.parse_pane_tabs(kdl_node, None, &mut pane)?;
+        Ok(pane)
     }
     fn parse_floating_pane_node(
         &self,
@@ -701,7 +795,33 @@ impl<'a> KdlLayoutParser<'a> {
         let y = self.parse_percent_or_fixed(kdl_node, "y", true)?;
         let pinned = kdl_get_bool_property_or_child_value_with_error!(kdl_node, "pinned");
         let borderless = kdl_get_bool_property_or_child_value_with_error!(kdl_node, "borderless");
-        let run = self.parse_command_plugin_or_edit_block(kdl_node)?;
+        let mut run = self.parse_command_plugin_or_edit_block(kdl_node)?;
+        let mut tabbed = TiledPaneLayout {
+            run: run.clone(),
+            ..Default::default()
+        };
+        if let Some(children) = kdl_children_nodes!(kdl_node) {
+            let children: Vec<_> = children
+                .iter()
+                .filter(|child| {
+                    matches!(kdl_name!(child), "pane" | "children")
+                        || self.pane_templates.contains_key(kdl_name!(child))
+                })
+                .cloned()
+                .collect();
+            let (external, children) = self.parse_child_pane_nodes_for_pane(&children, false)?;
+            tabbed.external_children_index = external;
+            tabbed.children = children;
+        }
+        self.parse_pane_tabs(kdl_node, None, &mut tabbed)?;
+        if !tabbed.children.is_empty() || tabbed.external_children_index.is_some() {
+            return Err(ConfigError::new_layout_kdl_error(
+                "floating pane children require tabbed=true".into(),
+                kdl_node.span().offset(),
+                kdl_node.span().len(),
+            ));
+        }
+        run = tabbed.run;
         let focus = kdl_get_bool_property_or_child_value_with_error!(kdl_node, "focus");
         let name = kdl_get_string_property_or_child_value_with_error!(kdl_node, "name")
             .map(|name| name.to_string());
@@ -721,6 +841,7 @@ impl<'a> KdlLayoutParser<'a> {
                 })
         });
         Ok(FloatingPaneLayout {
+            pane_tabs: tabbed.pane_tabs,
             name,
             height,
             width,
@@ -888,6 +1009,7 @@ impl<'a> KdlLayoutParser<'a> {
                     pane_template.is_expanded_in_stack = is_expanded_in_stack;
                 }
                 pane_template.external_children_index = external_children_index;
+                self.parse_pane_tabs(kdl_node, Some(pane_template_kdl_node), &mut pane_template)?;
                 Ok(pane_template)
             },
             PaneOrFloatingPane::FloatingPane(_) => {

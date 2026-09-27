@@ -136,6 +136,8 @@ pub mod pane_run {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TiledPaneLayout {
+    #[prost(string, optional, tag="15")]
+    pub pane_tabs_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration="SplitDirection", tag="1")]
     pub children_split_direction: i32,
     #[prost(string, optional, tag="2")]
@@ -168,6 +170,8 @@ pub struct TiledPaneLayout {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FloatingPaneLayout {
+    #[prost(string, optional, tag="13")]
+    pub pane_tabs_json: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag="1")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, optional, tag="2")]
@@ -1173,6 +1177,9 @@ pub enum ActionName {
     SetLightTheme = 102,
     ToggleTheme = 103,
     FocusLastPane = 104,
+    FocusPaneTabs = 123,
+    PreviousPaneTab = 124,
+    NextPaneTab = 125,
     SetPaneFrameStyle = 105,
     ToggleFocusNoUiFullscreen = 106,
     FocusHostSession = 107,
@@ -1300,6 +1307,9 @@ impl ActionName {
             ActionName::SetLightTheme => "SetLightTheme",
             ActionName::ToggleTheme => "ToggleTheme",
             ActionName::FocusLastPane => "FocusLastPane",
+            ActionName::FocusPaneTabs => "FocusPaneTabs",
+            ActionName::PreviousPaneTab => "PreviousPaneTab",
+            ActionName::NextPaneTab => "NextPaneTab",
             ActionName::SetPaneFrameStyle => "SetPaneFrameStyle",
             ActionName::ToggleFocusNoUiFullscreen => "ToggleFocusNoUiFullscreen",
             ActionName::FocusHostSession => "FocusHostSession",
@@ -1424,6 +1434,9 @@ impl ActionName {
             "SetLightTheme" => Some(Self::SetLightTheme),
             "ToggleTheme" => Some(Self::ToggleTheme),
             "FocusLastPane" => Some(Self::FocusLastPane),
+            "FocusPaneTabs" => Some(Self::FocusPaneTabs),
+            "PreviousPaneTab" => Some(Self::PreviousPaneTab),
+            "NextPaneTab" => Some(Self::NextPaneTab),
             "SetPaneFrameStyle" => Some(Self::SetPaneFrameStyle),
             "ToggleFocusNoUiFullscreen" => Some(Self::ToggleFocusNoUiFullscreen),
             "FocusHostSession" => Some(Self::FocusHostSession),

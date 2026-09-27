@@ -19,6 +19,7 @@ impl Screen {
         // message, triggering our render_to_clients method which does the actual rendering
 
         self.sync_nested_guest_fullscreen_state();
+        self.report_pane_tabs()?;
 
         let _ = self
             .bus
@@ -344,6 +345,8 @@ impl Screen {
                 self.deliver_to_pane_subscribers_directly();
             }
         }
+
+        self.report_pane_tabs()?;
 
         // === PHASE 2: Render for watchers ===
         if has_watchers {

@@ -180,6 +180,7 @@ pub enum Event {
     ModeUpdate(ModeInfo),
     TabUpdate(Vec<TabInfo>),
     PaneUpdate(PaneManifest),
+    PaneTabsUpdate(Vec<crate::pane_tabs::PaneTabsInfo>),
     /// A key was pressed while the user is focused on this plugin's pane
     Key(KeyWithModifier),
     /// A mouse event happened while the user is focused on this plugin's pane
@@ -1261,6 +1262,8 @@ pub struct PaneManifest {
 /// border.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct PaneInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_tabs: Option<crate::pane_tabs::PaneTabsInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multipane: Option<crate::multipane::MultipaneInfo>,
     /// The pane identity, including whether it is a terminal or a plugin.
@@ -2700,6 +2703,7 @@ pub struct NotifyClick {
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
+    PaneTabs(crate::pane_tabs::PaneTabsCommand),
     CreateMultipane(crate::multipane::CreateMultipane),
     UpdateMultipane(crate::multipane::UpdateMultipane),
     ReplaceMultipaneChild(crate::multipane::ReplaceMultipaneChild),

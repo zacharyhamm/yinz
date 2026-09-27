@@ -170,6 +170,10 @@ pub enum Action {
     FocusPreviousPane,
     /// Switch focus to the last focused pane.
     FocusLastPane,
+    FocusPaneTabs,
+    PreviousPaneTab,
+    NextPaneTab,
+
     /// Move the focus pane in specified direction.
     SwitchFocus,
     MoveFocus {

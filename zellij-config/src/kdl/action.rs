@@ -497,6 +497,9 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         },
         Action::FocusNextPane => Ok(KdlNode::new("FocusNextPane")),
         Action::FocusPreviousPane => Ok(KdlNode::new("FocusPreviousPane")),
+        Action::FocusPaneTabs => Ok(KdlNode::new("FocusPaneTabs")),
+        Action::PreviousPaneTab => Ok(KdlNode::new("PreviousPaneTab")),
+        Action::NextPaneTab => Ok(KdlNode::new("NextPaneTab")),
         Action::FocusLastPane => Ok(KdlNode::new("FocusLastPane")),
         Action::SwitchFocus => Ok(KdlNode::new("SwitchFocus")),
         Action::MoveFocus { direction } => {
@@ -1179,6 +1182,15 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
             parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
         "FocusPreviousPane" => {
+            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+        },
+        "FocusPaneTabs" => {
+            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+        },
+        "PreviousPaneTab" => {
+            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
+        },
+        "NextPaneTab" => {
             parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
         "FocusLastPane" => {
