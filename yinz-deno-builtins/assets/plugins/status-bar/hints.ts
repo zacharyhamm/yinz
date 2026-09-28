@@ -27,7 +27,7 @@ interface Hint {
 const hint = (long: string, short: string, keys: readonly Key[]): Hint => ({ long, short, keys });
 const searchInput = (input: number): Pattern => ({ SearchInput: { input: [input] } });
 
-// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep the mode hint table together; both layouts use the same selection rules.
+// oxlint-disable-next-line eslint/max-lines-per-function -- Keep the mode hint table together; both layouts use the same selection rules.
 export function hintsForMode(mi: ModeInfo): Hint[] {
   const original = modeKeymap(mi);
   const exits = actionKeys(original, [switchMode(mi.base_mode ?? "Normal")]);
@@ -38,6 +38,14 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
   const copy = ownKey(
     original.filter(([, aa]) => aa[0] !== undefined && shallowEqual(aa[0], "Copy")).map(([k]) => k),
   );
+  // Tab focus reads best as ←→, but arrows sort Left, Down, Up, Right and the dedupe below drops
+  // Right for Down: name the arrow pointing each way when it does it, from the whole keymap.
+  const preferring = (a: Pattern, preferred: "Left" | "Right"): Key[] => {
+    const keys = original
+      .filter(([, aa]) => aa[0] !== undefined && shallowEqual(aa[0], a))
+      .map(([k]) => k);
+    return keys.some((k) => equal(k, key(preferred))) ? [key(preferred)] : ownKey(keys);
+  };
   const known: unknown[] = [];
   const km = [...original]
     .sort(([a], [b]) => compareKeys(a, b))
@@ -86,18 +94,13 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
         hint("Select text", "Text", doing(switchMode("Select"))),
         select,
       ];
-    case "Tab": {
-      const all = actionGroup(original, [["GoToPreviousTab"], ["GoToNextTab"]]);
-      const arrows = [key("Left"), key("Right")];
+    case "Tab":
       return [
         hint("New", "New", doing({ NewTab: {} })),
-        hint(
-          "Change focus",
-          "Move",
-          arrows.every((k) => all.some((a) => equal(a, k)))
-            ? arrows
-            : group("GoToPreviousTab", "GoToNextTab"),
-        ),
+        hint("Change focus", "Move", [
+          ...preferring("GoToPreviousTab", "Left"),
+          ...preferring("GoToNextTab", "Right"),
+        ]),
         hint("Close", "Close", doing("CloseTab")),
         hint("Rename", "Rename", doing(switchMode("RenameTab"))),
         hint("Sync", "Sync", doing("ToggleActiveSyncTab")),
@@ -106,7 +109,6 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
         hint("Toggle", "Toggle", doing("ToggleTab")),
         select,
       ];
-    }
     case "Resize":
       return [
         hint(
