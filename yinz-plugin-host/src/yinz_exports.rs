@@ -246,6 +246,7 @@ macro_rules! apply_action {
             $env.default_mode.clone(),
             None,
             false,
+            false, // is_client_input
         ) {
             Ok((_, result)) => result,
             Err(e) => {
@@ -1998,6 +1999,7 @@ fn open_file(env: &mut PluginEnv, file_to_open: FileToOpen, context: BTreeMap<St
 }
 
 fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, String>) {
+    let ordered_input = matches!(&action, Action::Write { key_with_modifier: Some(_), bytes, .. } if bytes.is_empty());
     // Clone the necessary data to move into the thread
     action.populate_originating_plugin(env.originating_plugin(context.clone()));
     let action_clone = action.clone();
@@ -2009,8 +2011,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
     let default_mode = env.default_mode;
     let plugin_name = env.name().to_string();
 
-    // Spawn a new thread to execute the action
-    thread::spawn(move || {
+    let run = move || {
         // Execute the action and capture the result
         let pane_id = match route_action(
             action,
@@ -2023,6 +2024,7 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
             default_mode,
             None,
             false,
+            false, // is_client_input
         ) {
             Ok((_should_break, result)) => {
                 // Extract pane_id from ActionCompletionResult
@@ -2048,7 +2050,14 @@ fn run_action(env: &PluginEnv, mut action: Action, context: BTreeMap<String, Str
         if let Err(e) = senders.send_to_plugin(instruction) {
             log::error!("Failed to send ActionComplete event: {:?}", e);
         }
-    });
+    };
+    // Forwarded keys (already parsed, without raw bytes) must reach the screen in plugin
+    // event order, eg. Right then Enter on a native pane bar.
+    if ordered_input {
+        run();
+    } else {
+        thread::spawn(run);
+    }
 }
 
 fn open_file_floating(
@@ -7524,6 +7533,7 @@ fn try_edit_layout(
         env.default_mode,
         None,
         false,
+        false, // is_client_input
     )
     .map(|_| ())
     .map_err(|e| format!("Failed to route edit action: {:?}", e))

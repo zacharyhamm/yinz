@@ -1223,7 +1223,7 @@ impl State {
         // the list's below, rather than a missing owner's complaint: that is no answer the user
         // is waiting on, the bar's keys work without an owner, and the row says it again once
         // the keys are back on the list - an empty list's placeholder says it all along.
-        let bar = self.bar_has_keys() && !self.box_ahead_of_the_bar();
+        let bar = self.bar_has_keys();
         if self.vms.owner.is_none() && !bar {
             return NO_OWNER_DIVIDER.to_owned();
         }
@@ -1270,7 +1270,7 @@ impl State {
             let segments: Vec<&str> = std::iter::once(status.as_str())
                 .chain(tabs::BAR_HINT.split(" · "))
                 .collect();
-            return agents::fit_hints(&segments, room);
+            return agents::fit_keys(&segments, room);
         }
         let mut segments: Vec<String> = vec![];
         if short {
@@ -1335,7 +1335,11 @@ impl State {
         };
         // Room made for `? keys` by giving up trailing keys, but never the status or the key
         // after it: the sheet `?` opens lists the rest.
-        agents::fit_hints_marked(&segments[first..], room, status + 1)
+        if bar {
+            agents::fit_keys(&segments[first..], room)
+        } else {
+            agents::fit_hints_marked(&segments[first..], room, status + 1)
+        }
     }
 
     /// The keys worth naming for what is selected and which half has the keys, the selection's
@@ -1397,7 +1401,7 @@ impl State {
         // quiet list gets one too while the panel's tab bar has the keys, the row that says
         // what they do there - taken from the placeholder, which has rows to spare, as the
         // panel's footer took one for it before this row said it (`footer_hint`).
-        let bar = self.bar_has_keys() && !self.box_ahead_of_the_bar();
+        let bar = self.bar_has_keys();
         let status_row = detail_rows == 0 && (!quiet || bar) && rows >= 2;
         if status_row {
             list_rows -= 1;

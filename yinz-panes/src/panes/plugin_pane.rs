@@ -83,6 +83,7 @@ macro_rules! get_or_create_grid {
 pub struct PluginPane {
     pub pid: PluginId,
     pane_tabs_transfer: Option<crate::pane_tabs::PaneTabsTransfer>,
+    pane_tabs_views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
     pane_tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>,
     pub pending_pane_tabs: Option<yinz_types::pane_tabs::PaneTabsLayout>,
     pub should_render: HashMap<ClientId, bool>,
@@ -165,6 +166,7 @@ impl PluginPane {
         let mut plugin = PluginPane {
             pid,
             pane_tabs: None,
+            pane_tabs_views: HashMap::new(),
             pane_tabs_transfer: None,
             pending_pane_tabs: None,
             should_render: HashMap::new(),
@@ -537,22 +539,54 @@ impl Pane for PluginPane {
         }
         if self.tab_bar_rows() > 0 {
             if let Some(tabs) = &self.pane_tabs {
-                let mut characters: Vec<_> = crate::pane_tabs::bar_cells(tabs, columns)
-                    .into_iter()
-                    .filter(|(ch, _)| *ch != '\0')
-                    .map(|(ch, index)| {
-                        use crate::panes::terminal_character::{AnsiCode, RESET_STYLES};
-                        let mut character = crate::panes::TerminalCharacter::new(ch);
-                        if index == tabs.active && tabs.bar_focused.contains(&client_id) {
-                            let colors = self.style.colors.text_selected;
-                            character.styles = RESET_STYLES
-                                .foreground(Some(AnsiCode::from(colors.base)))
-                                .background(Some(AnsiCode::from(colors.background)))
-                                .into();
-                        }
-                        character
-                    })
-                    .collect();
+                let view = self
+                    .pane_tabs_views
+                    .get(&client_id)
+                    .copied()
+                    .unwrap_or_default();
+                let mut characters: Vec<_> = crate::pane_tabs::bar_cells(
+                    tabs,
+                    view,
+                    tabs.bar_focused.contains(&client_id),
+                    columns,
+                )
+                .into_iter()
+                .flat_map(|cell| {
+                    use crate::panes::terminal_character::{AnsiCode, RESET_STYLES};
+                    let colors = if cell.focused {
+                        self.style.colors.text_selected
+                    } else {
+                        self.style.colors.text_unselected
+                    };
+                    let styles = RESET_STYLES
+                        .foreground(Some(if cell.focused {
+                            AnsiCode::from(colors.base)
+                        } else if cell.active {
+                            AnsiCode::from(colors.emphasis_2)
+                        } else {
+                            AnsiCode::Reset
+                        }))
+                        .background(Some(AnsiCode::from(colors.background)))
+                        .bold(Some(if cell.active {
+                            AnsiCode::On
+                        } else {
+                            AnsiCode::Reset
+                        }))
+                        .dim(Some(if !cell.active && !cell.focused {
+                            AnsiCode::On
+                        } else {
+                            AnsiCode::Reset
+                        }));
+                    cell.text
+                        .chars()
+                        .map(|ch| {
+                            let mut character = crate::panes::TerminalCharacter::new(ch);
+                            character.styles = styles.into();
+                            character
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
                 let length: usize = characters.iter().map(|ch| ch.width()).sum();
                 characters.extend(vec![
                     EMPTY_TERMINAL_CHARACTER;
@@ -970,6 +1004,12 @@ impl Pane for PluginPane {
     }
     fn take_pane_tabs_layout(&mut self) -> Option<yinz_types::pane_tabs::PaneTabsLayout> {
         self.pending_pane_tabs.take()
+    }
+    fn set_pane_tabs_views(&mut self, views: HashMap<ClientId, crate::pane_tabs::PaneTabsView>) {
+        if self.pane_tabs_views != views {
+            self.pane_tabs_views = views;
+            self.set_should_render(true);
+        }
     }
     fn set_pane_tabs(&mut self, tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {
         if self.pane_tabs != tabs {

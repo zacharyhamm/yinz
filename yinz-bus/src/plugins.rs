@@ -105,6 +105,7 @@ pub enum PluginInstruction {
         client_id: ClientId,
     },
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
+    InputBarrier(PluginId, NotificationEnd),
     DenoTick(PluginId, ClientId, u64),
     DenoEvent(PluginId, ClientId, u64, Event),
     DenoDispose(PluginId, u64),
@@ -355,6 +356,7 @@ impl From<&PluginInstruction> for PluginContext {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PluginContext` or an arm here.
         match plugin_instruction {
+            PluginInstruction::InputBarrier(..) => PluginContext::Update,
             PluginInstruction::DenoTick(..) => PluginContext::Update,
             PluginInstruction::DenoEvent(..) => PluginContext::Update,
             PluginInstruction::DenoDispose(..) => PluginContext::Unload,

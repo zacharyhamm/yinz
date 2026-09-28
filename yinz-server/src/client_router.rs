@@ -409,6 +409,7 @@ pub(crate) fn route_thread_main(
                                             client_input_mode,
                                             Some(os_input.clone()),
                                             leaves_clipboard_message,
+                                            true, // is_client_input
                                         ) {
                                             Ok(route_action_should_break) => {
                                                 if route_action_should_break.0 {
@@ -492,6 +493,7 @@ pub(crate) fn route_thread_main(
                                     client_input_mode,
                                     Some(os_input.clone()),
                                     action_leaves_clipboard_message,
+                                    true, // is_client_input
                                 ) {
                                     Ok(route_action_should_break) => {
                                         if route_action_should_break.0 {

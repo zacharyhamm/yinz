@@ -572,8 +572,7 @@ pub fn screen_thread_main(
                     raw_bytes,
                     is_kitty_keyboard_protocol,
                     client_id,
-                    _completion_tx, // the action ends here, dropping this will release anything
-                                    // waiting for it
+                    completion,
                 ) => {
                     if screen.write_character(
                         key_with_modifier,
@@ -581,6 +580,7 @@ pub fn screen_thread_main(
                         is_kitty_keyboard_protocol,
                         client_id,
                         &keybind_intercepts,
+                        completion,
                     )? {
                         screen.render()?;
                     }

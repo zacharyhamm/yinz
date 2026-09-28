@@ -5368,7 +5368,7 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                     assert!(frame.contains("Allow?"), "prompt must render: {frame}");
 
                     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
-                    tab.write_to_active_terminal(&None, vec![key as u8], false, CLIENT_1)
+                    tab.write_to_active_terminal(&None, vec![key as u8], false, CLIENT_1, None)
                         .unwrap();
                     assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
                         instruction,
@@ -7349,7 +7349,7 @@ fn retained_multipane_repairs_focus_when_the_last_working_pane_exits() {
             .tabs
             .get_mut(&TabId::new(0))
             .unwrap()
-            .write_to_active_terminal(&None, b"x".to_vec(), false, CLIENT_1)
+            .write_to_active_terminal(&None, b"x".to_vec(), false, CLIENT_1, None)
             .unwrap();
         assert!(writes.try_iter().any(|(instruction, _)| matches!(instruction,
             PtyWriteInstruction::Write(bytes, id, _) if PaneId::Terminal(id) == expected && bytes == b"x"

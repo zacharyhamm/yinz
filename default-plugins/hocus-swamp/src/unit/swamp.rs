@@ -3093,7 +3093,8 @@ fn tab_in_the_query_box_walks_the_ring_and_keeps_the_draft() {
     assert_eq!(state.ring_yields, [wire::STOP_TABS]);
     key(&mut state, BareKey::Right);
     key(&mut state, BareKey::Down);
-    assert!(!state.tabs_focused);
+    assert!(state.tabs_focused);
+    key(&mut state, BareKey::Enter);
     assert!(!state.tabs_focused);
     // Clearing the search clears what was being typed for it too.
     choose(&mut state, 's', "triaged");
@@ -3117,25 +3118,25 @@ fn the_bar_hint_takes_the_swamp_header_not_a_row() {
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
     state.render(11, 60);
-    assert!(state.swamp_header(60).contains("←/→ switch"));
+    assert!(state.swamp_header(60).contains("←/→ choose"));
     assert_eq!(state.swamp.last_body_rows, body_rows);
     state.tabs_focused = false;
     state.bar_focused = vec![];
     state.render(11, 60);
     assert_eq!(state.swamp.last_body_rows, body_rows);
-    assert!(!state.swamp_header(60).contains("←/→ switch"));
-    // A box ahead of the bar has the keys however the bar is drawn, and says its own.
+    assert!(!state.swamp_header(60).contains("←/→ choose"));
+    // An open box keeps its draft while the bar owns the keys and hints.
     key(&mut state, BareKey::Char('s'));
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
-    assert!(!state.swamp_header(60).contains("←/→ switch"));
+    assert!(state.swamp_header(60).contains("←/→ choose"));
     key(&mut state, BareKey::Esc);
     // The reader's header is the same row.
     let mut state = reader();
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
     state.render(11, 80);
-    assert!(state.swamp_header(60).contains("←/→ switch"));
+    assert!(state.swamp_header(60).contains("←/→ choose"));
 }
 
 #[test]
@@ -3182,5 +3183,30 @@ fn live_swamp_club() {
         let detail = Detail::from_lab(&detail, &credentials);
         assert_eq!(detail.issue.number, issue.number);
         assert!(!detail_lines(&detail, 80).is_empty());
+    }
+}
+
+#[test]
+fn queued_bar_keys_and_paste_stay_out_of_content() {
+    let mut state = State::default();
+    state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+    for key in [
+        BareKey::Right,
+        BareKey::Right,
+        BareKey::Left,
+        BareKey::Down,
+        BareKey::Char('j'),
+        BareKey::Char('/'),
+        BareKey::Char('?'),
+    ] {
+        assert!(state.on_key(KeyWithModifier::new(key)));
+        assert!(state.tabs_focused);
+    }
+    assert!(!state.on_paste("queued paste"));
+    assert!(state.tabs_focused);
+    for key in [BareKey::Enter, BareKey::Tab, BareKey::Esc] {
+        state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+        assert!(state.on_key(KeyWithModifier::new(key)));
+        assert!(!state.tabs_focused);
     }
 }

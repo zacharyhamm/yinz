@@ -243,10 +243,11 @@ Tab, Esc      back to the box
 Shift+Tab     back to the list's second half, or to the list
 
 The panel's tab bar (Agents, Todos, VMs, Swamp):
-Left / Right  switch tab; a click on a tab does the same
-Enter, Down, j, Tab, Esc   into the tab's list
+Left / Right  highlight a tab; click to activate
+Enter         activate the highlighted tab
+Tab, Esc      return to the active tab's list
 Shift+Tab     to this conversation's box
-other keys    go to the list, and do their job there
+other keys and paste are ignored while the bar has focus
 
 In the agent list (Agents):
 Up / Down, j / k   choose an agent or a run; in the history

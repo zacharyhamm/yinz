@@ -157,7 +157,7 @@ fn open_sidebar(yinz: &TestSession) {
 
     yinz.send_stdin(&keys::ctrl('a'));
     wait_with_resizes(yinz, "both overlay panes are placed", |grid_snapshot| {
-        grid_snapshot.contains("Ask something.") && grid_snapshot.contains(" [Agents]")
+        grid_snapshot.contains("Ask something.") && grid_snapshot.contains(" Agents │")
     });
 }
 
@@ -288,6 +288,8 @@ fn a_todo_launches_an_agent_with_its_project_and_task_context() {
         cols: 120,
         rows: 50,
     });
+    // Keep these keys in a burst: Enter must not overtake Right while Shift+Tab
+    // hands input from the plugin to the native bar.
     yinz.send_stdin(&keys::SHIFT_TAB);
     yinz.send_stdin(b"\x1b[C");
     yinz.send_stdin(&keys::ENTER);
@@ -687,7 +689,7 @@ fn tab_walks_the_keyboard_across_the_panel() {
     // The panel is still whole through all of it: a ring step is a focus, never a hide.
     let screen = yinz.snapshot();
     assert!(
-        screen.text.contains("hocus — ") && screen.text.contains(" [Agents]"),
+        screen.text.contains("hocus — ") && screen.text.contains(" Agents │"),
         "both halves are still up:\n{}",
         screen.text
     );
@@ -731,7 +733,7 @@ fn the_panel_fills_the_viewport_on_ctrl_p_f_and_comes_back() {
             .lines()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find(" [Agents]")
+                line.find(" Agents │")
                     .map(|byte_index| (row, line[..byte_index].chars().count()))
             })
     }
@@ -855,12 +857,11 @@ fn vm_tab_focuses_a_pane_in_another_session_and_dismisses_the_panel() {
     source.expect_pty_spawn().output(b"$ ");
     open_sidebar(&source);
     source.send_stdin(&keys::SHIFT_TAB);
-    source.send_stdin(b"\x1b[C\x1b[C");
+    source.send_stdin(b"\x1b[C\x1b[C\r");
     source.wait_until(
         "the VM tab has the remote VM and associated pane",
-        |screen| screen.contains("[VMs]") && screen.contains("vm-focus-target"),
+        |screen| screen.contains(" VMs │") && screen.contains("vm-focus-target"),
     );
-    source.send_stdin(&keys::TAB);
     source.send_stdin(&keys::ENTER);
     source.send_stdin(&keys::ENTER);
     let destination = source.take_session_switch();
@@ -941,7 +942,8 @@ fn swamp_issue_details_load_after_moving_the_panel_to_another_tab() {
     for _ in 0..3 {
         yinz.send_stdin(b"\x1b[C");
     }
-    // Walking the tab bar onto Swamp asks the host nothing: the tab says what it needs, and
+    yinz.send_stdin(&keys::ENTER);
+    // Activating Swamp asks the host nothing: the tab says what it needs, and
     // the host's prompt, which takes over the whole pane, waits for `r`.
     yinz.wait_until("Swamp asks to be allowed", |grid| {
         grid.contains("r to allow")
@@ -1019,7 +1021,7 @@ fn multipane_startup_and_lifecycle(first: char) {
     shell.output(b"BASE AGENT");
     yinz.send_stdin(&keys::ctrl(first));
     yinz.wait_until("both multipane children load", |grid| {
-        grid.contains("Ask something.") && grid.contains(" [Agents]")
+        grid.contains("Ask something.") && grid.contains(" Agents │")
     });
     yinz.wait_until("requested child retains startup focus", |_| {
         panel_members(&yinz).iter().any(|pane| {
@@ -1079,7 +1081,7 @@ fn multipane_startup_and_lifecycle(first: char) {
         yinz.send_stdin(&keys::ctrl('b'));
     }
     yinz.wait_until("rapid reveal keeps the whole container visible", |grid| {
-        grid.contains("Ask something.") && grid.contains(" [Agents]")
+        grid.contains("Ask something.") && grid.contains(" Agents │")
     });
     let members = panel_members(&yinz);
     assert!(members
@@ -1136,7 +1138,7 @@ fn multipane_startup_and_lifecycle(first: char) {
     });
     yinz.wait_until(
         "reload retains both slots and the dragged divider",
-        |grid| grid.contains("Ask something.") && grid.contains(" [Agents]"),
+        |grid| grid.contains("Ask something.") && grid.contains(" Agents │"),
     );
     let members = panel_members(&yinz);
     assert_eq!(members.len(), 2);
@@ -1214,7 +1216,23 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     yinz.wait_until("Agents yields to the host bar", |_| {
         !tabs().bar_focused.is_empty()
     });
-    yinz.run_cli_action(CliAction::NextPaneTab);
+    // A queued burst chooses Todos but neither stray keys nor paste load it.
+    yinz.send_stdin(b"\x1b[Cj?");
+    yinz.send_stdin(&keys::BRACKETED_PASTE_START);
+    yinz.send_stdin(b"ignored paste");
+    yinz.send_stdin(&keys::BRACKETED_PASTE_END);
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("cancel returns to Agents without loading Todos", |_| {
+        tabs().bar_focused.is_empty()
+    });
+    assert_eq!(tabs().active, 0);
+    assert!(tabs()
+        .tabs
+        .iter()
+        .skip(1)
+        .all(|slot| slot.plugin_id.is_none()));
+    yinz.run_cli_action(CliAction::FocusPaneTabs);
+    yinz.send_stdin(b"\x1b[C\r");
     yinz.wait_until("Todos loads independently", |grid| {
         grid.contains("p to pick one")
     });
@@ -1228,7 +1246,9 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     yinz.wait_until("todo draft is visible", |grid| grid.contains("todo-draft"));
     yinz.run_cli_action(CliAction::NextPaneTab);
     yinz.wait_until("VM plugin loads", |grid| {
-        grid.contains("[VMs]") && grid.contains("Unavailable") && tabs().tabs[2].plugin_id.is_some()
+        grid.contains(" VMs │")
+            && grid.contains("Unavailable")
+            && tabs().tabs[2].plugin_id.is_some()
     });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("chat has focus", |grid| grid.cursor.is_some());
@@ -1268,7 +1288,7 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
                 .iter()
                 .any(|pane| pane["id"] == active && pane["is_focused"] == true)
     });
-    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.send_stdin(b"\x1b[C\r");
     yinz.wait_until("Swamp loads under its own permission identity", |grid| {
         grid.contains("r to allow")
     });
@@ -1292,7 +1312,13 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     for _ in 0..3 {
         yinz.run_cli_action(CliAction::PreviousPaneTab);
     }
-    yinz.wait_until("Agents reappears", |grid| grid.contains("[Agents]"));
+    yinz.wait_until("Agents reappears", |grid| {
+        grid.contains(" Agents │") && tabs().active == 0
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("the bar releases the keyboard", |_| {
+        tabs().bar_focused.is_empty()
+    });
     yinz.send_stdin(b"/");
     yinz.wait_until("Agents retains its search draft", |grid| {
         grid.contains("agent-draft")
@@ -1312,20 +1338,22 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     });
     yinz.send_stdin(&keys::ctrl('a'));
     yinz.wait_until("show restores the Todo child", |grid| {
-        grid.contains("[Todos]")
+        grid.contains(" Todos │") && tabs().active == 1
     });
     yinz.send_stdin(b"a");
     yinz.wait_until("show restores the active child and its draft", |grid| {
         grid.contains("todo-draft")
     });
     yinz.run_cli_action(CliAction::NextPaneTab);
-    yinz.wait_until("VM child reappears", |grid| grid.contains("[VMs]"));
+    yinz.wait_until("VM child reappears", |grid| {
+        grid.contains(" VMs │") && tabs().active == 2
+    });
     yinz.run_cli_action(CliAction::StartOrReloadPlugin {
         url: "yinz:hocus-vms".into(),
         configuration: None,
     });
     yinz.wait_until("VM reload preserves the host composition", |grid| {
-        grid.contains("[VMs]") && tabs().tabs[2].plugin_id.is_some()
+        grid.contains(" VMs │") && tabs().tabs[2].plugin_id.is_some()
     });
     assert_eq!(tabs().id, initial.id);
     for index in [0, 1, 3] {
@@ -1360,7 +1388,7 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     }
     yinz.wait_until(
         "host tab mouse coordinates activate the VM plugin",
-        |grid| grid.contains("[VMs]") && tabs().active == 2,
+        |grid| grid.contains(" VMs │") && tabs().active == 2,
     );
     yinz.quit();
 }

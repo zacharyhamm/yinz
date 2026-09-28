@@ -1,61 +1,70 @@
 use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::Text;
 
-/// What the panel's footer says while the panel's own tab bar has the keys, on every tab.
-///
-/// The bar is the only keyboard route between Agents, Todos, VMs and Swamp, and the keys it
-/// answers mean something else there than they do on the tab below - `Enter`, `↓`, `Tab` and
-/// `Esc` step down into the list rather than acting on it - so the footer says how to use the
-/// bar rather than advertising what those keys do in the list. Any other key is handed on to
-/// the list and does what it always does there. Keys first, like every hint line.
-pub const BAR_HINT: &str = "←/→ switch · Enter/↓ list · Tab next · Esc list";
+/// Navigation while the native panel tab bar has the keyboard.
+pub const BAR_HINT: &str = "←/→ choose · Enter open · Tab/Esc list";
 
-/// One tab cell, including the geometry used to draw and click it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TabCell<T> {
-    pub x: usize,
-    pub width: usize,
-    pub text: String,
-    pub active: bool,
-    pub focused: bool,
-    pub target: T,
+pub const BAR_KEYS: &[(&str, &str)] = &[
+    ("←/→", "highlight a tab"),
+    ("Enter", "activate the highlighted tab"),
+    ("Tab/Esc", "return to the active tab's list"),
+    ("Shift+Tab", "to the conversation's box"),
+    ("other keys/paste", "ignored while the bar has focus"),
+    ("click a tab/arrow", "activate a tab/browse hidden tabs"),
+];
+
+/// Return queued navigation to the native bar, which owns selection and activation.
+pub fn forward_bar_key(key: yinz_types::keys::KeyWithModifier) {
+    use yinz_types::keys::BareKey;
+    if key.has_no_modifiers()
+        && matches!(
+            key.bare_key,
+            BareKey::Left
+                | BareKey::Right
+                | BareKey::Enter
+                | BareKey::Tab
+                | BareKey::Esc
+                | BareKey::Char('r')
+        )
+    {
+        yinz_tile::prelude::run_action(
+            yinz_types::input::actions::Action::Write {
+                key_with_modifier: Some(key),
+                bytes: vec![],
+                is_kitty_keyboard_protocol: false,
+            },
+            Default::default(),
+        );
+    }
 }
 
-impl<T> TabCell<T> {
-    /// The cell as it is painted.
-    ///
-    /// The active tab stays bold and the others are not, so which tab is showing does not rest
-    /// on colour alone: an unfocused bar used to tell it apart only by colour 2 against dim. An
-    /// error marker - the `!` [`cells`] puts at the end of a name - is painted in the error
-    /// colour, since on a dimmed tab it is otherwise the easiest character on the row to miss.
-    pub fn styled(&self) -> Text {
-        let text = Text::new(&self.text);
-        let text = match self.active {
-            true => text,
-            false => text.unbold_range(..),
-        };
-        let text = if self.focused {
-            text.selected()
-        } else if self.active {
-            text.color_range(2, ..)
-        } else {
-            text.dim_range(..)
-        };
-        match self.marker() {
-            Some(at) => text.error_color_range(at..=at),
-            None => text,
-        }
-    }
+pub use yinz_types::tab_bar::TabCell;
 
-    /// Where the error marker is, by character: a `!` ending the name, just before the
-    /// separator or at the very end of the cell.
-    ///
-    /// Read from the text rather than carried beside it, and safe for the conversation's chat
-    /// tabs, which share this type: [`label`] always leaves a space between a title and its
-    /// separator, so a title that ends in `!` is never mistaken for a marker.
-    fn marker(&self) -> Option<usize> {
-        let name = self.text.strip_suffix('│').unwrap_or(&self.text);
-        name.ends_with('!').then(|| name.chars().count() - 1)
+/// The cell as it is painted.
+///
+/// The active tab stays bold and the others are not, so which tab is showing does not rest
+/// on colour alone: an unfocused bar used to tell it apart only by colour 2 against dim. An
+/// error marker - the `!` [`cells`] puts at the end of a name - is painted in the error
+/// colour, since on a dimmed tab it is otherwise the easiest character on the row to miss.
+pub fn styled<T>(cell: &TabCell<T>) -> Text {
+    let text = Text::new(&cell.text);
+    let text = match cell.active {
+        true => text,
+        false => text.unbold_range(..),
+    };
+    let text = if cell.focused {
+        text.selected()
+    } else if cell.active {
+        text.color_range(2, ..)
+    } else {
+        text.dim_range(..)
+    };
+    let name = cell.text.strip_suffix('│').unwrap_or(&cell.text);
+    if name.ends_with('!') {
+        let at = name.chars().count() - 1;
+        text.error_color_range(at..=at)
+    } else {
+        text
     }
 }
 
@@ -268,15 +277,14 @@ mod tests {
         let styled = |text: &str, active: bool| {
             format!(
                 "{:?}",
-                TabCell {
+                super::styled(&TabCell {
                     x: 0,
                     width: text.width(),
                     text: text.to_owned(),
                     active,
                     focused: false,
                     target: (),
-                }
-                .styled()
+                })
             )
         };
         assert_eq!(

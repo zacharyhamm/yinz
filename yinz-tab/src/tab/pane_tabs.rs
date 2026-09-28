@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
-use yinz_panes::pane_tabs::{bar_cells, PaneTabsTransfer};
+use yinz_panes::pane_tabs::{bar_cells, PaneTabsTransfer, PaneTabsView};
 use yinz_types::keys::BareKey;
 use yinz_types::pane_tabs::*;
 
@@ -8,6 +8,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct PaneTabs {
     pub info: PaneTabsInfo,
+    pub(super) views: HashMap<ClientId, PaneTabsView>,
     generations: Vec<u64>,
     visibility: HashMap<PluginId, bool>,
     last_geometry: Option<(PaneGeom, Offset, bool)>,
@@ -143,6 +144,7 @@ impl Tab {
         self.pane_tabs.insert(
             id,
             PaneTabs {
+                views: HashMap::new(),
                 last_geometry: None,
                 visibility: HashMap::new(),
                 generations: vec![0; info.tabs.len()],
@@ -168,6 +170,10 @@ impl Tab {
             .context("invalid pane tab index")?;
         let target = slot.plugin_id.map(PaneId::Plugin);
         tabs.info.active = index;
+        // Activation is shared; other clients keep their own highlight and overflow window.
+        if let Some(view) = tabs.views.get_mut(&client) {
+            view.reveal = None;
+        }
         if let Some(target) = target {
             self.reveal_pane_tab(id, target)?;
         } else if !matches!(slot.state, PaneTabLoadState::Loading) {
@@ -347,6 +353,13 @@ impl Tab {
         let tabs = self.pane_tabs.get_mut(&id).context("unknown pane tabs")?;
         tabs.info.bar_focused.retain(|c| *c != client);
         if bar {
+            tabs.views.insert(
+                client,
+                PaneTabsView {
+                    highlight: tabs.info.active,
+                    reveal: None,
+                },
+            );
             tabs.info.bar_focused.push(client);
             tabs.info.bar_focused.sort();
         }
@@ -435,6 +448,7 @@ impl Tab {
             .get_mut(&id)
             .context("pane tabs disappeared")?
             .last_geometry = Some((geom, offset, visible));
+        let views = self.pane_tabs[&id].views.clone();
         for member in members {
             if let Some(pane) = self.get_pane_with_id_mut(member) {
                 if pane.current_geom() != geom {
@@ -444,6 +458,7 @@ impl Tab {
                     pane.set_content_offset(offset);
                 }
                 pane.set_pane_tabs(Some(info.clone()));
+                pane.set_pane_tabs_views(views.clone());
             }
             if let Some(pane) = self.get_pane_with_id(member) {
                 if let PaneId::Plugin(plugin) = member {
@@ -513,15 +528,40 @@ impl Tab {
         }
         if let Some(key) = key.as_ref().filter(|key| key.has_no_modifiers()) {
             match key.bare_key {
-                BareKey::Left => self.select_pane_tab(id, info.active.saturating_sub(1), client)?,
-                BareKey::Right => {
-                    self.select_pane_tab(id, (info.active + 1).min(info.tabs.len() - 1), client)?
+                BareKey::Left | BareKey::Right => {
+                    let tabs = self
+                        .pane_tabs
+                        .get_mut(&id)
+                        .context("pane tabs disappeared")?;
+                    let view = tabs.views.entry(client).or_insert(PaneTabsView {
+                        highlight: info.active,
+                        reveal: None,
+                    });
+                    if !info.bar_focused.contains(&client) {
+                        view.highlight = info.active;
+                    }
+                    view.highlight = if key.bare_key == BareKey::Left {
+                        view.highlight.saturating_sub(1)
+                    } else {
+                        (view.highlight + 1).min(info.tabs.len() - 1)
+                    };
+                    view.reveal = None;
+                    if !tabs.info.bar_focused.contains(&client) {
+                        tabs.info.bar_focused.push(client);
+                        tabs.info.bar_focused.sort();
+                    }
+                    self.refresh_pane_tabs(id)?;
                 },
-                BareKey::Enter
-                | BareKey::Down
-                | BareKey::Esc
-                | BareKey::Tab
-                | BareKey::Char('j') => self.focus_pane_tabs(id, false, client)?,
+                BareKey::Enter => {
+                    let index = self.pane_tabs[&id]
+                        .views
+                        .get(&client)
+                        .filter(|_| info.bar_focused.contains(&client))
+                        .map_or(info.active, |view| view.highlight);
+                    self.select_pane_tab(id, index, client)?;
+                    self.focus_pane_tabs(id, false, client)?;
+                },
+                BareKey::Esc | BareKey::Tab => self.focus_pane_tabs(id, false, client)?,
                 BareKey::Char('r')
                     if matches!(
                         selected.state,
@@ -531,15 +571,8 @@ impl Tab {
                     self.close_pane_tab_child(id, info.active)?;
                     self.select_pane_tab(id, info.active, client)?;
                 },
-                _ if content_available => {
-                    self.focus_pane_tabs(id, false, client)?;
-                    return Ok(false);
-                },
                 _ => {},
             }
-        } else if content_available {
-            self.focus_pane_tabs(id, false, client)?;
-            return Ok(false);
         }
         Ok(true)
     }
@@ -572,14 +605,45 @@ impl Tab {
             }
             return Ok(!content_available);
         }
-        let col = event.position.column().saturating_sub(pane.get_content_x());
-        let cells = bar_cells(&info, pane.get_content_columns());
-        let index = cells.get(col).map(|(_, index)| *index);
+        let Some(col) = event.position.column().checked_sub(pane.get_content_x()) else {
+            return Ok(false);
+        };
+        if col >= pane.get_content_columns() {
+            return Ok(false);
+        }
+        let view = self.pane_tabs[&id]
+            .views
+            .get(&client)
+            .copied()
+            .unwrap_or_default();
+        let cells = bar_cells(
+            &info,
+            view,
+            info.bar_focused.contains(&client),
+            pane.get_content_columns(),
+        );
+        let target = cells
+            .iter()
+            .find(|cell| col >= cell.x && col < cell.x + cell.width)
+            .map(|cell| cell.target);
         if event.left && event.event_type == yinz_types::mouse::MouseEventType::Press {
-            if let Some(index) = index {
-                self.select_pane_tab(id, index, client)?;
+            match target {
+                Some(yinz_types::tab_bar::TabTarget::Tab(index)) => {
+                    self.select_pane_tab(id, index, client)?;
+                    self.focus_pane_tabs(id, false, client)?;
+                },
+                Some(yinz_types::tab_bar::TabTarget::Reveal(index)) => {
+                    self.pane_tabs
+                        .get_mut(&id)
+                        .context("pane tabs disappeared")?
+                        .views
+                        .entry(client)
+                        .or_default()
+                        .reveal = Some(index);
+                    self.focus_pane_tabs(id, false, client)?;
+                },
+                None => {},
             }
-            self.focus_pane_tabs(id, true, client)?;
         }
         Ok(true)
     }

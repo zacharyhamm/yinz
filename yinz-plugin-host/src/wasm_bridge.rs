@@ -1869,6 +1869,17 @@ impl WasmBridge {
         Ok(())
     }
 
+    /// A pane-tab key may hand focus to the host. Finish that plugin event before the
+    /// client's router sends its next key, so native input cannot overtake queued input.
+    pub fn input_barrier(&self, plugin_id: PluginId, completion: yinz_bus::route::NotificationEnd) {
+        self.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "input_completion",
+            true,
+            move |_, _, _, _, _| drop(completion),
+        );
+    }
+
     pub fn update_plugins(
         &mut self,
         mut updates: Vec<(Option<PluginId>, Option<ClientId>, Event)>,

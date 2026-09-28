@@ -631,6 +631,7 @@ impl Screen {
                         default_mode,
                         None,
                         leaves_clipboard_message,
+                        true, // is_client_input
                     ) {
                         log::error!("context menu action '{name}' failed: {e:?}");
                         // Stop at the first failure: the actions of one item are a sequence, and

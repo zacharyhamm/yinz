@@ -662,6 +662,11 @@ pub trait Pane {
     fn take_pane_tabs_layout(&mut self) -> Option<yinz_types::pane_tabs::PaneTabsLayout> {
         None
     }
+    fn set_pane_tabs_views(
+        &mut self,
+        _views: std::collections::HashMap<ClientId, crate::pane_tabs::PaneTabsView>,
+    ) {
+    }
     fn set_pane_tabs(&mut self, _tabs: Option<yinz_types::pane_tabs::PaneTabsInfo>) {}
     fn pane_tabs(&self) -> Option<&yinz_types::pane_tabs::PaneTabsInfo> {
         None

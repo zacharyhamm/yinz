@@ -256,9 +256,9 @@ fn a_tab_switch_drops_an_armed_todo_question() {
 }
 
 /// A tab click, like the bar it no longer focuses, hands the keys to the list: `j` walks
-/// it, and a list key pressed on the bar does its job rather than vanishing.
+/// it. List keys are consumed while the bar has focus.
 #[test]
-fn a_tab_click_or_a_key_off_the_bar_reaches_the_todo_list() {
+fn queued_bar_keys_are_consumed_until_the_bar_releases_focus() {
     let mut state = two_todos();
     state.render(12, 40);
     state.tabs_focused = false;
@@ -269,7 +269,10 @@ fn a_tab_click_or_a_key_off_the_bar_reaches_the_todo_list() {
     state.on_key(bare(BareKey::Tab).with_shift_modifier());
     assert!(state.tabs_focused);
     assert!(state.on_key(key('a')));
-    assert!(!state.tabs_focused);
+    assert!(state.tabs_focused);
+    assert!(matches!(state.todos.mode, Mode::Normal));
+    assert!(state.on_key(bare(BareKey::Esc)));
+    assert!(state.on_key(key('a')));
     assert!(matches!(state.todos.mode, Mode::Input { .. }));
 
     // Ctrl-o is the panel's, taken before the box that answers every other key.
@@ -290,12 +293,12 @@ fn the_bar_hint_takes_the_divider_not_a_row() {
     state.render_todos(12, 60);
     assert_eq!(state.todos.last_list_rows, rows);
     let line = state.todo_divider(60, 0, 0).line;
-    assert!(line.contains("←/→ switch"), "{line}");
+    assert!(line.contains("←/→ choose"), "{line}");
     // Enter on the bar steps into the list rather than editing.
     assert!(!line.contains("Enter/e edit"), "{line}");
     state.todos.status = "boom".into();
     let line = state.todo_divider(80, 0, 0).line;
-    assert!(line.contains("boom · Ctrl-r retry · ←/→ switch"), "{line}");
+    assert!(line.contains("boom · Ctrl-r retry · ←/→ choose"), "{line}");
     state.todos.status.clear();
     // Nor while another pane has the keyboard: the bar does not have it either.
     state.has_keyboard = Some(false);
@@ -305,6 +308,7 @@ fn the_bar_hint_takes_the_divider_not_a_row() {
         "{line}"
     );
     state.has_keyboard = None;
+    assert!(state.on_key(bare(BareKey::Esc)));
 
     // A move and a project pick keep across the Shift+Tab up to the bar, whose Enter and
     // Esc step back into the list rather than nesting or cancelling: the divider names
@@ -321,7 +325,7 @@ fn the_bar_hint_takes_the_divider_not_a_row() {
         assert!(state.tabs_focused);
         assert!(!matches!(state.todos.mode, Mode::Normal), "{arm:?}");
         let line = state.todo_divider(80, 0, 0).line;
-        assert!(line.contains("←/→ switch") && line.contains(kept), "{line}");
+        assert!(line.contains("←/→ choose") && line.contains(kept), "{line}");
         assert!(
             !line.contains("Esc cancel") && !line.contains("Esc back"),
             "{line}"
@@ -357,7 +361,7 @@ fn the_bar_hint_takes_an_open_boxs_row_too() {
     assert!(matches!(state.todos.mode, Mode::Input { .. }));
     let line = state.input_divider(60).unwrap().0.line;
     assert!(
-        line.contains("Fix") && line.contains("←/→ switch"),
+        line.contains("Fix") && line.contains("←/→ choose"),
         "{line}"
     );
     let spilled = state.input_hint_row(60).unwrap_or_default();
@@ -367,8 +371,8 @@ fn the_bar_hint_takes_an_open_boxs_row_too() {
             assert!(!text.contains(gone), "{gone} in {text}");
         }
     }
-    assert!(spilled.contains("←/→ switch"), "{spilled}");
-    assert!(narrow.contains("←/→ switch"), "{narrow}");
+    assert!(spilled.contains("←/→ choose"), "{spilled}");
+    assert!(narrow.contains("←/→ choose"), "{narrow}");
     // Both sets of keys spill past a draft this long at this width, so the list keeps its
     // rows across the Shift+Tab.
     state.render_todos(12, 60);
@@ -1984,8 +1988,7 @@ fn the_key_sheet_names_every_key_each_mode_binds() {
     expect(&state, &["Enter", "Esc", "j", "k", "Tab", "Shift+Tab"]);
 }
 
-/// `?` is a character in the box - even one too narrow to draw, and even pressed on the
-/// tab bar, which hands the box a key it does not own - and the Todos sheet everywhere else.
+/// `?` types into the box and opens the sheet on the list. The bar consumes it.
 #[test]
 fn a_question_mark_is_typed_into_the_box_and_opens_the_sheet_outside_it() {
     let mut state = two_todos();
@@ -2005,15 +2008,14 @@ fn a_question_mark_is_typed_into_the_box_and_opens_the_sheet_outside_it() {
     state.on_key(bare(BareKey::Tab).with_shift_modifier());
     assert!(state.tabs_focused);
     assert!(state.on_key(key('?')));
-    assert_eq!(draft(&state), Some("??"));
+    assert_eq!(draft(&state), Some("?"));
+    assert!(state.tabs_focused);
     assert_eq!(state.key_sheet_scroll, None);
 }
 
-/// A paste on the tab bar over an open box lands in the box, as a key the bar does not own
-/// does, and takes the keys down off the bar with it. With no box open the bar turns it
-/// away, as the list would: a paste is never replayed as its letters' commands.
+/// The bar consumes paste even when an input box remains open underneath.
 #[test]
-fn a_paste_on_the_bar_over_the_box_lands_in_the_box() {
+fn a_paste_on_the_bar_leaves_the_box_unchanged() {
     let mut state = two_todos();
     state.render(12, 40);
     assert!(state.on_key(key('a')));
@@ -2022,13 +2024,11 @@ fn a_paste_on_the_bar_over_the_box_lands_in_the_box() {
     }
     assert!(state.on_key(bare(BareKey::Tab).with_shift_modifier()));
     assert!(state.tabs_focused);
-    assert!(state.on_paste("flaky test"));
-    assert_eq!(draft(&state), Some("Fix flaky test"));
-    assert!(
-        !state.tabs_focused,
-        "the paste took the keys down to the box"
-    );
-
+    assert!(!state.on_paste("flaky test"));
+    assert_eq!(draft(&state), Some("Fix "));
+    assert!(state.tabs_focused);
+    assert!(state.on_key(bare(BareKey::Esc)));
+    assert_eq!(draft(&state), Some("Fix "));
     assert!(state.on_key(bare(BareKey::Esc)));
     assert!(matches!(state.todos.mode, Mode::Normal));
     assert!(state.on_key(bare(BareKey::Tab).with_shift_modifier()));

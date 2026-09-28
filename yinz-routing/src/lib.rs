@@ -154,6 +154,7 @@ pub fn route_action(
     default_mode: InputMode,
     os_input: Option<Box<dyn ServerOsApi>>,
     leaves_clipboard_message: bool,
+    is_client_input: bool,
 ) -> Result<(bool, Option<ActionCompletionResult>)> {
     let mut should_break = false;
     let err_context = || format!("failed to route action for client {client_id}");
@@ -196,6 +197,11 @@ pub fn route_action(
             bytes: raw_bytes,
             is_kitty_keyboard_protocol,
         } => {
+            let completion = if is_client_input {
+                NotificationEnd::new_client_input(completion_tx)
+            } else {
+                NotificationEnd::new(completion_tx)
+            };
             senders
                 .send_to_screen(ScreenInstruction::ClearScroll(client_id))
                 .with_context(err_context)?;
@@ -205,11 +211,16 @@ pub fn route_action(
                     raw_bytes,
                     is_kitty_keyboard_protocol,
                     client_id,
-                    Some(NotificationEnd::new(completion_tx)),
+                    Some(completion),
                 ))
                 .with_context(err_context)?;
         },
         Action::WriteChars { chars } => {
+            let completion = if is_client_input {
+                NotificationEnd::new_client_input(completion_tx)
+            } else {
+                NotificationEnd::new(completion_tx)
+            };
             senders
                 .send_to_screen(ScreenInstruction::ClearScroll(client_id))
                 .with_context(err_context)?;
@@ -220,7 +231,7 @@ pub fn route_action(
                     chars,
                     false,
                     client_id,
-                    Some(NotificationEnd::new(completion_tx)),
+                    Some(completion),
                 ))
                 .with_context(err_context)?;
         },
@@ -2836,6 +2847,10 @@ fn send_output_to_client(
 }
 
 #[cfg(test)]
+#[path = "unit/input_barrier_tests.rs"]
+mod input_barrier_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use yinz_runtime::channels::SenderWithContext;
@@ -2882,6 +2897,7 @@ mod tests {
                 InputMode::Normal,
                 None,
                 true,
+                true, // is_client_input
             );
             result.unwrap();
             assert!(screen_rx.try_recv().is_err());
@@ -2944,6 +2960,7 @@ mod tests {
                     InputMode::Normal,
                     None,
                     true,
+                    true, // is_client_input
                 )
                 .unwrap();
                 let (PluginInstruction::CliPipe { is_eof, .. }, _) = plugins.try_recv().unwrap()
@@ -3030,6 +3047,7 @@ mod tests {
                 InputMode::Normal,
                 None,
                 leaves_clipboard_message,
+                true, // is_client_input
             );
             let mut events = Vec::new();
             while let Ok((instruction, _ctx)) = rx.try_recv() {
@@ -3088,6 +3106,7 @@ mod tests {
             InputMode::Normal,
             None,
             false,
+            true, // is_client_input
         );
         let placement = std::iter::from_fn(|| rx.try_recv().ok())
             .find_map(|(instruction, _ctx)| match instruction {

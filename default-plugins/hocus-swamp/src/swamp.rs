@@ -2128,9 +2128,9 @@ impl State {
     /// body that came and went with the focus; the header is the tab's hint row, and says
     /// whichever keys are live. Dim, as the header is whenever the keys are not the tab's.
     fn swamp_header(&self, cols: usize) -> String {
-        if self.bar_has_keys() && !self.box_ahead_of_the_bar() {
+        if self.bar_has_keys() {
             let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
-            return agents::fit_hints(&segments, cols);
+            return agents::fit_keys(&segments, cols);
         }
         self.swamp.header(cols)
     }

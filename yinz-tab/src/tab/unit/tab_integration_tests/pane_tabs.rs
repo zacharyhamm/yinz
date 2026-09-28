@@ -190,6 +190,14 @@ fn pane_tabs_discard_stale_loads_and_keep_the_bar_usable_during_loading() {
         None,
     )
     .unwrap();
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 1);
+    assert!(tab
+        .pane_tabs_input(
+            first,
+            &Some(KeyWithModifier::new(BareKey::Enter)),
+            Some(client)
+        )
+        .unwrap());
     assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
     tab.close_pane_tab_child(info.id, 1).unwrap();
     let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
@@ -290,9 +298,11 @@ fn pane_tabs_bar_keeps_active_label_reachable_at_every_width() {
             .collect(),
     };
     for width in 1..30 {
-        let cells = yinz_panes::pane_tabs::bar_cells(&info, width);
+        let cells = yinz_panes::pane_tabs::bar_cells(&info, Default::default(), false, width);
         assert!(cells.len() <= width);
-        assert!(cells.iter().any(|(_, index)| *index == 1));
+        assert!(cells
+            .iter()
+            .any(|cell| cell.target == yinz_types::tab_bar::TabTarget::Tab(1)));
     }
 }
 
@@ -516,6 +526,12 @@ fn pane_tabs_content_press_releases_only_pressing_clients_bar_focus() {
             assert!(tab
                 .pane_tabs_mouse(&MouseEvent::new_left_press_event(label), client)
                 .unwrap());
+            assert!(!tab
+                .pane_tabs_info(info.id)
+                .unwrap()
+                .bar_focused
+                .contains(&client));
+            tab.focus_pane_tabs(info.id, true, client).unwrap();
         }
         let mut wheel = MouseEvent::new_buttonless_motion(content);
         wheel.event_type = yinz_types::mouse::MouseEventType::Press;
@@ -565,5 +581,279 @@ fn pane_tabs_content_press_releases_only_pressing_clients_bar_focus() {
             .pane_tabs_mouse(&MouseEvent::new_left_press_event(content), other)
             .unwrap());
         assert_eq!(tab.pane_tabs_info(info.id).unwrap().bar_focused, [other]);
+    }
+}
+
+#[test]
+fn pane_tabs_highlight_is_per_client_and_only_enter_activates() {
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    tab.add_client(other, None).unwrap();
+    let pane = PaneId::Plugin(PluginId::new(100));
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::NoPreference {
+            borderless: Some(false),
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(pane, layout(), 0, client).unwrap();
+    for client in [client, other] {
+        tab.focus_pane_tabs(info.id, true, client).unwrap();
+    }
+    receiver.try_iter().for_each(drop);
+    for key in [
+        BareKey::Right,
+        BareKey::Right,
+        BareKey::Char('j'),
+        BareKey::Down,
+        BareKey::Char('x'),
+    ] {
+        assert!(tab
+            .pane_tabs_input(pane, &Some(KeyWithModifier::new(key)), Some(client))
+            .unwrap());
+    }
+    assert!(tab
+        .pane_tabs_input(
+            pane,
+            &Some(KeyWithModifier::new(BareKey::Char('x')).with_ctrl_modifier()),
+            Some(client)
+        )
+        .unwrap());
+    assert!(tab.pane_tabs_input(pane, &None, Some(client)).unwrap());
+    tab.paste_to_active_terminal(b"ignored paste".to_vec(), client, None)
+        .unwrap();
+    assert_eq!(tab.pane_tabs[&info.id].views[&client].highlight, 1);
+    assert_eq!(tab.pane_tabs[&info.id].views[&other].highlight, 0);
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+    assert!(receiver.try_iter().all(|(instruction, _)| !matches!(
+        instruction,
+        PluginInstruction::LoadPaneTab { .. } | PluginInstruction::Update(_)
+    )));
+    for cancel in [BareKey::Esc, BareKey::Tab] {
+        assert!(tab
+            .pane_tabs_input(pane, &Some(KeyWithModifier::new(cancel)), Some(client))
+            .unwrap());
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap().bar_focused, [other]);
+        tab.focus_pane_tabs(info.id, true, client).unwrap();
+        assert_eq!(tab.pane_tabs[&info.id].views[&client].highlight, 0);
+        tab.pane_tabs_input(
+            pane,
+            &Some(KeyWithModifier::new(BareKey::Right)),
+            Some(client),
+        )
+        .unwrap();
+    }
+    assert!(!tab
+        .pane_tabs_input(
+            pane,
+            &Some(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
+            Some(client)
+        )
+        .unwrap());
+    tab.pane_tabs_input(
+        pane,
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        Some(client),
+    )
+    .unwrap();
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 1);
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().bar_focused, [other]);
+    assert_eq!(tab.pane_tabs[&info.id].views[&other].highlight, 0);
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|(instruction, _)| matches!(
+                instruction,
+                PluginInstruction::LoadPaneTab { index: 1, .. }
+            ))
+            .count(),
+        1
+    );
+    tab.pane_tab_loaded(info.id, 1, 1, Err("missing plugin".into()))
+        .unwrap();
+    tab.pane_tabs_input(
+        pane,
+        &Some(KeyWithModifier::new(BareKey::Char('r'))),
+        Some(other),
+    )
+    .unwrap();
+    assert_eq!(
+        tab.pane_tabs_info(info.id).unwrap().tabs[1].state,
+        PaneTabLoadState::Loading
+    );
+    assert!(receiver.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::LoadPaneTab {
+            index: 1,
+            generation: 3,
+            ..
+        }
+    )));
+    tab.remove_client(other);
+    assert!(tab.pane_tabs_info(info.id).unwrap().bar_focused.is_empty());
+    assert!(!tab.pane_tabs[&info.id].views.contains_key(&other));
+}
+
+#[test]
+fn pane_tabs_mouse_uses_render_geometry_and_overflow_does_not_activate() {
+    use yinz_panes::pane_tabs::bar_cells;
+    use yinz_types::tab_bar::TabTarget;
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 16, rows: 12 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    tab.add_client(other, None).unwrap();
+    let pane = PaneId::Plugin(PluginId::new(100));
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::NoPreference {
+            borderless: Some(false),
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let mut unicode_layout = layout();
+    unicode_layout.tabs[0].label = "第一".into();
+    unicode_layout.tabs[1].label = "界e\u{301}👩‍💻".into();
+    let info = tab
+        .mount_pane_tabs(pane, unicode_layout, 0, client)
+        .unwrap();
+    let content = tab.get_pane_with_id(pane).unwrap();
+    let x = content.get_content_x();
+    let y = content.get_content_y() - 1;
+    let width = content.get_content_columns();
+    let click =
+        |column| MouseEvent::new_left_press_event(Position::new(y as i32, (x + column) as u16));
+    assert!(!tab
+        .pane_tabs_mouse(
+            &MouseEvent::new_left_press_event(Position::new(y as i32, (x - 1) as u16)),
+            client
+        )
+        .unwrap());
+    assert!(!tab.pane_tabs_mouse(&click(width), client).unwrap());
+    let cells = bar_cells(&info, Default::default(), false, width);
+    let arrow = cells
+        .iter()
+        .find(|cell| cell.target == TabTarget::Reveal(1))
+        .unwrap();
+    receiver.try_iter().for_each(drop);
+    // Both columns of an arrow reveal the same window.
+    for column in arrow.x..arrow.x + arrow.width {
+        tab.focus_pane_tabs(info.id, true, client).unwrap();
+        assert!(tab.pane_tabs_mouse(&click(column), client).unwrap());
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+        assert_eq!(tab.pane_tabs[&info.id].views[&client].reveal, Some(1));
+        assert!(!tab.pane_tabs[&info.id].views.contains_key(&other));
+        assert!(tab.pane_tabs_info(info.id).unwrap().bar_focused.is_empty());
+    }
+    assert!(receiver
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PluginInstruction::LoadPaneTab { .. })));
+    let cells = bar_cells(&info, tab.pane_tabs[&info.id].views[&client], false, width);
+    let target = cells
+        .iter()
+        .find(|cell| cell.target == TabTarget::Tab(1))
+        .unwrap();
+    let end = cells.last().unwrap().x + cells.last().unwrap().width;
+    if end < width {
+        tab.pane_tabs_mouse(&click(end), client).unwrap();
+        assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 0);
+        assert_eq!(tab.pane_tabs[&info.id].views[&client].reveal, Some(1));
+    }
+    tab.pane_tabs_mouse(&click(arrow.x), other).unwrap();
+    tab.pane_tabs_mouse(&click(target.x + target.width - 1), client)
+        .unwrap();
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap().active, 1);
+    assert!(tab.pane_tabs_info(info.id).unwrap().bar_focused.is_empty());
+    assert_eq!(tab.pane_tabs[&info.id].views[&other].reveal, Some(1));
+    tab.remove_client(other);
+    assert!(!tab.pane_tabs[&info.id].views.contains_key(&other));
+}
+
+#[test]
+fn pane_tabs_render_active_inactive_and_independent_keyboard_highlight() {
+    use yinz_panes::panes::terminal_character::AnsiCode;
+    let (mut tab, _) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let plugin = PluginId::new(100);
+    let pane = PaneId::Plugin(plugin);
+    tab.new_pane(
+        pane,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::NoPreference {
+            borderless: Some(false),
+        },
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.handle_plugin_bytes(plugin, client, b"content".to_vec())
+        .unwrap();
+    let info = tab.mount_pane_tabs(pane, layout(), 0, client).unwrap();
+    for focused in [false, true] {
+        if focused {
+            tab.focus_pane_tabs(info.id, true, client).unwrap();
+            tab.pane_tabs_input(
+                pane,
+                &Some(KeyWithModifier::new(BareKey::Right)),
+                Some(client),
+            )
+            .unwrap();
+        }
+        let pane = tab.get_pane_with_id_mut(pane).unwrap();
+        let y = pane.get_content_y() - 1;
+        let rendered = pane.render(Some(client)).unwrap().unwrap();
+        let bar = rendered.0.iter().find(|chunk| chunk.y == y).unwrap();
+        assert!(bar
+            .terminal_characters
+            .iter()
+            .map(|ch| ch.character)
+            .collect::<String>()
+            .starts_with(" First │ Second │"));
+        let active = &bar.terminal_characters[1].styles;
+        let inactive = &bar.terminal_characters[9].styles;
+        assert_eq!(active.bold, Some(AnsiCode::On));
+        assert_eq!(
+            active.foreground,
+            Some(AnsiCode::from(
+                Style::default().colors.text_unselected.emphasis_2
+            ))
+        );
+        assert_eq!(inactive.bold, Some(AnsiCode::Reset));
+        assert_eq!(
+            inactive.dim,
+            Some(if focused {
+                AnsiCode::Reset
+            } else {
+                AnsiCode::On
+            })
+        );
+        if focused {
+            assert_eq!(
+                inactive.background,
+                Some(AnsiCode::from(
+                    Style::default().colors.text_selected.background
+                ))
+            );
+        }
     }
 }

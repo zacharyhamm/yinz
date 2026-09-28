@@ -1794,12 +1794,12 @@ impl State {
         let room = cols.saturating_sub(4 + scroll_readout(above, below).width());
         // While the panel's tab bar has the keys, this row says what they do there, rather
         // than a row more saying it: the tab's own keys are not what the next press does -
-        // Enter and Esc step into the list rather than acting - and a key the bar does not own
-        // goes to the list anyway. Only a question never has the bar over it, since the Tab
+        // Enter activates a tab, Esc returns to the active list, and other keys are consumed.
+        // Only a question never has the bar over it, since the Tab
         // that goes up to the bar drops it first (`todo_confirm_key`). An open box is drawn in
         // this row's place wherever it fits, and its row names the bar's keys the same way
         // (`input_row`).
-        let bar = self.bar_has_keys() && !self.box_ahead_of_the_bar();
+        let bar = self.bar_has_keys();
         let bar_keys = || tabs::BAR_HINT.split(" · ").map(str::to_owned);
         let (lead, error, rest): (Option<String>, bool, Vec<String>) = match &self.todos.mode {
             // Questions lead with their answer and their scope, which is what a narrow pane
@@ -1863,7 +1863,11 @@ impl State {
             },
         };
         let segments: Vec<&str> = lead.iter().chain(rest.iter()).map(String::as_str).collect();
-        let label = agents::fit_hints(&segments, room);
+        let label = if bar {
+            agents::fit_keys(&segments, room)
+        } else {
+            agents::fit_hints(&segments, room)
+        };
         let line = divider_line(&label, above, below, cols);
         let start = line
             .find(&label)
@@ -1999,7 +2003,7 @@ impl State {
         // list's own divider does (`todo_divider`): Enter and Esc on the bar step back down
         // into the box rather than saving or closing it, so the box's keys would name what the
         // next press does not do. The draft stays on the row, since it is what the box keeps.
-        let hints: Vec<&'static str> = if self.bar_has_keys() && !self.box_ahead_of_the_bar() {
+        let hints: Vec<&'static str> = if self.bar_has_keys() {
             tabs::BAR_HINT.split(" · ").collect()
         } else {
             match (
