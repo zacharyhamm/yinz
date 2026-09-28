@@ -100,6 +100,8 @@ fn gate_runs_integration_and_aggregates_failures() {
 printf '%s|%s\n' "$NEXTEST_TEST_THREADS" "$*" >> "$GATE_LOG"
 case "$*" in
   'metadata '*) cat "$GATE_METADATA" ;;
+  'tree -q -p zellij -e '*) [ "$GATE_FAILURE" = 1 ] && echo 'nix v0.30.1 [ioctl]' || echo 'nix v0.30.1 []' ;;
+  'tree -q -p zellij-integration-tests '*) echo 'nix v0.30.1 []' ;;
   'fmt '*|'clippy '*|'nextest run '*) exit "$GATE_FAILURE" ;;
   'nextest --version') exit "$GATE_NO_NEXTEST" ;;
 esac
@@ -130,6 +132,16 @@ exit 0
             String::from_utf8_lossy(&output.stderr)
         );
         let calls = fs::read_to_string(log).unwrap();
+        assert!(
+            calls.contains("3|tree -q -p zellij -e normal,build --prefix none"),
+            "{calls}"
+        );
+        assert!(
+            calls.contains(
+                "3|tree -q -p zellij-integration-tests -e normal,build,dev --prefix none"
+            ),
+            "{calls}"
+        );
         assert!(calls.contains("3|fmt --all --check"), "{calls}");
         assert!(calls.contains("3|clippy --workspace"), "{calls}");
         if failure == "0" {
@@ -149,7 +161,9 @@ exit 0
         }
         if failure == "1" {
             assert!(
-                stdout.contains(">> Failed: format --check, lint, test, integration-test"),
+                stdout.contains(
+                    ">> Failed: integration-test features, format --check, lint, test, integration-test"
+                ),
                 "{stdout}"
             );
         }

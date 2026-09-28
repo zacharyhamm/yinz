@@ -20,7 +20,7 @@ zellij-session = { workspace = true }
 zellij-types = { workspace = true }
 zellij-runtime = { workspace = true }
 # The kitty conformance suite's command builders and reply grammar, for `kitty_protocol`.
-zellij-terminal-graphics = { workspace = true, features = ["test-support"] }
+zellij-terminal-graphics = { workspace = true }
 zellij-client = { path = "../zellij-client", version = "0.45.0" }
 zellij-server = { path = "../zellij-server", version = "0.45.0" }
 anyhow = { workspace = true }
@@ -30,7 +30,7 @@ interprocess = { workspace = true }
 insta = "1.48"
 log = { workspace = true }
 regex = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 vte = { workspace = true }
 
 [dev-dependencies]
@@ -39,3 +39,7 @@ zellij-test-support = { path = "../zellij-test-support" }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+# Unused in code. `x integration-test` builds the zellij binary first, and the root package's
+# default `vendored_curl` links libcurl statically. Asking for it here too tests the libcurl the
+# binary ships and lets the suite reuse that build of libcurl, OpenSSL and every crate above them.
+zellij-downloader = { workspace = true, features = ["vendored_curl"] }

@@ -26,17 +26,16 @@ suite is split the same way:
   `zellij-terminal/src/output/unit/output_kitty_spec_tests.rs` (`cargo x test -p zellij-terminal`).
 * Whole app: `zellij-integration-tests/tests/kitty_graphics*.rs`.
 
-The fixtures and the reply grammar are `kitty_graphics/test_support.rs`, behind the crate's
-`test-support` feature. `zellij-terminal` reaches it through `panes::kitty_test_support`, which
-adds the helpers that drive a `Grid`, and `zellij-integration-tests/src/kitty_protocol.rs`
-re-exports the builders and `KittyReply` for the whole-app tests. A change to the reply grammar
-is therefore one change for every level.
+The fixtures and the reply grammar are `kitty_graphics/test_support.rs`. `zellij-terminal`
+reaches it through `panes::kitty_test_support`, which adds the helpers that drive a `Grid`, and
+`zellij-integration-tests/src/kitty_protocol.rs` re-exports the builders and `KittyReply` for the
+whole-app tests. A change to the reply grammar is therefore one change for every level.
 
-`zellij-integration-tests` enables `test-support` as a normal dependency, so `cargo check
---workspace` turns it on everywhere (and `cargo x lint` through `--all-features`), and the fixtures then also show
-up as `panes::test_support` in `zellij-terminal` and `zellij-panes` through their
-`kitty_graphics::*` globs. Do not import them from there. The zellij binary builds this crate
-without the feature.
+The module is public and compiled in every build, the zellij binary's included. The whole-app
+suite needs it outside `cfg(test)`, and gating it on a feature only the suite enabled made
+`x integration-test` build this crate and every crate above it twice, once for the binary and
+once for the suite. The fixtures also show up as `panes::test_support` in `zellij-terminal` and
+`zellij-panes` through their `kitty_graphics::*` globs. Do not import them from there.
 
 ## Plugin panes
 

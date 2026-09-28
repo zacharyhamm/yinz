@@ -28,7 +28,7 @@ zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-process = { path = "../zellij-process", version = "0.45.0" }
 interprocess = { workspace = true }
 log = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -39,7 +39,6 @@ nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "sign
 [dev-dependencies]
 criterion = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
 zellij-test-support = { path = "../zellij-test-support" }
 tempfile = "3.2.0"
 

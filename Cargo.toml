@@ -68,6 +68,8 @@ zellij-test-support = { path = "zellij-test-support" }
 rand = { workspace = true }
 regex = { workspace = true }
 vte = { workspace = true }
+# The agent_report test starts reporters in their own session and finds the socket directory by uid.
+nix = { workspace = true, features = ["process", "user"] }
 
 [workspace]
 members = [
@@ -210,7 +212,10 @@ lazy_static = { version = "1.4.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["std"] }
 log = { version = "0.4.17", default-features = false }
 miette = { version = "7.6", default-features = false, features = ["derive", "fancy"] }
-nix = { version = "0.30", default-features = false }
+# `ioctl` for every member, although only zellij-server-os uses it. That crate is in the zellij
+# binary's graph but not in the whole-app suite's, and a nix feature only one graph asks for
+# makes `x integration-test` build nix and every crate above it twice.
+nix = { version = "0.30", default-features = false, features = ["ioctl"] }
 notify-debouncer-full = { version = "0.5", default-features = false }
 notify = { version = "8.2", default-features = false, features = ["macos_kqueue"] }
 num_cpus = { version = "1.16", default-features = false }
@@ -226,6 +231,8 @@ strum = { version = "0.28.0", default-features = false, features = ["std"] }
 strum_macros = { version = "0.28.0", default-features = false }
 suggest = { version = "0.5.1", default-features = false }
 tempfile = { version = "3.2.0", default-features = false }
+# Not `sync`: each crate that uses `tokio::sync` names it. interprocess turns it on in nearly every
+# graph, so a crate that forgets it still builds until that changes.
 tokio = { version = "1.40", default-features = false, features = ["fs", "rt-multi-thread", "macros", "time", "process", "signal", "io-util", "io-std", "net"] }
 thiserror = { version = "2.0.18", default-features = false, features = ["std"] }
 tokio-util = { version = "0.7.15" }

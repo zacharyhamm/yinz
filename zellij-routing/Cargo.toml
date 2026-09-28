@@ -16,5 +16,5 @@ zellij-ipc = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
 log = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }

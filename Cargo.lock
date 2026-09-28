@@ -6584,6 +6584,7 @@ dependencies = [
  "zellij-client",
  "zellij-config",
  "zellij-deno-builtins",
+ "zellij-downloader",
  "zellij-ipc",
  "zellij-runtime",
  "zellij-server",
