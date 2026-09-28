@@ -20,14 +20,12 @@ compile_error!("Zellij does not support Windows");
 pub use zellij_bus::os_input_output;
 pub use zellij_panes::{pane, panes};
 pub use zellij_process::firecracker;
-pub use zellij_terminal::host_query;
 pub use zellij_terminal::output;
 use zellij_types::internal_ids::TabPosition;
 use zellij_types::style::default_palette;
 
 pub use zellij_bus::background_jobs;
 pub(crate) use zellij_bus::global_async_runtime;
-pub use zellij_bus::nested_guest;
 pub(crate) use zellij_plugin_host as plugins;
 pub use zellij_plugin_host::deno::testing as plugin_testing;
 use zellij_plugin_host::get_engine;
@@ -2772,6 +2770,10 @@ fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<Layo
         .map(|l| format!("{}", l.display()));
     zellij_config::layout::list_available_layouts(layout_dir, &default_layout_name)
 }
+
+#[cfg(test)]
+#[path = "unit/capturing_os.rs"]
+mod capturing_os;
 
 #[cfg(test)]
 #[path = "unit/session_teardown_tests.rs"]

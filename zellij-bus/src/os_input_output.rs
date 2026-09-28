@@ -70,8 +70,6 @@ pub struct AdoptedTerminal {
     pub child_exit_status: Option<Option<i32>>,
 }
 
-pub use zellij_runtime::own_binary::server_binary;
-
 /// A null `AsyncReader` for held panes (produces EOF immediately).
 pub struct NullAsyncReader;
 
