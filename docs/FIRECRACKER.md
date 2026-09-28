@@ -1,6 +1,6 @@
 # Firecracker VMs
 
-Run a shell or coding agent in a Linux VM from Zellij. Each VM starts from a
+Run a shell or coding agent in a Linux VM from Yinz. Each VM starts from a
 copy of a base image. A linked host worktree is copied into `/workspace` in
 the guest. File changes return to the host on sync or final close.
 
@@ -13,12 +13,12 @@ This provider requires **Linux x86_64**, access to `/dev/kvm`, user namespaces,
 and systemd for persistent networking. Run setup as your normal user. Setup
 uses sudo for provider installation and networking.
 
-1. Install this fork of Zellij and its `zellij-firecracker` companion. From
+1. Install Yinz and its `yinz-firecracker` companion. From
    this checkout, with the [build prerequisites](../AGENTS.md#build-and-test):
 
    ```sh
    mkdir -p "$HOME/.local/bin"
-   cargo x install "$HOME/.local/bin/zellij"
+   cargo x install "$HOME/.local/bin/yinz"
    export PATH="$HOME/.local/bin:$PATH"
    ```
 
@@ -37,38 +37,38 @@ uses sudo for provider installation and networking.
 
 3. Install the `firecracker` executable on your PATH. Use the official
    [Firecracker installation instructions](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md#getting-a-firecracker-binary).
-   This is separate from the `zellij-firecracker` companion. Check it with:
+   This is separate from the `yinz-firecracker` companion. Check it with:
 
    ```sh
    firecracker --version
    ```
 
-## Create an image and configure Zellij
+## Create an image and configure Yinz
 
 From the project directory:
 
 ```sh
-zellij-firecracker setup --name my-project
+yinz-firecracker setup --name my-project
 ```
 
 Setup checks prerequisites, installs a trusted provider if needed, configures
 networking, builds or reuses the image, writes configuration, and runs doctor.
 It makes this image the host's default for launches without a selected image.
 Existing images are reused. Use `--rebuild` after changing the image recipe
-or the Zellij binary that runs in the guest.
+or the Yinz binary that runs in the guest.
 
-If `.zellij/firecracker-image.sh` exists in the project, setup runs it inside
+If `.yinz/firecracker-image.sh` exists in the project, setup runs it inside
 the image to install your development tools. Without it, setup creates a
-base Debian 13 slim image with Zellij, Git, and file sync tools.
+base Debian 13 slim image with Yinz, Git, and file sync tools.
 That base does not install coding agents.
-The [recipe in this checkout](../.zellij/firecracker-image.sh) installs Rust,
+The [recipe in this checkout](../.yinz/firecracker-image.sh) installs Rust,
 build tools, Codex, and Claude Code. Image builds can take several minutes.
 
 For a project that does not have a recipe, create a minimal one:
 
 ```sh
-mkdir -p .zellij
-cat > .zellij/firecracker-image.sh <<'EOF'
+mkdir -p .yinz
+cat > .yinz/firecracker-image.sh <<'EOF'
 #!/bin/sh
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -77,7 +77,7 @@ apt-get install -y --no-install-recommends build-essential git rsync
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 EOF
-zellij-firecracker setup --name my-project --rebuild
+yinz-firecracker setup --name my-project --rebuild
 ```
 
 Add your agent and project dependencies to the recipe before launching them.
@@ -90,11 +90,11 @@ Setup uses a 64 GiB sparse disk by default. Allocated disk usage grows as
 files are added. Use `--disk-size-gib N` to change the capacity. Each VM has
 its own writable disk. The default VM has 2 vCPUs and 2048 MiB of memory.
 
-Use `--zellij /absolute/path/to/zellij` to select the guest binary. It must run
+Use `--yinz /absolute/path/to/yinz` to select the guest binary. It must run
 on Debian 13. The image builder checks it after provisioning and runs
-`zellij --version` inside the prepared filesystem before publishing the image.
+`yinz --version` inside the prepared filesystem before publishing the image.
 From this checkout, `cargo x firecracker-test --build` builds a compatible GNU
-binary in Docker at `target/x86_64-unknown-linux-gnu/release/zellij`.
+binary in Docker at `target/x86_64-unknown-linux-gnu/release/yinz`.
 Standalone image provisioning uses the downloaded Debian rootfs and does not
 require Docker.
 The rootfs comes from a commit-pinned [official Debian slim archive](https://github.com/debuerreotype/docker-debian-artifacts/tree/8f962b15d7884a90e17876a9303cbac909d119aa/trixie/slim), verified with SHA-256.
@@ -105,7 +105,7 @@ and running VMs stay unchanged until you explicitly rebuild their images.
 For additional images after setup:
 
 ```sh
-zellij-firecracker image build --name another-project --project /absolute/project/path
+yinz-firecracker image build --name another-project --project /absolute/project/path
 ```
 
 Unlike setup, an explicit `image build --project` requires that project's
@@ -115,12 +115,12 @@ an existing default image selection. Use `--help` for all options.
 
 ## Launch and verify
 
-Start a new Zellij session after first-time setup so it reads the provider
+Start a new Yinz session after first-time setup so it reads the provider
 configuration. Reattaching to a session started before setup does not load it.
 From a shell inside the new session, in your project:
 
 ```sh
-zellij action new-pane --firecracker review \
+yinz action new-pane --firecracker review \
     --firecracker-image my-project --firecracker-worktree "$PWD"
 ```
 
@@ -140,8 +140,8 @@ Use a separate Git worktree when you need a separate VM. To open another pane
 in an existing VM, use its name from the listing:
 
 ```sh
-zellij firecracker list
-zellij action new-pane --firecracker review
+yinz firecracker list
+yinz action new-pane --firecracker review
 ```
 
 ## Save changes and close
@@ -152,9 +152,9 @@ resource usage, and actions. Press **?** for the available keys.
 From the CLI:
 
 ```sh
-zellij firecracker changes review
-zellij firecracker sync review
-zellij firecracker close review
+yinz firecracker changes review
+yinz firecracker sync review
+yinz firecracker close review
 ```
 
 Use the name returned by `list`. Add `--session SESSION` when managing a VM
@@ -175,22 +175,22 @@ files you need before final close. Its writable disk is then deleted.
 
 ## Diagnose and recover
 
-Run `zellij-firecracker doctor` to check the configured host. Configuration is
-normally in `~/.config/zellij/firecracker.json`. Setup also writes the provider
-path to Zellij's `config.d` directory. Both paths appear in setup output.
+Run `yinz-firecracker doctor` to check the configured host. Configuration is
+normally in `~/.config/yinz/firecracker.json`. Setup also writes the provider
+path to Yinz's `config.d` directory. Both paths appear in setup output.
 
 | Problem | Next step |
 | --- | --- |
-| Firecracker is not configured | Run `zellij-firecracker setup` from the project, then start a new Zellij session. |
+| Firecracker is not configured | Run `yinz-firecracker setup` from the project, then start a new Yinz session. |
 | An image does not exist | Run `setup --name IMAGE` or choose an image you already built. |
 | Package installation fails when changing file ownership | Check subordinate UID/GID ranges in `/etc/subuid` and `/etc/subgid`, and install `uidmap`. The image builder needs mappings for guest system users. |
-| A TAP device is missing after reboot | Run `sudo zellij-firecracker network setup --user "$USER"`, then doctor. |
+| A TAP device is missing after reboot | Run `sudo yinz-firecracker network setup --user "$USER"`, then doctor. |
 | No TAP device is free | Close unused VMs, or increase the pool with `network setup --user "$USER" --taps N` under sudo. |
 | Agent command is missing | Install it in the image recipe, rebuild the image, and launch a new VM. |
-| VM cannot start Zellij | Check the guest binary's compatibility and the launch error's console log. |
+| VM cannot start Yinz | Check the guest binary's compatibility and the launch error's console log. |
 
 If provisioning or final sync fails, the provider retains the disk when
-possible and reports its location. `zellij firecracker list` and the VMs
+possible and reports its location. `yinz firecracker list` and the VMs
 panel show retained disks. **They expire seven days after retention.**
 Copy a needed disk outside the recovery directory before that deadline.
 

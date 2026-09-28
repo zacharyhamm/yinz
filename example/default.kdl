@@ -146,14 +146,14 @@ keybinds {
             SwitchToMode "Normal"
         }
         bind "a" {
-            LaunchOrFocusPlugin "zellij:about" {
+            LaunchOrFocusPlugin "yinz:about" {
                 floating true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
         bind "l" {
-            LaunchOrFocusPlugin "zellij:layout-manager" {
+            LaunchOrFocusPlugin "yinz:layout-manager" {
                 floating true
                 move_to_focused_tab true
             };
@@ -346,27 +346,27 @@ keybinds {
     }
 }
 
-// Plugin aliases - can be used to change the implementation of Zellij
+// Plugin aliases - can be used to change the implementation of Yinz
 // changing these requires a restart to take effect
 plugins {
-    tab-bar location="zellij:tab-bar"
-    status-bar location="zellij:status-bar"
-    strider location="zellij:strider"
-    compact-bar location="zellij:compact-bar"
-    session-manager location="zellij:session-manager"
-    welcome-screen location="zellij:session-manager" {
+    tab-bar location="yinz:tab-bar"
+    status-bar location="yinz:status-bar"
+    strider location="yinz:strider"
+    compact-bar location="yinz:compact-bar"
+    session-manager location="yinz:session-manager"
+    welcome-screen location="yinz:session-manager" {
         welcome_screen true
     }
-    filepicker location="zellij:strider" {
+    filepicker location="yinz:strider" {
         cwd "/"
     }
-    configuration location="zellij:configuration"
-    plugin-manager location="zellij:plugin-manager"
-    about location="zellij:about"
+    configuration location="yinz:configuration"
+    plugin-manager location="yinz:plugin-manager"
+    about location="yinz:about"
     // Fuzzy file finder for the project of the focused pane, bound to Alt e above.
     // Requires `fzf` on PATH.
     //
-    // Files open in the editor Zellij already uses elsewhere (scrollback_editor, then
+    // Files open in the editor Yinz already uses elsewhere (scrollback_editor, then
     // $EDITOR, $VISUAL, vi). Add `open_<extension>` entries to route particular types
     // somewhere else instead; `{}` stands for the file path, and is appended if you
     // leave it out. `open_default` catches everything unmatched.
@@ -379,7 +379,7 @@ plugins {
     // untracked-not-ignored files from the git root, or `find` outside a checkout),
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
     // `file_command` and `fzf_args` are spliced into a shell script as written.
-    file-finder location="zellij:file-finder"
+    file-finder location="yinz:file-finder"
     // The agent conversation, bound to Ctrl e c above.
     //
     // hocus draws itself as one overlay panel in the bottom-left corner of the
@@ -447,7 +447,7 @@ plugins {
     // Session mode before the panel sees it. It works on a panel you have
     // dragged, too - the press carries on from where the drag left it, and
     // dragging either half's frame moves the whole panel, split and all.
-    hocus location="zellij:hocus" {
+    hocus location="yinz:hocus" {
         shared true
         // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,
         // more direct tool runs; both keys are omitted from API requests unless set.
@@ -470,17 +470,17 @@ plugins {
     // The agent list, bound to Ctrl e a above — the left half of the panel, or
     // the whole of it when there is no conversation beside it. Sized by hocus's `width`,
     // `height` and `split`, above.
-    hocus-agents location="zellij:hocus-agents" {
+    hocus-agents location="yinz:hocus-agents" {
         shared true
     }
-    hocus-new-agent location="zellij:hocus-new-agent"
-    hocus-duplicate-agent location="zellij:hocus-new-agent" {
+    hocus-new-agent location="yinz:hocus-new-agent"
+    hocus-duplicate-agent location="yinz:hocus-new-agent" {
         duplicate_focused true
     }
     // The same modal again, asking one question first: which agent to start in the
     // focused pane's place. It opens on an agent *other* than the one running, which is
     // the whole reason to fork rather than duplicate.
-    hocus-fork-agent location="zellij:hocus-new-agent" {
+    hocus-fork-agent location="yinz:hocus-new-agent" {
         fork_focused true
     }
 }
@@ -489,11 +489,11 @@ plugins {
 // This block adds to the built-in defaults; `load_plugins clear-defaults=true`
 // replaces them instead
 load_plugins {
-    "zellij:link"
+    "yinz:link"
     // "file:/path/to/my-plugin.wasm"
 }
 
-// Plugins to run at a hook point - a moment zellij hands control to a plugin.
+// Plugins to run at a hook point - a moment yinz hands control to a plugin.
 // One plugin per point; bind the empty string to turn a point off.
 //
 //   agent_exit  an agent pane's command exited. The plugin is opened in place of
@@ -502,29 +502,29 @@ load_plugins {
 //               arrives as configuration: agent_pane_id, agent_cwd,
 //               agent_exit_code, agent_command.
 //
-// The default is a TypeScript plugin shipped with zellij. Your own is a plugin you
-// write into your plugin folder - `zellij-deno-builtins/assets/plugins/agent-exit.ts`
+// The default is a TypeScript plugin shipped with yinz. Your own is a plugin you
+// write into your plugin folder - `yinz-deno-builtins/assets/plugins/agent-exit.ts`
 // is the reference implementation to read - and then bind here by name. See
 // docs/DENO_PLUGINS.md.
 hooks {
-    agent_exit "zellij:agent-exit"
+    agent_exit "yinz:agent-exit"
     // agent_exit "file:my-agent-exit.ts"   // from your plugin folder
     // agent_exit ""   // turn it off: the pane just holds
 
     // context_menu  a right-click asked for a menu. Unlike agent_exit this plugin
     //               gets no pane: it runs headless, is handed the click as a
     //               `context_menu_requested` event, and answers with
-    //               `set_context_menu`. The menu itself is drawn by zellij.
-    context_menu "zellij:context-menu"
+    //               `set_context_menu`. The menu itself is drawn by yinz.
+    context_menu "yinz:context-menu"
     // context_menu ""   // turn it off: the menu shows the items below and nothing else
 
     // agent_waiting, agent_start, pane_exit, session_start  moments in the
     //               session that a headless plugin can watch: loaded once, and
     //               handed each later firing as a `hook` event. Nothing is bound
-    //               here by default; `zellij:agent-policy` is a shipped example
+    //               here by default; `yinz:agent-policy` is a shipped example
     //               that logs every firing and raises a notification when an
     //               agent stops for a question - the file to copy for your own.
-    // agent_waiting "zellij:agent-policy"
+    // agent_waiting "yinz:agent-policy"
 }
 
 // What a right-click menu offers, before the `context_menu` hook plugin has had
@@ -559,8 +559,8 @@ context_menu {
     }
 }
 
-// Choose what to do when zellij receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
-// eg. when terminal window with an active zellij session is closed
+// Choose what to do when yinz receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
+// eg. when terminal window with an active yinz session is closed
 // (Requires restart)
 // Options:
 //   - detach (Default)
@@ -586,12 +586,12 @@ context_menu {
 //
 // host_notification_protocol "auto"
 
-// Choose the path to the default shell that zellij will use for opening new panes
+// Choose the path to the default shell that yinz will use for opening new panes
 // Default: $SHELL
 //
 // default_shell "fish"
 
-// Choose the path to override cwd that zellij will use for opening new panes
+// Choose the path to override cwd that yinz will use for opening new panes
 //
 // default_cwd ""
 
@@ -616,7 +616,7 @@ context_menu {
 //
 // notification_timeout 4
 
-// Toggle between having Zellij lay out panes according to a predefined set of layouts whenever possible
+// Toggle between having Yinz lay out panes according to a predefined set of layouts whenever possible
 // Options:
 //   - true (default)
 //   - false
@@ -646,8 +646,8 @@ context_menu {
 //
 // scrollback_lines_to_serialize 10000
 
-// Define color themes for Zellij
-// For more examples, see: https://github.com/zellij-org/zellij/tree/main/example/themes
+// Define color themes for Yinz
+// For more examples, see: https://github.com/zacharyhamm/yinz/tree/main/yinz-config/assets/themes
 // Once these themes are defined, one of them should to be selected in the "theme" section of this file
 //
 // themes {
@@ -692,7 +692,7 @@ context_menu {
 //
 // default_layout "compact"
 
-// Choose the mode that zellij uses when starting up.
+// Choose the mode that yinz uses when starting up.
 // Default: normal
 //
 // default_mode "locked"
@@ -708,7 +708,7 @@ context_menu {
 // mouse_mode false
 
 // Configure the scroll back buffer size
-// This is the number of lines zellij stores for each pane in the scroll back
+// This is the number of lines yinz stores for each pane in the scroll back
 // buffer. Excess number of lines are discarded in a FIFO fashion.
 // (Requires restart)
 // Valid values: positive integers
@@ -753,17 +753,17 @@ context_menu {
 //
 // mirror_session true
 
-// The folder in which Zellij will look for layouts
+// The folder in which Yinz will look for layouts
 // (Requires restart)
 //
 // layout_dir "/path/to/my/layout_dir"
 
-// The folder in which Zellij will look for themes
+// The folder in which Yinz will look for themes
 // (Requires restart)
 //
 // theme_dir "/path/to/my/theme_dir"
 
-// The folder in which Zellij will look for plugins you wrote yourself
+// The folder in which Yinz will look for plugins you wrote yourself
 // (Requires restart)
 //
 // user_plugin_dir "/path/to/my/plugins"
@@ -808,7 +808,7 @@ context_menu {
 // stacked_resize false
 
 // The smallest tiled pane worth giving a newly spawned coding agent, as a terminal
-// size. Before an agent pane joins a tab, zellij projects the area each tiled pane
+// size. Before an agent pane joins a tab, yinz projects the area each tiled pane
 // would have if the tab's tiled panes (floating ones aside) shared the viewport
 // equally, and compares it with columns x rows. A tab that would fall below it
 // sends the agent to the roomiest other tab that stays above it, or to a new tab.
@@ -858,7 +858,7 @@ context_menu {
 // osc8_hyperlinks false
 
 // A command to run (will be wrapped with sh -c and provided the RESURRECT_COMMAND env variable)
-// after Zellij attempts to discover a command inside a pane when resurrecting sessions, the STDOUT
+// after Yinz attempts to discover a command inside a pane when resurrecting sessions, the STDOUT
 // of this command will be used instead of the discovered RESURRECT_COMMAND
 // can be useful for removing wrappers around commands
 // Note: be sure to escape backslashes and similar characters properly

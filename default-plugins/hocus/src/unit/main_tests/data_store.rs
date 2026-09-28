@@ -1,6 +1,6 @@
 use super::*;
-use zellij_tile::prelude::DataWatchId;
-use zellij_tile::prelude::HostId;
+use yinz_tile::prelude::DataWatchId;
+use yinz_tile::prelude::HostId;
 
 fn state_with_duplicate_projects() -> State {
     let mut state = state_with_project();
@@ -363,7 +363,7 @@ fn summaries_are_mirrored_and_restored_without_their_hash() {
     // Named, because a summary belongs to a session as well as a pane - see
     // `store::agent_summary_def`.
     let mut restarted = State {
-        zellij_session_name: "test-session".to_owned().into(),
+        yinz_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         ..State::default()
     };

@@ -148,7 +148,7 @@ fn check(status: u16, headers: &BTreeMap<String, String>, body: &[u8]) -> Result
     if (200..300).contains(&status) {
         return Ok(());
     }
-    // zellij reports a request that got no response as a 400 with no headers
+    // yinz reports a request that got no response as a 400 with no headers
     // and the error text as the body; a real server always sends headers.
     if headers.is_empty() && status == 400 {
         return Err(Error::Transport(

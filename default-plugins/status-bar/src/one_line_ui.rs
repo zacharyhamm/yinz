@@ -4,9 +4,9 @@ use ansi_term::{
     Style,
 };
 use std::collections::{BTreeSet, HashMap};
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
-use zellij_tile_utils::{palette_match, style};
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::{palette_match, style};
 
 use crate::first_line::{is_generic_to_normal_key, to_char, KeyAction, KeyMode, KeyShortcut};
 use crate::keybind_hints::render_hints;

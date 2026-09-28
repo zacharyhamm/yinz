@@ -20,7 +20,7 @@ use hocus_proto::swamp::swamp_lab::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub const SEARCH: &str = "swamp_issue_search";
 pub const GET: &str = "swamp_issue_get";

@@ -2,8 +2,8 @@ use ansi_term::ANSIStrings;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{LinePart, TabRenderData, ARROW_SEPARATOR};
-use zellij_tile::prelude::*;
-use zellij_tile_utils::style;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::style;
 
 pub struct TabLineOutput {
     pub parts: Vec<LinePart>,
@@ -378,7 +378,7 @@ impl<'a> TabLinePrefixBuilder<'a> {
     }
 
     fn build(&self, session_name: Option<&str>, mode: InputMode) -> TabLinePrefix {
-        let mut parts = vec![self.create_zellij_part()];
+        let mut parts = vec![self.create_yinz_part()];
         let mut used_len = parts.first().map_or(0, |p| p.len);
         let mut breadcrumb_range = None;
 
@@ -465,10 +465,10 @@ impl<'a> TabLinePrefixBuilder<'a> {
         Some((parts, (ancestor_start, ancestor_end), total_len))
     }
 
-    fn create_zellij_part(&self) -> LinePart {
+    fn create_yinz_part(&self) -> LinePart {
         // fall back to our own name if the host couldn't tell us its hostname
         let prefix_text = if self.hostname.is_empty() {
-            " Zellij ".to_string()
+            " Yinz ".to_string()
         } else {
             format!(" {} ", self.hostname)
         };

@@ -1,5 +1,5 @@
 use crate::LinePart;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub fn text_copied_hint(copy_destination: CopyDestination) -> LinePart {
     let hint = match copy_destination {

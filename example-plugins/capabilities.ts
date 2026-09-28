@@ -1,5 +1,5 @@
 // Live state, subscriptions, timers and raw commands in one pane.
-import z, { definePlugin, type TabInfo, type TimerHandle } from "zellij:plugin";
+import z, { definePlugin, type TabInfo, type TimerHandle } from "yinz:plugin";
 let running = true,
   selectable = true,
   tick = 1000,

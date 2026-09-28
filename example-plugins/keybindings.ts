@@ -1,6 +1,6 @@
-// zellij plugin --floating -- file:$PWD/example-plugins/keybindings.ts
+// yinz plugin --floating -- file:$PWD/example-plugins/keybindings.ts
 // Fallback keybindings owned by the plugin: Ctrl g runs a handler here, Ctrl n opens a pane.
-import z, { definePlugin } from "zellij:plugin";
+import z, { definePlugin } from "yinz:plugin";
 let presses = 0,
   state = "waiting for the Reconfigure grant";
 export default definePlugin({

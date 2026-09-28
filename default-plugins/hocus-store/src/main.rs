@@ -4,17 +4,17 @@
 //! Background-only plugin. Never rendered.
 //!
 //! These were hocus's own files. They live in the shared data store now, so
-//! anything can reach them — another plugin, or `zellij pipe` from a script:
+//! anything can reach them — another plugin, or `yinz pipe` from a script:
 //!
-//!     zellij pipe --name store_query \
+//!     yinz pipe --name store_query \
 //!         -- '{"op":"todo_list","args":{"project":"work"}}'
-//!     zellij pipe --name store_mutate \
+//!     yinz pipe --name store_mutate \
 //!         -- '{"op":"todo_add","args":{"project":"work","text":"ship it"}}'
-//!     zellij pipe --name store_mutate \
+//!     yinz pipe --name store_mutate \
 //!         -- '{"op":"note_add","args":{"project":"work","title":"why","body":"because"}}'
 //!
 //! Deliberately no `--plugin`: plugin identity is (location, configuration),
-//! and a bare `zellij:hocus-store` url carries none of the alias' `shared true`
+//! and a bare `yinz:hocus-store` url carries none of the alias' `shared true`
 //! — so it would miss the running instance and launch a second store. A
 //! host routes these two untargeted CLI message names to one existing store
 //! instance, regardless of its alias configuration or the number of clients.
@@ -40,11 +40,11 @@ use hocus_proto::store::{Backend, Host};
 use hocus_proto::wire::{self, Mutation, PollReply, Query};
 use hocus_proto::{agents, notes, projects, store, todos};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::DataRowId;
-use zellij_tile::prelude::DataWatchId;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::DataRowId;
+use yinz_tile::prelude::DataWatchId;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::*;
 
 const RETRY_SECONDS: f64 = 5.0;
 
@@ -64,7 +64,7 @@ struct State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         // Builtins already have data-store access; see hocus-agentd.
         let backend = Host::shared();
@@ -77,7 +77,7 @@ impl ZellijPlugin for State {
             return;
         }
         subscribe(&[EventType::Timer]);
-        set_timeout(zellij_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
+        set_timeout(yinz_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
         import_legacy(&backend, &get_plugin_ids().host_id);
         match backend.watch(
             &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
@@ -98,7 +98,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         if let Event::Timer(_) = event {
             self.retry_snapshot(&Host::shared());
-            set_timeout(zellij_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
+            set_timeout(yinz_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
         }
         if let Event::PluginDataChanged { watch_id, rows, .. } = event {
             if self.project_watch_id == Some(watch_id) {
@@ -370,7 +370,7 @@ fn discover_from(
 fn import_legacy(backend: &impl Backend, host_id: &HostId) {
     if !imported(backend, host_id, "projects") {
         let registry = projects::parse_legacy(&legacy_bytes(projects::FILE));
-        let mut mutations: Vec<zellij_tile::prelude::Mutation> =
+        let mut mutations: Vec<yinz_tile::prelude::Mutation> =
             registry.values().map(projects::to_mutation).collect();
         mutations.push(marker(host_id, "projects"));
         let _ = backend.apply(mutations);
@@ -434,7 +434,7 @@ fn import_todos(
                 let mut mutations =
                     todos::import_mutations(&current, root, &level, &new_ids, host_id)?;
                 let mut checkpoint = marker(host_id, &checkpoint);
-                if let zellij_tile::prelude::Mutation::Put { expect_rev, .. } = &mut checkpoint {
+                if let yinz_tile::prelude::Mutation::Put { expect_rev, .. } = &mut checkpoint {
                     *expect_rev = Some(REV_ABSENT);
                 }
                 mutations.push(checkpoint);
@@ -449,7 +449,7 @@ fn import_todos(
 /// The host is carried in from `load` rather than asked for here. `get_plugin_ids` is a host
 /// shim, and this file's tests run natively, where the shims read real stdin — see `store`'s
 /// module doc.
-fn marker(host_id: &HostId, what: &str) -> zellij_tile::prelude::Mutation {
+fn marker(host_id: &HostId, what: &str) -> yinz_tile::prelude::Mutation {
     store::import_marker_mutation(host_id, what)
 }
 
@@ -661,7 +661,7 @@ mod tests {
             panes: Some(panes),
             activity: agents::Activity::new(),
             manual_kinds: BTreeMap::new(),
-            zellij_session_name: String::new().into(),
+            yinz_session_name: String::new().into(),
             repositories,
             tab_projects: assigned,
             focused: None,
@@ -736,9 +736,9 @@ mod tests {
         }
         fn apply(
             &self,
-            _mutations: Vec<zellij_tile::prelude::Mutation>,
-        ) -> Result<ApplyReport, zellij_tile::prelude::WriteError> {
-            Err(zellij_tile::prelude::WriteError::Failed(
+            _mutations: Vec<yinz_tile::prelude::Mutation>,
+        ) -> Result<ApplyReport, yinz_tile::prelude::WriteError> {
+            Err(yinz_tile::prelude::WriteError::Failed(
                 "unreachable".to_owned(),
             ))
         }
@@ -1113,7 +1113,7 @@ mod tests {
             manual_kinds,
             // Nor which session the panes are in: a project is a folder on a machine, and
             // discovery is the same answer whoever asks.
-            zellij_session_name: String::new().into(),
+            yinz_session_name: String::new().into(),
             repositories: BTreeMap::from([(location, repository)]),
             // Only hocus makes these, and only when the user assigns a tab by
             // hand. Discovery does not read them at all.
@@ -1273,12 +1273,12 @@ mod tests {
         assert_eq!(project_names(&backend), vec!["feature"]);
         backend
             .apply(vec![
-                zellij_tile::prelude::Mutation::put("todo")
+                yinz_tile::prelude::Mutation::put("todo")
                     .set("root", worktree)
                     .set("text", "ship it")
                     .set("done", false)
                     .build(),
-                zellij_tile::prelude::Mutation::put("note")
+                yinz_tile::prelude::Mutation::put("note")
                     .set("root", worktree)
                     .set("title", "why")
                     .set("body", "because")

@@ -1,7 +1,0 @@
----
-source: zellij-integration-tests/tests/tabs.rs
-expression: normalized(&grid_snapshot)
----
- Zellij (test)  [0] Tab #1  [1] Tab #2  + 
-$ twotwo█
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

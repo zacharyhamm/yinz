@@ -246,14 +246,14 @@ fn a_paste_into_a_released_box_takes_the_keys_back() {
 #[test]
 fn tab_on_a_blank_box_steps_to_the_panel_tabs() {
     let mut state = ready_state();
-    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
+    state.agents_plugin = Some(yinz_tile::prelude::PluginId::new(7));
 
     assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
 
     assert_eq!(
         state.ring_focus_calls,
         [(
-            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            PaneId::Plugin(yinz_tile::prelude::PluginId::new(7)),
             hocus_proto::vms::STOP_TABS
         )]
     );
@@ -264,7 +264,7 @@ fn tab_on_a_blank_box_steps_to_the_panel_tabs() {
 #[test]
 fn tab_with_a_draft_still_completes() {
     let mut state = ready_state();
-    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
+    state.agents_plugin = Some(yinz_tile::prelude::PluginId::new(7));
     state.input.set_text("/hist".to_owned());
 
     assert!(state.on_key(KeyWithModifier::new(BareKey::Tab)));
@@ -277,7 +277,7 @@ fn tab_with_a_draft_still_completes() {
 #[test]
 fn tab_from_a_released_box_steps_to_the_agent_list() {
     let mut state = ready_state();
-    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
+    state.agents_plugin = Some(yinz_tile::prelude::PluginId::new(7));
     state.input.set_text("/hist".to_owned());
     state.on_key(esc());
 
@@ -286,7 +286,7 @@ fn tab_from_a_released_box_steps_to_the_agent_list() {
     assert_eq!(
         state.ring_focus_calls,
         [(
-            PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+            PaneId::Plugin(yinz_tile::prelude::PluginId::new(7)),
             hocus_proto::vms::STOP_TABS
         )]
     );
@@ -307,7 +307,7 @@ fn tab_from_a_released_box_steps_to_the_agent_list() {
 fn a_tiled_hocus_has_no_ring() {
     let mut state = ready_state();
     state.own_is_floating = Some(false);
-    state.agents_plugin = Some(zellij_tile::prelude::PluginId::new(7));
+    state.agents_plugin = Some(yinz_tile::prelude::PluginId::new(7));
 
     assert!(
         !state.on_key(KeyWithModifier::new(BareKey::Tab)),

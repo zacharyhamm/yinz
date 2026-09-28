@@ -4,48 +4,48 @@ use std::{
     process,
     time::Duration,
 };
-use zellij_types::internal_ids::SessionName;
-use zellij_types::internal_ids::SupervisorId;
-use zellij_types::units::{ElapsedMicros, UnixMicros};
+use yinz_types::internal_ids::SessionName;
+use yinz_types::internal_ids::SupervisorId;
+use yinz_types::units::{ElapsedMicros, UnixMicros};
 
-use zellij_client::{
+use yinz_client::{
     os_input_output::get_client_os_input, start_client as start_client_impl, ClientInfo,
 };
 
 use {
-    zellij_cli::sessions::assert_dead_session, zellij_cli::sessions::assert_session_ne,
-    zellij_cli::sessions::delete_session as delete_session_impl,
-    zellij_cli::sessions::generate_unique_session_name, zellij_cli::sessions::get_active_session,
-    zellij_cli::sessions::print_sessions, zellij_cli::sessions::print_sessions_with_index,
-    zellij_cli::sessions::session_listing_error_message,
-    zellij_cli::sessions::undeliverable_kill_message,
-    zellij_cli::sessions::unresponsive_session_message, zellij_cli::sessions::ActiveSession,
-    zellij_cli::sessions::SessionListing, zellij_ipc::probe::SessionProbe,
-    zellij_session::sessions::get_resurrectable_sessions, zellij_session::sessions::get_sessions,
-    zellij_session::sessions::get_sessions_sorted_by_mtime,
-    zellij_session::sessions::get_sessions_with_status,
-    zellij_session::sessions::kill_session as kill_session_impl,
-    zellij_session::sessions::match_session_name, zellij_session::sessions::resurrection_layout,
-    zellij_session::sessions::session_status, zellij_session::sessions::validate_session_name,
-    zellij_session::sessions::SessionNameMatch,
+    yinz_cli::sessions::assert_dead_session, yinz_cli::sessions::assert_session_ne,
+    yinz_cli::sessions::delete_session as delete_session_impl,
+    yinz_cli::sessions::generate_unique_session_name, yinz_cli::sessions::get_active_session,
+    yinz_cli::sessions::print_sessions, yinz_cli::sessions::print_sessions_with_index,
+    yinz_cli::sessions::session_listing_error_message,
+    yinz_cli::sessions::undeliverable_kill_message,
+    yinz_cli::sessions::unresponsive_session_message, yinz_cli::sessions::ActiveSession,
+    yinz_cli::sessions::SessionListing, yinz_ipc::probe::SessionProbe,
+    yinz_session::sessions::get_resurrectable_sessions, yinz_session::sessions::get_sessions,
+    yinz_session::sessions::get_sessions_sorted_by_mtime,
+    yinz_session::sessions::get_sessions_with_status,
+    yinz_session::sessions::kill_session as kill_session_impl,
+    yinz_session::sessions::match_session_name, yinz_session::sessions::resurrection_layout,
+    yinz_session::sessions::session_status, yinz_session::sessions::validate_session_name,
+    yinz_session::sessions::SessionNameMatch,
 };
 
-use zellij_runtime::consts::session_layout_cache_file_name;
+use yinz_runtime::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
-use zellij_runtime::envs;
-use zellij_server::start_server as start_server_impl;
-use zellij_server_os::get_server_os_input_from_termios_arg;
+use yinz_runtime::envs;
+use yinz_server::start_server as start_server_impl;
+use yinz_server_os::get_server_os_input_from_termios_arg;
 use {
-    zellij_cli::args::CliArgs, zellij_cli::args::Command, zellij_cli::args::SessionCommand,
-    zellij_cli::args::Sessions, zellij_cli::setup::Setup, zellij_config::config::Config,
-    zellij_config::config::ConfigError, zellij_types::data::SessionConnection,
-    zellij_types::input::actions::Action, zellij_types::input::options::Options,
+    yinz_cli::args::CliArgs, yinz_cli::args::Command, yinz_cli::args::SessionCommand,
+    yinz_cli::args::Sessions, yinz_cli::setup::Setup, yinz_config::config::Config,
+    yinz_config::config::ConfigError, yinz_types::data::SessionConnection,
+    yinz_types::input::actions::Action, yinz_types::input::options::Options,
 };
 
-pub(crate) use zellij_cli::sessions::list_sessions;
+pub(crate) use yinz_cli::sessions::list_sessions;
 
-/// Whether a nameless `zellij attach` may ask which session to attach to: only
+/// Whether a nameless `yinz attach` may ask which session to attach to: only
 /// a person at a terminal can answer.
 fn can_pick_a_session() -> bool {
     use std::io::IsTerminal;
@@ -54,21 +54,21 @@ fn can_pick_a_session() -> bool {
         && std::io::stderr().is_terminal()
 }
 
-/// A nameless `zellij attach` with several sessions running: a menu that
+/// A nameless `yinz attach` with several sessions running: a menu that
 /// attaches to the session picked, or switches to it when run from inside a
 /// session.
 fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInfo {
-    use zellij_cli::session_picker::{Outcome, PickerRow};
-    let mut sessions = zellij_cli::sessions::collect_sessions(false).unwrap_or_else(|e| {
+    use yinz_cli::session_picker::{Outcome, PickerRow};
+    let mut sessions = yinz_cli::sessions::collect_sessions(false).unwrap_or_else(|e| {
         eprintln!("Error occurred: {:?}", e);
         process::exit(1);
     });
     if sessions.is_empty() {
-        eprintln!("No active zellij sessions found.");
+        eprintln!("No active yinz sessions found.");
         process::exit(1);
     }
     // Newest first, as the listing this replaces printed them.
-    zellij_cli::sessions::sort_sessions(&mut sessions, true);
+    yinz_cli::sessions::sort_sessions(&mut sessions, true);
     let current = envs::get_session_name().ok();
     let rows = sessions
         .into_iter()
@@ -86,7 +86,7 @@ fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInf
     };
     match crate::session_menu::run(rows, verb) {
         Ok(Outcome::Picked(name)) if current.is_some() => {
-            let switch = zellij_cli::args::CliAction::SwitchSession {
+            let switch = yinz_cli::args::CliAction::SwitchSession {
                 name: name.into_string(),
                 tab_position: None,
                 pane_id: None,
@@ -127,10 +127,10 @@ fn sessions_to_kill(
 }
 
 pub(crate) fn firecracker(
-    command: zellij_cli::args::Firecracker,
+    command: yinz_cli::args::Firecracker,
     config: &Config,
-) -> zellij_runtime::errors::prelude::Result<()> {
-    let provider = zellij_server::firecracker::provider_from_options(
+) -> yinz_runtime::errors::prelude::Result<()> {
+    let provider = yinz_server::firecracker::provider_from_options(
         config.options.firecracker_provider.as_deref(),
         config.options.firecracker_provider_timeout_secs,
     )?;
@@ -178,44 +178,44 @@ fn git_branch(worktree: &Path) -> Option<String> {
 #[derive(serde::Serialize)]
 struct ListedVms<'a> {
     vms: Vec<ListedVm<'a>>,
-    recoveries: &'a [zellij_server::firecracker::RecoveryEntry],
+    recoveries: &'a [yinz_server::firecracker::RecoveryEntry],
 }
 
 #[derive(serde::Serialize)]
 struct ListedVm<'a> {
     #[serde(flatten)]
-    entry: &'a zellij_server::firecracker::VmEntry,
+    entry: &'a yinz_server::firecracker::VmEntry,
     /// Absent, rather than null, when there is no branch to name - the same shape the
     /// entry's own optional fields take, so a reader has one rule for all three.
     #[serde(skip_serializing_if = "Option::is_none")]
     branch: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    panes: Vec<zellij_types::firecracker::Pane>,
+    panes: Vec<yinz_types::firecracker::Pane>,
     #[serde(skip_serializing_if = "Option::is_none")]
     panes_error: Option<String>,
 }
 
 fn live_vm_session_panes(
     session: &str,
-) -> std::result::Result<Vec<zellij_types::data::PaneListEntry>, String> {
+) -> std::result::Result<Vec<yinz_types::data::PaneListEntry>, String> {
     if matches!(
         session_status(&SessionName::from(session)),
         Ok(SessionProbe::Absent)
     ) {
         return Ok(vec![]);
     }
-    zellij_session::firecracker::list_panes(session, Duration::from_secs(3))
+    yinz_session::firecracker::list_panes(session, Duration::from_secs(3))
         .map_err(|error| format!("Live pane list unavailable: {error:#}"))
 }
 
-/// The session a `zellij firecracker` command acts on: `--session` if given, else the
+/// The session a `yinz firecracker` command acts on: `--session` if given, else the
 /// session this command runs inside, else the only active one.
 pub(crate) fn resolve_firecracker_session(
     explicit: Option<String>,
     env_session: Option<SessionName>,
     active: ActiveSession,
-) -> zellij_runtime::errors::prelude::Result<String> {
-    use zellij_runtime::errors::prelude::*;
+) -> yinz_runtime::errors::prelude::Result<String> {
+    use yinz_runtime::errors::prelude::*;
 
     explicit
         .or(env_session.map(SessionName::into_string))
@@ -226,26 +226,24 @@ pub(crate) fn resolve_firecracker_session(
         .context("no session selected; pass --session SESSION")
 }
 
-/// Run one `zellij firecracker` command against `provider`, writing the listing to
+/// Run one `yinz firecracker` command against `provider`, writing the listing to
 /// `out` and each merge warning to `err`.
 ///
 /// `branch_of` is injected rather than called directly so the tests stay off whatever
 /// checkouts happen to exist on the machine running them; production passes
 /// [`git_branch`].
 pub(crate) fn run_firecracker(
-    command: zellij_cli::args::Firecracker,
-    provider: &zellij_server::firecracker::Provider,
+    command: yinz_cli::args::Firecracker,
+    provider: &yinz_server::firecracker::Provider,
     branch_of: &dyn Fn(&Path) -> Option<String>,
-    panes_of: &dyn Fn(&str) -> std::result::Result<Vec<zellij_types::data::PaneListEntry>, String>,
+    panes_of: &dyn Fn(&str) -> std::result::Result<Vec<yinz_types::data::PaneListEntry>, String>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> zellij_runtime::errors::prelude::Result<()> {
-    use zellij_cli::args::Firecracker;
-    use zellij_runtime::errors::prelude::anyhow;
+) -> yinz_runtime::errors::prelude::Result<()> {
+    use yinz_cli::args::Firecracker;
+    use yinz_runtime::errors::prelude::anyhow;
 
-    fn selected_session(
-        explicit: Option<String>,
-    ) -> zellij_runtime::errors::prelude::Result<String> {
+    fn selected_session(explicit: Option<String>) -> yinz_runtime::errors::prelude::Result<String> {
         // The active-session scan is only worth doing without an explicit choice.
         match explicit {
             Some(session) => Ok(session),
@@ -272,7 +270,7 @@ pub(crate) fn run_firecracker(
                         .or_insert_with(|| branch_of(worktree));
                 }
             }
-            let branch_for = |entry: &zellij_server::firecracker::VmEntry| {
+            let branch_for = |entry: &yinz_server::firecracker::VmEntry| {
                 entry
                     .worktree
                     .as_deref()
@@ -303,7 +301,7 @@ pub(crate) fn run_firecracker(
                                     .filter(|pane| !pane.pane_info.is_plugin()
                                         && pane.pane_info.target.firecracker_vm()
                                             == Some(entry.name.as_str()))
-                                    .map(|pane| zellij_types::firecracker::Pane {
+                                    .map(|pane| yinz_types::firecracker::Pane {
                                         id: pane.pane_info.id.legacy_parts().0,
                                         title: pane.pane_info.title.clone(),
                                         agent: pane.pane_info.agent.is_some(),
@@ -429,17 +427,17 @@ pub(crate) fn run_firecracker(
 }
 
 fn close_firecracker_lease(
-    provider: &zellij_server::firecracker::Provider,
+    provider: &yinz_server::firecracker::Provider,
     session: &str,
     name: &str,
-    expected: Option<&zellij_types::firecracker::Identity>,
+    expected: Option<&yinz_types::firecracker::Identity>,
     expected_checkout: Option<(&Path, &str, Option<&str>)>,
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
-) -> zellij_runtime::errors::prelude::Result<()> {
-    use zellij_runtime::errors::prelude::*;
+) -> yinz_runtime::errors::prelude::Result<()> {
+    use yinz_runtime::errors::prelude::*;
     validate_session_name(session).map_err(|error| anyhow!(error))?;
-    zellij_types::command::validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
+    yinz_types::command::validate_firecracker_vm_name(name).map_err(|error| anyhow!(error))?;
     if let Some(expected) = expected {
         expected
             .validate_target(session, name)
@@ -500,7 +498,7 @@ fn close_firecracker_lease(
 pub(crate) fn kill_all_sessions(yes: bool) {
     match sessions_to_kill(get_sessions_with_status) {
         Ok(sessions) if sessions.is_empty() => {
-            eprintln!("No active zellij sessions found.");
+            eprintln!("No active yinz sessions found.");
             process::exit(1);
         },
         Ok(sessions) => {
@@ -536,7 +534,7 @@ pub(crate) fn kill_all_sessions(yes: bool) {
 
 pub(crate) fn delete_all_sessions(yes: bool, force: bool) {
     use std::collections::BTreeMap;
-    use zellij_server::background_jobs::scan_session_list_default_dirs;
+    use yinz_server::background_jobs::scan_session_list_default_dirs;
 
     let (_live_sessions, resurrectable_map) =
         scan_session_list_default_dirs(&SessionName::default(), &[], &BTreeMap::new());
@@ -630,8 +628,8 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
             runtime.block_on(async {
                 tokio::time::timeout(
                     Duration::from_secs(10),
-                    zellij_ipc::ipc::async_kill_session_with_completion(
-                        &zellij_runtime::consts::ZELLIJ_SOCK_DIR.join(name),
+                    yinz_ipc::ipc::async_kill_session_with_completion(
+                        &yinz_runtime::consts::YINZ_SOCK_DIR.join(name),
                     ),
                 )
                 .await
@@ -644,7 +642,7 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
             })
         },
         || {
-            zellij_process::pty_host::cli::terminate_orphans_of_session(name)
+            yinz_process::pty_host::cli::terminate_orphans_of_session(name)
                 .map(|terminated| terminated.len())
                 .map_err(|e| format!("{e:#}"))
         },
@@ -690,7 +688,7 @@ fn get_os_input<OsInputOutput>(
 
 pub(crate) fn start_server(path: PathBuf, debug: bool, termios: Option<String>) {
     // Set instance-wide debug mode
-    zellij_runtime::consts::DEBUG_MODE.set(debug).unwrap();
+    yinz_runtime::consts::DEBUG_MODE.set(debug).unwrap();
     let os_input = get_os_input(|| get_server_os_input_from_termios_arg(termios.as_deref()));
     start_server_impl(Box::new(os_input), path);
 }
@@ -719,20 +717,20 @@ fn find_indexed_session(
     }
 }
 
-/// Client entrypoint for all [`zellij_cli::args::CliAction`]
+/// Client entrypoint for all [`yinz_cli::args::CliAction`]
 ///
 /// Checks session to send the action to and attaches with client
 pub(crate) fn send_action_to_session(
-    mut cli_action: zellij_cli::args::CliAction,
+    mut cli_action: yinz_cli::args::CliAction,
     mut requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
     if let Err(e) = retarget_implicit_agent_report(
         &mut cli_action,
         &mut requested_session_name,
-        std::env::var(zellij_server::pty_host::PANE_REF_ENV_KEY).ok(),
+        std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
         |pane_ref| {
-            zellij_server::pty_host::client::query(&zellij_server::pty_host::protocol::socket_path(
+            yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(
                 pane_ref,
             ))
             .map_err(|e| format!("could not resolve pane {pane_ref}: {e:#}"))
@@ -741,7 +739,7 @@ pub(crate) fn send_action_to_session(
         eprintln!("{e}");
         std::process::exit(1);
     }
-    let named_store_action = matches!(cli_action, zellij_cli::args::CliAction::NotesTodos(_));
+    let named_store_action = matches!(cli_action, yinz_cli::args::CliAction::NotesTodos(_));
     let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
@@ -807,15 +805,14 @@ pub(crate) fn send_action_to_session(
 /// while its supervisor is re-keyed to the adopting session and id. Explicit CLI targets still
 /// win; this only replaces the implicit environment-based route used by agent hooks.
 pub(crate) fn retarget_implicit_agent_report(
-    cli_action: &mut zellij_cli::args::CliAction,
+    cli_action: &mut yinz_cli::args::CliAction,
     requested_session_name: &mut Option<String>,
     pane_ref: Option<String>,
     query: impl FnOnce(
         &SupervisorId,
-    )
-        -> std::result::Result<zellij_server::pty_host::protocol::HostStatus, String>,
+    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
 ) -> std::result::Result<(), String> {
-    let zellij_cli::args::CliAction::AgentReport {
+    let yinz_cli::args::CliAction::AgentReport {
         pane_id: pane_id @ None,
         ..
     } = cli_action
@@ -831,7 +828,7 @@ pub(crate) fn retarget_implicit_agent_report(
     if pane_ref.len() != 12 || !pane_ref.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!(
             "invalid {}",
-            zellij_server::pty_host::PANE_REF_ENV_KEY
+            yinz_server::pty_host::PANE_REF_ENV_KEY
         ));
     }
 
@@ -853,7 +850,7 @@ pub(crate) fn retarget_implicit_agent_report(
     *requested_session_name = Some(session_name.into_string());
     Ok(())
 }
-/// The session a `zellij subscribe` / `zellij events` client attaches to: the one running, the
+/// The session a `yinz subscribe` / `yinz events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
 /// with `purpose` finishing the sentence ("subscribe to", "stream events from").
 fn resolve_session_for_stream(
@@ -911,13 +908,13 @@ fn resolve_session_for_stream(
 }
 
 pub(crate) fn subscribe_to_session(
-    subscribe_cli: zellij_cli::args::SubscribeCli,
+    subscribe_cli: yinz_cli::args::SubscribeCli,
     requested_session_name: Option<String>,
     _config: Option<Config>,
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "subscribe to");
-    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
-    zellij_client::cli_client::start_subscribe_client(
+    let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
+    yinz_client::cli_client::start_subscribe_client(
         Box::new(os_input),
         &session_name,
         subscribe_cli,
@@ -925,25 +922,25 @@ pub(crate) fn subscribe_to_session(
 }
 
 pub(crate) fn stream_session_events(
-    events_cli: zellij_cli::args::EventsCli,
+    events_cli: yinz_cli::args::EventsCli,
     requested_session_name: Option<String>,
     _config: Option<Config>,
 ) {
     let session_name = resolve_session_for_stream(requested_session_name, "stream events from");
-    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
-    zellij_client::cli_client::start_events_client(Box::new(os_input), &session_name, events_cli);
+    let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
+    yinz_client::cli_client::start_events_client(Box::new(os_input), &session_name, events_cli);
 }
 
 fn attach_with_cli_client(
-    cli_action: zellij_cli::args::CliAction,
+    cli_action: yinz_cli::args::CliAction,
     session_name: &SessionName,
     config: Option<Config>,
 ) {
-    if let zellij_cli::args::CliAction::NotesTodos(command) = &cli_action {
+    if let yinz_cli::args::CliAction::NotesTodos(command) = &cli_action {
         let result = command
             .action(&mut std::io::stdin())
             .map_err(anyhow::Error::msg)
-            .and_then(|action| zellij_client::store_client::request(session_name, action));
+            .and_then(|action| yinz_client::store_client::request(session_name, action));
         match result {
             Ok(data) => {
                 println!("{data}");
@@ -955,11 +952,11 @@ fn attach_with_cli_client(
             },
         }
     }
-    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
+    let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
     let get_current_dir = || std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match zellij_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
+    match yinz_cli::actions::actions_from_cli(cli_action, Box::new(get_current_dir), config) {
         Ok(actions) => {
-            let exit_status = zellij_client::cli_client::start_cli_client(
+            let exit_status = yinz_client::cli_client::start_cli_client(
                 Box::new(os_input),
                 session_name,
                 actions,
@@ -981,7 +978,7 @@ fn attach_with_session_index(config_options: Options, index: usize, create: bool
             if create {
                 create_new_client()
             } else {
-                eprintln!("No active zellij sessions found.");
+                eprintln!("No active yinz sessions found.");
                 process::exit(1);
             }
         },
@@ -1058,7 +1055,7 @@ fn attach_with_session_name(
         None => match get_active_session() {
             ActiveSession::None if create => create_new_client(),
             ActiveSession::None => {
-                eprintln!("No active zellij sessions found.");
+                eprintln!("No active yinz sessions found.");
                 process::exit(1);
             },
             ActiveSession::One(session_name) => ClientInfo::Attach(session_name, config_options),
@@ -1160,7 +1157,7 @@ pub(crate) fn start_client(opts: CliArgs) {
         {
             let config_options = match options.as_deref() {
                 Some(SessionCommand::Options(o)) => {
-                    zellij_cli::options::merge_from_cli(&config_options, o.to_owned().into())
+                    yinz_cli::options::merge_from_cli(&config_options, o.to_owned().into())
                 },
                 None => config_options,
             };
@@ -1268,12 +1265,12 @@ pub(crate) fn start_client(opts: CliArgs) {
                         // This prevents the same type of recursion as above, only that here we
                         // don't get the command to "attach", but to start a new session instead.
                         // This occurs for example when declaring the session name inside a layout
-                        // file and then, from within this session, trying to open a new zellij
+                        // file and then, from within this session, trying to open a new yinz
                         // session with the same layout. This causes an infinite recursion in the
-                        // `zellij_pty::terminal_bytes::listen` task, flooding the server and
+                        // `yinz_pty::terminal_bytes::listen` task, flooding the server and
                         // clients with infinite `Render` requests.
                         if *session_name == val {
-                            eprintln!("You are trying to attach to the current session (\"{}\"). Zellij does not support nesting a session in itself.", session_name);
+                            eprintln!("You are trying to attach to the current session (\"{}\"). Yinz does not support nesting a session in itself.", session_name);
                             process::exit(1);
                         }
                     }
@@ -1412,7 +1409,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
         },
         None => match get_active_session() {
             ActiveSession::None => {
-                eprintln!("No active zellij sessions found.");
+                eprintln!("No active yinz sessions found.");
                 process::exit(1);
             },
             ActiveSession::One(name) => ClientInfo::Watch(name, config_options.clone()),
@@ -1459,9 +1456,9 @@ fn reload_config_from_disk(
 }
 
 #[cfg(unix)]
-pub(crate) fn pty_hosts(command: zellij_cli::args::PtyHosts) -> anyhow::Result<()> {
-    use zellij_cli::args::PtyHosts as PtyHostsCli;
-    use zellij_server::pty_host::cli;
+pub(crate) fn pty_hosts(command: yinz_cli::args::PtyHosts) -> anyhow::Result<()> {
+    use yinz_cli::args::PtyHosts as PtyHostsCli;
+    use yinz_server::pty_host::cli;
     match command {
         PtyHostsCli::List { json, host } => match host {
             Some(host) => cli::remote_list(&host, json),
@@ -1475,19 +1472,19 @@ pub(crate) fn pty_hosts(command: zellij_cli::args::PtyHosts) -> anyhow::Result<(
     }
 }
 
-/// `zellij pty-host adopt` — put a surviving pane back on screen.
+/// `yinz pty-host adopt` — put a surviving pane back on screen.
 ///
 /// Resolves the supervisor here, where the failures are legible without a
 /// session, then hands the pane to one as an ordinary CLI action.
 #[cfg(unix)]
 pub(crate) fn pty_host_adopt(
-    command: zellij_cli::args::PtyHosts,
+    command: yinz_cli::args::PtyHosts,
     requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
-    use zellij_cli::args::PtyHosts as PtyHostsCli;
-    use zellij_server::pty_host::cli;
-    use zellij_types::input::actions::warp_placement;
+    use yinz_cli::args::PtyHosts as PtyHostsCli;
+    use yinz_server::pty_host::cli;
+    use yinz_types::input::actions::warp_placement;
 
     let PtyHostsCli::Adopt {
         host_id,
@@ -1516,8 +1513,8 @@ pub(crate) fn pty_host_adopt(
         },
     };
 
-    let os_input = get_os_input(zellij_client::os_input_output::get_cli_client_os_input);
-    let exit_status = zellij_client::cli_client::start_cli_client(
+    let os_input = get_os_input(yinz_client::os_input_output::get_cli_client_os_input);
+    let exit_status = yinz_client::cli_client::start_cli_client(
         Box::new(os_input),
         &SessionName::new(session),
         vec![Action::AdoptPane {
@@ -1529,14 +1526,14 @@ pub(crate) fn pty_host_adopt(
     std::process::exit(exit_status);
 }
 
-/// `zellij plugins ...`: the plugin folder is the session's - `user_plugin_dir` in the config,
+/// `yinz plugins ...`: the plugin folder is the session's - `user_plugin_dir` in the config,
 /// or `<config dir>/plugins` - so what is written here is what `plugin_reload` and a layout's
 /// `file:` location find.
-pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
-    use zellij_cli::args::Plugins as PluginsCli;
-    let config = zellij_cli::setup::load_config(opts).ok();
+pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
+    use yinz_cli::args::Plugins as PluginsCli;
+    let config = yinz_cli::setup::load_config(opts).ok();
     let plugin_dir = || {
-        zellij_runtime::home::user_plugin_dir_or_default(
+        yinz_runtime::home::user_plugin_dir_or_default(
             config
                 .as_ref()
                 .and_then(|config| config.options.user_plugin_dir.clone()),
@@ -1558,7 +1555,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
         json,
     } = command
     {
-        let options = zellij_types::authoring::PluginTestOptions {
+        let options = yinz_types::authoring::PluginTestOptions {
             kind: serde_json::from_value(serde_json::Value::String(kind))?,
             filter,
             timeout_ms,
@@ -1569,11 +1566,11 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             .into_iter()
             .collect::<std::io::Result<Vec<_>>>()?;
         let report = match (name, file) {
-            (_, Some(path)) => zellij_server::plugin_testing::run(&path, &options, None, &cancel)?,
+            (_, Some(path)) => yinz_server::plugin_testing::run(&path, &options, None, &cancel)?,
             (Some(name), None) => {
                 let directory = plugin_dir().ok();
                 let directory = directory.as_deref().unwrap_or(std::path::Path::new(""));
-                zellij_server::plugin_testing::run_named(directory, &name, &options, None, &cancel)?
+                yinz_server::plugin_testing::run_named(directory, &name, &options, None, &cancel)?
             },
             _ => anyhow::bail!("give a plugin name or --file"),
         };
@@ -1608,7 +1605,7 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             no_check,
         } => {
             let source = read_source(file.as_deref())?;
-            let written = zellij_server::plugin_authoring::write(
+            let written = yinz_server::plugin_authoring::write(
                 &plugin_dir()?,
                 &name,
                 &source,
@@ -1623,10 +1620,10 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             // warning is for the person watching. Never a refusal - see `plugin_authoring::lint`.
             // The write already checked syntax, so only the warnings are wanted here.
             print_plugin_findings(
-                &zellij_server::plugin_authoring::check_source(
+                &yinz_server::plugin_authoring::check_source(
                     &written.path,
                     &source,
-                    zellij_types::authoring::PluginCheckMode::Syntax,
+                    yinz_types::authoring::PluginCheckMode::Syntax,
                 )
                 .warnings,
             );
@@ -1636,12 +1633,12 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+                    yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                         .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            let report = zellij_server::plugin_authoring::check_plugin_report(&path)?;
+            let report = yinz_server::plugin_authoring::check_plugin_report(&path)?;
             println!("{} checks successfully", path.display());
             print_plugin_findings(&report.warnings);
             Ok(())
@@ -1650,23 +1647,23 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+                    yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                         .map_err(|e| anyhow::anyhow!(e))?
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
-            zellij_server::plugin_authoring::format_file(&path, check)?;
+            yinz_server::plugin_authoring::format_file(&path, check)?;
             println!("{} is formatted", path.display());
             Ok(())
         },
         PluginsCli::Reload { name } => {
-            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+            let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
             if !path.is_file() {
                 anyhow::bail!("{} is not there; write it first", path.display());
             }
             send_action_to_session(
-                zellij_cli::args::CliAction::StartOrReloadPlugin {
+                yinz_cli::args::CliAction::StartOrReloadPlugin {
                     url: format!("file:{}", path.display()),
                     configuration: None,
                 },
@@ -1676,12 +1673,12 @@ pub(crate) fn plugins(command: zellij_cli::args::Plugins, opts: &CliArgs) -> any
             Ok(())
         },
         PluginsCli::Log { name, lines } => {
-            let path = zellij_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+            let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
-            let log_file = zellij_runtime::consts::ZELLIJ_TMP_LOG_FILE.clone();
+            let log_file = yinz_runtime::consts::YINZ_TMP_LOG_FILE.clone();
             print!(
                 "{}",
-                zellij_server::plugin_authoring::log_tail(&log_file, &path, lines)?
+                yinz_server::plugin_authoring::log_tail(&log_file, &path, lines)?
             );
             Ok(())
         },
@@ -1712,11 +1709,11 @@ fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
 }
 
 pub(crate) fn recordings(
-    command: zellij_cli::args::Recordings,
+    command: yinz_cli::args::Recordings,
     data_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    use zellij_cli::args::Recordings as RecordingsCli;
-    let data_access = zellij_storage::data_access::DataAccess::sqlite(&data_dir);
+    use yinz_cli::args::Recordings as RecordingsCli;
+    let data_access = yinz_storage::data_access::DataAccess::sqlite(&data_dir);
     match command {
         RecordingsCli::List { json } => {
             let summaries = data_access.recordings().list()?;
@@ -1769,7 +1766,7 @@ pub(crate) fn recordings(
 }
 
 pub(crate) fn format_compaction(
-    result: &zellij_storage::session_recording::StoreCompaction,
+    result: &yinz_storage::session_recording::StoreCompaction,
 ) -> String {
     let moved = result.compaction;
     let mut out = if moved.events == 0 {
@@ -1805,9 +1802,7 @@ fn format_bytes(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
-pub(crate) fn format_search_results(
-    hits: &[zellij_storage::session_recording::SearchHit],
-) -> String {
+pub(crate) fn format_search_results(hits: &[yinz_storage::session_recording::SearchHit]) -> String {
     if hits.is_empty() {
         return "No matches.\n".to_string();
     }
@@ -1841,7 +1836,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 }
 
 pub(crate) fn format_recordings_list(
-    summaries: &[zellij_storage::session_recording::RecordingSummary],
+    summaries: &[yinz_storage::session_recording::RecordingSummary],
 ) -> String {
     // Header as specified in plan
     let mut out = String::new();
@@ -1899,14 +1894,14 @@ mod tests {
         sessions_to_delete, sessions_to_kill,
     };
     use std::{cell::Cell, io, time::Duration};
-    use zellij_cli::args::CliAction;
-    use zellij_server::pty_host::protocol::HostStatus;
+    use yinz_cli::args::CliAction;
+    use yinz_server::pty_host::protocol::HostStatus;
     use {
-        zellij_cli::sessions::session_listing_error_message,
-        zellij_cli::sessions::unresponsive_session_message, zellij_ipc::probe::SessionProbe,
+        yinz_cli::sessions::session_listing_error_message,
+        yinz_cli::sessions::unresponsive_session_message, yinz_ipc::probe::SessionProbe,
     };
 
-    fn session(name: &str) -> (zellij_types::internal_ids::SessionName, Duration) {
+    fn session(name: &str) -> (yinz_types::internal_ids::SessionName, Duration) {
         (name.into(), Duration::default())
     }
 
@@ -1927,14 +1922,14 @@ mod tests {
         HostStatus {
             supports_relabel: true,
             child_group_terminated: false,
-            host_id: zellij_types::internal_ids::SupervisorId::new("abcdef012345"),
+            host_id: yinz_types::internal_ids::SupervisorId::new("abcdef012345"),
             session_name: Some("after-warp".to_owned().into()),
             terminal_id: 42,
             command: "codex".to_owned(),
             cwd: Some("/work".into()),
-            child_pid: Some(zellij_types::internal_ids::ProcessId::new(10)),
-            host_pid: zellij_types::internal_ids::ProcessId::new(11),
-            started_at_unix: zellij_types::units::UnixSeconds::new(0),
+            child_pid: Some(yinz_types::internal_ids::ProcessId::new(10)),
+            host_pid: yinz_types::internal_ids::ProcessId::new(11),
+            started_at_unix: yinz_types::units::UnixSeconds::new(0),
             attached,
             child_exit_status: None,
             buffered_bytes: 0,
@@ -2096,7 +2091,7 @@ mod tests {
     fn only_an_absent_named_session_allows_creation() {
         let creation_allowed = |probe| {
             named_session_exists_or_error(
-                &zellij_types::internal_ids::SessionName::new("named"),
+                &yinz_types::internal_ids::SessionName::new("named"),
                 probe,
             )
             .map(|session_exists| !session_exists)
@@ -2127,10 +2122,10 @@ mod firecracker_command_tests {
         time::Duration,
     };
     use tempfile::TempDir;
-    use zellij_cli::args::Firecracker;
-    use zellij_cli::sessions::ActiveSession;
-    use zellij_server::firecracker::Provider;
-    use zellij_test_support::write_warm_script;
+    use yinz_cli::args::Firecracker;
+    use yinz_cli::sessions::ActiveSession;
+    use yinz_server::firecracker::Provider;
+    use yinz_test_support::write_warm_script;
 
     #[test]
     fn branch_lookup_stays_at_the_supplied_worktree_root() {
@@ -2298,7 +2293,7 @@ mod firecracker_command_tests {
 
     #[test]
     fn list_json_reads_each_sessions_live_panes_once_and_matches_vm_names() {
-        use zellij_types::data::{PaneInfo, PaneListEntry};
+        use yinz_types::data::{PaneInfo, PaneListEntry};
         let (_dir, provider) = stub_provider(
             r#"{"version":2,"vms":[{"session":"s","name":"api","state":"running"},{"session":"s","name":"other","state":"running"}]}"#,
         );
@@ -2309,7 +2304,7 @@ mod firecracker_command_tests {
             Ok(vec![PaneListEntry {
                 pane_info: PaneInfo {
                     title: "API shell".into(),
-                    target: zellij_types::command::PaneTarget::Firecracker {
+                    target: yinz_types::command::PaneTarget::Firecracker {
                         vm: "api".into(),
                         image: None,
                         worktree: None,
@@ -2477,7 +2472,7 @@ mod firecracker_command_tests {
 
     #[test]
     fn guarded_vm_dispatch_sends_the_confirmed_identity_unchanged() {
-        let expected: zellij_types::firecracker::Identity = serde_json::from_value(json!({
+        let expected: yinz_types::firecracker::Identity = serde_json::from_value(json!({
             "session": "work", "name": "review", "vm_id": "/vm/socket",
             "generation": "42:100", "worktree": "/repo with spaces",
         }))
@@ -2511,7 +2506,7 @@ mod firecracker_command_tests {
 
     #[test]
     fn close_refuses_incomplete_identities_before_any_pane_close_request() {
-        let complete: zellij_types::firecracker::VmEntry = serde_json::from_value(json!({
+        let complete: yinz_types::firecracker::VmEntry = serde_json::from_value(json!({
             "session": "work", "name": "review", "state": "running", "vm_id": "/vm/socket",
             "metrics": {"generation": "42:100", "source": "process", "sample_time_us": 0},
         }))
@@ -2563,7 +2558,7 @@ mod firecracker_command_tests {
 
     #[test]
     fn close_compares_every_confirmed_identity_field_before_closing_panes() {
-        let lease: zellij_types::firecracker::VmEntry = serde_json::from_value(json!({
+        let lease: yinz_types::firecracker::VmEntry = serde_json::from_value(json!({
             "session": "work", "name": "review", "state": "running", "vm_id": "/vm/socket",
             "metrics": {"generation": "42:100", "source": "process", "sample_time_us": 0},
             "worktree": "/repo",
@@ -2648,7 +2643,7 @@ mod firecracker_command_tests {
             },
             "worktree": "/repo/topic",
         });
-        let expected: zellij_types::firecracker::Identity = serde_json::from_value(json!({
+        let expected: yinz_types::firecracker::Identity = serde_json::from_value(json!({
             "session": "work", "name": "review", "vm_id": "/vm/socket",
             "generation": "42:100", "worktree": "/repo/topic",
         }))

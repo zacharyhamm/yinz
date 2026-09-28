@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }
 hocus-proto = { path = "../hocus-proto" }
 unicode-width = { workspace = true }
 

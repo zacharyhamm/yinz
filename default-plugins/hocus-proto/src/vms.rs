@@ -1,6 +1,6 @@
 //! The management panel's direct requests and host snapshots. No conversation state.
 use serde::{Deserialize, Serialize};
-use zellij_types::firecracker::{Metrics, RecoveryEntry, VmEntry};
+use yinz_types::firecracker::{Metrics, RecoveryEntry, VmEntry};
 
 pub const REQUEST: &str = "vm_panel_request";
 pub const RESULT: &str = "vm_panel_result";
@@ -16,22 +16,22 @@ pub const STOP_TABS: &str = "management_tabs";
 /// reply is proof the request it is waiting on is alive, not that anything went wrong.
 pub const BUSY: &str = "Another VM request is still running";
 
-pub use zellij_types::firecracker::Identity;
+pub use yinz_types::firecracker::Identity;
 /// How long the provider keeps a retained disk before deleting it, so the panel can say when
 /// that happens from the same number the provider uses.
-pub use zellij_types::firecracker::RECOVERY_RETENTION_SECS;
+pub use yinz_types::firecracker::RECOVERY_RETENTION_SECS;
 
 /// Only a unique builtin overlay with a pane can own the management companion.
 /// Suppressed panes still own it; visibility does not change plugin identity.
 pub fn panel_owner(
-    session: &zellij_types::data::SessionInfo,
-) -> Option<zellij_types::internal_ids::PluginId> {
-    use zellij_types::data::PaneId;
+    session: &yinz_types::data::SessionInfo,
+) -> Option<yinz_types::internal_ids::PluginId> {
+    use yinz_types::data::PaneId;
     if !session.is_current_session {
         return None;
     }
     let mut owners = session.plugins.iter().filter_map(|(id, plugin)| {
-        (plugin.location == "zellij:hocus"
+        (plugin.location == "yinz:hocus"
             && plugin.configuration.get("overlay").map(String::as_str) == Some("true")
             && session
                 .panes
@@ -68,7 +68,7 @@ pub struct Request {
     pub operation: Operation,
     pub target: Option<Identity>,
 }
-pub use zellij_types::firecracker::Pane;
+pub use yinz_types::firecracker::Pane;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lease {
     #[serde(flatten)]

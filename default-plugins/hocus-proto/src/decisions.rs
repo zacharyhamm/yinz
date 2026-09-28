@@ -13,7 +13,7 @@
 //! ```no_run
 //! use std::collections::BTreeMap;
 //! use hocus_proto::decisions::{self, Endpoint, Input, Question, Request};
-//! use zellij_tile::prelude::{web_request, HttpVerb};
+//! use yinz_tile::prelude::{web_request, HttpVerb};
 //!
 //! # fn prepare(kdl: &BTreeMap<String, String>, env: &BTreeMap<String, String>) -> Result<(), String> {
 //! if let Some(endpoint) = Endpoint::resolve(kdl, env)? {

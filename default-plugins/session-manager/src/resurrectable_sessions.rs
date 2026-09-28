@@ -1,11 +1,11 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use humantime::format_duration;
-use zellij_tile::prelude::SessionName;
+use yinz_tile::prelude::SessionName;
 
 use std::time::Duration;
 
-use zellij_tile::shim::*;
+use yinz_tile::shim::*;
 
 #[derive(Debug, Default)]
 pub struct ResurrectableSessions {

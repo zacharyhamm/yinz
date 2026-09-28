@@ -5,7 +5,7 @@ use std::path::PathBuf;
 xflags::xflags! {
     src "./src/flags.rs"
 
-    /// Custom build commands for zellij
+    /// Custom build commands for yinz
     cmd xtask {
         /// Deprecation warning. Compatibility to transition from `cargo make`.
         cmd deprecated {
@@ -49,14 +49,14 @@ xflags::xflags! {
             optional -c, --clean
         }
 
-        /// Generate a runnable `zellij` executable and install its builtin plugins
+        /// Generate a runnable `yinz` executable and install its builtin plugins
         cmd install {
             required destination: PathBuf
             /// Cargo profile to build with (e.g. `dev` for a fast, unoptimized install).
             /// Defaults to `release`.
             optional --profile name: String
             /// Where to put the builtin plugin wasm. Defaults to what the built binary
-            /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/zellij/builtins/<version>`
+            /// reports: `<data dir>/builtins/<version>`, or `$PREFIX/share/yinz/builtins/<version>`
             /// when PREFIX is set. Nothing is pruned under an explicit directory.
             optional --builtins-dir path: PathBuf
             /// Install the binary and authoring tools; skip Wasm builtins
@@ -67,12 +67,12 @@ xflags::xflags! {
             repeated args: OsString
         }
 
-        /// Run debug version of zellij
+        /// Run debug version of yinz
         cmd run {
             /// Skip the plugin build: run against the debug plugins already under target/,
             /// with a scratch data dir (target/dev-data) instead of the real one.
             optional --quick-run
-            /// Take plugins from here, skip building plugins. Passed to zellij verbatim
+            /// Take plugins from here, skip building plugins. Passed to yinz verbatim
             optional --data-dir path: PathBuf
             /// Arguments to pass after `cargo run --`
             repeated args: OsString

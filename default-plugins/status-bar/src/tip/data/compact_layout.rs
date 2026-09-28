@@ -6,8 +6,8 @@ use ansi_term::{
 
 use crate::LinePart;
 use crate::{action_key, style_key_with_modifier};
-use zellij_tile::prelude::{actions::Action, *};
-use zellij_tile_utils::palette_match;
+use yinz_tile::prelude::{actions::Action, *};
+use yinz_tile_utils::palette_match;
 
 macro_rules! strings {
     ($ANSIStrings:expr) => {{
@@ -23,17 +23,14 @@ macro_rules! strings {
 }
 
 pub fn compact_layout_full(help: &ModeInfo) -> LinePart {
-    // Tip: UI taking up too much space? Start Zellij with
-    // zellij -l compact or remove pane frames with Ctrl + <p> + <z>
+    // Tip: UI taking up too much space? Start Yinz with
+    // yinz -l compact or remove pane frames with Ctrl + <p> + <z>
     let green_color = palette_match!(help.style.colors.text_unselected.emphasis_0);
 
     let mut bits = vec![
         Style::new().paint(" Tip: "),
-        Style::new().paint("UI taking up too much space? Start Zellij with "),
-        Style::new()
-            .fg(green_color)
-            .bold()
-            .paint("zellij -l compact"),
+        Style::new().paint("UI taking up too much space? Start Yinz with "),
+        Style::new().fg(green_color).bold().paint("yinz -l compact"),
         Style::new().paint(" or remove pane frames with "),
     ];
     bits.extend(add_keybinds(help));
@@ -41,17 +38,14 @@ pub fn compact_layout_full(help: &ModeInfo) -> LinePart {
 }
 
 pub fn compact_layout_medium(help: &ModeInfo) -> LinePart {
-    // Tip: To save screen space, start Zellij with
-    // zellij -l compact or remove pane frames with Ctrl + <p> + <z>
+    // Tip: To save screen space, start Yinz with
+    // yinz -l compact or remove pane frames with Ctrl + <p> + <z>
     let green_color = palette_match!(help.style.colors.text_unselected.emphasis_0);
 
     let mut bits = vec![
         Style::new().paint(" Tip: "),
-        Style::new().paint("To save screen space, start Zellij with "),
-        Style::new()
-            .fg(green_color)
-            .bold()
-            .paint("zellij -l compact"),
+        Style::new().paint("To save screen space, start Yinz with "),
+        Style::new().fg(green_color).bold().paint("yinz -l compact"),
         Style::new().paint(" or remove frames with "),
     ];
     bits.extend(add_keybinds(help));
@@ -59,16 +53,13 @@ pub fn compact_layout_medium(help: &ModeInfo) -> LinePart {
 }
 
 pub fn compact_layout_short(help: &ModeInfo) -> LinePart {
-    // Save screen space, start Zellij with
-    // zellij -l compact or remove pane frames with Ctrl + <p> + <z>
+    // Save screen space, start Yinz with
+    // yinz -l compact or remove pane frames with Ctrl + <p> + <z>
     let green_color = palette_match!(help.style.colors.text_unselected.emphasis_0);
 
     let mut bits = vec![
         Style::new().paint(" Save screen space, start with: "),
-        Style::new()
-            .fg(green_color)
-            .bold()
-            .paint("zellij -l compact"),
+        Style::new().fg(green_color).bold().paint("yinz -l compact"),
         Style::new().paint(" or remove frames with "),
     ];
     bits.extend(add_keybinds(help));

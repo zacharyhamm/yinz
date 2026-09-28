@@ -7,11 +7,11 @@ use std::collections::BTreeMap;
 #[allow(unused_imports)]
 use std::io::prelude::*;
 #[allow(unused_imports)] // Action is used in non-test code paths (run_action call)
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::DataWatchId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::DataWatchId;
+use yinz_tile::prelude::*;
 
-// This is a fixture plugin used only for tests in Zellij
+// This is a fixture plugin used only for tests in Yinz
 // it is not (and should not!) be included in the mainline executable
 // it's included here for convenience so that it will be built by the CI
 
@@ -31,7 +31,7 @@ struct TestWorker {
     number_of_messages_received: usize,
 }
 
-impl<'de> ZellijWorker<'de> for TestWorker {
+impl<'de> YinzWorker<'de> for TestWorker {
     fn on_message(&mut self, message: String, payload: String) {
         if message == "ping" {
             self.number_of_messages_received += 1;
@@ -56,7 +56,7 @@ register_plugin!(State);
 register_worker!(TestWorker, test_worker, TEST_WORKER);
 
 #[cfg(target_family = "wasm")]
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         request_permission(&[
             PermissionType::ChangeApplicationState,
@@ -211,7 +211,7 @@ impl ZellijPlugin for State {
                 BareKey::Char('5') if key.has_no_modifiers() => toggle_active_tab_sync(),
                 BareKey::Char('6') if key.has_no_modifiers() => close_focused_tab(),
                 BareKey::Char('7') if key.has_no_modifiers() => undo_rename_tab(),
-                BareKey::Char('8') if key.has_no_modifiers() => quit_zellij(),
+                BareKey::Char('8') if key.has_no_modifiers() => quit_yinz(),
                 BareKey::Char('9') if key.has_no_modifiers() => new_pane(),
                 BareKey::Char('0') if key.has_no_modifiers() => toggle_floating_panes(None),
                 BareKey::Char('a') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
@@ -317,16 +317,16 @@ impl ZellijPlugin for State {
                     show_self(should_float_if_hidden);
                 },
                 BareKey::Char('r') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    close_terminal_pane(zellij_tile::prelude::TerminalId::new(1));
+                    close_terminal_pane(yinz_tile::prelude::TerminalId::new(1));
                 },
                 BareKey::Char('s') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
-                    close_plugin_pane(zellij_tile::prelude::PluginId::new(1));
+                    close_plugin_pane(yinz_tile::prelude::PluginId::new(1));
                 },
                 BareKey::Char('t') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     let should_float_if_hidden = false;
                     let should_be_in_place_if_hidden = false;
                     focus_terminal_pane(
-                        zellij_tile::prelude::TerminalId::new(1),
+                        yinz_tile::prelude::TerminalId::new(1),
                         should_float_if_hidden,
                         should_be_in_place_if_hidden,
                     );
@@ -335,20 +335,20 @@ impl ZellijPlugin for State {
                     let should_float_if_hidden = false;
                     let should_be_in_place_if_hidden = false;
                     focus_plugin_pane(
-                        zellij_tile::prelude::PluginId::new(1),
+                        yinz_tile::prelude::PluginId::new(1),
                         should_float_if_hidden,
                         should_be_in_place_if_hidden,
                     );
                 },
                 BareKey::Char('v') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     rename_terminal_pane(
-                        zellij_tile::prelude::TerminalId::new(1),
+                        yinz_tile::prelude::TerminalId::new(1),
                         "new terminal_pane_name",
                     );
                 },
                 BareKey::Char('w') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
                     rename_plugin_pane(
-                        zellij_tile::prelude::PluginId::new(1),
+                        yinz_tile::prelude::PluginId::new(1),
                         "new plugin_pane_name",
                     );
                 },
@@ -434,11 +434,11 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('a') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    hide_pane_with_id(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)));
+                    hide_pane_with_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)));
                 },
                 BareKey::Char('b') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     show_pane_with_id(
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)),
                         true,
                         true,
                     );
@@ -454,85 +454,83 @@ impl ZellijPlugin for State {
                     );
                 },
                 BareKey::Char('d') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    rerun_command_pane(zellij_tile::prelude::TerminalId::new(1));
+                    rerun_command_pane(yinz_tile::prelude::TerminalId::new(1));
                 },
                 BareKey::Char('e') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     resize_pane_with_id(
                         ResizeStrategy::new(Resize::Increase, Some(Direction::Left)),
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2)),
                     );
                 },
                 BareKey::Char('f') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     edit_scrollback_for_pane_with_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('g') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     write_to_pane_id(
                         vec![102, 111, 111],
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2)),
                     );
                 },
                 BareKey::Char('h') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     write_chars_to_pane_id(
                         "foo\n",
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2)),
                     );
                 },
                 BareKey::Char('i') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    move_pane_with_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
-                    ));
+                    move_pane_with_pane_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
+                        2,
+                    )));
                 },
                 BareKey::Char('j') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     move_pane_with_pane_id_in_direction(
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2)),
                         Direction::Left,
                     );
                 },
                 BareKey::Char('k') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     clear_screen_for_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('l') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_up_in_pane_id(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+                    scroll_up_in_pane_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2)));
+                },
+                BareKey::Char('m') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
+                    scroll_down_in_pane_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
                         2,
                     )));
                 },
-                BareKey::Char('m') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    scroll_down_in_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
-                    ));
-                },
                 BareKey::Char('n') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     scroll_to_top_in_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('o') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     scroll_to_bottom_in_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('p') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     page_scroll_up_in_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('q') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     page_scroll_down_in_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('r') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     toggle_pane_id_fullscreen(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('s') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     toggle_pane_embed_or_eject_for_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(2),
+                        yinz_tile::prelude::TerminalId::new(2),
                     ));
                 },
                 BareKey::Char('t') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
@@ -542,8 +540,8 @@ impl ZellijPlugin for State {
                     let should_change_focus_to_new_tab = true;
                     break_panes_to_new_tab(
                         &[
-                            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
-                            PaneId::Plugin(zellij_tile::prelude::PluginId::new(2)),
+                            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)),
+                            PaneId::Plugin(yinz_tile::prelude::PluginId::new(2)),
                         ],
                         Some("new_tab_name".to_owned()),
                         should_change_focus_to_new_tab,
@@ -553,22 +551,22 @@ impl ZellijPlugin for State {
                     let should_change_focus_to_target_tab = true;
                     break_panes_to_tab_with_index(
                         &[
-                            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
-                            PaneId::Plugin(zellij_tile::prelude::PluginId::new(2)),
+                            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)),
+                            PaneId::Plugin(yinz_tile::prelude::PluginId::new(2)),
                         ],
                         TabPosition::new(2),
                         should_change_focus_to_target_tab,
                     );
                 },
                 BareKey::Char('w') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
-                    reload_plugin_with_id(zellij_tile::prelude::PluginId::new(0));
+                    reload_plugin_with_id(yinz_tile::prelude::PluginId::new(0));
                 },
                 BareKey::Char('x') if key.has_only_modifiers(&[KeyModifier::Alt]) => {
                     let config = BTreeMap::new();
                     let load_in_background = true;
                     let skip_plugin_cache = true;
                     load_new_plugin(
-                        "zellij:OWN_URL",
+                        "yinz:OWN_URL",
                         config,
                         load_in_background,
                         skip_plugin_cache,
@@ -699,15 +697,15 @@ impl ZellijPlugin for State {
                 },
                 BareKey::Char('e') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test send_sigint_to_pane_id
-                    send_sigint_to_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(1),
-                    ));
+                    send_sigint_to_pane_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
+                        1,
+                    )));
                 },
                 BareKey::Char('f') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test send_sigkill_to_pane_id
-                    send_sigkill_to_pane_id(PaneId::Terminal(
-                        zellij_tile::prelude::TerminalId::new(1),
-                    ));
+                    send_sigkill_to_pane_id(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
+                        1,
+                    )));
                 },
                 BareKey::Char('g') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test set_pane_regex_highlights
@@ -723,15 +721,13 @@ impl ZellijPlugin for State {
                         tooltip_text: None,
                     }];
                     set_pane_regex_highlights(
-                        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
+                        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)),
                         highlights,
                     );
                 },
                 BareKey::Char('h') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     // Test clear_pane_highlights
-                    clear_pane_highlights(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
-                        1,
-                    )));
+                    clear_pane_highlights(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)));
                 },
                 BareKey::Char('i') if key.has_only_modifiers(&[KeyModifier::Super]) => {
                     toggle_floating_panes(Some(TabId::new(2)));
@@ -1100,8 +1096,8 @@ impl ZellijPlugin for State {
                     let should_change_focus_to_target_tab = true;
                     break_panes_to_tab_with_id(
                         &[
-                            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1)),
-                            PaneId::Plugin(zellij_tile::prelude::PluginId::new(2)),
+                            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1)),
+                            PaneId::Plugin(yinz_tile::prelude::PluginId::new(2)),
                         ],
                         TabId::new(2),
                         should_change_focus_to_target_tab,
@@ -1117,8 +1113,8 @@ impl ZellijPlugin for State {
             Event::BeforeClose => {
                 // this is just to assert something to make sure this event was triggered
                 highlight_and_unhighlight_panes(
-                    vec![PaneId::Terminal(zellij_tile::prelude::TerminalId::new(1))],
-                    vec![PaneId::Plugin(zellij_tile::prelude::PluginId::new(1))],
+                    vec![PaneId::Terminal(yinz_tile::prelude::TerminalId::new(1))],
+                    vec![PaneId::Plugin(yinz_tile::prelude::PluginId::new(1))],
                 );
             },
             Event::PluginConfigurationChanged(new_config) => {
@@ -1220,13 +1216,13 @@ fn data_store_roundtrip() -> Result<String, String> {
         vec![
             Mutation::put("fixture_agent")
                 .uid("fixture-a")
-                .set("project", "zellij")
+                .set("project", "yinz")
                 .set("summary", "fixing a rebase conflict")
                 .set("updated_at_ms", 2)
                 .build(),
             Mutation::put("fixture_agent")
                 .uid("fixture-b")
-                .set("project", "zellij")
+                .set("project", "yinz")
                 .set("summary", "writing the changelog")
                 .set("updated_at_ms", 1)
                 .build(),
@@ -1234,7 +1230,7 @@ fn data_store_roundtrip() -> Result<String, String> {
     )?;
 
     let rows = FetchRequest::entity("fixture_agent")
-        .filter(Pred::eq("project", "zellij"))
+        .filter(Pred::eq("project", "yinz"))
         .sort_by("updated_at_ms", SortDir::Desc)
         .select(["summary"])
         .fetch()?;

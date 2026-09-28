@@ -1,7 +1,7 @@
 //! The mutations and queries the store answers.
 //!
 //! Free functions rather than methods on the plugin, so that every one of them
-//! is testable on the host without a Zellij at all — which matters more here
+//! is testable on the host without a Yinz at all — which matters more here
 //! than elsewhere, because this is the only plugin that owns anything the user
 //! would miss if it were lost.
 //!
@@ -23,8 +23,8 @@
 use hocus_proto::store::Backend;
 use hocus_proto::{notes, projects, store, todos};
 use serde_json::{json, Value};
-use zellij_tile::prelude::DataRevision;
-use zellij_tile::prelude::{ApplyReport, FetchRequest, Mutation};
+use yinz_tile::prelude::DataRevision;
+use yinz_tile::prelude::{ApplyReport, FetchRequest, Mutation};
 
 /// What a mutation did, or why it did nothing. The `Err` text goes straight
 /// back to the model, so it says what to call next wherever it can.
@@ -38,7 +38,7 @@ pub type OpResult = Result<String, String>;
 #[derive(Debug, Default, PartialEq)]
 pub struct StoreView {
     pub projects: projects::Registry,
-    pub project_rows: zellij_tile::prelude::DataRows,
+    pub project_rows: yinz_tile::prelude::DataRows,
     pub list: Option<(String, todos::List)>,
 }
 
@@ -1128,7 +1128,7 @@ mod tests {
         let report = ApplyReport {
             rows_written: 1,
             rows_deleted: 0,
-            ids: vec![zellij_tile::prelude::DataRowId::new(42)],
+            ids: vec![yinz_tile::prelude::DataRowId::new(42)],
             per_mutation: vec![1],
         };
         assert_eq!(field(&reply.finish(&report), "id"), 42);

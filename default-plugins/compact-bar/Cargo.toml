@@ -1,7 +1,7 @@
 [package]
 name = "compact-bar"
 version = "0.1.0"
-authors = ["Alexander Kenji Berthold <aks.kenji@protonmail.com>" ]
+authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
 edition.workspace = true
 license.workspace = true
 
@@ -12,5 +12,5 @@ workspace = true
 [dependencies]
 ansi_term = { workspace = true }
 unicode-width = { workspace = true }
-zellij-tile = { path = "../../zellij-tile" }
-zellij-tile-utils = { path = "../../zellij-tile-utils" }
+yinz-tile = { path = "../../yinz-tile" }
+yinz-tile-utils = { path = "../../yinz-tile-utils" }

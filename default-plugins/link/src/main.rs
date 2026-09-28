@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 const FILE_PATH_REGEX: &str = r#"(?:^|\s)((?:(?:\./|\.\./|/)[A-Za-z0-9_./\-+@%,#=~!\$\{\}\[\]]+|~/[A-Za-z0-9_./\-+@%,#=~!\$\{\}\[\]]+|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9_./\-+@%,#=~!\$\{\}\[\]]+)(?::\d+(?::\d+)?)?)(?::|\s|$)"#;
 
@@ -21,7 +21,7 @@ struct State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
             EventType::PaneUpdate,
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn scan_directory_returns_entries() {
         use std::fs;
-        let dir = std::env::temp_dir().join("zellij_test_scan_dir");
+        let dir = std::env::temp_dir().join("yinz_test_scan_dir");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("file1.txt"), "").unwrap();

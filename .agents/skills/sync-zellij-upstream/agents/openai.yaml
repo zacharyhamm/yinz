@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sync Zellij Upstream"
-  short_description: "Review upstream changes for this Zellij fork"
-  default_prompt: "Use $sync-zellij-upstream to review new upstream Zellij changes for this fork."

@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 // -- projects -----------------------------------------------------------
 
@@ -437,7 +437,7 @@ fn a_project_supplies_the_default_agent_folder() {
 }
 
 #[test]
-fn a_project_tab_uses_the_stable_id_from_zellij() {
+fn a_project_tab_uses_the_stable_id_from_yinz() {
     let mut state = idle_state();
     let result = state.register_opened_project("hocus", r#"{"opened":true,"tab_id":47}"#);
     assert_eq!(result, r#"{"opened":true,"tab_id":47}"#);

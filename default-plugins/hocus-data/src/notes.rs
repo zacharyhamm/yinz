@@ -18,8 +18,8 @@
 
 use crate::store::{fetch_all, Backend};
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::{DataRevision, DataRowId};
-use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
+use yinz_tile::prelude::{DataRevision, DataRowId};
+use yinz_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, SortDir};
 
 /// The most notes one scope holds, live or archived. Equal to the most rows a
 /// fetch returns, so a scope's listing is always one fetch.

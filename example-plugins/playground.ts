@@ -1,5 +1,5 @@
 // Typed raw commands: queries, named fields, tuples, enums, bytes, and permission errors.
-import z, { definePlugin, type PaneId, type TabInfo } from "zellij:plugin";
+import z, { definePlugin, type PaneId, type TabInfo } from "yinz:plugin";
 function required<T>(value: T): NonNullable<T> {
   if (value == null) throw new Error("Missing required plugin state");
   return value;
@@ -13,7 +13,7 @@ let panes = 0;
 const focused = (): TabInfo | undefined => tabs.find((tab) => tab.active);
 const actions: Record<string, () => unknown> = {
   i: () => z.getPluginIds(),
-  v: () => z.command("GetZellijVersion"),
+  v: () => z.command("GetYinzVersion"),
   p: () => z.command("GetFocusedPaneInfo"),
   d: () => `${z.command("DumpLayout", "default").length} bytes of kdl`,
   t: () => z.command("NewTab", { name: "playground", cwd: null }),
@@ -79,7 +79,7 @@ export default definePlugin({
   },
   render(rows, cols) {
     return [
-      "zellij TypeScript playground",
+      "yinz TypeScript playground",
       `${tabs.length} tabs, ${panes} panes, focused: ${focused()?.name ?? "-"}`,
       "",
       last,

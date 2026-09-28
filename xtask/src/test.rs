@@ -5,10 +5,10 @@ use xshell::{cmd, Shell};
 
 /// Workspace members `x test` does not own.
 ///
-/// `zellij-integration-tests` belongs to `cargo x integration-test`, which brings the whole-app
+/// `yinz-integration-tests` belongs to `cargo x integration-test`, which brings the whole-app
 /// fixtures up and runs it under its own nextest profile. Sweeping it in here would silently add
 /// the integration binaries to standalone unit-test runs. The gate runs both phases.
-pub const EXCLUDED: &[&str] = &["zellij-integration-tests"];
+pub const EXCLUDED: &[&str] = &["yinz-integration-tests"];
 
 pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     let run = crate::test_run::TestRun::new()?;
@@ -30,12 +30,12 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     )
     .context(err_context)?;
     // Native compiler workers must re-exec this checkout's production binary, never libtest.
-    cmd!(sh, "{cargo} build --bin zellij")
+    cmd!(sh, "{cargo} build --bin yinz")
         .run()
         .context(err_context)?;
     let _worker = sh.push_env(
-        "ZELLIJ_COMPILATION_WORKER",
-        crate::project_root().join("target/debug/zellij"),
+        "YINZ_COMPILATION_WORKER",
+        crate::project_root().join("target/debug/yinz"),
     );
 
     println!();
@@ -44,7 +44,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
     println!("{}", msg);
 
     // One invocation for the whole workspace, rather than one per crate. Cargo resolves features
-    // once, so `zellij-types` - and everything above it - is compiled once instead of once per
+    // once, so `yinz-types` - and everything above it - is compiled once instead of once per
     // distinct feature set, and there is a single build/link tail rather than eight.
     //
     // The plugin crates pin themselves to wasm32-wasip1 in their own `.cargo/config.toml`, but
@@ -139,7 +139,7 @@ pub fn test(sh: &Shell, flags: flags::Test) -> anyhow::Result<()> {
 /// Whether any package the caller selected has a library target.
 ///
 /// `cargo test --doc -p <bin-only crate>` is a hard error ("no library targets found in package"),
-/// which would turn a perfectly good narrowed run red. A glob selector (`-p 'zellij-*'`) is not
+/// which would turn a perfectly good narrowed run red. A glob selector (`-p 'yinz-*'`) is not
 /// resolved here - cargo is left to decide - and a metadata failure is not worth failing over
 /// either, so both answer "yes" and let the real command speak.
 fn has_lib_target(sh: &Shell, selectors: &[OsString]) -> bool {
@@ -367,24 +367,24 @@ mod tests {
     #[test]
     fn package_selectors_carry_over() {
         assert_eq!(
-            selection(&["-p", "zellij-server"]),
-            packages(&["-p", "zellij-server"])
+            selection(&["-p", "yinz-server"]),
+            packages(&["-p", "yinz-server"])
         );
         assert_eq!(
-            selection(&["--package=zellij-types"]),
-            packages(&["--package=zellij-types"])
+            selection(&["--package=yinz-types"]),
+            packages(&["--package=yinz-types"])
         );
         assert_eq!(
-            selection(&["--exclude", "zellij-server", "-p", "zellij-types"]),
-            packages(&["--exclude", "zellij-server", "-p", "zellij-types"])
+            selection(&["--exclude", "yinz-server", "-p", "yinz-types"]),
+            packages(&["--exclude", "yinz-server", "-p", "yinz-types"])
         );
     }
 
     #[test]
     fn an_exclude_alone_leaves_the_run_at_workspace_scope() {
         assert_eq!(
-            selection(&["--exclude", "zellij-server"]),
-            workspace(&["--exclude", "zellij-server"])
+            selection(&["--exclude", "yinz-server"]),
+            workspace(&["--exclude", "yinz-server"])
         );
     }
 
@@ -392,18 +392,18 @@ mod tests {
     fn a_filterset_skips_the_doctest_pass() {
         assert!(filtered(&["-E", "test(x)"]));
         assert!(filtered(&["--filterset=test(x)"]));
-        assert!(filtered(&["-p", "zellij-server", "-E", "test(x)"]));
+        assert!(filtered(&["-p", "yinz-server", "-E", "test(x)"]));
     }
 
     #[test]
     fn test_filters_preserve_package_scope_in_either_order() {
         for args in [
-            vec!["-p", "zellij-server", "-E", "test(x)"],
-            vec!["-E", "test(x)", "-p", "zellij-server"],
-            vec!["some_test", "-p", "zellij-server"],
-            vec!["-p", "zellij-server", "some_test"],
+            vec!["-p", "yinz-server", "-E", "test(x)"],
+            vec!["-E", "test(x)", "-p", "yinz-server"],
+            vec!["some_test", "-p", "yinz-server"],
+            vec!["-p", "yinz-server", "some_test"],
         ] {
-            assert_eq!(selection(&args), packages(&["-p", "zellij-server"]));
+            assert_eq!(selection(&args), packages(&["-p", "yinz-server"]));
             assert!(filtered(&args));
         }
     }
@@ -417,18 +417,12 @@ mod tests {
 
     #[test]
     fn output_and_concurrency_flags_do_not_narrow() {
-        assert!(!filtered(&[
-            "--no-capture",
-            "-j",
-            "1",
-            "-p",
-            "zellij-types"
-        ]));
+        assert!(!filtered(&["--no-capture", "-j", "1", "-p", "yinz-types"]));
         assert_eq!(selection(&["--no-capture"]), workspace(&[]));
         assert_eq!(selection(&["-j", "1"]), workspace(&[]));
         assert_eq!(
-            selection(&["--no-capture", "-j", "1", "-p", "zellij-types"]),
-            packages(&["-p", "zellij-types"])
+            selection(&["--no-capture", "-j", "1", "-p", "yinz-types"]),
+            packages(&["-p", "yinz-types"])
         );
     }
 
@@ -438,16 +432,16 @@ mod tests {
             super::selected_package_names(
                 &[
                     "--exclude",
-                    "zellij-server",
+                    "yinz-server",
                     "-p",
-                    "zellij-types",
-                    "--package=zellij-tile"
+                    "yinz-types",
+                    "--package=yinz-tile"
                 ]
                 .iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>()
             ),
-            ["zellij-types", "zellij-tile"]
+            ["yinz-types", "yinz-tile"]
         );
     }
 

@@ -9,7 +9,7 @@ impl TestRun {
         // /tmp stays short on macOS too: its default temp_dir can exhaust sun_path.
         // SAFETY: geteuid has no preconditions.
         let parent =
-            std::path::PathBuf::from(format!("/tmp/zj-runs-{}", unsafe { libc::geteuid() }));
+            std::path::PathBuf::from(format!("/tmp/yz-runs-{}", unsafe { libc::geteuid() }));
         let root = OwnedDir::new(&parent).context("failed to create the test run directory")?;
         root.inherit_lock()
             .context("failed to pass the test run lease to child processes")?;
@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn test_child() {
-        let Ok(mode) = std::env::var("ZELLIJ_TEST_RUN_CHILD") else {
+        let Ok(mode) = std::env::var("YINZ_TEST_RUN_CHILD") else {
             return;
         };
         let cache = std::path::PathBuf::from(std::env::var_os(TEST_CACHE_ROOT_ENV).unwrap())
@@ -59,7 +59,7 @@ mod tests {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "test_run::tests::test_child", "--nocapture"])
                 .env(TEST_CACHE_ROOT_ENV, &path)
-                .env("ZELLIJ_TEST_RUN_CHILD", mode)
+                .env("YINZ_TEST_RUN_CHILD", mode)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()

@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 #[test]
 fn a_todo_tool_says_when_there_is_no_active_project() {

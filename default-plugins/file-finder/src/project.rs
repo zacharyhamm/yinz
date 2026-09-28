@@ -142,17 +142,17 @@ mod tests {
     #[test]
     fn a_checkout_is_named_by_its_folder_and_its_branch() {
         let host = Host::new();
-        let repo = host.dir("/work/zellij");
-        host.file("/work/zellij/.git/HEAD", "ref: refs/heads/main\n");
-        assert_eq!(host.label(&repo), Some("zellij (main)".to_owned()));
+        let repo = host.dir("/work/yinz");
+        host.file("/work/yinz/.git/HEAD", "ref: refs/heads/main\n");
+        assert_eq!(host.label(&repo), Some("yinz (main)".to_owned()));
     }
 
     #[test]
     fn a_subdirectory_is_named_by_the_root_above_it() {
         let host = Host::new();
-        let inner = host.dir("/work/zellij/zellij-server/src");
-        host.file("/work/zellij/.git/HEAD", "ref: refs/heads/main\n");
-        assert_eq!(host.label(&inner), Some("zellij (main)".to_owned()));
+        let inner = host.dir("/work/yinz/yinz-server/src");
+        host.file("/work/yinz/.git/HEAD", "ref: refs/heads/main\n");
+        assert_eq!(host.label(&inner), Some("yinz (main)".to_owned()));
     }
 
     /// The case the branch is in the title for: the folder alone would read as a stray
@@ -160,15 +160,15 @@ mod tests {
     #[test]
     fn a_linked_worktree_reports_its_own_branch() {
         let host = Host::new();
-        host.file("/work/zellij/.git/HEAD", "ref: refs/heads/main\n");
+        host.file("/work/yinz/.git/HEAD", "ref: refs/heads/main\n");
         host.file(
-            "/work/zellij/.git/worktrees/finder/HEAD",
+            "/work/yinz/.git/worktrees/finder/HEAD",
             "ref: refs/heads/worktree-file-finder-project-title\n",
         );
-        let worktree = host.dir("/work/zellij/.claude/worktrees/finder");
+        let worktree = host.dir("/work/yinz/.claude/worktrees/finder");
         host.file(
-            "/work/zellij/.claude/worktrees/finder/.git",
-            "gitdir: /work/zellij/.git/worktrees/finder\n",
+            "/work/yinz/.claude/worktrees/finder/.git",
+            "gitdir: /work/yinz/.git/worktrees/finder\n",
         );
         assert_eq!(
             host.label(&worktree),
@@ -180,12 +180,12 @@ mod tests {
     fn a_relative_gitdir_resolves_against_the_worktree() {
         let host = Host::new();
         host.file(
-            "/work/zellij/.git/worktrees/finder/HEAD",
+            "/work/yinz/.git/worktrees/finder/HEAD",
             "ref: refs/heads/x\n",
         );
-        let worktree = host.dir("/work/zellij/.claude/worktrees/finder");
+        let worktree = host.dir("/work/yinz/.claude/worktrees/finder");
         host.file(
-            "/work/zellij/.claude/worktrees/finder/.git",
+            "/work/yinz/.claude/worktrees/finder/.git",
             "gitdir: ../../../.git/worktrees/finder\n",
         );
         assert_eq!(host.label(&worktree), Some("finder (x)".to_owned()));
@@ -194,20 +194,20 @@ mod tests {
     #[test]
     fn a_checkout_with_an_unreadable_head_is_named_by_its_folder_alone() {
         let host = Host::new();
-        let repo = host.dir("/work/zellij");
-        host.dir("/work/zellij/.git");
-        assert_eq!(host.label(&repo), Some("zellij".to_owned()));
+        let repo = host.dir("/work/yinz");
+        host.dir("/work/yinz/.git");
+        assert_eq!(host.label(&repo), Some("yinz".to_owned()));
     }
 
     #[test]
     fn a_detached_head_names_no_branch() {
         let host = Host::new();
-        let repo = host.dir("/work/zellij");
+        let repo = host.dir("/work/yinz");
         host.file(
-            "/work/zellij/.git/HEAD",
+            "/work/yinz/.git/HEAD",
             "186ec55ef0000000000000000000000000000000\n",
         );
-        assert_eq!(host.label(&repo), Some("zellij".to_owned()));
+        assert_eq!(host.label(&repo), Some("yinz".to_owned()));
     }
 
     #[test]

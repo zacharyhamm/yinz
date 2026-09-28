@@ -3,9 +3,9 @@ use ansi_term::{
     Color::{Fixed, RGB},
     Style,
 };
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
-use zellij_tile_utils::palette_match;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::palette_match;
 
 use crate::{
     action_key,
@@ -366,7 +366,7 @@ mod tests {
                 "send_mouse_clicks_to_terminal",
                 "sync_tab",
                 "use_mouse",
-                "zellij_setup_check",
+                "yinz_setup_check",
                 // not a real tip: `keybinds` documents a fallback for this
                 "no_such_tip",
             ]

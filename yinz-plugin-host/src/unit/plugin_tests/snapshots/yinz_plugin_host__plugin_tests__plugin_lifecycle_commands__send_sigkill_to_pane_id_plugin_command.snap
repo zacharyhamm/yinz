@@ -1,0 +1,11 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/plugin_lifecycle_commands.rs
+expression: "format!(\"{:#?}\", sigkill_instruction)"
+---
+Some(
+    Terminal(
+        TerminalId(
+            1,
+        ),
+    ),
+)

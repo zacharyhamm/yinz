@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 #[test]
 fn a_question_asked_of_an_idle_hocus_goes_out_at_once() {

@@ -3,11 +3,11 @@
 //! file commands are stubs that say so, which is what the file tools answer here.
 
 use super::*;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::TabPosition;
 
 fn plugin_state() -> State {
     let mut state = ready_state();
-    state.user_plugin_dir = "/home/someone/.config/zellij/plugins".to_owned();
+    state.user_plugin_dir = "/home/someone/.config/yinz/plugins".to_owned();
     state
 }
 
@@ -17,7 +17,7 @@ fn strict_failures_never_write_backups_source_or_grants() {
     for (name, arguments) in [
         (
             "plugin_write",
-            serde_json::json!({"name":"keys", "overwrite":true, "source":"zellij.requestPermission(['WriteFiles']); export const value: string = 1;"}),
+            serde_json::json!({"name":"keys", "overwrite":true, "source":"yinz.requestPermission(['WriteFiles']); export const value: string = 1;"}),
         ),
         (
             "plugin_edit",
@@ -46,7 +46,7 @@ fn strict_failures_never_write_backups_source_or_grants() {
 fn plugin_write_requires_overwrite_before_reading_or_backing_up_existing_source() {
     use crate::tools::test_seams;
     let previous = "export const previous = 1;";
-    let source = "zellij.requestPermission(['WriteFiles']);";
+    let source = "yinz.requestPermission(['WriteFiles']);";
     for overwrite in [None, Some(false), Some(true)] {
         test_seams::reset();
         test_seams::set_plugin_source(previous);
@@ -127,7 +127,7 @@ fn formatting_a_draft_is_immediate_and_saved_formatting_confirms_and_backs_up() 
 #[test]
 fn a_plugin_edit_discloses_and_grants_only_the_permission_it_adds() {
     crate::tools::test_seams::reset();
-    crate::tools::test_seams::set_plugin_source(r#"zellij.requestPermission([ "ReadFiles" ]);"#);
+    crate::tools::test_seams::set_plugin_source(r#"yinz.requestPermission([ "ReadFiles" ]);"#);
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
         id: "edit".into(),
@@ -174,7 +174,7 @@ fn plugin_write_confirmations_reuse_permission_analysis() {
         name: "plugin_write".into(),
         arguments: serde_json::json!({
             "name": "keys",
-            "source": "zellij.requestPermission(['ReadFiles']);",
+            "source": "yinz.requestPermission(['ReadFiles']);",
         })
         .to_string(),
     });
@@ -399,7 +399,7 @@ fn a_cleared_reload_asks_the_host_once_and_stops_the_pump() {
             .plugin_load
             .as_ref()
             .map(|watch| watch.target.as_str()),
-        Some("/home/someone/.config/zellij/plugins/keys.ts")
+        Some("/home/someone/.config/yinz/plugins/keys.ts")
     );
     crate::tools::test_seams::reset();
 }
@@ -481,7 +481,7 @@ fn a_cleared_reload_waits_to_look_at_the_pane_before_answering() {
             .plugin_load
             .as_ref()
             .map(|watch| watch.target.as_str()),
-        Some("/home/someone/.config/zellij/plugins/keys.ts")
+        Some("/home/someone/.config/yinz/plugins/keys.ts")
     );
     assert!(state.timer_armed, "nothing would ever go and look");
 
@@ -514,7 +514,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
         panes.panes.insert(
             TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(id, true),
+                id: yinz_tile::prelude::PaneId::from_legacy(id, true),
                 ..PaneInfo::default()
             }],
         );
@@ -539,7 +539,7 @@ fn session_running(path: &str, id: u32, pane: bool) -> SessionInfo {
 #[test]
 fn a_headless_reload_names_the_headless_instance_and_never_a_panes() {
     crate::tools::test_seams::reset();
-    let path = "/home/someone/.config/zellij/plugins/harness.ts";
+    let path = "/home/someone/.config/yinz/plugins/harness.ts";
 
     let mut state = plugin_state();
     state.on_sessions(vec![session_running(path, 9, true)]);
@@ -646,7 +646,7 @@ fn an_awaited_plugin_load_can_be_aborted() {
 fn a_batch_edit_asks_once_and_grants_before_versus_final() {
     crate::tools::test_seams::reset();
     crate::tools::test_seams::set_plugin_source(
-        "zellij.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
+        "yinz.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
     );
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
@@ -696,7 +696,7 @@ fn a_batch_edit_asks_once_and_grants_before_versus_final() {
 fn a_batch_whose_second_edit_misses_is_refused_before_the_prompt() {
     crate::tools::test_seams::reset();
     crate::tools::test_seams::set_plugin_source(
-        "zellij.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
+        "yinz.requestPermission([ \"ReadFiles\" ]);\nexport default {};\n",
     );
     let mut state = plugin_state();
     state.pending = vec![ToolCall {
@@ -971,7 +971,7 @@ fn extension_reload_refuses_duplicate_namespaces_across_languages() {
     test_seams::PLUGIN_ENTRIES.with_borrow_mut(|entries| {
         *entries = Some(
             ["js", "ts"]
-                .map(|suffix| zellij_tile::prelude::FsEntry {
+                .map(|suffix| yinz_tile::prelude::FsEntry {
                     path: format!("/plugins/hocus/keys.{suffix}"),
                     metadata: None,
                 })

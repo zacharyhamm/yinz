@@ -67,7 +67,7 @@ fn send_input_brackets_only_the_text_and_only_when_asked() {
             b"\r".to_vec(),
         ]
     );
-    // No text, no markers: a lone key must stay a lone key so Zellij's own
+    // No text, no markers: a lone key must stay a lone key so Yinz's own
     // key adjustment still matches the whole buffer.
     let keys_only = Args::parse(r#"{"keys":["up"]}"#).unwrap();
     assert_eq!(

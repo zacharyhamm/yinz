@@ -7,11 +7,11 @@ Load the plugin tool family. Call project_config_read before proposing a write.
 Choose the full local CI gate required by the repository, not only a focused test.
 Verify the selected Swamp workflow exists with swamp workflow get and validate it before binding.
 Resolve an existing control_checkout redirect before choosing where to write.
-Propose .zellij/swamp-workflows.kdl in the primary checkout with this shape:
+Propose .yinz/swamp-workflows.kdl in the primary checkout with this shape:
 
 ```kdl
 agent_exit {
-    workflow "@hammz/zellij-agent-exit"
+    workflow "@hammz/yinz-agent-exit"
     ci "cargo" "x" "ci" "check"
     rebase_prompt "Resolve only the current rebase conflicts in this checkout and stage each resolution. Do not run rebase --continue or --abort: the workflow owns continuation. Do not merge, remove resources, or contact remotes. Report the result and exit when done."
     // default_branch "main"

@@ -1,4 +1,4 @@
-//! `zellij hocus hooks` — wiring coding-agent hooks to the agent plugins.
+//! `yinz hocus hooks` — wiring coding-agent hooks to the agent plugins.
 //!
 //! `hocus-agentd` decides whether an agent pane is busy, idle or blocked on the user
 //! by reading its screen every five seconds and hashing what it finds, and — for the
@@ -7,7 +7,7 @@
 //! bought with about fifteen seconds and an HTTP round trip.
 //!
 //! Claude Code, Codex and opencode say. This command installs a small script (or, for
-//! opencode, a plugin) as an agent hook so that an agent running in a zellij pane reports
+//! opencode, a plugin) as an agent hook so that an agent running in a yinz pane reports
 //! its own state, and the daemon stops guessing about that pane. Everything here is local
 //! file work: it writes a script and merges some entries into a settings file, and never
 //! needs a session.
@@ -21,17 +21,17 @@ use serde_json::{json, Map, Value};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use {zellij_cli::args::Hocus, zellij_cli::args::HocusHookAgent, zellij_cli::args::HocusHooks};
+use {yinz_cli::args::Hocus, yinz_cli::args::HocusHookAgent, yinz_cli::args::HocusHooks};
 
-/// The events, the timeout and the handler shape live in `zellij_types::agent`, so that this
+/// The events, the timeout and the handler shape live in `yinz_types::agent`, so that this
 /// installer and a spawned Claude Code pane's inline `--settings` cannot wire different events.
 ///
 /// `pub(crate)` on the Claude table because the CLI tests count against it rather than against
 /// a literal: it has grown once already, and a number here goes stale silently the next time
 /// it does.
-pub(crate) const CLAUDE_EVENTS: &[&str] = zellij_types::agent::CLAUDE_HOOK_EVENTS;
-const CODEX_EVENTS: &[&str] = zellij_types::agent::CODEX_HOOK_EVENTS;
-const OPENCODE_EVENTS: &[&str] = zellij_types::agent::OPENCODE_HOOK_EVENTS;
+pub(crate) const CLAUDE_EVENTS: &[&str] = yinz_types::agent::CLAUDE_HOOK_EVENTS;
+const CODEX_EVENTS: &[&str] = yinz_types::agent::CODEX_HOOK_EVENTS;
+const OPENCODE_EVENTS: &[&str] = yinz_types::agent::OPENCODE_HOOK_EVENTS;
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
@@ -40,11 +40,11 @@ const OPENCODE_EVENTS: &[&str] = zellij_types::agent::OPENCODE_HOOK_EVENTS;
 ///
 /// A missed bump is silent and total: `status` calls the old script current, and every event
 /// on a machine installed before the change goes nowhere.
-const SCRIPT_VERSION: u32 = 8;
+const SCRIPT_VERSION: u32 = 9;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
-const OPENCODE_PLUGIN_VERSION: u32 = 3;
+const OPENCODE_PLUGIN_VERSION: u32 = 4;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -59,15 +59,13 @@ const OPENCODE_MARKER: &str = "hocus-opencode-plugin";
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let hooks = match command {
         Hocus::Codex { command, args } => {
-            std::process::exit(zellij_codex::launch(&command, &args)?);
+            std::process::exit(yinz_codex::launch(&command, &args)?);
         },
         Hocus::CodexReport => {
-            return zellij_codex::report(
-                &std::env::current_exe().context("find this zellij binary")?,
-            );
+            return yinz_codex::report(&std::env::current_exe().context("find this yinz binary")?);
         },
         Hocus::Hooks(hooks) => hooks,
-        Hocus::Skills(zellij_cli::args::HocusSkills::Install {
+        Hocus::Skills(yinz_cli::args::HocusSkills::Install {
             agent,
             dry_run,
             force,
@@ -80,7 +78,7 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
                     home,
                 )?;
                 crate::hocus_skills::install(
-                    &root.join("skills/zellij-notes-todos/SKILL.md"),
+                    &root.join("skills/yinz-notes-todos/SKILL.md"),
                     dry_run,
                     force,
                 )
@@ -94,13 +92,13 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
             project_dir,
             dry_run,
         } => {
-            let zellij = std::env::current_exe().context("cannot find this zellij binary")?;
+            let yinz = std::env::current_exe().context("cannot find this yinz binary")?;
             for_each_agent(
                 selected_agents(agent, project || project_dir.is_some())?,
                 |agent| {
                     install(
                         &Files::resolve(agent, project, project_dir.clone())?,
-                        &zellij,
+                        &yinz,
                         dry_run,
                     )
                 },
@@ -199,27 +197,27 @@ fn selected_agents(agent: Option<HocusHookAgent>, project: bool) -> Result<Vec<H
 /// The script an agent runs, with this binary's own path baked in.
 ///
 /// Baked rather than looked up because a hook inherits the environment `claude` was
-/// started with, which is not always one where `zellij` is on the path — a desktop
+/// started with, which is not always one where `yinz` is on the path — a desktop
 /// launcher, a login shell that sets the path in a file an interactive shell reads.
 /// The lookup stays as the fallback for the case the baked path stops existing,
 /// which is what an upgrade that moves the binary looks like.
-fn script(agent: HocusHookAgent, zellij: &Path) -> String {
+fn script(agent: HocusHookAgent, yinz: &Path) -> String {
     if agent == HocusHookAgent::Codex {
-        let zellij = zellij.to_string_lossy().replace('\'', "'\\''");
+        let yinz = yinz.to_string_lossy().replace('\'', "'\\''");
         return format!(
             r#"#!/bin/sh
-# hocus-hook v{SCRIPT_VERSION} - generated by `zellij hocus hooks install`.
+# hocus-hook v{SCRIPT_VERSION} - generated by `yinz hocus hooks install`.
 # Codex hooks run in a shared daemon. The conversation id, not that daemon's
-# inherited environment, selects the pane registered by `zellij hocus codex`.
-ZELLIJ_BIN='{zellij}'
-[ -x "$ZELLIJ_BIN" ] || ZELLIJ_BIN=zellij
-"$ZELLIJ_BIN" hocus codex-report >/dev/null 2>&1
+# inherited environment, selects the pane registered by `yinz hocus codex`.
+YINZ_BIN='{yinz}'
+[ -x "$YINZ_BIN" ] || YINZ_BIN=yinz
+"$YINZ_BIN" hocus codex-report >/dev/null 2>&1
 printf '{{}}\n'
 exit 0
 "#
         );
     }
-    let zellij = zellij.display();
+    let yinz = yinz.display();
     let (name, wire_kind, kind, no_pane, output, output_rule) = match agent {
         HocusHookAgent::Claude => (
             "Claude Code",
@@ -237,16 +235,16 @@ exit 0
     };
     // Spelled from the constant the broker reads, so the two halves of the remote route
     // cannot drift apart: a variable name that does not match is silently no route at all.
-    let token_env = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+    let token_env = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
     format!(
         r#"#!/bin/sh
-# hocus-hook v{SCRIPT_VERSION} - generated by `zellij hocus hooks install`. Do not edit;
-# `zellij hocus hooks install` rewrites this file, and `--uninstall` removes it.
+# hocus-hook v{SCRIPT_VERSION} - generated by `yinz hocus hooks install`. Do not edit;
+# `yinz hocus hooks install` rewrites this file, and `--uninstall` removes it.
 #
 # {name} runs this on each wired hook event, with that event's JSON on stdin.
 # It hands the JSON to whoever owns the pane - the session directly for a local pane
-# (`zellij action agent-report`), that machine's pane broker for a remote one
-# (`zellij --pty-broker report`) - which carries what it means on the pane and
+# (`yinz action agent-report`), that machine's pane broker for a remote one
+# (`yinz --pty-broker report`) - which carries what it means on the pane and
 # broadcasts the event itself to the plugins: the pane reports its own busy/waiting/idle
 # state instead of being guessed at from its screen, and what a record has no room for -
 # the agent's own last message, the prompt behind it - reaches whoever wants it.
@@ -257,14 +255,14 @@ exit 0
 #     only reporting on.
 
 # The remote token is tested first, and that order is the whole point: a remote pane
-# carries a ${token_env} *and* a $ZELLIJ_PANE_ID, and the pane id it carries is the
+# carries a ${token_env} *and* a $YINZ_PANE_ID, and the pane id it carries is the
 # asking session's, on a machine that has no such session. Reading it here would send
 # every event to whatever session happens to run on this box, under a pane id that
-# means something else. Neither set: not a zellij pane at all, and nothing to report to.
-[ -n "${token_env}" ] || [ -n "$ZELLIJ_PANE_ID" ] || {{ {no_pane}; }}
+# means something else. Neither set: not a yinz pane at all, and nothing to report to.
+[ -n "${token_env}" ] || [ -n "$YINZ_PANE_ID" ] || {{ {no_pane}; }}
 
-ZELLIJ_BIN='{zellij}'
-[ -x "$ZELLIJ_BIN" ] || ZELLIJ_BIN=zellij
+YINZ_BIN='{yinz}'
+[ -x "$YINZ_BIN" ] || YINZ_BIN=yinz
 
 # Either way the event travels on stdin rather than as an argument, clear of execve's
 # per-argument limit.
@@ -272,10 +270,10 @@ if [ -n "${token_env}" ]; then
     # A remote pane - ssh or Firecracker. There is no session on this machine to tell,
     # so the event goes to the broker that owns the pty, which names the pane by the
     # token it put here and relays it on the pane's own channel to the pane's server.
-    "$ZELLIJ_BIN" --pty-broker report {wire_kind} >/dev/null 2>&1
+    "$YINZ_BIN" --pty-broker report {wire_kind} >/dev/null 2>&1
 else
-    # A local pane: the pane is $ZELLIJ_PANE_ID, which the action reads itself.
-    "$ZELLIJ_BIN" action agent-report --hook-json{kind} >/dev/null 2>&1
+    # A local pane: the pane is $YINZ_PANE_ID, which the action reads itself.
+    "$YINZ_BIN" action agent-report --hook-json{kind} >/dev/null 2>&1
 fi
 {output}
 
@@ -289,22 +287,22 @@ exit 0
 /// opencode is extended with a JS module rather than a shell hook, so this is the one
 /// agent whose wiring is a file it loads instead of an entry it runs. The plugin is a
 /// thin transport: it forwards opencode's own events and interception hooks, and the
-/// reading of them is `zellij_types::agent::opencode`, in the session, so opencode and
+/// reading of them is `yinz_types::agent::opencode`, in the session, so opencode and
 /// the other two agents cannot disagree about what an event meant.
 ///
 /// The path is baked for the same reason the shell script's is: the server inherits the
-/// environment the pane's shell was started with, which is not always one where `zellij`
-/// is on the path. There is no fallback to a `zellij` from PATH because opencode gives
+/// environment the pane's shell was started with, which is not always one where `yinz`
+/// is on the path. There is no fallback to a `yinz` from PATH because opencode gives
 /// the plugin no shell; a moved binary is an `install` away from being rewritten, and
 /// `status` is what says the path has stopped existing.
-fn opencode_plugin(zellij: &Path) -> String {
-    let zellij = serde_json::to_string(&zellij.display().to_string()).expect("a path serializes");
+fn opencode_plugin(yinz: &Path) -> String {
+    let yinz = serde_json::to_string(&yinz.display().to_string()).expect("a path serializes");
     // Spelled from the constant the broker reads, so the two halves of the remote route
     // cannot drift apart: a variable name that does not match is silently no route at all.
-    let token_env = serde_json::to_string(zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV)
+    let token_env = serde_json::to_string(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
         .expect("a name serializes");
     OPENCODE_PLUGIN_TEMPLATE
-        .replace("__ZELLIJ_BIN__", &zellij)
+        .replace("__YINZ_BIN__", &yinz)
         .replace("__TOKEN_ENV__", &token_env)
         .replace("__VERSION__", &OPENCODE_PLUGIN_VERSION.to_string())
 }
@@ -314,15 +312,15 @@ fn opencode_plugin(zellij: &Path) -> String {
 /// A template rather than a `format!` because the body is JavaScript, whose braces would
 /// all have to be doubled; and because a missed substitution has to fail a test rather
 /// than write a plugin opencode cannot parse.
-const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ - generated by `zellij hocus hooks install`.
-// Do not edit; `zellij hocus hooks install` rewrites this file, and `--uninstall`
+const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ - generated by `yinz hocus hooks install`.
+// Do not edit; `yinz hocus hooks install` rewrites this file, and `--uninstall`
 // removes it.
 //
 // opencode loads this plugin from `~/.config/opencode/plugin/hocus.js`. It forwards
 // opencode's own event stream - and the interception hooks that are not events - to
-// whoever owns the pane: `zellij action agent-report --hook-json --kind opencode` for a
-// local pane, `zellij --pty-broker report opencode` for a remote one. The session reads
-// the events (`zellij-types/src/agent/opencode.rs`) and carries what they mean on the
+// whoever owns the pane: `yinz action agent-report --hook-json --kind opencode` for a
+// local pane, `yinz --pty-broker report opencode` for a remote one. The session reads
+// the events (`yinz-types/src/agent/opencode.rs`) and carries what they mean on the
 // pane, so the pane reports its own busy/waiting/idle state instead of being guessed at
 // from its screen.
 //
@@ -333,17 +331,17 @@ const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ 
 
 import { spawn } from "node:child_process"
 
-const ZELLIJ_BIN = __ZELLIJ_BIN__
+const YINZ_BIN = __YINZ_BIN__
 const PANE_TOKEN_ENV = __TOKEN_ENV__
 const PANE_TOKEN = process.env[PANE_TOKEN_ENV]
-const PANE_ID = process.env.ZELLIJ_PANE_ID
+const PANE_ID = process.env.YINZ_PANE_ID
 
 let reports = Promise.resolve()
 
 function report(payload, isParent) {
   // The remote token is tested first, and that order is the whole point: a remote pane
   // carries a token *and* a pane id, and the pane id it carries is the asking session's,
-  // on a machine that has no such session. Neither set: not a zellij pane at all, and
+  // on a machine that has no such session. Neither set: not a yinz pane at all, and
   // nothing to report to.
   if (!PANE_TOKEN && !PANE_ID) return
   const args = PANE_TOKEN
@@ -360,7 +358,7 @@ function report(payload, isParent) {
     return new Promise((resolve) => {
       let child
       try {
-        child = spawn(ZELLIJ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
+        child = spawn(YINZ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
       } catch {
         resolve()
         return
@@ -516,7 +514,7 @@ export const Hocus = async ({ directory, client }) => {
 
 /// One handler entry, as both agents' settings spell it.
 fn handler(command: &str, timeout: u64) -> Value {
-    zellij_types::agent::hook_handler(command, timeout)
+    yinz_types::agent::hook_handler(command, timeout)
 }
 
 /// Whether one handler entry is one we wrote.
@@ -539,7 +537,7 @@ pub(crate) fn install_into(settings: Value, command: &str) -> Result<Value> {
         settings,
         command,
         CLAUDE_EVENTS,
-        zellij_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+        yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
     )
 }
 
@@ -757,7 +755,7 @@ impl Files {
         }
     }
 
-    /// The committed `.claude/settings.json` an older zellij wrote a project install into.
+    /// The committed `.claude/settings.json` an older yinz wrote a project install into.
     fn legacy_project_settings(&self) -> Option<PathBuf> {
         (self.agent == HocusHookAgent::Claude)
             .then_some(self.project.as_ref())
@@ -780,9 +778,9 @@ impl Files {
 
     fn timeout(&self) -> u64 {
         match self.agent {
-            HocusHookAgent::Claude => zellij_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
-            HocusHookAgent::Codex => zellij_types::agent::CODEX_HOOK_TIMEOUT_SECONDS,
-            HocusHookAgent::Opencode => zellij_types::agent::OPENCODE_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Claude => yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Codex => yinz_types::agent::CODEX_HOOK_TIMEOUT_SECONDS,
+            HocusHookAgent::Opencode => yinz_types::agent::OPENCODE_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }
@@ -873,12 +871,12 @@ fn write_generated(path: &Path, text: &str) -> Result<bool> {
 
 /// opencode's install: one plugin file, and no settings merge, because the file *is* the
 /// wiring.
-fn install_opencode(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
-    let plugin = opencode_plugin(zellij);
+fn install_opencode(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
+    let plugin = opencode_plugin(yinz);
     if let Some(existing) = read_generated(&files.script)? {
         if !existing.contains(OPENCODE_MARKER) {
             return Err(anyhow!(
-                "{} exists and was not written by zellij; move it aside first",
+                "{} exists and was not written by yinz; move it aside first",
                 files.script.display()
             ));
         }
@@ -901,15 +899,15 @@ fn install_opencode(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
         );
     }
     println!("restart opencode so it loads the plugin");
-    println!("run `zellij hocus hooks status` to check");
+    println!("run `yinz hocus hooks status` to check");
     Ok(())
 }
 
-pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()> {
+pub(crate) fn install(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
     if files.agent == HocusHookAgent::Opencode {
-        return install_opencode(files, zellij, dry_run);
+        return install_opencode(files, yinz, dry_run);
     }
-    let script = script(files.agent, zellij);
+    let script = script(files.agent, yinz);
     let settings_path = files.settings();
     let settings = read_settings(&settings_path)?;
     let command = shell_quote(&files.script);
@@ -972,11 +970,11 @@ pub(crate) fn install(files: &Files, zellij: &Path, dry_run: bool) -> Result<()>
     // come back in sorted order. Nothing about the settings changes, but a file under
     // version control will show a diff that is mostly not ours.
     println!("(settings are rewritten from a parse, so key order may change)");
-    println!("run `zellij hocus hooks status` to check");
+    println!("run `yinz hocus hooks status` to check");
     if files.agent == HocusHookAgent::Codex {
         println!("open `/hooks` inside Codex to review and trust the installed hooks");
         println!(
-            "launch with `zellij hocus codex -- [codex arguments]` for shared-daemon pane tracking"
+            "launch with `yinz hocus codex -- [codex arguments]` for shared-daemon pane tracking"
         );
     } else {
         println!("open `/hooks` inside Claude Code to inspect the installed hooks");
@@ -1040,7 +1038,7 @@ fn uninstall_opencode(files: &Files) -> Result<()> {
         },
         Some(_) => {
             return Err(anyhow!(
-                "{} was not written by zellij; leaving it alone",
+                "{} was not written by yinz; leaving it alone",
                 files.script.display()
             ))
         },
@@ -1060,7 +1058,7 @@ fn status(files: &Files) -> Result<()> {
                 println!("plugin:  {} (current)", files.script.display());
             },
             Some(_) => println!(
-                "plugin:  {} (older than this zellij - run `install` again)",
+                "plugin:  {} (older than this yinz - run `install` again)",
                 files.script.display()
             ),
             None => println!("plugin:  {} (missing)", files.script.display()),
@@ -1073,7 +1071,7 @@ fn status(files: &Files) -> Result<()> {
             println!("script:  {} (current)", files.script.display());
         },
         Ok(_) => println!(
-            "script:  {} (older than this zellij - run `install` again)",
+            "script:  {} (older than this yinz - run `install` again)",
             files.script.display()
         ),
         Err(_) => println!("script:  {} (missing)", files.script.display()),
@@ -1141,7 +1139,9 @@ fn status(files: &Files) -> Result<()> {
 
     if files.agent == HocusHookAgent::Codex && wired_anywhere > 0 {
         println!("trust:   review the installed hooks with `/hooks` inside Codex");
-        println!("launch:  `zellij hocus codex -- [codex arguments]` (automatic for Zellij agent launches)");
+        println!(
+            "launch:  `yinz hocus codex -- [codex arguments]` (automatic for Yinz agent launches)"
+        );
     }
     Ok(())
 }
@@ -1153,15 +1153,15 @@ fn status(files: &Files) -> Result<()> {
 fn pane_line() {
     // Same order the script keeps, and for the same reason: a remote pane carries both,
     // and only the token names the pane the report will actually reach.
-    let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+    let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
     if std::env::var_os(token).is_some_and(|value| !value.is_empty()) {
-        println!("pane:    this shell is a remote zellij pane, reporting through its broker");
+        println!("pane:    this shell is a remote yinz pane, reporting through its broker");
         return;
     }
-    match std::env::var("ZELLIJ_PANE_ID") {
-        Ok(pane_id) => println!("pane:    this shell is zellij pane {pane_id}"),
+    match std::env::var("YINZ_PANE_ID") {
+        Ok(pane_id) => println!("pane:    this shell is yinz pane {pane_id}"),
         Err(_) => println!(
-            "pane:    this shell is not in a zellij pane, so an agent started here \
+            "pane:    this shell is not in a yinz pane, so an agent started here \
              would report nothing"
         ),
     }
@@ -1176,7 +1176,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "zellij-hocus-hooks-{name}-{}-{}",
+            "yinz-hocus-hooks-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1213,23 +1213,23 @@ mod tests {
     #[test]
     fn generated_script_streams_a_large_payload_instead_of_putting_it_in_argv() {
         let temp = temp_dir("payload");
-        let fake_zellij = temp.join("zellij");
+        let fake_yinz = temp.join("yinz");
         let hook = temp.join("hocus-hook.sh");
         let captured = temp.join("payload");
         let argc = temp.join("argc");
         std::fs::write(
-            &fake_zellij,
+            &fake_yinz,
             "#!/bin/sh\nprintf '%s' \"$#\" > \"$ARGC\"\ncat > \"$CAPTURE\"\n",
         )
         .unwrap();
-        make_executable(&fake_zellij).unwrap();
-        std::fs::write(&hook, script(HocusHookAgent::Claude, &fake_zellij)).unwrap();
+        make_executable(&fake_yinz).unwrap();
+        std::fs::write(&hook, script(HocusHookAgent::Claude, &fake_yinz)).unwrap();
         make_executable(&hook).unwrap();
 
         let payload = vec![b'x'; 200 * 1024];
         let mut child = Command::new(&hook)
-            .env("ZELLIJ_PANE_ID", "7")
-            .env_remove(zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV)
+            .env("YINZ_PANE_ID", "7")
+            .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGC", &argc)
             .stdin(Stdio::piped())
@@ -1246,22 +1246,22 @@ mod tests {
     #[test]
     fn generated_codex_script_routes_without_daemon_pane_env_and_returns_neutral_json() {
         let temp = temp_dir("codex-payload");
-        let fake_zellij = temp.join("zellij");
+        let fake_yinz = temp.join("yinz");
         let captured = temp.join("payload");
         let argc = temp.join("argc");
         std::fs::write(
-            &fake_zellij,
+            &fake_yinz,
             "#!/bin/sh\nprintf '%s' \"$#\" > \"$ARGC\"\ncat > \"$CAPTURE\"\n",
         )
         .unwrap();
-        make_executable(&fake_zellij).unwrap();
+        make_executable(&fake_yinz).unwrap();
         let hook = temp.join("hocus-hook.sh");
-        std::fs::write(&hook, script(HocusHookAgent::Codex, &fake_zellij)).unwrap();
+        std::fs::write(&hook, script(HocusHookAgent::Codex, &fake_yinz)).unwrap();
         make_executable(&hook).unwrap();
 
         let output = Command::new(&hook)
-            .env_remove("ZELLIJ_PANE_ID")
-            .env_remove(zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV)
+            .env_remove("YINZ_PANE_ID")
+            .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGC", &argc)
             .stdin(Stdio::piped())
@@ -1290,23 +1290,23 @@ mod tests {
     /// Run the generated script with a given environment and say what it invoked.
     fn hook_argv(agent: HocusHookAgent, name: &str, env: &[(&str, &str)]) -> (String, String) {
         let temp = temp_dir(name);
-        let fake_zellij = temp.join("zellij");
+        let fake_yinz = temp.join("yinz");
         let captured = temp.join("payload");
         let argv = temp.join("argv");
         std::fs::write(
-            &fake_zellij,
+            &fake_yinz,
             "#!/bin/sh\nprintf '%s' \"$*\" > \"$ARGV\"\ncat > \"$CAPTURE\"\n",
         )
         .unwrap();
-        make_executable(&fake_zellij).unwrap();
+        make_executable(&fake_yinz).unwrap();
         let hook = temp.join("hocus-hook.sh");
-        std::fs::write(&hook, script(agent, &fake_zellij)).unwrap();
+        std::fs::write(&hook, script(agent, &fake_yinz)).unwrap();
         make_executable(&hook).unwrap();
 
         let mut command = Command::new(&hook);
         command
-            .env_remove("ZELLIJ_PANE_ID")
-            .env_remove(zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV)
+            .env_remove("YINZ_PANE_ID")
+            .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGV", &argv)
             .stdin(Stdio::piped())
@@ -1346,7 +1346,7 @@ mod tests {
     /// so the script hands the event to that machine's broker instead.
     #[test]
     fn a_remote_pane_reports_through_its_broker() {
-        let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+        let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
         let (argv, payload) = hook_argv(HocusHookAgent::Claude, "remote-claude", &[(token, "tok")]);
         assert_eq!(argv, "--pty-broker report claude");
         assert_eq!(payload, "{\"hook_event_name\":\"Stop\"}");
@@ -1356,15 +1356,15 @@ mod tests {
     }
 
     /// The order the two probes are made in is the behaviour: a remote pane carries a
-    /// `ZELLIJ_PANE_ID` too, and it is the *asking* session's, on a machine with no such
+    /// `YINZ_PANE_ID` too, and it is the *asking* session's, on a machine with no such
     /// session. Reading it would send every event to whatever session runs on this box.
     #[test]
     fn a_remote_pane_ignores_the_pane_id_it_also_carries() {
-        let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+        let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
         let (argv, _) = hook_argv(
             HocusHookAgent::Claude,
             "remote-both",
-            &[(token, "tok"), ("ZELLIJ_PANE_ID", "7")],
+            &[(token, "tok"), ("YINZ_PANE_ID", "7")],
         );
         assert_eq!(argv, "--pty-broker report claude");
     }
@@ -1372,7 +1372,7 @@ mod tests {
     /// An empty token is no token: `env -u` is not the only way a variable goes away.
     #[test]
     fn neither_a_pane_id_nor_a_token_reports_nothing() {
-        let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+        let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
         let (argv, _) = hook_argv(HocusHookAgent::Claude, "no-pane", &[(token, "")]);
         assert!(argv.is_empty(), "{argv:?}");
     }
@@ -1390,8 +1390,8 @@ mod tests {
         std::fs::remove_dir_all(temp).unwrap();
     }
 
-    fn fake_zellij(temp: &Path) -> PathBuf {
-        let fake = temp.join("zellij");
+    fn fake_yinz(temp: &Path) -> PathBuf {
+        let fake = temp.join("yinz");
         std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
         make_executable(&fake).unwrap();
         fake
@@ -1435,7 +1435,7 @@ mod tests {
     fn a_project_install_lands_in_settings_local_json() {
         let temp = temp_dir("local");
         let files = project_files(&temp);
-        install(&files, &fake_zellij(&temp), false).unwrap();
+        install(&files, &fake_yinz(&temp), false).unwrap();
 
         let local = temp.join("project/.claude/settings.local.json");
         assert_eq!(events_in(&local).len(), CLAUDE_EVENTS.len());
@@ -1452,7 +1452,7 @@ mod tests {
     fn a_codex_install_lands_in_the_user_hooks_file() {
         let temp = temp_dir("codex user's home");
         let files = codex_files(&temp);
-        install(&files, &fake_zellij(&temp), false).unwrap();
+        install(&files, &fake_yinz(&temp), false).unwrap();
 
         assert_eq!(events_in(&files.user_settings).len(), CODEX_EVENTS.len());
         assert!(files.script.exists());
@@ -1465,7 +1465,7 @@ mod tests {
         let output = Command::new("sh")
             .arg("-c")
             .arg(command)
-            .env("ZELLIJ_PANE_ID", "7")
+            .env("YINZ_PANE_ID", "7")
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -1479,7 +1479,7 @@ mod tests {
     fn an_opencode_install_writes_a_versioned_plugin_and_uninstall_removes_it() {
         let temp = temp_dir("opencode-install");
         let files = opencode_files(&temp);
-        install(&files, &fake_zellij(&temp), false).unwrap();
+        install(&files, &fake_yinz(&temp), false).unwrap();
 
         let plugin = read_generated(&files.script).unwrap().unwrap();
         assert!(
@@ -1489,14 +1489,14 @@ mod tests {
         assert!(plugin.contains("\"agent-report\""), "{plugin}");
         assert!(plugin.contains("\"--pty-broker\""), "{plugin}");
         assert!(
-            !plugin.contains("__ZELLIJ_BIN__")
+            !plugin.contains("__YINZ_BIN__")
                 && !plugin.contains("__TOKEN_ENV__")
                 && !plugin.contains("__VERSION__"),
             "every substitution is filled in"
         );
         assert!(!temp.join("home/.config/opencode/settings.json").exists());
 
-        install(&files, &fake_zellij(&temp), false).unwrap();
+        install(&files, &fake_yinz(&temp), false).unwrap();
         assert_eq!(read_generated(&files.script).unwrap().unwrap(), plugin);
 
         uninstall(&files).unwrap();
@@ -1509,15 +1509,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let plugin = temp.path().join("hocus.mjs");
         let harness = temp.path().join("regressions.mjs");
-        std::fs::write(&plugin, opencode_plugin(Path::new("/test/zellij"))).unwrap();
+        std::fs::write(&plugin, opencode_plugin(Path::new("/test/yinz"))).unwrap();
         std::fs::write(&harness, include_str!("unit/opencode_plugin.mjs")).unwrap();
-        let token = zellij_server::pty_host::remote::broker::PANE_TOKEN_ENV;
+        let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
         for remote in [false, true] {
             let mut command = Command::new("node");
-            command
-                .arg(&harness)
-                .arg(&plugin)
-                .env("ZELLIJ_PANE_ID", "1");
+            command.arg(&harness).arg(&plugin).env("YINZ_PANE_ID", "1");
             if remote {
                 command.env(token, "test-token");
             } else {
@@ -1544,7 +1541,7 @@ mod tests {
         std::fs::create_dir_all(files.script.parent().unwrap()).unwrap();
         std::fs::write(&files.script, "// somebody else's plugin\n").unwrap();
 
-        assert!(install(&files, &fake_zellij(&temp), false).is_err());
+        assert!(install(&files, &fake_yinz(&temp), false).is_err());
         assert!(uninstall(&files).is_err());
         assert_eq!(
             read_generated(&files.script).unwrap().unwrap(),
@@ -1557,8 +1554,8 @@ mod tests {
     /// or a quote in it must not write a plugin opencode cannot parse.
     #[test]
     fn the_opencode_plugin_bakes_a_json_quoted_binary_path() {
-        let plugin = opencode_plugin(Path::new("/opt/my zellij/zellij"));
-        assert!(plugin.contains("\"/opt/my zellij/zellij\""), "{plugin}");
+        let plugin = opencode_plugin(Path::new("/opt/my yinz/yinz"));
+        assert!(plugin.contains("\"/opt/my yinz/yinz\""), "{plugin}");
     }
 
     #[test]
@@ -1686,7 +1683,7 @@ mod tests {
         let old = install_into(json!({ "model": "opus" }), &command).unwrap();
         write_settings(&legacy, &old).unwrap();
 
-        install(&files, &fake_zellij(&temp), false).unwrap();
+        install(&files, &fake_yinz(&temp), false).unwrap();
 
         assert!(
             events_in(&legacy).is_empty(),
@@ -1703,14 +1700,14 @@ mod tests {
     #[test]
     fn a_project_uninstall_keeps_the_script_a_user_install_uses() {
         let temp = temp_dir("shared-script");
-        let zellij = fake_zellij(&temp);
+        let yinz = fake_yinz(&temp);
         let project = project_files(&temp);
         let user = Files {
             project: None,
             ..project_files(&temp)
         };
-        install(&user, &zellij, false).unwrap();
-        install(&project, &zellij, false).unwrap();
+        install(&user, &yinz, false).unwrap();
+        install(&project, &yinz, false).unwrap();
 
         uninstall(&project).unwrap();
         assert!(events_in(&project.settings()).is_empty());

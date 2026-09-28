@@ -6,7 +6,7 @@ use hocus_proto::panel_text::{divider_line, scroll_readout, wrap_words};
 use hocus_proto::{agents, markdown, tabs, wire};
 use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
@@ -32,7 +32,7 @@ enum Surface {
     Todos,
 }
 register_plugin!(State);
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _: BTreeMap<String, String>) {
         subscribe(&[
             EventType::Key,

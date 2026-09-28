@@ -18,7 +18,7 @@ AllowTcpForwarding yes
 AllowStreamLocalForwarding yes
 StreamLocalBindUnlink yes
 
-# `ssh host zellij --pty-broker ensure` is a non-interactive exec, so the PATH
+# `ssh host yinz --pty-broker ensure` is a non-interactive exec, so the PATH
 # sshd builds is all it gets. /usr/local/bin is where the entrypoint puts the
 # wrapper.
 PermitUserEnvironment no

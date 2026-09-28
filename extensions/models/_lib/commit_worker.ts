@@ -49,9 +49,9 @@ const seconds = (name: string, fallback: number) => {
     const value = Number(raw);
     return Number.isFinite(value) && value >= 0 ? value : fallback;
 };
-const LOCK_WAIT_SECONDS = seconds("ZELLIJ_COMMIT_LOCK_WAIT_SECONDS", 600);
-const LOCK_NOTICE_SECONDS = seconds("ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS", 2);
-const SESSION_POLL_SECONDS = seconds("ZELLIJ_COMMIT_SESSION_POLL_SECONDS", 30);
+const LOCK_WAIT_SECONDS = seconds("YINZ_COMMIT_LOCK_WAIT_SECONDS", 600);
+const LOCK_NOTICE_SECONDS = seconds("YINZ_COMMIT_LOCK_NOTICE_SECONDS", 2);
+const SESSION_POLL_SECONDS = seconds("YINZ_COMMIT_SESSION_POLL_SECONDS", 30);
 let cancelled = false, dismissing = false;
 const records = new Map<string, Record<string, unknown>>();
 const c: Context & GitContext = {
@@ -143,7 +143,7 @@ const sessionListed = async (session: string) => {
         if (listing.code === 0) {
             return text(listing.stdout).split("\n").includes(session);
         }
-        return text(listing.stderr).includes("No active zellij sessions")
+        return text(listing.stderr).includes("No active yinz sessions")
             ? false
             : null;
     } catch {

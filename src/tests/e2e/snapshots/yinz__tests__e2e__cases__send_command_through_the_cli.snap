@@ -1,0 +1,28 @@
+---
+source: src/tests/e2e/cases.rs
+expression: last_snapshot
+---
+ Yinz (e2e-test)  Tab #1                                                                                                    Alt <[]>  VERTICAL 
+┌ Pane #1 ────────────────────────────────────────────────────────────────┐┌ /usr/src/yinz/fixtures/append-echo-script.sh ─────────────────────────┐
+│$ /usr/src/yinz/yinz run -s -- "/usr/src/yinz/fixtures/append-echo-││foo                                                                      │
+│script.sh"                                                               ││foo                                                                      │
+│terminal_1                                                               ││█                                                                        │
+│$                                                                        ││                                                                         │
+│$                                                                        ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+│                                                                         ││                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘└ [ EXIT CODE: 0 ] <ENTER> re-run, <ESC> drop to shell, <Ctrl-c> exit ────┘
+ Ctrl + <g> LOCK  <p> PANE  <t> TAB  <n> RESIZE  <h> MOVE  <s> SEARCH  <o> SESSION  <q> QUIT                                      ...

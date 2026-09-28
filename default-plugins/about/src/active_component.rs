@@ -1,7 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use zellij_tile::prelude::*;
-
 use crate::pages::{Page, TextOrCustomRender};
 
 #[derive(Debug)]
@@ -68,16 +64,9 @@ impl ActiveComponent {
         component_width
     }
     pub fn left_click_action(&mut self) -> Option<Page> {
-        match self.left_click_action.take() {
-            Some(ClickAction::ChangePage(go_to_page)) => Some(go_to_page()),
-            Some(ClickAction::OpenLink(link, executable)) => {
-                self.left_click_action =
-                    Some(ClickAction::OpenLink(link.clone(), executable.clone()));
-                run_command(&[&executable.borrow(), &link], Default::default());
-                None
-            },
-            None => None,
-        }
+        self.left_click_action
+            .take()
+            .map(|ClickAction::ChangePage(go_to_page)| go_to_page())
     }
     pub fn handle_left_click_at_position(&mut self, x: usize, y: usize) -> Option<Page> {
         let Some(last_rendered_coordinates) = &self.last_rendered_coordinates else {
@@ -139,16 +128,12 @@ impl ComponentCoordinates {
 
 pub enum ClickAction {
     ChangePage(Box<dyn FnOnce() -> Page>),
-    OpenLink(String, Rc<RefCell<String>>), // (destination, executable)
 }
 
 impl std::fmt::Debug for ClickAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClickAction::ChangePage(_) => write!(f, "ChangePage"),
-            ClickAction::OpenLink(destination, executable) => {
-                write!(f, "OpenLink: {}, {:?}", destination, executable)
-            },
         }
     }
 }
@@ -159,8 +144,5 @@ impl ClickAction {
         F: FnOnce() -> Page + 'static,
     {
         ClickAction::ChangePage(Box::new(go_to_page))
-    }
-    pub fn new_open_link(destination: String, executable: Rc<RefCell<String>>) -> Self {
-        ClickAction::OpenLink(destination, executable)
     }
 }

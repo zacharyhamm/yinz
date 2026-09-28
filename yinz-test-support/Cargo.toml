@@ -1,0 +1,17 @@
+[package]
+name = "yinz-test-support"
+description = "Test-only synchronization helpers shared across the Yinz workspace"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+publish = false
+
+# Intentionally dependency-free. This is a leaf crate so that any workspace member
+# can dev-depend on it without creating a cycle (`yinz-integration-tests` depends
+# on `yinz-server`, so it cannot host helpers that `yinz-server` needs).
+
+[lints]
+workspace = true
+
+[dependencies]

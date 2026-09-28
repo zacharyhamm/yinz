@@ -9,7 +9,7 @@
 //! `.wasm` and prunes the rest of the version directory, so a sidecar file would not survive.
 //! See `assets/wand/README.md` for how they are drawn.
 
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 /// The frames, in loop order. They are the whole runtime asset.
 pub const FRAMES: [&[u8]; 12] = [

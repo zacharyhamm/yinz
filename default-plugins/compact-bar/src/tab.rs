@@ -1,8 +1,8 @@
 use crate::{line::tab_separator, LinePart};
 use ansi_term::{ANSIString, ANSIStrings};
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
-use zellij_tile_utils::{ellipsize, style};
+use yinz_tile::prelude::*;
+use yinz_tile_utils::{ellipsize, style};
 
 fn cursors<'a>(
     focused_clients: &'a [ClientId],

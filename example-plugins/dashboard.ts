@@ -1,5 +1,5 @@
 // Tabs as ribbons, panes as a table, and periodic command output.
-import z, { definePlugin, type TabInfo, type PaneInfo, type PaneManifest } from "zellij:plugin";
+import z, { definePlugin, type TabInfo, type PaneInfo, type PaneManifest } from "yinz:plugin";
 let tabs: TabInfo[] = [];
 let manifest: PaneManifest["panes"] = {};
 let command = "uptime";

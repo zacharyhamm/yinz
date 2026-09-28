@@ -30,20 +30,20 @@ fn build(sh: &Shell) -> anyhow::Result<()> {
     let cargo = crate::cargo()?;
 
     println!(">> Building the provider and Debian GNU guest binary");
-    cmd!(sh, "{cargo} build --bin zellij-firecracker").run()?;
+    cmd!(sh, "{cargo} build --bin yinz-firecracker").run()?;
     let binary = crate::ci::build_linux_release(sh)?;
 
     let test_dir = dir();
     for name in ["config", "data", "cache", "state", "runtime"] {
         fs::create_dir_all(test_dir.join(name))?;
     }
-    let provider = crate::target_dir().join("debug/zellij-firecracker");
+    let provider = crate::target_dir().join("debug/yinz-firecracker");
     let guest = crate::target_dir().join(binary);
-    let image = test_dir.join("data/zellij/firecracker");
+    let image = test_dir.join("data/yinz/firecracker");
     let project = crate::project_root();
     cmd!(
         sh,
-        "{provider} image build --name zellij-dev --project {project} --zellij {guest} --output {image}"
+        "{provider} image build --name yinz-dev --project {project} --yinz {guest} --output {image}"
     )
     .envs(test_env())
     .run()
@@ -57,7 +57,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     let run = crate::test_run::TestRun::new()?;
     let _cache_root = sh.push_env(crate::owned_dir::TEST_CACHE_ROOT_ENV, run.path());
     let test_dir = dir();
-    let config = test_dir.join("config/zellij/firecracker.json");
+    let config = test_dir.join("config/yinz/firecracker.json");
     if !config.exists() {
         anyhow::bail!(
             "{} is missing; run 'cargo x firecracker-test --build' first",
@@ -70,10 +70,10 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
 
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
-    cmd!(sh, "{cargo} build --bin zellij-firecracker").run()?;
-    let provider = crate::target_dir().join("debug/zellij-firecracker");
+    cmd!(sh, "{cargo} build --bin yinz-firecracker").run()?;
+    let provider = crate::target_dir().join("debug/yinz-firecracker");
     let network = TemporaryNetwork::start(sh, provider, test_dir.join("network.json"))?;
-    let test_result = cmd!(sh, "{cargo} test -p zellij-server --test firecracker_vm -- --ignored --nocapture --test-threads 1")
+    let test_result = cmd!(sh, "{cargo} test -p yinz-server --test firecracker_vm -- --ignored --nocapture --test-threads 1")
         .args(args)
         .envs(test_env())
         .run()
@@ -154,8 +154,8 @@ fn test_network(pid: u32, uid: u32) -> serde_json::Value {
         second = 200 + (second - 200 + 1) % 55;
     }
     serde_json::json!({
-        "bridge": format!("zfcb{pid:x}"),
-        "tap_prefix": format!("zfct{pid:x}-"),
+        "bridge": format!("yfcb{pid:x}"),
+        "tap_prefix": format!("yfct{pid:x}-"),
         "subnet": format!("10.{second}.{third}.0/24"),
         "taps": 2,
         "dns": "1.1.1.1"
@@ -184,12 +184,12 @@ fn test_env() -> Vec<(OsString, OsString)> {
     .into_iter()
     .map(|(key, value)| (OsString::from(key), test_dir.join(value).into_os_string()))
     .chain([(
-        OsString::from("ZELLIJ_FIRECRACKER_NETWORK_CONFIG"),
+        OsString::from("YINZ_FIRECRACKER_NETWORK_CONFIG"),
         test_dir.join("network.json").into_os_string(),
     )])
     .chain([(
-        OsString::from("ZELLIJ_SOCKET_DIR"),
-        OsString::from(format!("/tmp/zfc-test-{}", std::process::id())),
+        OsString::from("YINZ_SOCKET_DIR"),
+        OsString::from(format!("/tmp/yfc-test-{}", std::process::id())),
     )])
     .collect()
 }

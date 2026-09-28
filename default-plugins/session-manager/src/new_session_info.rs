@@ -1,8 +1,8 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::path::PathBuf;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::*;
 
 #[derive(Default)]
 pub struct NewSessionInfo {
@@ -122,7 +122,7 @@ impl NewSessionInfo {
                     if self.is_welcome_screen {
                         // the welcome screen has done its job and now we need to quit this temporary
                         // session so as not to leave garbage sessions behind
-                        quit_zellij();
+                        quit_yinz();
                     } else {
                         close_self();
                     }

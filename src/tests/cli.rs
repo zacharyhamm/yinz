@@ -1,9 +1,9 @@
 use clap::{CommandFactory, Parser};
-use zellij_types::internal_ids::TabId;
-use zellij_types::internal_ids::TabPosition;
-use zellij_types::internal_ids::{RecordingId, TerminalId};
-use zellij_types::units::{ElapsedMicros, UnixMicros};
-use {zellij_cli::args::CliArgs, zellij_cli::args::Command};
+use yinz_types::internal_ids::TabId;
+use yinz_types::internal_ids::TabPosition;
+use yinz_types::internal_ids::{RecordingId, TerminalId};
+use yinz_types::units::{ElapsedMicros, UnixMicros};
+use {yinz_cli::args::CliArgs, yinz_cli::args::Command};
 
 const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -36,27 +36,27 @@ fn verify_cli() {
 
 #[test]
 fn cli_recordings_list_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "list"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "list"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: false })) => {},
+        Some(Command::Recordings(yinz_cli::args::Recordings::List { json: false })) => {},
         _ => panic!("Expected Recordings::List"),
     }
 }
 
 #[test]
 fn cli_recordings_list_json_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "list", "--json"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "list", "--json"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::List { json: true })) => {},
+        Some(Command::Recordings(yinz_cli::args::Recordings::List { json: true })) => {},
         _ => panic!("Expected Recordings::List with json"),
     }
 }
 
 #[test]
 fn cli_recordings_export_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "export", "42"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "export", "42"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
+        Some(Command::Recordings(yinz_cli::args::Recordings::Export {
             recording_id,
             output: None,
         })) if recording_id == RecordingId::new(42) => {},
@@ -66,26 +66,26 @@ fn cli_recordings_export_parses() {
 
 #[test]
 fn cli_recordings_unknown_subcommand_fails() {
-    let res = try_parse_cli(["zellij", "recordings", "bogus"]);
+    let res = try_parse_cli(["yinz", "recordings", "bogus"]);
     assert!(res.is_err(), "unknown subcommand should fail");
 }
 
 #[test]
 fn cli_recordings_export_missing_id_fails() {
-    let res = try_parse_cli(["zellij", "recordings", "export"]);
+    let res = try_parse_cli(["yinz", "recordings", "export"]);
     assert!(res.is_err(), "missing recording_id should fail");
 }
 
 #[test]
 fn cli_recordings_export_non_numeric_id_fails() {
-    let res = try_parse_cli(["zellij", "recordings", "export", "abc"]);
+    let res = try_parse_cli(["yinz", "recordings", "export", "abc"]);
     assert!(res.is_err(), "non-numeric id should fail");
 }
 
 #[test]
 fn cli_recordings_export_with_output_parses() {
     let args = try_parse_cli([
-        "zellij",
+        "yinz",
         "recordings",
         "export",
         "42",
@@ -94,7 +94,7 @@ fn cli_recordings_export_with_output_parses() {
     ])
     .unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::Export {
+        Some(Command::Recordings(yinz_cli::args::Recordings::Export {
             recording_id,
             output: Some(path),
         })) if path == *"pane.cast" && recording_id == RecordingId::new(42) => {},
@@ -104,9 +104,9 @@ fn cli_recordings_export_with_output_parses() {
 
 #[test]
 fn cli_recordings_search_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "search", "needle"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "search", "needle"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::Search { query, limit, json })) => {
+        Some(Command::Recordings(yinz_cli::args::Recordings::Search { query, limit, json })) => {
             assert_eq!(query, "needle");
             assert_eq!(limit, 50, "default limit");
             assert!(!json, "default is the human-readable table");
@@ -117,25 +117,25 @@ fn cli_recordings_search_parses() {
 
 #[test]
 fn cli_recordings_search_limit_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "search", "needle", "--limit", "5"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "search", "needle", "--limit", "5"]).unwrap();
     match args.command {
-        Some(Command::Recordings(zellij_cli::args::Recordings::Search { limit: 5, .. })) => {},
+        Some(Command::Recordings(yinz_cli::args::Recordings::Search { limit: 5, .. })) => {},
         _ => panic!("Expected Recordings::Search with limit 5"),
     }
 }
 
 #[test]
 fn cli_recordings_compact_parses() {
-    let args = try_parse_cli(["zellij", "recordings", "compact"]).unwrap();
+    let args = try_parse_cli(["yinz", "recordings", "compact"]).unwrap();
     assert!(matches!(
         args.command,
-        Some(Command::Recordings(zellij_cli::args::Recordings::Compact))
+        Some(Command::Recordings(yinz_cli::args::Recordings::Compact))
     ));
 }
 
 #[test]
 fn recordings_compact_output_reports_what_moved_and_the_file_size() {
-    use zellij_storage::session_recording::{CompactionReport, StoreCompaction};
+    use yinz_storage::session_recording::{CompactionReport, StoreCompaction};
 
     let output = crate::commands::format_compaction(&StoreCompaction {
         compaction: CompactionReport {
@@ -165,13 +165,13 @@ fn recordings_compact_output_reports_what_moved_and_the_file_size() {
 
 #[test]
 fn cli_recordings_search_missing_query_fails() {
-    let res = try_parse_cli(["zellij", "recordings", "search"]);
+    let res = try_parse_cli(["yinz", "recordings", "search"]);
     assert!(res.is_err(), "missing query should fail");
 }
 
 #[test]
 fn recordings_search_output_formats_header_and_rows() {
-    use zellij_storage::session_recording::SearchHit;
+    use yinz_storage::session_recording::SearchHit;
 
     assert_eq!(crate::commands::format_search_results(&[]), "No matches.\n");
 
@@ -203,11 +203,11 @@ fn recordings_search_output_formats_header_and_rows() {
 #[test]
 fn recordings_list_output_formats_header_and_rows() {
     use std::fs;
-    use zellij_storage::session_recording::{PaneMetadata, RecordingStore};
+    use yinz_storage::session_recording::{PaneMetadata, RecordingStore};
 
     // create temp recording database with one pane (unique per test invocation to avoid pid collision)
     let dir_path = std::env::temp_dir().join(format!(
-        "zellij-recordings-test-{}-{}",
+        "yinz-recordings-test-{}-{}",
         std::process::id(),
         rand::random::<u64>()
     ));
@@ -225,7 +225,7 @@ fn recordings_list_output_formats_header_and_rows() {
         rows: 24,
     };
     store.update_panes(&[meta], ElapsedMicros::new(0)).unwrap();
-    let summaries = zellij_storage::session_recording::list_recordings(&dir_path).unwrap();
+    let summaries = yinz_storage::session_recording::list_recordings(&dir_path).unwrap();
     assert_eq!(summaries.len(), 1);
     // call formatting helper (does not exist yet, should fail)
     let output = crate::commands::format_recordings_list(&summaries);
@@ -261,7 +261,7 @@ fn recordings_list_output_formats_header_and_rows() {
 
 #[test]
 fn recordings_state_strings() {
-    use zellij_storage::session_recording::RecordingSummary;
+    use yinz_storage::session_recording::RecordingSummary;
 
     let running = RecordingSummary {
         id: RecordingId::new(1),
@@ -317,14 +317,14 @@ fn recordings_state_strings() {
 }
 
 // ---------------------------------------------------------------------------
-// `zellij hocus hooks`
+// `yinz hocus hooks`
 // ---------------------------------------------------------------------------
 
 #[test]
 fn cli_hocus_hooks_parses_its_three_subcommands() {
-    use {zellij_cli::args::Hocus, zellij_cli::args::HocusHooks};
+    use {yinz_cli::args::Hocus, yinz_cli::args::HocusHooks};
 
-    let install = try_parse_cli(["zellij", "hocus", "hooks", "install"]).expect("parsed");
+    let install = try_parse_cli(["yinz", "hocus", "hooks", "install"]).expect("parsed");
     assert!(matches!(
         install.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
@@ -336,7 +336,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     ));
 
     let project_dir = try_parse_cli([
-        "zellij",
+        "yinz",
         "hocus",
         "hooks",
         "install",
@@ -353,7 +353,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     }
 
     let project =
-        try_parse_cli(["zellij", "hocus", "hooks", "install", "--project"]).expect("parsed");
+        try_parse_cli(["yinz", "hocus", "hooks", "install", "--project"]).expect("parsed");
     assert!(matches!(
         project.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
@@ -362,7 +362,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
         })))
     ));
 
-    let status = try_parse_cli(["zellij", "hocus", "hooks", "status"]).expect("parsed");
+    let status = try_parse_cli(["yinz", "hocus", "hooks", "status"]).expect("parsed");
     assert!(matches!(
         status.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Status {
@@ -371,27 +371,27 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     ));
 
     let codex =
-        try_parse_cli(["zellij", "hocus", "hooks", "install", "--agent", "codex"]).expect("parsed");
+        try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "codex"]).expect("parsed");
     assert!(matches!(
         codex.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(zellij_cli::args::HocusHookAgent::Codex),
+            agent: Some(yinz_cli::args::HocusHookAgent::Codex),
             ..
         })))
     ));
 
-    let opencode = try_parse_cli(["zellij", "hocus", "hooks", "install", "--agent", "opencode"])
+    let opencode = try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "opencode"])
         .expect("parsed");
     assert!(matches!(
         opencode.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(zellij_cli::args::HocusHookAgent::Opencode),
+            agent: Some(yinz_cli::args::HocusHookAgent::Opencode),
             ..
         })))
     ));
 
     assert!(
-        try_parse_cli(["zellij", "hocus", "hooks"]).is_err(),
+        try_parse_cli(["yinz", "hocus", "hooks"]).is_err(),
         "`hooks` on its own names no action"
     );
 }
@@ -549,9 +549,9 @@ fn uninstalling_hooks_preserves_user_authored_empty_events() {
 
 #[test]
 fn server_termios_requires_server() {
-    assert!(try_parse_cli(["zellij", "--server-termios", "null"]).is_err());
+    assert!(try_parse_cli(["yinz", "--server-termios", "null"]).is_err());
     let args = try_parse_cli([
-        "zellij",
+        "yinz",
         "--server",
         "/tmp/test.sock",
         "--server-termios",
@@ -559,7 +559,7 @@ fn server_termios_requires_server() {
     ])
     .expect("internal server arguments");
     assert_eq!(args.server_termios.as_deref(), Some("null"));
-    assert!(try_parse_cli(["zellij", "--server", "/tmp/test.sock"])
+    assert!(try_parse_cli(["yinz", "--server", "/tmp/test.sock"])
         .unwrap()
         .server_termios
         .is_none());
@@ -567,15 +567,15 @@ fn server_termios_requires_server() {
 
 #[test]
 fn explicit_theme_hue_keeps_cli_choices() {
-    use zellij_types::style::ThemeHue;
+    use yinz_types::style::ThemeHue;
     for (value, expected) in [("light", ThemeHue::Light), ("dark", ThemeHue::Dark)] {
-        let args = try_parse_cli(["zellij", "options", "--explicit-theme-hue", value]).unwrap();
+        let args = try_parse_cli(["yinz", "options", "--explicit-theme-hue", value]).unwrap();
         let Some(Command::Options(options)) = args.command else {
             panic!("expected options command");
         };
         assert_eq!(options.explicit_theme_hue, Some(expected));
     }
     for invalid in ["LIGHT", "Dark", "unknown"] {
-        assert!(try_parse_cli(["zellij", "options", "--explicit-theme-hue", invalid]).is_err());
+        assert!(try_parse_cli(["yinz", "options", "--explicit-theme-hue", invalid]).is_err());
     }
 }

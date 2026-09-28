@@ -1,6 +1,6 @@
 use crate::DisplayLayout;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 // Every budget in this module is in terminal columns, because that is what the caller has: a
 // pane width, or a column of a table. A `char` count is not that (CJK and emoji take two

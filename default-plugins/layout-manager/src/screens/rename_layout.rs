@@ -1,6 +1,6 @@
 use super::{ErrorScreen, KeyResponse, LayoutListScreen, OptimisticUpdate, Screen};
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{Button, Form, FormEvent, TextInput};
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::{Button, Form, FormEvent, TextInput};
 
 /// Rows the dialog occupies on top of the form itself: title, blank, blank, help.
 const DIALOG_CHROME_HEIGHT: usize = 4;

@@ -1,0 +1,16 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
+expression: "format!(\"{:#?}\", suppress_pane_event)"
+---
+Some(
+    SuppressPane(
+        Terminal(
+            TerminalId(
+                1,
+            ),
+        ),
+        ClientId(
+            1,
+        ),
+    ),
+)

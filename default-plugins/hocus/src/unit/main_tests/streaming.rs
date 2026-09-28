@@ -284,7 +284,7 @@ fn chunks_from_a_superseded_stream_are_ignored() {
 }
 
 /// Every plugin render costs the host a full screen composite, on the same
-/// thread that services every other Zellij action — one per socket read
+/// thread that services every other Yinz action — one per socket read
 /// froze the whole session for the length of a reply. Only the terminator
 /// asks for a render now; the frame timer repaints what arrives in between.
 #[test]

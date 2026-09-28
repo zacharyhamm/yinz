@@ -12,7 +12,7 @@ workspace = true
 # registry, so it must not bring agent strips, envelopes, the LLM request builders or swamp-lab
 # into the server with it.
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
@@ -22,5 +22,5 @@ url = { workspace = true }
 # them. Target-gated because `plugin_data_store` and `rusqlite` do not build for
 # wasm — which is the same reason the plugins get `store::Host` instead.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-zellij-storage = { workspace = true }
+yinz-storage = { workspace = true }
 tempfile = { workspace = true }

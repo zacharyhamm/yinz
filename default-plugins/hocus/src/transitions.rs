@@ -5,8 +5,8 @@ use crate::*;
 use hocus_proto::jobs;
 use hocus_proto::llm::{api_error_message, retry_delay, streamed_retry_delay};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::DataWatchId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::DataWatchId;
+use yinz_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Transitions
@@ -66,7 +66,7 @@ impl State {
     /// The session name arrives with the daemon's first snapshot, so this is not `is_known`
     /// until then — which is why the per-pane reads and writes hold back until it is.
     pub(crate) fn owner(&self) -> agents::rows::Owner {
-        agents::rows::Owner::new(self.host_id.clone(), self.zellij_session_name.clone())
+        agents::rows::Owner::new(self.host_id.clone(), self.yinz_session_name.clone())
     }
 
     /// hocus's own namespace: the archive and the up-arrow history.
@@ -317,7 +317,7 @@ impl State {
             return false;
         }
         let answer = match serde_json::from_str::<
-            Result<zellij_tile::plugin_authoring::PluginTestReport, String>,
+            Result<yinz_tile::plugin_authoring::PluginTestReport, String>,
         >(payload)
         {
             Ok(Ok(report)) => serde_json::to_string(&report).unwrap_or_default(),
@@ -552,11 +552,11 @@ impl State {
     /// being re-armed from `on_timer` for as long as there is something to do.
     ///
     /// ponytail: one chain, so a request that starts while a slow job tick is
-    /// outstanding can show its spinner up to `JOB_SECONDS` late — Zellij has
+    /// outstanding can show its spinner up to `JOB_SECONDS` late — Yinz has
     /// no cancel_timeout, and a second chain would defeat `timer_armed`.
     pub(crate) fn arm_timer(&mut self, interval: f64) {
         if !self.timer_armed {
-            set_timeout(zellij_tile::prelude::FractionalSeconds::new(interval));
+            set_timeout(yinz_tile::prelude::FractionalSeconds::new(interval));
             self.timer_armed = true;
         }
     }
@@ -673,7 +673,7 @@ impl State {
     pub(crate) fn take_projects(
         &mut self,
         projects: projects::Registry,
-        ids: BTreeMap<String, zellij_tile::prelude::DataRowId>,
+        ids: BTreeMap<String, yinz_tile::prelude::DataRowId>,
     ) {
         // Compare row identities too: a forgotten name may already have been recreated.
         // ponytail: scan replacement histories; index IDs if large registries slow watches.
@@ -894,7 +894,7 @@ impl State {
 
     pub(crate) fn send_run_detail(
         &self,
-        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_id: yinz_tile::prelude::PluginId,
         run_id: &str,
         revision: Option<u64>,
     ) {
@@ -911,7 +911,7 @@ impl State {
     /// request that produced it, so a store that recovers replaces it with the run.
     pub(crate) fn run_detail_message(
         &self,
-        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_id: yinz_tile::prelude::PluginId,
         run_id: &str,
         revision: Option<u64>,
     ) -> MessageToPlugin {
@@ -967,7 +967,7 @@ impl State {
     /// Answered either way (`wire::AGENT_RESUME_RESULT`). The panel put a confirmation in
     /// front of this, so the user has already said yes to something; a refusal that never
     /// arrives would leave that yes looking like a key that does nothing.
-    pub(crate) fn resume_run(&mut self, plugin_id: zellij_tile::prelude::PluginId, run_id: &str) {
+    pub(crate) fn resume_run(&mut self, plugin_id: yinz_tile::prelude::PluginId, run_id: &str) {
         let answer = |detail: String| {
             let Ok(payload) = serde_json::to_string(&wire::ResumeResult {
                 run_id: run_id.to_owned(),
@@ -1021,7 +1021,7 @@ impl State {
             return Err(format!("that run is live again in pane {pane_id}"));
         }
         let header = self.stored_run_header(run_id)?;
-        // The same staleness one zellij session further out: another session sharing the
+        // The same staleness one yinz session further out: another session sharing the
         // store resumed this run, or warped its pane in, and `adopt_stored_run` cleared the
         // record's end. `active_runs` above cannot see that - it is this session's live runs
         // - and the stored record is the only thing that can. `ended_at_ms` rather than
@@ -1043,7 +1043,7 @@ impl State {
     ///
     /// The store rather than `archived_runs`, which is where the row itself came from: that
     /// list is a snapshot taken when the page was loaded, and a run adopted since - by
-    /// another zellij session sharing this store, or by a warp - still looks ended in it.
+    /// another yinz session sharing this store, or by a warp - still looks ended in it.
     /// Reading it back is also what covers the panel pointing at a row this instance never
     /// loaded, which the paged archive makes real rather than defensive.
     pub(crate) fn stored_run_header(&self, run_id: &str) -> Result<agents::AgentRunHeader, String> {
@@ -1576,7 +1576,7 @@ impl State {
     pub(crate) fn on_ask(&mut self, message: &PipeMessage) -> bool {
         let reply_to = match message.source {
             PipeSource::Plugin(id) => Some(id),
-            // A hand-typed `zellij pipe` has no plugin to answer. The question
+            // A hand-typed `yinz pipe` has no plugin to answer. The question
             // is still taken; there is just nobody to tell.
             _ => None,
         };
@@ -1640,7 +1640,7 @@ impl State {
     /// delivered to the wrong one would answer a question it never put.
     fn ack_ask(
         &self,
-        reply_to: Option<zellij_tile::prelude::PluginId>,
+        reply_to: Option<yinz_tile::prelude::PluginId>,
         outcome: wire::AskOutcome,
         detail: &str,
     ) {
@@ -1866,7 +1866,7 @@ impl State {
     pub(crate) fn cancel_in_flight(&mut self) {
         if self.status == Status::AwaitingPluginTest {
             if let Some(call) = self.pending.front() {
-                zellij_tile::shim::cancel_plugin_test(&call.id);
+                yinz_tile::shim::cancel_plugin_test(&call.id);
             }
         }
         if let Some(stream_id) = self.active_stream_id() {

@@ -1,6 +1,6 @@
 //! The remote-pane tests: a real sshd, in a container, over a cuttable link.
 //!
-//! Everything under `zellij-process/src/pty_host/remote/` that needs another
+//! Everything under `yinz-process/src/pty_host/remote/` that needs another
 //! machine is verified here and nowhere else. The unit tests stop at a
 //! `UnixStream::pair()`; this is where an actual `ssh` runs, an actual broker
 //! daemonises on the far side, and an actual pty is allocated over there.
@@ -9,7 +9,7 @@
 //!
 //!   * `--build` — Debian GNU binary, generated keypair and ssh config, containers up
 //!     (`--build --native` uses a native debug binary on Linux)
-//!   * `--test`  — the `#[ignore]`d tests in `zellij-server/tests/`
+//!   * `--test`  — the `#[ignore]`d tests in `yinz-server/tests/`
 //!   * `--clean` — containers down, generated credentials removed
 //!
 //! The tests are `#[ignore]`d, so `cargo x test` and `cargo x integration-test`
@@ -31,11 +31,11 @@ const COMPOSE_FILE: &str = "docker-compose.remote-panes.yml";
 /// otherwise pick.
 ///
 /// Both compose files here are invoked from the repository root, so without this
-/// they land in one project named `zellij` — and each file's containers are
+/// they land in one project named `yinz` — and each file's containers are
 /// orphans of the other. `clean` runs `down --remove-orphans`, which would then
 /// take the e2e suite's sshd down with ours. The header of the compose file
 /// promises the opposite; this is what makes that true.
-const COMPOSE_PROJECT: &str = "zellij-remote-panes";
+const COMPOSE_PROJECT: &str = "yinz-remote-panes";
 /// Where sshd is published, through the proxy. Matches
 /// `docker/remote-pane-toxiproxy.json` and the compose port mapping.
 const SSH_PORT: u16 = 2223;
@@ -91,10 +91,10 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
         crate::status(">> Building the native debug binary for the far machine");
         println!(">> Building the native debug binary for the far machine");
         let cargo = crate::cargo()?;
-        cmd!(sh, "{cargo} build --bin zellij")
+        cmd!(sh, "{cargo} build --bin yinz")
             .run()
             .context("failed to build the native binary the container runs")?;
-        PathBuf::from("debug/zellij")
+        PathBuf::from("debug/yinz")
     } else {
         crate::status(">> Building the Debian GNU binary for the far machine");
         println!(">> Building the Debian GNU binary for the far machine");
@@ -113,7 +113,7 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
 
     // Relative to target/remote-test on both the host and the container's bind mount.
     // Keep the entrypoint independent of the selected target and build profile.
-    let link = remote_test_dir().join("zellij");
+    let link = remote_test_dir().join("yinz");
     match std::fs::remove_file(&link) {
         Ok(()) => {},
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
@@ -129,7 +129,7 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
         .run()
         .context("failed to start the containers. Is docker running?")?;
 
-    // The entrypoint installs the authorized key and writes the `zellij`
+    // The entrypoint installs the authorized key and writes the `yinz`
     // wrapper, so an already-running container is holding whatever the *last*
     // build generated. `up -d` will not recreate it — nothing about the compose
     // file changed — so say it explicitly rather than debug a "Permission
@@ -139,7 +139,7 @@ fn build(sh: &Shell, native: bool) -> anyhow::Result<()> {
         .context("failed to restart the far machine")?;
 
     wait_for_sshd().context("the containers came up but sshd never started answering")?;
-    compose(sh, &["exec", "-T", "remote", "/usr/local/bin/zellij", "--version"])
+    compose(sh, &["exec", "-T", "remote", "/usr/local/bin/yinz", "--version"])
         .run()
         .context("the built binary cannot run in the SSH container; native builds need compatible runtime libraries")?;
 
@@ -174,7 +174,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     // one far machine whose broker and forwards are process-global state.
     cmd!(
         sh,
-        "{cargo} test -p zellij-server --test remote_pane_ssh -- --ignored --nocapture --test-threads 1"
+        "{cargo} test -p yinz-server --test remote_pane_ssh -- --ignored --nocapture --test-threads 1"
     )
     .args(args)
     .run()
@@ -235,7 +235,7 @@ fn generate_credentials(sh: &Shell) -> anyhow::Result<()> {
         let private_arg = private.display().to_string();
         cmd!(
             sh,
-            "ssh-keygen -q -t ed25519 -N '' -C zellij-remote-pane-test -f {private_arg}"
+            "ssh-keygen -q -t ed25519 -N '' -C yinz-remote-pane-test -f {private_arg}"
         )
         .run()
         .context("failed to generate an ssh keypair. Is ssh-keygen installed?")?;
@@ -293,7 +293,7 @@ fn generate_credentials(sh: &Shell) -> anyhow::Result<()> {
 
 /// The ssh destination the tests pass to `--remote-host`. An alias rather than
 /// a `user@host`, because resolving one is part of what is being tested.
-pub const HOST_ALIAS: &str = "zellij-remote-pane";
+pub const HOST_ALIAS: &str = "yinz-remote-pane";
 
 fn set_private_mode(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]

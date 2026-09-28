@@ -2,16 +2,16 @@
 //! instance for the whole session rather than one instance per client.
 //!
 //! Launch it with:
-//!   zellij plugin --floating -c shared=true -- zellij:shared-test
+//!   yinz plugin --floating -c shared=true -- yinz:shared-test
 //!
 //! Attach a second client and the same instance renders a different view for each of them.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
-    plugin_id: zellij_tile::prelude::PluginId,
+    plugin_id: yinz_tile::prelude::PluginId,
     presses: BTreeMap<ClientId, u32>,
     total: u32,
     last_presser: Option<ClientId>,
@@ -25,7 +25,7 @@ struct State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[EventType::Key]);
         request_permission(&[PermissionType::ChangeApplicationState]);

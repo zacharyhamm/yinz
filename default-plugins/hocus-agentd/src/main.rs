@@ -2,7 +2,7 @@
 //!
 //! Background-only plugin. Never rendered.
 //!
-//! The daemon takes one startup snapshot, follows Zellij's pane, command, and CWD
+//! The daemon takes one startup snapshot, follows Yinz's pane, command, and CWD
 //! events, and samples agent output on a small heartbeat for activity and Git changes.
 
 mod messages;
@@ -21,10 +21,10 @@ use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, projects};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::*;
 
 const ACTIVITY_SECONDS: f64 = 5.0;
 const GIT_REFRESH_SECONDS: f64 = 60.0;
@@ -99,7 +99,7 @@ const COMPLETE_ID: &str = "complete_id";
 /// Twenty-four ticks is two minutes — longer than [`SUMMARY_TICKS`] because a caller
 /// driving its own tool loop may be asking a reasoning model something slow, and shorter
 /// than any caller's patience. Anyone who wants less has their own timeout: the TypeScript helper
-/// arms one, and a `zellij pipe` can be interrupted.
+/// arms one, and a `yinz pipe` can be interrupted.
 const COMPLETE_TICKS: u32 = 24;
 /// How many completions one caller may have in flight.
 ///
@@ -254,7 +254,7 @@ struct State {
     summaries: agents::Summaries,
     /// Hook-backed runs currently attached to a pane. Completed runs live in the shared store;
     /// dirty completed rows ride the snapshot that announces their end.
-    zellij_session_name: Option<SessionName>,
+    yinz_session_name: Option<SessionName>,
     /// The machine this daemon runs on, read once at load. The other half of a row's owner —
     /// see `agents::rows::Owner`.
     host_id: HostId,
@@ -361,7 +361,7 @@ struct InFlight {
 /// A completion that has gone out on somebody else's behalf and not yet come back.
 ///
 /// Where [`InFlight`] can simply be forgotten — the pane will go idle again and ask again —
-/// this one is somebody's blocked call, and a `zellij pipe` caller is a blocked process. So
+/// this one is somebody's blocked call, and a `yinz pipe` caller is a blocked process. So
 /// everything needed to *answer* it is held here, because the reply arrives on a
 /// `WebRequestResult` that knows nothing about the pipe that started it.
 struct Completion {
@@ -476,7 +476,7 @@ struct GitProbe {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
             EventType::AgentEvent,
@@ -490,7 +490,7 @@ impl ZellijPlugin for State {
             EventType::Timer,
         ]);
         // No `request_permission` here, deliberately. A builtin plugin — one
-        // loaded from a `zellij:` location — is granted every gated call
+        // loaded from a `yinz:` location — is granted every gated call
         // unconditionally by `check_command_permission`, which is why almost no
         // other default plugin asks either.
         //
@@ -510,9 +510,7 @@ impl ZellijPlugin for State {
         let _ = store::Host::shared().define_all(&store::shared_defs());
 
         self.bootstrap();
-        set_timeout(zellij_tile::prelude::FractionalSeconds::new(
-            ACTIVITY_SECONDS,
-        ));
+        set_timeout(yinz_tile::prelude::FractionalSeconds::new(ACTIVITY_SECONDS));
         // A reload drops the in-memory subscriber list. Ask existing watchers
         // to subscribe again instead of silently stopping their snapshots.
         pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_HELLO));
@@ -561,7 +559,7 @@ impl ZellijPlugin for State {
                     .find(|session| session.is_current_session)
                     .map(|session| session.name)
                 {
-                    self.set_zellij_session_name(name);
+                    self.set_yinz_session_name(name);
                 }
             },
             Event::RunCommandResult(exit_code, stdout, _, context) => {
@@ -606,9 +604,7 @@ impl ZellijPlugin for State {
                     self.refresh_repositories();
                 }
                 self.publish();
-                set_timeout(zellij_tile::prelude::FractionalSeconds::new(
-                    ACTIVITY_SECONDS,
-                ));
+                set_timeout(yinz_tile::prelude::FractionalSeconds::new(ACTIVITY_SECONDS));
             },
             _ => {},
         }
@@ -746,7 +742,7 @@ impl State {
         else {
             return;
         };
-        self.set_zellij_session_name(session_name.clone());
+        self.set_yinz_session_name(session_name.clone());
         if let Ok(rows) = store::Host::shared()
             .fetch(&agents::rows::active_runs_request(&self.owner()).limit(MAX_FETCH_ROWS))
         {
@@ -802,23 +798,23 @@ impl State {
     fn owner(&self) -> agents::rows::Owner {
         agents::rows::Owner::new(
             self.host_id.clone(),
-            self.zellij_session_name.clone().unwrap_or_default(),
+            self.yinz_session_name.clone().unwrap_or_default(),
         )
     }
 
-    fn set_zellij_session_name(&mut self, name: SessionName) {
-        if self.zellij_session_name.as_ref() == Some(&name) {
+    fn set_yinz_session_name(&mut self, name: SessionName) {
+        if self.yinz_session_name.as_ref() == Some(&name) {
             return;
         }
-        self.zellij_session_name = Some(name.clone());
+        self.yinz_session_name = Some(name.clone());
         let host_id = self.host_id.clone();
         for run in self.runs.values_mut() {
-            run.zellij_session_name = name.clone();
+            run.yinz_session_name = name.clone();
             run.host_id = host_id.clone();
             self.dirty_runs.insert(run.id.clone(), run.clone());
         }
         for run in self.dirty_runs.values_mut() {
-            run.zellij_session_name = name.clone();
+            run.yinz_session_name = name.clone();
             run.host_id = host_id.clone();
         }
     }
@@ -920,12 +916,12 @@ impl State {
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                    PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
             |pane_id, title| {
                 rename_pane_with_id(
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                    PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                     title,
                 )
             },
@@ -957,7 +953,7 @@ impl State {
         toast: impl FnOnce(u32, &str),
         rename: impl FnOnce(u32, &str),
     ) {
-        // The session carries the record, and `zellij action agent-report --hook-json` sets it
+        // The session carries the record, and `yinz action agent-report --hook-json` sets it
         // in the same breath as it broadcasts this event - so this write is a no-op beside it,
         // and the road for a hook script from before that, which only ever piped.
         match hocus_proto::agent::hook_outcome(kind, event) {
@@ -1178,8 +1174,7 @@ impl State {
             && !event.session_id.is_empty()
         {
             if let Some(run) = self.load_run(&agents::session_run_id(kind, &event.session_id)) {
-                if run.host_id != owner.host_id
-                    || run.zellij_session_name != owner.zellij_session_name
+                if run.host_id != owner.host_id || run.yinz_session_name != owner.yinz_session_name
                 {
                     return;
                 }
@@ -1218,7 +1213,7 @@ impl State {
             .or_insert_with(|| agents::AgentRun {
                 id: agents::run_id(kind, pane_id, &event.session_id, now_ms, &owner.host_id),
                 pane_id,
-                zellij_session_name: owner.zellij_session_name.clone(),
+                yinz_session_name: owner.yinz_session_name.clone(),
                 host_id: owner.host_id.clone(),
                 origin_run_id: None,
                 previous_run_id: None,
@@ -1437,7 +1432,7 @@ impl State {
     /// can find it. See `AgentInfo::run_id`.
     fn publish_run_id(&self, pane_id: u32, run_id: Option<String>) {
         set_pane_agent_run(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
             run_id,
         );
     }
@@ -2650,7 +2645,7 @@ impl State {
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                    PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
         )
@@ -3000,14 +2995,14 @@ impl State {
             context,
             |pane_id, title| {
                 rename_pane_with_id(
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                    PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                     title,
                 )
             },
             |pane_id, text| {
                 notify_with_pane_id(
                     text,
-                    PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                    PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                 )
             },
         );
@@ -3110,7 +3105,7 @@ impl State {
     // whole thing back each round. The daemon serves it because it is the half of hocus
     // that is always running and has no conversation of its own to contend with.
 
-    /// Take a completion request from a plugin or a `zellij pipe`.
+    /// Take a completion request from a plugin or a `yinz pipe`.
     fn on_complete(&mut self, message: &PipeMessage) {
         // Read once: each of these is a host call, and hocus's block is what configures
         // them, for the reason `HOCUS_ALIAS` gives.
@@ -3138,7 +3133,7 @@ impl State {
     /// Every request answers, refusals included, for the reason hocus's `on_ask` acknowledges
     /// even the questions it will not take: a caller cannot tell a daemon that heard and
     /// said nothing from a session with no daemon in it. Answering is also what releases a
-    /// blocked `zellij pipe`, so a silent path would hang a terminal. CLI EOF is not a request.
+    /// blocked `yinz pipe`, so a silent path would hang a terminal. CLI EOF is not a request.
     ///
     /// Returns whether the request went out, for the tests.
     fn on_complete_with(
@@ -3251,7 +3246,7 @@ impl State {
             ));
         }
         // Equality on the source is equality on the caller: a plugin id names one plugin,
-        // and two `zellij pipe` invocations carry different pipe ids. Only `Keybind`, which
+        // and two `yinz pipe` invocations carry different pipe ids. Only `Keybind`, which
         // is never answered and so never gets this far twice, is indistinguishable.
         let mine = self
             .completions
@@ -3307,7 +3302,7 @@ impl State {
     /// Answer and clear every completion that has been outstanding too long.
     ///
     /// Where the two summary lanes simply forget, this replies: the caller is blocked — a
-    /// `zellij pipe` literally so — and a `WebRequestResult` the host dropped would
+    /// `yinz pipe` literally so — and a `WebRequestResult` the host dropped would
     /// otherwise hang a terminal for the life of the session.
     fn age_completions_with(
         &mut self,
@@ -3521,7 +3516,7 @@ impl State {
     fn refresh_title_prefixes(&mut self) {
         self.refresh_title_prefixes_with(|pane_id, prefix| {
             set_pane_title_prefix(
-                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+                PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
                 prefix,
             )
         });
@@ -3673,7 +3668,7 @@ impl State {
             suppressed_panes: self.suppressed_panes.clone(),
             activity: self.activity.clone(),
             manual_kinds: self.manual_kinds.clone(),
-            zellij_session_name: self.zellij_session_name.clone().unwrap_or_default(),
+            yinz_session_name: self.yinz_session_name.clone().unwrap_or_default(),
             repositories: self.repositories.clone(),
             tab_projects: self.tab_projects.clone(),
             focused: self.focused,
@@ -3749,7 +3744,7 @@ impl State {
             return;
         }
         self.seq += 1;
-        // Addressed by plugin id, never by url: `with_plugin_url("zellij:hocus")`
+        // Addressed by plugin id, never by url: `with_plugin_url("yinz:hocus")`
         // would *launch* hocus, which is precisely what a background monitor
         // must not do. No subscribers means there is simply nobody to notify;
         // the cached snapshot remains ready for the first subscriber.
@@ -3769,7 +3764,7 @@ impl State {
 ///
 /// A plugin gets a [`wire::COMPLETE_RESULT`] addressed to its id, the way hocus's `ack_ask`
 /// answers an ask: a caller is one of possibly several and must not read somebody else's
-/// answer. A `zellij pipe` is a blocked process waiting on stdout, and answering it the
+/// answer. A `yinz pipe` is a blocked process waiting on stdout, and answering it the
 /// other way would hang the terminal. A keybind is neither and gets nothing — there is just
 /// nobody to tell, the same stance `on_ask` takes.
 fn answer_completion(source: &PipeSource, reply: &wire::CompletionReply) {
@@ -3806,8 +3801,8 @@ fn answer_completion_with(
 }
 
 /// The largest frame the client/server transport carries, which a completion reply is held to.
-/// It comes from `zellij-runtime`, which the wasm build already has through `zellij-tile`.
-use zellij_runtime::consts::MAX_IPC_FRAME_LEN;
+/// It comes from `yinz-runtime`, which the wasm build already has through `yinz-tile`.
+use yinz_runtime::consts::MAX_IPC_FRAME_LEN;
 
 /// A reply over the transport limit becomes an error the caller can match to its request. A CLI
 /// caller's line goes out in a frame a few bytes larger; the server holds that frame to the
@@ -3832,7 +3827,7 @@ fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> Str
 #[cfg(target_arch = "wasm32")]
 fn report_agent(pane_id: u32, agent: Option<AgentInfo>) {
     set_pane_agent(
-        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
         agent,
     );
 }
@@ -4236,9 +4231,9 @@ mod tests {
             other => panic!("{other:?}"),
         };
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(record),
                 ..PaneInfo::default()
@@ -4265,7 +4260,7 @@ mod tests {
                 record.session_id = Some(format!("{kind}-session"));
                 record.run_id = Some(format!("{kind}:transferred-run"));
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(i as u32 + 7, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(i as u32 + 7, false),
                     agent: Some(record),
                     ..PaneInfo::default()
                 }
@@ -4274,7 +4269,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), panes);
+            .insert(yinz_tile::prelude::TabPosition::new(0), panes);
         for _ in 0..3 {
             state.rebuild_panes();
             assert_eq!(state.hooks.len(), 2);
@@ -4328,9 +4323,9 @@ mod tests {
             other => panic!("{other:?}"),
         };
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(record),
                 ..PaneInfo::default()
@@ -4358,14 +4353,14 @@ mod tests {
     #[test]
     fn an_adopted_run_becomes_this_sessions_and_brings_its_summary() {
         let mut state = State {
-            zellij_session_name: Some("there".to_owned().into()),
+            yinz_session_name: Some("there".to_owned().into()),
             panes: Some(vec![pane(2, "claude", "/work")]),
             ..State::default()
         };
         let mut run = agents::AgentRun {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned().into(),
+            yinz_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             origin_run_id: None,
             previous_run_id: None,
@@ -4405,7 +4400,7 @@ mod tests {
         assert_eq!(live.entries.len(), 1, "with the history it arrived with");
         assert_eq!(live.started_at_ms, 10);
         assert_eq!(live.outcome, agents::RunOutcome::Active);
-        assert_eq!(live.zellij_session_name, "there".into());
+        assert_eq!(live.yinz_session_name, "there".into());
         assert!(
             state.dirty_runs.contains_key(&run.id),
             "and queued for the write that claims the row"
@@ -4427,15 +4422,15 @@ mod tests {
     #[test]
     fn a_pane_that_leaves_releases_its_run_rather_than_closing_it_outright() {
         let mut state = State {
-            zellij_session_name: Some("here".to_owned().into()),
+            yinz_session_name: Some("here".to_owned().into()),
             panes: Some(vec![pane(7, "claude", "/work")]),
             latched: BTreeMap::from([(7, CLAUDE.to_owned())]),
             ..State::default()
         };
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4448,7 +4443,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![]);
         state.rebuild_panes();
 
         assert!(
@@ -4482,9 +4477,9 @@ mod tests {
 
         // `kill -9`: no `SessionEnd`, and the pane's record goes to `Exited` on its own.
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(AgentInfo {
                     kind: CLAUDE.to_owned(),
@@ -4525,9 +4520,9 @@ mod tests {
     fn a_pane_that_reports_some_other_way_is_read_off_the_manifest() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 agent: Some(AgentInfo {
                     kind: CLAUDE.to_owned(),
@@ -4554,9 +4549,9 @@ mod tests {
     fn command_and_cwd_events_survive_the_next_pane_snapshot() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4710,7 +4705,7 @@ mod tests {
     fn a_suppressed_firecracker_pane_keeps_the_worktree_its_vm_mirrors() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             is_suppressed: true,
@@ -4722,7 +4717,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![vm]);
         state.rebuild_panes();
 
         assert!(
@@ -4738,7 +4733,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![]);
         state.rebuild_panes();
         assert_eq!(state.location_of(7), None);
     }
@@ -4752,7 +4747,7 @@ mod tests {
     fn a_firecracker_pane_re_run_on_this_machine_stops_answering_with_the_vms_worktree() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4763,7 +4758,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![vm]);
         state.cwds.insert(7, "/workspace".to_owned());
         state.rebuild_panes();
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
@@ -4771,9 +4766,9 @@ mod tests {
         // Re-run here: the same pane id, a local target, and no host — which is exactly
         // what the server reports, since it retracts both when the pane is respawned.
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "claude".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -4797,7 +4792,7 @@ mod tests {
     fn a_firecracker_pane_moved_to_another_vm_stops_answering_with_the_first_vms_worktree() {
         let mut state = State::default();
         let mut vm = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4808,13 +4803,13 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![vm]);
         state.cwds.insert(7, "/workspace".to_owned());
         state.rebuild_panes();
         assert_eq!(state.location_of(7), Some(local("/work/hocus")));
 
         let mut moved = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:dev".to_owned()),
             ..PaneInfo::default()
@@ -4823,7 +4818,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![moved]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![moved]);
         state.rebuild_panes();
 
         assert!(
@@ -4846,7 +4841,7 @@ mod tests {
     fn a_pane_still_in_a_vm_keeps_its_worktree_though_its_target_names_none() {
         let mut state = State::default();
         let mut joining = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -4855,7 +4850,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![joining]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![joining]);
         state.firecracker_worktrees.insert(
             7,
             VmCheckout {
@@ -4869,7 +4864,7 @@ mod tests {
     }
 
     /// A VM mirrors a folder on this machine, so that folder is what Git is asked
-    /// about — the same answer `zellij firecracker list` gives for a VM's branch. The
+    /// about — the same answer `yinz firecracker list` gives for a VM's branch. The
     /// guest's own repository is a clone whose only remote names the worktree's path,
     /// so nothing here could match it to a project.
     #[test]
@@ -5571,9 +5566,9 @@ mod tests {
     fn a_manifest_without_a_cwd_does_not_clobber_a_known_one() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -5770,9 +5765,9 @@ mod tests {
             .repositories
             .insert(local("/work"), projects::Repository::folder("/work"));
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 is_suppressed: true,
                 ..PaneInfo::default()
@@ -5792,9 +5787,9 @@ mod tests {
         // Back in front, and still the same process: it has not re-run, so it
         // does not have to earn its latch again.
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "codex".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -5818,9 +5813,9 @@ mod tests {
     fn a_rerun_pane_earns_its_latch_again() {
         let mut state = ran_codex(7);
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 exited: true,
                 ..PaneInfo::default()
@@ -5837,9 +5832,9 @@ mod tests {
         // manifest's last word rather than the agent's.
         state.commands.insert(7, "zsh".to_owned());
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -5867,9 +5862,9 @@ mod tests {
             },
         );
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 exited: true,
                 ..PaneInfo::default()
@@ -5880,9 +5875,9 @@ mod tests {
         // Re-run: the same pane id, running again.
         state.commands.insert(7, "zsh".to_owned());
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -5902,9 +5897,9 @@ mod tests {
         let manifest = |id: u32| {
             let mut manifest = PaneManifest::default();
             manifest.panes.insert(
-                zellij_tile::prelude::TabPosition::new(0),
+                yinz_tile::prelude::TabPosition::new(0),
                 vec![PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(id, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(id, false),
                     title: "Pane #1".to_owned(),
                     ..PaneInfo::default()
                 }],
@@ -6050,9 +6045,9 @@ mod tests {
     fn a_pane_update_does_not_cancel_the_bootstrap_retry() {
         let mut state = State::default();
         state.manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                 title: "shell".to_owned(),
                 ..PaneInfo::default()
             }],
@@ -6154,7 +6149,7 @@ mod tests {
             text: text.to_owned(),
             readable: true,
             is_scrolled: false,
-            last_output_ms_ago: Some(zellij_tile::prelude::ElapsedMillis::new(0)),
+            last_output_ms_ago: Some(yinz_tile::prelude::ElapsedMillis::new(0)),
         }
     }
 
@@ -6162,7 +6157,7 @@ mod tests {
     /// or a viewport that moved on its own looks like.
     fn quiet(text: &str) -> poll::PaneSample {
         poll::PaneSample {
-            last_output_ms_ago: Some(zellij_tile::prelude::ElapsedMillis::new(600_000)),
+            last_output_ms_ago: Some(yinz_tile::prelude::ElapsedMillis::new(600_000)),
             ..sample(text)
         }
     }
@@ -6189,12 +6184,12 @@ mod tests {
     fn sized_manifest(pane_id: u32, rows: usize, columns: usize) -> PaneManifest {
         let mut manifest = PaneManifest::default();
         manifest.panes.insert(
-            zellij_tile::prelude::TabPosition::new(0),
+            yinz_tile::prelude::TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(pane_id, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(pane_id, false),
                 title: "claude".to_owned(),
-                pane_content_rows: zellij_tile::prelude::RowCount::new(rows),
-                pane_content_columns: zellij_tile::prelude::ColumnCount::new(columns),
+                pane_content_rows: yinz_tile::prelude::RowCount::new(rows),
+                pane_content_columns: yinz_tile::prelude::ColumnCount::new(columns),
                 ..PaneInfo::default()
             }],
         );
@@ -6277,16 +6272,16 @@ mod tests {
         fn state() -> State {
             State {
                 host_id: HostId::new("host-a"),
-                zellij_session_name: Some("here".into()),
+                yinz_session_name: Some("here".into()),
                 ..State::default()
             }
         }
 
         fn manifest(state: &mut State, kind: &str, session: &str, exited: bool) {
             state.manifest.panes.insert(
-                zellij_tile::prelude::TabPosition::new(0),
+                yinz_tile::prelude::TabPosition::new(0),
                 vec![PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(7, false),
                     title: kind.to_owned(),
                     agent: Some(AgentInfo {
                         kind: kind.to_owned(),
@@ -6397,7 +6392,7 @@ mod tests {
                 manifest(&mut state, "claude", "A", false);
                 match case {
                     "host" => state.host_id = HostId::new("host-b"),
-                    "owner" => state.zellij_session_name = Some("elsewhere".into()),
+                    "owner" => state.yinz_session_name = Some("elsewhere".into()),
                     "destroy" => {
                         state.manifest.panes.clear();
                         state.rebuild_panes();
@@ -6611,7 +6606,7 @@ mod tests {
         let mut run = agents::AgentRun {
             id: "claude:s".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned().into(),
+            yinz_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             origin_run_id: None,
             previous_run_id: None,
@@ -7687,7 +7682,7 @@ mod tests {
     fn a_persist_writes_only_the_entries_the_store_does_not_have() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
-            zellij_session_name: Some("zellij".to_owned().into()),
+            yinz_session_name: Some("yinz".to_owned().into()),
             ..State::default()
         };
         feed(
@@ -7703,7 +7698,7 @@ mod tests {
         // One run row, one entry row.
         let (first, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
             HostId::new("host-a"),
-            "zellij".into(),
+            "yinz".into(),
         ));
         assert_eq!(first.len(), 2);
         assert_eq!(written, vec![(run_id.clone(), 1)]);
@@ -7721,7 +7716,7 @@ mod tests {
         );
         let (second, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
             HostId::new("host-a"),
-            "zellij".into(),
+            "yinz".into(),
         ));
         assert_eq!(second.len(), 2, "the run row and the one new entry");
         assert_eq!(written, vec![(run_id.clone(), 2)]);
@@ -7742,7 +7737,7 @@ mod tests {
         );
         let (released, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
             HostId::new("host-a"),
-            "zellij".into(),
+            "yinz".into(),
         ));
         assert_eq!(
             released.len(),
@@ -7758,13 +7753,13 @@ mod tests {
     #[test]
     fn a_released_run_whose_entries_were_never_rows_still_writes_them() {
         let mut state = State {
-            zellij_session_name: Some("zellij".to_owned().into()),
+            yinz_session_name: Some("yinz".to_owned().into()),
             ..State::default()
         };
         let mut run = agents::AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new("host-a"),
             origin_run_id: None,
             previous_run_id: None,
@@ -7791,7 +7786,7 @@ mod tests {
 
         let (mutations, written) = state.dirty_run_mutations(&agents::rows::Owner::new(
             HostId::new("host-a"),
-            "zellij".into(),
+            "yinz".into(),
         ));
         assert_eq!(
             mutations.len(),
@@ -8089,16 +8084,16 @@ mod tests {
     }
 
     #[test]
-    fn active_runs_follow_a_zellij_session_rename() {
+    fn active_runs_follow_a_yinz_session_rename() {
         let mut state = State::default();
         feed(&mut state, 7, &hook("UserPromptSubmit"), None);
 
-        state.set_zellij_session_name("first".to_owned().into());
-        assert_eq!(state.runs[&7].zellij_session_name, "first".into());
-        state.set_zellij_session_name("renamed".to_owned().into());
-        assert_eq!(state.runs[&7].zellij_session_name, "renamed".into());
+        state.set_yinz_session_name("first".to_owned().into());
+        assert_eq!(state.runs[&7].yinz_session_name, "first".into());
+        state.set_yinz_session_name("renamed".to_owned().into());
+        assert_eq!(state.runs[&7].yinz_session_name, "renamed".into());
         assert_eq!(
-            state.dirty_runs[&state.runs[&7].id].zellij_session_name,
+            state.dirty_runs[&state.runs[&7].id].yinz_session_name,
             "renamed".into()
         );
     }
@@ -8295,7 +8290,7 @@ mod tests {
         };
         let event = |raw: &str| {
             Event::AgentEvent(wire::AgentEvent {
-                pane_id: zellij_tile::prelude::TerminalId::new(7),
+                pane_id: yinz_tile::prelude::TerminalId::new(7),
                 kind: CLAUDE.to_owned(),
                 hook: "Stop".to_owned(),
                 raw: raw.to_owned(),
@@ -9059,7 +9054,7 @@ mod tests {
         state.dirty_runs.clear();
 
         let mut vm = PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(7, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(7, false),
             title: "claude".to_owned(),
             host: Some("firecracker:review".to_owned()),
             ..PaneInfo::default()
@@ -9070,7 +9065,7 @@ mod tests {
         state
             .manifest
             .panes
-            .insert(zellij_tile::prelude::TabPosition::new(0), vec![vm]);
+            .insert(yinz_tile::prelude::TabPosition::new(0), vec![vm]);
         state.rebuild_panes();
 
         let run = state.runs.get(&7).expect("the pane's run");
@@ -9128,7 +9123,7 @@ mod tests {
         let mut run = agents::AgentRun {
             id: "claude:cc-session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned().into(),
+            yinz_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             origin_run_id: None,
             previous_run_id: None,
@@ -9171,7 +9166,7 @@ mod tests {
         agents::AgentRun {
             id: id.to_owned(),
             pane_id: 7,
-            zellij_session_name: "here".to_owned().into(),
+            yinz_session_name: "here".to_owned().into(),
             host_id: HostId::new("host-a"),
             origin_run_id: None,
             previous_run_id: None,
@@ -9606,7 +9601,7 @@ mod tests {
             for owner in ["same", "other host", "other session", "missing"] {
                 let mut state = State {
                     host_id: HostId::new("host-a"),
-                    zellij_session_name: Some("here".into()),
+                    yinz_session_name: Some("here".into()),
                     ..State::default()
                 };
                 state.record_run_event(7, kind, &prompt("work"), 1);
@@ -9633,7 +9628,7 @@ mod tests {
                 let mut archived = state.dirty_runs[&id].clone();
                 match owner {
                     "other host" => archived.host_id = HostId::new("host-b"),
-                    "other session" => archived.zellij_session_name = "elsewhere".into(),
+                    "other session" => archived.yinz_session_name = "elsewhere".into(),
                     _ => {},
                 }
                 state.dirty_runs.insert(id.clone(), archived.clone());
@@ -9721,7 +9716,7 @@ mod tests {
             for captured in [false, true] {
                 let mut state = State {
                     host_id: HostId::new("host-a"),
-                    zellij_session_name: Some("here".into()),
+                    yinz_session_name: Some("here".into()),
                     ..State::default()
                 };
                 let id = agents::session_run_id("claude", "cc-session-1");
@@ -9731,7 +9726,7 @@ mod tests {
                 if foreign == "host" {
                     run.host_id = HostId::new("host-b");
                 } else if foreign == "session" {
-                    run.zellij_session_name = "elsewhere".into();
+                    run.yinz_session_name = "elsewhere".into();
                 }
                 state.dirty_runs.insert(id.clone(), run.clone());
                 let mut end = hook("SessionEnd");
@@ -10061,7 +10056,7 @@ mod tests {
 
     /// Both kinds of caller are held to the limit on the reply's JSON. The frame that carries a
     /// CLI caller's line is a few bytes larger, and the server holds that frame to the limit
-    /// itself (zellij-server's `cli_pipe_tests`).
+    /// itself (yinz-server's `cli_pipe_tests`).
     #[test]
     fn completion_replies_are_held_to_the_limit_for_both_callers() {
         let size = |reply: &wire::CompletionReply| serde_json::to_string(reply).unwrap().len();
@@ -10531,7 +10526,7 @@ mod tests {
         assert!(state.completions.is_empty(), "a failure frees the slot too");
     }
 
-    /// The whole reason this lane ages out at all: a `zellij pipe` is a blocked process, and
+    /// The whole reason this lane ages out at all: a `yinz pipe` is a blocked process, and
     /// a `WebRequestResult` the host dropped would hang it for the life of the session.
     #[test]
     fn a_completion_that_never_answers_is_timed_out_and_its_slot_freed() {

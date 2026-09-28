@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{Button, Dialog, Form, FormEvent, Rect};
-use zellij_tile::ui_components::Text;
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::{Button, Dialog, Form, FormEvent, Rect};
+use yinz_tile::ui_components::Text;
 
 const CANCEL: &str = "cancel";
 const QUIT: &str = "quit";
@@ -25,7 +25,7 @@ impl Default for State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         // What the plugins holding something outstanding asked to have said, one per line, and
         // why we are asking. Both are put here by `Screen::confirm_quit`.
@@ -74,7 +74,7 @@ impl ZellijPlugin for State {
             },
             FormEvent::ButtonPressed(id) if id == QUIT => {
                 close_self();
-                quit_zellij();
+                quit_yinz();
                 false
             },
             event => event.should_render(),
@@ -90,11 +90,11 @@ fn confirmation_dialog(notice: Option<&str>, on_last_pane: bool) -> Dialog {
     // The last pane closing is a quit the user did not ask for in so many words, so the question
     // says which gesture it is answering rather than leaving them to work it out.
     let message = match on_last_pane {
-        true => "That was the last pane. Quit Zellij?",
+        true => "That was the last pane. Quit Yinz?",
         false => "Are you sure you want to quit?",
     };
     let mut dialog = Dialog::new(
-        Text::new("Quit Zellij?").color_all(2),
+        Text::new("Quit Yinz?").color_all(2),
         Form::new()
             .button(CANCEL, Button::new("Cancel"))
             .button(QUIT, Button::new("Quit")),

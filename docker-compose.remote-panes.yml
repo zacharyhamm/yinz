@@ -13,8 +13,8 @@ services:
     build:
       context: ./docker
       dockerfile: remote-pane-sshd.Dockerfile
-    container_name: zellij-remote-pane
-    hostname: zellij-remote-pane
+    container_name: yinz-remote-pane
+    hostname: yinz-remote-pane
     environment:
       PUBLIC_KEY_FILE: /keys/id_ed25519.pub
       # Test seam. A pane whose server never comes back is reclaimed after this
@@ -25,19 +25,19 @@ services:
       # that same order would have the reaper quietly winning the race, and the
       # failure would look like a broken reconnect rather than an impatient
       # fixture.
-      ZELLIJ_REMOTE_ORPHAN_TIMEOUT_SECS: "20"
+      YINZ_REMOTE_ORPHAN_TIMEOUT_SECS: "20"
       #
       # How often the broker asks Git about a pane's folder again, on top of
       # asking when the folder changes. The default is a minute, which is the
       # right cadence in real use and far too long to watch in a test: a branch
       # switched in place has to be waited out before it is reported.
-      ZELLIJ_REMOTE_GIT_REFRESH_SECS: "5"
+      YINZ_REMOTE_GIT_REFRESH_SECS: "5"
     volumes:
-      # The selected binary is linked at target/remote-test/zellij by the build.
+      # The selected binary is linked at target/remote-test/yinz by the build.
       # Its relative link works through this mount for both Debian and native builds.
       - type: bind
         source: ./target
-        target: /usr/src/zellij
+        target: /usr/src/yinz
       - type: bind
         source: ./target/remote-test/keys
         target: /keys
@@ -51,7 +51,7 @@ services:
   # choosing, with none of the guesswork of killing sshd processes by pattern.
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.12.0
-    container_name: zellij-remote-pane-proxy
+    container_name: yinz-remote-pane-proxy
     command: ["-host", "0.0.0.0", "-config", "/config/toxiproxy.json"]
     volumes:
       - type: bind

@@ -22,7 +22,7 @@ fn test_config() -> Config {
         dobbs: DEFAULT_DOBBS.into(),
         dobbs_addr: None,
         dobbs_token: None,
-        zellij: DEFAULT_ZELLIJ.into(),
+        yinz: DEFAULT_YINZ.into(),
         system_prompt: None,
         thinking: None,
         reasoning_effort: None,

@@ -1,5 +1,5 @@
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::Text;
+use yinz_tile::prelude::Text;
 
 /// What the panel's footer says while the panel's own tab bar has the keys, on every tab.
 ///

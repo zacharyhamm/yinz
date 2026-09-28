@@ -1,7 +1,7 @@
 mod active_component;
 mod keybindings;
 mod pages;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use pages::Page;
 use std::cell::RefCell;
@@ -17,32 +17,28 @@ const UI_COLUMNS: usize = 90;
 #[derive(Debug)]
 struct App {
     active_page: Page,
-    link_executable: Rc<RefCell<String>>,
-    zellij_version: Rc<RefCell<String>>,
+    yinz_version: Rc<RefCell<String>>,
     base_mode: Rc<RefCell<InputMode>>,
     keybinding_state: Rc<RefCell<KeybindingState>>,
     tab_rows: usize,
     tab_columns: usize,
-    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
+    own_plugin_id: Option<yinz_tile::prelude::PluginId>,
     is_release_notes: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let link_executable = Rc::new(RefCell::new("".to_owned()));
-        let zellij_version = Rc::new(RefCell::new("".to_owned()));
+        let yinz_version = Rc::new(RefCell::new("".to_owned()));
         let base_mode = Rc::new(RefCell::new(Default::default()));
         let keybinding_state = Rc::new(RefCell::new(Default::default()));
         App {
             active_page: Page::new_main_screen(
-                link_executable.clone(),
                 "".to_owned(),
                 base_mode.clone(),
                 false,
                 keybinding_state.clone(),
             ),
-            link_executable,
-            zellij_version,
+            yinz_version,
             base_mode,
             keybinding_state,
             tab_rows: 0,
@@ -55,7 +51,7 @@ impl Default for App {
 
 register_plugin!(App);
 
-impl ZellijPlugin for App {
+impl YinzPlugin for App {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.is_release_notes = configuration
             .get("is_release_notes")
@@ -65,16 +61,14 @@ impl ZellijPlugin for App {
             EventType::Key,
             EventType::Mouse,
             EventType::ModeUpdate,
-            EventType::RunCommandResult,
             EventType::TabUpdate,
             EventType::FailedToWriteConfigToDisk,
             EventType::ConfigWasWrittenToDisk,
         ]);
         let own_plugin_id = get_plugin_ids().plugin_id;
         self.own_plugin_id = Some(own_plugin_id);
-        *self.zellij_version.borrow_mut() = get_zellij_version();
+        *self.yinz_version.borrow_mut() = get_yinz_version();
         self.change_own_title();
-        self.query_link_executable();
         self.active_page = self.main_screen();
     }
     fn update(&mut self, event: Event) -> bool {
@@ -121,17 +115,6 @@ impl ZellijPlugin for App {
                     should_render = true;
                 }
             },
-            Event::RunCommandResult(exit_code, _stdout, _stderr, context) => {
-                let is_xdg_open = context.contains_key("xdg_open_cli");
-                let is_open = context.contains_key("open_cli");
-                if is_xdg_open {
-                    if exit_code == Some(0) {
-                        self.update_link_executable("xdg-open".to_owned());
-                    }
-                } else if is_open && exit_code == Some(0) {
-                    self.update_link_executable("open".to_owned());
-                }
-            },
             Event::Key(key) => {
                 should_render = self.handle_key(key);
             },
@@ -147,23 +130,20 @@ impl ZellijPlugin for App {
 impl App {
     fn main_screen(&self) -> Page {
         Page::new_main_screen(
-            self.link_executable.clone(),
-            self.zellij_version.borrow().clone(),
+            self.yinz_version.borrow().clone(),
             self.base_mode.clone(),
             self.is_release_notes,
             self.keybinding_state.clone(),
         )
     }
     fn main_screen_builder(&self) -> Rc<dyn Fn() -> Page> {
-        let link_executable = self.link_executable.clone();
-        let zellij_version = self.zellij_version.clone();
+        let yinz_version = self.yinz_version.clone();
         let base_mode = self.base_mode.clone();
         let keybinding_state = self.keybinding_state.clone();
         let is_release_notes = self.is_release_notes;
         Rc::new(move || {
             Page::new_main_screen(
-                link_executable.clone(),
-                zellij_version.borrow().clone(),
+                yinz_version.borrow().clone(),
                 base_mode.clone(),
                 is_release_notes,
                 keybinding_state.clone(),
@@ -237,23 +217,12 @@ impl App {
             if self.is_release_notes {
                 rename_plugin_pane(
                     own_plugin_id,
-                    format!("Release Notes {}", self.zellij_version.borrow()),
+                    format!("Release Notes {}", self.yinz_version.borrow()),
                 );
             } else {
-                rename_plugin_pane(own_plugin_id, "About Zellij");
+                rename_plugin_pane(own_plugin_id, "About Yinz");
             }
         }
-    }
-    pub fn query_link_executable(&self) {
-        let mut xdg_open_context = BTreeMap::new();
-        xdg_open_context.insert("xdg_open_cli".to_owned(), String::new());
-        run_command(&["xdg-open", "--help"], xdg_open_context);
-        let mut open_context = BTreeMap::new();
-        open_context.insert("open_cli".to_owned(), String::new());
-        run_command(&["open", "--help"], open_context);
-    }
-    pub fn update_link_executable(&mut self, new_link_executable: String) {
-        *self.link_executable.borrow_mut() = new_link_executable;
     }
     pub fn update_base_mode(&mut self, new_base_mode: InputMode) -> bool {
         let mut should_render = false;

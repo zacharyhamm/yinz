@@ -15,9 +15,9 @@ use ansi_term::{
 
 use std::collections::BTreeMap;
 use std::fmt::{Display, Error, Formatter};
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
-use zellij_tile_utils::{palette_match, style};
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::{palette_match, style};
 
 use first_line::first_line;
 use one_line_ui::{one_line_ui, SecondaryInfo};
@@ -259,7 +259,7 @@ fn col_in_range(range: Option<(usize, usize)>, col: usize) -> bool {
     }
 }
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         // TODO: Should be able to choose whether to use the cache through config.
         self.tip_name = get_cached_tip_name();
@@ -658,7 +658,7 @@ impl State {
     fn arm_tick(&mut self, now: i64) {
         let at = next_tick_at(now, self.hint_until_ms(), self.animation_interval_ms());
         if should_arm_tick(self.pending_tick_at_ms, at) {
-            set_timeout(zellij_tile::prelude::FractionalSeconds::new(
+            set_timeout(yinz_tile::prelude::FractionalSeconds::new(
                 ((at - now) as f64 / 1000.0).max(0.001),
             ));
             self.pending_tick_at_ms = Some(at);
@@ -1026,9 +1026,7 @@ pub mod tests {
     }
 
     fn launches(alias: &str) -> Action {
-        use {
-            zellij_types::input::layout::PluginAlias, zellij_types::input::layout::RunPluginOrAlias,
-        };
+        use {yinz_types::input::layout::PluginAlias, yinz_types::input::layout::RunPluginOrAlias};
         Action::LaunchOrFocusPlugin {
             plugin: RunPluginOrAlias::Alias(PluginAlias {
                 name: alias.to_string(),

@@ -229,7 +229,7 @@ fn info_rect() -> Rect {
 
 fn yielded(stop: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(7)),
         name: hocus_proto::wire::AGENT_STRIP_YIELD.to_owned(),
         payload: None,
         args: BTreeMap::from([(hocus_proto::wire::PANEL_STOP.to_owned(), stop.to_owned())]),
@@ -416,7 +416,7 @@ fn nothing_is_followed_until_we_know_where_we_are() {
 /// A tiled pane on the panel's tab, the layer under the overlay.
 fn tiled(id: u32, is_focused: bool) -> PaneInfo {
     PaneInfo {
-        id: PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)),
+        id: PaneId::Terminal(yinz_tile::prelude::TerminalId::new(id)),
         is_floating: false,
         is_focused,
         ..Default::default()
@@ -582,7 +582,7 @@ fn a_modal_handing_the_keys_back_does_not_hide_the_panel() {
 #[test]
 fn a_launch_on_another_clients_tab_leaves_the_panel_up() {
     let hide = |tab: Option<&str>| PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(55)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(55)),
         name: hocus_proto::wire::AGENT_STRIP_HIDE.to_owned(),
         payload: None,
         args: tab
@@ -987,7 +987,7 @@ fn configured_request(
     value: &str,
     rows: usize,
     cols: usize,
-) -> (zellij_types::multipane::CreateMultipane, usize) {
+) -> (yinz_types::multipane::CreateMultipane, usize) {
     let mut state = placed_state();
     state.multipane = None;
     state.surface_rows = rows;
@@ -1004,11 +1004,11 @@ fn configured_request(
 /// The two halves of a `request` as the host draws them on a panel `cols` wide, with the floor
 /// the container carries.
 fn drawn_halves(
-    request: &zellij_types::multipane::CreateMultipane,
+    request: &yinz_types::multipane::CreateMultipane,
     rows: usize,
     cols: usize,
 ) -> (usize, usize) {
-    let outer = zellij_types::pane_size::PaneGeom::from(&Size { rows, cols });
+    let outer = yinz_types::pane_size::PaneGeom::from(&Size { rows, cols });
     let ([list, conversation], _) = request.split.geometry(outer, true, request.min_cells);
     (list.cols.as_usize(), conversation.cols.as_usize())
 }

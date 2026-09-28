@@ -1,0 +1,35 @@
+[package]
+name = "yinz-tab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The yinz server's tab: pane composition, focus, swap layouts, mouse and pane groups"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-panes = { path = "../yinz-panes", version = "0.45.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-key-codec = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+log = { workspace = true }
+unicode-width = { workspace = true }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["process", "signal"] }
+
+[dev-dependencies]
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+hegeltest = "0.29.3"
+insta = "1.48"
+interprocess = { workspace = true }
+kdl = { workspace = true }
+tempfile = "3.2.0"
+vte = { workspace = true }

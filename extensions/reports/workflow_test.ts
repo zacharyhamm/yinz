@@ -13,20 +13,20 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
         ["@hammz/question", "question-model", "report-summary", 1, {
             type: "report",
         }, "# Markdown report"],
-        ["@hammz/zellij", "earlier", "review-current", 2, {
+        ["@hammz/yinz", "earlier", "review-current", 2, {
             workflowRunId: "run",
             specName: "review",
             modelName: "earlier-name",
         }, { findings: [] }],
-        ["@hammz/zellij", "earlier", "test-current", 1, {
+        ["@hammz/yinz", "earlier", "test-current", 1, {
             workflowRunId: "previous",
             specName: "test",
         }, { output: large }],
-        ["@hammz/zellij", "earlier", "test-current", 2, {
+        ["@hammz/yinz", "earlier", "test-current", 2, {
             workflowRunId: "other",
             specName: "test",
         }, { output: "newer" }],
-        ["@hammz/zellij", "current", "checks-current", 1, {
+        ["@hammz/yinz", "current", "checks-current", 1, {
             workflowRunId: "run",
             specName: "checks",
         }, {
@@ -40,18 +40,18 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             test: {
                 output: "preview",
                 outputRef: {
-                    modelType: "@hammz/zellij",
+                    modelType: "@hammz/yinz",
                     modelId: "earlier",
                     name: "test-current",
                     version: 1,
                 },
             },
         }],
-        ["@hammz/zellij", "current", "missing", 1, {
+        ["@hammz/yinz", "current", "missing", 1, {
             workflowRunId: "run",
             specName: "test",
         }, null],
-        ["@hammz/zellij", "current", "claim", 1, {
+        ["@hammz/yinz", "current", "claim", 1, {
             workflowRunId: "run",
             specName: "claim",
         }, {}],
@@ -64,7 +64,7 @@ Deno.test("reports need no session or subprocess and retain resumed, exact and m
             run: "other",
             state: "answered",
         }],
-        ["@hammz/zellij", "current", "test-with-summary", 1, {
+        ["@hammz/yinz", "current", "test-with-summary", 1, {
             workflowRunId: "run",
             specName: "test",
         }, {

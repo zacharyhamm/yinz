@@ -2,7 +2,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use std::path::PathBuf;
 use std::time::Duration;
-use zellij_tile::prelude::SessionName;
+use yinz_tile::prelude::SessionName;
 
 use crate::new_session_info::LayoutList;
 use crate::ui::components::UnifiedResultsRenderCache;
@@ -369,10 +369,10 @@ mod tests {
                         .map(|j| crate::ui::PaneUiInfo {
                             name: format!("pane-{}", j),
                             exit_code: None,
-                            pane_id: zellij_tile::prelude::PaneId::from_legacy(j as u32, false),
+                            pane_id: yinz_tile::prelude::PaneId::from_legacy(j as u32, false),
                         })
                         .collect(),
-                    position: zellij_tile::prelude::TabPosition::new(i),
+                    position: yinz_tile::prelude::TabPosition::new(i),
                 })
                 .collect(),
             connected_users: connected,

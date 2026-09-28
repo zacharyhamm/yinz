@@ -5,7 +5,7 @@
 //! job is armed or fires, so the store is not written once a second per job.
 
 use crate::agents::rows::Owner;
-use zellij_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred};
+use yinz_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred};
 
 pub const ENTITY: &str = "job";
 
@@ -81,7 +81,7 @@ pub fn to_mutation(owner: &Owner, job: &JobRow) -> Mutation {
     Mutation::put(ENTITY)
         .uid(job_uid(owner, job.job_id))
         .set("host_id", owner.host_id.clone())
-        .set("zellij_session_name", owner.zellij_session_name.clone())
+        .set("yinz_session_name", owner.yinz_session_name.clone())
         .set("job_id", job.job_id)
         .set(
             "chat_id",
@@ -159,11 +159,11 @@ pub fn to_rows(jobs: &[JobRow]) -> DataRows {
 mod tests {
     use super::*;
     use crate::store::{self, Backend};
-    use zellij_tile::prelude::{FetchRequest, SortDir};
+    use yinz_tile::prelude::{FetchRequest, SortDir};
 
     /// The machine these jobs were armed on.
     fn owner() -> Owner {
-        Owner::new(zellij_tile::prelude::HostId::new("host-a"), "zellij".into())
+        Owner::new(yinz_tile::prelude::HostId::new("host-a"), "yinz".into())
     }
 
     fn job(id: u64) -> JobRow {
@@ -190,11 +190,11 @@ mod tests {
         let build_box = laptop.joined(store::SHARED, "hocus");
 
         let on_laptop = Owner::new(
-            zellij_tile::prelude::HostId::new("host-laptop"),
+            yinz_tile::prelude::HostId::new("host-laptop"),
             "main".into(),
         );
         let on_build_box = Owner::new(
-            zellij_tile::prelude::HostId::new("host-build-box"),
+            yinz_tile::prelude::HostId::new("host-build-box"),
             "main".into(),
         );
 
@@ -234,7 +234,7 @@ mod tests {
         local.define_all(&store::shared_defs()).unwrap();
         // The old shape: a bare job id for a uid, and no owner columns.
         local
-            .apply(vec![zellij_tile::prelude::Mutation::put(ENTITY)
+            .apply(vec![yinz_tile::prelude::Mutation::put(ENTITY)
                 .uid("1")
                 .set("job_id", 1_u64)
                 .set("every", 60.0)
@@ -242,7 +242,7 @@ mod tests {
                 .set("prompt", "an old prompt")
                 .build()])
             .unwrap();
-        let owner = Owner::new(zellij_tile::prelude::HostId::new("host-a"), "main".into());
+        let owner = Owner::new(yinz_tile::prelude::HostId::new("host-a"), "main".into());
         assert!(from_rows(&local.fetch(&owned_request(&owner)).unwrap()).is_empty());
     }
 

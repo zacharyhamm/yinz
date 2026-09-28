@@ -10,4 +10,4 @@ workspace = true
 [dependencies]
 hocus-proto = { path = "../hocus-proto" }
 serde_json = { workspace = true }
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }

@@ -1867,14 +1867,14 @@ mod tests {
                 (
                     PluginId::new(1),
                     PluginInfo {
-                        location: "zellij:hocus".into(),
+                        location: "yinz:hocus".into(),
                         configuration: launch::overlay_configuration(),
                     },
                 ),
                 (
                     PluginId::new(2),
                     PluginInfo {
-                        location: "zellij:hocus".into(),
+                        location: "yinz:hocus".into(),
                         ..Default::default()
                     },
                 ),
@@ -1950,7 +1950,7 @@ mod tests {
         );
         state.vm_sessions(&[session.clone()]);
         assert!(state.vms.owner.is_none());
-        session.plugins.get_mut(&PluginId::new(1)).unwrap().location = "zellij:hocus".into();
+        session.plugins.get_mut(&PluginId::new(1)).unwrap().location = "yinz:hocus".into();
         state.vm_sessions(&[session.clone()]);
         state.vm_pipe(&visibility(1));
         assert!(
@@ -2801,7 +2801,7 @@ mod tests {
         state.vms.visible = true;
         state.poll_vms();
         let error = "VM command failed (exit 1): Error: Firecracker is not configured: set \
-                     firecracker_provider in your Zellij config to the absolute path of a \
+                     firecracker_provider in your Yinz config to the absolute path of a \
                      provider executable to use VMs\n";
         assert!(state.accept_vm_result(reply(&state, None, "", error)));
         state.render(20, 60);
@@ -3566,7 +3566,7 @@ mod tests {
         }
     }
 
-    /// A session whose only `zellij:hocus` overlays are `ids`: one of them owns the tab, two
+    /// A session whose only `yinz:hocus` overlays are `ids`: one of them owns the tab, two
     /// leave it with no one to ask.
     fn overlays(ids: &[u32]) -> SessionInfo {
         SessionInfo {
@@ -3577,7 +3577,7 @@ mod tests {
                     (
                         PluginId::new(id),
                         PluginInfo {
-                            location: "zellij:hocus".into(),
+                            location: "yinz:hocus".into(),
                             configuration: launch::overlay_configuration(),
                         },
                     )

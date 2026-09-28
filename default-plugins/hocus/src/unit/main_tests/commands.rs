@@ -75,7 +75,7 @@ fn a_command_result_is_capped_before_it_reaches_the_transcript() {
     assert!(results[0].content.contains("exit code: 0"));
 }
 
-/// Zellij reports "could not spawn" as exit code 2 with a bare io::Error,
+/// Yinz reports "could not spawn" as exit code 2 with a bare io::Error,
 /// naming neither the binary nor the setting that chose it.
 #[test]
 fn a_slack_tool_that_cannot_find_dobbs_says_which_binary_and_setting() {
@@ -147,7 +147,7 @@ fn the_dobbs_hint_does_not_fire_for_a_head_that_is_not_a_slack_tool() {
 }
 
 /// A changed KDL block is the only way a running plugin's config can move:
-/// Zellij freezes it at server start and replays it even on a reload.
+/// Yinz freezes it at server start and replays it even on a reload.
 #[test]
 fn a_configuration_change_event_re_resolves_the_config() {
     let mut state = ready_state();
@@ -175,7 +175,7 @@ fn a_configuration_change_event_re_resolves_the_config() {
 }
 
 /// The Slack tools are intercepted before `tools::dispatch`, which on the
-/// host triple would answer "tools are unavailable outside zellij".
+/// host triple would answer "tools are unavailable outside yinz".
 #[test]
 fn a_bad_slack_call_is_answered_without_reaching_dispatch() {
     let mut state = ready_state();

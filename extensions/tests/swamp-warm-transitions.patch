@@ -384,7 +384,7 @@ index 0992ddad..354ceab0 100644
 +): Promise<T> {
 +  let enabled = false;
 +  try {
-+    enabled = Deno.env.get("ZELLIJ_SWAMP_TIMING") === "1";
++    enabled = Deno.env.get("YINZ_SWAMP_TIMING") === "1";
 +  } catch { /* Diagnostics are optional for restricted callers. */ }
 +  if (!enabled) return await action();
 +  const started = performance.now();

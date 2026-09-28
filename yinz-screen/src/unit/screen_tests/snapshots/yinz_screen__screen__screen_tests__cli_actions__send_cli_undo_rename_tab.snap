@@ -1,0 +1,5 @@
+---
+source: yinz-screen/src/./unit/screen_tests.rs
+expression: "format!(\"{:#?}\", plugin_undo_rename_tab_instruction)"
+---
+None

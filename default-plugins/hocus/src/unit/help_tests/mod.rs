@@ -13,7 +13,7 @@ fn extension_registry(safety: &str) -> Registry {
     let discovered =
         BTreeMap::from([("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned())]);
     let instances = BTreeMap::from([(
-        zellij_tile::prelude::PluginId::new(7),
+        yinz_tile::prelude::PluginId::new(7),
         ("weather".to_owned(), "/plugins/hocus/weather.ts".to_owned()),
     )]);
     let registration = json!({
@@ -36,7 +36,7 @@ fn extension_registry(safety: &str) -> Registry {
     let mut registry = Registry::default();
     registry
         .register(
-            zellij_tile::prelude::PluginId::new(7),
+            yinz_tile::prelude::PluginId::new(7),
             &registration,
             &discovered,
             &instances,

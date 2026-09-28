@@ -1,0 +1,28 @@
+---
+source: yinz-integration-tests/tests/title_frame_mouse.rs
+expression: normalized(&grid_snapshot)
+---
+ Yinz (test)  Tab #1  + 
+                                              [0] Pane #1                                             │                                              [1] Pane #2
+$                                                                                                     │first pane from the status bar
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      ├──────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                      │                                              [2] Pane #3
+                                                                                                      │second pane from the status bar█
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+                                                                                                      │
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT           Alt +  <n> New Pane  <←↓↑→> Change Focus  <+-> Resize  <f> Floating 

@@ -6,8 +6,8 @@ use hocus_proto::notes;
 use hocus_proto::run_history;
 use hocus_proto::store::Backend;
 use std::collections::BTreeMap;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::*;
 
 /// The answer to an agent list hocus has not yet seen in the session's plugin list, which is
 /// what says a sender is the builtin list and may read the archive. The next `SessionUpdate`
@@ -176,13 +176,13 @@ impl State {
                 let args = tools::Args::parse(&call.arguments)?;
                 let root = self.project_target()?.root.clone();
                 let snapshot = if call.name == "project_config_write" {
-                    zellij_tile::shim::project_config_write(
+                    yinz_tile::shim::project_config_write(
                         root.into(),
                         args.source.ok_or("source is required")?,
                         args.expected,
                     )
                 } else {
-                    zellij_tile::shim::project_config_read(root.into())
+                    yinz_tile::shim::project_config_read(root.into())
                 }?;
                 serde_json::to_string(&snapshot).map_err(|e| e.to_string())
             })();
@@ -216,7 +216,7 @@ impl State {
         if tools::SKILL_TOOLS.contains(&call.name.as_str()) {
             return self.start_skill_tool(call);
         }
-        // Same shape again, pointed at the `zellij` CLI: a wasm plugin cannot run the
+        // Same shape again, pointed at the `yinz` CLI: a wasm plugin cannot run the
         // Firecracker provider, and the CLI already knows how.
         if tools::VM_TOOLS.contains(&call.name.as_str()) {
             return self.start_vm_tool(call);
@@ -342,7 +342,7 @@ impl State {
                 tools::formatted_source(
                     args.name.as_deref().unwrap_or_default(),
                     &edited.source,
-                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                    yinz_tile::plugin_authoring::PluginCheckMode::Prepare,
                 )
             })
             .err()
@@ -816,7 +816,7 @@ impl State {
         false
     }
 
-    /// Run one of the four VM tools by shelling out to the `zellij` CLI. The result
+    /// Run one of the four VM tools by shelling out to the `yinz` CLI. The result
     /// comes back as `RunCommandResult` carrying this call's id, the way the project
     /// readers and the Slack tools answer.
     ///
@@ -852,11 +852,11 @@ impl State {
         let session = explicit_session
             .or_else(|| current.as_ref().map(|session| session.name.as_str()))
             .unwrap_or_default();
-        let Ok(zellij) = self.cfg.as_ref().map(|cfg| cfg.zellij.clone()) else {
+        let Ok(yinz) = self.cfg.as_ref().map(|cfg| cfg.yinz.clone()) else {
             self.finish_head("hocus is not configured");
             return true;
         };
-        let argv = match tools::vm_argv(&call.name, &args, &zellij, session) {
+        let argv = match tools::vm_argv(&call.name, &args, &yinz, session) {
             Ok(argv) => argv,
             Err(error) => {
                 self.finish_head(error);
@@ -869,9 +869,7 @@ impl State {
             &borrowed,
             self.env
                 .iter()
-                .filter(|(key, _)| {
-                    matches!(key.as_str(), "ZELLIJ_CONFIG_FILE" | "ZELLIJ_CONFIG_DIR")
-                })
+                .filter(|(key, _)| matches!(key.as_str(), "YINZ_CONFIG_FILE" | "YINZ_CONFIG_DIR"))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
             // The CLI resolves nothing relative to the cwd, and `.` is the one value the
@@ -1165,14 +1163,14 @@ impl State {
                 self.finish_head("name is required");
                 return true;
             };
-            let options = serde_json::from_value::<zellij_tile::plugin_authoring::PluginTestOptions>(
+            let options = serde_json::from_value::<yinz_tile::plugin_authoring::PluginTestOptions>(
                 serde_json::json!({
                     "kind": args.kind.as_deref().unwrap_or("all"), "filter": args.filter, "timeout_ms": args.timeout_ms.unwrap_or(30_000)
                 }),
             );
             return match options {
                 Ok(options) => {
-                    zellij_tile::shim::test_plugin(name, options, &call.id);
+                    yinz_tile::shim::test_plugin(name, options, &call.id);
                     self.status = Status::AwaitingPluginTest;
                     false
                 },
@@ -1191,7 +1189,7 @@ impl State {
                     tools::formatted_source(
                         name,
                         args.source.as_deref().unwrap_or_default(),
-                        zellij_tile::plugin_authoring::PluginCheckMode::Format,
+                        yinz_tile::plugin_authoring::PluginCheckMode::Format,
                     )
                 });
             self.finish_head(answer.unwrap_or_else(|error| error));
@@ -1321,7 +1319,7 @@ impl State {
                 let source = match tools::formatted_source(
                     &name,
                     &source,
-                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                    yinz_tile::plugin_authoring::PluginCheckMode::Prepare,
                 ) {
                     Ok(source) => source,
                     Err(error) => {
@@ -1399,7 +1397,7 @@ impl State {
                 let prepared = match tools::formatted_source(
                     &name,
                     &edited.source,
-                    zellij_tile::plugin_authoring::PluginCheckMode::Prepare,
+                    yinz_tile::plugin_authoring::PluginCheckMode::Prepare,
                 ) {
                     Ok(source) => source,
                     Err(error) => {
@@ -1441,7 +1439,7 @@ impl State {
                     let source = tools::formatted_source(
                         &name,
                         &previous,
-                        zellij_tile::plugin_authoring::PluginCheckMode::Format,
+                        yinz_tile::plugin_authoring::PluginCheckMode::Format,
                     )?;
                     let backup = tools::keep_replaced(&name, Some(&previous), &source);
                     if backup == tools::Kept::Failed {
@@ -2582,7 +2580,7 @@ impl State {
         }
         self.manual_kinds.insert(pane_id, kind.to_owned());
         self.persist_latch(pane_id, kind);
-        // The session's record too, so `list-panes`, `zellij events` and every other plugin
+        // The session's record too, so `list-panes`, `yinz events` and every other plugin
         // see the registration, and so it outlives a hocus reload on its own.
         let cwd = self
             .panes
@@ -2644,13 +2642,13 @@ impl State {
     /// never happened" when it means "not here".
     fn run_filter(&self, args: &tools::Args) -> Result<(run_history::Filter, String), String> {
         let mut scope = Vec::new();
-        let (zellij_session_name, host_id) = match args.this_session {
+        let (yinz_session_name, host_id) = match args.this_session {
             false => (None, None),
             true => {
                 // Empty until the daemon's first poll reply names it. Matching on
                 // `""` would silently select every run that never had a session
                 // name written, which is the opposite of what was asked for.
-                let name = self.zellij_session_name.as_str().trim();
+                let name = self.yinz_session_name.as_str().trim();
                 if name.is_empty() {
                     return Err(
                         "this session is not named yet; retry in a moment, or drop this_session \
@@ -2709,7 +2707,7 @@ impl State {
         }
         Ok((
             run_history::Filter {
-                zellij_session_name: zellij_session_name.map(Into::into),
+                yinz_session_name: yinz_session_name.map(Into::into),
                 host_id,
                 root,
                 kind: kind.map(str::to_owned),
@@ -2956,7 +2954,7 @@ impl State {
     /// Start an agent, and register the kind the caller gave against the pane id.
     ///
     /// One route: `tools::spawn_agent`, the host command the New agent modal's button and a
-    /// TypeScript plugin's `zellij.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
+    /// TypeScript plugin's `yinz.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
     /// the same argv and the same worktree defaults everywhere. `launch::plan` is run here
     /// first only to say what the host will refuse before anything is opened - and to know
     /// whether a checkout is being made, which decides what `cwd` means: with one, the
@@ -3810,7 +3808,7 @@ impl State {
     fn halt_tools(&mut self, head_result: &str, rest_result: &str) {
         if self.status == Status::AwaitingPluginTest {
             if let Some(call) = self.pending.front() {
-                zellij_tile::shim::cancel_plugin_test(&call.id);
+                yinz_tile::shim::cancel_plugin_test(&call.id);
             }
         }
         self.drop_spotlight();

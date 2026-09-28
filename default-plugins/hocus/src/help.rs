@@ -112,7 +112,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "list_other_sessions",
-        "Show the other zellij sessions on this machine, with each visible pane ID and its is_plugin value. The list gives the tab_id of each tab as well as its number in the tab bar; the tools take the tab_id. Use warp_pane_here or warp_tab_here to move one of those panes or tabs into this session.",
+        "Show the other yinz sessions on this machine, with each visible pane ID and its is_plugin value. The list gives the tab_id of each tab as well as its number in the tab bar; the tools take the tab_id. Use warp_pane_here or warp_tab_here to move one of those panes or tabs into this session.",
     ),
     (
         "warp_pane_here",
@@ -144,7 +144,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "new_remote_pane",
-        "Open a pane whose program runs on a different machine through ssh. The remote machine needs a zellij of the same version on its PATH. Give remote_host as a host name, as an alias from your ssh config, or as user@host. Without a command, the pane opens the login shell of that machine. Without a cwd, the pane opens the remote home directory.",
+        "Open a pane whose program runs on a different machine through ssh. The remote machine needs a yinz of the same version on its PATH. Give remote_host as a host name, as an alias from your ssh config, or as user@host. Without a command, the pane opens the login shell of that machine. Without a cwd, the pane opens the remote home directory.",
     ),
     (
         "new_tab",
@@ -216,7 +216,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "openrouter_decisions",
-        "Evaluate named questions against the supplied state through OpenRouter Decisions. Use choice for options, score for ordered criteria, and noul for a boolean likelihood from 0 to 1. Set OPENROUTER_API_KEY before you start the Zellij session. The default model is typesafe/jev-1.13. The model argument overrides the Decisions model for one call. Configure the endpoint and credentials through decisions_url and decisions_api_key_env, not tool arguments. Answers include usage and cost, separate from chat usage. Ctrl+c stops the wait and discards a late response. Requests are not retried automatically.",
+        "Evaluate named questions against the supplied state through OpenRouter Decisions. Use choice for options, score for ordered criteria, and noul for a boolean likelihood from 0 to 1. Set OPENROUTER_API_KEY before you start the Yinz session. The default model is typesafe/jev-1.13. The model argument overrides the Decisions model for one call. Configure the endpoint and credentials through decisions_url and decisions_api_key_env, not tool arguments. Answers include usage and cost, separate from chat usage. Ctrl+c stops the wait and discards a late response. Requests are not retried automatically.",
     ),
     (
         "schedule",
@@ -232,7 +232,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "project_assign",
-        "Make a tab belong to a project. A project that does not exist needs an absolute root path. Without a tab ID, the tool takes the tab of the agent you looked at last, and the active tab after that. The project becomes the active one only when that tab is the active tab. The file tools and the git tools all work in the project of the active tab. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Zellij appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
+        "Make a tab belong to a project. A project that does not exist needs an absolute root path. Without a tab ID, the tool takes the tab of the agent you looked at last, and the active tab after that. The project becomes the active one only when that tab is the active tab. The file tools and the git tools all work in the project of the active tab. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Yinz appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
     ),
     (
         "project_forget",
@@ -248,7 +248,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "project_open",
-        "Open a project in a new tab, and make the tab belong to it. The new tab starts in the root of the project. A project that does not exist needs an absolute root path. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Zellij appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
+        "Open a project in a new tab, and make the tab belong to it. The new tab starts in the root of the project. A project that does not exist needs an absolute root path. Set worktree_dir for future worktrees. Omit it to keep the setting, or give an empty string to clear it. Launch overrides take precedence, then this setting, then .worktrees/. Yinz appends the branch name. Relative paths resolve against the primary checkout, including sibling paths. Absolute paths are also accepted. Shell variables and ~ are not expanded. NUL bytes are rejected. Existing worktrees stay where they are.",
     ),
     (
         "todo_add",
@@ -332,7 +332,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_spawn",
-        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in the explicit worktree_dir, then the saved project worktree_dir, then .worktrees/. Relative directories resolve against the primary checkout; absolute and sibling directories are supported, with no shell variable or ~ expansion; with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a zellij TypeScript plugin, use plugin_write instead of an agent.",
+        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in the explicit worktree_dir, then the saved project worktree_dir, then .worktrees/. Relative directories resolve against the primary checkout; absolute and sibling directories are supported, with no shell variable or ~ expansion; with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a yinz TypeScript plugin, use plugin_write instead of an agent.",
     ),
     (
         "slack_status",
@@ -416,7 +416,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_docs",
-        "Read the SDK declarations and examples for zellij TypeScript plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
+        "Read the SDK declarations and examples for yinz TypeScript plugins. Without a section, the tool lists the sections with their sizes. Give a query, which is a regular expression, to find the section that holds a subject. Then read that section, or a part of it.",
     ),
     (
         "plugin_list",
@@ -424,14 +424,14 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_outline",
-        "Show the shape of one TypeScript or JavaScript plugin without its code: every function, every zellij.on handler, every import, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
+        "Show the shape of one TypeScript or JavaScript plugin without its code: every function, every yinz.on handler, every import, every permission request, every data.define and every hocus tool, each with its line number. Use these line numbers to read only the part you need.",
     ),
     (
         "plugin_search",
         "Search the TypeScript and JavaScript plugins of the user with a regular expression. Each hit gives file:LINE:text, and each context line gives file-LINE-text, with two hyphens between the groups. The text after the second separator is the line exactly as it is in the file: copy that text, and not the prefix, into the old_string of plugin_edit. The answer gives 40 hits, and 200 with max_results; context is 0 lines, and 10 at the most. A search of every plugin stops after a number of files, and says how many files it left out.",
     ),
     ("project_config_read", "Read the active project workflow settings and their exact source. Missing configuration has a null source. Invalid configuration returns an error."),
-    ("project_config_write", "Validate and write .zellij/swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
+    ("project_config_write", "Validate and write .yinz/swamp-workflows.kdl after confirmation. Supply the complete source and the exact previous source as expected, or null for an absent file. Stale changes are refused. This does not execute CI or grant permissions."),
     (
         "plugin_read",
         "Read one TypeScript or JavaScript plugin of the user. Use explicit .ts filenames for new plugins. Extensionless names select TypeScript. The tool reads 300 lines from start_line. Use plugin_outline or plugin_search first, then read only the range that you must change.",
@@ -466,7 +466,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "plugin_log",
-        "Show the last lines that a plugin wrote with zellij.log. The tool gives 50 lines.",
+        "Show the last lines that a plugin wrote with yinz.log. The tool gives 50 lines.",
     ),
     (
         "vm_list",

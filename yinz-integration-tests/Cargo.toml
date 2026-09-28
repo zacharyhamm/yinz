@@ -1,0 +1,46 @@
+[package]
+name = "yinz-integration-tests"
+description = "In-process whole-app integration test harness for Yinz"
+publish = false
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-cli = { workspace = true }
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-session = { workspace = true }
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+# The kitty conformance suite's command builders and reply grammar, for `kitty_protocol`.
+yinz-terminal-graphics = { workspace = true }
+yinz-client = { path = "../yinz-client", version = "0.45.0" }
+yinz-server = { path = "../yinz-server", version = "0.45.0" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+interprocess = { workspace = true }
+insta = "1.48"
+log = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+vte = { workspace = true }
+
+[dev-dependencies]
+yinz-deno-builtins = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+# Unused in code. `x integration-test` builds the yinz binary first, and the root package's
+# default `vendored_curl` links libcurl statically. Asking for it here too tests the libcurl the
+# binary ships and lets the suite reuse that build of libcurl, OpenSSL and every crate above them.
+openssl-sys = { workspace = true }
+curl-sys = { workspace = true, features = ["static-curl"] }

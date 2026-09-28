@@ -1,6 +1,6 @@
 //! Which panes hold coding agents, and what they are showing.
 //!
-//! Nothing here calls the Zellij host, so all of it runs under `make test`.
+//! Nothing here calls the Yinz host, so all of it runs under `make test`.
 //!
 //! There is no registry to keep in step. An agent is a terminal pane from the last
 //! session snapshot whose command or title names a known agent, plus any pane id the
@@ -18,9 +18,9 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
-use zellij_types::internal_ids::SessionName;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
+use yinz_types::internal_ids::SessionName;
 
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
@@ -41,7 +41,7 @@ const POLL_SECONDS: u64 = 5;
 /// pane id → (content hash, consecutive unchanged polls).
 pub type Activity = BTreeMap<u32, (u64, u32)>;
 
-/// What a pane is doing, as far as Zellij will say. `Held` is a command pane that
+/// What a pane is doing, as far as Yinz will say. `Held` is a command pane that
 /// exited and is waiting to be re-run or closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentStatus {
@@ -65,9 +65,9 @@ impl AgentStatus {
 pub struct AgentPane {
     pub pane_id: u32,
     pub title: String,
-    /// The command with its arguments, as Zellij stringified it. `None` for a shell.
+    /// The command with its arguments, as Yinz stringified it. `None` for a shell.
     pub command: Option<String>,
-    /// The current folder reported by Zellij.
+    /// The current folder reported by Yinz.
     pub cwd: Option<String>,
     /// The machine the pane runs on, when it is not this one.
     ///
@@ -124,7 +124,7 @@ impl AgentPane {
 /// path. Nothing about that identity can be matched to a project here, and matching it by
 /// path would be worse: `/workspace` on this machine is somebody else's folder. The
 /// checkout that identifies the work is the worktree the VM mirrors, which is the same rule
-/// `zellij firecracker list` resolves a VM's branch by.
+/// `yinz firecracker list` resolves a VM's branch by.
 ///
 /// Taken apart rather than off an [`AgentPane`] because the daemon applies it to its own
 /// per-pane maps: a suppressed pane is not in the pane list and still has a folder.
@@ -178,10 +178,10 @@ pub fn worktree_cell(run: &AgentRunHeader) -> String {
 }
 
 // The command-line classifier - `KINDS`, `kind_of`, `kind_from_command` - lives in
-// `zellij_types::agent` now, because the server reads it too: where a spawned agent pane
+// `yinz_types::agent` now, because the server reads it too: where a spawned agent pane
 // goes is decided before the process has said anything, from the same list `hocus-agentd`
 // latches "detected" from. Re-exported so every caller in the plugins keeps one name for it.
-pub use zellij_tile::agent::{kind_from_command, kind_of, program, KINDS};
+pub use yinz_tile::agent::{kind_from_command, kind_of, program, KINDS};
 
 /// The agent kind a pane title names, or `None`.
 ///
@@ -378,11 +378,11 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // What an agent says about itself
 // ---------------------------------------------------------------------------
 
-pub use zellij_tile::agent::{
+pub use yinz_tile::agent::{
     clean_hint, hook_detail, question_text, waiting_detail, waiting_needs_a_person,
     HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
 };
-use zellij_tile::prelude::{AgentInfo, AgentSource, AgentState};
+use yinz_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
 /// What an agent pane says it is doing, in the three states a row can draw.
 ///
@@ -482,7 +482,7 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 /// `SessionEnd` is `None` here too, and deliberately: it does not move a feed to a
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
 pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
-    zellij_tile::agent::hook_state(event).and_then(HookPhase::from_state)
+    yinz_tile::agent::hook_state(event).and_then(HookPhase::from_state)
 }
 
 /// A line already cleaned for a toast, cut again to what one cell of a row can hold.
@@ -912,8 +912,8 @@ pub struct AgentRun {
     pub id: String,
     pub pane_id: u32,
     #[serde(default)]
-    pub zellij_session_name: SessionName,
-    /// The machine whose server owns this run, with `zellij_session_name` — see
+    pub yinz_session_name: SessionName,
+    /// The machine whose server owns this run, with `yinz_session_name` — see
     /// [`rows::Owner`]. Not to be confused with [`AgentRun::host`], which is where the agent's
     /// *folder* is: an agent working over ssh on a build box is owned by the server that opened
     /// the pane, not by the box.
@@ -986,7 +986,7 @@ impl AgentRun {
     /// What a warp moves is the process, not the run: the same agent goes on doing the same
     /// work, and its prompts, plans, questions, results and summary are as much a part of it
     /// after the move as before. Only the two facts that were never the run's own — which pane
-    /// it sits in and which zellij session owns that pane — are allowed to change.
+    /// it sits in and which yinz session owns that pane — are allowed to change.
     ///
     /// `ended_at_ms` and `outcome` are cleared because the session that lost the pane closed
     /// the run when it saw the pane leave. It could not tell a warp from a `kill`; this is the
@@ -997,7 +997,7 @@ impl AgentRun {
     /// is half of each — which no guard would then match.
     pub fn adopted_by(mut self, pane_id: u32, owner: &rows::Owner) -> AgentRun {
         self.pane_id = pane_id;
-        self.zellij_session_name = owner.zellij_session_name.clone();
+        self.yinz_session_name = owner.yinz_session_name.clone();
         self.host_id = owner.host_id.clone();
         self.ended_at_ms = None;
         self.outcome = RunOutcome::Active;
@@ -1006,7 +1006,7 @@ impl AgentRun {
 
     /// Who owns this run now.
     pub fn owner(&self) -> rows::Owner {
-        rows::Owner::new(self.host_id.clone(), self.zellij_session_name.clone())
+        rows::Owner::new(self.host_id.clone(), self.yinz_session_name.clone())
     }
 
     pub fn header(&self) -> AgentRunHeader {
@@ -1077,7 +1077,7 @@ pub fn session_run_id(kind: &str, session_id: &str) -> String {
 ///
 /// The fallback names the machine too, and has to. A pane id means nothing outside the server
 /// that handed it out, so `kind:pane:5:<epoch>` is a name two servers can mint at once — two
-/// machines sharing a Postgres, or two zellij servers sharing this machine's data dir. The row
+/// machines sharing a Postgres, or two yinz servers sharing this machine's data dir. The row
 /// is written with an unguarded `Put` keyed on this id, so a collision does not fail: it
 /// interleaves two agents' timelines under one uid and says nothing.
 ///
@@ -1189,7 +1189,7 @@ pub fn stored_run_id(agent: &AgentInfo) -> Option<String> {
 /// this used to cut to — `WAITING_DETAIL_CHARS`, and a bare `600` for a prompt — are a toast's
 /// budget and a sidebar cell's, and they were only ever applied here because the timeline was
 /// stored as one blob that grew with every event.
-pub fn run_entry(event: &zellij_tile::agent::HookEvent) -> Option<(RunEntryKind, String)> {
+pub fn run_entry(event: &yinz_tile::agent::HookEvent) -> Option<(RunEntryKind, String)> {
     let (kind, text) = match event.hook_event_name.as_str() {
         "UserPromptSubmit" => (RunEntryKind::Prompt, event.prompt.clone()?),
         "PreToolUse"
@@ -1262,7 +1262,7 @@ const PROMPT_EVENT: &str = "UserPromptSubmit";
 /// besides — `crate::text::sanitize` drops the `\r` that leaves a CRLF notification looking cut
 /// to the scanner, and expands the tabs that would otherwise make one delivery differ from the
 /// next. Stable for exactly as long as `sanitize` and [`crate::envelope`] are.
-pub fn run_event_id(event: &zellij_tile::agent::HookEvent, recorded: &str) -> Option<String> {
+pub fn run_event_id(event: &yinz_tile::agent::HookEvent, recorded: &str) -> Option<String> {
     if let Some(id) = event
         .tool_use_id
         .as_deref()
@@ -1397,7 +1397,7 @@ pub mod rows {
     };
     use crate::store::Backend;
     use std::collections::{BTreeMap, BTreeSet};
-    use zellij_tile::prelude::{
+    use yinz_tile::prelude::{
         DataRows, DataValue, FetchRequest, Mutation, Pred, PutBuilder, SortDir, MAX_FETCH_ROWS,
     };
 
@@ -1405,7 +1405,7 @@ pub mod rows {
     ///
     /// One type rather than two arguments because forgetting the host half is exactly the bug
     /// this exists to prevent, and a pair of `&str` parameters invites it — the two were a
-    /// single `zellij_session_name` for as long as the store was per-machine, and every call
+    /// single `yinz_session_name` for as long as the store was per-machine, and every call
     /// site that scopes a row would otherwise have to remember to grow a second one.
     ///
     /// A session name alone stopped being an owner when `plugin_data_url` could point at
@@ -1415,14 +1415,14 @@ pub mod rows {
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct Owner {
         pub host_id: HostId,
-        pub zellij_session_name: SessionName,
+        pub yinz_session_name: SessionName,
     }
 
     impl Owner {
-        pub fn new(host_id: HostId, zellij_session_name: SessionName) -> Self {
+        pub fn new(host_id: HostId, yinz_session_name: SessionName) -> Self {
             Owner {
                 host_id,
-                zellij_session_name,
+                yinz_session_name,
             }
         }
 
@@ -1432,7 +1432,7 @@ pub mod rows {
         /// callers hold back their per-pane reads and writes until it is known — see
         /// `restore_pane_rows`. The host id is available from load and is not part of the test.
         pub fn is_known(&self) -> bool {
-            !self.zellij_session_name.is_empty()
+            !self.yinz_session_name.is_empty()
         }
     }
 
@@ -1675,14 +1675,11 @@ pub mod rows {
     /// A pane's row key: the machine, the session on it, and the pane.
     ///
     /// All three, because none of the shorter keys is unique. A bare pane id makes two sessions'
-    /// pane 5 into one row — every zellij server on a machine shares one store. Adding the
+    /// pane 5 into one row — every yinz server on a machine shares one store. Adding the
     /// session fixed that and stopped there, which was right while the store was a file per
     /// machine; pointed at a shared Postgres it puts two machines' `main:5` back into one row.
     fn pane_uid(owner: &Owner, pane_id: u32) -> String {
-        format!(
-            "{}:{}:{}",
-            owner.host_id, owner.zellij_session_name, pane_id
-        )
+        format!("{}:{}:{}", owner.host_id, owner.yinz_session_name, pane_id)
     }
 
     /// Only this server's rows. Every prune and every restore is scoped by it, so one session
@@ -1694,8 +1691,8 @@ pub mod rows {
     /// use [`owned_or_unclaimed`].
     fn owned_by(owner: &Owner) -> Pred {
         Pred::eq("host_id", owner.host_id.clone()).and(Pred::eq(
-            "zellij_session_name",
-            owner.zellij_session_name.clone(),
+            "yinz_session_name",
+            owner.yinz_session_name.clone(),
         ))
     }
 
@@ -1717,8 +1714,8 @@ pub mod rows {
     /// such a run claims it — see [`claim_unowned_runs`].
     fn owned_or_unclaimed(owner: &Owner) -> Pred {
         crate::store::host_or_legacy(&owner.host_id).and(Pred::eq(
-            "zellij_session_name",
-            owner.zellij_session_name.clone(),
+            "yinz_session_name",
+            owner.yinz_session_name.clone(),
         ))
     }
 
@@ -1745,7 +1742,7 @@ pub mod rows {
     /// and a column that disagrees.
     fn owner_values(put: PutBuilder, owner: &Owner) -> PutBuilder {
         put.set("host_id", owner.host_id.clone())
-            .set("zellij_session_name", owner.zellij_session_name.clone())
+            .set("yinz_session_name", owner.yinz_session_name.clone())
     }
 
     /// This server's latches, or summaries — `entity` is [`LATCH_ENTITY`] or
@@ -1887,8 +1884,8 @@ pub mod rows {
             ("pane_id", DataValue::from(run.pane_id)),
             ("session_id", DataValue::from(run.session_id.clone())),
             (
-                "zellij_session_name",
-                DataValue::from(run.zellij_session_name.clone()),
+                "yinz_session_name",
+                DataValue::from(run.yinz_session_name.clone()),
             ),
             ("host_id", DataValue::from(run.host_id.clone())),
             ("kind", DataValue::from(run.kind.clone())),
@@ -1919,7 +1916,7 @@ pub mod rows {
         let stored = AgentRun {
             id: run.id.clone(),
             pane_id: run.pane_id,
-            zellij_session_name: run.zellij_session_name.clone(),
+            yinz_session_name: run.yinz_session_name.clone(),
             host_id: run.host_id.clone(),
             origin_run_id: run.origin_run_id.clone(),
             previous_run_id: run.previous_run_id.clone(),
@@ -2051,7 +2048,7 @@ pub fn rename_title(summary: &Summary) -> Option<&str> {
 /// The name to give the pane of an agent that has just been asked for something.
 ///
 /// The other half of [`rename_title`], and the earlier one: a summary title arrives when the
-/// turn ends, and this is what the pane carries while it runs. `zellij_tile::agent::clean_line`
+/// turn ends, and this is what the pane carries while it runs. `yinz_tile::agent::clean_line`
 /// does the whole job — a prompt is several lines of a person's typing, and it collapses the
 /// whitespace runs, drops the control characters a paste carries, and cuts to
 /// [`WAITING_DETAIL_CHARS`] with a `…`. Cutting there rather than to the model title's tighter
@@ -2067,8 +2064,8 @@ pub fn prompt_title(prompt: &str) -> Option<String> {
     // cut either way, so a title shortens from a sentence rather than from a temp path.
     crate::envelope::title(prompt)
         .as_deref()
-        .and_then(zellij_tile::agent::clean_line)
-        .or_else(|| zellij_tile::agent::clean_line(prompt))
+        .and_then(yinz_tile::agent::clean_line)
+        .or_else(|| yinz_tile::agent::clean_line(prompt))
 }
 
 /// One summary as the toast the daemon shows the moment it is made.
@@ -2820,7 +2817,7 @@ fn run_header(run: &RunFacts, width: usize, utc_offset_secs: i32) -> Vec<MdLine>
     let mut rows = wrapped_field(
         "started",
         &wall_clock(
-            zellij_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
+            yinz_tile::prelude::SignedUnixMillis::new(run.started_at_ms),
             utc_offset_secs,
         ),
         width,
@@ -3144,10 +3141,10 @@ pub fn age_gutter(now_ms: i64, then_ms: Option<i64>) -> String {
 /// Now, as an epoch millisecond — the unit every timestamp in this module is in: a run's
 /// `started_at_ms`, an entry's `created_at_ms`, [`short_age`]'s two arguments.
 ///
-/// Re-exported rather than written here: it lives in `zellij-tile` next to
+/// Re-exported rather than written here: it lives in `yinz-tile` next to
 /// `get_local_utc_offset`, which is the host command that makes any of this drawable at all.
 pub fn now_ms() -> i64 {
-    zellij_tile::prelude::now_ms().get()
+    yinz_tile::prelude::now_ms().get()
 }
 
 pub fn short_age(now_ms: i64, then_ms: i64) -> String {
@@ -3171,10 +3168,10 @@ const MAX_AGE_DAYS: i64 = 99;
 /// after the fact, and every entry under it is drawn as an age because what is being read there
 /// is the spacing.
 ///
-/// Re-exported from `zellij-tile`, which is where the civil-calendar arithmetic and the
+/// Re-exported from `yinz-tile`, which is where the civil-calendar arithmetic and the
 /// `get_local_utc_offset` host command that feeds it now live, so every plugin that draws a
-/// timestamp shares one copy. See `zellij_tile::clock`.
-pub use zellij_tile::prelude::wall_clock;
+/// timestamp shares one copy. See `yinz_tile::clock`.
+pub use yinz_tile::prelude::wall_clock;
 
 /// How a `summary: ` label is painted instead: bold and undimmed. The summary used to be told
 /// apart by standing above the timeline; it is a row of the timeline now, so its label is what
@@ -3899,8 +3896,8 @@ mod tests {
     const HOST: &str = "host-a";
 
     /// An owner on [`HOST`]. The cross-machine cases spell `Owner::new` out.
-    fn owner(zellij_session_name: &str) -> rows::Owner {
-        rows::Owner::new(HostId::new(HOST), zellij_session_name.into())
+    fn owner(yinz_session_name: &str) -> rows::Owner {
+        rows::Owner::new(HostId::new(HOST), yinz_session_name.into())
     }
 
     #[test]
@@ -5072,7 +5069,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5143,7 +5140,7 @@ mod tests {
     /// The fallback id names the machine, and has to.
     ///
     /// A pane id means nothing outside the server that handed it out, so two servers sharing a
-    /// store — two machines on one Postgres, or two zellij servers on this machine's data dir —
+    /// store — two machines on one Postgres, or two yinz servers on this machine's data dir —
     /// can reach for the same `kind:pane:5:<epoch>`. The row is written with an unguarded `Put`
     /// keyed on it, so a collision would not fail: it would interleave two agents' timelines
     /// under one uid and say nothing.
@@ -5233,7 +5230,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5319,7 +5316,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5377,7 +5374,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5445,7 +5442,7 @@ mod tests {
     #[test]
     fn an_agent_run_round_trips_through_the_shared_store() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::{FetchRequest, Mutation, Pred};
+        use yinz_tile::prelude::{FetchRequest, Mutation, Pred};
 
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
@@ -5469,7 +5466,7 @@ mod tests {
         let mut run = AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5497,10 +5494,10 @@ mod tests {
         let mut foreign = run.clone();
         foreign.id = "claude:session-2".to_owned();
         foreign.session_id = "session-2".to_owned();
-        foreign.zellij_session_name = "another-zellij".to_owned().into();
+        foreign.yinz_session_name = "another-yinz".to_owned().into();
         local.apply(rows::run_mutations(&foreign)).unwrap();
         let active = local
-            .fetch(&rows::active_runs_request(&owner("zellij")))
+            .fetch(&rows::active_runs_request(&owner("yinz")))
             .unwrap();
         // The metadata comes back from the run's own row; the timeline is rows of its own, and
         // arrives only once it is asked for.
@@ -5549,18 +5546,18 @@ mod tests {
     #[test]
     fn a_run_stored_before_the_split_keeps_the_entries_in_its_payload() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::Mutation;
+        use yinz_tile::prelude::Mutation;
 
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
-        let run = a_run_with_entries("claude:session-1", "zellij", 7, &["asked", "answered"]);
+        let run = a_run_with_entries("claude:session-1", "yinz", 7, &["asked", "answered"]);
         // The old shape: the whole run, timeline included, inside `payload`.
         local
             .apply(vec![Mutation::put(rows::RUN_ENTITY)
                 .uid(run.id.clone())
                 .set("pane_id", run.pane_id)
                 .set("session_id", run.session_id.clone())
-                .set("zellij_session_name", run.zellij_session_name.clone())
+                .set("yinz_session_name", run.yinz_session_name.clone())
                 .set("host_id", run.host_id.clone())
                 .set("kind", run.kind.clone())
                 .set("active", true)
@@ -5570,7 +5567,7 @@ mod tests {
             .unwrap();
         let mut restored = rows::runs_from_rows(
             &local
-                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .fetch(&rows::active_runs_request(&owner("yinz")))
                 .unwrap(),
         );
         assert_eq!(
@@ -5601,7 +5598,7 @@ mod tests {
         let texts: Vec<String> = (0..10).map(|n| format!("{n}").repeat(each)).collect();
         let run = a_run_with_entries(
             "claude:session-1",
-            "zellij",
+            "yinz",
             7,
             &texts.iter().map(String::as_str).collect::<Vec<_>>(),
         );
@@ -5632,7 +5629,7 @@ mod tests {
         // One entry over the budget on its own is still sent: an empty history is worse than
         // a large one.
         let huge = "x".repeat(rows::RUN_DETAIL_BYTES * 2);
-        let big = a_run_with_entries("claude:session-2", "zellij", 8, &[huge.as_str()]);
+        let big = a_run_with_entries("claude:session-2", "yinz", 8, &[huge.as_str()]);
         local.apply(rows::run_mutations(&big)).unwrap();
         let mut detail = AgentRun {
             entries: Vec::new(),
@@ -5656,7 +5653,7 @@ mod tests {
             .collect();
         let run = a_run_with_entries(
             "claude:session-1",
-            "zellij",
+            "yinz",
             7,
             &texts.iter().map(String::as_str).collect::<Vec<_>>(),
         );
@@ -5726,19 +5723,19 @@ mod tests {
 
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
-        let texts: Vec<String> = (0..zellij_tile::prelude::MAX_FETCH_ROWS + 20)
+        let texts: Vec<String> = (0..yinz_tile::prelude::MAX_FETCH_ROWS + 20)
             .map(|n| format!("entry {n}"))
             .collect();
         let run = a_run_with_entries(
             "claude:session-1",
-            "zellij",
+            "yinz",
             7,
             &texts.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         local.apply(rows::run_mutations(&run)).unwrap();
         let mut restored = rows::runs_from_rows(
             &local
-                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .fetch(&rows::active_runs_request(&owner("yinz")))
                 .unwrap(),
         );
         rows::hydrate_entries(&local, &mut restored);
@@ -5810,7 +5807,7 @@ mod tests {
         AgentRun {
             id: id.to_owned(),
             pane_id,
-            zellij_session_name: session.to_owned().into(),
+            yinz_session_name: session.to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -5884,7 +5881,7 @@ mod tests {
 
         let stored = stored_run(&losing, "claude:session-1");
         assert_eq!(stored.pane_id, 2);
-        assert_eq!(stored.zellij_session_name, "there".into());
+        assert_eq!(stored.yinz_session_name, "there".into());
         assert_eq!(stored.ended_at_ms, None);
     }
 
@@ -6158,7 +6155,7 @@ mod tests {
     #[test]
     fn the_pane_id_only_entities_migrate_rather_than_refusing() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::{AttrDef, EntityDef, FetchRequest, Mutation};
+        use yinz_tile::prelude::{AttrDef, EntityDef, FetchRequest, Mutation};
 
         let local = store::Local::shared("hocus");
         // The definitions as they were, and a row under the uid they used.
@@ -6215,7 +6212,7 @@ mod tests {
     #[test]
     fn a_run_written_before_the_host_column_is_restored_and_then_claimed() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::{AttrDef, EntityDef, Mutation};
+        use yinz_tile::prelude::{AttrDef, EntityDef, Mutation};
 
         let local = store::Local::shared("hocus-agentd");
         // The definition as it was, without a host, and a run stored under it. Its payload has
@@ -6225,7 +6222,7 @@ mod tests {
                 &EntityDef::new(rows::RUN_ENTITY, 2)
                     .attr(AttrDef::int("pane_id").indexed().required())
                     .attr(AttrDef::text("session_id").indexed().required().default(""))
-                    .attr(AttrDef::text("zellij_session_name").indexed())
+                    .attr(AttrDef::text("yinz_session_name").indexed())
                     .attr(AttrDef::text("kind").indexed().required())
                     .attr(
                         AttrDef::boolean("active")
@@ -6238,14 +6235,14 @@ mod tests {
                     .attr(AttrDef::json("payload").required()),
             )
             .expect("the old definition still declares");
-        let mut before = a_run_with_entries("claude:session-1", "zellij", 7, &[]);
+        let mut before = a_run_with_entries("claude:session-1", "yinz", 7, &[]);
         before.host_id = HostId::default();
         local
             .apply(vec![Mutation::put(rows::RUN_ENTITY)
                 .uid(before.id.clone())
                 .set("pane_id", before.pane_id)
                 .set("session_id", before.session_id.clone())
-                .set("zellij_session_name", before.zellij_session_name.clone())
+                .set("yinz_session_name", before.yinz_session_name.clone())
                 .set("kind", before.kind.clone())
                 .set("active", true)
                 .set("started_at_ms", before.started_at_ms)
@@ -6260,20 +6257,20 @@ mod tests {
         // The restore finds it, where a strict host check would have found nothing.
         let mut restored = rows::runs_from_rows(
             &local
-                .fetch(&rows::active_runs_request(&owner("zellij")))
+                .fetch(&rows::active_runs_request(&owner("yinz")))
                 .unwrap(),
         );
         assert_eq!(restored, vec![before.clone()], "the run was stranded");
         assert!(restored[0].host_id.is_empty(), "and it still names no host");
 
         // Claiming costs no write of its own: the stamp rides out with the next persist.
-        rows::claim_unowned_runs(&mut restored, &owner("zellij"));
+        rows::claim_unowned_runs(&mut restored, &owner("yinz"));
         assert_eq!(restored[0].host_id, HostId::new(HOST));
         local.apply(rows::run_mutations(&restored[0])).unwrap();
 
         // Which narrows the row. Another machine running a session of the same name could reach
         // it while it named no host, and cannot once it does.
-        let elsewhere = rows::Owner::new(HostId::new("host-b"), "zellij".into());
+        let elsewhere = rows::Owner::new(HostId::new("host-b"), "yinz".into());
         assert!(
             rows::runs_from_rows(&local.fetch(&rows::active_runs_request(&elsewhere)).unwrap())
                 .is_empty(),
@@ -6282,7 +6279,7 @@ mod tests {
         assert_eq!(
             rows::runs_from_rows(
                 &local
-                    .fetch(&rows::active_runs_request(&owner("zellij")))
+                    .fetch(&rows::active_runs_request(&owner("yinz")))
                     .unwrap()
             )
             .len(),
@@ -6299,7 +6296,7 @@ mod tests {
 
         let local = store::Local::shared("hocus-agentd");
         local.define_all(&store::shared_defs()).unwrap();
-        let mut run = a_run_with_entries("claude:session-1", "zellij", 7, &["asked"]);
+        let mut run = a_run_with_entries("claude:session-1", "yinz", 7, &["asked"]);
         run.host_id = HostId::default();
         local.apply(rows::run_mutations(&run)).unwrap();
 
@@ -6308,13 +6305,13 @@ mod tests {
         run.ended_at_ms = Some(99);
         run.outcome = RunOutcome::Closed;
         local
-            .apply(vec![rows::run_owned_mutation(&run, &owner("zellij"))])
+            .apply(vec![rows::run_owned_mutation(&run, &owner("yinz"))])
             .unwrap();
 
         assert!(
             rows::runs_from_rows(
                 &local
-                    .fetch(&rows::active_runs_request(&owner("zellij")))
+                    .fetch(&rows::active_runs_request(&owner("yinz")))
                     .unwrap()
             )
             .is_empty(),
@@ -6335,15 +6332,15 @@ mod tests {
     #[test]
     fn a_latch_that_predates_the_host_column_is_not_adopted() {
         use crate::store::{self, Backend};
-        use zellij_tile::prelude::{FetchRequest, Mutation};
+        use yinz_tile::prelude::{FetchRequest, Mutation};
 
         let local = store::Local::shared("hocus");
         local.define_all(&store::shared_defs()).unwrap();
         local
             .apply(vec![Mutation::put(rows::LATCH_ENTITY)
-                .uid("zellij:5")
+                .uid("yinz:5")
                 .set("pane_id", 5_u32)
-                .set("zellij_session_name", "zellij")
+                .set("yinz_session_name", "yinz")
                 .set("host_id", "")
                 .set("kind", "reviewer")
                 .build()])
@@ -6352,7 +6349,7 @@ mod tests {
         let mine = local
             .fetch(&rows::owned_rows_request(
                 rows::LATCH_ENTITY,
-                &owner("zellij"),
+                &owner("yinz"),
             ))
             .unwrap();
         assert!(
@@ -8489,10 +8486,7 @@ mod tests {
         ];
         for (epoch_ms, offset, expected) in cases {
             assert_eq!(
-                wall_clock(
-                    zellij_tile::prelude::SignedUnixMillis::new(epoch_ms),
-                    offset
-                ),
+                wall_clock(yinz_tile::prelude::SignedUnixMillis::new(epoch_ms), offset),
                 expected,
                 "{epoch_ms}ms at {offset}s"
             );
@@ -8506,20 +8500,20 @@ mod tests {
         for day in [-800_i64, -1, 0, 1, 20_000] {
             let midnight = day * 86_400_000;
             assert!(
-                wall_clock(zellij_tile::prelude::SignedUnixMillis::new(midnight), 0)
+                wall_clock(yinz_tile::prelude::SignedUnixMillis::new(midnight), 0)
                     .ends_with("00:00:00 +00:00"),
                 "day {day} did not start at midnight: {}",
-                wall_clock(zellij_tile::prelude::SignedUnixMillis::new(midnight), 0)
+                wall_clock(yinz_tile::prelude::SignedUnixMillis::new(midnight), 0)
             );
             assert!(
                 wall_clock(
-                    zellij_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
+                    yinz_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
                     0
                 )
                 .ends_with("23:59:59 +00:00"),
                 "day {day} did not end a second before midnight: {}",
                 wall_clock(
-                    zellij_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
+                    yinz_tile::prelude::SignedUnixMillis::new(midnight + 86_399_000),
                     0
                 )
             );
@@ -8530,7 +8524,7 @@ mod tests {
         AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
-            zellij_session_name: "zellij".to_owned().into(),
+            yinz_session_name: "yinz".to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -9034,8 +9028,8 @@ mod tests {
         assert_eq!(run_title(&run), "rebase onto main and rerun the suite");
     }
 
-    fn prompt_event(prompt: &str) -> zellij_tile::agent::HookEvent {
-        zellij_tile::agent::HookEvent {
+    fn prompt_event(prompt: &str) -> yinz_tile::agent::HookEvent {
+        yinz_tile::agent::HookEvent {
             hook_event_name: "UserPromptSubmit".to_owned(),
             prompt: Some(prompt.to_owned()),
             ..Default::default()
@@ -9071,7 +9065,7 @@ mod tests {
     /// Reports that differ only beyond the retained prefix must not share a history id.
     #[test]
     fn a_notification_cut_by_the_broadcast_cap_gets_no_id() {
-        let lines = zellij_tile::agent::HOOK_BROADCAST_MAX_BYTES / 10;
+        let lines = yinz_tile::agent::HOOK_BROADCAST_MAX_BYTES / 10;
         let prune = |text: &str| {
             let event = prompt_event(text);
             event

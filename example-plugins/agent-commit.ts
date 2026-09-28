@@ -1,5 +1,5 @@
 // Bind with: hooks { agent_exit "file:agent-commit.ts"; }
-import z, { definePlugin } from "zellij:plugin";
+import z, { definePlugin } from "yinz:plugin";
 let cwd = "",
   pane: number | undefined,
   status = "";

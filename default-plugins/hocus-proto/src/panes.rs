@@ -7,9 +7,9 @@
 
 use crate::agents;
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::TabPosition;
-use zellij_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::TabPosition;
+use yinz_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
 
 /// The terminal panes of a manifest, as the agent module wants them.
 ///
@@ -137,7 +137,7 @@ pub fn focused_pane(manifest: &PaneManifest, tabs: &[TabInfo]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_tile::prelude::{PaneInfo, PaneTarget};
+    use yinz_tile::prelude::{PaneInfo, PaneTarget};
 
     #[test]
     fn terminal_discovery_includes_hidden_list_members_only() {
@@ -146,20 +146,20 @@ mod tests {
             TabPosition::new(0),
             vec![
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(1, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(1, false),
                     is_suppressed: true,
                     is_stack_list_member: true,
                     ..Default::default()
                 },
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(2, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(2, false),
                     is_suppressed: true,
                     cwd: Some("/work/hidden".to_owned()),
                     exited: true,
                     ..Default::default()
                 },
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(3, true),
+                    id: yinz_tile::prelude::PaneId::from_legacy(3, true),
                     is_suppressed: true,
                     ..Default::default()
                 },
@@ -192,7 +192,7 @@ mod tests {
             TabPosition::new(0),
             vec![
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(3, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(3, false),
                     cwd: Some("/work/hocus".to_owned()),
                     host: Some("firecracker:review".to_owned()),
                     target: PaneTarget::Firecracker {
@@ -203,7 +203,7 @@ mod tests {
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(4, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(4, false),
                     cwd: None,
                     ..PaneInfo::default()
                 },
@@ -232,16 +232,16 @@ mod tests {
             TabPosition::new(0),
             vec![
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(3, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(3, false),
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(4, false),
+                    id: yinz_tile::prelude::PaneId::from_legacy(4, false),
                     is_suppressed: true,
                     ..PaneInfo::default()
                 },
                 PaneInfo {
-                    id: zellij_tile::prelude::PaneId::from_legacy(5, true),
+                    id: yinz_tile::prelude::PaneId::from_legacy(5, true),
                     ..PaneInfo::default()
                 },
             ],
@@ -271,7 +271,7 @@ mod tests {
 
     fn focused(id: u32) -> PaneInfo {
         PaneInfo {
-            id: zellij_tile::prelude::PaneId::from_legacy(id, false),
+            id: yinz_tile::prelude::PaneId::from_legacy(id, false),
             is_focused: true,
             ..PaneInfo::default()
         }
@@ -322,7 +322,7 @@ mod tests {
         manifest.panes.insert(
             TabPosition::new(0),
             vec![PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(3, true),
+                id: yinz_tile::prelude::PaneId::from_legacy(3, true),
                 ..focused(3)
             }],
         );

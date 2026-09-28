@@ -1,5 +1,5 @@
-//! Runs the `zellij attach` session picker on the terminal. The state, the drawing
-//! and the key parsing are `zellij_cli::session_picker`'s; this sets the
+//! Runs the `yinz attach` session picker on the terminal. The state, the drawing
+//! and the key parsing are `yinz_cli::session_picker`'s; this sets the
 //! terminal up, reads bytes and draws on stderr's alternate screen, leaving
 //! stdout alone.
 use console::Term;
@@ -8,7 +8,7 @@ use nix::poll::{poll, PollFd, PollFlags};
 use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg, SpecialCharacterIndices, Termios};
 use std::io::{self, Write};
 use std::os::fd::AsFd;
-use zellij_cli::session_picker::{KeyParser, Outcome, PickerRow, PickerState};
+use yinz_cli::session_picker::{KeyParser, Outcome, PickerRow, PickerState};
 
 /// Milliseconds to wait for the rest of a part-read key before taking a held
 /// ESC as the Escape key: longer than a slow link splits a sequence by,

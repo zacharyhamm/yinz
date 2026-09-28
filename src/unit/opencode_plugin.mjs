@@ -9,8 +9,8 @@ import { pathToFileURL } from "node:url"
 const children = []
 let failure
 childProcess.spawn = (binary, args, options) => {
-  assert.equal(binary, "/test/zellij")
-  assert.deepEqual(args, process.env.ZELLIJ_REMOTE_PANE_TOKEN
+  assert.equal(binary, "/test/yinz")
+  assert.deepEqual(args, process.env.YINZ_REMOTE_PANE_TOKEN
     ? ["--pty-broker", "report", "opencode"]
     : ["action", "agent-report", "--hook-json", "--kind", "opencode"])
   assert.deepEqual(options.stdio, ["pipe", "ignore", "ignore"])

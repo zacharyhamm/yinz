@@ -1,18 +1,18 @@
 //! CLI attachment to project-owned Swamp runs. Execution belongs to managed Swamp.
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use zellij_cli::args::{CliArgs, Workflow};
-use zellij_runtime::errors::prelude::*;
+use yinz_cli::args::{CliArgs, Workflow};
+use yinz_runtime::errors::prelude::*;
 
 pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot read working directory")?;
-    let snapshot = zellij_config::project_config::access(&cwd, None).map_err(|e| anyhow!(e))?;
+    let snapshot = yinz_config::project_config::access(&cwd, None).map_err(|e| anyhow!(e))?;
     if let Some(error) = snapshot.error {
         return Err(anyhow!(error));
     }
-    let binary = std::env::current_exe().context("cannot resolve Zellij executable")?;
+    let binary = std::env::current_exe().context("cannot resolve Yinz executable")?;
     let session = opts.session.clone().or_else(|| {
-        zellij_runtime::envs::get_session_name()
+        yinz_runtime::envs::get_session_name()
             .ok()
             .map(|name| name.into_string())
     });
@@ -22,7 +22,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         .context("cannot start workflow client runtime")?;
     match command {
         Workflow::Server { command } => {
-            use zellij_cli::args::WorkflowServer;
+            use yinz_cli::args::WorkflowServer;
             let action = match command {
                 WorkflowServer::Status => "status",
                 WorkflowServer::Restart => "restart",
@@ -30,7 +30,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             };
             println!(
                 "{}",
-                runtime.block_on(zellij_swamp::lifecycle(snapshot.root, action))?
+                runtime.block_on(yinz_swamp::lifecycle(snapshot.root, action))?
             );
         },
         Workflow::Run {
@@ -51,7 +51,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             let result = pipe(
                 &binary,
                 session.as_deref(),
-                "zellij:swamp-bridge",
+                "yinz:swamp-bridge",
                 "swamp",
                 &request,
             )?;
@@ -70,7 +70,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    runtime.block_on(zellij_swamp::call(
+                    runtime.block_on(yinz_swamp::call(
                         snapshot.root.clone(),
                         "workflow.history.get",
                         serde_json::json!({"workflowIdOrName":run})
@@ -101,7 +101,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
                 pipe(
                     &binary,
                     session.as_deref(),
-                    "zellij:swamp-bridge",
+                    "yinz:swamp-bridge",
                     "swamp",
                     &request
                 )?["result"]
@@ -114,7 +114,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
                 pipe(
                     &binary,
                     session.as_deref(),
-                    "zellij:swamp-bridge",
+                    "yinz:swamp-bridge",
                     "swamp",
                     &request
                 )?
@@ -202,7 +202,7 @@ fn open_view(
             "--height",
             "90%",
             "--",
-            "zellij:swamp-workflow",
+            "yinz:swamp-workflow",
         ])
         .stdin(Stdio::null())
         .output()
@@ -217,8 +217,8 @@ fn open_view(
         .context("invalid workflow view pane ID")?
         .trim();
     if !matches!(
-        destination.parse::<zellij_types::pane_id::PaneId>(),
-        Ok(zellij_types::pane_id::PaneId::Plugin(_))
+        destination.parse::<yinz_types::pane_id::PaneId>(),
+        Ok(yinz_types::pane_id::PaneId::Plugin(_))
     ) {
         return Err(anyhow!("Invalid workflow view pane ID: {destination:?}"));
     }
@@ -233,8 +233,8 @@ mod tests {
     #[test]
     fn open_view_targets_the_launched_pane_and_rejects_invalid_output() {
         let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("zellij");
-        zellij_test_support::write_warm_script(
+        let binary = dir.path().join("yinz");
+        yinz_test_support::write_warm_script(
             &binary,
             r#"cd "$(dirname "$0")"
 case "$1" in

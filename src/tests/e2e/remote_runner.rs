@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vte;
-use zellij_server::panes::kitty_graphics::KittyImageStore;
-use zellij_server::panes::sixel::SixelImageStore;
-use zellij_server::panes::{LinkHandler, TerminalPane};
+use yinz_server::panes::kitty_graphics::KittyImageStore;
+use yinz_server::panes::sixel::SixelImageStore;
+use yinz_server::panes::{LinkHandler, TerminalPane};
 
-use zellij_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
-use zellij_types::style::{Palette, Style};
+use yinz_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
+use yinz_types::style::{Palette, Style};
 
 use ssh2::Session;
 use std::io::prelude::*;
@@ -17,18 +17,18 @@ use std::net::TcpStream;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-const ZELLIJ_EXECUTABLE_LOCATION: &str = "/usr/src/zellij/zellij";
-// ZELLIJ_HOSTNAME pins the name the tab bar prints, which is otherwise the container's hostname
+const YINZ_EXECUTABLE_LOCATION: &str = "/usr/src/yinz/yinz";
+// YINZ_HOSTNAME pins the name the tab bar prints, which is otherwise the container's hostname
 // and would put it in every snapshot taken here.
-const SET_ENV_VARIABLES: &str = "EDITOR=/usr/bin/vi ZELLIJ_HOSTNAME=Zellij";
-const ZELLIJ_DATA_DIR: &str = "/usr/src/zellij/e2e-data";
-const ZELLIJ_FIXTURE_PATH: &str = "/usr/src/zellij/fixtures";
+const SET_ENV_VARIABLES: &str = "EDITOR=/usr/bin/vi YINZ_HOSTNAME=Yinz";
+const YINZ_DATA_DIR: &str = "/usr/src/yinz/e2e-data";
+const YINZ_FIXTURE_PATH: &str = "/usr/src/yinz/fixtures";
 const CONNECTION_STRING: &str = "127.0.0.1:2222";
 const CONNECTION_USERNAME: &str = "test";
 const CONNECTION_PASSWORD: &str = "test";
 const SESSION_NAME: &str = "e2e-test";
 const RETRIES: usize = 10;
-const CLEANUP_DONE_MARKER: &str = "__ZELLIJ_CLEANUP_DONE__";
+const CLEANUP_DONE_MARKER: &str = "__YINZ_CLEANUP_DONE__";
 
 fn ssh_connect() -> ssh2::Session {
     let tcp = TcpStream::connect(CONNECTION_STRING).unwrap();
@@ -50,31 +50,31 @@ fn setup_remote_environment(channel: &mut ssh2::Channel, win_size: Size) {
     channel.flush().unwrap();
 }
 
-fn stop_zellij(channel: &mut ssh2::Channel) {
+fn stop_yinz(channel: &mut ssh2::Channel) {
     // here we remove the status-bar-tips cache to make sure only the quicknav tip is loaded
     channel
         .write_all(b"find /tmp | grep status-bar-tips | xargs rm\n")
         .unwrap();
-    channel.write_all(b"killall -KILL zellij\n").unwrap();
+    channel.write_all(b"killall -KILL yinz\n").unwrap();
     channel.write_all(b"rm -rf /tmp/*\n").unwrap(); // remove temporary artifacts from previous
                                                     // tests
     channel.write_all(b"rm -rf /tmp/*\n").unwrap(); // remove temporary artifacts from previous
     channel.write_all(b"rm -rf /tmp/*\n").unwrap(); // remove temporary artifacts from previous
     channel
-        .write_all(b"rm -rf ~/.cache/zellij/*/session_info\n")
+        .write_all(b"rm -rf ~/.cache/yinz/*/session_info\n")
         .unwrap();
     channel
-        .write_all(b"rm -rf ~/.cache/zellij/permissions.kdl\n")
+        .write_all(b"rm -rf ~/.cache/yinz/permissions.kdl\n")
         .unwrap();
 }
 
-fn start_zellij(channel: &mut ssh2::Channel) {
-    stop_zellij(channel);
+fn start_yinz(channel: &mut ssh2::Channel) {
+    stop_yinz(channel);
     channel
         .write_all(
             format!(
                 "{} {} --session {} --data-dir {} options --show-release-notes false\n",
-                SET_ENV_VARIABLES, ZELLIJ_EXECUTABLE_LOCATION, SESSION_NAME, ZELLIJ_DATA_DIR
+                SET_ENV_VARIABLES, YINZ_EXECUTABLE_LOCATION, SESSION_NAME, YINZ_DATA_DIR
             )
             .as_bytes(),
         )
@@ -82,17 +82,17 @@ fn start_zellij(channel: &mut ssh2::Channel) {
     channel.flush().unwrap();
 }
 
-fn start_zellij_mirrored_session_with_layout(channel: &mut ssh2::Channel, layout_file_name: &str) {
-    stop_zellij(channel);
+fn start_yinz_mirrored_session_with_layout(channel: &mut ssh2::Channel, layout_file_name: &str) {
+    stop_yinz(channel);
     channel
         .write_all(
             format!(
                 "{} {} --session {} --data-dir {} --new-session-with-layout {} options --show-release-notes false --mirror-session true --serialization-interval 1\n",
                 SET_ENV_VARIABLES,
-                ZELLIJ_EXECUTABLE_LOCATION,
+                YINZ_EXECUTABLE_LOCATION,
                 SESSION_NAME,
-                ZELLIJ_DATA_DIR,
-                format_args!("{}/{}", ZELLIJ_FIXTURE_PATH, layout_file_name)
+                YINZ_DATA_DIR,
+                format_args!("{}/{}", YINZ_FIXTURE_PATH, layout_file_name)
             )
             .as_bytes(),
         )
@@ -163,7 +163,7 @@ fn read_from_channel(
                 let styled_underlines = true;
                 let explicitly_disable_kitty_keyboard_protocol = false;
                 let mut terminal_output = TerminalPane::new(
-                    zellij_server::TerminalId::new(0),
+                    yinz_server::TerminalId::new(0),
                     pane_geom,
                     Style::default(),
                     0,
@@ -336,17 +336,14 @@ impl RemoteTerminal {
                 .write_all(
                     format!(
                         "{} {} --data-dir {} attach {}\n",
-                        SET_ENV_VARIABLES,
-                        ZELLIJ_EXECUTABLE_LOCATION,
-                        ZELLIJ_DATA_DIR,
-                        SESSION_NAME
+                        SET_ENV_VARIABLES, YINZ_EXECUTABLE_LOCATION, YINZ_DATA_DIR, SESSION_NAME
                     )
                     .as_bytes(),
                 )
                 .unwrap();
             channel.flush().unwrap();
-        } // release mutex before sleeping so the reader thread can process Zellij's startup output
-        std::thread::sleep(std::time::Duration::from_secs(1)); // wait until Zellij stops parsing startup ANSI codes from the terminal STDIN
+        } // release mutex before sleeping so the reader thread can process Yinz's startup output
+        std::thread::sleep(std::time::Duration::from_secs(1)); // wait until Yinz stops parsing startup ANSI codes from the terminal STDIN
     }
     pub fn send_blocking_command_through_the_cli(&mut self, command: &str) {
         let mut channel = self.channel.lock().unwrap();
@@ -354,7 +351,7 @@ impl RemoteTerminal {
             .write_all(
                 format!(
                     "{} run --blocking --floating --close-on-exit -- {}",
-                    ZELLIJ_EXECUTABLE_LOCATION, command
+                    YINZ_EXECUTABLE_LOCATION, command
                 )
                 .as_bytes(),
             )
@@ -400,7 +397,7 @@ impl RemoteRunner {
             logical_position: None,
         };
         setup_remote_environment(&mut channel, win_size);
-        start_zellij(&mut channel);
+        start_yinz(&mut channel);
         let channel = Arc::new(Mutex::new(channel));
         let last_snapshot = Arc::new(Mutex::new(String::new()));
         let cursor_coordinates = Arc::new(Mutex::new((0, 0)));
@@ -438,7 +435,7 @@ impl RemoteRunner {
             logical_position: None,
         };
         setup_remote_environment(&mut channel, win_size);
-        start_zellij_mirrored_session_with_layout(&mut channel, layout_file_name);
+        start_yinz_mirrored_session_with_layout(&mut channel, layout_file_name);
         let channel = Arc::new(Mutex::new(channel));
         let last_snapshot = Arc::new(Mutex::new(String::new()));
         let cursor_coordinates = Arc::new(Mutex::new((0, 0)));
@@ -463,7 +460,7 @@ impl RemoteRunner {
         let sess = ssh_connect();
         let mut channel = sess.channel_session().unwrap();
         setup_remote_environment(&mut channel, win_size);
-        stop_zellij(&mut channel);
+        stop_yinz(&mut channel);
         channel
             .write_all(format!("printf '{}\\n'\n", CLEANUP_DONE_MARKER).as_bytes())
             .unwrap();

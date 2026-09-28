@@ -1,7 +1,7 @@
 use crate::screens::{KeyResponse, Screen};
 use crate::ui::{truncate_line_with_ansi, wrap_text_to_width, ErrorMessage, MultiLineErrorMessage};
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 /// Format a layout parsing error into a detailed error string
 pub fn format_kdl_error(error: LayoutParsingError) -> String {
@@ -14,8 +14,8 @@ pub fn format_kdl_error(error: LayoutParsingError) -> String {
             use miette::{GraphicalReportHandler, NamedSource, Report};
 
             kdl_error.help_message =
-                Some("https://zellij.dev/documentation/creating-a-layout.html".to_owned());
-            let report: Report = zellij_config::config::KdlError::from(*kdl_error).into();
+                Some("https://github.com/zacharyhamm/yinz/tree/main/example/layouts".to_owned());
+            let report: Report = yinz_config::config::KdlError::from(*kdl_error).into();
             let report = report.with_source_code(NamedSource::new(file_name, source_code));
 
             let handler = GraphicalReportHandler::new();

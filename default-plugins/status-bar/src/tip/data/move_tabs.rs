@@ -4,8 +4,8 @@ use ansi_term::{
     Style,
 };
 
-use zellij_tile::prelude::*;
-use zellij_tile_utils::palette_match;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::palette_match;
 
 use crate::LinePart;
 

@@ -1,8 +1,8 @@
 use crate::DisplayLayout;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::TextInput;
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::TextInput;
 
 #[derive(Clone)]
 pub struct SearchResult {

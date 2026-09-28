@@ -1,6 +1,6 @@
 ---
 #This file functions as an overview of using screen binds in place of the lock mode.
-#It currently functions fine in Zellij, but doesn't give the user the opportunity to use lock mode.
+#It currently functions fine in Yinz, but doesn't give the user the opportunity to use lock mode.
 keybinds:
     unbind: true
     normal:
@@ -33,7 +33,7 @@ keybinds:
     locked:
         - action: [SwitchToMode: Normal,]
           key: [Ctrl: 'a',]
-########################################### List of Screen Commands as implemented in screen.yaml for Zellij ###########################################################
+########################################### List of Screen Commands as implemented in screen.yaml for Yinz #############################################################
 ################################################# Commands were gathered from GNU Screen version 4.08.00 ###############################################################
 ############################ Adapted from the GNU Screen User’s Manual here: https://www.gnu.org/software/screen/manual/screen.html#####################################
         #- action: [DisplayPaneInformation, SwitchToMode: PaneWindowIndex,]
@@ -136,7 +136,7 @@ keybinds:
           key: [Char: 'X',]
         #- action: [LockTerminal, SwitchToMode: Normal,]
         #  key: [Char: 'x', Ctrl: 'x',]
-        #- action: [SuspendZellij, SwitchToMode: Normal,]
+        #- action: [SuspendYinz, SwitchToMode: Normal,]
         #  key: [Char: 'z', Ctrl: 'z',]
         #- action: [SendReset, SwitchToMode: Normal,]
         #  key: [Char: 'Z',]
@@ -146,7 +146,7 @@ keybinds:
         #  key: [Char: '?',]
         - action: [Quit,]
           key: [Char: '\',]
-        #- action: [EnterZellijCommandPrompt, SwitchToMode: Normal,]
+        #- action: [EnterYinzCommandPrompt, SwitchToMode: Normal,]
         #  key: [ Char: ':',]
         #- action: [SwitchToMode: Copy,]
         #  key: [Escape, Char: '[', Ctrl: '[',]
@@ -164,7 +164,7 @@ keybinds:
         #  key: [Char: '_',]
         - action: [NewPane: Down, SwitchToMode: Normal,]
           key: [Char: '|',]
-        #- action: [ShowZellijSoftwareLicense,]
+        #- action: [ShowYinzSoftwareLicense,]
         #  key: [Char: ',',]
         #- action: [ShowAttachedUsers,]
         #  key: [Char: '*',]

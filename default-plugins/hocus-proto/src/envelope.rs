@@ -81,7 +81,7 @@ pub struct Envelope<'a> {
     /// answers today.
     pub raw: &'a str,
     /// No closing tag was ever found — the event was cut on the way in by
-    /// `zellij_tile::agent::HookEvent::pruned_to`, or the writer was.
+    /// `yinz_tile::agent::HookEvent::pruned_to`, or the writer was.
     pub truncated: bool,
 }
 

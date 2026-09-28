@@ -103,7 +103,7 @@ export const Operation = z.object({
 });
 export const Session = z.object({
     session: z.string().min(1),
-    binary: Literal.min(1).default("zellij"),
+    binary: Literal.min(1).default("yinz"),
     timeoutMs: z.number().int().positive().default(30000),
 });
 export const Request = z.object({
@@ -139,7 +139,7 @@ export const AgentSpec = z.object({
 function timing(c: Pick<Context, "logger" | "modelId">, request: unknown) {
     let enabled = false;
     try {
-        enabled = Deno.env.get("ZELLIJ_SWAMP_TIMING") === "1";
+        enabled = Deno.env.get("YINZ_SWAMP_TIMING") === "1";
     } catch { /* Restricted callers remain usable. */ }
     const start = performance.now();
     const attempt = enabled ? crypto.randomUUID() : undefined;
@@ -196,7 +196,7 @@ export async function bridge(
             "--name",
             "swamp",
             "--plugin",
-            "zellij:swamp-bridge",
+            "yinz:swamp-bridge",
         ], JSON.stringify(request) + "\n");
         record("process", "ok");
         phase = "parse";

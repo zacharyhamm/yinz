@@ -83,7 +83,7 @@ fn a_daemon_that_announces_itself_is_heard_again() {
     assert_eq!(state.agent_seq, 9);
 
     state.pipe(PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_HELLO.to_owned(),
         payload: None,
         args: BTreeMap::new(),

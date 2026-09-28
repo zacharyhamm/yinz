@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 // -- manual `/tool` invocation ------------------------------------------
 
@@ -29,7 +29,7 @@ fn a_slash_command_runs_the_tool_and_sends_nothing() {
 /// A tool the user typed is shown as prose and still recorded as the raw
 /// result the model reads. Driven through `finish_head` rather than through
 /// `submit`, because off-wasm `tools::dispatch` answers "tools are
-/// unavailable outside zellij" and there is nothing structured to present.
+/// unavailable outside yinz" and there is nothing structured to present.
 #[test]
 fn a_typed_tools_result_is_presented_without_changing_what_is_sent() {
     let mut state = State::default();

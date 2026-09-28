@@ -1,0 +1,36 @@
+[package]
+name = "yinz-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Plugin data and recording storage for Yinz"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+yinz-types = { workspace = true }
+bytes = { version = "1", default-features = false }
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
+tokio-stream = { version = "0.1" }
+anyhow = { workspace = true }
+log = { workspace = true }
+native-tls = "0.2.14"
+percent-encoding = "2"
+postgres-native-tls = "0.5"
+rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+vte = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+postgres = { version = "0.19", default-features = false }
+tempfile = { workspace = true }
+hegeltest = "0.29.3"
+
+[features]
+postgres-tests = []

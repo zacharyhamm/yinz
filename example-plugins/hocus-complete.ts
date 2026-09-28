@@ -1,5 +1,5 @@
 // Own a bounded model/tool loop. Hocus-agentd serves stateless completion requests.
-import z, { definePlugin, type CompletionMessage, type PaneManifest } from "zellij:plugin";
+import z, { definePlugin, type CompletionMessage, type PaneManifest } from "yinz:plugin";
 let asking = false,
   panes: PaneManifest["panes"] = {};
 const lines = ["press <Enter> to ask, or q to quit"];

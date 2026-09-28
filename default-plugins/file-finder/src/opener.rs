@@ -8,7 +8,7 @@
 //! open_pdf "zathura {}"
 //! ```
 //!
-//! Anything unmatched falls through to Zellij's own editor resolution
+//! Anything unmatched falls through to Yinz's own editor resolution
 //! (`scrollback_editor` → `$EDITOR` → `$VISUAL` → `vi`), which the server applies when
 //! it receives a `TerminalAction::OpenFile`. The plugin deliberately never picks an
 //! editor itself.
@@ -29,7 +29,7 @@ const PLACEHOLDER: &str = "{}";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opener {
     /// Hand the file to the host, which substitutes the configured editor.
-    ZellijEditor,
+    YinzEditor,
     /// Run a specific command, already resolved down to argv.
     Command { path: String, args: Vec<String> },
 }
@@ -38,7 +38,7 @@ pub enum Opener {
 ///
 /// Extensions are matched case-insensitively, so `open_png` covers `SCREENSHOT.PNG`.
 /// A file with no extension, or one whose extension has no `open_<ext>` entry, uses
-/// `open_default` if set and Zellij's editor otherwise.
+/// `open_default` if set and Yinz's editor otherwise.
 pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Opener {
     let by_extension = file
         .extension()
@@ -48,14 +48,14 @@ pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Opener {
 
     let command = match by_extension.or_else(|| config.get(OPEN_DEFAULT)) {
         Some(command) => command,
-        None => return Opener::ZellijEditor,
+        None => return Opener::YinzEditor,
     };
 
     // An empty or whitespace-only value is how a user disables an inherited entry;
     // treat it as "no opener configured" rather than trying to exec the empty string.
     match build_command(command, file) {
         Some(opener) => opener,
-        None => Opener::ZellijEditor,
+        None => Opener::YinzEditor,
     }
 }
 
@@ -110,16 +110,16 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_extension_uses_the_zellij_editor() {
+    fn unconfigured_extension_uses_the_yinz_editor() {
         let config = config(&[("open_md", "glow")]);
         let opener = opener_for(&config, &PathBuf::from("/p/src/main.rs"));
-        assert_eq!(opener, Opener::ZellijEditor);
+        assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
-    fn empty_config_uses_the_zellij_editor() {
+    fn empty_config_uses_the_yinz_editor() {
         let opener = opener_for(&BTreeMap::new(), &PathBuf::from("/p/README.md"));
-        assert_eq!(opener, Opener::ZellijEditor);
+        assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
@@ -184,17 +184,17 @@ mod tests {
     }
 
     #[test]
-    fn blank_opener_falls_back_to_the_zellij_editor() {
+    fn blank_opener_falls_back_to_the_yinz_editor() {
         let config = config(&[("open_md", "   ")]);
         let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
-        assert_eq!(opener, Opener::ZellijEditor);
+        assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
     fn unrelated_config_keys_are_ignored() {
         let config = config(&[("floating", "true"), ("width", "80%")]);
         let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
-        assert_eq!(opener, Opener::ZellijEditor);
+        assert_eq!(opener, Opener::YinzEditor);
     }
 
     /// `build_command` documents that a command without a `{}` gets the file path
@@ -246,7 +246,7 @@ mod tests {
                 );
                 assert_eq!(args.len(), expected_argv.len(), "no words may be dropped");
             },
-            Opener::ZellijEditor => panic!(
+            Opener::YinzEditor => panic!(
                 "a configured, non-blank opener {:?} should not fall through to the editor",
                 command
             ),

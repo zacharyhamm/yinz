@@ -1,0 +1,5 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/plugin_lifecycle_commands.rs
+expression: "format!(\"{:#?}\", move_focus_instruction)"
+---
+None

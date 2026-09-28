@@ -6,7 +6,7 @@ import { join, toFileUrl } from "@std/path";
 const [source, fixture, rawCount] = Deno.args;
 const count = Number(rawCount);
 if (
-    !fixture.includes("zellij-workflow-acceptance-") ||
+    !fixture.includes("yinz-workflow-acceptance-") ||
     !Number.isInteger(count) || count < 0
 ) {
     throw new Error(
@@ -43,7 +43,7 @@ const definitions = new YamlDefinitionRepository(
 const outputs = new YamlOutputRepository(fixture);
 const workflows = new YamlWorkflowRepository(fixture);
 const runs = new YamlWorkflowRunRepository(fixture);
-const workflow = await workflows.findByName("@hammz/zellij-agent-exit");
+const workflow = await workflows.findByName("@hammz/yinz-agent-exit");
 if (!workflow) throw new Error("Missing fixture workflow");
 for (let i = 0; i < count; i++) {
     const run = WorkflowRun.create(workflow);
@@ -53,7 +53,7 @@ for (let i = 0; i < count; i++) {
     for (
         const typeName of [
             "@hammz/question",
-            "@hammz/zellij",
+            "@hammz/yinz",
             "@swamp/git",
         ]
     ) {

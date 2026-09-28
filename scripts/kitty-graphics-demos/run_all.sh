@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Run every demo in this directory in order, pausing between each so you can look at the
-# result before the next one clears/overwrites it. Run this *inside* a zellij pane (or any
+# result before the next one clears/overwrites it. Run this *inside* a yinz pane (or any
 # other kitty-protocol host) — it writes raw escape sequences to stdout.
 #
 #   scripts/kitty-graphics-demos/run_all.sh

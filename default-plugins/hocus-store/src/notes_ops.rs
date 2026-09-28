@@ -11,8 +11,8 @@ use hocus_proto::notes::{self, Filter, Note, Where};
 use hocus_proto::store::{self, Backend};
 use hocus_proto::{projects, todos};
 use serde_json::{json, Value};
-use zellij_tile::prelude::DataRevision;
-use zellij_tile::prelude::FetchRequest;
+use yinz_tile::prelude::DataRevision;
+use yinz_tile::prelude::FetchRequest;
 
 pub type OpResult = Result<String, String>;
 
@@ -311,7 +311,7 @@ pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
 mod tests {
     use super::*;
     use hocus_proto::store::Local;
-    use zellij_tile::prelude::{
+    use yinz_tile::prelude::{
         ApplyReport, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, Mutation, Pred,
         WatchMode, WriteError,
     };

@@ -1,5 +1,5 @@
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ActionType {
@@ -58,7 +58,7 @@ impl ActionType {
             ActionType::SessionManager => "Session manager".to_string(),
             ActionType::PluginManager => "Plugin manager".to_string(),
             ActionType::Configuration => "Configuration".to_string(),
-            ActionType::About => "About Zellij".to_string(),
+            ActionType::About => "About Yinz".to_string(),
             ActionType::SwitchToMode(input_mode) if input_mode == &InputMode::RenamePane => {
                 "Rename pane".to_string()
             },
@@ -137,7 +137,7 @@ impl ActionType {
             action if action.launches_plugin("session-manager") => ActionType::SessionManager,
             action if action.launches_plugin("configuration") => ActionType::Configuration,
             action if action.launches_plugin("plugin-manager") => ActionType::PluginManager,
-            action if action.launches_plugin("zellij:about") => ActionType::About,
+            action if action.launches_plugin("yinz:about") => ActionType::About,
             Action::NewTab { .. } => ActionType::NewTab,
             _ => ActionType::Other(format!("{:?}", action)),
         }

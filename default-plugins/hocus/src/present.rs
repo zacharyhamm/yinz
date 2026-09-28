@@ -1104,7 +1104,7 @@ fn todo_written(name: &str, value: &Value) -> Option<String> {
 // VMs
 // ---------------------------------------------------------------------------
 
-/// `zellij firecracker list --json`, as one line per VM.
+/// `yinz firecracker list --json`, as one line per VM.
 ///
 /// Unlike the rest of this file this is read by the *model*, not by the user - it is
 /// what `vm_tool_result` answers a `vm_list` with. The listing is paid for on every

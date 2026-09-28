@@ -1,5 +1,5 @@
 import { captureCommand, readCapture, testReport } from "./_lib/test_report.ts";
-import { methods, resources } from "./_lib/zellij_methods.ts";
+import { methods, resources } from "./_lib/yinz_methods.ts";
 import { Context } from "./_lib/workflow.ts";
 
 function assert(value: unknown, message = "assertion failed"): asserts value {
@@ -100,7 +100,7 @@ Deno.test("private concurrent capture preserves literal argv, full large stdout/
     await Promise.all([0, 7].map(async (exitCode) => {
         const directory = await Deno.makeTempDir({
             dir: "/tmp",
-            prefix: "zellij-test-",
+            prefix: "yinz-test-",
         });
         try {
             assert(
@@ -171,7 +171,7 @@ Deno.test("private concurrent capture preserves literal argv, full large stdout/
 Deno.test("capture survives a failed evidence save; saved reports retain beginning, middle and end and resolve for fix prompts", async () => {
     const directory = await Deno.makeTempDir({
         dir: "/tmp",
-        prefix: "zellij-test-",
+        prefix: "yinz-test-",
     });
     const saved = new Map<string, Record<string, unknown>>();
     let failSave = true;
@@ -189,7 +189,7 @@ print('{"result": {}}')
     await Deno.chmod(binary, 0o700);
     const c: Context = {
         repoDir: "/tmp",
-        modelType: { normalized: "@hammz/zellij" },
+        modelType: { normalized: "@hammz/yinz" },
         modelId: "saved",
         globalArgs: { session: "test", binary },
         signal: new AbortController().signal,
@@ -294,7 +294,7 @@ print('{"result": {}}')
                 output: "preview",
                 summary: undefined,
                 outputRef: {
-                    modelType: "@hammz/zellij",
+                    modelType: "@hammz/yinz",
                     modelId: "saved",
                     name: "test-current",
                     version: 1,
@@ -334,7 +334,7 @@ print('{"result": {}}')
                 output: "preview",
                 summary: undefined,
                 outputRef: {
-                    modelType: "@hammz/zellij",
+                    modelType: "@hammz/yinz",
                     modelId: "saved",
                     name: "test-current",
                     version: 1,
@@ -366,7 +366,7 @@ Deno.test("foreground tests stream output and preserve exit status only after di
         for (const dismiss of [true, false, "interrupt"]) {
             const directory = await Deno.makeTempDir({
                 dir: "/tmp",
-                prefix: "zellij-test-",
+                prefix: "yinz-test-",
             });
             const notify = directory + "/notify";
             await Deno.writeTextFile(

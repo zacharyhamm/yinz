@@ -12,7 +12,7 @@ fn gate_runs_integration_and_aggregates_failures() {
         root.path().join("target/authoring-tools"),
     )
     .unwrap();
-    let policy = "zellij-plugin-host/src/deno/authoring";
+    let policy = "yinz-plugin-host/src/deno/authoring";
     fs::create_dir_all(root.path().join(policy)).unwrap();
     fs::copy(
         checkout.join(policy).join("oxfmt.json"),
@@ -20,13 +20,13 @@ fn gate_runs_integration_and_aggregates_failures() {
     )
     .unwrap();
     fs::create_dir_all(root.path().join("example-plugins")).unwrap();
-    fs::create_dir_all(root.path().join("zellij-deno-builtins/assets/plugins")).unwrap();
+    fs::create_dir_all(root.path().join("yinz-deno-builtins/assets/plugins")).unwrap();
     fs::write(
         root.path().join("example-plugins/main.ts"),
         "export const value = 1;\n",
     )
     .unwrap();
-    let binary = root.path().join("target/debug/zellij");
+    let binary = root.path().join("target/debug/yinz");
     fs::write(
         &binary,
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$GATE_LOG\"\n",
@@ -35,18 +35,18 @@ fn gate_runs_integration_and_aggregates_failures() {
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     for (out, src, generated) in [
         (
-            "zellij-plugin-api/assets",
-            "zellij-plugin-api/src",
+            "yinz-plugin-api/assets",
+            "yinz-plugin-api/src",
             "generated_plugin_api.rs",
         ),
         (
-            "zellij-ipc/assets/prost_ipc",
-            "zellij-ipc/src/client_server_contract",
+            "yinz-ipc/assets/prost_ipc",
+            "yinz-ipc/src/client_server_contract",
             "generated_client_server_api.rs",
         ),
         (
-            "zellij-ipc/assets/prost_nested_session",
-            "zellij-ipc/src/nested_session_contract",
+            "yinz-ipc/assets/prost_nested_session",
+            "yinz-ipc/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),
     ] {
@@ -86,8 +86,8 @@ fn gate_runs_integration_and_aggregates_failures() {
 printf '%s|%s\n' "$NEXTEST_TEST_THREADS" "$*" >> "$GATE_LOG"
 case "$*" in
   'metadata '*) cat "$GATE_METADATA" ;;
-  'tree -q -p zellij -e '*) [ "$GATE_FAILURE" = 1 ] && echo 'nix v0.30.1 [ioctl]' || echo 'nix v0.30.1 []' ;;
-  'tree -q -p zellij-integration-tests '*) echo 'nix v0.30.1 []' ;;
+  'tree -q -p yinz -e '*) [ "$GATE_FAILURE" = 1 ] && echo 'nix v0.30.1 [ioctl]' || echo 'nix v0.30.1 []' ;;
+  'tree -q -p yinz-integration-tests '*) echo 'nix v0.30.1 []' ;;
   'fmt '*|'clippy '*|'nextest run '*) exit "$GATE_FAILURE" ;;
   'nextest --version') exit "$GATE_NO_NEXTEST" ;;
 esac
@@ -119,13 +119,11 @@ exit 0
         );
         let calls = fs::read_to_string(log).unwrap();
         assert!(
-            calls.contains("3|tree -q -p zellij -e normal,build --prefix none"),
+            calls.contains("3|tree -q -p yinz -e normal,build --prefix none"),
             "{calls}"
         );
         assert!(
-            calls.contains(
-                "3|tree -q -p zellij-integration-tests -e normal,build,dev --prefix none"
-            ),
+            calls.contains("3|tree -q -p yinz-integration-tests -e normal,build,dev --prefix none"),
             "{calls}"
         );
         assert!(calls.contains("3|fmt --all --check"), "{calls}");
@@ -136,12 +134,12 @@ exit 0
         if no_nextest == "0" {
             assert!(calls.contains("3|nextest run --profile unit"), "{calls}");
             assert!(
-                calls.contains("16|nextest run -p zellij-integration-tests\n"),
+                calls.contains("16|nextest run -p yinz-integration-tests\n"),
                 "{calls}"
             );
         } else {
             assert!(
-                calls.contains("16|test -p zellij-integration-tests -- --test-threads=1\n"),
+                calls.contains("16|test -p yinz-integration-tests -- --test-threads=1\n"),
                 "{calls}"
             );
         }

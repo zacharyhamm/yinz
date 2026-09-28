@@ -31,7 +31,7 @@ const EXAMPLE_WEATHER_EXTENSION: &str =
 /// so a model that has read the part it needs does not have to guess how a call is spelled.
 /// Served in parts, cut at its own `// ---- section:` markers, so that none is more than a
 /// tool call should cost.
-const SDK: &str = include_str!("../../../zellij-plugin-host/src/deno/sdk.d.ts");
+const SDK: &str = include_str!("../../../yinz-plugin-host/src/deno/sdk.d.ts");
 const SDK_SECTIONS: [&str; 7] = [
     "sdk_core",
     "sdk_commands",
@@ -137,11 +137,11 @@ fn source_section(name: &str) -> Option<String> {
         "build" => {
             return Some(format!(
                 "```toml\n{}\n```",
-                include_str!("../../../zellij-plugin-host/Cargo.toml").trim_end()
+                include_str!("../../../yinz-plugin-host/Cargo.toml").trim_end()
             ))
         },
         "permissions" => {
-            let names = zellij_tile::plugin_authoring::all_permission_names()
+            let names = yinz_tile::plugin_authoring::all_permission_names()
                 .into_iter()
                 .map(|name| {
                     let pascal: String = name
@@ -184,8 +184,8 @@ fn source_section(name: &str) -> Option<String> {
         "data" => {
             return Some(format!(
                 "Shared namespace prefix: `{}`. Reserved attributes: {}.\n\n{}",
-                zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX,
-                zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES
+                yinz_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX,
+                yinz_tile::plugin_authoring::RESERVED_ATTR_NAMES
                     .iter()
                     .map(|name| format!("`{name}`"))
                     .collect::<Vec<_>>()
@@ -202,7 +202,7 @@ fn source_section(name: &str) -> Option<String> {
 /// piece of the guide worth having without asking.
 fn index() -> String {
     let mut out = String::from(
-        "Zellij TypeScript plugin reference from bundled declarations and executable examples. Never ask another agent to write a plugin. \
+        "Yinz TypeScript plugin reference from bundled declarations and executable examples. Never ask another agent to write a plugin. \
          `plugin_write` formats and checks strict types and lint, asks approval, keeps a backup, writes the prepared source, then grants its literal permissions. \
          `plugin_check` checks saved files or drafts without writing. `plugin_format` formats drafts or confirms a saved-file change. Fix diagnostics and create dependencies first. To edit, use `plugin_outline` or \
          `plugin_search`, then `plugin_read` and `plugin_edit`. `plugin_reload` reports the first render \
@@ -215,23 +215,23 @@ fn index() -> String {
             "quickstart" => "a complete minimal TypeScript plugin",
             "overview" => "what a plugin is, and how it is named and loaded",
             "lifecycle" => "definePlugin, load/update/render/pipe",
-            "events" => "raw shapes, zellij.event/onEvent, delivery order",
-            "commands" => "zellij.command and raw shapes",
+            "events" => "raw shapes, yinz.event/onEvent, delivery order",
+            "commands" => "yinz.command and raw shapes",
             "permissions" => "permission names from the host API",
-            "helpers" => "zellij.host helpers, default keybindings",
+            "helpers" => "yinz.host helpers, default keybindings",
             "limits" => "numbers, BigInt, allocation budgets",
             "async" => "async helpers: runCommand, webRequest, the rest below",
             "async_panes" => "runInPane, paneSequence: commands in one pane",
             "async_waits" => "waitForEvent/Pipe/Permissions, cancellation",
             "async_timers" => "sleep, after, every",
-            "files" => "zellij.fs and projectConfig",
-            "data" => "zellij.data: the store, revisions, shared namespaces, hocus data",
+            "files" => "yinz.fs and projectConfig",
+            "data" => "yinz.data: the store, revisions, shared namespaces, hocus data",
             "queues" => "work queues: other plugin code, one slot at a time",
-            "rpc" => "zellij.rpc: a call with an answer, between plugins",
+            "rpc" => "yinz.rpc: a call with an answer, between plugins",
             "builtins" => "embedded builtins and server identity",
-            "agents" => "zellij.agent: spawning, observing and steering agents",
-            "hocus_completions" => "zellij.hocus.complete: a plugin's own model turn",
-            "hocus_extensions" => "zellij.hocus.tools: JS/TS Hocus tools",
+            "agents" => "yinz.agent: spawning, observing and steering agents",
+            "hocus_completions" => "yinz.hocus.complete: a plugin's own model turn",
+            "hocus_extensions" => "yinz.hocus.tools: JS/TS Hocus tools",
             "rendering" => "the render contract and themed components",
             "ui" => "widgets, forms, Markdown, terminal text",
             "hooks" => "hook points, and the agent_exit one",
@@ -246,9 +246,9 @@ fn index() -> String {
             "testing" => "installed unit and integration tests",
             "sdk_testing" => "declarations: assertions, harness, disposable sessions",
             "build" => "build inputs and binary size",
-            "sdk_core" => "declarations: events, Plugin, the Zellij interface",
+            "sdk_core" => "declarations: events, Plugin, the Yinz interface",
             "sdk_commands" => "declarations: every command's arguments",
-            "sdk_replies" => "declarations: replies, zellij.host, keybindings",
+            "sdk_replies" => "declarations: replies, yinz.host, keybindings",
             "sdk_types" => "declarations: input, layout, pane/tab/mode/session",
             "sdk_types_data" => "declarations: style, menus, agents, hooks, queues, data",
             "sdk_actions" => "declarations: Action",
@@ -290,7 +290,7 @@ fn index() -> String {
 pub fn section(name: &str) -> Option<String> {
     match name {
         "index" => Some(index()),
-        "sdk_testing" => Some(fenced(include_str!("../../../zellij-plugin-host/src/deno/testing/testing.d.ts"))),
+        "sdk_testing" => Some(fenced(include_str!("../../../yinz-plugin-host/src/deno/testing/testing.d.ts"))),
         "quickstart" => Some(format!("Write `clock.ts` with `plugin_write`, then call `plugin_reload name=clock.ts`. Use explicit `.ts` filenames. Extensionless names select TypeScript.\n\n```ts\n{EXAMPLE_CLOCK}\n```\n\nRead `sdk_core` and `sdk_helpers` for the API declarations.")),
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
@@ -585,12 +585,12 @@ mod tests {
 
     /// The guide is the only place a plugin author meets these names, and hocus pre-grants what
     /// it finds in a source: a permission spelled wrong is granted to nobody and raises nothing
-    /// until the plugin runs. So every permission zellij has must be nameable from the guide,
+    /// until the plugin runs. So every permission yinz has must be nameable from the guide,
     /// and a permission added later must fail here rather than be undocumented.
     #[test]
     fn the_guides_name_every_permission_a_plugin_can_ask_for() {
         let ts = section("permissions").expect("the TypeScript permission table's own section");
-        for name in zellij_tile::plugin_authoring::all_permission_names() {
+        for name in yinz_tile::plugin_authoring::all_permission_names() {
             // The TypeScript spelling is the Rust one: PascalCase.
             let pascal: String = name
                 .split('_')
@@ -611,16 +611,16 @@ mod tests {
 
     /// The two store rules that cost the most to learn at run time: a namespace that is not
     /// `shared:`-prefixed is refused, and a declared `created_at` fails the whole define. Both
-    /// are enforced in `zellij_types::plugin_data`, and both have to be sayable from the guide.
+    /// are enforced in `yinz_types::plugin_data`, and both have to be sayable from the guide.
     #[test]
     fn the_guides_state_the_data_store_rules_they_cannot_enforce() {
         for name in ["data"] {
             let data = section(name).expect("the data section");
             assert!(
-                data.contains(zellij_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
+                data.contains(yinz_tile::plugin_authoring::SHARED_NAMESPACE_PREFIX),
                 "{name} does not mention the shared namespace prefix"
             );
-            for reserved in zellij_tile::plugin_authoring::RESERVED_ATTR_NAMES {
+            for reserved in yinz_tile::plugin_authoring::RESERVED_ATTR_NAMES {
                 assert!(
                     data.contains(reserved),
                     "{name} does not say `{reserved}` is reserved"

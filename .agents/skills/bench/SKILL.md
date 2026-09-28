@@ -1,9 +1,9 @@
 ---
 name: bench
-description: Run zellij's render-throughput benchmarks (cargo x bench) and compare against a saved baseline. Use when the user wants to benchmark, measure render performance, or check for perf regressions in the render path.
+description: Run yinz's render-throughput benchmarks (cargo x bench) and compare against a saved baseline. Use when the user wants to benchmark, measure render performance, or check for perf regressions in the render path.
 ---
 
-`cargo x bench` runs `zellij-server/benches/multi_pane_render.rs`: N terminal panes tiled over
+`cargo x bench` runs `yinz-server/benches/multi_pane_render.rs`: N terminal panes tiled over
 one surface, all fed synthetic pty bytes at once, measured as three criterion groups —
 `ingest` (vte parse only), `frame` (parse + diff + serialize, the headline number) and
 `render_only` (diff + serialize with ingest untimed). Five workloads × pane counts 1–16.

@@ -3,7 +3,7 @@ mod presets_screen;
 mod rebind_leaders_screen;
 mod ui_components;
 
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use presets_screen::PresetsScreen;
 use rebind_leaders_screen::RebindLeadersScreen;
@@ -91,7 +91,7 @@ impl Default for State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.is_setup_wizard = configuration
             .get("is_setup_wizard")

@@ -2,7 +2,7 @@ use super::*;
 use crate::decisions::REVIEW_CONTEXT;
 use serde_json::json;
 use std::time::{Duration, Instant};
-use zellij_tile::prelude::{PaneInfo, RowCount, SessionInfo};
+use yinz_tile::prelude::{PaneInfo, RowCount, SessionInfo};
 
 fn review_state() -> State {
     review_state_for(
@@ -40,7 +40,7 @@ fn plugin_review_state() -> State {
 pub(super) fn set_review_session(state: &mut State) {
     tools::test_seams::reset();
     let mut session = SessionInfo {
-        name: state.zellij_session_name.clone(),
+        name: state.yinz_session_name.clone(),
         is_current_session: true,
         tabs: vec![TabInfo {
             position: TabPosition::new(2),
@@ -63,7 +63,7 @@ pub(super) fn set_review_session(state: &mut State) {
             PaneInfo {
                 id: PaneId::from_legacy(3, true),
                 title: "Strider".into(),
-                plugin_url: Some("zellij:strider".into()),
+                plugin_url: Some("yinz:strider".into()),
                 ..Default::default()
             },
         ],
@@ -167,8 +167,8 @@ fn direct_and_queued_human_mentions_keep_review_authority() {
 #[test]
 fn every_pipe_source_requires_confirmation_and_cannot_claim_human_origin() {
     for source in [
-        PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
-        PipeSource::Plugin(zellij_tile::prelude::PluginId::new(99)),
+        PipeSource::Plugin(yinz_tile::prelude::PluginId::new(7)),
+        PipeSource::Plugin(yinz_tile::prelude::PluginId::new(99)),
         PipeSource::Cli("pipe-1".into()),
         PipeSource::Keybind,
     ] {
@@ -261,7 +261,7 @@ fn plugin_reviews_use_the_exact_target_and_ignore_terminal_and_geometry_changes(
             json!([{
                 "pane_id": 3,
                 "is_plugin": true,
-                "plugin_url": "zellij:strider",
+                "plugin_url": "yinz:strider",
                 "title": "Strider",
                 "session": "test-session",
                 "tab": [8, "files"],
@@ -384,7 +384,7 @@ fn terminal_reviews_include_suppressed_targets_and_ignore_plugins_and_geometry()
             let panes = session.panes.panes.get_mut(&TabPosition::new(2)).unwrap();
             panes[0].pane_rows = RowCount::new(40);
             panes[0].is_focused = true;
-            panes[1].plugin_url = Some("zellij:other".into());
+            panes[1].plugin_url = Some("yinz:other".into());
             panes[1].title = "changed plugin".into();
             session.tabs[0].viewport_rows = RowCount::new(50);
             session.tabs[0].active = true;
@@ -587,7 +587,7 @@ fn an_authorized_codex_launch_includes_the_prompt_and_cwd_then_dispatches() {
     let body: serde_json::Value = serde_json::from_slice(body).unwrap();
     assert_eq!(body["state"]["human_request"], request);
     let launch = &body["state"]["pending_call"]["launch"];
-    assert_eq!(launch["program"], "zellij");
+    assert_eq!(launch["program"], "yinz");
     assert_eq!(
         launch["args"],
         json!(["hocus", "codex", "--command", "codex", "--", prompt])
@@ -1004,9 +1004,9 @@ fn vm_reviews_bind_effective_execution_settings_privately_in_every_chat() {
             for change in [
                 "unchanged",
                 "equivalent",
-                "zellij_path",
-                "ZELLIJ_CONFIG_FILE",
-                "ZELLIJ_CONFIG_DIR",
+                "yinz_path",
+                "YINZ_CONFIG_FILE",
+                "YINZ_CONFIG_DIR",
                 "removed_file",
                 "removed_dir",
                 "invalid_config",
@@ -1018,12 +1018,10 @@ fn vm_reviews_bind_effective_execution_settings_privately_in_every_chat() {
                 state.env.extend([
                     ("OPENAI_API_KEY".into(), "chat-secret".into()),
                     ("HOME".into(), "/home/me".into()),
-                    ("ZELLIJ_CONFIG_FILE".into(), "/private/config.kdl".into()),
-                    ("ZELLIJ_CONFIG_DIR".into(), "/private/config-dir".into()),
+                    ("YINZ_CONFIG_FILE".into(), "/private/config.kdl".into()),
+                    ("YINZ_CONFIG_DIR".into(), "/private/config-dir".into()),
                 ]);
-                state
-                    .kdl
-                    .insert("zellij_path".into(), "~/bin/zellij".into());
+                state.kdl.insert("yinz_path".into(), "~/bin/yinz".into());
                 state.reconfigure();
                 state.pump_tools();
                 let context = review_context(&state);
@@ -1036,18 +1034,18 @@ fn vm_reviews_bind_effective_execution_settings_privately_in_every_chat() {
                     unreachable!()
                 };
                 let (executable, env) = execution_config.as_ref().unwrap();
-                assert_eq!(executable, "/home/me/bin/zellij");
+                assert_eq!(executable, "/home/me/bin/yinz");
                 assert_eq!(
                     env,
                     &BTreeMap::from([
-                        ("ZELLIJ_CONFIG_FILE".into(), "/private/config.kdl".into()),
-                        ("ZELLIJ_CONFIG_DIR".into(), "/private/config-dir".into()),
+                        ("YINZ_CONFIG_FILE".into(), "/private/config.kdl".into()),
+                        ("YINZ_CONFIG_DIR".into(), "/private/config-dir".into()),
                     ])
                 );
                 let serialized = serde_json::to_string(&state.status).unwrap();
                 for private in [
                     "chat-secret",
-                    "/home/me/bin/zellij",
+                    "/home/me/bin/yinz",
                     "/private/config.kdl",
                     "/private/config-dir",
                 ] {
@@ -1069,19 +1067,19 @@ fn vm_reviews_bind_effective_execution_settings_privately_in_every_chat() {
                 match change {
                     "unchanged" => {},
                     "equivalent" => {
-                        configuration.insert("zellij_path".into(), "/home/me/bin/zellij".into());
+                        configuration.insert("yinz_path".into(), "/home/me/bin/yinz".into());
                     },
-                    "zellij_path" => {
-                        configuration.insert("zellij_path".into(), "/changed/zellij".into());
+                    "yinz_path" => {
+                        configuration.insert("yinz_path".into(), "/changed/yinz".into());
                     },
                     "invalid_config" => {
                         configuration.insert("api_key_env".into(), "MISSING_KEY".into());
                     },
                     "removed_file" => {
-                        state.env.remove("ZELLIJ_CONFIG_FILE");
+                        state.env.remove("YINZ_CONFIG_FILE");
                     },
                     "removed_dir" => {
-                        state.env.remove("ZELLIJ_CONFIG_DIR");
+                        state.env.remove("YINZ_CONFIG_DIR");
                     },
                     key => {
                         state.env.insert(key.into(), "/changed".into());

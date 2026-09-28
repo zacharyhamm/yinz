@@ -903,7 +903,7 @@ fn a_skill_is_a_planning_turn_while_planning_and_answers_a_waiting_plan() {
 fn the_plan_toast_is_clickable_and_names_the_chat_that_planned() {
     tools::test_seams::reset();
     let mut state = planning_state();
-    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.own_plugin_id = yinz_tile::prelude::PluginId::new(7);
     state.chat_id = Some(42);
 
     reply_and_settle(&mut state, "here is the plan");
@@ -912,10 +912,7 @@ fn the_plan_toast_is_clickable_and_names_the_chat_that_planned() {
     let toasts = tools::test_seams::TOASTS.with_borrow(Clone::clone);
     let (text, pane, chat_id) = toasts.first().expect("the plan went up as a toast");
     assert!(text.contains("hocus has a plan"), "got: {text}");
-    assert_eq!(
-        *pane,
-        PaneId::Plugin(zellij_tile::prelude::PluginId::new(7))
-    );
+    assert_eq!(*pane, PaneId::Plugin(yinz_tile::prelude::PluginId::new(7)));
     assert_eq!(*chat_id, Some(42));
 }
 
@@ -931,7 +928,7 @@ fn a_toast_from_a_parked_chat_names_the_parked_chat() {
     let parked = planning.take_chat();
 
     let mut state = idle_state();
-    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.own_plugin_id = yinz_tile::prelude::PluginId::new(7);
     state.chat_id = Some(1);
     state.parked.push(parked);
 

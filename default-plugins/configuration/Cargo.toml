@@ -1,7 +1,7 @@
 [package]
 name = "configuration"
 version = "0.1.0"
-authors = ["Aram Drevekenin <aram@poor.dev>"]
+authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
 edition.workspace = true
 license.workspace = true
 
@@ -10,9 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }
 
 [dev-dependencies]
 # The preset tests parse the default config and name its actions.
-zellij-config = { workspace = true }
-zellij-types = { workspace = true }
+yinz-config = { workspace = true }
+yinz-types = { workspace = true }

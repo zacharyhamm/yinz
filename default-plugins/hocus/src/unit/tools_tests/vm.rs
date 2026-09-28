@@ -6,7 +6,7 @@ fn vm_argv_for(name: &str, arguments: &str) -> Result<Vec<String>, String> {
     vm_argv(
         name,
         &Args::parse(arguments).unwrap(),
-        "/usr/bin/zellij",
+        "/usr/bin/yinz",
         "work",
     )
 }
@@ -17,7 +17,7 @@ fn listing_is_machine_wide_and_names_no_session() {
     // is still a VM the user has running. `--session` would hide both.
     assert_eq!(
         vm_argv_for("vm_list", "{}").unwrap(),
-        ["/usr/bin/zellij", "firecracker", "list", "--json"]
+        ["/usr/bin/yinz", "firecracker", "list", "--json"]
     );
 }
 
@@ -32,7 +32,7 @@ fn each_per_vm_tool_sends_its_own_cli_verb() {
         assert_eq!(
             vm_argv_for(tool, r#"{"vm":"review"}"#).unwrap(),
             [
-                "/usr/bin/zellij",
+                "/usr/bin/yinz",
                 "firecracker",
                 verb,
                 "review",
@@ -52,7 +52,7 @@ fn an_explicit_session_is_the_callers_to_choose() {
         vm_argv(
             "vm_sync",
             &Args::parse(r#"{"vm":"review"}"#).unwrap(),
-            "zellij",
+            "yinz",
             "other",
         )
         .unwrap()
@@ -70,10 +70,10 @@ fn a_per_vm_tool_without_a_vm_is_refused_before_it_runs() {
     }
 }
 
-/// A name Zellij would refuse is a mistake the model can fix from the message.
+/// A name Yinz would refuse is a mistake the model can fix from the message.
 /// Finding that out should not cost a process.
 #[test]
-fn a_vm_name_zellij_would_refuse_never_reaches_the_cli() {
+fn a_vm_name_yinz_would_refuse_never_reaches_the_cli() {
     let error = vm_argv_for("vm_close", r#"{"vm":"a/b"}"#).unwrap_err();
     assert!(!error.is_empty(), "{error}");
     assert!(vm_argv_for("vm_close", r#"{"vm":""}"#).is_err());

@@ -1,4 +1,4 @@
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub struct MultiLineErrorMessage {
     message: Vec<String>,

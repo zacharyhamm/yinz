@@ -3,12 +3,12 @@ mod tab;
 
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::TabNumber;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::TabNumber;
+use yinz_tile::prelude::TabPosition;
 
 use tab::get_tab_to_focus;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::line::{tab_line, tab_line_prefix_width, tab_separator};
 use crate::tab::tab_style;
@@ -92,7 +92,7 @@ impl State {
     }
 }
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.hostname = get_plugin_ids().hostname;
         self.hide_swap_layout_indication = configuration
@@ -166,7 +166,7 @@ impl ZellijPlugin for State {
                 } else {
                     self.hint_text = Some(hint_variants);
                     self.outstanding_hint_timeouts += 1;
-                    set_timeout(zellij_tile::prelude::FractionalSeconds::new(5.0));
+                    set_timeout(yinz_tile::prelude::FractionalSeconds::new(5.0));
                     should_render = true;
                 }
             },

@@ -3,14 +3,14 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use zellij_runtime::errors::prelude::*;
+use yinz_runtime::errors::prelude::*;
 use {
-    zellij_cli::args::CliAction, zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcRecv,
-    zellij_ipc::ipc::IpcSenderWithContext, zellij_ipc::ipc::ServerToClientMsg,
-    zellij_runtime::agent::report::reporting_watchdog, zellij_runtime::agent::report::ReportTrace,
-    zellij_runtime::agent::report::REPORT_DEADLINE, zellij_types::agent::report::AgentReport,
-    zellij_types::agent::report::AgentReportState, zellij_types::data::PaneId,
-    zellij_types::input::actions::Action,
+    yinz_cli::args::CliAction, yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcRecv,
+    yinz_ipc::ipc::IpcSenderWithContext, yinz_ipc::ipc::ServerToClientMsg,
+    yinz_runtime::agent::report::reporting_watchdog, yinz_runtime::agent::report::ReportTrace,
+    yinz_runtime::agent::report::REPORT_DEADLINE, yinz_types::agent::report::AgentReport,
+    yinz_types::agent::report::AgentReportState, yinz_types::data::PaneId,
+    yinz_types::input::actions::Action,
 };
 
 pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant) -> Result<()> {
@@ -23,13 +23,13 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 t.kind = kind.clone().unwrap_or_else(|| "claude".into());
                 t.pane = pane_id
                     .clone()
-                    .or_else(|| std::env::var("ZELLIJ_PANE_ID").ok())
+                    .or_else(|| std::env::var("YINZ_PANE_ID").ok())
                     .unwrap_or_default();
             }
             t.session = session
                 .clone()
                 .or_else(|| {
-                    zellij_runtime::envs::get_session_name()
+                    yinz_runtime::envs::get_session_name()
                         .ok()
                         .map(|name| name.into_string())
                 })
@@ -39,11 +39,11 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
         crate::commands::retarget_implicit_agent_report(
             &mut action,
             &mut session,
-            std::env::var(zellij_server::pty_host::PANE_REF_ENV_KEY).ok(),
+            std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
             |reference| {
-                zellij_server::pty_host::client::query(
-                    &zellij_server::pty_host::protocol::socket_path(reference),
-                )
+                yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(
+                    reference,
+                ))
                 .map_err(|_| "could not resolve pane owner".into())
             },
         )
@@ -65,7 +65,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
         // Reuse the same parser, state mapping, and bounded event construction as manual
         // actions. These values are packaged, never dispatched as generic actions.
         let actions =
-            zellij_cli::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
+            yinz_cli::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
                 .map_err(|_| anyhow!("invalid agent report input"))?;
         let (pane_id, state, event) = report_parts(actions)?;
         let report = {
@@ -91,12 +91,12 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             }
         };
         let session = session
-            .map(zellij_types::internal_ids::SessionName::new)
-            .or_else(|| zellij_runtime::envs::get_session_name().ok());
+            .map(yinz_types::internal_ids::SessionName::new)
+            .or_else(|| yinz_runtime::envs::get_session_name().ok());
         let session = match session {
             Some(session) => session,
             None => {
-                let sessions = zellij_session::sessions::get_sessions()
+                let sessions = yinz_session::sessions::get_sessions()
                     .map_err(|_| anyhow!("cannot discover sessions"))?;
                 if sessions.len() != 1 {
                     return Err(anyhow!("specify a session for the report"));
@@ -104,9 +104,8 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 sessions[0].0.clone()
             },
         };
-        zellij_session::sessions::validate_session_name(session.as_str())
-            .map_err(|e| anyhow!(e))?;
-        zellij_runtime::agent::report::validate_report(&report)?;
+        yinz_session::sessions::validate_session_name(session.as_str()).map_err(|e| anyhow!(e))?;
+        yinz_runtime::agent::report::validate_report(&report)?;
         trace
             .lock()
             .map_err(|_| anyhow!("report trace poisoned"))?
@@ -116,7 +115,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("connect");
         let socket =
-            zellij_ipc::consts::ipc_connect(&zellij_runtime::consts::ZELLIJ_SOCK_DIR.join(session))
+            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session))
                 .context("connect report session")?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
         let mut receiver = sender
@@ -177,7 +176,7 @@ fn report_parts(
 ) -> Result<(
     PaneId,
     AgentReportState,
-    Option<zellij_types::agent::AgentEvent>,
+    Option<yinz_types::agent::AgentEvent>,
 )> {
     let mut pane = None;
     let mut state = AgentReportState::Unchanged;

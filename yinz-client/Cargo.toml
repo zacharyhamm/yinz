@@ -1,0 +1,50 @@
+[package]
+name = "yinz-client"
+version.workspace = true
+authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
+edition.workspace = true
+description = "The client-side library for Yinz"
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-cli = { workspace = true }
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-key-codec = { workspace = true }
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crossterm = { workspace = true, features = ["events", "bracketed-paste"] }
+interprocess = { workspace = true }
+lazy_static = { workspace = true }
+log = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
+daemonize = { workspace = true }
+nix = { workspace = true, features = ["fs", "term"] }
+
+[dev-dependencies]
+hegeltest = "0.29.3"
+insta = "1.48"
+serde_json = "1.0"
+tempfile = "3"
+# `test-util` enables `tokio::time::pause` / `advance`, used by the
+# forward-timeout timer tests to drive virtual time deterministically.
+tokio = { workspace = true, features = ["sync", "test-util"] }
+
+[features]
+unstable = []

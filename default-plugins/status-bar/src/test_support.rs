@@ -1,8 +1,8 @@
 //! Helpers shared by the plugin's tests: a `ModeInfo` off the shipped config, and a way to read
 //! a rendered line back as text.
 
-use zellij_config::config::Config;
-use zellij_tile::prelude::*;
+use yinz_config::config::Config;
+use yinz_tile::prelude::*;
 
 use crate::LinePart;
 
@@ -21,7 +21,7 @@ pub fn with_shipped_keybinds(mode: InputMode) -> ModeInfo {
 /// text - a ribbon as `[text]`.
 pub fn plain_text(line_part: LinePart) -> String {
     let rendered = line_part.to_string();
-    let component = regex::Regex::new(r"\x1bPz(text|ribbon);([^\x1b]*)\x1b\\").unwrap();
+    let component = regex::Regex::new(r"\x1bPy(text|ribbon);([^\x1b]*)\x1b\\").unwrap();
     let decoded = component.replace_all(&rendered, |caps: &regex::Captures| {
         // The payload is `[xzd]*` style flags, `i,j$` index groups, then the text as
         // decimal bytes.

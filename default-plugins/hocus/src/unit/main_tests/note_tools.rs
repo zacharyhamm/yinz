@@ -370,7 +370,7 @@ fn a_note_write_answers_without_parking_the_queue() {
     assert_eq!(stored_note(&state, 1).unwrap().title, "why");
 }
 
-use zellij_tile::prelude::{
+use yinz_tile::prelude::{
     ApplyReport, DataRows, DataSchemaInfo, DataWatchHandle, EntityDef, Mutation, Pred, WatchMode,
     WriteError,
 };

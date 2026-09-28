@@ -2,7 +2,7 @@
 import { z } from "npm:zod@4.3.6";
 
 export const Capture = z.object({
-    directory: z.string().regex(/^\/tmp\/zellij-test-[A-Za-z0-9_-]+$/),
+    directory: z.string().regex(/^\/tmp\/yinz-test-[A-Za-z0-9_-]+$/),
 });
 export const ReportFields = z.object({
     summary: z.string().optional(),
@@ -25,7 +25,7 @@ export function captureCommand(
 ) {
     Capture.parse({ directory });
     const interrupt = cancellation
-        ? `printf "%s\\n" "$cancel_request" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin zellij:swamp-bridge >/dev/null`
+        ? `printf "%s\\n" "$cancel_request" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin yinz:swamp-bridge >/dev/null`
         : ":";
     return [
         "/bin/bash",
@@ -40,13 +40,13 @@ export function captureCommand(
         'read -r code capture_code <"$dir/status" || code=125\n' +
         'if [ -e "$dir/cancelled" ]; then code=130; fi\n' +
         (cancellation
-            ? 'printf \'%s,"process":%s}\\n\' "${finished_request%?}" "$$" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin zellij:swamp-bridge >/dev/null\n'
+            ? 'printf \'%s,"process":%s}\\n\' "${finished_request%?}" "$$" | "$cancel_binary" --session "$cancel_session" pipe --name swamp --plugin yinz:swamp-bridge >/dev/null\n'
             : "") +
         (foreground
             ? 'trap \'exit "$code"\' INT\nprintf "\\nTests finished (exit %s). Press Enter to return.\\n" "$code"\nIFS= read -r dismissal || exit 125\n'
             : "") +
         'exit "$code"',
-        "zellij-test-capture",
+        "yinz-test-capture",
         directory,
         cancellation?.binary ?? "",
         cancellation?.session ?? "",

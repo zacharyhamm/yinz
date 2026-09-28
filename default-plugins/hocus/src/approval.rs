@@ -28,7 +28,7 @@ use hocus_proto::{
 };
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::{DataValue, FetchRequest, GitCheckout, PaneId};
+use yinz_tile::prelude::{DataValue, FetchRequest, GitCheckout, PaneId};
 
 // OpenRouter advertises 32,000 tokens for Jev 1.13. Reserve 2,000 for the
 // provider's formatting and estimation error. A body is normally a few hundred
@@ -881,7 +881,7 @@ mod tests {
             .unwrap()
             .starts_with("opens a new pane running `codex`"));
         let launch = &pending["launch"];
-        assert_eq!(launch["program"], "zellij");
+        assert_eq!(launch["program"], "yinz");
         assert_eq!(
             launch["args"],
             json!([
@@ -921,7 +921,7 @@ mod tests {
         let mut call = call();
         for (reuse, expected) in [(None, false), (Some(true), true)] {
             let mut arguments = json!({
-                "agent": "claude", "project": "zellij", "branch": "jev-test",
+                "agent": "claude", "project": "yinz", "branch": "jev-test",
                 "prompt": "just seeing if jev autoapproves this in hocus",
             });
             if let Some(reuse) = reuse {
@@ -930,21 +930,21 @@ mod tests {
             call.arguments = arguments.to_string();
             let mut state = State {
                 messages: vec![Message::user(
-                    "create a new claude agent in zellij worktree jev-test",
+                    "create a new claude agent in yinz worktree jev-test",
                 )],
                 ..State::default()
             };
             state.projects.insert(
-                "zellij".into(),
-                projects::validate("zellij", "/work/zellij").unwrap(),
+                "yinz".into(),
+                projects::validate("yinz", "/work/yinz").unwrap(),
             );
             let (_, request) = body(&state, &call);
             let launch = &request["state"]["pending_call"]["launch"];
             assert_eq!(launch["program"], "claude");
-            assert_eq!(launch["directory"], "/work/zellij");
+            assert_eq!(launch["directory"], "/work/yinz");
             assert_eq!(
                 launch["project"],
-                json!({"name": "zellij", "root": "/work/zellij"})
+                json!({"name": "yinz", "root": "/work/yinz"})
             );
             assert_eq!(launch["git"]["kind"], "new_worktree");
             assert_eq!(launch["git"]["branch"], "jev-test");
@@ -960,7 +960,7 @@ mod tests {
                 .contains("worktree"));
         }
         call.arguments =
-            json!({"agent": "claude", "cwd": "/work/zellij", "branch": "fix", "worktree": false})
+            json!({"agent": "claude", "cwd": "/work/yinz", "branch": "fix", "worktree": false})
                 .to_string();
         let state = State {
             messages: vec![Message::user("branch fix here")],
@@ -1161,13 +1161,13 @@ mod tests {
             messages: vec![Message::user("start claude on branch x in its own VM")],
             ..State::default()
         };
-        let mut project = projects::validate("zellij", "/work/zellij").unwrap();
+        let mut project = projects::validate("yinz", "/work/yinz").unwrap();
         project.worktree_dir = Some("/scratch/wt".into());
         project.firecracker_image = Some("ubuntu-dev".into());
-        state.projects.insert("zellij".into(), project);
+        state.projects.insert("yinz".into(), project);
         let mut call = call();
         call.arguments = json!({
-            "agent": "claude", "project": "zellij", "branch": "x", "firecracker": true,
+            "agent": "claude", "project": "yinz", "branch": "x", "firecracker": true,
             "prompt": "Fix the parser",
         })
         .to_string();
@@ -1182,7 +1182,7 @@ mod tests {
         assert_eq!(launch["vm_image"], "ubuntu-dev");
         // An explicit VM and image are the caller's and win over the project's.
         call.arguments = json!({
-            "agent": "claude", "project": "zellij", "branch": "x", "worktree_dir": "/elsewhere",
+            "agent": "claude", "project": "yinz", "branch": "x", "worktree_dir": "/elsewhere",
             "firecracker_vm": "mine", "firecracker_image": "alpine", "prompt": "Fix the parser",
         })
         .to_string();

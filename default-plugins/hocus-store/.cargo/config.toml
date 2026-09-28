@@ -1,6 +1,6 @@
 # Pin the build target so `cargo build` and rust-analyzer stay on wasm. Without
-# this, every check compiles the host-only deps of zellij-runtime (tokio, log4rs)
-# and zellij-storage (rusqlite, through hocus-data) for the host triple.
+# this, every check compiles the host-only deps of yinz-runtime (tokio, log4rs)
+# and yinz-storage (rusqlite, through hocus-data) for the host triple.
 #
 # Note this also redirects `cargo test`, which then can't run the tests. Run them from the repo
 # root instead - `cargo x test -p hocus`, or bare `cargo test -p hocus` - where this file is not

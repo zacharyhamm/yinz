@@ -289,7 +289,7 @@ fn resolve_prefers_kdl_dobbs_path_over_env_over_the_default() {
 
 /// A local daemon needs no environment at all; a remote one is only reachable
 /// with both halves, so neither may be dropped on the way to the CLI.
-/// Nothing downstream expands a tilde — Zellij passes argv straight to exec
+/// Nothing downstream expands a tilde — Yinz passes argv straight to exec
 /// — so a `~/…` binary that got through would fail naming nothing.
 #[test]
 fn resolve_expands_a_tilde_in_the_dobbs_path() {

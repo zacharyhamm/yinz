@@ -10,9 +10,9 @@ use crate::plugin_source::{
     apply_edits, listing, missing_report, outline_answer, search, span_list, EditPair, Edited,
     LineSpan, Listed, Search, MAX_CONTEXT, MAX_SEARCH_HITS, SEARCH_HITS,
 };
-use zellij_tile::prelude::{FileMetadata, FsEntry};
+use yinz_tile::prelude::{FileMetadata, FsEntry};
 
-const DIR: &str = "/home/someone/.config/zellij/plugins";
+const DIR: &str = "/home/someone/.config/yinz/plugins";
 
 /// A compile error names the file the loader would name, whatever spelling the write used.
 #[test]
@@ -81,7 +81,7 @@ fn a_name_resolves_with_or_without_its_extension() {
 
 /// The path a reload is built from must be absolute, and this is the guard on that.
 ///
-/// `zellij_runtime::plugin_location::parse_plugin_location` joins a *relative* `file:` path onto the cwd whenever one is
+/// `yinz_runtime::plugin_location::parse_plugin_location` joins a *relative* `file:` path onto the cwd whenever one is
 /// supplied, and `start_or_reload_plugin` always supplies one — so a relative URL would be
 /// resolved against the session's cwd and never reach the plugin folder at all. It would fail
 /// only at load time, in a pane, which is exactly where nobody is looking.
@@ -183,7 +183,7 @@ fn a_missing_name_or_folder_says_which_is_missing() {
 }
 
 /// What the model reads from `plugin_log`: the host's lines as they are, a pointer at
-/// `zellij.log` when there are none yet, and the host's own reason when it could not look.
+/// `yinz.log` when there are none yet, and the host's own reason when it could not look.
 #[test]
 fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
     assert_eq!(
@@ -192,12 +192,12 @@ fn the_log_tool_passes_lines_on_and_explains_an_empty_log() {
     );
     let empty = plugin_log_answer("keys.ts", Ok(String::new()));
     assert!(
-        empty.starts_with("no log lines from keys.ts yet") && empty.contains("zellij.log"),
+        empty.starts_with("no log lines from keys.ts yet") && empty.contains("yinz.log"),
         "{empty}"
     );
     assert_eq!(
-        plugin_log_answer("keys", Err("no zellij log at /tmp/zellij.log".to_owned())),
-        "no zellij log at /tmp/zellij.log"
+        plugin_log_answer("keys", Err("no yinz log at /tmp/yinz.log".to_owned())),
+        "no yinz log at /tmp/yinz.log"
     );
 }
 
@@ -489,9 +489,9 @@ fn the_lint_qualifies_a_report_without_displacing_it() {
     );
     assert_eq!(clean, "probe.ts compiles");
     let trap = r#"
-import zellij from 'zellij:plugin';
-zellij.on('PermissionRequestResult', () => {
-  zellij.data.define('todo', {title:'text'}, {namespace:'todo'});
+import yinz from 'yinz:plugin';
+yinz.on('PermissionRequestResult', () => {
+  yinz.data.define('todo', {title:'text'}, {namespace:'todo'});
 });
 "#;
     let warned = with_lint("probe.ts compiles".to_owned(), "probe", trap);
@@ -554,10 +554,10 @@ fn a_long_source_is_cut_short_in_the_toast() {
 #[test]
 fn the_permissions_a_source_asks_for_are_read_off_it() {
     let source = r#"
-import zellij from 'zellij:plugin';
+import yinz from 'yinz:plugin';
 export default {load() {
-  zellij.requestPermission(['ReadFiles','WriteFiles','RunCommands','not_a_permission']);
-  zellij.requestPermission(['ReadFiles']); // duplicate
+  yinz.requestPermission(['ReadFiles','WriteFiles','RunCommands','not_a_permission']);
+  yinz.requestPermission(['ReadFiles']); // duplicate
 }};
 "#;
     assert_eq!(
@@ -571,11 +571,9 @@ export default {load() {
     assert!(source_permissions("keys", "export default {};")
         .unwrap()
         .is_empty());
-    assert!(
-        source_permissions("keys", "zellij.requestPermission(perms);")
-            .unwrap()
-            .is_empty()
-    );
+    assert!(source_permissions("keys", "yinz.requestPermission(perms);")
+        .unwrap()
+        .is_empty());
     assert_eq!(
         permission_names(&[PermissionType::ReadFiles, PermissionType::FullHdAccess]),
         vec!["read_files", "full_hd_access"]
@@ -585,8 +583,8 @@ export default {load() {
 #[test]
 fn source_permission_cache_tracks_names_source_and_errors() {
     test_seams::reset();
-    let read = "zellij.requestPermission(['ReadFiles']);";
-    let write = "zellij.requestPermission(['WriteFiles']);";
+    let read = "yinz.requestPermission(['ReadFiles']);";
+    let write = "yinz.requestPermission(['WriteFiles']);";
     for _ in 0..3 {
         assert_eq!(
             source_permissions("keys", read).unwrap(),
@@ -629,7 +627,7 @@ fn source_permission_cache_tracks_names_source_and_errors() {
 fn a_write_confirmation_names_the_permissions_it_grants() {
     let with = consequence(&call(
         "plugin_write",
-        r#"{"name":"keys","source":"zellij.requestPermission([ \"ReadFiles\", \"RunCommands\" ]);"}"#,
+        r#"{"name":"keys","source":"yinz.requestPermission([ \"ReadFiles\", \"RunCommands\" ]);"}"#,
     ))
     .unwrap();
     assert!(
@@ -649,8 +647,7 @@ fn an_edit_grants_only_permissions_added_to_the_complete_source() {
     )
     .unwrap();
     let (_, granted) =
-        edit_source_and_permissions(r#"zellij.requestPermission([ "ReadFiles" ]);"#, &args)
-            .unwrap();
+        edit_source_and_permissions(r#"yinz.requestPermission([ "ReadFiles" ]);"#, &args).unwrap();
     assert_eq!(
         granted,
         vec![PermissionType::WriteFiles],
@@ -660,7 +657,7 @@ fn an_edit_grants_only_permissions_added_to_the_complete_source() {
     let unchanged =
         Args::parse(r#"{"name":"keys","old_string":"old","new_string":"new"}"#).unwrap();
     assert!(edit_source_and_permissions(
-        "zellij.requestPermission([ \"ReadFiles\" ]);\n// old",
+        "yinz.requestPermission([ \"ReadFiles\" ]);\n// old",
         &unchanged,
     )
     .unwrap()
@@ -670,7 +667,7 @@ fn an_edit_grants_only_permissions_added_to_the_complete_source() {
     let removed =
         Args::parse(r#"{"name":"keys","old_string":", \"WriteFiles\"","new_string":""}"#).unwrap();
     assert!(edit_source_and_permissions(
-        r#"zellij.requestPermission([ "ReadFiles", "WriteFiles" ]);"#,
+        r#"yinz.requestPermission([ "ReadFiles", "WriteFiles" ]);"#,
         &removed,
     )
     .unwrap()
@@ -828,7 +825,7 @@ fn search_with(query: &str, context: usize) -> Search<'_> {
 /// apart - so a hit can be told from its surroundings, and its text copied as it is.
 #[test]
 fn a_search_answers_in_the_shape_search_files_does() {
-    let keys = "const M = {};\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;\n";
+    let keys = "const M = {};\nM.load = function() {\n  yinz.subscribe([\"Key\"]);\n};\nexport default M;\n";
     let clock = "const M = {};\nM.render = function() {\n  return new Date().toISOString();\n};\nexport default M;\n";
     let files = [("keys.ts", keys), ("clock.ts", clock)];
 
@@ -845,7 +842,7 @@ fn a_search_answers_in_the_shape_search_files_does() {
         .unwrap();
     assert_eq!(
         with_context,
-        "keys.ts-1-const M = {};\nkeys.ts:2:M.load = function() {\nkeys.ts-3-  zellij.subscribe([\"Key\"]);\n--\nclock.ts-1-const M = {};\nclock.ts:2:M.render = function() {\nclock.ts-3-  \
+        "keys.ts-1-const M = {};\nkeys.ts:2:M.load = function() {\nkeys.ts-3-  yinz.subscribe([\"Key\"]);\n--\nclock.ts-1-const M = {};\nclock.ts:2:M.render = function() {\nclock.ts-3-  \
          return new Date().toISOString();"
     );
 }
@@ -854,11 +851,11 @@ fn a_search_answers_in_the_shape_search_files_does() {
 /// that is what makes a hit something a `plugin_edit` can be built from without a read.
 #[test]
 fn a_search_hit_is_verbatim_after_the_second_separator() {
-    let source = "M.load = function() {\n\t  zellij.subscribe([\"Key\"]);  \n};\n";
+    let source = "M.load = function() {\n\t  yinz.subscribe([\"Key\"]);  \n};\n";
     let hits = search(&[("keys.ts", source)], &search_with("subscribe", 0))
         .unwrap()
         .unwrap();
-    assert_eq!(hits, "keys.ts:2:\t  zellij.subscribe([\"Key\"]);  ");
+    assert_eq!(hits, "keys.ts:2:\t  yinz.subscribe([\"Key\"]);  ");
 }
 
 /// Two hits whose context windows overlap or touch print once, as one group with no separator
@@ -958,7 +955,7 @@ fn search_options_clamp_context_and_max_results_and_refuse_an_empty_query() {
 /// the page that follows can be a range. Numbers align so the column reads.
 #[test]
 fn an_outline_answer_numbers_every_entry_and_states_the_length() {
-    let source = "import zellij from 'zellij:plugin';\nexport function render() {return 'hi';}\nzellij.requestPermission(['ReadFiles']);\n";
+    let source = "import yinz from 'yinz:plugin';\nexport function render() {return 'hi';}\nyinz.requestPermission(['ReadFiles']);\n";
     let answer = outline_answer("keys", source);
     assert!(answer.starts_with("keys.ts: 3 lines\n"), "{answer}");
     assert!(
@@ -1080,10 +1077,10 @@ fn span_list_names_a_deletion_by_its_line_and_caps_at_five() {
 #[test]
 fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() {
     let source =
-        "const M = {};\nM.load = function() {\n\tzellij.subscribe([\"Key\"]);\n\treturn true\n};\n";
+        "const M = {};\nM.load = function() {\n\tyinz.subscribe([\"Key\"]);\n\treturn true\n};\n";
     let report = missing_report(
         source,
-        "M.load = function() {\n  zellij.subscribe([\"Key\"]);\n  return true",
+        "M.load = function() {\n  yinz.subscribe([\"Key\"]);\n  return true",
     );
     assert!(
         report.starts_with(
@@ -1092,7 +1089,7 @@ fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() 
         "{report}"
     );
     assert!(
-        report.ends_with("M.load = function() {\n\tzellij.subscribe([\"Key\"]);\n\treturn true"),
+        report.ends_with("M.load = function() {\n\tyinz.subscribe([\"Key\"]);\n\treturn true"),
         "{report}"
     );
     assert!(!report.contains("plugin_read"), "{report}");
@@ -1110,15 +1107,15 @@ fn a_missing_old_string_that_differs_only_in_whitespace_is_located_and_quoted() 
 /// own text from that point is quoted, so the next old_string can be copied rather than guessed.
 #[test]
 fn a_missing_old_string_whose_first_line_exists_is_anchored_there() {
-    let source = "const M = {};\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;\n";
+    let source = "const M = {};\nM.load = function() {\n  yinz.subscribe([\"Key\"]);\n};\nexport default M;\n";
     let report = missing_report(
         source,
-        "M.load = function() {\n  zellij.subscribe([\"Timer\"]);",
+        "M.load = function() {\n  yinz.subscribe([\"Timer\"]);",
     );
     assert_eq!(
         report,
         "old_string is not in the file. Its first line is at line 2; the file reads from line \
-         2:\nM.load = function() {\n  zellij.subscribe([\"Key\"]);\n};\nexport default M;"
+         2:\nM.load = function() {\n  yinz.subscribe([\"Key\"]);\n};\nexport default M;"
     );
 }
 
@@ -1254,7 +1251,7 @@ fn a_batch_edit_renders_each_pair_as_its_own_block() {
     );
     let detail = confirmation_detail(&edit).join("\n");
     assert!(
-        detail.contains("changes keys.ts in your Zellij plugin folder in 5 places"),
+        detail.contains("changes keys.ts in your Yinz plugin folder in 5 places"),
         "{detail}"
     );
     assert!(

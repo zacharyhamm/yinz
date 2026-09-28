@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use xshell::{cmd, Shell};
-#[path = "../../zellij-plugin-host/src/deno/authoring/bundle.rs"]
+#[path = "../../yinz-plugin-host/src/deno/authoring/bundle.rs"]
 pub(crate) mod bundle;
 
 pub fn prepare(sh: &Shell) -> Result<PathBuf> {
@@ -55,11 +55,11 @@ pub fn prepare(sh: &Shell) -> Result<PathBuf> {
     std::fs::write(dir.join("provenance.json"), bundle::MANIFEST)?;
     std::fs::write(
         dir.join("LICENSE-oxc"),
-        include_str!("../../zellij-plugin-host/src/deno/authoring/LICENSE-oxc"),
+        include_str!("../../yinz-plugin-host/src/deno/authoring/LICENSE-oxc"),
     )?;
     std::fs::write(
         dir.join("LICENSE-tsgolint"),
-        include_str!("../../zellij-plugin-host/src/deno/authoring/LICENSE-tsgolint"),
+        include_str!("../../yinz-plugin-host/src/deno/authoring/LICENSE-tsgolint"),
     )?;
     bundle::verify_dir(&dir)?;
     Ok(dir)
@@ -100,7 +100,7 @@ pub fn install(sh: &Shell, builtins: &Path) -> Result<()> {
 
 pub fn plugin_files() -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for folder in ["zellij-deno-builtins/assets/plugins", "example-plugins"] {
+    for folder in ["yinz-deno-builtins/assets/plugins", "example-plugins"] {
         for entry in std::fs::read_dir(crate::project_root().join(folder))? {
             let path = entry?.path();
             if path.extension().is_some_and(|ext| ext == "ts")
@@ -116,7 +116,7 @@ pub fn plugin_files() -> Result<Vec<PathBuf>> {
 
 pub fn format(sh: &Shell, check: bool) -> Result<()> {
     let tool = prepare(sh)?.join("oxfmt");
-    let config = crate::project_root().join("zellij-plugin-host/src/deno/authoring/oxfmt.json");
+    let config = crate::project_root().join("yinz-plugin-host/src/deno/authoring/oxfmt.json");
     let files = plugin_files()?;
     let scratch = tempfile::tempdir()?;
     let _pd = sh.push_dir(scratch.path());
@@ -132,11 +132,11 @@ pub fn format(sh: &Shell, check: bool) -> Result<()> {
 pub fn lint(sh: &Shell) -> Result<()> {
     prepare(sh)?;
     let cargo = crate::cargo()?;
-    cmd!(sh, "{cargo} build --bin zellij").run()?;
-    let binary = crate::project_root().join("target/debug/zellij");
+    cmd!(sh, "{cargo} build --bin yinz").run()?;
+    let binary = crate::project_root().join("target/debug/yinz");
     let mut failed = false;
     for file in plugin_files()? {
-        // Test modules use zellij:testing and are checked by the embedded test runner.
+        // Test modules use yinz:testing and are checked by the embedded test runner.
         if file.to_string_lossy().ends_with(".test.ts") {
             continue;
         }

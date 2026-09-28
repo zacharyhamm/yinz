@@ -1,6 +1,6 @@
-import { definePlugin, zellij, type WidgetInteraction } from "zellij:plugin";
+import { definePlugin, yinz, type WidgetInteraction } from "yinz:plugin";
 
-const ui = zellij.ui;
+const ui = yinz.ui;
 const form = ui.form([
   { kind: "textInput", id: "name", label: "Name", value: "日本語" },
   { kind: "checkbox", id: "frames", label: "Pane frames", value: true },
@@ -25,7 +25,7 @@ const markdown = ui.markdown(
 let confirming = false;
 let status = "Edit the form";
 let scroll = 0;
-const active = (): import("zellij:plugin").FormWidget => (confirming ? dialog : form);
+const active = (): import("yinz:plugin").FormWidget => (confirming ? dialog : form);
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function interact(result: WidgetInteraction): boolean {
   if (result.kind === "buttonPressed") {
@@ -46,8 +46,8 @@ function interact(result: WidgetInteraction): boolean {
 }
 export default definePlugin({
   load() {
-    zellij.subscribe(["Key", "Mouse", "PastedText"]);
-    zellij.on("Key", (key) => {
+    yinz.subscribe(["Key", "Mouse", "PastedText"]);
+    yinz.on("Key", (key) => {
       if (key.bare_key === "PageDown") {
         scroll += 1;
         return true;
@@ -58,8 +58,8 @@ export default definePlugin({
       }
       return interact(active().handleKey(key));
     });
-    zellij.on("Mouse", (mouse) => interact(active().handleMouse(mouse)));
-    zellij.on("PastedText", (text) => interact(active().insertPastedText(text)));
+    yinz.on("Mouse", (mouse) => interact(active().handleMouse(mouse)));
+    yinz.on("PastedText", (text) => interact(active().insertPastedText(text)));
   },
   render(rows, columns) {
     if (confirming) return dialog.render({ width: columns, height: rows });
@@ -67,7 +67,7 @@ export default definePlugin({
     let output = form.render({ width: columns, height: formRows });
     if (rows > formRows) {
       output += ui
-        .text(zellij.text.truncate(status, columns))
+        .text(yinz.text.truncate(status, columns))
         .dim()
         .render({ y: formRows, width: columns, height: 1 });
       output += markdown.render({

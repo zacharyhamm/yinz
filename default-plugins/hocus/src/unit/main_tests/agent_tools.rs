@@ -1,6 +1,6 @@
 use super::*;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
 
 /// A plugin pane is not an agent, a suppressed one is not on screen, and a held
 /// one still is - the three cases the snapshot has to tell apart.
@@ -174,8 +174,8 @@ fn a_spawned_kind_is_registered_against_the_pane_new_pane_reported() {
         r#"{"opened":true,"pane_id":8,"is_plugin":false}"#,
     );
     assert_eq!(
-        state.register_spawned(Some("scout"), "zellij did not open the pane"),
-        "zellij did not open the pane",
+        state.register_spawned(Some("scout"), "yinz did not open the pane"),
+        "yinz did not open the pane",
     );
     assert!(state.manual_kinds.is_empty());
 }
@@ -337,14 +337,14 @@ fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
     let mut state = idle_state();
     assert_eq!(
         state.run_local(&agent_call("agent_spawn", r#"{"agent":"claude"}"#)),
-        Some("tools are unavailable outside zellij".into()),
+        Some("tools are unavailable outside yinz".into()),
     );
     assert_eq!(
         state.run_local(&agent_call(
             "agent_spawn",
             r#"{"agent":"claude","branch":"fix-parser"}"#
         )),
-        Some("tools are unavailable outside zellij".into()),
+        Some("tools are unavailable outside yinz".into()),
     );
 }
 
@@ -389,7 +389,7 @@ fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
             "agent_spawn",
             r#"{"agent":"claude","firecracker":true}"#
         )),
-        Some("tools are unavailable outside zellij".into()),
+        Some("tools are unavailable outside yinz".into()),
     );
 }
 
@@ -659,7 +659,7 @@ fn a_registered_kind_survives_open_store() {
     // `store::agent_latch_def`. A hocus that has not heard a snapshot yet reads none, and
     // restores them when the first one names the session.
     let mut restarted = State {
-        zellij_session_name: "test-session".to_owned().into(),
+        yinz_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         ..State::default()
     };
@@ -702,7 +702,7 @@ fn project_worktree_defaults_reach_the_host_only_for_worktrees() {
     ] {
         assert_eq!(
             state.run_local(&agent_call("agent_spawn", args)),
-            Some("tools are unavailable outside zellij".into())
+            Some("tools are unavailable outside yinz".into())
         );
     }
     tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| {

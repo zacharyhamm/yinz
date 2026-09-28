@@ -11,8 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::TabId;
-use zellij_types::internal_ids::SessionName;
+use yinz_tile::prelude::TabId;
+use yinz_types::internal_ids::SessionName;
 
 use crate::agents;
 use crate::location::Location;
@@ -192,7 +192,7 @@ pub const AGENT_SEARCH_RESULT: &str = "agent_search_result";
 /// an agent and has not dropped back to its shell prompt, and something to describe.
 ///
 /// Broadcast rather than url-addressed, for the same reason [`AGENT_REFRESH`] is: a bare
-/// `zellij:hocus-agentd` url carries none of the alias' `shared true`, so it would miss the
+/// `yinz:hocus-agentd` url carries none of the alias' `shared true`, so it would miss the
 /// running daemon and launch a second one. A broadcast only ever reaches plugins that are
 /// already running, and this name is handled in the daemon and nowhere else.
 pub const AGENT_SUMMARIZE: &str = "agent_summarize";
@@ -217,7 +217,7 @@ pub const STORE_MUTATE: &str = "store_mutate";
 pub const STORE_QUERY: &str = "store_query";
 
 /// → hocus: a question put to the running hocus, from a plugin or from
-/// `zellij pipe`.
+/// `yinz pipe`.
 pub const ASK: &str = "hocus_ask";
 /// hocus → the asker: what became of it.
 ///
@@ -227,7 +227,7 @@ pub const ASK: &str = "hocus_ask";
 /// hocus" — a broadcast to nobody is silent.
 pub const ASK_ACK: &str = "hocus_ask_ack";
 
-/// → hocus-agentd: one stateless completion, from a plugin or from `zellij pipe`.
+/// → hocus-agentd: one stateless completion, from a plugin or from `yinz pipe`.
 ///
 /// [`ASK`] puts a question into the user's conversation and answers only whether hocus took
 /// it. This is the other thing a plugin might want: its own turn, with its own messages and
@@ -235,7 +235,7 @@ pub const ASK_ACK: &str = "hocus_ask_ack";
 /// the model is to see travels in the [`CompletionRequest`] — which is what lets a caller
 /// drive its own tool loop by sending the whole transcript back each round.
 ///
-/// Discover exactly one `zellij:hocus-agentd` in the current session through
+/// Discover exactly one `yinz:hocus-agentd` in the current session through
 /// `get_session_list`, then send with `destination_plugin_id`. This needs
 /// `read_application_state` and `message_and_launch_other_plugins`. Discovery failure sends
 /// nothing. Accept replies only from the discovered plugin ID, with the matching request ID.
@@ -285,13 +285,13 @@ pub struct PollReply {
     /// registered agent looks like an ordinary shell to everyone downstream.
     #[serde(default)]
     pub manual_kinds: BTreeMap<u32, String>,
-    /// The zellij session these panes belong to.
+    /// The yinz session these panes belong to.
     ///
     /// Here because the store is shared by every session on the machine, so anything hocus
     /// writes about a *pane* has to say which session's pane it means — and hocus has no other
     /// route to the name. The daemon holds it already.
     #[serde(default)]
-    pub zellij_session_name: SessionName,
+    pub yinz_session_name: SessionName,
     /// Resolved agent folder to its repository or plain-folder definition.
     ///
     /// Keyed by folder *and machine*: a remote pane's path names a place on
@@ -334,10 +334,10 @@ pub struct PollReply {
 
 /// One hook event as the session hands it to plugins: `Event::AgentEvent`. The daemon reads
 /// `raw` back into a [`HookEvent`] for the fields the typed event does not carry.
-pub use zellij_tile::agent::AgentEvent;
+pub use yinz_tile::agent::AgentEvent;
 /// A Claude Code hook event, as its JSON arrives - the session's own reading of one, so the
-/// daemon and `zellij action agent-report` cannot disagree about what an event means.
-pub use zellij_tile::agent::HookEvent;
+/// daemon and `yinz action agent-report` cannot disagree about what an event means.
+pub use yinz_tile::agent::HookEvent;
 
 /// Where the cursor is in the agents pane.
 ///
@@ -350,7 +350,7 @@ pub struct Selection {
     /// A search hit to reveal; ordinary list selections load the newest history.
     #[serde(default)]
     pub revision: Option<u64>,
-    pub plugin_id: zellij_tile::prelude::PluginId,
+    pub plugin_id: yinz_tile::prelude::PluginId,
     #[serde(default)]
     pub pane_id: Option<u32>,
     #[serde(default)]

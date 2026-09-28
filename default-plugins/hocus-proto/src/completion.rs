@@ -10,7 +10,7 @@
 //! gets `tool_calls` back, runs them itself, and sends the whole thing again with the
 //! results appended — the daemon serving this holds no transcript to get out of step with.
 //!
-//! Nothing here calls the Zellij host, so all of it runs on the host triple.
+//! Nothing here calls the Yinz host, so all of it runs on the host triple.
 
 use serde_json::{json, Value};
 

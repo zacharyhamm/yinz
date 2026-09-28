@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 # Sans-IO: this crate builds requests and parses responses, and the caller sends
-# them. No zellij dependency, so it links into a wasm plugin and a native binary
+# them. No yinz dependency, so it links into a wasm plugin and a native binary
 # alike.
 [dependencies]
 regex = { workspace = true }

@@ -35,7 +35,7 @@ pub fn bench(sh: &Shell, flags: flags::Bench) -> anyhow::Result<()> {
     // Both run even if the first fails, so one red bench does not hide the other.
     let server = cmd!(
         sh,
-        "{cargo} bench -p zellij-server --bench multi_pane_render --"
+        "{cargo} bench -p yinz-server --bench multi_pane_render --"
     )
     .args(&flags.args)
     .run()
