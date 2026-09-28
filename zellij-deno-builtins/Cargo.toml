@@ -10,3 +10,6 @@ workspace = true
 
 [dependencies]
 include_dir = { workspace = true }
+
+[dev-dependencies]
+zellij-runtime = { workspace = true }

@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn installed_builtin_unit_suites() {
-    for name in zellij_deno_builtins::BUILTIN_DENO_PLUGINS
+    for name in zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES
         .iter()
-        .map(|(name, _)| *name)
+        .copied()
         .chain(["workflow-view"])
     {
         let report = run_named(

@@ -209,7 +209,8 @@ pub fn run_named(
     allowed: Option<&[PermissionType]>,
     cancel: &AtomicBool,
 ) -> Result<PluginTestReport> {
-    if zellij_deno_builtins::builtin_deno_plugin(name).is_some() || name == "workflow-view" {
+    // A shipped top-level module: a builtin, or a module they share such as `workflow-view`.
+    if zellij_deno_builtins::builtin_deno_plugin(name).is_some() {
         let root = tempfile::tempdir().context("unpack builtin tests")?;
         zellij_deno_builtins::BUILTIN_DENO_FILES
             .extract(root.path())

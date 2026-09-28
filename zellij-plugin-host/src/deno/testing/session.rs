@@ -249,7 +249,7 @@ impl Controller {
     }
     fn location(&self, path: &str, loader: &PluginModuleLoader) -> Result<String> {
         if let Some(name) = path.strip_prefix("zellij:") {
-            if zellij_deno_builtins::builtin_deno_plugin(name).is_some() {
+            if zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(&name) {
                 return Ok(path.to_owned());
             }
             bail!("integration test requires a shipped TypeScript builtin: {path}");

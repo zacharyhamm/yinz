@@ -3,7 +3,7 @@ use zellij_types::authoring::{PluginTestKind, PluginTestOptions};
 
 #[test]
 fn installed_builtin_typescript_integration_suites() {
-    for (name, _) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
+    for name in zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
         let report = zellij_server::plugin_testing::run_named(
             Path::new("/unused"),
             name,

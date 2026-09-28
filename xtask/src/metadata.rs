@@ -40,19 +40,14 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "zellij-project-config",
         ],
     ),
-    ("zellij-deno-builtins", &[]),
+    ("zellij-deno-builtins", &["zellij-runtime"]),
     (
         "zellij-plugin-api",
         &["zellij-types", "zellij-plugin-location"],
     ),
     (
         "zellij-plugin-authoring",
-        &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-config",
-            "zellij-plugin-api",
-        ],
+        &["zellij-types", "zellij-runtime", "zellij-plugin-api"],
     ),
     (
         "zellij-ipc",
@@ -247,6 +242,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// generated code to build. The screen's tests drive it with parsed CLI actions and the pty's tests
 /// assert on IPC messages and recorded events, but neither thread names those crates otherwise.
 /// The tab's tests parse KDL layouts and stand up client IPC channels, which the tab never does.
+/// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
+/// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-ipc", &["zellij-plugin-api"]),
     ("zellij-cli", &["zellij-plugin-api"]),
@@ -254,6 +251,7 @@ const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
     ("zellij-pty", &["zellij-ipc", "zellij-storage"]),
     ("zellij-tab", &["zellij-config", "zellij-ipc"]),
     ("zellij-panes", &["zellij-config", "zellij-tile"]),
+    ("zellij-deno-builtins", &["zellij-runtime"]),
 ];
 
 /// The package that composes the concrete backends into the running program.
@@ -503,6 +501,9 @@ mod tests {
             ("zellij-routing", "zellij-plugin-host"),
             ("zellij-routing", "zellij-server"),
             ("zellij-routing", "zellij-panes"),
+            // Authoring reads its two constants from the runtime so Hocus's native tests do not
+            // build configuration or the downloader.
+            ("zellij-plugin-authoring", "zellij-config"),
         ] {
             let index = metadata["packages"]
                 .as_array()
@@ -617,10 +618,10 @@ mod tests {
             (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
             (AUTHORING, "v8", "normal", Some(AUTHORING)),
             (AUTHORING, "wasmi_wasi", "normal", Some(AUTHORING)),
-            ("zellij-config", "deno_ast", "build", Some(AUTHORING)),
+            ("zellij-runtime", "deno_ast", "build", Some(AUTHORING)),
             ("zellij-types", "zellij-bus", "normal", Some(AUTHORING)),
             // A dependency's dev-dependencies are not built.
-            ("zellij-config", "deno_core", "dev", None),
+            ("zellij-runtime", "deno_core", "dev", None),
         ] {
             let mut metadata = allowed.clone();
             let package = metadata["packages"]

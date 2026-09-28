@@ -513,7 +513,8 @@ fn grant_requested_permissions(plugin: &mut DenoPlugin) {
 
 #[test]
 fn every_embedded_typescript_builtin_loads_and_renders() {
-    for (name, source) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
+    for name in zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
+        let source = zellij_deno_builtins::builtin_deno_plugin(name).unwrap();
         let directory = tempfile::tempdir().unwrap();
         let mut env = test_env();
         env.data_access = Arc::new(zellij_storage::data_access::DataAccess::sqlite(
