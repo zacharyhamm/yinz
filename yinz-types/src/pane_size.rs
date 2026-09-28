@@ -8,6 +8,18 @@ use crate::geometry::FloatingPaneCoordinates;
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::position::Position;
 
+/// The fewest rows a flexible pane may have, frame included, when a pane is split or resized, a
+/// project layout is fitted or a floating or overlay pane is clamped. A stacked layout is placed
+/// only where its expanded pane gets at least this many rows
+/// (`TiledPaneLayout::position_panes_in_space`). Fixed-size panes such as bars and collapsed stack
+/// members can be smaller, and resizing a stack only keeps one row per member
+/// (`StackedPanes::min_stack_height`). This is a cell count on purpose, not a share of the screen: resizing a
+/// percent-sized tiled pane in yinz-panes also keeps it at or above `RESIZE_PERCENT`
+/// (`TiledPaneGrid::can_reduce_pane_width`), and both limits apply.
+pub const MIN_TERMINAL_HEIGHT: usize = 5;
+/// The fewest columns a flexible pane may have, frame included. See [`MIN_TERMINAL_HEIGHT`].
+pub const MIN_TERMINAL_WIDTH: usize = 5;
+
 /// A percentage-only reduction was requested for a fixed dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("Cannot reduce_by fixed dimensions")]

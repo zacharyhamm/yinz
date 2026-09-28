@@ -3,7 +3,7 @@ use super::{command::RunCommand, plugins::PluginAliases};
 use crate::data::{OverlayPlacement, PluginTag};
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::internal_ids::TabPosition;
-use crate::pane_size::{Dimension, PaneGeom};
+use crate::pane_size::{Dimension, PaneGeom, MIN_TERMINAL_HEIGHT};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -1354,9 +1354,10 @@ fn split_space(
         } else if let Some(last_size) = sizes.last_mut() {
             *last_size = None;
         }
-        if sizes.len() > space_to_split.rows.as_usize().saturating_sub(3) {
-            // 4 is MIN_TERMINAL_HEIGHT, minus 1 because sizes also includes the expanded pane in
-            // the stack
+        // Every member but the expanded one is a single title row, and the expanded one needs
+        // MIN_TERMINAL_HEIGHT rows: n members need n - 1 + MIN_TERMINAL_HEIGHT rows.
+        let rows = space_to_split.rows.as_usize();
+        if sizes.len() > rows.saturating_sub(MIN_TERMINAL_HEIGHT - 1) {
             return Err("Not enough room for stacked panes in this layout");
         }
         sizes
@@ -1569,3 +1570,7 @@ fn adjust_geoms_for_rounding_errors(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/layout_tests.rs"]
+mod layout_tests;

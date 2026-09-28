@@ -76,9 +76,9 @@ macro_rules! resize_pty {
     }};
 }
 
-// FIXME: This should be replaced by `RESIZE_PERCENT` at some point
-pub const MIN_TERMINAL_HEIGHT: usize = 5;
-pub const MIN_TERMINAL_WIDTH: usize = 5;
+// Defined in yinz-types so layouts can check against them too, and re-exported under the path
+// the pane layer has always named them by.
+pub use yinz_types::pane_size::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 
 pub type HoldForCommand = Option<RunCommand>;
 
