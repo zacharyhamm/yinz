@@ -476,8 +476,13 @@ impl Offset {
         }
     }
 
-    // FIXME: This should be top and left, not bottom and right, but `boundaries.rs` would need
-    // some changing
+    /// Reserves `bottom` rows and `right` columns for the separators a frameless tiled pane shares
+    /// with the panes below and to its right: the pane above or to the left owns each separator.
+    /// `pane_content_offset` in yinz-panes decides when to reserve them, `Boundaries` draws a
+    /// neighbour's top and left edges at `y - 1` and `x - 1`, inside this space, and
+    /// `Pane::position_is_on_frame` gives clicks there to this pane. A stack member gets its
+    /// stack's offsets, so for a collapsed member `bottom` places its title row that many rows
+    /// above its `y` instead. `shift_right_top_and_bottom` follows the same convention.
     pub fn shift(bottom: usize, right: usize) -> Self {
         Self {
             bottom,

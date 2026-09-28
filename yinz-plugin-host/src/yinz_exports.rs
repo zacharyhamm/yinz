@@ -3664,11 +3664,14 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
     let client_id = env.client_id;
     let plugin_name = env.name();
     // Use tokio runtime for async I/O (timer operation)
+    let start_time = Instant::now();
     get_tokio_runtime().spawn(async move {
-        let start_time = Instant::now();
         tokio::time::sleep(duration).await;
-        // FIXME: The way that elapsed time is being calculated here is not exact; it doesn't take into account the
-        // time it takes an event to actually reach the plugin after it's sent to the `wasm` thread.
+        // This measures the host timer alone. The `Timer` event then waits on the plugin bus, in
+        // `cached_events_for_pending_plugins` while any instance of this plugin id is loading,
+        // reloading or awaiting permission, and behind earlier work on the plugin's executor or
+        // Deno worker, which can add seconds. A plugin that needs to know how long it really
+        // waited reads its own clock.
         let elapsed_time = Instant::now().duration_since(start_time).as_secs_f64();
 
         send_plugin_instructions
