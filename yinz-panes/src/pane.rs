@@ -91,7 +91,6 @@ pub type RenderedPane = (
     Vec<KittyImageChunk>,
 );
 
-// FIXME: Use a struct that has a pane_type enum, to reduce all of the duplication
 pub trait Pane {
     fn x(&self) -> usize {
         self.current_geom().x

@@ -193,7 +193,9 @@ pub enum Event {
     Key(KeyWithModifier),
     /// A mouse event happened while the user is focused on this plugin's pane
     Mouse(Mouse),
-    /// A timer expired set by the `set_timeout` method exported by `yinz-tile`.
+    /// A timer expired set by the `set_timeout` method exported by `yinz-tile`. It carries the
+    /// time the host timer slept, measured when it fired; delivery to the plugin can add more,
+    /// so a plugin that needs elapsed wall time reads its own clock.
     Timer(FractionalSeconds),
     /// Text was copied to the clipboard anywhere in the app
     CopyToClipboard(CopyDestination),

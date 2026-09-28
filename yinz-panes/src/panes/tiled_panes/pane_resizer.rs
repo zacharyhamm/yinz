@@ -16,8 +16,12 @@ pub struct PaneResizer<'a> {
     solver: Solver,
 }
 
-// FIXME: Just hold a mutable Pane reference instead of the PaneId, fixed, pos, and size?
-// Do this after panes are no longer trait-objects!
+/// One pane's (or one stack's) extent along the axis given by `direction`, detached from the pane
+/// itself. A stack is a single span, keyed by its main pane and measured over the whole stack. A
+/// pane that crosses several `grid_boundaries` bands appears in each band's row of the `Grid`, so
+/// spans carry the `PaneId` rather than a pane reference: `discretize_spans` rewrites `pos` and
+/// `size` as scratch values, `is_layout_valid` checks them before any pane changes, and
+/// `apply_spans` writes them back by id.
 #[derive(Debug, Clone, Copy)]
 struct Span {
     pid: PaneId,
@@ -227,7 +231,6 @@ impl<'a> PaneResizer<'a> {
         }
     }
 
-    // FIXME: Functions like this should have unit tests!
     fn grid_boundaries(&self, direction: SplitDirection) -> Vec<(usize, usize)> {
         // Select the spans running *perpendicular* to the direction of resize
         let spans: Vec<Span> = self

@@ -424,7 +424,6 @@ fn run_awaits_placement(run: &Option<Run>) -> bool {
 }
 
 impl Tab {
-    // FIXME: Still too many arguments for clippy to be happy...
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: TabId,
