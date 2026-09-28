@@ -5,12 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "The zellij server's panes, pane managers, frames and layout application"
 
-[features]
-# Test helpers on `TiledPanes`, `FloatingPanes` and `ContextMenuLayout` that `zellij-tab`'s tab
-# tests and `zellij-screen`'s screen tests drive. Their normal dependencies enable this feature for
-# consistent build and test selection.
-test-support = []
-
 [lints]
 workspace = true
 

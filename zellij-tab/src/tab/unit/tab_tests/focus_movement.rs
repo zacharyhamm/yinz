@@ -231,17 +231,30 @@ pub fn moving_a_pane_after_the_pty_writer_exited_swaps_it_without_panicking() {
     };
     let stacked_resize = true;
     let client_id = crate::ClientId::new(1);
-    let mut tab = create_new_tab(size, stacked_resize);
+    // Send errors surface, as in production, rather than being swallowed as the test default
+    // does, which would hide the case under test. Every other thread keeps listening, so the pty
+    // writer's is the only send that can fail.
+    let (to_screen, _screen_receiver) = unbounded();
+    let (to_pty, _pty_receiver) = unbounded();
+    let (to_plugin, _plugin_receiver) = unbounded();
+    let (to_server, _server_receiver) = unbounded();
+    let (to_pty_writer, pty_writer_receiver) = unbounded();
+    let (to_background_jobs, _background_jobs_receiver) = unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        to_pty: Some(SenderWithContext::new(to_pty)),
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        to_server: Some(SenderWithContext::new(to_server)),
+        to_pty_writer: Some(SenderWithContext::new(to_pty_writer)),
+        to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
+        ..ThreadSenders::default()
+    };
+    let mut tab = create_new_tab_with_senders(size, stacked_resize, senders);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     tab.horizontal_split(new_pane_id, None, client_id, None, None)
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
-    let (tx, rx) = unbounded();
-    drop(rx);
-    let senders = tab.tiled_panes.senders_mut();
-    senders.replace_to_pty_writer(SenderWithContext::new(tx));
-    // the test default swallows send errors, which would hide the case under test
-    senders.should_silently_fail = false;
+    drop(pty_writer_receiver);
 
     tab.move_active_pane_down(client_id);
 

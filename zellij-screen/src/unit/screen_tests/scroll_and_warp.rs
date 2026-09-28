@@ -2913,7 +2913,9 @@ fn render_floating_stack(tab: &mut crate::tab::Tab) -> String {
         Default::default(),
         Default::default(),
     );
-    tab.render(&mut output, Some(ClientId::new(1))).unwrap();
+    tab.render_panes(&mut output, Some(ClientId::new(1)))
+        .unwrap();
+    tab.render_cursor_last(&mut output, Some(ClientId::new(1)));
     let rendered = output
         .serialize()
         .unwrap()
@@ -3048,7 +3050,8 @@ fn floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection() {
             MouseEvent::new_left_release_event(content),
             MouseEvent::new_scroll_up_event(content),
         ] {
-            tab.handle_mouse_event(&event, client).unwrap();
+            tab.handle_mouse_event_with_passthrough(&event, client, None)
+                .unwrap();
         }
         assert_eq!(tab.get_active_pane_id(client), Some(displayed));
         assert!(tab.get_pane_with_id(displayed).unwrap().scroll_position().0 > 0);
@@ -3076,7 +3079,8 @@ fn floating_stack_shrink_hides_headers_and_growth_restores_mouse_selection() {
             MouseEvent::new_left_press_event(header),
             MouseEvent::new_left_release_event(header),
         ] {
-            tab.handle_mouse_event(&event, client).unwrap();
+            tab.handle_mouse_event_with_passthrough(&event, client, None)
+                .unwrap();
         }
         assert_eq!(
             tab.get_active_pane_id(client),
@@ -3116,8 +3120,12 @@ fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
             let header = Position::new((geom.y + rank) as i32, (geom.x + 2) as u16);
             assert!(tab.pane_is_hidden_stack_list_member(&id));
 
-            tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(header), client_id)
-                .unwrap();
+            tab.handle_mouse_event_with_passthrough(
+                &MouseEvent::new_buttonless_motion(header),
+                client_id,
+                None,
+            )
+            .unwrap();
             assert!(tab.pane_is_hidden_stack_list_member(&id));
             assert!(tab
                 .get_floating_panes()
@@ -3128,7 +3136,8 @@ fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
                 MouseEvent::new_left_press_event(header),
                 MouseEvent::new_left_release_event(header),
             ] {
-                tab.handle_mouse_event(&event, client_id).unwrap();
+                tab.handle_mouse_event_with_passthrough(&event, client_id, None)
+                    .unwrap();
             }
             assert_eq!(tab.get_active_pane_id(client_id), Some(id));
             assert!(!tab.pane_is_hidden_stack_list_member(&id));
@@ -3145,7 +3154,8 @@ fn mouse_selects_hidden_members_of_a_transferred_floating_stack() {
                 MouseEvent::new_left_press_event(content),
                 MouseEvent::new_left_release_event(content),
             ] {
-                tab.handle_mouse_event(&event, client_id).unwrap();
+                tab.handle_mouse_event_with_passthrough(&event, client_id, None)
+                    .unwrap();
             }
             assert_eq!(tab.get_active_pane_id(client_id), Some(id));
             assert!(!tab.pane_is_hidden_stack_list_member(&id));
@@ -3193,7 +3203,8 @@ fn fullscreen_floating_stack_content_targets_the_displayed_member() {
             MouseEvent::new_left_release_event(content),
             MouseEvent::new_scroll_up_event(content),
         ] {
-            tab.handle_mouse_event(&event, client_id).unwrap();
+            tab.handle_mouse_event_with_passthrough(&event, client_id, None)
+                .unwrap();
         }
         assert_eq!(tab.get_active_pane_id(client_id), Some(displayed));
         assert!(!tab.pane_is_hidden_stack_list_member(&displayed));
@@ -3215,7 +3226,8 @@ fn fullscreen_floating_stack_content_targets_the_displayed_member() {
             MouseEvent::new_left_press_event(header),
             MouseEvent::new_left_release_event(header),
         ] {
-            tab.handle_mouse_event(&event, client_id).unwrap();
+            tab.handle_mouse_event_with_passthrough(&event, client_id, None)
+                .unwrap();
         }
         assert_eq!(tab.get_active_pane_id(client_id), Some(selected));
         assert!(!tab.pane_is_hidden_stack_list_member(&selected));

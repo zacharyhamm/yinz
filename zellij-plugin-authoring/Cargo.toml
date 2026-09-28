@@ -5,11 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "Offline TypeScript plugin checks and writes, run through the compilation worker"
 
-[features]
-# The worker spawn counter that `zellij-plugin-host`'s loader and plugin tests assert deltas
-# against. Its normal dependency enables this feature for consistent build and test selection.
-test-support = []
-
 [lints]
 workspace = true
 

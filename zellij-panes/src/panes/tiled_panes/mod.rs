@@ -2516,12 +2516,6 @@ impl TiledPanes {
             None => false,
         }
     }
-    /// The senders this container resizes through, for a test that needs to replace one.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn senders_mut(&mut self) -> &mut ThreadSenders {
-        &mut self.senders
-    }
-
     /// Exchange the on-screen positions of two panes: each takes the other's geometry and
     /// geometry override, is told its new size, and is marked for render. Focus and frames are
     /// the caller's business. Nothing changes if either id is unknown.

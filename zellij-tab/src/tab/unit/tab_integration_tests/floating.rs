@@ -96,7 +96,7 @@ fn overlay_does_not_show_hidden_floating_panes() {
     // in its own collection rather than in the same map this line writes to.
     tab.overlay_panes.defocus_pane(other_client_id);
     tab.floating_panes
-        .set_active_pane_for_client(floating_pane_id, other_client_id);
+        .focus_pane(floating_pane_id, other_client_id);
 
     assert!(tab.pane_is_overlay(overlay_pane_id));
     assert!(!tab.floating_panes.all_panes_are_visible());

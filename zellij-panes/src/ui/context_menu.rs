@@ -85,7 +85,6 @@ impl ContextMenuLayout {
     /// order and hit-testing goes the other way, so nothing in production has an item and wants a
     /// row. It exists so a test can aim at an item without duplicating the layout arithmetic it is
     /// supposed to be checking.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn row_of_item(&self, item_index: usize) -> Option<usize> {
         self.rows
             .iter()
