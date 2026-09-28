@@ -378,7 +378,9 @@ plugins {
     hocus-store location="yinz:hocus-store" {
         shared true
     }
+    hocus-swamp location="yinz:hocus-swamp"
     hocus-todos location="yinz:hocus-todos"
+    hocus-vms location="yinz:hocus-vms"
     plugin-manager location="yinz:plugin-manager"
     session-manager location="yinz:session-manager"
     status-bar location="yinz:status-bar"

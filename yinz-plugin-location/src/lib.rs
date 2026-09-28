@@ -13,29 +13,26 @@ pub fn run_plugin_or_alias_from_url(
     alias_dict: Option<&PluginAliases>,
     cwd: Option<PathBuf>,
 ) -> Result<RunPluginOrAlias, String> {
-    match crate::parse_plugin_location_with_relative(url, cwd) {
-        Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
-            _allow_exec_host_cmd: false,
-            location,
-            configuration: configuration
-                .as_ref()
-                .map(|c| PluginUserConfiguration::new(c.clone()))
-                .unwrap_or_default(),
-            relative_path,
-            ..Default::default()
-        })),
-        Err(PluginsConfigError::InvalidUrlScheme(_)) | Err(PluginsConfigError::InvalidUrl(..)) => {
-            let mut plugin_alias = PluginAlias::new(url, configuration, None);
-            if let Some(alias_dict) = alias_dict {
-                plugin_alias.run_plugin = alias_dict
-                    .aliases
-                    .get(url)
-                    .map(|r| r.clone().merge_configuration(configuration));
-            }
-            Ok(RunPluginOrAlias::Alias(plugin_alias))
-        },
-        Err(e) => Err(format!("Failed to parse plugin location {url}: {}", e)),
-    }
+    let mut plugin =
+        match crate::parse_plugin_location_with_relative(url, cwd) {
+            Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
+                _allow_exec_host_cmd: false,
+                location,
+                configuration: configuration
+                    .as_ref()
+                    .map(|c| PluginUserConfiguration::new(c.clone()))
+                    .unwrap_or_default(),
+                relative_path,
+                ..Default::default()
+            })),
+            Err(PluginsConfigError::InvalidUrlScheme(_))
+            | Err(PluginsConfigError::InvalidUrl(..)) => Ok(RunPluginOrAlias::Alias(
+                PluginAlias::new(url, configuration, None),
+            )),
+            Err(e) => Err(format!("Failed to parse plugin location {url}: {}", e)),
+        }?;
+    plugin.populate_run_plugin_if_needed(alias_dict.unwrap_or(&PluginAliases::default()));
+    Ok(plugin)
 }
 pub fn run_plugin_from_url(url: &str) -> Result<RunPlugin, PluginsConfigError> {
     let location = crate::parse_plugin_location(url, None)?;
@@ -163,3 +160,7 @@ mod retired_script_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/panel_migration.rs"]
+mod panel_migration;

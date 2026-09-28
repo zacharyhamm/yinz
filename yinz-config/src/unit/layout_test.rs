@@ -3761,3 +3761,62 @@ fn remote_layouts_are_refused() {
         Err(crate::config::ConfigError::RemoteLayoutUnsupported(_))
     ));
 }
+
+#[test]
+fn legacy_panel_tabs_resolve_aliases_after_merging_and_keep_their_working_directory() {
+    use yinz_types::input::plugins::PluginAliases;
+    let aliases = PluginAliases {
+        aliases: BTreeMap::from([(
+            "legacy-panel".into(),
+            RunPlugin {
+                location: RunPluginLocation::Yinz(PluginTag::new("hocus-agents")),
+                configuration: PluginUserConfiguration::new(BTreeMap::from([
+                    ("view".into(), "swamp".into()),
+                    ("shared".into(), "true".into()),
+                ])),
+                initial_cwd: Some("/alias".into()),
+                ..Default::default()
+            },
+        )]),
+    };
+    for floating in [false, true] {
+        for location in ["yinz:hocus-agents", "legacy-panel"] {
+            for view in ["vms", "swamp"] {
+                let pane = format!(
+                    r#"pane tabbed=true {{
+                    pane name="Legacy" {{ plugin location="{location}" cwd="work" {{ view "{view}"; keep "yes"; }}; }}
+                }}"#
+                );
+                let pane = if floating {
+                    format!("floating_panes {{ {pane}; }}")
+                } else {
+                    pane
+                };
+                let raw = format!("layout cwd=\"/project\" {{ {pane}; }}");
+                let mut layout = crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+                layout.populate_plugin_aliases_in_layout(&aliases);
+                let (tiled, floats) = layout.template.as_ref().unwrap();
+                let (tabs, run) = if floating {
+                    (
+                        floats[0].pane_tabs.as_ref().unwrap(),
+                        floats[0].run.as_ref().unwrap(),
+                    )
+                } else {
+                    (
+                        tiled.children[0].pane_tabs.as_ref().unwrap(),
+                        tiled.children[0].run.as_ref().unwrap(),
+                    )
+                };
+                let plugin = run.get_run_plugin().unwrap();
+                let descriptor = &tabs.tabs[0];
+                assert_eq!(descriptor.location, format!("yinz:hocus-{view}"));
+                assert_eq!(descriptor.location, plugin.location.display());
+                assert_eq!(descriptor.configuration, *plugin.configuration.inner());
+                assert!(!descriptor.configuration.contains_key("view"));
+                assert_eq!(descriptor.configuration["keep"], "yes");
+                assert_eq!(descriptor.initial_cwd, Some("/project/work".into()));
+                assert_eq!(descriptor.initial_cwd, plugin.initial_cwd);
+            }
+        }
+    }
+}

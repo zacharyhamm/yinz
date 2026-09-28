@@ -390,7 +390,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 }
                 swamp_request(env, directory, id, operation, payload);
             },
-            PluginCommand::PaneTabs(command) => {
+            PluginCommand::PaneTabs(mut command) => {
+                if let yinz_types::pane_tabs::PaneTabsCommand::Mount { layout, .. } = &mut command {
+                    let aliases = env.plugin_aliases.lock().unwrap();
+                    for descriptor in &mut layout.tabs {
+                        descriptor.populate_plugin_alias(&aliases);
+                    }
+                }
                 let (response, receive) = crossbeam::channel::bounded(1);
                 env.senders
                     .send_to_screen(ScreenInstruction::PaneTabs {

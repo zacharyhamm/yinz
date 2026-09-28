@@ -716,7 +716,7 @@ impl State {
         let pane = PaneId::Plugin(agents_id);
         self.reset_ring_stop();
         if let Some(tabs) = &self.panel_tabs {
-            let _ = focus_pane_tabs(tabs.id, stop == hocus_proto::wire::STOP_TABS);
+            let _ = focus_pane_tabs(tabs.id, stop == hocus_proto::vms::STOP_TABS);
         } else {
             focus_pane_with_id(pane, false, false);
         }

@@ -1,0 +1,14 @@
+[package]
+name = "hocus-vms"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+yinz-tile = { path = "../../yinz-tile" }
+hocus-proto = { path = "../hocus-proto" }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
