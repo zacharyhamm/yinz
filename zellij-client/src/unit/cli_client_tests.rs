@@ -102,6 +102,28 @@ fn a_pipe_output_failure_does_not_report_success() {
     );
 }
 
+/// The server answers a plugin reply too large for one frame with an error, and the plugin's
+/// unblock still follows it. The error decides the exit, not the unblock.
+#[test]
+fn a_pipe_error_before_its_unblock_exits_non_zero() {
+    let os = FakeClientOsApi::default().capturing_stdout();
+    os.queue_from_server(ServerToClientMsg::LogError {
+        lines: vec!["too large".into()],
+    });
+    os.queue_from_server(ServerToClientMsg::UnblockCliPipeInput {
+        pipe_name: "pipe".into(),
+    });
+    assert_eq!(
+        start_cli_client(
+            Box::new(os.clone()),
+            &"test".into(),
+            vec![pipe_action(Some("input".into()))]
+        ),
+        2,
+    );
+    assert!(os.stdout_bytes().is_empty());
+}
+
 #[test]
 fn pipe_input_eof_waits_for_the_final_response() {
     for input in ["", "input\n"] {

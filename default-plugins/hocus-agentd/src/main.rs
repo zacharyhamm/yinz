@@ -3805,51 +3805,24 @@ fn answer_completion_with(
     }
 }
 
-/// The largest frame the client/server transport carries. It lives in `zellij-runtime`, which the
-/// wasm build already has through `zellij-tile`, so only [`cli_pipe_output_frame_len`] needs a
-/// local stand-in for `zellij-ipc`: linking that crate compiled the whole client/server contract
-/// into the wasm build. A native test holds the frame size to the real crate.
+/// The largest frame the client/server transport carries, which a completion reply is held to.
+/// It comes from `zellij-runtime`, which the wasm build already has through `zellij-tile`.
 use zellij_runtime::consts::MAX_IPC_FRAME_LEN;
 
-/// What prost's `encoded_len` answers for the `ServerToClientMsg` that carries `output` to the
-/// CLI pipe `pipe_name`, computed from the contract's field layout instead of by building the
-/// frame: `CliPipeOutputMsg { string pipe_name = 1; string output = 2; }` as oneof variant 9.
-fn cli_pipe_output_frame_len(pipe_name: &str, output: &str) -> usize {
-    use prost::encoding::{encoded_len_varint, key_len};
-    const PIPE_NAME: u32 = 1;
-    const OUTPUT: u32 = 2;
-    const CLI_PIPE_OUTPUT: u32 = 9;
-
-    // A proto3 string at its default, the empty string, is not written at all.
-    let string_field = |tag: u32, value: &str| {
-        if value.is_empty() {
-            0
-        } else {
-            key_len(tag) + encoded_len_varint(value.len() as u64) + value.len()
-        }
-    };
-    let message = string_field(PIPE_NAME, pipe_name) + string_field(OUTPUT, output);
-    // A oneof variant is written even when the message in it is empty.
-    key_len(CLI_PIPE_OUTPUT) + encoded_len_varint(message as u64) + message
-}
-
+/// A reply over the transport limit becomes an error the caller can match to its request. A CLI
+/// caller's line goes out in a frame a few bytes larger; the server holds that frame to the
+/// limit and answers the pipe with an error when it overflows.
 fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> String {
     let mut output = serde_json::to_string(reply).expect("a completion reply is serializable");
-    let size = if let PipeSource::Cli(pipe_id) = source {
-        output.push('\n');
-        cli_pipe_output_frame_len(pipe_id, &output)
-    } else {
-        output.len()
-    };
-    if size > MAX_IPC_FRAME_LEN {
+    if output.len() > MAX_IPC_FRAME_LEN {
         let error = completion::error_reply(
             &reply.request_id,
             &format!("completion reply exceeds the {MAX_IPC_FRAME_LEN}-byte transport limit"),
         );
         output = serde_json::to_string(&error).expect("a completion error is serializable");
-        if matches!(source, PipeSource::Cli(_)) {
-            output.push('\n');
-        }
+    }
+    if matches!(source, PipeSource::Cli(_)) {
+        output.push('\n');
     }
     output
 }
@@ -10086,31 +10059,16 @@ mod tests {
         .expect("encoded")
     }
 
+    /// Both kinds of caller are held to the limit on the reply's JSON. The frame that carries a
+    /// CLI caller's line is a few bytes larger, and the server holds that frame to the limit
+    /// itself (zellij-server's `cli_pipe_tests`).
     #[test]
-    fn completion_transport_accepts_exactly_fitting_replies() {
-        use prost::Message;
-        use zellij_ipc::client_server_contract::client_server_contract::ServerToClientMsg;
-        use zellij_ipc::MAX_IPC_FRAME_LEN;
-
+    fn completion_replies_are_held_to_the_limit_for_both_callers() {
+        let size = |reply: &wire::CompletionReply| serde_json::to_string(reply).unwrap().len();
         for source in [
             PipeSource::Plugin(PluginId::new(9)),
-            PipeSource::Cli("pipe-name".repeat(20)),
+            PipeSource::Cli("pipe-name".to_owned()),
         ] {
-            let size = |reply: &wire::CompletionReply| {
-                let json = serde_json::to_string(reply).unwrap();
-                match &source {
-                    PipeSource::Cli(pipe_name) => {
-                        let frame: ServerToClientMsg =
-                            zellij_ipc::ipc::ServerToClientMsg::CliPipeOutput {
-                                pipe_name: pipe_name.clone(),
-                                output: format!("{json}\n"),
-                            }
-                            .into();
-                        frame.encoded_len()
-                    },
-                    _ => json.len(),
-                }
-            };
             let mut reply = wire::CompletionReply {
                 request_id: "boundary".to_owned(),
                 content: "x".repeat(MAX_IPC_FRAME_LEN - 1024),
@@ -10121,19 +10079,14 @@ mod tests {
                 .push_str(&"x".repeat(MAX_IPC_FRAME_LEN - size(&reply)));
             assert_eq!(size(&reply), MAX_IPC_FRAME_LEN);
             let output = prepare_completion(&source, &reply);
+            assert_eq!(output.ends_with('\n'), matches!(source, PipeSource::Cli(_)));
             let back: wire::CompletionReply = serde_json::from_str(&output).unwrap();
             assert!(back.error.is_empty());
-            assert_eq!(back.content, reply.content);
-            if matches!(source, PipeSource::Cli(_)) {
-                assert!(output.ends_with('\n'));
-                assert!(
-                    output.len() < MAX_IPC_FRAME_LEN,
-                    "the envelope consumes budget"
-                );
-            }
+            // Not `assert_eq!`, which would print 64 MiB.
+            assert!(back.content == reply.content);
             drop((output, back));
+
             reply.content.push('x');
-            assert_eq!(size(&reply), MAX_IPC_FRAME_LEN + 1);
             let back: wire::CompletionReply =
                 serde_json::from_str(&prepare_completion(&source, &reply)).unwrap();
             assert_eq!(back.request_id, reply.request_id);
@@ -10143,53 +10096,8 @@ mod tests {
         }
     }
 
-    /// The transport's limit and frame size are computed here rather than taken from
-    /// `zellij-ipc`, so the wasm build does not link it. This is what keeps the copy honest: the
-    /// real contract's encoder, on every side of each varint width a length prefix can take.
-    #[test]
-    fn cli_pipe_output_frame_len_matches_the_ipc_encoder() {
-        use prost::Message;
-        use zellij_ipc::client_server_contract::client_server_contract::{
-            server_to_client_msg, CliPipeOutputMsg, ServerToClientMsg,
-        };
-
-        assert_eq!(MAX_IPC_FRAME_LEN, zellij_ipc::MAX_IPC_FRAME_LEN);
-        let around = |width: usize| width.saturating_sub(3)..=width + 3;
-        let lengths: Vec<usize> = [0, 1]
-            .into_iter()
-            .chain(around(127))
-            .chain(around(16_383))
-            .chain(around(2_097_151))
-            .collect();
-        let pipe_names = [0, 1, 126, 127, 128, 16_384].map(|len| "p".repeat(len));
-        let mut outputs: Vec<String> = lengths.iter().map(|len| "x".repeat(*len)).collect();
-        // Lengths are bytes, not characters.
-        outputs.push("é\n".repeat(70));
-        for pipe_name in &pipe_names {
-            for output in &outputs {
-                let frame = ServerToClientMsg {
-                    message: Some(server_to_client_msg::Message::CliPipeOutput(
-                        CliPipeOutputMsg {
-                            pipe_name: pipe_name.clone(),
-                            output: output.clone(),
-                        },
-                    )),
-                };
-                assert_eq!(
-                    cli_pipe_output_frame_len(pipe_name, output),
-                    frame.encoded_len(),
-                    "pipe name of {} bytes, output of {} bytes",
-                    pipe_name.len(),
-                    output.len(),
-                );
-            }
-        }
-    }
-
     #[test]
     fn oversized_completion_tool_arguments_and_http_errors_reach_both_callers() {
-        use zellij_ipc::MAX_IPC_FRAME_LEN;
-
         // Escaping makes the reply exceed the budget even though the raw arguments fit.
         let body = serde_json::to_vec(&serde_json::json!({
             "choices": [{"message": {"tool_calls": [{

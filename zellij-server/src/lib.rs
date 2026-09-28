@@ -1455,7 +1455,7 @@ pub fn start_server_impl(
                     send_to_client!(
                         client_id,
                         os_input,
-                        ServerToClientMsg::CliPipeOutput { pipe_name, output },
+                        cli_pipe_reply(pipe_name, output),
                         session_state,
                         session_data
                     );
@@ -2803,6 +2803,17 @@ fn update_new_saved_config(
     }
 }
 
+/// What the CLI waiting on `pipe_name` is sent for a plugin's `output` to it: the output, or an
+/// error when it does not fit in one IPC frame. The thread writing to the client would refuse
+/// that frame but only log it, and `zellij pipe` then exited 0 with nothing on stdout.
+fn cli_pipe_reply(pipe_name: String, output: String) -> ServerToClientMsg {
+    ServerToClientMsg::cli_pipe_output(pipe_name, output)
+        .context("cannot send the plugin's output to the CLI pipe")
+        .unwrap_or_else(|error| ServerToClientMsg::LogError {
+            lines: vec![format!("{error:#}")],
+        })
+}
+
 // TODO: move elsewhere
 fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<LayoutWithError>) {
     let layout_dir = config_options
@@ -2823,6 +2834,10 @@ mod session_teardown_tests;
 #[cfg(test)]
 #[path = "unit/session_shutdown_tests.rs"]
 mod session_shutdown_tests;
+
+#[cfg(test)]
+#[path = "unit/cli_pipe_tests.rs"]
+mod cli_pipe_tests;
 
 #[cfg(test)]
 mod session_state_tests {
