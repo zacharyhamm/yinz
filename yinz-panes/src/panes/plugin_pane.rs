@@ -1203,7 +1203,8 @@ impl Pane for PluginPane {
         self.geom.logical_position = None;
     }
     fn mouse_event(&self, event: &MouseEvent, client_id: ClientId) -> Option<String> {
-        match event.event_type {
+        let (line, column) = (event.position.line(), event.position.column());
+        let mouse = match event.event_type {
             MouseEventType::Motion
                 if !event.left
                     && !event.right
@@ -1211,16 +1212,20 @@ impl Pane for PluginPane {
                     && !event.wheel_up
                     && !event.wheel_down =>
             {
-                let _ = self
-                    .send_plugin_instructions
-                    .send(PluginInstruction::Update(vec![(
-                        Some(self.pid),
-                        Some(client_id),
-                        Event::Mouse(Mouse::Hover(event.position.line(), event.position.column())),
-                    )]));
+                Mouse::Hover(line, column)
             },
-            _ => {},
-        }
+            // The tab sends a right press here only on the focused pane's content, and only when
+            // no context menu opened for it. The release and any drag that follow are not clicks.
+            MouseEventType::Press if event.right => Mouse::RightClick(line, column),
+            _ => return None,
+        };
+        let _ = self
+            .send_plugin_instructions
+            .send(PluginInstruction::Update(vec![(
+                Some(self.pid),
+                Some(client_id),
+                Event::Mouse(mouse),
+            )]));
         None
     }
     fn set_mouse_selection_support(&mut self, selection_support: bool) {

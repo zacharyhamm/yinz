@@ -102,10 +102,18 @@ pub use crate::keys::{BareKey, KeyModifier, KeyWithModifier};
 
 use crate::geometry::{Direction, Resize, ResizeStrategy};
 
+/// A mouse event delivered to a plugin pane, with positions relative to the pane's content.
+///
+/// The host sends `LeftClick`, `Hold` and `Release` for the left button, and `RightClick` for a
+/// right press on the focused pane's content, unless `context_menu_on_right_click` opens a menu
+/// instead or alt is held (alt+right ungroups panes). `Hover` reports buttonless motion, also
+/// over the pane's frame; when the pointer leaves the pane, the host sends `Hover(0, u16::MAX)`.
+/// Each wheel direction has its own variant, carrying a count rather than a sign, because
+/// horizontal scrolling exists alongside vertical. The middle button is not delivered.
+///
+/// The variants mirror `MouseEventName` in yinz-plugin-api's `event.proto` and the Deno SDK's
+/// `Mouse`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-// FIXME: This should be extended to handle different button clicks (not just
-// left click) and the `ScrollUp` and `ScrollDown` events could probably be
-// merged into a single `Scroll(isize)` event.
 pub enum Mouse {
     ScrollUp(usize),   // number of lines
     ScrollDown(usize), // number of lines

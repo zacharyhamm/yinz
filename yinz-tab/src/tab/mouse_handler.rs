@@ -1639,10 +1639,25 @@ impl MouseHandler {
             let relative_position = pane.relative_position(&event.position);
             let mut event_for_pane = event;
             event_for_pane.position = relative_position;
-            if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
-                if !pane.position_is_on_frame(&event.position) {
-                    tab.write_to_active_terminal(&None, mouse_event.into_bytes(), false, client_id)
+            // Off its content a plugin hears only motion, so its hover can follow the pointer
+            // out. Anything else there is on a frame, not outside the content: its own frame
+            // (a right press may already have toggled a floating plugin's pin), or a multipane
+            // overlay's outer frame or divider, which lie outside the child's geometry yet route
+            // to its first child. A terminal's report is written only off its own frame.
+            let on_frame = pane.position_is_on_frame(&event.position);
+            let off_plugin_content = matches!(pane_id, PaneId::Plugin(_))
+                && (on_frame || !pane.contains(&event.position));
+            if !off_plugin_content || event.event_type == MouseEventType::Motion {
+                if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
+                    if !on_frame {
+                        tab.write_to_active_terminal(
+                            &None,
+                            mouse_event.into_bytes(),
+                            false,
+                            client_id,
+                        )
                         .with_context(err_context)?;
+                    }
                 }
             }
             if clear_hover_for_client(tab, client_id) {
