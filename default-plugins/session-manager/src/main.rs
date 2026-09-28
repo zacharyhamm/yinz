@@ -19,7 +19,9 @@ use ui::{
         render_renaming_session_screen, render_screen_toggle, render_single_screen_prompt,
         render_unified_results, render_unsaved_changes_line, Colors,
     },
-    welcome_screen::{render_banner, render_welcome_boundaries},
+    welcome_screen::{
+        main_menu_left_border, main_menu_width, render_banner, render_welcome_boundaries,
+    },
     SessionUiInfo,
 };
 
@@ -207,7 +209,12 @@ impl YinzPlugin for State {
         let background = self.colors.palette.text_unselected.background;
 
         if self.is_welcome_screen {
-            render_banner(x, 0, rows.saturating_sub(height), width);
+            render_banner(
+                main_menu_left_border(cols),
+                0,
+                rows.saturating_sub(height),
+                width,
+            );
         }
 
         if self.active_screen != ActiveScreen::SingleScreen {
@@ -1469,12 +1476,12 @@ impl State {
     fn main_menu_size(&self, rows: usize, cols: usize) -> (usize, usize, usize, usize) {
         // x, y, width, height
         let width = if self.is_welcome_screen {
-            std::cmp::min(cols, 101)
+            main_menu_width(cols)
         } else {
             cols
         };
         let x = if self.is_welcome_screen {
-            (cols.saturating_sub(width) as f64 / 2.0).floor() as usize + 2
+            main_menu_left_border(cols) + 2
         } else {
             0
         };

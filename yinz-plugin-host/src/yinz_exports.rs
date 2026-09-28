@@ -5106,7 +5106,7 @@ fn warp_pane_to_session(
         // on a snapshot it took earlier, and for a shared plugin instance
         // `env.client_id` is whichever client's event is being handled.
         Some(pane_id),
-        &yinz_bus::warp::current_session_name(),
+        &env.server_session.current(),
         &to_session,
         placement,
         yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
@@ -5121,7 +5121,7 @@ fn warp_pane_from_session(
     placement: WarpPlacement,
 ) {
     let result = yinz_bus::warp::warp_pane_from_session(
-        &yinz_bus::warp::current_session_name(),
+        &env.server_session.current(),
         &from_session,
         pane_id,
         placement,
@@ -5137,7 +5137,7 @@ fn warp_tab_to_session(env: &mut PluginEnv, tab_id: TabId, to_session: SessionNa
         // Explicit for the same reason the pane version is: a plugin acts on a
         // snapshot, and `env.client_id` is whichever client's event is in hand.
         Some(tab_id),
-        &yinz_bus::warp::current_session_name(),
+        &env.server_session.current(),
         &to_session,
         yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
     );
@@ -5146,7 +5146,7 @@ fn warp_tab_to_session(env: &mut PluginEnv, tab_id: TabId, to_session: SessionNa
 
 fn warp_tab_from_session(env: &mut PluginEnv, tab_id: TabId, from_session: SessionName) {
     let result = yinz_bus::warp::warp_tab_from_session(
-        &yinz_bus::warp::current_session_name(),
+        &env.server_session.current(),
         &from_session,
         tab_id,
         yinz_bus::warp::WARP_PULL_TIMEOUT,

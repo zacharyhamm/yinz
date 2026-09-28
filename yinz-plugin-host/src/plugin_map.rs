@@ -703,6 +703,10 @@ pub struct PluginEnv {
     // ponytail: one watcher per instance; share by canonical root if watcher counts become costly.
     pub(crate) filesystem_watcher: Option<crate::watch_filesystem::FilesystemWatcher>,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
+    /// This server's session name, as the Deno identity and plugin warps read it. The
+    /// `session_start` hook payload uses a clone of the same handle held by the plugin thread.
+    /// See [`crate::ServerSession`] for why it is not a plain name.
+    pub server_session: crate::ServerSession,
     /// The `plugins { }` alias table, shared with `WasmBridge` so it stays current across
     /// config reloads. Read only by `GetPluginAliasConfiguration`.
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,

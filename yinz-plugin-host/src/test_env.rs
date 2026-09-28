@@ -42,6 +42,8 @@ pub(crate) fn test_env() -> PluginEnv {
         plugin_cwd: PathBuf::from("."),
         filesystem_watcher: None,
         session_env_vars: BTreeMap::new(),
+        // Never the process environment: tests run on threads that share it.
+        server_session: crate::ServerSession::Fixed(Default::default()),
         plugin_aliases: Arc::new(Mutex::new(Default::default())),
         input_pipes_to_unblock: Arc::new(Mutex::new(HashSet::new())),
         input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),

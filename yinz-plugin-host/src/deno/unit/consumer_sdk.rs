@@ -136,6 +136,7 @@ fn deno_bridge_forwards_answer_admission_progress() {
 }
 
 fn consumer(runtime: &mut JsRuntime, name: &str) {
+    use yinz_types::ui_components::UI_COMPONENT_DCS_FINAL;
     let builtin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../yinz-deno-builtins/assets/plugins/{name}.ts"));
     let path = if builtin.exists() { builtin } else {
@@ -147,10 +148,10 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
         .collect::<Vec<_>>().join("\n")
         .replace("export default definePlugin", "globalThis.M = definePlugin")
         .replace("export const view", "const view");
-    run(runtime, r#"globalThis.plain = text => text.replace(/\x1bPytext;([^\x1b]*)\x1b\\/g, (_match, payload) => {
+    run(runtime, &format!(r#"globalThis.plain = text => text.replace(/\x1bP{UI_COMPONENT_DCS_FINAL}text;([^\x1b]*)\x1b\\/g, (_match, payload) => {{
       const body=payload.split(';').at(-1).split('$').at(-1).replace(/^[a-z]+/, '');
       return body ? yinz.decodeUtf8(new Uint8Array(body.split(',').map(Number))) : '';
-    });"#);
+    }});"#));
     let tail = if name == "workflow-view" { "globalThis.M = view;" } else { "" };
     run(runtime, &format!("globalThis.reloadConsumer = () => {{ (function(z, definePlugin) {{ {source}\n{tail}\n}})(mock, p => p); }}; reloadConsumer();"));
 }

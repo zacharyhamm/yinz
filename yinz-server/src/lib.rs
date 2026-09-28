@@ -2453,6 +2453,9 @@ fn init_session(
                     context_menu,
                     builtin_plugins_dir,
                     client_id,
+                    // `Process`, not the name as it is now: a rename republishes the variable,
+                    // and plugins loaded afterwards must see the new name.
+                    plugins::ServerSession::Process,
                 )
                 .fatal()
             }

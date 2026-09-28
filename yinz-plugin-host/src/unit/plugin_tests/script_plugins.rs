@@ -1252,7 +1252,10 @@ pub fn the_agent_exit_hook_closes_the_pane_on_escape() {
 const HEADLESS_HOOK_TS: &str = r#"
 import yinz from 'yinz:plugin';
 let granted=false, queued=[];
-function say(e) { yinz.command('RenameTabWithId', [1, e.point + ':' + (e.payload.pane_id ?? e.payload.session_name ?? '')]); }
+function say(e) {
+  const identity = e.point === 'session_start' ? '@' + yinz.serverSession : '';
+  yinz.command('RenameTabWithId', [1, e.point + ':' + (e.payload.pane_id ?? e.payload.session_name ?? '') + identity]);
+}
 export default {load() { yinz.subscribe(['Hook', 'PermissionRequestResult']); yinz.requestPermission(['ChangeApplicationState']); }, render() {return '';}};
 yinz.on('PermissionRequestResult', () => {granted=true; for (const e of queued) say(e); queued=[];});
 yinz.on('Hook', e => {if (granted) say(e); else queued.push(e);});
@@ -1511,10 +1514,13 @@ pub fn session_start_fires_for_the_initiating_client() {
     screen_thread.join().unwrap();
     teardown();
 
+    // The hook reports the payload's session name, which the plugin thread's handle supplies,
+    // and after the `@` the plugin's own `yinz.serverSession`, which reaches the Deno runtime
+    // through `WasmBridge`, `PluginLoader` and `PluginEnv`. Both must carry the harness's name.
     let instructions = received_screen_instructions.lock();
     assert_eq!(
         tab_names_set(&instructions),
-        vec!["session_start:yinz-test".to_owned()],
+        vec!["session_start:yinz-test@yinz-test".to_owned()],
         "the harness names its session yinz-test, got: {instructions:?}"
     );
 }

@@ -1369,6 +1369,7 @@ mod tests {
     use yinz_runtime::channels;
     use yinz_tile::ui_components::{image_row, place_image_sequence, png_transmit_sequence};
     use yinz_types::pane_size::Dimension;
+    use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
     fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         test_plugin_pane_with_cell_size(rows, cols, content_offset, None)
@@ -1701,7 +1702,7 @@ mod tests {
             .map(|byte| byte.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        format!("\u{1b}Pytext;{x}/{y}/{width}/;{bytes}\u{1b}\\")
+        format!("{UI_COMPONENT_DCS_PREFIX}text;{x}/{y}/{width}/;{bytes}\u{1b}\\")
     }
 
     // regression test: the host pads a component out to the width it is given, so a

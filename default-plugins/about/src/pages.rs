@@ -25,7 +25,6 @@ pub struct Page {
     title: Option<Text>,
     components_to_render: Vec<RenderedComponent>,
     has_hover: bool,
-    menu_item_is_selected: bool,
     pub is_main_screen: bool,
     pub kind: PageKind,
 }
@@ -33,19 +32,16 @@ pub struct Page {
 impl Page {
     pub fn new_main_screen(
         yinz_version: String,
-        base_mode: Rc<RefCell<InputMode>>,
         is_release_notes: bool,
         keybinding_state: Rc<RefCell<KeybindingState>>,
     ) -> Self {
         let has_missing_binds = keybinding_state.borrow().has_missing_binds();
         let main_screen_builder: Rc<dyn Fn() -> Page> = Rc::new({
             let yinz_version = yinz_version.clone();
-            let base_mode = base_mode.clone();
             let keybinding_state = keybinding_state.clone();
             move || {
                 Page::new_main_screen(
                     yinz_version.clone(),
-                    base_mode.clone(),
                     is_release_notes,
                     keybinding_state.clone(),
                 )
@@ -687,7 +683,6 @@ impl Page {
             title: None,
             components_to_render: vec![],
             has_hover: false,
-            menu_item_is_selected: false,
             is_main_screen: false,
             kind: PageKind::Other,
         }
@@ -763,18 +758,17 @@ impl Page {
         }
         None
     }
+    /// Returns whether any component became active or inactive. That covers the help line
+    /// too, which `render` derives from the active component.
     pub fn handle_mouse_hover(&mut self, x: usize, y: usize) -> bool {
-        let previous_help = self.menu_item_is_selected;
         self.has_hover = false;
-        self.menu_item_is_selected = false;
         let mut changed = false;
-        let mut hover = |component: &mut ActiveComponent, selectable: bool| {
+        let mut hover = |component: &mut ActiveComponent| {
             let was_active = component.is_active;
             if self.has_hover {
                 component.is_active = false;
             } else if component.handle_hover_at_position(x, y) {
                 self.has_hover = true;
-                self.menu_item_is_selected = selectable;
             }
             changed |= was_active != component.is_active;
         };
@@ -782,21 +776,35 @@ impl Page {
             match rendered_component {
                 RenderedComponent::BulletinList(bulletin_list) => {
                     for component in &mut bulletin_list.items {
-                        hover(component, true);
+                        hover(component);
                     }
                 },
                 RenderedComponent::Paragraph(paragraph) => {
                     for component_line in paragraph {
                         for component in &mut component_line.components {
-                            let selectable = component.is_keyboard_selectable();
-                            hover(component, selectable);
+                            hover(component);
                         }
                     }
                 },
                 _ => {},
             }
         }
-        changed || previous_help != self.menu_item_is_selected
+        changed
+    }
+    /// Whether `<ENTER>` would open something: a menu item or feature link is selected,
+    /// by the keyboard or by hovering it.
+    fn menu_item_is_selected(&mut self) -> bool {
+        self.position_of_active_selectable().is_some()
+    }
+    /// The help line for the current selection, as `render` prints it.
+    fn help_text(&mut self) -> Option<Text> {
+        let menu_item_is_selected = self.menu_item_is_selected();
+        self.components_to_render
+            .iter()
+            .find_map(|component| match component {
+                RenderedComponent::HelpText(help_text) => Some(help_text(menu_item_is_selected)),
+                _ => None,
+            })
     }
     fn move_selection_up(&mut self) {
         match self.position_of_active_selectable() {
@@ -902,6 +910,7 @@ impl Page {
         row_count
     }
     pub fn render(&mut self, rows: usize, columns: usize) {
+        let help_text = self.help_text();
         let base_x = columns.saturating_sub(self.ui_column_count()) / 2;
         let base_y = rows.saturating_sub(self.ui_row_count()) / 2;
         let mut current_y = base_y;
@@ -924,7 +933,7 @@ impl Page {
                 columns.saturating_sub(base_x * 2)
             };
             let rendered_rows =
-                rendered_component.render(base_x, y, rows, columns, self.menu_item_is_selected);
+                rendered_component.render(base_x, y, rows, columns, help_text.as_ref());
             current_y += rendered_rows + 1; // 1 for the line space between components
         }
     }
@@ -936,12 +945,11 @@ fn whats_new_title() -> Text {
 }
 
 fn main_screen_title(version: String, is_release_notes: bool) -> Text {
+    let product = format!("Yinz {}", version);
     if is_release_notes {
-        let title_text = format!("Hi there, welcome to Yinz {}!", version);
-        Text::new(title_text).color_range(2, 21..=25 + version.chars().count())
+        Text::new(format!("Hi there, welcome to {}!", product)).color_substring(2, &product)
     } else {
-        let title_text = format!("Yinz {}", version);
-        Text::new(title_text).color_range(2, ..)
+        Text::new(product).color_range(2, ..)
     }
 }
 
@@ -964,7 +972,6 @@ fn color_help_keys(help_text: String) -> Text {
         .color_substring(2, "Update Keybindings")
         .color_substring(1, "<u>")
         .color_substring(1, "<ESC>")
-        .color_substring(1, "<?>")
 }
 
 fn esc_to_go_back_help() -> Text {
@@ -1034,19 +1041,15 @@ impl RenderedComponent {
         y: usize,
         rows: usize,
         columns: usize,
-        menu_item_is_selected: bool,
+        help_text: Option<&Text>,
     ) -> usize {
         let mut rendered_rows = 0;
         match self {
-            RenderedComponent::HelpText(text) => {
+            RenderedComponent::HelpText(_) => {
                 rendered_rows += 1;
-                print_text_with_coordinates(
-                    text(menu_item_is_selected),
-                    0,
-                    y,
-                    Some(columns),
-                    Some(rows),
-                );
+                if let Some(help_text) = help_text {
+                    print_text_with_coordinates(help_text.clone(), 0, y, Some(columns), Some(rows));
+                }
             },
             RenderedComponent::BulletinList(bulletin_list) => {
                 rendered_rows += bulletin_list.len();
@@ -1190,44 +1193,5 @@ impl ComponentLine {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mouse_hover_only_renders_when_selection_or_help_changes() {
-        let component = |y, selectable| {
-            let mut component = ActiveComponent::new(TextOrCustomRender::CustomRender(
-                Box::new(|_, _| 10),
-                Box::new(|| 10),
-            ))
-            .with_hover(TextOrCustomRender::Text(Text::new("hover")));
-            if selectable {
-                component = component.keyboard_selectable();
-            }
-            component.render(0, y, 1, 10, false);
-            component
-        };
-        let mut page = Page::new()
-            .with_bulletin_list(
-                BulletinList::new(Text::new("menu")).with_items(vec![component(0, false)]),
-            )
-            .with_paragraph(vec![ComponentLine::new(vec![component(1, false)])]);
-
-        assert!(page.handle_mouse_hover(1, 0));
-        assert!(page.menu_item_is_selected);
-        assert!(!page.handle_mouse_hover(2, 0));
-        assert!(page.handle_mouse_hover(1, 1));
-        assert!(!page.menu_item_is_selected);
-        assert!(!page.handle_mouse_hover(2, 1));
-        assert!(page.handle_mouse_hover(20, 1));
-        assert!(!page.has_hover);
-        assert!(!page.handle_mouse_hover(20, 1));
-
-        page.set_active_selectable(0);
-        assert!(
-            page.handle_mouse_hover(20, 1),
-            "clear a keyboard selection too"
-        );
-        assert_eq!(page.position_of_active_selectable(), None);
-    }
-}
+#[path = "unit/pages.rs"]
+mod tests;

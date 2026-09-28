@@ -9399,7 +9399,7 @@ mod tests {
             cells("claude", "hocus", "fix the pane exit teardown", Some(now)),
             cells(
                 "codex",
-                "yinz",
+                "yinzer",
                 "add the archive table",
                 Some(now - 7_200_000),
             ),
@@ -9407,21 +9407,21 @@ mod tests {
         let columns = archive_columns(&rows, 60);
         assert_eq!(
             (columns.age, columns.kind, columns.worktree),
-            (true, 6, 5),
+            (true, 6, 6),
             "the widest cell in each column, and the age gutter",
         );
         let drawn: Vec<String> = rows.iter().map(|row| drawn(&columns, now, row)).collect();
         assert_eq!(
             drawn,
             [
-                "now claude  hocus  fix the pane exit teardown",
-                " 2h codex   yinz   add the archive table",
+                "now claude  hocus   fix the pane exit teardown",
+                " 2h codex   yinzer  add the archive table",
             ],
         );
         for row in &drawn {
             assert_eq!(
                 row.find("fix").or_else(|| row.find("add")),
-                Some(agents::AGE_WIDTH + 6 + COLUMN_GAP + 5 + COLUMN_GAP),
+                Some(agents::AGE_WIDTH + 6 + COLUMN_GAP + 6 + COLUMN_GAP),
                 "every prompt starts in the same column",
             );
         }

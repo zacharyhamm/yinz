@@ -1,10 +1,10 @@
-function yr () { yinz run --name "$*" -- bash -ic "$*";}
-function yrf () { yinz run --name "$*" --floating -- bash -ic "$*";}
-function yri () { yinz run --name "$*" --in-place -- bash -ic "$*";}
-function ye () { yinz edit "$*";}
-function yef () { yinz edit --floating "$*";}
-function yei () { yinz edit --in-place "$*";}
-function ypipe () { 
+function yzr () { yinz run --name "$*" -- bash -ic "$*";}
+function yzrf () { yinz run --name "$*" --floating -- bash -ic "$*";}
+function yzri () { yinz run --name "$*" --in-place -- bash -ic "$*";}
+function yze () { yinz edit "$*";}
+function yzef () { yinz edit --floating "$*";}
+function yzei () { yinz edit --in-place "$*";}
+function yzpipe () { 
   if [ -z "$1" ]; then
     yinz pipe;
   else 

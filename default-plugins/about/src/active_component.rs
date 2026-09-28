@@ -66,7 +66,7 @@ impl ActiveComponent {
     pub fn left_click_action(&mut self) -> Option<Page> {
         self.left_click_action
             .take()
-            .map(|ClickAction::ChangePage(go_to_page)| go_to_page())
+            .map(|ClickAction(go_to_page)| go_to_page())
     }
     pub fn handle_left_click_at_position(&mut self, x: usize, y: usize) -> Option<Page> {
         let Some(last_rendered_coordinates) = &self.last_rendered_coordinates else {
@@ -126,15 +126,12 @@ impl ComponentCoordinates {
     }
 }
 
-pub enum ClickAction {
-    ChangePage(Box<dyn FnOnce() -> Page>),
-}
+/// Builds the page that a click, or `<ENTER>` on the selected component, opens.
+pub struct ClickAction(Box<dyn FnOnce() -> Page>);
 
 impl std::fmt::Debug for ClickAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClickAction::ChangePage(_) => write!(f, "ChangePage"),
-        }
+        write!(f, "ClickAction")
     }
 }
 
@@ -143,6 +140,6 @@ impl ClickAction {
     where
         F: FnOnce() -> Page + 'static,
     {
-        ClickAction::ChangePage(Box::new(go_to_page))
+        ClickAction(Box::new(go_to_page))
     }
 }

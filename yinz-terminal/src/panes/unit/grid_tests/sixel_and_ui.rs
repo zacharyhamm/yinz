@@ -5,7 +5,7 @@ fn deeply_indented_list_items_are_clipped_without_scrolling_the_pane() {
     for indentation in [3, 4, 65_536] {
         let mut grid = create_grid_with_size_and_raw(5, 8, b"original");
         let command = format!(
-            "\x1bPynested_list;0/4/8/1;{}65\x1b\\",
+            "{UI_COMPONENT_DCS_PREFIX}nested_list;0/4/8/1;{}65\x1b\\",
             "|".repeat(indentation)
         );
 
@@ -16,7 +16,8 @@ fn deeply_indented_list_items_are_clipped_without_scrolling_the_pane() {
     }
 
     let mut grid = create_grid_with_size_and_raw(5, 8, b"original");
-    feed_bytes(&mut grid, b"\x1bPynested_list;0/1/8/2;||||65;66\x1b\\");
+    let command = format!("{UI_COMPONENT_DCS_PREFIX}nested_list;0/1/8/2;||||65;66\x1b\\");
+    feed_bytes(&mut grid, command.as_bytes());
     assert_eq!(viewport_texts(&grid)[0], "original");
     assert_eq!(row_text(&grid.viewport[2]), " > B");
     assert!(grid.lines_above.is_empty());
@@ -73,7 +74,9 @@ fn component_coordinates_preserve_terminal_clamping_without_overflow() {
         for component in ["text", "ribbon", "nested_list", "table"] {
             let mut grid = create_grid_with_content("");
             let table_dimensions = if component == "table" { "1;1;" } else { "" };
-            let command = format!("\x1bPy{component};{coordinates};{table_dimensions}65\x1b\\");
+            let command = format!(
+                "{UI_COMPONENT_DCS_PREFIX}{component};{coordinates};{table_dimensions}65\x1b\\"
+            );
             vte::Parser::new().advance(&mut grid, command.as_bytes());
             assert!(
                 grid.dump_screen(false).contains('A'),
@@ -82,7 +85,9 @@ fn component_coordinates_preserve_terminal_clamping_without_overflow() {
         }
     }
     // Existing SDK callers place bottom help at y=rows and rely on the terminal's clamp.
-    let grid = create_grid_with_content("\x1bPytext;0/20/80/20;65\x1b\\");
+    let grid = create_grid_with_content(&format!(
+        "{UI_COMPONENT_DCS_PREFIX}text;0/20/80/20;65\x1b\\"
+    ));
     assert_eq!(grid.viewport[19].columns[0].character, 'A');
 }
 
@@ -92,7 +97,7 @@ fn component_dimensions_are_clipped_before_rendering() {
         let mut grid = create_grid_with_content("");
         let table_dimensions = if component == "table" { "1;1;" } else { "" };
         let command = format!(
-            "\x1bPy{component};1/1/{0}/{0};{table_dimensions}z65\x1b\\",
+            "{UI_COMPONENT_DCS_PREFIX}{component};1/1/{0}/{0};{table_dimensions}z65\x1b\\",
             usize::MAX
         );
         vte::Parser::new().advance(&mut grid, command.as_bytes());
@@ -589,7 +594,9 @@ pub fn cursor_hide_persists_through_alternate_screen() {
 #[test]
 fn zero_column_tables_are_discarded_and_output_continues() {
     for params in ["0;0", "0;1;", "0;1;88"] {
-        let input = format!("\x1bPytable;{params}\x1b\\after\x1bPytable;1;1;79,75\x1b\\end");
+        let input = format!(
+            "{UI_COMPONENT_DCS_PREFIX}table;{params}\x1b\\after{UI_COMPONENT_DCS_PREFIX}table;1;1;79,75\x1b\\end"
+        );
         for chunk_size in [input.len(), 1, 3] {
             let mut grid = create_grid_with_content("");
             let mut parser = vte::Parser::new();

@@ -199,6 +199,7 @@ impl TestBridge {
             InputMode::Normal,
             Keybinds::default(),
             PluginAliases::default(),
+            crate::ServerSession::Fixed(Default::default()),
         )
         .unwrap();
         TestBridge {

@@ -1,4 +1,5 @@
 use super::Text;
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 /// render a table with arbitrary data
 #[derive(Debug, Clone)]
@@ -44,7 +45,7 @@ impl Table {
 }
 
 pub fn print_table(table: Table) {
-    print!("\u{1b}Pytable;{}", table.serialize())
+    print!("{UI_COMPONENT_DCS_PREFIX}table;{}", table.serialize())
 }
 
 pub fn print_table_with_coordinates(
@@ -57,7 +58,7 @@ pub fn print_table_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     print!(
-        "\u{1b}Pytable;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,
@@ -67,7 +68,7 @@ pub fn print_table_with_coordinates(
 }
 
 pub fn serialize_table(table: &Table) -> String {
-    format!("\u{1b}Pytable;{}", table.serialize())
+    format!("{UI_COMPONENT_DCS_PREFIX}table;{}", table.serialize())
 }
 
 pub fn serialize_table_with_coordinates(
@@ -80,7 +81,7 @@ pub fn serialize_table_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     format!(
-        "\u{1b}Pytable;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}table;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,

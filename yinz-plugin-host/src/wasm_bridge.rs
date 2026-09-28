@@ -110,6 +110,7 @@ pub struct LoadingContext {
     pub tab_index: Option<TabId>,
     pub path_to_default_shell: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
+    pub server_session: crate::ServerSession,
     pub plugin_aliases: Arc<Mutex<PluginAliases>>,
     pub default_shell: Option<TerminalAction>,
     pub layout_dir: Option<PathBuf>,
@@ -163,6 +164,7 @@ impl LoadingContext {
             plugin_id,
             path_to_default_shell: wasm_bridge.path_to_default_shell.clone(),
             session_env_vars: wasm_bridge.session_env_vars.clone(),
+            server_session: wasm_bridge.server_session.clone(),
             plugin_aliases: wasm_bridge.plugin_aliases.clone(),
             plugin_cwd: cwd.unwrap_or_else(|| wasm_bridge.yinz_cwd.clone()),
             default_shell: wasm_bridge.default_shell.clone(),
@@ -261,6 +263,7 @@ pub struct WasmBridge {
     path_to_default_shell: PathBuf,
     yinz_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
+    server_session: crate::ServerSession,
     default_shell: Option<TerminalAction>,
     pending_pipes: PendingPipes,
     layout_dir: Option<PathBuf>,
@@ -397,6 +400,7 @@ impl WasmBridge {
         default_mode: InputMode,
         default_keybinds: Keybinds,
         plugin_aliases: PluginAliases,
+        server_session: crate::ServerSession,
     ) -> Result<Self> {
         let mut temporary_root = OwnedDir::new(&YINZ_CACHE_DIR.join("plugin-tmp"))
             .context("failed to create plugin host temporary directory")?;
@@ -446,6 +450,7 @@ impl WasmBridge {
             queues: Default::default(),
             yinz_cwd,
             session_env_vars,
+            server_session,
             default_shell,
             pending_pipes: Default::default(),
             layout_dir,

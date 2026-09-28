@@ -20,6 +20,7 @@ pub mod deno;
 #[doc(hidden)]
 pub use deno::run_compilation_worker;
 mod host_bridge;
+pub use host_bridge::ServerSession;
 pub mod logging_pipe;
 mod pinned_executor;
 mod pipes;
@@ -112,6 +113,9 @@ pub fn plugin_thread_main(
     // on session start when we need to load the background plugins, and so we must have an
     // explicit client_id that has started the session
     initiating_client_id: ClientId,
+    // How plugins learn the session's name. The server passes `ServerSession::Process`, so a
+    // rename reaches plugins loaded after it.
+    server_session: ServerSession,
 ) -> Result<()> {
     info!("Wasm main thread starts");
     let yinz_data_dir = data_dir.clone();
@@ -138,6 +142,7 @@ pub fn plugin_thread_main(
         default_mode,
         default_keybinds,
         plugin_aliases.clone(),
+        server_session.clone(),
     )?;
 
     for run_plugin_or_alias in background_plugins {
@@ -489,7 +494,7 @@ pub fn plugin_thread_main(
                     run_hook(
                         HookPoint::SessionStart,
                         None,
-                        session_start_payload(client_id),
+                        session_start_payload(&server_session, client_id),
                         client_id,
                         &hooks,
                         &mut wasm_bridge,
@@ -1655,11 +1660,9 @@ fn pipe_to_specific_plugins(
 
 /// What the `session_start` hook is told: enough to address the session from a plugin that was
 /// loaded before any tab existed.
-fn session_start_payload(client_id: ClientId) -> HookFiring {
-    // The name lives in the server's environment; nothing on the bus carries it, and reading
-    // it here beats threading it through the thread's signature for one string.
+fn session_start_payload(session: &ServerSession, client_id: ClientId) -> HookFiring {
     HookFiring::Headless(HookPayload::SessionStart {
-        session_name: yinz_runtime::envs::get_session_name().unwrap_or_default(),
+        session_name: session.current(),
         client_id,
     })
 }

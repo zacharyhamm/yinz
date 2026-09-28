@@ -21,6 +21,7 @@ pub mod plugin_data;
 pub mod position;
 pub mod recording;
 pub mod text;
+pub mod ui_components;
 
 pub mod keys;
 
