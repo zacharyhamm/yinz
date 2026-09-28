@@ -2,13 +2,19 @@
 
 use crate::{
     background_jobs::BackgroundJob, os_input_output::ServerOsApi, plugins::PluginInstruction,
-    pty::PtyInstruction, pty_writer::PtyWriteInstruction, screen::ScreenInstruction,
+    pty::PtyInstruction, pty_writer::PtyWriteInstruction, screen::ScreenInstruction, ClientId,
     ServerInstruction,
 };
+use std::path::Path;
+use zellij_config::config::Config;
+use zellij_config::screen_config::ScreenConfig;
 use zellij_runtime::channels;
 use zellij_runtime::channels::SenderWithContext;
 use zellij_runtime::errors::prelude::*;
+use zellij_runtime::home::user_plugin_dir_or_default;
 use zellij_types::diagnostics::ErrorContext;
+use zellij_types::input::command::{RunCommand, TerminalAction};
+use zellij_types::input::options::Options;
 
 #[cfg(test)]
 #[path = "unit/thread_bus_tests.rs"]
@@ -147,6 +153,84 @@ impl ThreadSenders {
         }
     }
 
+    /// Hand each client's new configuration to every thread that holds a part of it: the screen,
+    /// the plugins and the pty, in that order per client. When the configuration was written to
+    /// disk, the plugins are then asked to look for changes to their own configuration.
+    ///
+    /// Each config must already be the client's effective one, plugin default keybinds
+    /// included: the threads adopt it as is. `config_dir` is the session's `--config-dir`, from
+    /// which a config that does not name `user_plugin_dir` has it re-derived.
+    pub fn reconfigure_threads(
+        &self,
+        config_changes: Vec<(ClientId, Config)>,
+        config_dir: Option<&Path>,
+        was_written_to_disk: bool,
+    ) {
+        let mut new_plugin_config = None;
+        for (client_id, new_config) in config_changes {
+            new_plugin_config.get_or_insert_with(|| new_config.plugins.clone());
+            let default_shell = default_shell_action(&new_config.options);
+            self.send_to_screen(ScreenInstruction::Reconfigure {
+                client_id,
+                keybinds: new_config.keybinds.clone(),
+                config: ScreenConfig::from_config(&new_config),
+            })
+            .context("reconfiguring the screen")
+            .non_fatal();
+            self.send_to_plugin(PluginInstruction::Reconfigure {
+                client_id,
+                keybinds: Some(new_config.keybinds),
+                default_mode: new_config.options.default_mode,
+                default_shell,
+                layout_dir: new_config.options.layout_dir,
+                // Re-derived rather than passed through: `WasmBridge::reconfigure` assigns
+                // this verbatim, so a config that does not name the option explicitly would
+                // otherwise wipe the folder derived at session start. The server's cwd has
+                // not moved since then, so a relative folder resolves to the same place.
+                user_plugin_dir: user_plugin_dir_or_default(
+                    new_config.options.user_plugin_dir,
+                    config_dir.map(Path::to_path_buf),
+                ),
+                builtin_plugins_dir: new_config.options.builtin_plugins_dir,
+                hooks: new_config.hooks,
+                context_menu: new_config.context_menu,
+                was_written_to_disk,
+            })
+            .context("reconfiguring the plugins")
+            .non_fatal();
+            self.send_to_pty(PtyInstruction::Reconfigure {
+                client_id,
+                default_editor: new_config.options.scrollback_editor,
+                post_command_discovery_hook: new_config.options.post_command_discovery_hook,
+            })
+            .context("reconfiguring the pty")
+            .non_fatal();
+        }
+
+        if was_written_to_disk {
+            if let Some(new_plugins) = new_plugin_config {
+                self.send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))
+                    .context("reporting plugin config changes")
+                    .non_fatal();
+            }
+        }
+    }
+
+    /// Tell every worker thread to exit, the screen first: it can still need every other worker
+    /// while it finishes its queued instructions, so they are told only once `wait_for_screen`
+    /// returns. A caller that owns the screen thread joins it there.
+    ///
+    /// The sends are allowed to fail, because a thread that has already exited has nothing left
+    /// to be told. A new worker channel gets its `Exit` here, so every shutdown path sends it.
+    pub fn exit_threads(&self, wait_for_screen: impl FnOnce()) {
+        let _ = self.send_to_screen(ScreenInstruction::Exit);
+        wait_for_screen();
+        let _ = self.send_to_pty(PtyInstruction::Exit);
+        let _ = self.send_to_plugin(PluginInstruction::Exit);
+        let _ = self.send_to_pty_writer(PtyWriteInstruction::Exit);
+        let _ = self.send_to_background_jobs(BackgroundJob::Exit);
+    }
+
     #[allow(unused)]
     pub fn silently_fail_on_send(mut self) -> Self {
         // this is mostly used for the tests, see struct
@@ -172,6 +256,19 @@ impl ThreadSenders {
         // this is mostly used for the tests, see struct
         self.to_plugin.replace(new_to_plugin);
     }
+}
+
+/// What a new pane runs when `options` names a default shell: that shell, started in the
+/// default cwd and titled by what runs in it.
+pub fn default_shell_action(options: &Options) -> Option<TerminalAction> {
+    options.default_shell.as_ref().map(|shell| {
+        TerminalAction::RunCommand(RunCommand {
+            command: shell.clone(),
+            cwd: options.default_cwd.clone(),
+            use_terminal_title: true,
+            ..Default::default()
+        })
+    })
 }
 
 /// A container for a receiver, OS input and the senders to a given thread

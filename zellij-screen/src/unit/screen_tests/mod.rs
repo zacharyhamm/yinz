@@ -460,9 +460,9 @@ fn seed_first_client_size(mut screen: Screen, size: Size) -> Screen {
 /// handles and the per-client configuration, neither of which a screen test has: its
 /// configuration is always the default one, so every client's default mode is `Normal`.
 ///
-/// Dropping one tells every worker to exit, exactly as dropping the server's session does, and
-/// tests lean on that: a clone going out of scope at the end of a test is what stops the threads
-/// it started.
+/// Dropping one tells every worker to exit through `ThreadSenders::exit_threads`, as dropping
+/// the server's session does, and tests lean on that: a clone going out of scope at the end of a
+/// test is what stops the threads it started.
 #[derive(Clone)]
 struct MockSession {
     shutdown: Shutdown,
@@ -477,38 +477,26 @@ impl MockSession {
         InputMode::Normal
     }
 
-    /// The screen's half of the server's `propagate_configuration_changes`: each changed client's
-    /// screen is reconfigured with its new keybinds and screen config. The plugin and pty halves
-    /// are the server's business, and nothing in a screen test receives them.
+    /// The server's `propagate_configuration_changes` under the default configuration: no plugin
+    /// has registered default keybinds, so each config reaches the threads as is, through the
+    /// same `ThreadSenders::reconfigure_threads` the server sends with.
     pub fn propagate_configuration_changes(
-        &mut self,
+        &self,
         config_changes: Vec<(ClientId, Config)>,
-        _config_was_written_to_disk: bool,
+        config_was_written_to_disk: bool,
     ) {
-        for (client_id, new_config) in config_changes {
-            self.senders
-                .send_to_screen(ScreenInstruction::Reconfigure {
-                    client_id,
-                    keybinds: new_config.keybinds.clone(),
-                    config: ScreenConfig::from_config(&new_config),
-                })
-                .context("reconfiguring the screen")
-                .non_fatal();
-        }
+        self.senders.reconfigure_threads(
+            config_changes,
+            self.config_dir.as_deref(),
+            config_was_written_to_disk,
+        );
     }
 }
 
 impl Drop for MockSession {
     fn drop(&mut self) {
         self.shutdown.begin();
-        let _ = self.senders.send_to_screen(ScreenInstruction::Exit);
-        let _ = self.senders.send_to_pty(PtyInstruction::Exit);
-        let _ = self.senders.send_to_plugin(PluginInstruction::Exit);
-        let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Exit);
-        let _ = self.senders.send_to_background_jobs(BackgroundJob::Exit);
-        if let Some(recorder) = self.senders.session_recorder.take() {
-            recorder.stop();
-        }
+        self.senders.exit_threads(|| {});
     }
 }
 
@@ -850,15 +838,13 @@ impl MockScreen {
     /// assertion instead of at the panic that caused it. Re-raising puts the original panic, with
     /// its own message and location, back in front of them.
     ///
-    /// The sends are still allowed to fail: a thread that has already exited has already done what
-    /// the Exit message would have asked of it, and its `join` below is the real check.
+    /// The Exits go out as the server's session sends them, through
+    /// `ThreadSenders::exit_threads`, and are still allowed to fail: a thread that has already
+    /// exited has already done what the Exit message would have asked of it, and its `join` below
+    /// is the real check.
     pub fn teardown(&mut self, threads: Vec<std::thread::JoinHandle<()>>) {
-        let _ = self.to_pty.send(PtyInstruction::Exit);
-        let _ = self.to_pty_writer.send(PtyWriteInstruction::Exit);
-        let _ = self.to_screen.send(ScreenInstruction::Exit);
+        self.session_metadata.senders.exit_threads(|| {});
         let _ = self.to_server.send(ServerInstruction::KillSession);
-        let _ = self.to_plugin.send(PluginInstruction::Exit);
-        let _ = self.to_background_jobs.send(BackgroundJob::Exit);
         for thread in threads {
             if let Err(panic) = thread.join() {
                 std::panic::resume_unwind(panic);
