@@ -36,7 +36,7 @@ Revisit if cells move to a struct-of-arrays layout or CJK throughput becomes a g
 
 | Candidate | Location | Why rejected |
 | --- | --- | --- |
-| Ground-state ESC scan | `yinz-panes/src/panes/terminal_pane.rs:291-303`, `plugin_pane.rs:328-339` | `position(\|b\| *b == 0x1b)` is scalar (about 1 byte per cycle) but only 0.4–1.2% of a frame. A `memchr` A/B test was noise, ±1–3% with the sign flipping between runs. |
+| Ground-state ESC scan | `yinz-panes/src/panes/terminal_pane.rs:260-272`, `plugin_pane.rs:294-305` | `position(\|b\| *b == 0x1b)` is scalar (about 1 byte per cycle) but only 0.4–1.2% of a frame. A `memchr` A/B test was noise, ±1–3% with the sign flipping between runs. |
 | Kitty APC capture | `yinz-terminal-graphics/src/kitty_graphics/interceptor.rs:74-168` | Real cost during `t=d` uploads, but about 85% of the fix is scalar and `memchr` matches a SIMD kernel. See [Kitty direct-transmission capture](#kitty-direct-transmission-capture). |
 | vte ground-state UTF-8 validation | vte 0.15 `src/lib.rs:609` (external) | Ingest −9 to −13% on `unicode_wide/16` and −6 to −8% on pure CJK, but 0% or slightly slower on colored output (`git log`, `ls`, `cargo tree`), whose runs average 5–28 bytes. Needs `[patch.crates-io]`, and `simdutf8::compat::from_utf8` is a drop-in that returns the same `Utf8Error`. A hand-written validator would feed `from_utf8_unchecked`, so it is soundness-critical. |
 | Bilinear scaling | `yinz-terminal-graphics/src/kitty_graphics/grid_state.rs:1992` (`scale_rgba`) | Runs per placement with `c`/`r` or `U=1`, not per frame. A bit-exact scalar rewrite gets about 4x; `f64x4` adds 1.55–1.6x on top. `U=1` clients tend to request identity or near-identity sizes; exact identity wants a memcpy shortcut, which is 50x faster than SIMD. |
@@ -65,7 +65,7 @@ Ranked by measured share of the text path. Shares are from the bench profile, wh
 | Rank | Candidate | Location | Measured share | Idea |
 | --- | --- | --- | --- | --- |
 | 1 | Style fast path when serializing | `yinz-terminal/src/output/mod.rs:202-275` (`serialize_chunks`; `write_changed_styles` at `:111`) and `yinz-terminal/src/panes/terminal_character.rs:322` (`update_and_return_diff`) | `CharacterStyles::eq` (`terminal_character.rs:232`) is 24–26% of a 1-pane frame | Skip `adjust_styles_*` and the style diff when the cell's style `Rc` is pointer-equal to the previous cell's and there are no selections, `changed_colors`, or pane defaults. Inline the call chain and drop the per-cell `with_context`. |
-| 2 | One vte call per escape sequence | `yinz-panes/src/panes/terminal_pane.rs:274-364` (`handle_pty_bytes`) | 7–16% of SGR-heavy ingest; 3–6% for colored and TUI output | See [below](#one-vte-call-per-escape-sequence). |
+| 2 | One vte call per escape sequence | `yinz-panes/src/panes/terminal_pane.rs:243-333` (`handle_pty_bytes`) | 7–16% of SGR-heavy ingest; 3–6% for colored and TUI output | See [below](#one-vte-call-per-escape-sequence). |
 | 3 | Per-character overhead in `Grid::print` | `yinz-terminal/src/panes/grid.rs` | 10–26% self time | Two `Rc` clones per character (`set_preceding_character` and the cell), plus a store-forwarding stall on the 16-byte cell. |
 | 4 | `HyperlinkTracker::update` | `yinz-terminal/src/panes/hyperlink_tracker.rs` | 7–8% | Called per character. |
 | 5 | Scrollback eviction | `bounded_push`, `Row::width` in `yinz-terminal/src/panes/grid.rs` | 4–11% | Reuse cached row widths. Partly bound by cache misses, since dropping the row touches the same lines. |

@@ -1086,6 +1086,78 @@ pub fn frameless_pane_position_is_on_frame() {
     assert!(!terminal_pane.position_is_on_frame(&Position::new(30, 131)));
 }
 
+fn geom_at(x: usize, y: usize, cols: usize, rows: usize) -> PaneGeom {
+    let mut geom = PaneGeom {
+        x,
+        y,
+        ..Default::default()
+    };
+    geom.cols.set_inner(cols);
+    geom.rows.set_inner(rows);
+    geom
+}
+
+/// (x, y, cols, rows) of the pane, then of its content.
+fn pane_and_content_geometry(pane: &TerminalPane) -> [usize; 8] {
+    [
+        pane.x(),
+        pane.y(),
+        pane.cols(),
+        pane.rows(),
+        pane.get_content_x(),
+        pane.get_content_y(),
+        pane.get_content_columns(),
+        pane.get_content_rows(),
+    ]
+}
+
+#[test]
+pub fn pane_geometry_follows_override_until_reset() {
+    let mut terminal_pane = make_terminal_pane_for_bell();
+    terminal_pane.set_geom(geom_at(2, 3, 40, 10));
+    terminal_pane.set_content_offset(Offset::frame(1));
+    assert_eq!(
+        pane_and_content_geometry(&terminal_pane),
+        [2, 3, 40, 10, 3, 4, 38, 8],
+        "the frame takes one cell off each side"
+    );
+
+    terminal_pane.set_subtitle(Some("subtitle".into()));
+    assert_eq!(
+        pane_and_content_geometry(&terminal_pane),
+        [2, 3, 40, 10, 3, 5, 38, 7],
+        "the subtitle takes a row off the top of the content"
+    );
+
+    terminal_pane.set_geom_override(geom_at(5, 6, 30, 12));
+    assert_eq!(terminal_pane.current_geom(), geom_at(5, 6, 30, 12));
+    assert!(terminal_pane.contains(&Position::new(6, 5)));
+    assert!(!terminal_pane.contains(&Position::new(3, 2)));
+    assert_eq!(
+        pane_and_content_geometry(&terminal_pane),
+        [5, 6, 30, 12, 6, 8, 28, 9],
+        "every getter follows the override"
+    );
+    assert_eq!(
+        (terminal_pane.grid.width, terminal_pane.grid.height),
+        (28, 9),
+        "the grid is resized to the override's content area"
+    );
+
+    terminal_pane.reset_size_and_position_override();
+    assert_eq!(terminal_pane.current_geom(), geom_at(2, 3, 40, 10));
+    assert!(terminal_pane.contains(&Position::new(3, 2)));
+    assert_eq!(
+        pane_and_content_geometry(&terminal_pane),
+        [2, 3, 40, 10, 3, 5, 38, 7],
+        "every getter is back on the pane's own geometry"
+    );
+    assert_eq!(
+        (terminal_pane.grid.width, terminal_pane.grid.height),
+        (38, 7)
+    );
+}
+
 fn create_guest_modal_pane() -> TerminalPane {
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(80);

@@ -1061,30 +1061,6 @@ impl MockPane {
 }
 
 impl Pane for MockPane {
-    fn x(&self) -> usize {
-        unimplemented!()
-    }
-    fn y(&self) -> usize {
-        unimplemented!()
-    }
-    fn rows(&self) -> usize {
-        unimplemented!()
-    }
-    fn cols(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_x(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_y(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_columns(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_rows(&self) -> usize {
-        unimplemented!()
-    }
     fn reset_size_and_position_override(&mut self) {
         unimplemented!()
     }

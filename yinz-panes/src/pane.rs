@@ -93,14 +93,41 @@ pub type RenderedPane = (
 
 // FIXME: Use a struct that has a pane_type enum, to reduce all of the duplication
 pub trait Pane {
-    fn x(&self) -> usize;
-    fn y(&self) -> usize;
-    fn rows(&self) -> usize;
-    fn cols(&self) -> usize;
-    fn get_content_x(&self) -> usize;
-    fn get_content_y(&self) -> usize;
-    fn get_content_columns(&self) -> usize;
-    fn get_content_rows(&self) -> usize;
+    fn x(&self) -> usize {
+        self.current_geom().x
+    }
+    fn y(&self) -> usize {
+        self.current_geom().y
+    }
+    fn rows(&self) -> usize {
+        self.current_geom().rows.as_usize()
+    }
+    fn cols(&self) -> usize {
+        self.current_geom().cols.as_usize()
+    }
+    fn get_content_x(&self) -> usize {
+        self.x() + self.get_content_offset().left
+    }
+    fn get_content_y(&self) -> usize {
+        self.y() + self.get_content_offset().top + self.content_header_rows()
+    }
+    /// Content columns can differ from the pane's columns: with a frame they are 2 less.
+    fn get_content_columns(&self) -> usize {
+        let offset = self.get_content_offset();
+        self.cols().saturating_sub(offset.left + offset.right)
+    }
+    /// Content rows can differ from the pane's rows: with a frame they are 2 less, and the
+    /// header rows come off too.
+    fn get_content_rows(&self) -> usize {
+        let offset = self.get_content_offset();
+        self.rows()
+            .saturating_sub(offset.top + offset.bottom + self.content_header_rows())
+    }
+    /// Rows drawn below the content offset's top and above the content: the subtitle, plus
+    /// anything a pane type adds there, such as a plugin pane's tab bar.
+    fn content_header_rows(&self) -> usize {
+        self.subtitle_rows()
+    }
     fn reset_size_and_position_override(&mut self);
     fn set_geom(&mut self, position_and_size: PaneGeom);
     fn set_geom_override(&mut self, pane_geom: PaneGeom);
@@ -143,7 +170,11 @@ pub trait Pane {
         None
     }
     fn position_and_size(&self) -> PaneGeom;
-    fn current_geom(&self) -> PaneGeom;
+    /// The geometry the pane occupies now: its override if it has one, else its own.
+    fn current_geom(&self) -> PaneGeom {
+        self.geom_override()
+            .unwrap_or_else(|| self.position_and_size())
+    }
     fn geom_override(&self) -> Option<PaneGeom>;
     fn should_render(&self) -> bool;
     fn set_should_render(&mut self, should_render: bool);
@@ -209,10 +240,7 @@ pub trait Pane {
         "\u{1b}[0 q".to_string() // default to non blinking block
     }
     fn contains(&self, position: &Position) -> bool {
-        match self.geom_override() {
-            Some(position_and_size) => position_and_size.contains(position),
-            None => self.position_and_size().contains(position),
-        }
+        self.current_geom().contains(position)
     }
     fn start_selection(&mut self, _start: &Position, _client_id: ClientId) {}
     fn update_selection(&mut self, _position: &Position, _client_id: ClientId) {}

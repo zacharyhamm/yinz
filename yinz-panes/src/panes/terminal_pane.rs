@@ -200,37 +200,6 @@ pub struct TerminalPane {
 }
 
 impl Pane for TerminalPane {
-    fn x(&self) -> usize {
-        self.get_x()
-    }
-    fn y(&self) -> usize {
-        self.get_y()
-    }
-    fn rows(&self) -> usize {
-        self.get_rows()
-    }
-    fn cols(&self) -> usize {
-        self.get_columns()
-    }
-    fn get_content_x(&self) -> usize {
-        self.get_x() + self.content_offset.left
-    }
-    fn get_content_y(&self) -> usize {
-        self.get_y() + self.content_offset.top + self.subtitle_rows()
-    }
-    fn get_content_columns(&self) -> usize {
-        // content columns might differ from the pane's columns if the pane has a frame
-        // in that case they would be 2 less
-        self.get_columns()
-            .saturating_sub(self.content_offset.left + self.content_offset.right)
-    }
-    fn get_content_rows(&self) -> usize {
-        // content rows might differ from the pane's rows if the pane has a frame
-        // in that case they would be 2 less
-        self.get_rows().saturating_sub(
-            self.content_offset.top + self.content_offset.bottom + self.subtitle_rows(),
-        )
-    }
     fn reset_size_and_position_override(&mut self) {
         self.geom_override = None;
         self.reflow_lines();
@@ -374,7 +343,7 @@ impl Pane for TerminalPane {
             return None;
         }
         let Offset { top, left, .. } = self.content_offset;
-        let top = top + self.subtitle_rows();
+        let top = top + self.content_header_rows();
         self.grid
             .cursor_coordinates()
             .map(|(x, y, is_visible)| (x + left, y + top, is_visible))
@@ -539,9 +508,6 @@ impl Pane for TerminalPane {
     }
     fn position_and_size(&self) -> PaneGeom {
         self.geom
-    }
-    fn current_geom(&self) -> PaneGeom {
-        self.geom_override.unwrap_or(self.geom)
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
@@ -1932,30 +1898,6 @@ impl TerminalPane {
             guest_modal_shortcuts: GuestModalShortcuts::default(),
             pending_pty_input: VecDeque::new(),
             kitty_interceptor: KittyApcInterceptor::new(),
-        }
-    }
-    pub fn get_x(&self) -> usize {
-        match self.geom_override {
-            Some(position_and_size_override) => position_and_size_override.x,
-            None => self.geom.x,
-        }
-    }
-    pub fn get_y(&self) -> usize {
-        match self.geom_override {
-            Some(position_and_size_override) => position_and_size_override.y,
-            None => self.geom.y,
-        }
-    }
-    pub fn get_columns(&self) -> usize {
-        match self.geom_override {
-            Some(position_and_size_override) => position_and_size_override.cols.as_usize(),
-            None => self.geom.cols.as_usize(),
-        }
-    }
-    pub fn get_rows(&self) -> usize {
-        match self.geom_override {
-            Some(position_and_size_override) => position_and_size_override.rows.as_usize(),
-            None => self.geom.rows.as_usize(),
         }
     }
     fn reflow_lines(&mut self) {
