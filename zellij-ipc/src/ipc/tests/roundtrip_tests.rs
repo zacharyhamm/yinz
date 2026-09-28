@@ -4722,6 +4722,51 @@ fn an_oversized_frame_is_refused_without_allocating() {
     );
 }
 
+/// The server answers a CLI pipe with an error instead of a frame that the thread writing to
+/// the client would refuse and only log. Both must draw the line at the same byte, so the frame
+/// is measured by the encoder the writer uses, not by a copy of the wire layout.
+#[test]
+fn a_cli_pipe_reply_is_refused_exactly_where_its_frame_would_be() {
+    use crate::client_server_contract::client_server_contract::ServerToClientMsg as ProtoMsg;
+    use crate::ipc::MAX_IPC_FRAME_LEN;
+
+    let pipe_name = "pipe".to_owned();
+    // What the frame adds around the output. 2 MiB takes the same 4-byte length prefixes as
+    // 64 MiB; the frame length asserted below would catch it if it did not.
+    let sample = "x".repeat(1 << 21);
+    let envelope = ProtoMsg::from(ServerToClientMsg::CliPipeOutput {
+        pipe_name: pipe_name.clone(),
+        output: sample.clone(),
+    })
+    .encoded_len()
+        - sample.len();
+
+    // Never `{:?}` a reply here: it would print 64 MiB.
+    let output = "x".repeat(MAX_IPC_FRAME_LEN - envelope);
+    let reply = ServerToClientMsg::cli_pipe_output(pipe_name.clone(), output)
+        .unwrap_or_else(|error| panic!("a frame of exactly the limit should be sent: {error}"));
+    let frame = ProtoMsg::from(reply);
+    assert_eq!(frame.encoded_len(), MAX_IPC_FRAME_LEN);
+    let Ok(ServerToClientMsg::CliPipeOutput {
+        pipe_name: sent_to,
+        mut output,
+    }) = ServerToClientMsg::try_from(frame)
+    else {
+        panic!("the reply should be the pipe's output");
+    };
+    assert_eq!(sent_to, pipe_name);
+    assert_eq!(output.len(), MAX_IPC_FRAME_LEN - envelope);
+
+    output.push('x');
+    let Err(error) = ServerToClientMsg::cli_pipe_output(pipe_name, output) else {
+        panic!("a frame one byte over the limit should be refused");
+    };
+    assert!(
+        error.to_string().contains(&MAX_IPC_FRAME_LEN.to_string()),
+        "{error}"
+    );
+}
+
 /// Every variant, every case: the kinds are walked rather than sampled, so a variant the wire
 /// mishandles cannot hide behind an unlucky draw. The generator has no wildcard arm, so a new
 /// variant does not compile until it is covered here.

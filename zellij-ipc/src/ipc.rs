@@ -254,6 +254,7 @@ pub enum ServerToClientMsg {
     UnblockCliPipeInput {
         pipe_name: String,
     },
+    /// Built with [`ServerToClientMsg::cli_pipe_output`], which holds it to the frame limit.
     CliPipeOutput {
         pipe_name: String,
         output: String,
@@ -286,6 +287,20 @@ pub enum ServerToClientMsg {
     EmitNestedSessionFrame {
         payload_bytes: Vec<u8>,
     },
+}
+
+impl ServerToClientMsg {
+    /// A CLI pipe's output, refused when its frame would be over [`MAX_IPC_FRAME_LEN`].
+    ///
+    /// [`IpcSenderWithContext::send_server_msg`] refuses that frame too, but on the thread that
+    /// writes to the client, where the refusal can only be logged; a CLI then takes the unblock
+    /// that follows for a reply with no output. Refused here, the server can answer the pipe.
+    pub fn cli_pipe_output(pipe_name: String, output: String) -> Result<Self> {
+        // Measured on the wire message itself, which takes both strings without copying them.
+        let frame = ProtoServerToClientMsg::from(Self::CliPipeOutput { pipe_name, output });
+        check_frame_len(frame.encoded_len())?;
+        Self::try_from(frame)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -592,14 +607,19 @@ fn read_protobuf_message<T: Message + Default>(reader: &mut impl Read) -> Result
     T::decode(&buf[..]).map_err(Into::into)
 }
 
-fn write_protobuf_message<T: Message>(writer: &mut impl Write, msg: &T) -> Result<()> {
-    let len = msg.encoded_len();
+/// Refuse a frame over [`MAX_IPC_FRAME_LEN`] before any of it is written.
+fn check_frame_len(len: usize) -> Result<()> {
     if len > MAX_IPC_FRAME_LEN {
         return Err(anyhow!(
-            "refusing to send a {} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit",
-            len
+            "refusing to send a {len} byte IPC frame, over the {MAX_IPC_FRAME_LEN} byte limit"
         ));
     }
+    Ok(())
+}
+
+fn write_protobuf_message<T: Message>(writer: &mut impl Write, msg: &T) -> Result<()> {
+    let len = msg.encoded_len();
+    check_frame_len(len)?;
     // Build one complete frame before touching the socket. There is no buffered
     // writer to retry an undelivered tail when it is dropped after a write error.
     let mut frame = Vec::with_capacity(4 + len);
