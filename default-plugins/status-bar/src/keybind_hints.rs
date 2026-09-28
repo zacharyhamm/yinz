@@ -95,6 +95,24 @@ fn key_doing(keymap: &[(KeyWithModifier, Vec<Action>)], action: &Action) -> Vec<
     )
 }
 
+/// [`key_doing`], but `preferred` when it is one of the keys doing `action` — for a hint that
+/// reads best as the arrow pointing the way the action goes, whichever key would otherwise win.
+fn key_doing_preferring(
+    keymap: &[(KeyWithModifier, Vec<Action>)],
+    action: &Action,
+    preferred: BareKey,
+) -> Vec<KeyWithModifier> {
+    let preferred = KeyWithModifier::new(preferred);
+    let preferred_does_it = keymap.iter().any(|(key, acvec)| {
+        *key == preferred && acvec.first().is_some_and(|first| first.shallow_eq(action))
+    });
+    if preferred_does_it {
+        vec![preferred]
+    } else {
+        key_doing(keymap, action)
+    }
+}
+
 /// [`key_doing`] for several actions, in order — for hints like "Break pane left/right".
 fn keys_doing_each(
     keymap: &[(KeyWithModifier, Vec<Action>)],
@@ -233,21 +251,15 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Select text", "Text", key_doing(&km, &A::SwitchToMode{input_mode: IM::Select})),
         hint("Select pane", "Select", to_base_mode),
     ]} else if mi.mode == IM::Tab {
-        // With the default bindings, "Move focus" for tabs is tricky: It binds all the arrow keys
-        // to moving tabs focus (left/up go left, right/down go right). Since we sort the keys
-        // above and then deduplicate based on the actions, we will end up with LeftArrow for
-        // "left" and DownArrow for "right". What we really expect is to see LeftArrow and
-        // RightArrow.
-        // FIXME: So for lack of a better idea we just check this case manually here.
+        // The shipped config binds every arrow to tab focus (left/up go left, right/down go
+        // right), and arrows sort Left, Down, Up, Right, so the deduplicated keymap would name
+        // Down for "next". Name the arrow pointing each way when it goes that way, looking in the
+        // whole keymap because the dedupe drops Right.
         let old_keymap = mi.get_mode_keybinds();
-        let focus_keys_full: Vec<KeyWithModifier> = action_key_group(&old_keymap,
-            &[&[A::GoToPreviousTab], &[A::GoToNextTab]]);
-        let focus_keys = if focus_keys_full.contains(&KeyWithModifier::new(BareKey::Left))
-            && focus_keys_full.contains(&KeyWithModifier::new(BareKey::Right)) {
-            vec![KeyWithModifier::new(BareKey::Left), KeyWithModifier::new(BareKey::Right)]
-        } else {
-            action_key_group(&km, &[&[A::GoToPreviousTab], &[A::GoToNextTab]])
-        };
+        let focus_keys = [
+            key_doing_preferring(&old_keymap, &A::GoToPreviousTab, BareKey::Left),
+            key_doing_preferring(&old_keymap, &A::GoToNextTab, BareKey::Right),
+        ].concat();
 
         vec![
         hint("New", "New", key_doing(&km, &new_tab)),
@@ -524,6 +536,50 @@ mod tests {
             });
         }
         assert_eq!(move_panel(&without_the_pipe), vec![]);
+    }
+
+    // Tab focus reads best as ←→, so each way names its arrow when that arrow goes that way -
+    // whatever the binding does afterwards, and not merely because both arrows are bound.
+    #[test]
+    fn tab_focus_names_the_arrow_that_points_each_way() {
+        let focus = |mode_info: &ModeInfo| {
+            hints_for_mode(mode_info)
+                .into_iter()
+                .find(|hint| hint.long == "Change focus")
+                .expect("Tab mode has a Change focus hint")
+                .keys
+        };
+        let left = KeyWithModifier::new(BareKey::Left);
+        let right = KeyWithModifier::new(BareKey::Right);
+
+        let shipped = with_shipped_keybinds(InputMode::Tab);
+        assert_eq!(focus(&shipped), vec![left.clone(), right.clone()]);
+
+        let mut leaving_the_mode = with_shipped_keybinds(InputMode::Tab);
+        for (_, binds) in leaving_the_mode.keybinds.iter_mut() {
+            for (_, actions) in binds.iter_mut() {
+                if matches!(
+                    actions.first(),
+                    Some(Action::GoToPreviousTab | Action::GoToNextTab)
+                ) {
+                    actions.push(TO_NORMAL);
+                }
+            }
+        }
+        assert_eq!(focus(&leaving_the_mode), vec![left.clone(), right.clone()]);
+
+        let swapped = ModeInfo {
+            mode: InputMode::Tab,
+            keybinds: vec![(
+                InputMode::Tab,
+                vec![
+                    (left.clone(), vec![Action::GoToNextTab]),
+                    (right.clone(), vec![Action::GoToPreviousTab]),
+                ],
+            )],
+            ..ModeInfo::default()
+        };
+        assert_eq!(focus(&swapped), vec![right, left]);
     }
 
     #[test]

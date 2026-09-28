@@ -223,6 +223,10 @@ fn status_bar_wasm_deno_custom_bindings_unicode_and_reconfiguration() {
                 bind "Ctrl 界" { Resize "Increase Left"; }
                 bind "Ctrl 🦀" { Resize "Increase Right"; }
             }
+            tab {
+                bind "h" "Left" "Up" { GoToPreviousTab; SwitchToMode "Normal"; }
+                bind "l" "Right" "Down" { GoToNextTab; SwitchToMode "Normal"; }
+            }
             session {
                 bind "Ctrl q" { LaunchOrFocusPlugin "unrelated"; }
                 bind "Ctrl a" { LaunchPlugin "session-manager"; SwitchToMode "Normal"; }

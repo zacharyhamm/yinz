@@ -1,4 +1,4 @@
-import z, { type Action, type KeyWithModifier, type TabInfo } from "yinz:plugin";
+import z, { type Action, type BareKey, type KeyWithModifier, type TabInfo } from "yinz:plugin";
 import { test, loadPlugin, assert, assertEquals } from "yinz:testing";
 import { defaultMode } from "./status-bar/default-mode.ts";
 
@@ -155,6 +155,36 @@ test("status bar names the Agent-mode key that moves the panel by its message", 
   });
   const frame = await p.render(2, 200);
   assert(frame.includes("<o> Move panel"), frame);
+});
+
+// Tab focus names the arrow pointing each way even when the binding also leaves the mode, and
+// even though Up and Down, bound the same, sort before Right.
+test("status bar names the Tab-mode arrows for bindings that also leave the mode", async () => {
+  const p = await loadPlugin("./status-bar.ts", { replies, configuration: { classic: "true" } });
+  const toNormal: Action = { SwitchToMode: { input_mode: "Normal" } };
+  const bind = (bare_key: BareKey, action: Action): [KeyWithModifier, Action[]] => [
+    { bare_key, key_modifiers: [] },
+    [action, toNormal],
+  ];
+  const binds: [KeyWithModifier, Action[]][] = [
+    bind("Left", "GoToPreviousTab"),
+    bind("Up", "GoToPreviousTab"),
+    bind({ Char: "h" }, "GoToPreviousTab"),
+    bind("Right", "GoToNextTab"),
+    bind("Down", "GoToNextTab"),
+    bind({ Char: "l" }, "GoToNextTab"),
+    [{ bare_key: "Enter", key_modifiers: [] }, [toNormal]],
+  ];
+  await p.event({ TabUpdate: [activeTab] });
+  await p.event({
+    ModeUpdate: {
+      ...defaultMode(),
+      mode: "Tab" as const,
+      keybinds: [["Tab", binds] as ["Tab", [KeyWithModifier, Action[]][]]],
+    },
+  });
+  const frame = await p.render(2, 200);
+  assert(frame.includes("<←→> Change focus"), frame);
 });
 
 test("status bar clipboard messages clear on input and live Alt release restores the clock", async () => {
