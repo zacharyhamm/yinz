@@ -133,14 +133,8 @@ fn state_marks(arrow_fonts: bool, now_ms: i64) -> (&'static str, &'static str, &
 
 /// `⣾2 ◆1 ·3`, or nothing at all when no pane holds an agent.
 ///
-/// `with_idle` drops the idle count, which is the first thing to go when the line is tight:
-/// idle agents are the ones not asking for anything.
-fn agent_segments(
-    counts: &AgentCounts,
-    arrow_fonts: bool,
-    with_idle: bool,
-    now_ms: i64,
-) -> Vec<Segment> {
+/// Keep all nonzero counts together, even when the clock no longer fits.
+fn agent_segments(counts: &AgentCounts, arrow_fonts: bool, now_ms: i64) -> Vec<Segment> {
     if counts.is_empty() {
         return vec![];
     }
@@ -164,7 +158,7 @@ fn agent_segments(
     if counts.busy > 0 {
         segments.push(Segment::new(mark(busy, counts.busy), Paint::Emphasis));
     }
-    if with_idle && counts.idle > 0 {
+    if counts.idle > 0 {
         segments.push(Segment::new(mark(idle, counts.idle), Paint::Dim));
     }
     // A single space between counts, which is enough separation given they are coloured.
@@ -223,8 +217,7 @@ impl Clock {
 
 /// The whole right-hand block, drawn to fit `max_len`.
 ///
-/// Degrades in one direction, dropping what is least worth the columns first: the date, then
-/// the idle count, then the agent counts entirely, then the clock. An empty `LinePart` is a
+/// Drop the date, then the clock, before giving up any agent counts. An empty `LinePart` is a
 /// legitimate answer for a terminal too narrow to say anything.
 pub fn status_block(
     help: &ModeInfo,
@@ -236,22 +229,15 @@ pub fn status_block(
     let arrow_fonts = help.capabilities.arrow_fonts;
     let dimmed = help.session_dimmed.unwrap_or(false);
     // Widest first; the first one that fits is what gets drawn.
-    let candidates = [
-        (true, true, true),
-        (true, true, false),
-        (true, false, false),
-        (false, false, false),
-    ];
-    for (with_agents, with_idle, with_date) in candidates {
-        let mut segments = vec![];
-        if with_agents {
-            segments.extend(agent_segments(counts, arrow_fonts, with_idle, now_ms));
+    let candidates = [(true, true), (true, false), (false, false)];
+    for (with_clock, with_date) in candidates {
+        let mut segments = agent_segments(counts, arrow_fonts, now_ms);
+        if with_clock {
+            if !segments.is_empty() {
+                segments.push(Segment::new("   ", Paint::Dim));
+            }
+            segments.extend(clock_segments(clock, with_date));
         }
-        if !segments.is_empty() {
-            // Wider than the gap between counts, so the two halves read as two things.
-            segments.push(Segment::new("   ", Paint::Dim));
-        }
-        segments.extend(clock_segments(clock, with_date));
         let len: usize = segments.iter().map(|segment| segment.width()).sum();
         if len <= max_len {
             let part = segments
@@ -396,7 +382,7 @@ mod tests {
                 .enumerate()
             {
                 let now = frame as i64 * 125;
-                let segments = agent_segments(&counts, ascii, true, now);
+                let segments = agent_segments(&counts, ascii, now);
                 assert_eq!(segments[0].text, if ascii { "34w" } else { "◆34" });
                 assert_eq!(
                     segments[2].text,
@@ -455,26 +441,25 @@ mod tests {
     }
 
     #[test]
-    fn it_sheds_the_date_then_the_idle_count_then_the_agents() {
-        let help = mode_info();
+    fn it_sheds_the_date_then_the_clock_before_agent_counts() {
+        let mut help = mode_info();
+        help.capabilities.arrow_fonts = false;
         let counts = AgentCounts {
             busy: 2,
             waiting: 1,
             idle: 3,
         };
         let clock = Clock::at(1_709_208_000_000, 0);
-        // Widths, in the order the ladder gives them up.
         let full = status_block(&help, &counts, &clock, 200, 0).len;
         let no_date = status_block(&help, &counts, &clock, full - 1, 0).len;
-        let no_idle = status_block(&help, &counts, &clock, no_date - 1, 0).len;
-        let clock_only = status_block(&help, &counts, &clock, no_idle - 1, 0).len;
-        assert!(full > no_date && no_date > no_idle && no_idle > clock_only);
-        // The last rung standing is the time, and nothing narrower than it draws at all.
-        assert_eq!(clock_only, "14:32".width());
+        let agents_only = status_block(&help, &counts, &clock, no_date - 1, 0);
+        assert!(full > no_date && no_date > agents_only.len);
+        assert_eq!(agents_only.len, "◆1 ⣾2 ·3".width());
         assert_eq!(
-            status_block(&help, &counts, &clock, clock_only - 1, 0).len,
+            status_block(&help, &counts, &clock, agents_only.len - 1, 0).len,
             0
         );
+        assert_eq!(crate::test_support::plain_text(agents_only), "◆1 ⣾2 ·3");
     }
 
     #[test]
@@ -494,7 +479,7 @@ mod tests {
             waiting: 1,
             idle: 3,
         };
-        let segments = agent_segments(&counts, true, true, 0);
+        let segments = agent_segments(&counts, true, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())
@@ -510,7 +495,7 @@ mod tests {
             waiting: 1,
             idle: 3,
         };
-        let segments = agent_segments(&counts, false, true, 0);
+        let segments = agent_segments(&counts, false, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())
@@ -525,7 +510,7 @@ mod tests {
             waiting: 0,
             idle: 2,
         };
-        let segments = agent_segments(&counts, false, true, 0);
+        let segments = agent_segments(&counts, false, 0);
         let text: String = segments
             .iter()
             .map(|segment| segment.text.clone())

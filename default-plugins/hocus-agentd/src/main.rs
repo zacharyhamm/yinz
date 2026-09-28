@@ -953,14 +953,8 @@ impl State {
         toast: impl FnOnce(u32, &str),
         rename: impl FnOnce(u32, &str),
     ) {
-        // The session carries the record, and `yinz action agent-report --hook-json` sets it
-        // in the same breath as it broadcasts this event - so this write is a no-op beside it,
-        // and the road for a hook script from before that, which only ever piped.
-        match hocus_proto::agent::hook_outcome(kind, event) {
-            hocus_proto::agent::HookOutcome::Ended => report_agent(pane_id, None),
-            hocus_proto::agent::HookOutcome::Reported(agent) => report_agent(pane_id, Some(agent)),
-            hocus_proto::agent::HookOutcome::Nothing => {},
-        }
+        // The screen applied the record before broadcasting this event. Writing it back
+        // here can overwrite a newer report while the daemon catches up on its queue.
         self.record_run_event(pane_id, kind, event, now_ms());
         if event.hook_event_name == agents::HOOK_SESSION_END {
             // The session is over, so there is nothing left reporting for this pane
@@ -3821,19 +3815,6 @@ fn prepare_completion(source: &PipeSource, reply: &wire::CompletionReply) -> Str
     }
     output
 }
-
-/// Write a pane's agent record to the session. Off wasm there is no session, and the tests
-/// read the daemon's own feed instead.
-#[cfg(target_arch = "wasm32")]
-fn report_agent(pane_id: u32, agent: Option<AgentInfo>) {
-    set_pane_agent(
-        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
-        agent,
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn report_agent(_pane_id: u32, _agent: Option<AgentInfo>) {}
 
 #[cfg(test)]
 mod tests {

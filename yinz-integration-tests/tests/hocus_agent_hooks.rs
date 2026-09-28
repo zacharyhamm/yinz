@@ -367,6 +367,79 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
 }
 
 #[test]
+fn delayed_daemon_events_do_not_overwrite_newer_pane_state() {
+    let mut size = TERMINAL_SIZE;
+    size.cols = 180;
+    let layout = r#"layout {
+        pane focus=true size="50%" { plugin location="hocus"; }
+        pane name="claude" command="sleep" { args "600"; }
+        pane size=1 borderless=true { plugin location="yinz:status-bar"; }
+    }"#
+    .to_owned();
+    let mut yinz = TestRunner::new(size)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    yinz.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("permissions granted", |grid| !grid.contains("Allow? (y/n)"));
+    submit(&yinz, "/agent_list {}");
+    yinz.wait_until("the daemon found the pane", |grid| grid.contains("•"));
+    let pane_id = agent_pane_id(&yinz.snapshot().to_string());
+    clear(&yinz, "•");
+
+    for (hook, expected, mark) in [
+        ("UserPromptSubmit", "Busy", "⣾1"),
+        ("Stop", "Idle", "·1"),
+        ("PermissionRequest", "Waiting", "◆1"),
+    ] {
+        send_hook(
+            &mut yinz,
+            pane_id,
+            &serde_json::json!({
+                "hook_event_name": hook, "session_id": "current", "tool_name": "Bash",
+            })
+            .to_string(),
+        );
+        assert_eq!(pane_agent(&mut yinz, pane_id)["state"], expected);
+
+        // Model a daemon lagging behind the screen: its old Stop arrives after the
+        // newer record. Only deliver the broadcast; the screen already applied it earlier.
+        let payload = r#"{"hook_event_name":"Stop","session_id":"current"}"#;
+        let event = serde_json::from_str(payload).unwrap();
+        let actions = hook_report_actions(
+            "claude",
+            PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(pane_id)),
+            &event,
+            payload.to_owned(),
+        )
+        .into_iter()
+        .filter(|action| matches!(action, yinz_types::input::actions::Action::AgentEvent(_)))
+        .collect();
+        let (code, output) = yinz.run_actions_reporting(actions);
+        assert_eq!(code, 0, "{output}");
+        submit(&yinz, "/agent_list {}");
+        yinz.wait_until("the daemon has processed the delayed Stop", |grid| {
+            grid.contains("•") && grid.contains("idle")
+        });
+        assert_eq!(pane_agent(&mut yinz, pane_id)["state"], expected);
+        yinz.wait_until("the status bar retains the current state", |grid| {
+            // Busy animates, so accept every frame of its mark.
+            if expected == "Busy" {
+                ["⣾1", "⣽1", "⣻1", "⢿1", "⡿1", "⣟1", "⣯1", "⣷1"]
+                    .iter()
+                    .any(|mark| grid.contains(mark))
+            } else {
+                grid.contains(mark)
+            }
+        });
+        clear(&yinz, "•");
+    }
+}
+
+#[test]
 fn background_workers_preserve_the_parent_record_and_idle_count() {
     let mut size = TERMINAL_SIZE;
     size.rows = 70;

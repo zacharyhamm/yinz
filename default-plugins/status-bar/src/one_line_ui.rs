@@ -1980,11 +1980,9 @@ mod tests {
                         assert!(new_pane.is_some() && floating.is_some());
                         assert!(!text.contains("◆1"));
                     } else {
-                        assert!(text.contains(&info.clock.time));
+                        assert!(text.contains("◆1") && text.contains("·3"));
                         assert!(new_pane.is_none() && floating.is_none());
-                        if width >= 25 {
-                            assert!(text.contains("◆1"));
-                        }
+                        assert_eq!(text.contains(&info.clock.time), width >= 25);
                     }
                     println!("width={width} hint={revealed} ms={now}: {}", text.trim());
                 }
