@@ -214,42 +214,8 @@ impl PluginPane {
 }
 
 impl Pane for PluginPane {
-    // FIXME: These position and size things should all be moved to default trait implementations,
-    // with something like a get_pos_and_sz() method underpinning all of them. Alternatively and
-    // preferably, just use an enum and not a trait object
-    fn x(&self) -> usize {
-        self.geom_override.unwrap_or(self.geom).x
-    }
-    fn y(&self) -> usize {
-        self.geom_override.unwrap_or(self.geom).y
-    }
-    fn rows(&self) -> usize {
-        self.geom_override.unwrap_or(self.geom).rows.as_usize()
-    }
-    fn cols(&self) -> usize {
-        self.geom_override.unwrap_or(self.geom).cols.as_usize()
-    }
-    fn get_content_x(&self) -> usize {
-        self.x() + self.content_offset.left
-    }
-    fn get_content_y(&self) -> usize {
-        self.y() + self.content_offset.top + self.subtitle_rows() + self.tab_bar_rows()
-    }
-    fn get_content_columns(&self) -> usize {
-        // content columns might differ from the pane's columns if the pane has a frame
-        // in that case they would be 2 less
-        self.cols()
-            .saturating_sub(self.content_offset.left + self.content_offset.right)
-    }
-    fn get_content_rows(&self) -> usize {
-        // content rows might differ from the pane's rows if the pane has a frame
-        // in that case they would be 2 less
-        self.rows().saturating_sub(
-            self.content_offset.top
-                + self.content_offset.bottom
-                + self.subtitle_rows()
-                + self.tab_bar_rows(),
-        )
+    fn content_header_rows(&self) -> usize {
+        self.subtitle_rows() + self.tab_bar_rows()
     }
     fn reset_size_and_position_override(&mut self) {
         self.geom_override = None;
@@ -368,7 +334,7 @@ impl Pane for PluginPane {
         let own_content_columns = self.get_content_columns();
         let own_content_rows = self.get_content_rows();
         let Offset { top, left, .. } = self.content_offset;
-        let top = top + self.subtitle_rows() + self.tab_bar_rows();
+        let top = top + self.content_header_rows();
         if client_id.is_some_and(|client| {
             self.pane_tabs.as_ref().is_some_and(|tabs| {
                 tabs.bar_focused.contains(&client)
@@ -492,9 +458,6 @@ impl Pane for PluginPane {
     }
     fn position_and_size(&self) -> PaneGeom {
         self.geom
-    }
-    fn current_geom(&self) -> PaneGeom {
-        self.geom_override.unwrap_or(self.geom)
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override

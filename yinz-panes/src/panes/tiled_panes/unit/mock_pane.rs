@@ -171,30 +171,6 @@ pub fn run_layout(specs: &[PaneSpec], direction: SplitDirection, space: usize) -
 }
 
 impl Pane for MockPane {
-    fn x(&self) -> usize {
-        unimplemented!()
-    }
-    fn y(&self) -> usize {
-        unimplemented!()
-    }
-    fn rows(&self) -> usize {
-        unimplemented!()
-    }
-    fn cols(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_x(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_y(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_columns(&self) -> usize {
-        unimplemented!()
-    }
-    fn get_content_rows(&self) -> usize {
-        unimplemented!()
-    }
     fn reset_size_and_position_override(&mut self) {
         unimplemented!()
     }
@@ -215,9 +191,6 @@ impl Pane for MockPane {
     }
     fn position_and_size(&self) -> PaneGeom {
         self.geom
-    }
-    fn current_geom(&self) -> PaneGeom {
-        self.geom_override.unwrap_or(self.geom)
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
