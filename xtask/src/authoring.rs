@@ -98,14 +98,22 @@ pub fn install(sh: &Shell, builtins: &Path) -> Result<()> {
     bundle::verify_dir(&dir)
 }
 
+const PLUGIN_FOLDERS: [&str; 2] = ["yinz-deno-builtins/assets/plugins", "example-plugins"];
+
+fn is_plugin_source(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "ts")
+        && !path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".bak."))
+}
+
+/// The top-level plugin and test modules: the entry points `lint` checks.
 pub fn plugin_files() -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    for folder in ["yinz-deno-builtins/assets/plugins", "example-plugins"] {
+    for folder in PLUGIN_FOLDERS {
         for entry in std::fs::read_dir(crate::project_root().join(folder))? {
             let path = entry?.path();
-            if path.extension().is_some_and(|ext| ext == "ts")
-                && !path.to_string_lossy().contains(".bak.")
-            {
+            if is_plugin_source(&path) {
                 files.push(path);
             }
         }
@@ -114,10 +122,33 @@ pub fn plugin_files() -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Every plugin module, including those the entry points import from subdirectories.
+fn plugin_sources() -> Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            // Not `Path::is_dir`: a symlinked directory could lead `--write` out of the tree.
+            if entry.file_type()?.is_dir() {
+                walk(&path, files)?;
+            } else if is_plugin_source(&path) {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    for folder in PLUGIN_FOLDERS {
+        walk(&crate::project_root().join(folder), &mut files)?;
+    }
+    files.sort();
+    Ok(files)
+}
+
 pub fn format(sh: &Shell, check: bool) -> Result<()> {
     let tool = prepare(sh)?.join("oxfmt");
     let config = crate::project_root().join("yinz-plugin-host/src/deno/authoring/oxfmt.json");
-    let files = plugin_files()?;
+    let files = plugin_sources()?;
     let scratch = tempfile::tempdir()?;
     let _pd = sh.push_dir(scratch.path());
     let flag = if check { "--check" } else { "--write" };
