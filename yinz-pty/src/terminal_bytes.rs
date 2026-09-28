@@ -100,21 +100,18 @@ impl TerminalBytes {
         // `_pane_closed_guard` drops here at scope end and sends `pane_closed`.
         // No explicit `drop()` is needed; explicit drop was removed to avoid
         // redundancy and to keep the guard alive until function exit.
-        // Ignore any errors that happen here.
-        // We only leave the loop above when the pane exits. This can happen in a lot of ways, but
-        // the most problematic is when quitting yinz with `Ctrl+q`. That is because the channel
-        // for `Screen` will have exited already, so this send *will* fail. This isn't a problem
-        // per-se because the application terminates anyway, but it will print a lengthy error
-        // message into the log for every pane that was still active when we quit the application.
-        // This:
-        //
-        // 1. Makes the log rather pointless, because even when the application exits "normally",
-        //    there will be errors inside and
-        // 2. Leaves the impression we have a bug in the code and can't terminate properly
-        //
-        // FIXME: Ideally we detect whether the application is being quit and only ignore the error
-        // in that particular case?
-        let _ = self.async_send_to_screen(ScreenInstruction::Render).await;
+        // Once `Shutdown::begin` has run, `SenderWithContext::send` reports a send to the exited
+        // screen as success, so session teardown lands here as `Ok`. An error means the screen
+        // went away some other way: worth a log line, but not the session.
+        self.async_send_to_screen(ScreenInstruction::Render)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to request a render after terminal {} closed",
+                    self.terminal_id
+                )
+            })
+            .non_fatal();
 
         Ok(())
     }
@@ -141,6 +138,7 @@ mod tests {
     use async_trait::async_trait;
     use std::io;
     use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_runtime::channels::{self, Shutdown};
 
     struct FakeReader {
         data: Option<Vec<u8>>,
@@ -200,6 +198,51 @@ mod tests {
             yinz_storage::session_recording::EventKind::Output
         );
         assert_eq!(closed, Some(TerminalId::new(1)));
+        Ok(())
+    }
+
+    /// Senders whose screen receiver is gone, as after the screen thread exits.
+    fn senders_with_exited_screen(shutdown: &Shutdown) -> ThreadSenders {
+        let (to_screen, screen_rx) = channels::bounded(1);
+        drop(screen_rx);
+        ThreadSenders {
+            to_screen: Some(shutdown.sender(to_screen)),
+            should_silently_fail: false,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_final_render_is_logged_not_returned() -> anyhow::Result<()> {
+        // Shutdown never began, so the `Render` sent at EOF fails.
+        let mut terminal_bytes = TerminalBytes::new(
+            TerminalId::new(1),
+            Box::new(FakeReader { data: None }),
+            senders_with_exited_screen(&Shutdown::default()),
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        terminal_bytes.listen().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn output_after_the_screen_exits_at_shutdown_is_not_an_error() -> anyhow::Result<()> {
+        // Pins the `PtyBytes` send in the read loop, whose error `listen` returns, to the
+        // shutdown-tolerant path. The final `Render` is logged either way; pty_tests pins its
+        // routing.
+        let shutdown = Shutdown::default();
+        shutdown.begin();
+        let mut terminal_bytes = TerminalBytes::new(
+            TerminalId::new(1),
+            Box::new(FakeReader {
+                data: Some(b"late".to_vec()),
+            }),
+            senders_with_exited_screen(&shutdown),
+            false,
+            Arc::new(AtomicBool::new(false)),
+        );
+        terminal_bytes.listen().await?;
         Ok(())
     }
 }
