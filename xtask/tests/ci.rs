@@ -55,44 +55,30 @@ fn gate_runs_integration_and_aggregates_failures() {
         fs::write(assets.join(generated), "").unwrap();
         fs::create_dir_all(root.path().join(src)).unwrap();
     }
-    let crates = [
-        "zellij-types",
-        "zellij-plugin-location",
-        "zellij-runtime",
-        "zellij-downloader",
-        "zellij-key-codec",
-        "zellij-host-protocol",
-        "zellij-storage",
-        "zellij-project-config",
-        "zellij-config",
-        "zellij-deno-builtins",
-        "zellij-plugin-api",
-        "zellij-plugin-authoring",
-        "zellij-ipc",
-        "zellij-session",
-        "zellij-cli",
-        "zellij-terminal-graphics",
-        "zellij-terminal",
-        "zellij-process",
-        "zellij-swamp",
-        "zellij-codex",
-        "zellij-firecracker-provider",
-        "zellij-bus",
-        "zellij-server-os",
-        "zellij-routing",
-        "zellij-plugin-host",
-        "zellij-panes",
-        "zellij-tab",
-        "zellij-screen",
-        "zellij-pty",
-        "hocus",
-        "hocus-data",
-    ];
+    // The gate starts with the real dependency policy, which requires the crates it names to
+    // exist: give it this checkout's members, without the edges metadata.rs's own tests cover.
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(checkout.join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut members: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    for package in members["packages"].as_array_mut().unwrap() {
+        package["dependencies"] = serde_json::json!([]);
+    }
     let metadata = root.path().join("metadata.json");
-    fs::write(&metadata, serde_json::json!({
-        "packages": crates.iter().map(|name| serde_json::json!({"id": name, "name": name, "dependencies": []})).collect::<Vec<_>>(),
-        "workspace_members": crates
-    }).to_string()).unwrap();
+    fs::write(&metadata, members.to_string()).unwrap();
     let cargo = root.path().join("cargo-stub");
     fs::write(
         &cargo,

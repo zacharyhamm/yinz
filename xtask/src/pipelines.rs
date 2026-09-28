@@ -282,8 +282,9 @@ fn install_builtins(
         )
     })?;
 
-    let names: Vec<&str> = build::plugin_names()
-        .into_iter()
+    let names: Vec<&str> = build::PLUGINS
+        .iter()
+        .copied()
         .filter(|name| !build::TEST_ONLY_PLUGINS.contains(name))
         .collect();
     let legacy_dir = prune
@@ -396,8 +397,9 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
         // Skip the stamp hash and the build: run against whatever debug plugins are already
         // under target/. Only a tree that has never built them gets a (debug, one-off) plugin
         // build - never the release build, which is the slowest thing xtask does.
-        let missing: Vec<&str> = build::plugin_names()
-            .into_iter()
+        let missing: Vec<&str> = build::PLUGINS
+            .iter()
+            .copied()
             .filter(|name| !build::debug_plugin_path(name).is_file())
             .collect();
         if missing.is_empty() {

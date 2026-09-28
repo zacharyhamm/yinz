@@ -70,7 +70,7 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
         .and_then(|_| sh.create_dir(data_dir.join("plugins")))
         .context(err_context)?;
 
-    for name in build::plugin_names() {
+    for name in build::PLUGINS {
         sh.copy_file(build::release_plugin_path(name), data_dir.join("plugins"))
             .context(err_context)?;
     }

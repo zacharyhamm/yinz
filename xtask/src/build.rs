@@ -3,46 +3,25 @@
 //! Currently has the following functions:
 //!
 //! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
-use crate::{flags, WorkspaceMember};
+use crate::flags;
 use anyhow::Context;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use xshell::{cmd, Shell};
 
-const PLUGIN_INPUT_DIRS: &[&str] = &[
-    "default-plugins",
-    "zellij-tile/src",
-    "zellij-tile-markdown/src",
-    "zellij-tile-utils/src",
-    "zellij-config/src",
-    "zellij-config/assets",
-    "zellij-project-config/src",
-    "zellij-plugin-api/src",
-    "zellij-plugin-api/assets",
-    "zellij-types/src",
-    "zellij-runtime/src",
-    "zellij-plugin-location/src",
-];
-
-const PLUGIN_INPUT_FILES: &[&str] = &[
+/// Plugin build inputs that no dep-info lists: the lockfile, the workspace manifest with its
+/// profiles and patches, the toolchain pin, and this recipe with `PLUGINS` and the flags
+/// `build_plugins` passes.
+const PLUGIN_BUILD_FILES: &[&str] = &[
     "Cargo.lock",
     "Cargo.toml",
     "rust-toolchain.toml",
     "xtask/src/build.rs",
-    "xtask/src/main.rs",
-    "zellij-tile/Cargo.toml",
-    "zellij-tile-markdown/Cargo.toml",
-    "zellij-tile-utils/Cargo.toml",
-    "zellij-config/Cargo.toml",
-    "zellij-project-config/Cargo.toml",
-    "zellij-plugin-api/Cargo.toml",
-    "zellij-types/Cargo.toml",
-    "zellij-runtime/Cargo.toml",
-    "zellij-plugin-location/Cargo.toml",
 ];
 
-/// Build members of the zellij workspace.
+/// Build the plugins and the zellij binary.
 ///
 /// Build behavior is controlled by the [`flags`](flags::Build). Calls some variation of `cargo
 /// build` under the hood.
@@ -72,24 +51,17 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
         ensure_plugins(sh, profile)?;
     }
 
-    // Build non-plugin crates (native target).
+    // The zellij binary, and with it every library crate, for the native target.
     if !flags.plugins_only {
-        for WorkspaceMember { crate_name, .. } in crate::workspace_members()
-            .iter()
-            .filter(|member| member.build && !member.crate_name.contains("plugins"))
-        {
-            let err_context = || format!("failed to build '{crate_name}'");
+        println!();
+        let msg = ">> Building 'zellij'";
+        crate::status(msg);
+        println!("{}", msg);
 
-            let _pd = sh.push_dir(Path::new(crate_name));
-            println!();
-            let msg = format!(">> Building '{crate_name}'");
-            crate::status(&msg);
-            println!("{}", msg);
-
-            let mut base_cmd = cmd!(sh, "{cargo} build --profile {profile}");
-            base_cmd = base_cmd.args(&flags.args);
-            base_cmd.run().with_context(err_context)?;
-        }
+        cmd!(sh, "{cargo} build --profile {profile}")
+            .args(&flags.args)
+            .run()
+            .context("failed to build 'zellij'")?;
     }
 
     Ok(())
@@ -120,14 +92,33 @@ pub fn profile_dir(profile: &str) -> &str {
     }
 }
 
-/// The plugin crates `cargo x build -p` builds, by wasm file stem.
-pub fn plugin_names() -> Vec<&'static str> {
-    crate::workspace_members()
-        .iter()
-        .filter(|m| m.build && m.crate_name.contains("plugins"))
-        .filter_map(|m| plugin_name_of(m).ok())
-        .collect()
-}
+/// The crates built for wasm32-wasip1: every package under `default-plugins` with a binary, by
+/// package name, which is also its wasm file stem. Library crates, `hocus-proto` and `hocus-data`
+/// among them, build as dependencies of a plugin or of the zellij binary, so a new library needs
+/// no entry here.
+pub const PLUGINS: &[&str] = &[
+    "compact-bar",
+    "status-bar",
+    "strider",
+    "tab-bar",
+    "fixture-plugin-for-tests",
+    "session-manager",
+    "configuration",
+    "plugin-manager",
+    "about",
+    "multiple-select",
+    "layout-manager",
+    "link",
+    "file-finder",
+    "quit-confirmation",
+    "shared-test",
+    "hocus",
+    "hocus-todos",
+    "hocus-agents",
+    "hocus-new-agent",
+    "hocus-agentd",
+    "hocus-store",
+];
 
 /// Plugins that exist for the test suites and must not be installed for users.
 pub const TEST_ONLY_PLUGINS: &[&str] = &[
@@ -161,10 +152,13 @@ pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
 }
 
 /// Hashes the inputs which can change plugin wasm, so checkout and worktree mtime changes do not
-/// cause rebuilds while dependency, toolchain and build-flag changes still do.
+/// cause rebuilds while source, dependency, toolchain and build-flag changes still do.
+///
+/// The files come from the dep-info of the last build, so content, not mtimes, decides, and
+/// `None` - no dep-info to go by - means build.
 fn hash_plugin_inputs(profile: &str) -> Option<String> {
     let root = crate::project_root();
-    let mut hasher = hash_plugin_files(&root)?;
+    let mut hasher = hash_plugin_files(&root, &plugin_dep_infos(profile))?;
     hash_cargo_configs(&root, cargo_home(&root).as_deref(), &mut hasher)?;
 
     let cargo = crate::cargo().ok()?;
@@ -294,6 +288,9 @@ fn plugin_build_environment_variable(key: &std::ffi::OsStr) -> bool {
         key.as_ref(),
         "CARGO"
             | "CARGO_ENCODED_RUSTFLAGS"
+            // zellij-runtime, which the plugins build, bakes it in with `option_env!`, so cargo
+            // rebuilds when it changes.
+            | "PREFIX"
             | "RUSTC"
             | "RUSTC_BOOTSTRAP"
             | "RUSTC_WORKSPACE_WRAPPER"
@@ -304,81 +301,114 @@ fn plugin_build_environment_variable(key: &std::ffi::OsStr) -> bool {
         || key.starts_with("CARGO_TARGET_WASM32_WASIP1_")
 }
 
-fn hash_plugin_files(root: &Path) -> Option<Sha256> {
-    let mut files = vec![];
-    for dir in PLUGIN_INPUT_DIRS {
-        collect_files(&root.join(dir), &mut files);
-    }
-    files.extend(PLUGIN_INPUT_FILES.iter().map(|path| root.join(path)));
-    if files.is_empty() {
-        return None;
-    }
-    files.sort();
-    files.dedup();
+/// The dep-info cargo writes beside each plugin's wasm. It lists every local file the build read:
+/// the sources of the plugin and of each workspace crate it builds, and whatever `include_str!`,
+/// `include_bytes!` or `include!` pulled in from anywhere in the checkout. It lists no manifests
+/// and no registry files, which `Cargo.lock` pins.
+fn plugin_dep_infos(profile: &str) -> Vec<PathBuf> {
+    PLUGINS
+        .iter()
+        .map(|name| plugin_path(profile, name).with_extension("d"))
+        .collect()
+}
 
+/// The prerequisites of a cargo dep-info file: one Makefile rule per line, with spaces in paths
+/// escaped as `\ `. `None` when there is no rule, or a line that is neither a rule nor a comment,
+/// so a format this does not know rebuilds rather than hashing half the inputs.
+fn dep_info_dependencies(text: &str) -> Option<Vec<PathBuf>> {
+    let mut dependencies = vec![];
+    let mut rules = 0;
+    for line in text.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (_, prerequisites) = line
+            .split_once(": ")
+            .or_else(|| Some((line.strip_suffix(':')?, "")))?;
+        rules += 1;
+        let mut path = String::new();
+        let mut chars = prerequisites.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' if chars.peek() == Some(&' ') => {
+                    path.push(' ');
+                    chars.next();
+                },
+                ' ' => {
+                    if !path.is_empty() {
+                        dependencies.push(PathBuf::from(std::mem::take(&mut path)));
+                    }
+                },
+                c => path.push(c),
+            }
+        }
+        if !path.is_empty() {
+            dependencies.push(PathBuf::from(path));
+        }
+    }
+    (rules > 0).then_some(dependencies)
+}
+
+/// Every file the plugin build reads, relative to the canonical checkout: what `dep_infos` list,
+/// the manifest and any `build.rs` of each listed file's package, and `PLUGIN_BUILD_FILES`.
+///
+/// `None`, which rebuilds, when a dep-info is missing or unreadable, or lists a file that is gone
+/// or lies outside the checkout. A missing one means the plugins were never built here; a file
+/// outside means the wasm came from another checkout sharing this `target/`, whose sources this
+/// one cannot vouch for.
+fn plugin_input_files(root: &Path, dep_infos: &[PathBuf]) -> Option<BTreeSet<PathBuf>> {
+    let root = root.canonicalize().ok()?;
+    let mut listed = BTreeSet::new();
+    for dep_info in dep_infos {
+        listed.extend(dep_info_dependencies(
+            &std::fs::read_to_string(dep_info).ok()?,
+        )?);
+    }
+
+    let mut files: BTreeSet<PathBuf> = PLUGIN_BUILD_FILES.iter().map(PathBuf::from).collect();
+    for path in listed {
+        // Cargo writes absolute paths unless `build.dep-info-basedir` is set; a relative one is
+        // taken against the checkout. Canonicalizing folds rustc's `src/../../..` and the macOS
+        // `/tmp` alias into one identity per file.
+        let file = root.join(path).canonicalize().ok()?;
+        let relative = file.strip_prefix(&root).ok()?.to_path_buf();
+        // Its package's manifest, and the build script cargo finds there without the manifest
+        // naming one. The walk ends at the workspace manifest for a file outside any package,
+        // such as `example-plugins/`.
+        if let Some(package) = relative
+            .ancestors()
+            .skip(1)
+            .find(|dir| root.join(dir).join("Cargo.toml").is_file())
+        {
+            files.insert(package.join("Cargo.toml"));
+            let build_script = package.join("build.rs");
+            if root.join(&build_script).is_file() {
+                files.insert(build_script);
+            }
+        }
+        files.insert(relative);
+    }
+    Some(files)
+}
+
+fn hash_plugin_files(root: &Path, dep_infos: &[PathBuf]) -> Option<Sha256> {
     let mut hasher = Sha256::new();
-    for path in files {
-        let relative = path.strip_prefix(root).ok()?;
+    for relative in plugin_input_files(root, dep_infos)? {
         hasher.update(relative.to_string_lossy().as_bytes());
         hasher.update([0]);
-        hasher.update(std::fs::read(path).ok()?);
+        hasher.update(std::fs::read(root.join(relative)).ok()?);
         hasher.update([0]);
     }
     Some(hasher)
-}
-
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(_) => continue,
-        };
-        if file_type.is_dir() {
-            let name = path.file_name().and_then(|name| name.to_str());
-            if matches!(name, Some("benches" | "target" | "tests" | "unit")) {
-                continue;
-            }
-            collect_files(&path, out);
-        } else {
-            let name = path.file_name().and_then(|name| name.to_str());
-            // `.wasm` is build output, never an input: a stale, gitignored plugin left in
-            // `zellij-config/assets/plugins` by an older checkout must not perturb the hash.
-            if !matches!(
-                path.extension().and_then(|extension| extension.to_str()),
-                Some("md" | "snap" | "wasm")
-            ) && !matches!(name, Some(".gitignore" | "test.rs"))
-                && !name
-                    .is_some_and(|name| name.ends_with("_test.rs") || name.ends_with("_tests.rs"))
-            {
-                out.push(path);
-            }
-        }
-    }
 }
 
 /// Make sure every plugin's wasm is present and fresh under
 /// `target/wasm32-wasip1/<profile dir>`, building only when the inputs changed since the last
 /// build of that profile (or `ZELLIJ_FORCE_PLUGINS` is set).
 pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
-    let plugin_members: Vec<&WorkspaceMember> = crate::workspace_members()
+    let missing = PLUGINS
         .iter()
-        .filter(|m| m.build && m.crate_name.contains("plugins"))
-        .collect();
-    if plugin_members.is_empty() {
-        return Ok(());
-    }
-
-    let missing = plugin_members
-        .iter()
-        .any(|member| match plugin_name_of(member) {
-            Ok(name) => !plugin_path(profile, name).is_file(),
-            Err(_) => true,
-        });
+        .any(|name| !plugin_path(profile, name).is_file());
     let stale = plugins_force() || missing || plugin_sources_changed(profile);
 
     if !stale {
@@ -396,24 +426,19 @@ pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     crate::status(&msg);
     eprintln!("{}", msg);
 
-    build_plugins(sh, profile, &plugin_members)
+    build_plugins(sh, profile)
 }
 
 /// Build all plugins in a single invocation so Cargo can unify transitive dependency features
 /// across all of them and compile shared crates (e.g. zellij-plugin-api) only once.
-fn build_plugins(
-    sh: &Shell,
-    profile: &str,
-    plugin_members: &[&WorkspaceMember],
-) -> anyhow::Result<()> {
+fn build_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     let cargo = crate::cargo()?;
     let mut base_cmd = cmd!(
         sh,
         "{cargo} build --target wasm32-wasip1 --profile {profile}"
     );
-    for member in plugin_members {
-        let plugin_name = plugin_name_of(member)?;
-        base_cmd = base_cmd.args(["-p", plugin_name]);
+    for name in PLUGINS {
+        base_cmd = base_cmd.args(["-p", name]);
     }
     for (key, value) in plugin_profile_overrides(profile) {
         base_cmd = base_cmd.env(key, value);
@@ -423,14 +448,6 @@ fn build_plugins(
         .with_context(|| format!("failed to build plugins ({profile})"))?;
     write_plugin_stamp(sh, profile);
     Ok(())
-}
-
-fn plugin_name_of(member: &WorkspaceMember) -> anyhow::Result<&'static str> {
-    Ok(member
-        .crate_name
-        .rsplit_once('/')
-        .context("Cannot determine plugin name from crate path")?
-        .1)
 }
 
 /// One freshness stamp per profile directory. The two built-in profiles keep the names they
@@ -536,332 +553,5 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::OsStr;
-    use std::fs::{self, FileTimes, OpenOptions};
-    use std::time::{Duration, SystemTime};
-
-    /// Every workspace crate a plugin compiles against must feed the rebuild stamp, or an edit to
-    /// it leaves stale wasm behind. Plugin crates themselves are covered by `default-plugins`.
-    #[test]
-    fn plugin_inputs_cover_every_workspace_crate_the_plugins_build() {
-        let sh = Shell::new().unwrap();
-        let metadata = crate::metadata::get_cargo_metadata(&sh).unwrap();
-        let root = crate::project_root();
-        let packages = metadata["packages"].as_array().unwrap();
-        let directory_of = |package: &serde_json::Value| {
-            Path::new(package["manifest_path"].as_str().unwrap())
-                .parent()
-                .unwrap()
-                .strip_prefix(&root)
-                .unwrap()
-                .to_path_buf()
-        };
-        let mut pending: Vec<PathBuf> = packages
-            .iter()
-            .map(directory_of)
-            .filter(|dir| dir.starts_with("default-plugins"))
-            .collect();
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(dir) = pending.pop() {
-            if !seen.insert(dir.clone()) {
-                continue;
-            }
-            let package = packages
-                .iter()
-                .find(|package| directory_of(package) == dir)
-                .unwrap();
-            for dependency in package["dependencies"].as_array().unwrap() {
-                // Plugins build only for wasm32-wasip1, so neither dev nor native-only edges
-                // reach a plugin's compile.
-                if dependency["kind"] == "dev"
-                    || dependency["target"] == r#"cfg(not(target_family = "wasm"))"#
-                {
-                    continue;
-                }
-                if let Some(path) = dependency["path"].as_str() {
-                    pending.push(Path::new(path).strip_prefix(&root).unwrap().to_path_buf());
-                }
-            }
-        }
-        for dir in seen
-            .iter()
-            .filter(|dir| !dir.starts_with("default-plugins"))
-        {
-            let dir = dir.to_str().unwrap();
-            assert!(
-                PLUGIN_INPUT_DIRS.contains(&format!("{dir}/src").as_str()),
-                "PLUGIN_INPUT_DIRS is missing {dir}/src"
-            );
-            assert!(
-                PLUGIN_INPUT_FILES.contains(&format!("{dir}/Cargo.toml").as_str()),
-                "PLUGIN_INPUT_FILES is missing {dir}/Cargo.toml"
-            );
-            if root.join(dir).join("assets").is_dir() {
-                assert!(
-                    PLUGIN_INPUT_DIRS.contains(&format!("{dir}/assets").as_str()),
-                    "PLUGIN_INPUT_DIRS is missing {dir}/assets"
-                );
-            }
-        }
-        // And nothing else: a crate no plugin builds would restamp every plugin on each edit.
-        let crate_of = |entry: &str| {
-            Path::new(entry)
-                .parent()
-                .filter(|dir| !dir.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-        };
-        for entry in PLUGIN_INPUT_DIRS
-            .iter()
-            .chain(
-                PLUGIN_INPUT_FILES
-                    .iter()
-                    .filter(|file| file.ends_with("/Cargo.toml")),
-            )
-            .filter(|entry| !entry.starts_with("default-plugins") && !entry.starts_with("xtask/"))
-        {
-            let dir = crate_of(entry).unwrap();
-            assert!(
-                seen.contains(&dir),
-                "{entry} is a plugin input, but no plugin builds {}",
-                dir.display()
-            );
-        }
-    }
-
-    #[test]
-    fn plugin_file_hash_tracks_build_inputs_not_mtimes_or_tests() {
-        let root = std::env::temp_dir().join(format!(
-            "zellij-xtask-plugin-inputs-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        for dir in PLUGIN_INPUT_DIRS {
-            fs::create_dir_all(root.join(dir)).unwrap();
-        }
-        for file in PLUGIN_INPUT_FILES {
-            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
-            fs::write(root.join(file), file).unwrap();
-        }
-
-        let source = root.join("default-plugins/example/src/main.rs");
-        let test = root.join("default-plugins/example/tests/plugin.rs");
-        let adjacent_test = root.join("default-plugins/example/src/main_test.rs");
-        let readme = root.join("default-plugins/example/README.md");
-        fs::create_dir_all(source.parent().unwrap()).unwrap();
-        fs::create_dir_all(test.parent().unwrap()).unwrap();
-        fs::write(&source, "fn main() {}\n").unwrap();
-        fs::write(&test, "test\n").unwrap();
-        fs::write(&adjacent_test, "test\n").unwrap();
-        fs::write(&readme, "docs\n").unwrap();
-
-        let original = hash_plugin_files(&root).unwrap().finalize();
-        OpenOptions::new()
-            .write(true)
-            .open(&source)
-            .unwrap()
-            .set_times(FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(1)))
-            .unwrap();
-        assert_eq!(original, hash_plugin_files(&root).unwrap().finalize());
-
-        fs::write(&test, "changed test\n").unwrap();
-        fs::write(&adjacent_test, "changed test\n").unwrap();
-        fs::write(&readme, "changed docs\n").unwrap();
-        assert_eq!(original, hash_plugin_files(&root).unwrap().finalize());
-
-        fs::write(&source, "fn main() { println!(\"changed\"); }\n").unwrap();
-        let changed = hash_plugin_files(&root).unwrap().finalize();
-        assert_ne!(original, changed);
-
-        // A stale plugin binary lying around is output, not input.
-        let stray_wasm = root.join("zellij-config/assets/plugins/tab-bar.wasm");
-        fs::create_dir_all(stray_wasm.parent().unwrap()).unwrap();
-        fs::write(&stray_wasm, "wasm").unwrap();
-        assert_eq!(changed, hash_plugin_files(&root).unwrap().finalize());
-
-        fs::write(root.join("xtask/src/build.rs"), "changed build recipe\n").unwrap();
-        let changed_recipe = hash_plugin_files(&root).unwrap().finalize();
-        assert_ne!(changed, changed_recipe);
-
-        fs::write(
-            root.join("xtask/src/main.rs"),
-            "changed plugin membership\n",
-        )
-        .unwrap();
-        assert_ne!(changed_recipe, hash_plugin_files(&root).unwrap().finalize());
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn profile_dirs_follow_cargo() {
-        // Cargo builds the two built-in profiles into directories that are not named after the
-        // profile; every other profile gets a directory of its own name.
-        assert_eq!(profile_dir("dev"), "debug");
-        assert_eq!(profile_dir("test"), "debug");
-        assert_eq!(profile_dir("release"), "release");
-        assert_eq!(profile_dir("bench"), "release");
-        assert_eq!(profile_dir("release-fast"), "release-fast");
-    }
-
-    #[test]
-    fn each_profile_gets_its_own_plugin_stamp() {
-        // The two built-in profiles keep the stamp names they have always had, so an existing
-        // tree does not rebuild its plugins once after this flag was added.
-        assert!(plugin_stamp_path("dev").ends_with(".xtask-plugins-stamp"));
-        assert!(plugin_stamp_path("release").ends_with(".xtask-plugins-release-stamp"));
-        assert!(plugin_stamp_path("release-fast").ends_with(".xtask-plugins-release-fast-stamp"));
-    }
-
-    #[test]
-    fn profile_flag_wins_over_release() {
-        let build = |release, profile: Option<&str>| flags::Build {
-            release,
-            profile: profile.map(str::to_string),
-            plugins_only: false,
-            no_plugins: false,
-            args: vec![],
-        };
-        assert_eq!(profile_of(&build(false, None)), "dev");
-        assert_eq!(profile_of(&build(true, None)), "release");
-        assert_eq!(
-            profile_of(&build(false, Some("release-fast"))),
-            "release-fast"
-        );
-    }
-
-    #[test]
-    fn plugin_hash_tracks_effective_external_cargo_config() {
-        let base = std::env::temp_dir().join(format!(
-            "zellij-xtask-cargo-config-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let root = base.join("workspace");
-        let cargo_home = base.join("cargo-home");
-        fs::create_dir_all(root.join(".cargo")).unwrap();
-        fs::create_dir_all(base.join(".cargo")).unwrap();
-        fs::create_dir_all(&cargo_home).unwrap();
-        fs::write(
-            root.join(".cargo/config"),
-            "[build]\nrustflags = ['legacy']\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join(".cargo/config.toml"),
-            "[build]\nrustflags = ['ignored']\n",
-        )
-        .unwrap();
-        fs::write(base.join(".cargo/config.toml"), "[build]\njobs = 1\n").unwrap();
-        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n").unwrap();
-
-        assert_eq!(
-            cargo_config_files(&root, Some(&cargo_home)),
-            vec![
-                root.join(".cargo/config"),
-                base.join(".cargo/config.toml"),
-                cargo_home.join("config.toml"),
-            ]
-        );
-
-        let hash = |root: &Path, cargo_home: &Path| {
-            let mut hasher = Sha256::new();
-            hash_cargo_configs(root, Some(cargo_home), &mut hasher).unwrap();
-            hasher.finalize()
-        };
-        let original = hash(&root, &cargo_home);
-        fs::write(
-            root.join(".cargo/config.toml"),
-            "[build]\nrustflags = ['still ignored']\n",
-        )
-        .unwrap();
-        assert_eq!(original, hash(&root, &cargo_home));
-
-        fs::write(
-            cargo_home.join("config.toml"),
-            "[target.wasm32-wasip1]\nrustflags = ['home']\n",
-        )
-        .unwrap();
-        assert_ne!(original, hash(&root, &cargo_home));
-        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n").unwrap();
-
-        fs::write(
-            base.join(".cargo/config.toml"),
-            "[target.wasm32-wasip1]\nrustflags = ['changed']\n",
-        )
-        .unwrap();
-        assert_ne!(original, hash(&root, &cargo_home));
-
-        fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn plugin_hash_ignores_runtime_rust_environment() {
-        for key in [
-            "RUSTFLAGS",
-            "RUSTC",
-            "RUSTC_BOOTSTRAP",
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "CARGO_BUILD_RUSTC",
-            "CARGO_PROFILE_RELEASE_LTO",
-            "CARGO_TARGET_WASM32_WASIP1_LINKER",
-        ] {
-            assert!(plugin_build_environment_variable(OsStr::new(key)), "{key}");
-        }
-        for key in ["RUST_BACKTRACE", "RUST_LOG"] {
-            assert!(!plugin_build_environment_variable(OsStr::new(key)), "{key}");
-        }
-    }
-
-    /// `dev` and `test` share `target/wasm32-wasip1/debug` and its stamp, so they must get the
-    /// same wasm settings; a profile with a tree of its own gets none.
-    #[test]
-    fn debug_dir_profiles_share_plugin_overrides() {
-        let nobody_set = |_: &str| false;
-        let dev = plugin_profile_overrides_given("dev", nobody_set);
-        assert!(dev.iter().any(|(key, _)| *key == DEV_OPT_LEVEL), "{dev:?}");
-        assert_eq!(plugin_profile_overrides_given("test", nobody_set), dev);
-        for profile in ["release", "bench", "release-fast"] {
-            assert!(
-                plugin_profile_overrides_given(profile, nobody_set).is_empty(),
-                "{profile}"
-            );
-        }
-    }
-
-    /// A profile setting the user exported wins, and is still what the stamp hashes.
-    #[test]
-    fn a_profile_setting_the_user_exported_is_left_to_them() {
-        let overrides = plugin_profile_overrides_given("dev", |key| key == DEV_OPT_LEVEL);
-        assert!(
-            overrides.iter().all(|(key, _)| *key != DEV_OPT_LEVEL),
-            "{overrides:?}"
-        );
-        assert!(!overrides.is_empty(), "the others still apply");
-        for (key, _) in plugin_profile_overrides_given("dev", |_| false) {
-            assert!(plugin_build_environment_variable(OsStr::new(key)), "{key}");
-        }
-    }
-
-    /// The stamp is what decides whether the wasm is rebuilt: `dev` and `test` write the same
-    /// one, so they must agree on it, and it must move with the settings a build applies.
-    #[test]
-    fn dev_and_test_agree_on_the_plugin_stamp() {
-        let Some(dev) = hash_plugin_inputs("dev") else {
-            return;
-        };
-        assert_eq!(hash_plugin_inputs("test").as_deref(), Some(dev.as_str()));
-        if !plugin_profile_overrides("dev").is_empty() {
-            assert_ne!(hash_plugin_inputs("release").as_deref(), Some(dev.as_str()));
-        }
-    }
-}
+#[path = "unit/build.rs"]
+mod tests;
