@@ -452,21 +452,6 @@ impl Offset {
         }
     }
 
-    pub fn shift_right_and_top(right: usize, top: usize) -> Self {
-        Self {
-            right,
-            top,
-            ..Default::default()
-        }
-    }
-
-    pub fn shift_right(right: usize) -> Self {
-        Self {
-            right,
-            ..Default::default()
-        }
-    }
-
     pub fn shift_right_top_and_bottom(right: usize, top: usize, bottom: usize) -> Self {
         Self {
             right,
