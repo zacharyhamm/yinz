@@ -133,7 +133,6 @@ impl Drop for ConnectionSlot {
 use zellij_runtime::envs;
 use zellij_storage::data_access::DataAccess;
 
-use zellij_config::screen_config::ScreenConfig;
 use zellij_types::input::cli_assets::CliAssets;
 
 use crate::{
@@ -458,77 +457,27 @@ impl SessionMetaData {
             self.current_input_modes.insert(client_id, input_mode);
         }
     }
+    /// Reconfigure every thread for the clients whose configuration changed, each with its
+    /// plugins' default keybinds filled in, and cancel their pending locked escapes.
     pub fn propagate_configuration_changes(
         &mut self,
         config_changes: Vec<(ClientId, Config)>,
         config_was_written_to_disk: bool,
     ) {
-        let mut new_plugin_config = None;
+        let mut effective_changes = Vec::with_capacity(config_changes.len());
         for (client_id, new_config) in config_changes {
             self.locked_escapes.remove(&client_id);
             let new_config = self.session_configuration.with_plugin_defaults(new_config);
-            if new_plugin_config.is_none() {
-                new_plugin_config = Some(new_config.plugins.clone());
-            }
-
-            self.default_shell = new_config.options.default_shell.as_ref().map(|shell| {
-                TerminalAction::RunCommand(RunCommand {
-                    command: shell.clone(),
-                    cwd: new_config.options.default_cwd.clone(),
-                    use_terminal_title: true,
-                    ..Default::default()
-                })
-            });
-            let screen_config = ScreenConfig::from_config(&new_config);
-            self.senders
-                .send_to_screen(ScreenInstruction::Reconfigure {
-                    client_id,
-                    keybinds: new_config.keybinds.clone(),
-                    config: screen_config,
-                })
-                .context("reconfiguring the screen")
-                .non_fatal();
-            self.senders
-                .send_to_plugin(PluginInstruction::Reconfigure {
-                    client_id,
-                    keybinds: Some(new_config.keybinds),
-                    default_mode: new_config.options.default_mode,
-                    default_shell: self.default_shell.clone(),
-                    layout_dir: new_config.options.layout_dir,
-                    // Re-derived rather than passed through: `WasmBridge::reconfigure` assigns
-                    // this verbatim, so a config that does not name the option explicitly would
-                    // otherwise wipe the folder derived at session start. The server's cwd has
-                    // not moved since then, so a relative folder resolves to the same place.
-                    user_plugin_dir: user_plugin_dir_or_default(
-                        new_config.options.user_plugin_dir,
-                        self.config_dir.clone(),
-                    ),
-                    builtin_plugins_dir: new_config.options.builtin_plugins_dir,
-                    hooks: new_config.hooks,
-                    context_menu: new_config.context_menu,
-                    was_written_to_disk: config_was_written_to_disk,
-                })
-                .context("reconfiguring the plugins")
-                .non_fatal();
-            self.senders
-                .send_to_pty(PtyInstruction::Reconfigure {
-                    client_id,
-                    default_editor: new_config.options.scrollback_editor,
-                    post_command_discovery_hook: new_config.options.post_command_discovery_hook,
-                })
-                .context("reconfiguring the pty")
-                .non_fatal();
+            effective_changes.push((client_id, new_config));
         }
-
-        // Detect and notify plugins of configuration changes
-        if config_was_written_to_disk {
-            if let Some(new_plugins) = new_plugin_config {
-                self.senders
-                    .send_to_plugin(PluginInstruction::DetectPluginConfigChanges(new_plugins))
-                    .context("reporting plugin config changes")
-                    .non_fatal();
-            }
+        if let Some((_, last_config)) = effective_changes.last() {
+            self.default_shell = thread_bus::default_shell_action(&last_config.options);
         }
+        self.senders.reconfigure_threads(
+            effective_changes,
+            self.config_dir.as_deref(),
+            config_was_written_to_disk,
+        );
     }
 }
 
@@ -560,15 +509,12 @@ impl SessionMetaData {
 impl Drop for SessionMetaData {
     fn drop(&mut self) {
         self.shutdown.begin();
-        // The screen can still need every worker while finishing its queued instructions.
-        let _ = self.senders.send_to_screen(ScreenInstruction::Exit);
-        if let Some(screen_thread) = self.screen_thread.take() {
-            let _ = screen_thread.join();
-        }
-        let _ = self.senders.send_to_pty(PtyInstruction::Exit);
-        let _ = self.senders.send_to_plugin(PluginInstruction::Exit);
-        let _ = self.senders.send_to_pty_writer(PtyWriteInstruction::Exit);
-        let _ = self.senders.send_to_background_jobs(BackgroundJob::Exit);
+        let screen_thread = self.screen_thread.take();
+        self.senders.exit_threads(|| {
+            if let Some(screen_thread) = screen_thread {
+                let _ = screen_thread.join();
+            }
+        });
         if let Some(pty_thread) = self.pty_thread.take() {
             let _ = pty_thread.join();
         }
@@ -2834,6 +2780,10 @@ mod session_teardown_tests;
 #[cfg(test)]
 #[path = "unit/session_shutdown_tests.rs"]
 mod session_shutdown_tests;
+
+#[cfg(test)]
+#[path = "unit/session_reconfigure_tests.rs"]
+mod session_reconfigure_tests;
 
 #[cfg(test)]
 #[path = "unit/cli_pipe_tests.rs"]
