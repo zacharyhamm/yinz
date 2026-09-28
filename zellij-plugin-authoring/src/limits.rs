@@ -2,7 +2,7 @@
 //! checker, and again inside the worker.
 use zellij_runtime::errors::prelude::*;
 
-pub const MAX_SOURCE_BYTES: usize = zellij_config::plugins::MAX_DENO_SOURCE_BYTES;
+pub const MAX_SOURCE_BYTES: usize = zellij_runtime::consts::MAX_DENO_SOURCE_BYTES;
 
 pub fn check_source(path: &std::path::Path, source: &str) -> Result<()> {
     if source.len() > MAX_SOURCE_BYTES {

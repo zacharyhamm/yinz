@@ -806,27 +806,23 @@ mod tests {
         );
     }
 
-    /// Config knows the TypeScript builtins only by tag, and this crate compiles in their
-    /// sources, so the two lists are checked against each other here, where both are in reach.
+    /// Every listed TypeScript builtin resolves through config to Deno and is served its
+    /// compiled-in source. The tests in `zellij-deno-builtins` hold the list and the files to
+    /// each other.
     #[test]
     fn deno_builtins_resolve_from_embedded_source() {
-        for (name, source) in zellij_deno_builtins::BUILTIN_DENO_PLUGINS {
-            assert!(
-                zellij_config::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(name),
-                "'{name}' is compiled in, but zellij-config's BUILTIN_DENO_PLUGIN_NAMES does not list it"
-            );
+        for name in zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
             let plugin = builtin_plugin(name);
             assert_eq!(plugin.runtime(), PluginRuntime::Deno);
             assert!(plugin.is_builtin());
             assert_eq!(
                 script_source(&plugin, Some(Path::new("/missing/plugins"))).unwrap(),
-                (None, (*source).to_owned())
-            );
-        }
-        for name in zellij_config::consts::BUILTIN_DENO_PLUGIN_NAMES {
-            assert!(
-                zellij_deno_builtins::builtin_deno_plugin(name).is_some(),
-                "zellij-config names '{name}' as a TypeScript builtin, but it is not compiled in"
+                (
+                    None,
+                    zellij_deno_builtins::builtin_deno_plugin(name)
+                        .unwrap()
+                        .to_owned()
+                )
             );
         }
         let file = PluginConfig::from_run_plugin(&RunPlugin {

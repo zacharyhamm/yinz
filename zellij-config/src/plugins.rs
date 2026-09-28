@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(all(not(target_family = "wasm"), debug_assertions))]
 use crate::consts::BUILTIN_PLUGIN_DEBUG_DIR;
+use crate::consts::BUILTIN_PLUGIN_NAMES;
 #[cfg(not(target_family = "wasm"))]
 use crate::consts::BUILTIN_PLUGIN_RELEASE_DIR;
-use crate::consts::{BUILTIN_DENO_PLUGIN_NAMES, BUILTIN_PLUGIN_NAMES};
+use zellij_runtime::consts::{BUILTIN_DENO_PLUGIN_NAMES, MAX_DENO_SOURCE_BYTES};
 use zellij_runtime::errors::prelude::*;
 use zellij_types::data::PluginTag;
 use {
@@ -48,8 +49,6 @@ pub struct PluginConfig {
 /// go on; anything else - a permission denied, a directory where a file was expected - is an
 /// error the user needs to see rather than a reason to keep looking and then report the wrong
 /// path as missing.
-pub const MAX_DENO_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-
 fn read_source_file(path: &Path) -> Result<Option<String>> {
     use std::io::Read;
     let read = || -> std::io::Result<String> {
@@ -344,7 +343,8 @@ impl PluginConfig {
     }
 
     /// Whether this is one of the TypeScript builtins. Their sources are compiled into the plugin
-    /// host from `zellij-deno-builtins`, so all this crate knows of them is their tags.
+    /// host from `zellij-deno-builtins`, so all this crate knows of them is their tags, from
+    /// `zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES`.
     pub fn is_builtin_deno(&self) -> bool {
         match &self.location {
             RunPluginLocation::Zellij(tag) => {
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn a_builtin_deno_tag_is_never_read_from_a_file() {
         let plugin_dir = tempdir().unwrap();
-        for name in crate::consts::BUILTIN_DENO_PLUGIN_NAMES {
+        for name in zellij_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
             fs::write(plugin_dir.path().join(name), "-- impostor").unwrap();
             fs::write(plugin_dir.path().join(format!("{name}.ts")), "-- impostor").unwrap();
             let plugin = builtin_plugin(name);

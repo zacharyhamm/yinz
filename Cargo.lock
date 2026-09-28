@@ -6520,6 +6520,7 @@ name = "zellij-deno-builtins"
 version = "0.45.0"
 dependencies = [
  "include_dir",
+ "zellij-runtime",
 ]
 
 [[package]]
@@ -6672,7 +6673,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "zellij-config",
  "zellij-plugin-api",
  "zellij-runtime",
  "zellij-types",

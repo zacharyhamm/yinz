@@ -28,6 +28,26 @@ pub const CLIENT_SERVER_CONTRACT_VERSION: usize = 1;
 /// handing them to the host.
 pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
 
+/// The TypeScript builtins, by tag. The builtin tagged `x` is `x.ts` at the top of
+/// `zellij-deno-builtins/assets/plugins`, compiled into the plugin host, so editing a source
+/// rebuilds neither this crate nor what depends on it. Adding a builtin means adding both; the
+/// tests in `zellij-deno-builtins` fail until they agree. Configuration resolves `zellij:<tag>`
+/// through this list, and plugin authoring, which links no configuration, reads it too.
+pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
+    "tab-bar",
+    "status-bar",
+    "context-menu",
+    "agent-policy",
+    "swamp-bridge",
+    "swamp-workflow",
+    "agent-exit",
+];
+
+/// The per-file source budget of a script plugin: configuration applies it when it reads one,
+/// and `zellij_plugin_authoring::limits` before a source reaches the compilation worker, the
+/// loader or the checker. It lives here so authoring need not link configuration.
+pub const MAX_DENO_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Legacy flat metadata path. Read current metadata through `SessionCheckpoint`.
 pub fn session_info_cache_file_name(session_name: &SessionName) -> PathBuf {
     session_info_folder_for_session(session_name).join("session-metadata.kdl")

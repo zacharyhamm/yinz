@@ -24,19 +24,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus-store",
 ];
 
-/// The TypeScript builtins. Only their tags live here: the sources are compiled into the plugin
-/// host from `zellij-deno-builtins`, so editing one does not rebuild this crate or anything that
-/// depends on it. The plugin host's tests hold the two lists equal.
-pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
-    "tab-bar",
-    "status-bar",
-    "context-menu",
-    "agent-policy",
-    "swamp-bridge",
-    "swamp-workflow",
-    "agent-exit",
-];
-
 /// The checkout's freshly built debug plugins, baked in at compile time from this crate's
 /// manifest dir. Searched *before* any installed copy: a `cargo x run` or `cargo test` on the
 /// same `VERSION` as an installed zellij must see the plugins it just built, not last week's

@@ -9,7 +9,6 @@ description = "Offline TypeScript plugin checks and writes, run through the comp
 workspace = true
 
 [dependencies]
-zellij-config = { workspace = true }
 zellij-plugin-api = { workspace = true }
 zellij-runtime = { workspace = true }
 zellij-types = { workspace = true }
