@@ -266,7 +266,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
 
 #[derive(Default)]
 struct BridgeOptions {
-    has_cd: bool,
+    cd: Option<PathBuf>,
 }
 
 // Only known, unambiguous UI arguments may acquire an implicit --remote endpoint.
@@ -308,7 +308,9 @@ fn bridge_options(args: &[String]) -> Option<BridgeOptions> {
                     {
                         return None;
                     }
-                    options.has_cd |= matches!(option, "--cd" | "-C");
+                    if matches!(option, "--cd" | "-C") {
+                        options.cd = value.map(PathBuf::from);
+                    }
                 },
                 "--oss"
                 | "--full-auto"
@@ -384,11 +386,12 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             .map(exit_code)
             .context("run Codex");
     };
-    let cwd = if options.has_cd {
-        None
-    } else {
-        Some(std::env::current_dir().context("resolve Codex launcher working directory")?)
-    };
+    let cwd = match &options.cd {
+        Some(cd) => std::path::absolute(cd),
+        None => std::env::current_dir(),
+    }
+    .context("resolve Codex launcher working directory")?;
+    let trust = worktree_trust(&cwd);
     let registration = Registration::new(&directory(), env)?;
     let status = Command::new(program)
         .args(["app-server", "daemon", "start"])
@@ -411,8 +414,11 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
                 .arg("--remote")
                 .arg(format!("unix://{}", path.display()));
             // A shared daemon may have started in a different pane's working directory.
-            if let Some(cwd) = &cwd {
-                command.arg("--cd").arg(cwd);
+            if options.cd.is_none() {
+                command.arg("--cd").arg(&cwd);
+            }
+            if let Some(trust) = &trust {
+                command.args(["--config", trust]);
             }
             let mut ui = command
                 .args(args)
@@ -435,6 +441,35 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
                 },
             }
         })
+}
+
+/// Trust only the linked worktree selected for this launch, without persisting a setting.
+fn worktree_trust(cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let metadata = String::from_utf8(output.stdout).ok()?;
+    let mut lines = metadata.lines();
+    let root = lines.next()?;
+    let git_dir = lines.next()?;
+    let common_dir = lines.next()?;
+    if git_dir == common_dir {
+        return None;
+    }
+    // An inline table keeps dots and quotes in paths out of the CLI's dotted-key parser.
+    let root = serde_json::Value::String(root.to_owned());
+    Some(format!("projects={{{root}={{trust_level=\"trusted\"}}}}"))
 }
 
 fn exit_code(status: std::process::ExitStatus) -> i32 {

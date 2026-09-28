@@ -42,15 +42,10 @@ const DUPLICATE_FOCUSED: &str = "duplicate_focused";
 const FORK_FOCUSED: &str = "fork_focused";
 const CALLER_TERMINAL_PANE_ID: &str = "caller_terminal_pane_id";
 
-/// The one refusal a fork makes on its own: nothing else can be forked from a pane whose
-/// agent the session does not know. A duplicate says the same when it falls back to the
-/// New agent form, for the same reason.
+/// Neither action can use a pane whose agent the session does not know.
 const NOT_AN_AGENT: &str = "the focused pane is not an agent";
 
-/// What the New agent form says when the alias asked to duplicate or fork and no terminal
-/// pane was focused to do it to - the agents panel, or any plugin, had the keys. The title
-/// already says what the modal is; this says why it is not what the key asked for, and
-/// what would have made it so.
+/// Reported when an action has no terminal pane to use.
 const NO_PANE_TO_DUPLICATE: &str = "duplicate needs a focused agent pane";
 const NO_PANE_TO_FORK: &str = "fork needs a focused agent pane";
 
@@ -106,6 +101,7 @@ struct ForkContext {
 }
 
 struct State {
+    duplicate: bool,
     workflow_reply: Option<(u32, String, String)>,
     workflow_result_pending: bool,
     workflow_source: Option<PaneId>,
@@ -125,7 +121,7 @@ struct State {
     worktree_dir_edited: bool,
     error: Option<String>,
     /// A standing remark for the status row: what the fork modal is forking, or why a
-    /// duplicate or fork is showing the New agent form instead. Outlived by the error,
+    /// fork is showing the New agent form instead. Outlived by the error,
     /// which takes the same row when there is one.
     note: Option<String>,
     /// The `(width, height, y)` `resize` last asked the host for, so it can decline to ask again.
@@ -217,6 +213,7 @@ impl Default for State {
         // row from the start.
         let help = help_for(&form);
         Self {
+            duplicate: false,
             workflow_reply: None,
             workflow_result_pending: false,
             workflow_source: None,
@@ -253,11 +250,9 @@ impl YinzPlugin for State {
             .zip(configuration.get("swamp_work").cloned())
             .zip(configuration.get("swamp_key").cloned())
             .map(|((id, work), key)| (id, work, key));
-        self.load_projects();
-        self.fill_projects();
-        self.fill_initial_prompt(&configuration);
         self.plugin_id = get_plugin_ids().plugin_id;
         let asked_for = |key: &str| configuration.get(key).map(String::as_str) == Some("true");
+        self.duplicate = asked_for(DUPLICATE_FOCUSED);
         let caller_pane_id = configuration
             .get(CALLER_TERMINAL_PANE_ID)
             .and_then(|pane_id| pane_id.parse().ok());
@@ -269,6 +264,18 @@ impl YinzPlugin for State {
         );
         self.job = job;
         self.note = note.map(str::to_owned);
+        if self.duplicate {
+            hide_self();
+            if let Some(note) = note {
+                notify(note);
+                self.finish_picker(None);
+                return;
+            }
+        } else {
+            self.load_projects();
+            self.fill_projects();
+            self.fill_initial_prompt(&configuration);
+        }
         if matches!(self.job, Job::Fork { .. }) {
             // Before `resize`, which sizes the overlay to whichever dialog is up.
             self.dialog = fork_dialog();
@@ -286,14 +293,10 @@ impl YinzPlugin for State {
             EventType::PaneClosed,
             EventType::PaneUpdate,
         ]);
-        // The fork dialog has no Git fields to suggest into, and its fallback when the
-        // pane turns out not to be an agent is a refusal rather than the form - so there
-        // is nothing for two `git` processes to fill in. Duplicate still probes: its
-        // fallback *is* the New agent form.
-        if !matches!(self.job, Job::Fork { .. }) {
+        if matches!(self.job, Job::New) {
             self.refresh_git_suggestions();
         }
-        set_selectable(true);
+        set_selectable(!self.duplicate);
         rename_plugin_pane(self.plugin_id, self.pane_title());
     }
 
@@ -349,7 +352,7 @@ impl YinzPlugin for State {
             Event::RunCommandResult(exit_code, stdout, _stderr, context) => {
                 self.finish_git_probe(exit_code, &String::from_utf8_lossy(&stdout), &context)
             },
-            Event::Visible(false) => {
+            Event::Visible(false) if !self.duplicate => {
                 self.finish_picker(None);
                 false
             },
@@ -358,6 +361,9 @@ impl YinzPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        if self.duplicate {
+            return;
+        }
         let help = help_for(self.dialog.form());
         self.dialog.set_help(Some(Text::new(help)));
         let status = self.status(cols);
@@ -409,23 +415,20 @@ impl YinzPlugin for State {
             Job::Duplicate { pane_id } => {
                 let command =
                     pane_of(pane_id).and_then(|pane| duplicate_command(&pane, &reply.manual_kinds));
-                // A pane that is not an agent leaves the New agent form up, which is what
-                // this modal is underneath - and says so, or the form would read as the
-                // answer to some other key.
                 let Some(command) = command else {
-                    self.note = Some(NOT_AN_AGENT.to_owned());
-                    return true;
+                    notify(NOT_AN_AGENT);
+                    self.finish_picker(None);
+                    return false;
                 };
                 match start(command, None) {
                     Ok(new_pane_id) => {
                         self.finish_launch(new_pane_id);
                         false
                     },
-                    // The form is up underneath either way; the error is what says that
-                    // this was a duplicate that failed rather than one that never started.
                     Err(error) => {
-                        self.error = Some(error.to_owned());
-                        true
+                        notify(error);
+                        self.finish_picker(None);
+                        false
                     },
                 }
             },
@@ -521,12 +524,9 @@ fn help_for(form: &Form) -> &'static str {
 
 /// What the alias asked this modal to do, and what the status row says when it cannot.
 ///
-/// Without a caller pane there is nothing to duplicate or fork, whatever the alias asked
-/// for, so the modal stays the New agent one. The host stamps a caller only when a
-/// terminal pane had the keys, and the duplicate and fork keys are bound everywhere - a
-/// press from the agents panel reaches this modal with no pane at all. Without the note
-/// that press would open a form nobody asked for and say nothing of why. Duplicate wins
-/// when both are asked for, as it always has.
+/// Without a caller pane there is nothing to duplicate or fork. The duplicate action
+/// reports the note and closes; a fork leaves it on the New agent form. Duplicate wins
+/// when both are requested.
 fn requested_job(caller: Option<u32>, duplicate: bool, fork: bool) -> (Job, Option<&'static str>) {
     match (caller, duplicate, fork) {
         (Some(pane_id), true, _) => (Job::Duplicate { pane_id }, None),
@@ -662,6 +662,9 @@ fn modal_height(dialog: &Dialog) -> usize {
 
 impl State {
     fn resize(&mut self, display_columns: usize, available_rows: usize) {
+        if self.duplicate {
+            return;
+        }
         // Floating geometry clips at the bottom instead of moving a tall dialog up.
         let height = modal_height(&self.dialog).min(available_rows);
         let y = (available_rows / 5).min(available_rows.saturating_sub(height));
@@ -1063,7 +1066,7 @@ impl State {
     }
 
     fn handle(&mut self, event: FormEvent) -> bool {
-        if self.workflow_result_pending {
+        if self.workflow_result_pending || self.duplicate {
             return false;
         }
         match event {
@@ -2709,7 +2712,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_or_fork_with_no_pane_opens_new_agent_and_says_why() {
+    fn duplicate_or_fork_with_no_pane_has_no_job_and_says_why() {
         assert!(matches!(
             requested_job(None, true, false),
             (Job::New, Some(NO_PANE_TO_DUPLICATE))
@@ -2758,14 +2761,24 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_fallback_keeps_its_source_until_the_picker_finishes() {
+    fn duplicate_stays_hidden_and_finishes_without_a_form_when_the_source_is_not_an_agent() {
         let source = PaneId::Terminal(TerminalId::new(7));
         let mut state = State {
+            duplicate: true,
             job: Job::Duplicate { pane_id: 7 },
             workflow_reply: Some((42, "work".to_owned(), "duplicate".to_owned())),
             workflow_source: Some(source),
             ..Default::default()
         };
+        state.update(Event::Visible(false));
+        assert!(
+            !state.workflow_result_pending,
+            "hiding must not cancel duplication"
+        );
+        state.resize(120, 40);
+        assert!(state.requested_size.is_none());
+        assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
+        assert!(state.error.is_none());
         let pane = AgentPane {
             title: "shell".to_owned(),
             command: Some("/bin/sh".to_owned()),
@@ -2781,23 +2794,11 @@ mod tests {
             false,
         ));
         assert!(matches!(state.job, Job::New));
-        // The form it falls back to says why it is not a duplicate.
-        assert_eq!(state.note.as_deref(), Some(NOT_AN_AGENT));
-        assert!(state.workflow_focus.is_none());
-        state.update(Event::PaneClosed(PaneId::Terminal(TerminalId::new(8))));
-        assert!(!state.workflow_result_pending);
-        // The default form lacks a branch name: Create still reaches form validation.
-        assert!(state.handle(FormEvent::ButtonPressed("create".to_owned())));
-        assert!(state.error.take().is_some());
-
-        state.update(Event::PaneClosed(source));
         assert!(state.workflow_result_pending);
-        assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
-        assert!(
-            state.error.is_none(),
-            "cancelled picker must not even submit the form"
-        );
+        assert!(state.note.is_none());
         assert!(state.workflow_focus.is_none());
+        assert!(!state.handle(FormEvent::ButtonPressed("create".to_owned())));
+        assert!(state.error.is_none());
     }
 
     #[test]
