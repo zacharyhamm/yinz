@@ -13,6 +13,37 @@ fn worker_transport_rejects_abnormal_exit_and_invalid_output() {
 }
 
 #[test]
+fn worker_that_exits_without_reading_reports_its_status_and_stderr() {
+    // A binary that rejects the worker argument never reads its request. Whether it exits
+    // before the first write, mid-write or after it, the error must be the worker's own.
+    for (size, fits_pipe) in [(16, true), (256 * 1024, false)] {
+        let error = exchange(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "echo \"unexpected argument $1\" >&2; exit 3",
+                    "worker",
+                ])
+                .arg(ARG),
+            &vec![b' '; size],
+            DEADLINE,
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&format!("unexpected argument {ARG}")),
+            "{message}"
+        );
+        assert!(message.contains("exit status: 3"), "{message}");
+        assert!(!message.contains("Broken pipe"), "{message}");
+        // No pipe buffer holds this request, so the worker cannot have taken all of it.
+        if !fits_pipe {
+            assert!(message.contains("before reading its request"), "{message}");
+        }
+    }
+}
+
+#[test]
 fn worker_timeout_reaps_the_child_even_when_input_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let pid_file = dir.path().join("pid");
