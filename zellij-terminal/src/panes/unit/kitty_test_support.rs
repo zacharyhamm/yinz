@@ -1,10 +1,9 @@
 //! The kitty conformance fixtures for this crate's grid-level and output-level tests.
 //!
 //! Everything in `zellij_terminal_graphics::kitty_graphics::test_support` (reached here as
-//! `crate::panes::kitty_graphics::test_support` and enabled by the `test-support` dev-dependency
-//! feature), plus the helpers that drive a [`Grid`], which that crate cannot name: they feed
-//! bytes through the APC interceptor the way `TerminalPane::handle_pty_bytes` does and read the
-//! replies back off the grid's outbound queue.
+//! `crate::panes::kitty_graphics::test_support`), plus the helpers that drive a [`Grid`], which
+//! that crate cannot name: they feed bytes through the APC interceptor the way
+//! `TerminalPane::handle_pty_bytes` does and read the replies back off the grid's outbound queue.
 
 pub use crate::panes::kitty_graphics::test_support::*;
 

@@ -5,8 +5,7 @@
 //! host-emission tests under `output/unit/` reach it through that crate's
 //! `panes::kitty_test_support`, which adds the helpers that drive a `Grid`. The whole-app tests
 //! reach its command builders and [`KittyReply`] through
-//! `zellij-integration-tests/src/kitty_protocol.rs`. Both of those crates enable the
-//! `test-support` feature.
+//! `zellij-integration-tests/src/kitty_protocol.rs`.
 //!
 //! The one deliberate difference between the levels is that [`parse_replies`] here panics on a
 //! malformed reply while `kitty_protocol::parse_replies` skips it, because that one reads a live

@@ -22,8 +22,6 @@ unicode-width = { workspace = true }
 vte = { workspace = true }
 
 [dev-dependencies]
-# The kitty conformance fixtures that `panes::kitty_test_support` re-exports.
-zellij-terminal-graphics = { workspace = true, features = ["test-support"] }
 hegeltest = "0.29.3"
 insta = "1.48"
 tempfile = "3.2.0"

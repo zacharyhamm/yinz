@@ -287,6 +287,10 @@ fn check(sh: &Shell) -> anyhow::Result<()> {
         eprintln!("Dependency boundaries: {error:#}");
         failed.push("dependency boundaries");
     }
+    if let Err(error) = crate::integration_test::check_shared_features(sh) {
+        eprintln!("Integration-test features: {error:#}");
+        failed.push("integration-test features");
+    }
 
     if crate::format::format(sh, flags::Format { check: true }).is_err() {
         failed.push("format --check");

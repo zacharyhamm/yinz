@@ -8,11 +8,6 @@ description = "Kitty graphics and Sixel protocol engine for Zellij's terminal em
 [lints]
 workspace = true
 
-[features]
-# `kitty_graphics::test_support`, the conformance suite's fixtures and reply grammar, for the
-# grid-level tests in `zellij-terminal` and the whole-app tests in `zellij-integration-tests`.
-test-support = ["dep:tempfile"]
-
 # Nothing from the terminal emulator itself: the grid drives this crate through `KittyGrid`,
 # `SixelGrid` and their stores, never the other way round.
 [dependencies]
@@ -23,9 +18,9 @@ libc = { workspace = true }
 png = { version = "0.17.16", default-features = false }
 sixel-image = { version = "0.2.1", default-features = false }
 sixel-tokenizer = { version = "0.1.0", default-features = false }
-tempfile = { workspace = true, optional = true }
+# The file-transmission fixtures in `kitty_graphics::test_support`.
+tempfile = { workspace = true }
 
 [dev-dependencies]
 hegeltest = "0.29.3"
-tempfile = { workspace = true }
 vte = { workspace = true }

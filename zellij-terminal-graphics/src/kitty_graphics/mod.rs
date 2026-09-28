@@ -108,10 +108,11 @@ pub use replies::*;
 pub use store::*;
 
 // Shared fixtures for the conformance suite. Deliberately outside the glob re-exports above so
-// its `KittyReply` cannot collide with the protocol types. Behind the `test-support` feature for
-// the suite's levels in other crates. A plain comment rather than `///`: rustdoc resolves an outer
-// doc's links from this module, and would then fail on the links in `test_support`'s own `//!` doc.
-#[cfg(any(test, feature = "test-support"))]
+// its `KittyReply` cannot collide with the protocol types. Compiled in every build: the whole-app
+// suite needs it outside `cfg(test)`, and a feature only the suite asked for built this crate and
+// every crate above it a second time in each `x integration-test`. A plain comment rather than
+// `///`: rustdoc resolves an outer doc's links from this module, and would then fail on the links
+// in `test_support`'s own `//!` doc.
 pub mod test_support;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
