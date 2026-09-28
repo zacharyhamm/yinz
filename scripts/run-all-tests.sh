@@ -132,11 +132,6 @@ if [[ ${#skipped[@]} -gt 0 ]]; then
   printf '%d skipped for a failed prerequisite: %s\n' \
     "${#skipped[@]}" "${skipped[*]}" | tee -a "$summary"
 fi
-
-# Two suites are known to flake under parallel load and pass on a rerun. Worth
-# checking before chasing either as a real break.
-printf '\nKnown flaky: zellij-server scroll snapshots.\n' \
-  | tee -a "$summary"
 printf 'Logs: %s\n' "$log_dir" | tee -a "$summary"
 
 exit "$exit_code"

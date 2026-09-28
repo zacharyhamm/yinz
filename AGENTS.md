@@ -60,7 +60,7 @@ Put xtask flags first. Remaining arguments go to:
 | Command | Forwards to |
 |---|---|
 | `x test`, `x integration-test` | `cargo nextest run` |
-| `x build`, `x install` | Native `cargo build`, per crate; excludes the Wasm build |
+| `x build`, `x install` | Native `cargo build`; excludes the Wasm build |
 | `x run` | Zellij |
 | `x bench` | Criterion |
 | `x ci e2e` | E2E runner |
@@ -99,8 +99,11 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
   `zellij-tab/`, `zellij-pty/`), `zellij-plugin-host/`, or `zellij-plugin-authoring/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
-Whole-app tests use a fake OS backend, so for `zellij-server-os/` run
-`cargo x test -p zellij-server-os`, plus `cargo x remote-test` or
+In-process whole-app tests use a fake OS backend. The real `zellij-server-os/`
+backend runs end to end only in tests that spawn the `zellij` binary, mainly the
+root package's tests and the integration suite's plugin-test sessions. For
+`zellij-server-os/` changes, run `cargo x test -p zellij-server-os -p zellij`
+and `cargo x integration-test -j 16`, plus `cargo x remote-test` or
 `cargo x firecracker-test` when remote or VM spawning changes.
 
 For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
