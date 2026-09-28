@@ -260,6 +260,11 @@ fn supervise_cancel(
                         error.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                     ) => {},
+                // The worker stopped reading, usually by exiting. Its status and stderr say why,
+                // so stop writing and collect them below rather than report the broken pipe.
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                    stdin.take();
+                },
                 Err(error) => return Err(error).context("write worker request"),
             }
             if remaining.is_empty() {
@@ -275,7 +280,10 @@ fn supervise_cancel(
         if let Some(status) = child.0.try_wait().context("wait for worker")? {
             if stdout_done && stderr_done {
                 if !remaining.is_empty() {
-                    bail!("worker exited before reading request");
+                    bail!(
+                        "worker exited with {status} before reading its request: {}",
+                        String::from_utf8_lossy(&errors)
+                    );
                 }
                 return Ok((status, output, errors));
             }

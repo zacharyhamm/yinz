@@ -96,7 +96,7 @@ values included, and every ```` ```ts ```` block of the guide - against `sdk.d.t
 `unit/analysis.rs` covers inferred grants and the lint rules; `unit/limits.rs` exhausts budgets
 in supervised subprocesses; `unit/loader.rs` and `unit/worker.rs` cover confinement, the cache
 and containment in the compilation subprocess, while the worker transport's deadlines, frame
-limits and reaping are tested in `zellij-plugin-authoring/src/unit/worker.rs` beside
+limits, early exits and reaping are tested in `zellij-plugin-authoring/src/unit/worker.rs` beside
 `plugin_authoring.rs`'s own tests; `unit/builtins.rs` loads every shipped builtin and reference
 example; `../unit/plugin_tests/deno_plugins.rs` drives a real plugin thread; and
 `zellij-integration-tests/tests/deno_plugins.rs` runs whole sessions. Hocus serves the guide and
