@@ -59,6 +59,90 @@ const SHELL_ONLY: &str = r#"layout {
 }
 "#;
 
+#[test]
+fn duplicate_agent_never_shows_the_spawn_form() {
+    duplicate_agent_shortcut(true);
+}
+
+#[test]
+fn duplicate_of_a_shell_notifies_without_showing_the_spawn_form() {
+    duplicate_agent_shortcut(false);
+}
+
+fn duplicate_agent_shortcut(is_agent: bool) {
+    const CONFIG: &str = r#"
+agent_pane_min_columns 0
+agent_pane_min_rows 0
+keybinds {
+  normal {
+    bind "Ctrl d" {
+      LaunchOrFocusPlugin "hocus-duplicate-agent" {
+        floating true
+        overlay true
+        modal true
+        move_to_focused_tab true
+      }
+    }
+  }
+}
+plugins {
+  hocus-duplicate-agent location="yinz:hocus-new-agent" { duplicate_focused true; }
+  hocus-agentd location="yinz:hocus-agentd"
+}
+load_plugins clear-defaults=true { "hocus-agentd"; }
+"#;
+    let layout = if is_agent {
+        "layout { pane command=\"claude\"; }"
+    } else {
+        SHELL_ONLY
+    };
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout.to_owned()))
+        .start();
+    let source = yinz.expect_pty_spawn();
+    source.output(b"SOURCE READY\r\n");
+    yinz.wait_until("the source pane is ready", |snapshot| {
+        snapshot.contains("SOURCE READY")
+    });
+    for attempt in 1..=if is_agent { 2 } else { 1 } {
+        yinz.send_stdin(&keys::ctrl('d'));
+        if is_agent {
+            let agent = yinz.expect_pty_spawn();
+            assert_eq!(agent.run_command().command.to_str(), Some("claude"));
+            let marker = format!("DUPLICATE {attempt} READY");
+            agent.output(format!("{marker}\r\n").as_bytes());
+            yinz.wait_until("the duplicate is visible", |snapshot| {
+                snapshot.contains(&marker)
+            });
+            let input = format!("duplicate-{attempt}");
+            yinz.send_stdin(input.as_bytes());
+            agent.wait_for_stdin("the duplicate has focus", |bytes| {
+                bytes
+                    .windows(input.len())
+                    .any(|window| window == input.as_bytes())
+            });
+        } else {
+            yinz.wait_until("duplication reports a non-agent pane", |snapshot| {
+                snapshot.contains("the focused pane is not an agent")
+            });
+            let input = format!("source-{attempt}");
+            yinz.send_stdin(input.as_bytes());
+            source.wait_for_stdin("the source keeps focus", |bytes| {
+                bytes
+                    .windows(input.len())
+                    .any(|window| window == input.as_bytes())
+            });
+        }
+        assert!(!yinz.snapshot().contains("Create agent"));
+        assert!(
+            !String::from_utf8_lossy(&yinz.raw_bytes()).contains("Create agent"),
+            "the form must never flash during duplication"
+        );
+    }
+    yinz.quit();
+}
+
 /// SGR mouse reports, 1-based, as `floating_pane_overlay.rs` sends them.
 fn sgr_press(column: usize, line: usize) -> Vec<u8> {
     format!("\u{1b}[<0;{column};{line}M").into_bytes()

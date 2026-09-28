@@ -148,6 +148,53 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
     let cwd = root.path().join("launcher with spaces");
     std::fs::create_dir(&cwd).unwrap();
     let cwd = cwd.canonicalize().unwrap();
+    let worktree_name = "work.tree \"quoted\"";
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        vec![
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            "../work.tree \"quoted\"",
+        ],
+    ] {
+        let result = Command::new("git")
+            .args(args)
+            .current_dir(&cwd)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let worktree = root.path().join(worktree_name).canonicalize().unwrap();
+    let trust = format!(
+        "projects={{{}={{trust_level=\"trusted\"}}}}",
+        json!(worktree)
+    );
+    assert!(
+        worktree_trust(&cwd).is_none(),
+        "the primary checkout is not implicitly trusted"
+    );
+    std::fs::create_dir(worktree.join("nested")).unwrap();
+    assert_eq!(
+        worktree_trust(&worktree.join("nested")),
+        Some(trust.clone())
+    );
     let output = root.path().join("arguments");
     yinz_test_support::write_warm_script(
         &root.path().join("codex"),
@@ -167,6 +214,16 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         (&["resume", "--last", "--cd", "../other"], true, Some(true)),
         (&["fork", "thread-id", "-C../other"], true, Some(true)),
         (&["--cd=../other", "resume", "--last"], true, Some(true)),
+        (&["--cd", worktree.to_str().unwrap()], true, Some(true)),
+        (&["--cd", "../work.tree \"quoted\""], true, Some(true)),
+        (&["--cd=../work.tree \"quoted\""], true, Some(true)),
+        (&["-C../work.tree \"quoted\""], true, Some(true)),
+        (&["-C=../work.tree \"quoted\""], true, Some(true)),
+        (
+            &["--cd", "../other", "-C", "../work.tree \"quoted\""],
+            true,
+            Some(true),
+        ),
         (&["--", "--cd=literal prompt"], true, Some(false)),
         (&["--", "-C"], true, Some(false)),
         (&["resume", "--", "--cd"], true, Some(false)),
@@ -184,37 +241,45 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         (&["-C="], true, None),
         (&["--cd", "--", "prompt"], true, None),
     ];
-    for (args, pane, expected_cd) in cases {
-        let result = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", TEST])
-            .current_dir(&cwd)
-            .env(ARGS_ENV, serde_json::to_string(args).unwrap())
-            .env(OUTPUT_ENV, &output)
-            .env("YINZ_PANE_ID", if *pane { "15" } else { "" })
-            .env_remove("YINZ_PANE_REF")
-            .env_remove("YINZ_REMOTE_PANE_TOKEN")
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "{args:?}: {}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
-        let actual = std::fs::read_to_string(&output).unwrap();
-        let mut actual: Vec<_> = actual.split_terminator('\0').collect();
-        if let Some(has_cd) = expected_cd {
-            assert_eq!(actual[0], "--remote", "{args:?}");
-            assert!(actual[1].starts_with("unix://"), "{args:?}");
-            actual.drain(..2);
-            if !has_cd {
-                assert_eq!(actual[0], "--cd", "{args:?}");
-                assert_eq!(Path::new(actual[1]), cwd, "{args:?}");
+    for launch_cwd in [&cwd, &worktree] {
+        for (args, pane, expected_cd) in cases {
+            let result = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST])
+                .current_dir(launch_cwd)
+                .env(ARGS_ENV, serde_json::to_string(args).unwrap())
+                .env(OUTPUT_ENV, &output)
+                .env("YINZ_PANE_ID", if *pane { "15" } else { "" })
+                .env_remove("YINZ_PANE_REF")
+                .env_remove("YINZ_REMOTE_PANE_TOKEN")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{args:?}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            let actual = std::fs::read_to_string(&output).unwrap();
+            let mut actual: Vec<_> = actual.split_terminator('\0').collect();
+            if let Some(has_cd) = expected_cd {
+                assert_eq!(actual[0], "--remote", "{args:?}");
+                assert!(actual[1].starts_with("unix://"), "{args:?}");
                 actual.drain(..2);
+                if !has_cd {
+                    assert_eq!(actual[0], "--cd", "{args:?}");
+                    assert_eq!(Path::new(actual[1]), launch_cwd, "{args:?}");
+                    actual.drain(..2);
+                }
+                if (!has_cd && launch_cwd == &worktree)
+                    || args.iter().any(|arg| arg.ends_with(worktree_name))
+                {
+                    assert_eq!(&actual[..2], &["--config", &trust], "{args:?}");
+                    actual.drain(..2);
+                }
             }
+            assert_eq!(&actual, args, "{args:?}");
         }
-        assert_eq!(&actual, args, "{args:?}");
     }
 }
 

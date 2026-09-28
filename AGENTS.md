@@ -44,7 +44,14 @@ The SSH fixture listens on localhost port 2222 with user/password `test`/`test`.
 
 **Never set `CARGO_TARGET_DIR` or change `build.target-dir`.** Checkout plugin
 paths resolve at compile time to `<repo>/target/wasm32-wasip1/{debug,release}`.
-Symlink `target/` if needed. Builtin Wasm is not checked in.
+**In a worktree, NEVER use a shared `target/`. Isolate your builds and tests.**
+Keep a separate, real `target/` directory in each worktree; do not symlink it to
+the main checkout or another worktree, or hardlink mutable build artifacts.
+Do not copy workspace binaries, Wasm plugins, or their build metadata between
+worktrees, either.
+Concurrent builds can replace the native binary and Wasm plugins while tests
+are running, causing tests to execute another checkout's code. Build the
+worktree's own binaries and plugins before testing. Builtin Wasm is not checked in.
 
 `cargo x install <destination>` defaults to `release` and installs Wasm to
 `<data dir>/builtins/<version>`. Use `--builtins-dir <dir>` or `--no-builtins`
