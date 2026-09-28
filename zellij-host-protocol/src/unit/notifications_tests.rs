@@ -1,6 +1,10 @@
-use super::NotificationProtocol;
+use super::{
+    denormalize_notification_response, namespace_notification_id, NotificationProtocol,
+    PendingNotification,
+};
 use std::collections::BTreeMap;
 use zellij_types::input::options::HostNotificationProtocol;
+use zellij_types::internal_ids::TerminalId;
 
 fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -142,4 +146,288 @@ fn notification_text_cannot_escape_its_host_terminal_sequence() {
             .unwrap();
         assert!(payload.chars().all(|c| !c.is_control()));
     }
+}
+
+#[test]
+fn a_notification_carries_its_title_and_body_across_protocols() {
+    assert_eq!(
+        PendingNotification::Osc9 {
+            body: "body".to_owned()
+        }
+        .title_and_body(),
+        (String::new(), "body".to_owned())
+    );
+    assert_eq!(
+        PendingNotification::Osc777 {
+            title: "title".to_owned(),
+            body: "body".to_owned()
+        }
+        .title_and_body(),
+        ("title".to_owned(), "body".to_owned())
+    );
+    assert_eq!(
+        PendingNotification::Osc99 {
+            payload: "i=1;the title".to_owned(),
+            terminator: "\u{7}".to_owned(),
+            wants_report: false,
+            display: Some(("the title".to_owned(), "the body".to_owned())),
+        }
+        .title_and_body(),
+        ("the title".to_owned(), "the body".to_owned())
+    );
+}
+
+// OSC 99 identifiers, namespaced per pane on the way out and restored on the host's answer.
+
+#[test]
+fn osc99_namespace_denormalize_roundtrip() {
+    // Test that namespace_notification_id and denormalize_notification_response
+    // are inverse operations.
+    let original_metadata = "i=mynotif:p=title:a=report";
+    let pane_id: u32 = 42;
+
+    // Namespace — a=report means 'r' flag is set
+    let namespaced = namespace_notification_id(original_metadata, TerminalId::new(pane_id), true);
+    assert!(
+        namespaced.contains("i=p42r.mynotif"),
+        "Should namespace to i=p42r.mynotif (a=report → 'r' flag), got: {:?}",
+        namespaced
+    );
+
+    // Simulate a response with the namespaced ID
+    let response_payload = "i=p42r.mynotif;activated".to_string();
+    let result = denormalize_notification_response(response_payload.as_bytes());
+    assert!(result.is_some(), "Should successfully denormalize");
+
+    let response = result.unwrap();
+    assert_eq!(
+        response.terminal_id,
+        TerminalId::new(42),
+        "Should extract pane_id 42"
+    );
+    assert!(
+        response.forward_to_pane,
+        "'r' flag in i=p42r.mynotif means the response goes back to the app"
+    );
+    assert!(
+        response.focus_pane,
+        "an activation report focuses the originating pane"
+    );
+
+    let response_str = String::from_utf8_lossy(&response.bytes);
+    assert!(
+        response_str.contains("i=mynotif"),
+        "Should restore original i=mynotif, got: {:?}",
+        response_str
+    );
+    assert!(
+        !response_str.contains("p42"),
+        "Should not contain namespaced prefix, got: {:?}",
+        response_str
+    );
+}
+
+#[test]
+fn osc99_denormalize_with_no_namespace_returns_none() {
+    // A response without the p<N>. namespace pattern should return None
+    let result = denormalize_notification_response(b"i=plain_id;data");
+    assert!(
+        result.is_none(),
+        "Should return None for non-namespaced response"
+    );
+}
+
+#[test]
+fn osc99_namespace_without_identifier_adds_default() {
+    // With a=report → 'r' flag
+    let metadata = "p=title:a=report";
+    let namespaced = namespace_notification_id(metadata, TerminalId::new(7), true);
+    assert!(
+        namespaced.contains("i=p7r.:"),
+        "Should add default i=p7r. when no i= present (a=report → 'r' flag), got: {:?}",
+        namespaced
+    );
+
+    // Without a=report → no 'r' flag
+    let metadata = "p=title";
+    let namespaced = namespace_notification_id(metadata, TerminalId::new(7), false);
+    assert!(
+        namespaced.contains("i=p7.:"),
+        "Should add default i=p7. when no i= and no a=report, got: {:?}",
+        namespaced
+    );
+}
+
+#[test]
+fn osc99_namespace_does_not_leave_empty_metadata_entries() {
+    let namespaced = namespace_notification_id("", TerminalId::new(1), false);
+    assert_eq!(
+        namespaced, "i=p1.:a=focus,report",
+        "an empty metadata section produces no empty key=value entries"
+    );
+}
+
+#[test]
+fn osc99_namespace_is_stable_across_the_escapes_of_one_notification() {
+    let notification = namespace_notification_id("i=myid:a=report", TerminalId::new(4), true);
+    let close = namespace_notification_id("i=myid:p=close", TerminalId::new(4), true);
+    assert!(
+        notification.contains("i=p4r.myid") && close.contains("i=p4r.myid"),
+        "a close request addresses the same identifier the notification got, got: {:?} and {:?}",
+        notification,
+        close
+    );
+    assert!(
+        !close.contains("a="),
+        "a close request is not turned into something the host reports on, got: {:?}",
+        close
+    );
+}
+
+#[test]
+fn osc99_namespace_ensures_report_action() {
+    // a=focus → a=focus,report
+    let result = namespace_notification_id("i=test:p=title:a=focus", TerminalId::new(1), false);
+    assert!(
+        result.contains("a=focus,report"),
+        "a=focus should be augmented with report, got: {:?}",
+        result
+    );
+
+    // a=report → unchanged
+    let result = namespace_notification_id("i=test:p=title:a=report", TerminalId::new(1), true);
+    assert!(
+        result.contains("a=report"),
+        "a=report should be preserved, got: {:?}",
+        result
+    );
+    assert!(
+        !result.contains("a=report,report"),
+        "Should not duplicate report, got: {:?}",
+        result
+    );
+
+    // a=focus,report → unchanged
+    let result =
+        namespace_notification_id("i=test:p=title:a=focus,report", TerminalId::new(1), true);
+    assert!(
+        result.contains("a=focus,report"),
+        "a=focus,report should be preserved, got: {:?}",
+        result
+    );
+
+    let result = namespace_notification_id("i=test:p=title", TerminalId::new(1), false);
+    assert!(
+        result.contains("a=focus,report"),
+        "Missing a= should keep the protocol's default focus action, got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn osc99_report_flag_roundtrip() {
+    // App sends a=report → namespaced with 'r' flag → denormalize returns app_wants_report=true
+    let namespaced = namespace_notification_id("i=myid:p=title:a=report", TerminalId::new(5), true);
+    assert!(
+        namespaced.contains("i=p5r.myid"),
+        "a=report should produce 'r' flag in namespace, got: {:?}",
+        namespaced
+    );
+    let response = "i=p5r.myid;activated".to_string();
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, TerminalId::new(5));
+    assert!(
+        response.forward_to_pane,
+        "Should detect 'r' flag and hand the report to the app"
+    );
+
+    // App sends a=focus (no report) → namespaced without 'r' flag → denormalize returns false
+    let namespaced = namespace_notification_id("i=myid:p=title:a=focus", TerminalId::new(5), false);
+    assert!(
+        namespaced.contains("i=p5.myid"),
+        "a=focus should NOT produce 'r' flag, got: {:?}",
+        namespaced
+    );
+    assert!(
+        namespaced.contains("a=focus,report"),
+        "a=focus should be augmented with report for the host terminal, got: {:?}",
+        namespaced
+    );
+    let response = "i=p5.myid;activated".to_string();
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, TerminalId::new(5));
+    assert!(
+        !response.forward_to_pane,
+        "No 'r' flag means the app is not handed a report it never asked for"
+    );
+    assert!(
+        response.focus_pane,
+        "the pane is still focused when the notification is clicked"
+    );
+}
+
+#[test]
+fn osc99_query_response_is_handed_to_the_pane_without_focusing_it() {
+    let namespaced = namespace_notification_id("i=qid:p=?", TerminalId::new(3), false);
+    assert_eq!(
+        namespaced, "i=p3.qid:p=?",
+        "a query is namespaced and otherwise left alone"
+    );
+    let response = "i=p3.qid:p=?;a=focus,report:p=title,body".to_string();
+    let response = denormalize_notification_response(response.as_bytes()).unwrap();
+    assert_eq!(response.terminal_id, TerminalId::new(3));
+    assert!(
+        response.forward_to_pane,
+        "the app is waiting for the answer to its query"
+    );
+    assert!(
+        !response.focus_pane,
+        "answering a query is not the user clicking a notification"
+    );
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=qid:p=?"),
+        "the app's own identifier is restored, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
+}
+
+#[test]
+fn osc99_close_report_does_not_steal_focus() {
+    let response = denormalize_notification_response(b"i=p3.myid:p=close;").unwrap();
+    assert_eq!(response.terminal_id, TerminalId::new(3));
+    assert!(
+        response.forward_to_pane,
+        "close events only arrive when the app asked for them with c=1"
+    );
+    assert!(
+        !response.focus_pane,
+        "dismissing a notification is not activating it"
+    );
+}
+
+#[test]
+fn osc99_liveness_answer_is_restricted_to_the_asking_pane() {
+    let response =
+        denormalize_notification_response(b"i=p3.myid:p=alive;p3.one,p4r.other,p3r.two").unwrap();
+    let restored = String::from_utf8_lossy(&response.bytes).to_string();
+    assert!(
+        restored.contains(";one,two"),
+        "the pane's own identifiers are restored, got: {:?}",
+        restored
+    );
+    assert!(
+        !restored.contains("other"),
+        "identifiers belonging to other panes are not disclosed, got: {:?}",
+        restored
+    );
+}
+
+#[test]
+fn osc99_response_to_an_unidentified_notification_uses_the_protocol_default() {
+    let response = denormalize_notification_response(b"i=p3r.;activated").unwrap();
+    assert!(
+        String::from_utf8_lossy(&response.bytes).contains("i=0"),
+        "an app that sent no identifier is answered with i=0, got: {:?}",
+        String::from_utf8_lossy(&response.bytes)
+    );
 }

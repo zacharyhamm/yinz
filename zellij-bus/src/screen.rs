@@ -938,13 +938,6 @@ impl From<&ScreenInstruction> for ScreenContext {
     }
 }
 
-// The host's answer to a forwarded OSC 99 notification, which the screen routes back to the pane
-// on `DesktopNotificationResponse`. No caller names `NotificationResponse` today; it is re-exported
-// on purpose so the function's return type stays nameable from the same path.
-pub use zellij_host_protocol::notifications::{
-    denormalize_notification_response, NotificationResponse,
-};
-
 pub type InitialTitle = String;
 
 pub type HoldForCommand = Option<RunCommand>;

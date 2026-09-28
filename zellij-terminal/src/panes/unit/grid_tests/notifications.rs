@@ -152,35 +152,6 @@ fn an_osc_777_notification_without_a_body_is_kept() {
 }
 
 #[test]
-fn a_notification_carries_its_title_and_body_across_protocols() {
-    assert_eq!(
-        PendingNotification::Osc9 {
-            body: "body".to_owned()
-        }
-        .title_and_body(),
-        (String::new(), "body".to_owned())
-    );
-    assert_eq!(
-        PendingNotification::Osc777 {
-            title: "title".to_owned(),
-            body: "body".to_owned()
-        }
-        .title_and_body(),
-        ("title".to_owned(), "body".to_owned())
-    );
-    assert_eq!(
-        PendingNotification::Osc99 {
-            payload: "i=1;the title".to_owned(),
-            terminator: "\u{7}".to_owned(),
-            wants_report: false,
-            display: Some(("the title".to_owned(), "the body".to_owned())),
-        }
-        .title_and_body(),
-        ("the title".to_owned(), "the body".to_owned())
-    );
-}
-
-#[test]
 fn an_osc_99_notification_is_assembled_from_its_chunks() {
     let mut grid = new_grid_for_forwarding_test();
     feed_bytes(&mut grid, b"\x1b]99;i=1:d=0;Hello world\x1b\\");
@@ -194,6 +165,31 @@ fn an_osc_99_notification_is_assembled_from_its_chunks() {
         osc99_display(&grid, 1),
         Some(("Hello world".to_owned(), "This is cool".to_owned())),
         "the finished notification carries all of its chunks"
+    );
+}
+
+#[test]
+fn osc99_grid_parses_and_stores_notification() {
+    let mut grid = new_grid_for_forwarding_test();
+    feed_bytes(
+        &mut grid,
+        b"\x1b]99;i=gridtest:p=title;Grid notification\x07",
+    );
+
+    assert_eq!(
+        grid.pending_desktop_notifications.len(),
+        1,
+        "Should have one pending notification"
+    );
+
+    let payload = match grid.pending_desktop_notifications.first() {
+        Some(PendingNotification::Osc99 { payload, .. }) => payload.clone(),
+        other => panic!("Expected an OSC 99 notification, got: {:?}", other),
+    };
+    assert!(
+        payload.contains("i=gridtest"),
+        "Payload should contain i=gridtest, got: {:?}",
+        payload
     );
 }
 

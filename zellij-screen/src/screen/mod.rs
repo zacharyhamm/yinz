@@ -150,8 +150,7 @@ pub use zellij_bus::screen::ScreenInstruction;
 #[cfg(test)]
 pub(crate) use zellij_bus::screen::TabOverrideResult;
 pub(crate) use zellij_bus::screen::{
-    denormalize_notification_response, GuestModalOutcome, HoldForCommand, InitialTitle,
-    NotificationClick,
+    GuestModalOutcome, HoldForCommand, InitialTitle, NotificationClick,
 };
 
 /// Get the active tab and call a closure on it
