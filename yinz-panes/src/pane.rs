@@ -366,12 +366,6 @@ pub trait Pane {
         std::cmp::min(self.x() + self.cols(), other.x() + other.cols())
             - std::cmp::max(self.x(), other.x())
     }
-    fn can_reduce_height_by(&self, reduce_by: usize) -> bool {
-        self.rows() > reduce_by && self.rows() - reduce_by >= self.min_height()
-    }
-    fn can_reduce_width_by(&self, reduce_by: usize) -> bool {
-        self.cols() > reduce_by && self.cols() - reduce_by >= self.min_width()
-    }
     fn min_width(&self) -> usize {
         MIN_TERMINAL_WIDTH
     }
