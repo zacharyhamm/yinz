@@ -20,6 +20,8 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "hocus-agentd",
     "hocus-agents",
     "hocus-todos",
+    "hocus-vms",
+    "hocus-swamp",
     "hocus-new-agent",
     "hocus-store",
 ];

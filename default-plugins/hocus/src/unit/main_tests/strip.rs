@@ -776,14 +776,12 @@ fn the_strip_goes_to_every_agent_list_and_nothing_else() {
     list_plugin(&mut state, PluginId::new(12), AGENT_LIST_LOCATION);
     list_plugin(&mut state, PluginId::new(13), AGENT_LIST_LOCATION);
     list_plugin(&mut state, PluginId::new(14), "yinz:tab-bar");
-    for (id, view) in [(15, "vms"), (16, "swamp")] {
-        list_plugin(&mut state, PluginId::new(id), AGENT_LIST_LOCATION);
-        state
-            .plugin_instances
-            .get_mut(&PluginId::new(id))
-            .unwrap()
-            .configuration
-            .insert("view".into(), view.into());
+    for (id, location) in [
+        (15, "yinz:hocus-vms"),
+        (16, "yinz:hocus-swamp"),
+        (17, "yinz:hocus-todos"),
+    ] {
+        list_plugin(&mut state, PluginId::new(id), location);
     }
 
     let strip = state.current_strip();

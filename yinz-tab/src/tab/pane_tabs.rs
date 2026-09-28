@@ -90,10 +90,13 @@ impl Tab {
     pub fn mount_pane_tabs(
         &mut self,
         pane: PaneId,
-        layout: PaneTabsLayout,
+        mut layout: PaneTabsLayout,
         existing: usize,
         client: ClientId,
     ) -> Result<PaneTabsInfo> {
+        for descriptor in &mut layout.tabs {
+            descriptor.normalize_hocus_panel();
+        }
         layout.validate().map_err(|error| anyhow!(error))?;
         let PaneId::Plugin(plugin_id) = pane else {
             return Err(anyhow!("pane tabs require a plugin pane"));

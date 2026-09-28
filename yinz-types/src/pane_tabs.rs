@@ -24,6 +24,37 @@ pub struct PaneTabDescriptor {
 }
 
 impl PaneTabDescriptor {
+    /// Resolve panel aliases before identifying companions; custom plugins keep their descriptors.
+    pub fn populate_plugin_alias(&mut self, aliases: &crate::input::plugins::PluginAliases) {
+        if let Some(plugin) = aliases.aliases.get(&self.location) {
+            if !matches!(
+                plugin.location.display().as_str(),
+                "yinz:hocus-agents" | "yinz:hocus-todos" | "yinz:hocus-vms" | "yinz:hocus-swamp"
+            ) {
+                return;
+            }
+            let mut plugin = plugin
+                .clone()
+                .merge_configuration(&Some(self.configuration.clone()));
+            if self.initial_cwd.is_some() {
+                plugin.initial_cwd = self.initial_cwd.clone();
+            }
+            plugin.normalize_hocus_panel();
+            self.location = plugin.location.display();
+            self.configuration = plugin.configuration.inner().clone();
+            self.initial_cwd = plugin.initial_cwd;
+        }
+        self.normalize_hocus_panel();
+    }
+
+    pub fn normalize_hocus_panel(&mut self) {
+        if let Some(location) =
+            crate::input::layout::normalize_hocus_panel(&self.location, &mut self.configuration)
+        {
+            self.location = location.into();
+        }
+    }
+
     pub fn add_cwd(&mut self, cwd: &Path) {
         self.initial_cwd = Some(match &self.initial_cwd {
             Some(child) => cwd.join(child),

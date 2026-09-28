@@ -53,6 +53,14 @@ impl RunPluginOrAlias {
                 });
             run_plugin_alias.run_plugin = merged_run_plugin;
         }
+        match self {
+            Self::RunPlugin(plugin) => plugin.normalize_hocus_panel(),
+            Self::Alias(alias) => {
+                if let Some(plugin) = &mut alias.run_plugin {
+                    plugin.normalize_hocus_panel();
+                }
+            },
+        }
     }
     pub fn get_run_plugin(&self) -> Option<RunPlugin> {
         match self {
@@ -429,7 +437,33 @@ pub struct RunPlugin {
     pub relative_path: Option<PathBuf>,
 }
 
+/// Consume the legacy panel selector only for the builtin that used to own those views.
+pub fn normalize_hocus_panel(
+    location: &str,
+    configuration: &mut BTreeMap<String, String>,
+) -> Option<&'static str> {
+    if location != "yinz:hocus-agents" {
+        return None;
+    }
+    let location = match configuration.get("view").map(String::as_str) {
+        Some("vms") => "yinz:hocus-vms",
+        Some("swamp") => "yinz:hocus-swamp",
+        _ => return None,
+    };
+    configuration.remove("view");
+    Some(location)
+}
+
 impl RunPlugin {
+    pub fn normalize_hocus_panel(&mut self) {
+        if let Some(location) =
+            normalize_hocus_panel(&self.location.display(), &mut self.configuration.0)
+        {
+            self.location =
+                RunPluginLocation::Yinz(PluginTag::new(location.trim_start_matches("yinz:")));
+        }
+    }
+
     pub fn with_configuration(mut self, configuration: BTreeMap<String, String>) -> Self {
         self.configuration = PluginUserConfiguration::new(configuration);
         self
@@ -758,6 +792,17 @@ pub struct FloatingPaneLayout {
 }
 
 impl FloatingPaneLayout {
+    pub fn populate_plugin_aliases(&mut self, aliases: &PluginAliases) {
+        if let Some(run) = &mut self.run {
+            run.populate_run_plugin_if_needed(aliases);
+        }
+        if let Some(tabs) = &mut self.pane_tabs {
+            for descriptor in &mut tabs.tabs {
+                descriptor.populate_plugin_alias(aliases);
+            }
+        }
+    }
+
     pub fn new() -> Self {
         FloatingPaneLayout {
             pane_tabs: None,
@@ -1100,6 +1145,11 @@ impl TiledPaneLayout {
         }
     }
     pub fn populate_plugin_aliases_in_layout(&mut self, plugin_aliases: &PluginAliases) {
+        if let Some(tabs) = &mut self.pane_tabs {
+            for descriptor in &mut tabs.tabs {
+                descriptor.populate_plugin_alias(plugin_aliases);
+            }
+        }
         if let Some(run) = self.run.as_mut() {
             run.populate_run_plugin_if_needed(plugin_aliases)
         }
@@ -1275,17 +1325,13 @@ impl Layout {
         for tab in self.tabs.iter_mut() {
             tab.1.populate_plugin_aliases_in_layout(plugin_aliases);
             for floating_pane_layout in tab.2.iter_mut() {
-                if let Some(f) = floating_pane_layout.run.as_mut() {
-                    f.populate_run_plugin_if_needed(plugin_aliases)
-                }
+                floating_pane_layout.populate_plugin_aliases(plugin_aliases);
             }
         }
         if let Some(template) = self.template.as_mut() {
             template.0.populate_plugin_aliases_in_layout(plugin_aliases);
             for floating_pane_layout in template.1.iter_mut() {
-                if let Some(f) = floating_pane_layout.run.as_mut() {
-                    f.populate_run_plugin_if_needed(plugin_aliases)
-                }
+                floating_pane_layout.populate_plugin_aliases(plugin_aliases);
             }
         }
         for swap_tiled_layout in &mut self.swap_tiled_layouts {
@@ -1296,9 +1342,7 @@ impl Layout {
         for swap_floating_layout in &mut self.swap_floating_layouts {
             for floating_pane_layouts in swap_floating_layout.0.values_mut() {
                 for floating_pane_layout in floating_pane_layouts {
-                    if let Some(f) = floating_pane_layout.run.as_mut() {
-                        f.populate_run_plugin_if_needed(plugin_aliases)
-                    }
+                    floating_pane_layout.populate_plugin_aliases(plugin_aliases);
                 }
             }
         }

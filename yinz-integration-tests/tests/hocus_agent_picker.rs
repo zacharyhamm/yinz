@@ -1155,3 +1155,212 @@ fn hocus_multipane_chat_first_keeps_ownership_through_its_lifecycle() {
 fn hocus_multipane_agents_first_keeps_ownership_through_its_lifecycle() {
     multipane_startup_and_lifecycle('a');
 }
+
+#[test]
+fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
+    use yinz_cli::{args::CliAction, notes_todos::NotesTodos};
+    use yinz_types::pane_tabs::PaneTabsInfo;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("mouse_mode true\n{HOCUS_PROJECT_CONFIG}"))
+        .start();
+    yinz_integration_tests::claim_first_terminal_and_wait_for_prompt(&yinz);
+    let root = write_git_repository("panel-state", "main")
+        .canonicalize()
+        .unwrap();
+    let action = NotesTodos::ProjectRemember {
+        name: "panel-state".into(),
+        root: root.to_string_lossy().into_owned(),
+    }
+    .action(&mut std::io::empty())
+    .unwrap();
+    yinz_client::store_client::request(&yinz.session_name().into(), action).unwrap();
+    open_sidebar(&yinz);
+    let tabs = || -> PaneTabsInfo {
+        panel_members(&yinz)
+            .iter()
+            .find_map(|pane| {
+                pane.get("pane_tabs")
+                    .and_then(|tabs| serde_json::from_value(tabs.clone()).ok())
+            })
+            .expect("the panel has host tabs")
+    };
+    let initial = tabs();
+    assert_eq!(
+        initial
+            .tabs
+            .iter()
+            .map(|slot| slot.descriptor.location.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "yinz:hocus-agents",
+            "yinz:hocus-todos",
+            "yinz:hocus-vms",
+            "yinz:hocus-swamp"
+        ]
+    );
+    assert!(
+        initial
+            .tabs
+            .iter()
+            .skip(1)
+            .all(|slot| slot.plugin_id.is_none()),
+        "children load on demand"
+    );
+    yinz.send_stdin(b"/agent-draft");
+    yinz.wait_until("Agents search draft is visible", |grid| {
+        grid.contains("agent-draft")
+    });
+    yinz.send_stdin(&keys::SHIFT_TAB);
+    yinz.wait_until("Agents yields to the host bar", |_| {
+        !tabs().bar_focused.is_empty()
+    });
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.wait_until("Todos loads independently", |grid| {
+        grid.contains("p to pick one")
+    });
+    yinz.send_stdin(b"p");
+    yinz.wait_until("project is listed", |grid| grid.contains("panel-state"));
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("project is selected", |grid| {
+        !grid.contains("Pick a project") && grid.contains("panel-state")
+    });
+    yinz.send_stdin(b"atodo-draft");
+    yinz.wait_until("todo draft is visible", |grid| grid.contains("todo-draft"));
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.wait_until("VM plugin loads", |grid| {
+        grid.contains("[VMs]") && grid.contains("Unavailable") && tabs().tabs[2].plugin_id.is_some()
+    });
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("chat has focus", |grid| grid.cursor.is_some());
+    yinz.send_stdin(&keys::TAB);
+    yinz.wait_until("chat yields to the active VM child", |_| {
+        let tabs = tabs();
+        let active = tabs.tabs[2].plugin_id.unwrap().get();
+        !tabs.bar_focused.is_empty()
+            && panel_members(&yinz)
+                .iter()
+                .any(|pane| pane["id"] == active && pane["is_focused"] == true)
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("the ring enters the VM list", |_| {
+        tabs().bar_focused.is_empty()
+    });
+    yinz.send_stdin(&keys::TAB);
+    yinz.wait_until("the ring enters the VM details", |grid| {
+        grid.contains("─ ▸ Unavailable")
+    });
+    yinz.send_stdin(&keys::TAB);
+    yinz.wait_until("VM content yields focus back to the conversation", |_| {
+        panel_members(&yinz)
+            .iter()
+            .any(|pane| pane["plugin_url"] == "hocus" && pane["is_focused"] == true)
+    });
+    yinz.send_stdin(&keys::TAB);
+    yinz.wait_until("the ring reaches the conversation input", |grid| {
+        grid.cursor.is_some()
+    });
+    yinz.send_stdin(&keys::TAB);
+    yinz.wait_until("the ring returns to the active child", |_| {
+        let tabs = tabs();
+        let active = tabs.tabs[2].plugin_id.unwrap().get();
+        !tabs.bar_focused.is_empty()
+            && panel_members(&yinz)
+                .iter()
+                .any(|pane| pane["id"] == active && pane["is_focused"] == true)
+    });
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.wait_until("Swamp loads under its own permission identity", |grid| {
+        grid.contains("r to allow")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(b"/swamp-draft");
+    yinz.wait_until("Swamp query is visible", |grid| {
+        grid.contains("swamp-draft")
+    });
+    yinz.send_stdin(&keys::SHIFT_TAB);
+    yinz.wait_until("Swamp yields to the host bar", |_| {
+        !tabs().bar_focused.is_empty()
+    });
+    let loaded = tabs();
+    let ids: std::collections::BTreeSet<_> = loaded
+        .tabs
+        .iter()
+        .filter_map(|slot| slot.plugin_id)
+        .collect();
+    assert_eq!(ids.len(), 4);
+    assert_eq!(loaded.id, initial.id);
+    for _ in 0..3 {
+        yinz.run_cli_action(CliAction::PreviousPaneTab);
+    }
+    yinz.wait_until("Agents reappears", |grid| grid.contains("[Agents]"));
+    yinz.send_stdin(b"/");
+    yinz.wait_until("Agents retains its search draft", |grid| {
+        grid.contains("agent-draft")
+    });
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.send_stdin(b"a");
+    yinz.wait_until("Todos retains its draft across plugin switches", |grid| {
+        grid.contains("todo-draft")
+    });
+    yinz.send_stdin(&keys::ctrl('b'));
+    yinz.wait_until("chat is ready to hide the panel", |grid| {
+        grid.cursor.is_some()
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("the whole panel is hidden", |grid| {
+        !grid.contains("todo-draft")
+    });
+    yinz.send_stdin(&keys::ctrl('a'));
+    yinz.wait_until("show restores the Todo child", |grid| {
+        grid.contains("[Todos]")
+    });
+    yinz.send_stdin(b"a");
+    yinz.wait_until("show restores the active child and its draft", |grid| {
+        grid.contains("todo-draft")
+    });
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.wait_until("VM child reappears", |grid| grid.contains("[VMs]"));
+    yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+        url: "yinz:hocus-vms".into(),
+        configuration: None,
+    });
+    yinz.wait_until("VM reload preserves the host composition", |grid| {
+        grid.contains("[VMs]") && tabs().tabs[2].plugin_id.is_some()
+    });
+    assert_eq!(tabs().id, initial.id);
+    for index in [0, 1, 3] {
+        assert_eq!(tabs().tabs[index].plugin_id, loaded.tabs[index].plugin_id);
+    }
+    yinz.run_cli_action(CliAction::NextPaneTab);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(b"/");
+    yinz.wait_until("Swamp retains its own query draft", |grid| {
+        grid.contains("swamp-draft")
+    });
+    yinz.send_stdin(&[keys::ctrl('t'), keys::key('n')].concat());
+    yinz.expect_pty_spawn().output(b"FOUR PLUGINS MOVED");
+    yinz.wait_until("all four slots move with the panel", |grid| {
+        grid.contains("FOUR PLUGINS MOVED")
+            && grid.contains("swamp-draft")
+            && tabs().id == initial.id
+            && tabs().tabs.iter().all(|slot| slot.plugin_id.is_some())
+    });
+    let screen = yinz.snapshot();
+    let (row, column) = screen
+        .text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find(" VMs ")
+                .map(|at| (row, line[..at].chars().count() + 2))
+        })
+        .expect("the host bar exposes the VM tab");
+    for suffix in ['M', 'm'] {
+        yinz.send_stdin(format!("\x1b[<0;{};{}{suffix}", column + 1, row + 1).as_bytes());
+    }
+    yinz.wait_until(
+        "host tab mouse coordinates activate the VM plugin",
+        |grid| grid.contains("[VMs]") && tabs().active == 2,
+    );
+    yinz.quit();
+}

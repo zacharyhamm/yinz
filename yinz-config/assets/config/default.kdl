@@ -555,6 +555,8 @@ plugins {
     // draws is pushed by the one hocus instance, and there is one panel per
     // session. Sized by hocus's `width`, `height` and `split`, above.
     hocus-todos location="yinz:hocus-todos"
+    hocus-vms location="yinz:hocus-vms"
+    hocus-swamp location="yinz:hocus-swamp"
     hocus-agents location="yinz:hocus-agents" {
         shared true
     }

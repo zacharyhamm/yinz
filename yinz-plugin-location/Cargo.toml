@@ -14,3 +14,6 @@ log = { workspace = true }
 percent-encoding = { version = "2.1.0", default-features = false, features = ["std"] }
 shellexpand = { version = "3.0.0", default-features = false, features = ["base-0", "tilde"] }
 url = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

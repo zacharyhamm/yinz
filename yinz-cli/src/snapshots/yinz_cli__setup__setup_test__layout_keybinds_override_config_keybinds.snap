@@ -371,11 +371,37 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "hocus-swamp": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "hocus-swamp",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "hocus-todos": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
                     PluginTag(
                         "hocus-todos",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "hocus-vms": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "hocus-vms",
                     ),
                 ),
                 configuration: PluginUserConfiguration(

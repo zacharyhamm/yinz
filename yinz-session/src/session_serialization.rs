@@ -2622,7 +2622,10 @@ mod tests {
             } else {
                 tiled.children[0].pane_tabs.as_ref()
             };
-            assert_eq!(actual, Some(&tabs), "{raw}");
+            let mut expected = tabs.clone();
+            expected.tabs[1].location = "yinz:hocus-vms".into();
+            expected.tabs[1].configuration.clear();
+            assert_eq!(actual, Some(&expected), "{raw}");
         }
     }
 

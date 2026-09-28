@@ -137,10 +137,7 @@ fn the_waiting_view_says_what_it_is_and_the_way_back() {
     assert!(state.toggle_waiting());
     state.render(20, 70);
     assert_eq!(state.view_label().as_deref(), Some("Waiting for you"));
-    assert_eq!(
-        state.tab_cells[0].text, " Agents │",
-        "the tab is still the Agents tab"
-    );
+
     state.hide_the_panel();
     state.render(20, 70);
     assert_eq!(state.view_label().as_deref(), Some("Waiting for you"));

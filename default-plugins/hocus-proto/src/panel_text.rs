@@ -89,3 +89,130 @@ pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+
+use yinz_tile::prelude::{print_text_with_coordinates, Text};
+
+pub const MIN_HISTORY_ROWS: usize = 2;
+pub const FOCUS_MARK_COLS: usize = 2;
+pub const PANEL_KEYS: &[(&str, &str)] = &[
+    ("Ctrl e o", "move the panel (Ctrl-o when locked)"),
+    ("?", "shut this sheet"),
+];
+
+pub fn paint(text: Text, x: usize, y: usize, width: Option<usize>, height: Option<usize>) {
+    print_text_with_coordinates(text, x, y, width, height);
+}
+
+pub fn render_divider(
+    label: &str,
+    above: usize,
+    below: usize,
+    focused: bool,
+    y: usize,
+    cols: usize,
+) {
+    paint(
+        divider_text(label, above, below, focused, cols),
+        0,
+        y,
+        Some(cols),
+        None,
+    );
+}
+
+pub fn divider_text(label: &str, above: usize, below: usize, focused: bool, cols: usize) -> Text {
+    let label = match (focused, label.is_empty()) {
+        (true, true) => "▸".to_owned(),
+        (true, false) => format!("▸ {label}"),
+        (false, true) => String::new(),
+        (false, false) => format!("  {label}"),
+    };
+    let line = divider_line(&label, above, below, cols);
+    // Found rather than counted: a label cut to fit may have lost the marker, and no kind can
+    // contain one (`valid_kind` allows no punctuation).
+    let marker = label
+        .contains('!')
+        .then(|| line.chars().position(|c| c == '!'))
+        .flatten();
+    let text = Text::new(line);
+    // Dim wins over colour where both are asked for, so an unfocused rule is dimmed around
+    // the marker rather than under it: a waiting `!` painted red under a dim range was drawn
+    // dim, the one character on the row meant to stand out.
+    let text = match (focused, marker) {
+        (true, _) => text.color_range(2, ..),
+        (false, Some(at)) => text.dim_range(..at).dim_range(at + 1..),
+        (false, None) => text.dim_range(..),
+    };
+    match marker {
+        Some(at) => text.error_color_range(at..at + 1),
+        None => text,
+    }
+}
+
+pub fn split(rows: usize) -> (usize, usize) {
+    let history_rows = rows / 2;
+    let list_rows = rows.saturating_sub(history_rows + 1);
+    // Measured rather than thresholded, so the two minimums stay the thing that decides and
+    // there is no second expression of the arithmetic to keep in step with this one.
+    if list_rows < 3 || history_rows < MIN_HISTORY_ROWS {
+        return (rows, 0);
+    }
+    (list_rows, history_rows)
+}
+
+pub fn single_line(text: &str) -> String {
+    let pieces: Vec<&str> = text.split(['\n', '\r']).collect();
+    let last = pieces.len() - 1;
+    let mut line = String::with_capacity(text.len());
+    for (index, piece) in pieces.into_iter().enumerate() {
+        let piece: String = piece
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect();
+        let piece = match (index == 0, index == last) {
+            (true, true) => piece.as_str(),
+            (true, false) => piece.trim_end(),
+            (false, true) => piece.trim_start(),
+            (false, false) => piece.trim(),
+        };
+        if piece.is_empty() {
+            continue;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(piece);
+    }
+    line
+}
+
+pub fn sheet(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(keys, what)| ((*keys).to_owned(), (*what).to_owned()))
+        .collect()
+}
+
+pub fn key_sheet_lines(
+    keys: &str,
+    what: &str,
+    key_width: usize,
+    cols: usize,
+) -> Vec<(String, usize)> {
+    let keys = wrap_words(keys, key_width);
+    let what = wrap_words(what, cols.saturating_sub(1 + key_width + 2));
+    (0..keys.len().max(what.len()).max(1))
+        .map(|row| {
+            let piece = keys.get(row).map_or("", String::as_str);
+            let mut line = format!(" {piece}");
+            let key_chars = match piece.is_empty() {
+                true => 0,
+                false => line.chars().count(),
+            };
+            if let Some(what) = what.get(row) {
+                line.push_str(&" ".repeat(key_width.saturating_sub(piece.width()) + 2));
+                line.push_str(what);
+            }
+            (agents::cut_to_width(line, cols), key_chars)
+        })
+        .collect()
+}

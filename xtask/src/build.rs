@@ -115,6 +115,8 @@ pub const PLUGINS: &[&str] = &[
     "hocus",
     "hocus-todos",
     "hocus-agents",
+    "hocus-vms",
+    "hocus-swamp",
     "hocus-new-agent",
     "hocus-agentd",
     "hocus-store",

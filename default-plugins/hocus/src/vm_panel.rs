@@ -1,10 +1,10 @@
-use crate::archive::AGENT_LIST_LOCATION;
 use crate::{api, tools, State, MAX_TOOL_OUTPUT};
 use hocus_proto::vms::{self, Operation, Request, ResultMessage, Snapshot};
 use std::collections::BTreeMap;
 use yinz_tile::prelude::*;
 
 pub(crate) const CONTEXT: &str = "vm_panel";
+const VM_LOCATION: &str = "yinz:hocus-vms";
 const VALIDATE: &str = "vm_panel_validate";
 
 impl State {
@@ -15,25 +15,13 @@ impl State {
         let member = self.panel_tabs.as_ref().and_then(|tabs| {
             tabs.tabs
                 .iter()
-                .find(|slot| {
-                    slot.descriptor.location == AGENT_LIST_LOCATION
-                        && slot
-                            .descriptor
-                            .configuration
-                            .get("view")
-                            .is_some_and(|view| view == "vms")
-                })
+                .find(|slot| slot.descriptor.location == VM_LOCATION)
                 .and_then(|slot| slot.plugin_id)
         });
         member.filter(|id| {
-            self.plugin_instances.get(id).is_some_and(|plugin| {
-                plugin.location == AGENT_LIST_LOCATION
-                    && plugin.has_pane
-                    && plugin
-                        .configuration
-                        .get("view")
-                        .is_some_and(|view| view == "vms")
-            })
+            self.plugin_instances
+                .get(id)
+                .is_some_and(|plugin| plugin.location == VM_LOCATION && plugin.has_pane)
         })
     }
 
@@ -293,9 +281,9 @@ mod tests {
             tabs: vec![PaneTabInfo {
                 descriptor: PaneTabDescriptor {
                     label: "VMs".into(),
-                    location: AGENT_LIST_LOCATION.into(),
+                    location: VM_LOCATION.into(),
                     initial_cwd: None,
-                    configuration: BTreeMap::from([("view".into(), "vms".into())]),
+                    configuration: BTreeMap::new(),
                 },
                 plugin_id: Some(PluginId::new(id)),
                 state: PaneTabLoadState::Ready,
@@ -326,8 +314,8 @@ mod tests {
                 (
                     PluginId::new(7),
                     PluginInfo {
-                        location: "yinz:hocus-agents".into(),
-                        configuration: BTreeMap::from([("view".into(), "vms".into())]),
+                        location: VM_LOCATION.into(),
+                        configuration: BTreeMap::new(),
                     },
                 ),
             ]),
