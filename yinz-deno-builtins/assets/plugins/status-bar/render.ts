@@ -420,38 +420,37 @@ function statusBlock(
   const simple = mi.capabilities.arrow_fonts;
   const mark = (glyph: string, count: number): string =>
     simple ? `${count}${glyph}` : `${glyph}${count}`;
-  for (const [agents, idle, date] of [
-    [true, true, true],
-    [true, true, false],
-    [true, false, false],
-    [false, false, false],
+  for (const [withClock, date] of [
+    [true, true],
+    [true, false],
+    [false, false],
   ]) {
     const segments: [string, "dim" | "emphasis" | "alert"][] = [];
-    if (agents) {
-      const add = (text: string, style: "dim" | "emphasis" | "alert"): void => {
-        if (segments.length > 0) segments.push([" ", "dim"]);
-        segments.push([text, style]);
-      };
-      if (counts.waiting)
-        add(
-          mark(simple ? "w" : "◆", counts.waiting),
-          Math.floor(now / 500) % 2 === 0 ? "alert" : "dim",
-        );
-      if (counts.busy)
-        add(
-          mark(
-            simple
-              ? (["|", "/", "-", "\\"][frame % 4] ?? "|")
-              : (["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"][frame] ?? "⣾"),
-            counts.busy,
-          ),
-          "emphasis",
-        );
-      if (idle && counts.idle) add(mark(simple ? "i" : "·", counts.idle), "dim");
+    const add = (text: string, style: "dim" | "emphasis" | "alert"): void => {
+      if (segments.length > 0) segments.push([" ", "dim"]);
+      segments.push([text, style]);
+    };
+    if (counts.waiting)
+      add(
+        mark(simple ? "w" : "◆", counts.waiting),
+        Math.floor(now / 500) % 2 === 0 ? "alert" : "dim",
+      );
+    if (counts.busy)
+      add(
+        mark(
+          simple
+            ? (["|", "/", "-", "\\"][frame % 4] ?? "|")
+            : (["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"][frame] ?? "⣾"),
+          counts.busy,
+        ),
+        "emphasis",
+      );
+    if (counts.idle) add(mark(simple ? "i" : "·", counts.idle), "dim");
+    if (withClock) {
+      if (segments.length > 0) segments.push(["   ", "dim"]);
+      segments.push([clock.time, "emphasis"]);
+      if (date) segments.push(["  ", "dim"], [clock.date, "dim"]);
     }
-    if (segments.length > 0) segments.push(["   ", "dim"]);
-    segments.push([clock.time, "emphasis"]);
-    if (date) segments.push(["  ", "dim"], [clock.date, "dim"]);
     const len = segments.reduce((n, [text]) => n + width(text), 0);
     if (len <= max)
       return line(
