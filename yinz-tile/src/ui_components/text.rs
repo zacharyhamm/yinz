@@ -2,6 +2,7 @@ use std::ops::Bound;
 use std::ops::Range;
 use std::ops::RangeBounds;
 use yinz_types::data::StyledText;
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 /// Char-index ranges of every non-overlapping occurrence of `substr` in `text`.
 ///
@@ -437,7 +438,7 @@ impl Text {
 }
 
 pub fn print_text(text: Text) {
-    print!("\u{1b}Pytext;{}\u{1b}\\", text.serialize())
+    print!("{UI_COMPONENT_DCS_PREFIX}text;{}\u{1b}\\", text.serialize())
 }
 
 pub fn print_text_with_coordinates(
@@ -450,7 +451,7 @@ pub fn print_text_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     print!(
-        "\u{1b}Pytext;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}text;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,
@@ -460,7 +461,7 @@ pub fn print_text_with_coordinates(
 }
 
 pub fn serialize_text(text: &Text) -> String {
-    format!("\u{1b}Pytext;{}\u{1b}\\", text.serialize())
+    format!("{UI_COMPONENT_DCS_PREFIX}text;{}\u{1b}\\", text.serialize())
 }
 
 pub fn serialize_text_with_coordinates(
@@ -473,7 +474,7 @@ pub fn serialize_text_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     format!(
-        "\u{1b}Pytext;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}text;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,

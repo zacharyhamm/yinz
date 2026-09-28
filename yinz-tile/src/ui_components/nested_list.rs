@@ -1,6 +1,7 @@
 use super::Text;
 use std::borrow::Borrow;
 use std::ops::RangeBounds;
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 #[derive(Debug, Default, Clone)]
 pub struct NestedListItem {
@@ -141,7 +142,7 @@ pub fn print_nested_list(items: Vec<NestedListItem>) {
         .map(|i| i.serialize())
         .collect::<Vec<_>>()
         .join(";");
-    print!("\u{1b}Pynested_list;{}\u{1b}\\", items)
+    print!("{UI_COMPONENT_DCS_PREFIX}nested_list;{}\u{1b}\\", items)
 }
 
 pub fn print_nested_list_with_coordinates(
@@ -159,7 +160,7 @@ pub fn print_nested_list_with_coordinates(
         .collect::<Vec<_>>()
         .join(";");
     print!(
-        "\u{1b}Pynested_list;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}nested_list;{}/{}/{}/{};{}\u{1b}\\",
         x, y, width, height, items
     )
 }
@@ -174,7 +175,7 @@ where
         .map(|i| i.borrow().serialize())
         .collect::<Vec<_>>()
         .join(";");
-    format!("\u{1b}Pynested_list;{}\u{1b}\\", items)
+    format!("{UI_COMPONENT_DCS_PREFIX}nested_list;{}\u{1b}\\", items)
 }
 
 pub fn serialize_nested_list_with_coordinates<I>(
@@ -196,7 +197,7 @@ where
         .collect::<Vec<_>>()
         .join(";");
     format!(
-        "\u{1b}Pynested_list;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}nested_list;{}/{}/{}/{};{}\u{1b}\\",
         x, y, width, height, items
     )
 }

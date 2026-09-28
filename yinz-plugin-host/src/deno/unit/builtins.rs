@@ -326,12 +326,18 @@ try { yinz.serverIncarnation = 'forged'; } catch (_) {}
 if (identity[2] !== yinz.serverIncarnation) throw Error('mutable metadata');
 export default {render() {return JSON.stringify(identity);}};
 "#;
+    let env = || {
+        let mut env = test_env();
+        env.server_session = crate::ServerSession::Fixed("identity-session".into());
+        env
+    };
     let first = {
-        let mut plugin = load_builtin("identity", source, test_env()).unwrap();
+        let mut plugin = load_builtin("identity", source, env()).unwrap();
         serde_json::from_slice::<Value>(&plugin.render(1, 1000).unwrap()).unwrap()
     };
-    let mut reloaded = load_builtin("identity", source, test_env()).unwrap();
+    let mut reloaded = load_builtin("identity", source, env()).unwrap();
     let second: Value = serde_json::from_slice(&reloaded.render(1, 1000).unwrap()).unwrap();
+    assert_eq!(first[1], "identity-session");
     for i in 0..3 {
         assert_eq!(first[i], second[i]);
     }
@@ -506,12 +512,12 @@ fn grant_requested_permissions(plugin: &mut DenoPlugin) {
 
 #[test]
 fn every_embedded_typescript_builtin_loads_and_renders() {
-    // swamp-bridge refuses to load without a server session; don't inherit one from the shell.
-    yinz_runtime::envs::set_session_name("builtins".into());
     for name in yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES {
         let source = yinz_deno_builtins::builtin_deno_plugin(name).unwrap();
         let directory = tempfile::tempdir().unwrap();
         let mut env = test_env();
+        // swamp-bridge refuses to load without a server session.
+        env.server_session = crate::ServerSession::Fixed("builtins".into());
         env.data_access = Arc::new(yinz_storage::data_access::DataAccess::sqlite(
             directory.path(),
         ));
@@ -664,7 +670,6 @@ fn shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_ag
     use crate::ServerInstruction;
     use yinz_runtime::channels::SenderWithContext;
     use yinz_types::data::{PipeMessage, PipeSource};
-    yinz_runtime::envs::set_session_name("bridge-migration".into());
     let directory = tempfile::tempdir().unwrap();
     let data = Arc::new(yinz_storage::data_access::DataAccess::sqlite(
         directory.path(),
@@ -674,6 +679,8 @@ fn shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_ag
     let env = || {
         let mut env = test_env();
         env.plugin.location = RunPluginLocation::Yinz(PluginTag::new("swamp-bridge"));
+        // Every load must see the same session: the delivery rows are keyed by it.
+        env.server_session = crate::ServerSession::Fixed("bridge-migration".into());
         env.data_access = data.clone();
         env.plugin_own_data_dir = directory.path().to_owned();
         env.senders.to_server = Some(SenderWithContext::new(server_tx.clone()));
@@ -771,10 +778,10 @@ fn run_scenario(name: &str, source: &str) {
     use crate::ServerInstruction;
     use yinz_runtime::channels::SenderWithContext;
     use yinz_types::data::{PipeMessage, PipeSource};
-    yinz_runtime::envs::set_session_name("swamp-subtitles".into());
     let directory = tempfile::tempdir().unwrap();
     let (server_tx, server_rx) = yinz_runtime::channels::unbounded();
     let mut env = test_env();
+    env.server_session = crate::ServerSession::Fixed("swamp-subtitles".into());
     env.data_access = Arc::new(yinz_storage::data_access::DataAccess::sqlite(
         directory.path(),
     ));

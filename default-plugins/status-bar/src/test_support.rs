@@ -3,6 +3,7 @@
 
 use yinz_config::config::Config;
 use yinz_tile::prelude::*;
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 use crate::LinePart;
 
@@ -21,7 +22,11 @@ pub fn with_shipped_keybinds(mode: InputMode) -> ModeInfo {
 /// text - a ribbon as `[text]`.
 pub fn plain_text(line_part: LinePart) -> String {
     let rendered = line_part.to_string();
-    let component = regex::Regex::new(r"\x1bPy(text|ribbon);([^\x1b]*)\x1b\\").unwrap();
+    let component = regex::Regex::new(&format!(
+        r"{}(text|ribbon);([^\x1b]*)\x1b\\",
+        regex::escape(UI_COMPONENT_DCS_PREFIX)
+    ))
+    .unwrap();
     let decoded = component.replace_all(&rendered, |caps: &regex::Captures| {
         // The payload is `[xzd]*` style flags, `i,j$` index groups, then the text as
         // decimal bytes.

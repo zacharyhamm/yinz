@@ -1,6 +1,7 @@
 use crate::ClientId;
 use crate::PaneId;
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use yinz_runtime::common_path::common_path_all;
@@ -685,19 +686,36 @@ impl ClientMetadata {
         clients_metadata: BTreeMap<ClientId, ClientMetadata>,
         default_editor: &Option<PathBuf>,
     ) -> String {
-        let mut lines = vec![];
-        lines.push(String::from("CLIENT_ID YINZ_PANE_ID RUNNING_COMMAND"));
-
+        let mut lines = vec![Self::render_row(
+            "CLIENT_ID",
+            "YINZ_PANE_ID",
+            "RUNNING_COMMAND",
+        )];
         for (client_id, client_metadata) in clients_metadata.iter() {
-            // 9 - CLIENT_ID, 14 - YINZ_PANE_ID, 15 - RUNNING_COMMAND
-            lines.push(format!(
-                "{: <9} {: <14} {: <15}",
+            lines.push(Self::render_row(
                 client_id,
                 client_metadata.stringify_pane_id(),
-                client_metadata.stringify_command(default_editor)
+                client_metadata.stringify_command(default_editor),
             ));
         }
         lines.join("\n")
+    }
+    /// One line of `yinz action list-clients`. The header goes through here too,
+    /// so it and the rows share one set of column widths: CLIENT_ID 9, YINZ_PANE_ID
+    /// 14 (room for `terminal_12345`, wider than its 12-character name), and
+    /// RUNNING_COMMAND 15.
+    fn render_row(
+        client_id: impl fmt::Display,
+        pane_id: impl fmt::Display,
+        running_command: impl fmt::Display,
+    ) -> String {
+        const CLIENT_ID_WIDTH: usize = 9;
+        const PANE_ID_WIDTH: usize = 14;
+        const RUNNING_COMMAND_WIDTH: usize = 15;
+        format!(
+            "{client_id: <CLIENT_ID_WIDTH$} {pane_id: <PANE_ID_WIDTH$} \
+             {running_command: <RUNNING_COMMAND_WIDTH$}"
+        )
     }
 }
 
@@ -872,6 +890,36 @@ mod tests {
             Some(Run::Command(rc)) => assert_eq!(rc.command, PathBuf::from("vim")),
             other => panic!("expected Command, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn list_clients_header_lines_up_with_its_rows() {
+        let clients = BTreeMap::from([(
+            ClientId::new(1),
+            ClientMetadata {
+                pane_id: PaneId::Terminal(crate::TerminalId::new(2)),
+                command: Some(Run::Command(RunCommand::new(PathBuf::from("htop")))),
+            },
+        )]);
+        let rendered = ClientMetadata::render_many(clients, &None);
+        let lines: Vec<&str> = rendered.lines().collect();
+        let [header, row] = lines[..] else {
+            panic!("expected a header and one row:\n{rendered}");
+        };
+        let column = |line: &str, cell: &str| {
+            line.find(cell)
+                .unwrap_or_else(|| panic!("{cell:?} missing from {line:?}"))
+        };
+        assert_eq!(
+            column(header, "YINZ_PANE_ID"),
+            column(row, "terminal_2"),
+            "pane id column misaligned:\n{rendered}"
+        );
+        assert_eq!(
+            column(header, "RUNNING_COMMAND"),
+            column(row, "htop"),
+            "running command column misaligned:\n{rendered}"
+        );
     }
 
     // detects_hx_when_editor_is_helix: the group-1 draw pairs the configured

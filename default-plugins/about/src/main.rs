@@ -18,7 +18,6 @@ const UI_COLUMNS: usize = 90;
 struct App {
     active_page: Page,
     yinz_version: Rc<RefCell<String>>,
-    base_mode: Rc<RefCell<InputMode>>,
     keybinding_state: Rc<RefCell<KeybindingState>>,
     tab_rows: usize,
     tab_columns: usize,
@@ -29,17 +28,10 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         let yinz_version = Rc::new(RefCell::new("".to_owned()));
-        let base_mode = Rc::new(RefCell::new(Default::default()));
         let keybinding_state = Rc::new(RefCell::new(Default::default()));
         App {
-            active_page: Page::new_main_screen(
-                "".to_owned(),
-                base_mode.clone(),
-                false,
-                keybinding_state.clone(),
-            ),
+            active_page: Page::new_main_screen("".to_owned(), false, keybinding_state.clone()),
             yinz_version,
-            base_mode,
             keybinding_state,
             tab_rows: 0,
             tab_columns: 0,
@@ -99,9 +91,6 @@ impl YinzPlugin for App {
                 should_render = self.handle_mouse_event(mouse_event);
             },
             Event::ModeUpdate(mode_info) => {
-                if let Some(base_mode) = mode_info.base_mode {
-                    should_render = self.update_base_mode(base_mode);
-                }
                 let base_mode_changed = self
                     .keybinding_state
                     .borrow_mut()
@@ -131,20 +120,17 @@ impl App {
     fn main_screen(&self) -> Page {
         Page::new_main_screen(
             self.yinz_version.borrow().clone(),
-            self.base_mode.clone(),
             self.is_release_notes,
             self.keybinding_state.clone(),
         )
     }
     fn main_screen_builder(&self) -> Rc<dyn Fn() -> Page> {
         let yinz_version = self.yinz_version.clone();
-        let base_mode = self.base_mode.clone();
         let keybinding_state = self.keybinding_state.clone();
         let is_release_notes = self.is_release_notes;
         Rc::new(move || {
             Page::new_main_screen(
                 yinz_version.borrow().clone(),
-                base_mode.clone(),
                 is_release_notes,
                 keybinding_state.clone(),
             )
@@ -223,14 +209,6 @@ impl App {
                 rename_plugin_pane(own_plugin_id, "About Yinz");
             }
         }
-    }
-    pub fn update_base_mode(&mut self, new_base_mode: InputMode) -> bool {
-        let mut should_render = false;
-        if *self.base_mode.borrow() != new_base_mode {
-            should_render = true;
-        }
-        *self.base_mode.borrow_mut() = new_base_mode;
-        should_render
     }
     pub fn handle_mouse_event(&mut self, mouse_event: Mouse) -> bool {
         let mut should_render = false;

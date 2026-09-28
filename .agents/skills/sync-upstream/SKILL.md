@@ -22,6 +22,25 @@ Upstream code keeps the Zellij names. The fork uses yinz names:
   `Yinz*`, and `YINZ_*` in the fork. The `zellij` command and directory names such
   as `.zellij/` and `~/.config/zellij/` correspond to `yinz`, `.yinz/`, and
   `~/.config/yinz/`.
+- Upstream UI components are the DCS sequence `ESC P z <component>;... ESC \`, and the
+  upstream grid parser matches `'z'`. The fork uses `ESC P y`. Use
+  `yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX` (or `UI_COMPONENT_DCS_FINAL` for the
+  parser's final byte) instead of a literal. Only this marker changed: the opaque style flag
+  `z` inside the payload keeps its letter. Raw fixtures such as
+  `yinz-terminal/fixtures/*-ui-component*` and the JavaScript checks in
+  `yinz-plugin-host/src/deno/unit/ui_sdk.rs` spell `y` directly.
+- The shell helpers in `yinz-cli/assets/completions/` are `yz`-prefixed: upstream `zr`,
+  `zrf`, `zri`, `ze`, `zef`, `zei`, and `zpipe` correspond to `yzr`, `yzrf`, `yzri`, `yze`,
+  `yzef`, `yzei`, and `yzpipe`. The fish functions `__fish_complete_sessions` and
+  `__fish_complete_aliases` correspond to `__yinz_complete_sessions` and
+  `__yinz_complete_aliases`.
+- Recorded terminal output spells upstream's `zellij` as `yinzer`, which keeps its six
+  columns. This applies to replay fixtures in `yinz-terminal/fixtures/` and
+  `src/tests/fixtures/`, and to the snapshots and expected strings made from them. Do
+  not shorten it to `yinz` there.
+- `Yinz` is two columns narrower than `Zellij`. Do not copy upstream offsets, widths, or
+  `color_range` indices that cover the name. Derive them from the text, for example with
+  `color_substring`.
 - Rename every adapted change to the yinz names, including code, tests, snapshots,
   messages, and documentation.
 - Keep the Zellij names in upstream commit titles, links, and upstream paths. In the

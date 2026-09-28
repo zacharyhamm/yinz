@@ -36,6 +36,7 @@ use vte;
 use yinz_types::pane_size::SizeInPixels;
 use yinz_types::position::Position;
 use yinz_types::style::{Palette, Styling};
+use yinz_types::ui_components::UI_COMPONENT_DCS_FINAL;
 use {
     yinz_ipc::nested_session, yinz_ipc::nested_session::NestedSessionMessage,
     yinz_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, yinz_runtime::consts::SCROLL_BUFFER_SIZE,
@@ -4845,7 +4846,7 @@ impl Perform for Grid {
                     params.iter().collect(),
                 );
             }
-        } else if c == 'y' {
+        } else if c == UI_COMPONENT_DCS_FINAL {
             // UI-component (Yinz internal)
             self.ui_component_bytes = Some(vec![]);
         } else if c == 'n'

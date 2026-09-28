@@ -1,8 +1,12 @@
 use super::Text;
 use std::borrow::Borrow;
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 pub fn print_ribbon(text: Text) {
-    print!("\u{1b}Pyribbon;{}\u{1b}\\", text.serialize());
+    print!(
+        "{UI_COMPONENT_DCS_PREFIX}ribbon;{}\u{1b}\\",
+        text.serialize()
+    );
 }
 
 pub fn print_ribbon_with_coordinates(
@@ -15,7 +19,7 @@ pub fn print_ribbon_with_coordinates(
     let width = width.map(|w| w.to_string()).unwrap_or_default();
     let height = height.map(|h| h.to_string()).unwrap_or_default();
     print!(
-        "\u{1b}Pyribbon;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}ribbon;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,
@@ -25,7 +29,10 @@ pub fn print_ribbon_with_coordinates(
 }
 
 pub fn serialize_ribbon(text: &Text) -> String {
-    format!("\u{1b}Pyribbon;{}\u{1b}\\", text.serialize())
+    format!(
+        "{UI_COMPONENT_DCS_PREFIX}ribbon;{}\u{1b}\\",
+        text.serialize()
+    )
 }
 
 pub fn serialize_ribbon_with_coordinates(
@@ -39,7 +46,7 @@ pub fn serialize_ribbon_with_coordinates(
     let height = height.map(|h| h.to_string()).unwrap_or_default();
 
     format!(
-        "\u{1b}Pyribbon;{}/{}/{}/{};{}\u{1b}\\",
+        "{UI_COMPONENT_DCS_PREFIX}ribbon;{}/{}/{}/{};{}\u{1b}\\",
         x,
         y,
         width,

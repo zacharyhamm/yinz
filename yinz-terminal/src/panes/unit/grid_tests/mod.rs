@@ -16,6 +16,7 @@ use yinz_types::input::options::DEFAULT_WORD_SEPARATORS;
 use yinz_types::pane_size::SizeInPixels;
 use yinz_types::position::Position;
 use yinz_types::style::{Palette, Style};
+use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
 use std::fmt::Write;
 
@@ -618,7 +619,10 @@ fn serialize_text_bytes(text: &str) -> String {
 fn render_ui_component(component_name: &str, serialized_params: &str) -> Grid {
     let mut vte_parser = vte::Parser::new();
     let mut grid = new_grid_for_nested_frames();
-    let dcs = format!("\u{1b}Py{};{}\u{1b}\\", component_name, serialized_params);
+    let dcs = format!(
+        "{UI_COMPONENT_DCS_PREFIX}{};{}\u{1b}\\",
+        component_name, serialized_params
+    );
     vte_parser.advance(&mut grid, dcs.as_bytes());
     grid
 }
@@ -1126,7 +1130,7 @@ fn assert_dcs_payload_is_bounded(prefix: &[u8], kind: BufferedDcs) {
 
 #[test]
 fn ui_component_dcs_payload_is_bounded_and_recovers() {
-    assert_dcs_payload_is_bounded(b"\x1bPy", BufferedDcs::UiComponent);
+    assert_dcs_payload_is_bounded(UI_COMPONENT_DCS_PREFIX.as_bytes(), BufferedDcs::UiComponent);
 }
 
 #[test]

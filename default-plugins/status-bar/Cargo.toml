@@ -24,8 +24,9 @@ yinz-tile-utils = { path = "../../yinz-tile-utils" }
 regex = { workspace = true }
 hegeltest = "0.29.3"
 insta = "1.48"
-# Only to name `RunPluginOrAlias`/`PluginAlias` in tests: they are the field types of
-# `Action::LaunchOrFocusPlugin`, but yinz-tile's prelude does not re-export them.
+# For tests: `RunPluginOrAlias`/`PluginAlias` are the field types of
+# `Action::LaunchOrFocusPlugin`, but yinz-tile's prelude does not re-export them, and
+# test_support.rs matches UI components by `ui_components::UI_COMPONENT_DCS_PREFIX`.
 yinz-types = { workspace = true }
 # Only for `Config` in test_support.rs.
 yinz-config = { workspace = true }

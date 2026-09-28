@@ -816,7 +816,7 @@ impl RuntimeInstance {
             "initialize",
             json!({
                 "instanceId": uuid::Uuid::new_v4().to_string(),
-                "identity": super::host_bridge::server_identity()?,
+                "identity": super::host_bridge::server_identity(&env.server_session)?,
                 "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin.location),
                 "swampTiming": std::env::var("YINZ_SWAMP_TIMING").as_deref() == Ok("1"),
             }),

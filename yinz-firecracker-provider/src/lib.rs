@@ -52,6 +52,7 @@ use {yinz_runtime::consts::YINZ_CACHE_DIR, yinz_runtime::consts::YINZ_PROJ_DIR};
 const CONFIG_ENV: &str = "YINZ_FIRECRACKER_CONFIG";
 const TEST_NETWORK_ENV: &str = "YINZ_FIRECRACKER_NETWORK_CONFIG";
 const DEFAULT_TAPS: u8 = 16;
+const DEFAULT_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
 const DEFAULT_SETUP_IMAGE: &str = "yinz-dev";
 const DEFAULT_SETUP_DISK_GIB: u64 = 64;
 const INSTALLED_PROVIDER: &str = "/usr/local/bin/yinz-firecracker";
@@ -103,13 +104,35 @@ const CHROOT_DEVICES: [&str; 6] = [
     "/dev/tty",
 ];
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub bridge: String,
     pub tap_prefix: String,
     pub subnet: String,
     pub taps: u8,
     pub dns: Ipv4Addr,
+}
+
+impl NetworkConfig {
+    /// A UID's network under the interface names derived from the UID. `network setup` creates
+    /// its bridge and TAPs under these names, and `network teardown` deletes by them when setup
+    /// died before recording its config, so every UID-derived interface name comes from here:
+    /// were the two to drift, teardown would delete interfaces setup never made, and the real
+    /// bridge, its TAPs and its firewall chain (named after the bridge) would leak without a word.
+    fn for_uid(uid: u32, subnet: String, taps: u8, dns: Ipv4Addr) -> Self {
+        Self {
+            bridge: format!("yfc{uid}"),
+            tap_prefix: format!("yft{uid}-"),
+            subnet,
+            taps,
+            dns,
+        }
+    }
+
+    /// The TAP device of `slot`, as setup creates it and removal deletes it.
+    fn tap(&self, slot: u8) -> String {
+        format!("{}{slot:02}", self.tap_prefix)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -740,7 +763,7 @@ fn ensure(
         ));
     }
     let guest_ip = ipv4_add(network_base, u32::from(slot) + 2)?;
-    let tap = format!("{}{slot:02}", network.tap_prefix);
+    let tap = network.tap(slot);
     if !interface_exists(&tap) {
         return Err(anyhow!(
             "TAP {tap} is missing; run 'sudo yinz-firecracker network setup --user $USER'"
@@ -4779,7 +4802,7 @@ fn doctor() -> Result<()> {
     let network = load_network(&config)?;
     check_kvm()?;
     for slot in 0..network.taps {
-        let tap = format!("{}{slot:02}", network.tap_prefix);
+        let tap = network.tap(slot);
         if !interface_exists(&tap) {
             return Err(anyhow!(
                 "network TAP {tap} is missing; run 'sudo yinz-firecracker network setup --user $USER'"
@@ -5515,22 +5538,7 @@ fn network_setup(args: &[String]) -> Result<()> {
     require_root()?;
     let user = option_value(args, "--user")?.context("network setup requires --user USER")?;
     let uid = id_value(user, "-u")?;
-    let subnet = network_subnet(uid, option_value(args, "--subnet")?)?;
-    let taps = option_value(args, "--taps")?
-        .map(|value| value.parse().context("invalid --taps"))
-        .transpose()?
-        .unwrap_or(DEFAULT_TAPS);
-    let dns = option_value(args, "--dns")?
-        .unwrap_or("1.1.1.1")
-        .parse()
-        .context("invalid --dns")?;
-    let config = NetworkConfig {
-        bridge: format!("yfc{uid}"),
-        tap_prefix: format!("yft{uid}-"),
-        subnet,
-        taps,
-        dns,
-    };
+    let config = setup_network_config(uid, args)?;
     validate_network_config(&config)?;
     write_network_unit()?;
     // The recorded configuration is written only once the host actually matches it. A run that
@@ -5539,16 +5547,40 @@ fn network_setup(args: &[String]) -> Result<()> {
     let undo = network_apply(uid, &config)?;
     if let Err(error) = record_network_config(uid, &config).and_then(|()| {
         run(
-            Command::new("systemctl")
-                .args(["enable", &format!("yinz-firecracker-network@{uid}.service")]),
+            Command::new("systemctl").args(["enable", &network_unit(uid)]),
             "failed to enable Firecracker networking at boot",
         )
     }) {
         rollback(uid, &config, undo);
         return Err(error);
     }
-    println!("Configured {} TAPs on {} for {user}.", taps, config.bridge);
+    println!(
+        "Configured {} TAPs on {} for {user}.",
+        config.taps, config.bridge
+    );
     Ok(())
+}
+
+/// The network `network setup` applies for `uid`, from its options. This must not start from
+/// `default_network_config`: that needs a subnet derived from the UID, which a UID above 65535
+/// does not have, whereas setup accepts such a UID given an explicit `--subnet`.
+fn setup_network_config(uid: u32, args: &[String]) -> Result<NetworkConfig> {
+    let subnet = network_subnet(uid, option_value(args, "--subnet")?)?;
+    let taps = option_value(args, "--taps")?
+        .map(|value| value.parse().context("invalid --taps"))
+        .transpose()?
+        .unwrap_or(DEFAULT_TAPS);
+    let dns = option_value(args, "--dns")?
+        .map(|value| value.parse().context("invalid --dns"))
+        .transpose()?
+        .unwrap_or(DEFAULT_DNS);
+    Ok(NetworkConfig::for_uid(uid, subnet, taps, dns))
+}
+
+/// The systemd instance that reapplies `uid`'s network at boot. Setup enables it and teardown
+/// disables it by this one name.
+fn network_unit(uid: u32) -> String {
+    format!("yinz-firecracker-network@{uid}.service")
 }
 
 fn record_network_config(uid: u32, config: &NetworkConfig) -> Result<()> {
@@ -5561,13 +5593,12 @@ fn record_network_config(uid: u32, config: &NetworkConfig) -> Result<()> {
 /// derived from the UID, which is what lets `teardown` clean up after a run that never got as
 /// far as writing its config file.
 fn default_network_config(uid: u32) -> Result<NetworkConfig> {
-    Ok(NetworkConfig {
-        bridge: format!("yfc{uid}"),
-        tap_prefix: format!("yft{uid}-"),
-        subnet: network_subnet(uid, None)?,
-        taps: DEFAULT_TAPS,
-        dns: "1.1.1.1".parse()?,
-    })
+    Ok(NetworkConfig::for_uid(
+        uid,
+        network_subnet(uid, None)?,
+        DEFAULT_TAPS,
+        DEFAULT_DNS,
+    ))
 }
 
 fn network_apply_cli(args: &[String]) -> Result<()> {
@@ -5684,7 +5715,7 @@ fn network_apply_inner(
         "failed to start the Firecracker bridge",
     )?;
     for slot in 0..config.taps {
-        let tap = format!("{}{slot:02}", config.tap_prefix);
+        let tap = config.tap(slot);
         if !interface_exists(&tap) {
             run(
                 Command::new("ip").args([
@@ -6234,7 +6265,7 @@ fn split_rule(line: &str) -> Vec<String> {
 /// then the bridge. Deleting the bridge alone detaches the TAPs and leaves them behind.
 fn network_remove_commands(config: &NetworkConfig) -> Vec<Vec<String>> {
     (0..config.taps)
-        .map(|slot| strings(&["link", "delete", &format!("{}{slot:02}", config.tap_prefix)]))
+        .map(|slot| strings(&["link", "delete", &config.tap(slot)]))
         .chain([strings(&["link", "delete", &config.bridge])])
         .collect()
 }
@@ -6283,11 +6314,7 @@ fn network_teardown(args: &[String]) -> Result<()> {
     };
     validate_network_config(&config)?;
     run(
-        Command::new("systemctl").args([
-            "disable",
-            "--now",
-            &format!("yinz-firecracker-network@{uid}.service"),
-        ]),
+        Command::new("systemctl").args(["disable", "--now", &network_unit(uid)]),
         "failed to disable Firecracker networking",
     )?;
     let _ = Command::new("nft")
@@ -6453,6 +6480,10 @@ fn find_in_path_from(program: &Path, path: Option<&OsStr>) -> Option<PathBuf> {
 #[cfg(test)]
 #[path = "unit/provider_cli.rs"]
 mod cli_tests;
+
+#[cfg(test)]
+#[path = "unit/network_names.rs"]
+mod network_names_tests;
 
 #[cfg(test)]
 mod tests {

@@ -26,7 +26,6 @@ use {
 };
 
 use crate::PluginInstruction;
-use std::env::set_var;
 use yinz_bus::background_jobs::BackgroundJob;
 use yinz_bus::pty::PtyInstruction;
 use yinz_bus::pty_writer::PtyWriteInstruction;
@@ -656,7 +655,6 @@ fn create_plugin_thread_with_hooks_and_event_sender(
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
-            set_var("YINZ_SESSION_NAME", "yinz-test");
             plugin_thread_main(
                 plugin_bus,
                 engine,
@@ -679,6 +677,7 @@ fn create_plugin_thread_with_hooks_and_event_sender(
                 Default::default(), // context_menu
                 None,
                 initiating_client_id,
+                crate::ServerSession::Fixed("yinz-test".into()),
             )
             .expect("TEST")
         })
@@ -745,7 +744,6 @@ fn create_plugin_thread_with_server_receiver(
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
-            set_var("YINZ_SESSION_NAME", "yinz-test");
             plugin_thread_main(
                 plugin_bus,
                 engine,
@@ -768,6 +766,7 @@ fn create_plugin_thread_with_server_receiver(
                 Default::default(), // context_menu
                 None,
                 initiating_client_id,
+                crate::ServerSession::Fixed("yinz-test".into()),
             )
             .expect("TEST");
         })
@@ -857,7 +856,6 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
-            set_var("YINZ_SESSION_NAME", "yinz-test");
             plugin_thread_main(
                 plugin_bus,
                 engine,
@@ -880,6 +878,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
                 Default::default(), // context_menu
                 None,
                 initiating_client_id,
+                crate::ServerSession::Fixed("yinz-test".into()),
             )
             .expect("TEST")
         })
@@ -947,7 +946,6 @@ fn create_plugin_thread_with_background_jobs_receiver(
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
         .spawn(move || {
-            set_var("YINZ_SESSION_NAME", "yinz-test");
             plugin_thread_main(
                 plugin_bus,
                 engine,
@@ -970,6 +968,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
                 Default::default(), // context_menu
                 None,
                 initiating_client_id,
+                crate::ServerSession::Fixed("yinz-test".into()),
             )
             .expect("TEST")
         })
