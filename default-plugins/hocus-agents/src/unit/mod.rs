@@ -1882,7 +1882,7 @@ fn footer_hints_name_the_keys_for_the_row_under_the_cursor() {
     state.focus = Focus::History;
     assert_eq!(
         footer(&mut state),
-        "↑↓ event · Enter read · r resume · s summary · w waiting (0) · / search · \
+        "↑↓ event · Enter read · y copy · r resume · s summary · w waiting (0) · / search · \
          PgUp/PgDn scroll · Tab chat"
     );
     // Unless another pane has the keyboard, when the half does not claim them.
@@ -4277,6 +4277,39 @@ fn y_copies_the_fold_under_the_cursor_and_the_whole_event_otherwise() {
         prose.copy_target().as_deref(),
         Some("fix the flaky reconnect test")
     );
+}
+
+#[test]
+fn y_copies_the_selected_history_event_without_opening_it() {
+    for text in [
+        "**Agent reply**\n\n你好 🌍\n".repeat(80),
+        task_notification(),
+    ] {
+        let mut state = reading(&text);
+        press(&mut state, BareKey::Esc);
+        assert!(state.reading.is_none());
+        assert_eq!(state.copy_target().as_deref(), Some(text.as_str()));
+        assert!(state.footer_hint().unwrap().contains("y copy"));
+        assert!(state
+            .key_sheet()
+            .iter()
+            .any(|(key, description)| key == "y" && description == "copy the whole event"));
+        assert!(state.on_key(KeyWithModifier::new(BareKey::Char('y'))));
+        assert_eq!(state.open_note.as_deref(), Some("copied the whole event"));
+        assert!(state.reading.is_none());
+
+        state.on_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
+        assert_eq!(state.focus, Focus::List);
+        assert!(!state.on_key(KeyWithModifier::new(BareKey::Char('y'))));
+        assert!(state.open_note.is_none());
+    }
+
+    let mut empty = State {
+        focus: Focus::History,
+        ..Default::default()
+    };
+    assert!(!empty.on_key(KeyWithModifier::new(BareKey::Char('y'))));
+    assert!(empty.open_note.is_none());
 }
 
 /// A copy is invisible until it is pasted, and the fold and the whole event are two
