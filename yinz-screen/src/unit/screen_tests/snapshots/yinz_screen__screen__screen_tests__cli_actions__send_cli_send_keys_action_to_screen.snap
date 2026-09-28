@@ -1,6 +1,6 @@
 ---
 source: yinz-screen/src/screen/../unit/screen_tests/cli_actions.rs
-assertion_line: 225
+assertion_line: 230
 expression: "format!(\"{:#?}\", received_write_instructions)"
 ---
 [
@@ -11,7 +11,17 @@ expression: "format!(\"{:#?}\", received_write_instructions)"
         TerminalId(
             0,
         ),
-        None,
+        Some(
+            NotificationEnd {
+                channel: None,
+                exit_status: None,
+                unblock_condition: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                error_message: None,
+                stdout_message: None,
+            },
+        ),
     ),
     Write(
         [
@@ -20,6 +30,16 @@ expression: "format!(\"{:#?}\", received_write_instructions)"
         TerminalId(
             0,
         ),
-        None,
+        Some(
+            NotificationEnd {
+                channel: None,
+                exit_status: None,
+                unblock_condition: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                error_message: None,
+                stdout_message: None,
+            },
+        ),
     ),
 ]

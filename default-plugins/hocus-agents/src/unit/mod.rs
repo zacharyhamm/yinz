@@ -2110,15 +2110,12 @@ fn the_bar_hint_is_the_footer_wherever_the_bar_has_the_keys() {
         assert_ne!(state.footer_hint().as_deref(), Some(tabs::BAR_HINT));
     }
 
-    // A box being typed in takes the keys ahead of the bar, so its hint does too.
+    // The bar owns keys and hints even when a search box remains open.
     state.begin_search();
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
     state.render(11, 60);
-    assert_eq!(
-        state.footer_hint().as_deref(),
-        Some("Enter apply · Esc cancel")
-    );
+    assert_eq!(state.footer_hint().as_deref(), Some(tabs::BAR_HINT));
 }
 
 /// Ctrl-o moves the panel from wherever the keys are in it, including every state that
@@ -2144,8 +2141,8 @@ fn ctrl_o_is_taken_ahead_of_every_state_that_answers_every_key() {
     state.tabs_focused = true;
 
     state.bar_focused = vec![state.own_client_id];
-    assert!(!state.on_key(ctrl_o()));
-    assert!(state.tabs_focused, "the bar keeps the keys");
+    assert!(state.on_key(ctrl_o()));
+    assert!(state.tabs_focused, "the bar consumes modified keys too");
     state.tabs_focused = false;
     state.bar_focused = vec![];
 
@@ -2183,46 +2180,36 @@ fn native_bar_focus_uses_the_sending_client() {
     assert!(state.bar_focused.is_empty());
 }
 
-/// The bar answers its own keys and hands every other one back to the surface, which then
-/// does with it what it always does - rather than the key vanishing under a surface still
-/// advertising it.
 #[test]
-fn a_key_the_bar_does_not_own_goes_to_the_list_below_it() {
+fn queued_bar_keys_do_not_reach_the_list() {
     let mut state = State::default();
     state.set_rows(unfocused(strip()));
     state.render(20, 40);
     state.selected = 3;
-    for release in [BareKey::Enter, BareKey::Down, BareKey::Char('j')] {
-        state.tabs_focused = true;
-        state.bar_focused = vec![state.own_client_id];
+    state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+    for key in [
+        BareKey::Left,
+        BareKey::Right,
+        BareKey::Down,
+        BareKey::Char('j'),
+        BareKey::Char('k'),
+        BareKey::Char('s'),
+        BareKey::Char('x'),
+    ] {
+        assert!(state.on_key(KeyWithModifier::new(key)));
+        assert!(state.tabs_focused);
+        assert_eq!(state.selected, 3);
+        assert_eq!(asked(&state), None);
+    }
+    assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier()));
+    assert!(state.tabs_focused);
+    assert!(!state.on_paste("queued paste"));
+    for release in [BareKey::Enter, BareKey::Tab, BareKey::Esc] {
+        state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
         assert!(state.on_key(KeyWithModifier::new(release)));
         assert!(!state.tabs_focused);
-        assert_eq!(state.selected, 3, "{release:?} only leaves the bar");
+        assert_eq!(state.selected, 3);
     }
-    state.tabs_focused = true;
-    state.bar_focused = vec![state.own_client_id];
-    assert!(state.on_key(KeyWithModifier::new(BareKey::Char('k'))));
-    assert!(!state.tabs_focused);
-    assert_eq!(state.selected, 2, "k walked the list");
-
-    state.tabs_focused = true;
-
-    state.bar_focused = vec![state.own_client_id];
-    assert!(state.on_key(KeyWithModifier::new(BareKey::Char('s'))));
-    assert_eq!(asked(&state), Some("pane:3"));
-    assert!(!state.tabs_focused);
-
-    // Modified keys too: Ctrl-r is the list's refresh, not the bar's to drop. And a redraw,
-    // like every key that leaves the bar, whether or not the list has anything to draw for
-    // it: the bar's highlight and its footer are coming down.
-    state.tabs_focused = true;
-    state.bar_focused = vec![state.own_client_id];
-    assert!(state.on_key(KeyWithModifier::new(BareKey::Char('r')).with_ctrl_modifier()));
-    assert!(!state.tabs_focused);
-    state.tabs_focused = true;
-    state.bar_focused = vec![state.own_client_id];
-    assert!(state.on_key(KeyWithModifier::new(BareKey::Char('x'))));
-    assert!(!state.tabs_focused);
 }
 
 /// A click takes the keys off the bar wherever it lands, and that is a redraw even on a

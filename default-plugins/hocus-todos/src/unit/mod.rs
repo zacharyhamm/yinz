@@ -11,5 +11,7 @@ fn queued_bar_arrows_keep_focus_on_the_native_bar() {
         assert!(state.tabs_focused);
     }
     state.on_key(KeyWithModifier::new(BareKey::Char('j')));
+    assert!(state.tabs_focused);
+    state.on_key(KeyWithModifier::new(BareKey::Enter));
     assert!(!state.tabs_focused);
 }

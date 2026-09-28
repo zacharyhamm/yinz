@@ -36,6 +36,7 @@ pub mod geometry;
 pub mod multipane;
 pub mod pane_size;
 pub mod pane_tabs;
+pub mod tab_bar;
 
 pub mod agent;
 pub mod command;

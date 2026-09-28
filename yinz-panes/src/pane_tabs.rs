@@ -21,59 +21,29 @@ impl PaneTabsTransfer {
     }
 }
 
-/// Cell hit targets and rendering share one clipped window; the active label always fits first.
-pub fn bar_cells(info: &PaneTabsInfo, width: usize) -> Vec<(char, usize)> {
-    use unicode_width::UnicodeWidthChar;
-    if width == 1 {
-        return vec![('•', info.active)];
-    }
-    let labels: Vec<Vec<(char, usize)>> = info
+/// Host-owned view state, separate from plugin events and persisted layouts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaneTabsView {
+    pub highlight: usize,
+    pub reveal: Option<usize>,
+}
+
+pub fn bar_cells(
+    info: &PaneTabsInfo,
+    view: PaneTabsView,
+    focused: bool,
+    width: usize,
+) -> Vec<yinz_types::tab_bar::TabCell<yinz_types::tab_bar::TabTarget>> {
+    let labels: Vec<_> = info
         .tabs
         .iter()
-        .enumerate()
-        .map(|(index, slot)| {
+        .map(|slot| {
             let label =
                 yinz_types::text::clean_string_from_control_and_linebreak(&slot.descriptor.label);
-            format!(
-                " {}{}{} ",
-                if index == info.active { "[" } else { "" },
-                label,
-                if index == info.active { "]" } else { "" }
-            )
-            .chars()
-            .map(|ch| (ch, index))
-            .collect()
+            format!(" {label} │")
         })
         .collect();
-    let length = |label: &Vec<(char, usize)>| {
-        label
-            .iter()
-            .map(|(ch, _)| ch.width().unwrap_or(0))
-            .sum::<usize>()
-    };
-    let mut start = 0;
-    while start < info.active
-        && labels[start..=info.active]
-            .iter()
-            .map(length)
-            .sum::<usize>()
-            > width
-    {
-        start += 1;
-    }
-    let mut result = Vec::new();
-    for &(ch, index) in labels[start..].iter().flatten() {
-        let cells = ch.width().unwrap_or(0);
-        if result.len() + cells > width {
-            break;
-        }
-        if cells == 0 {
-            continue;
-        }
-        result.push((ch, index));
-        for _ in 1..cells {
-            result.push(('\0', index));
-        }
-    }
-    result
+    let focus = focused.then_some(view.highlight);
+    let keep = focus.or(view.reveal).unwrap_or(info.active);
+    yinz_types::tab_bar::overflow(&labels, width, info.active, focus, keep)
 }

@@ -1879,18 +1879,18 @@ fn the_bar_hint_takes_the_vm_divider_not_a_row() {
     state.render(11, 60);
     let halves = |state: &State| (state.vms.last_list_rows, state.vms.last_details_rows);
     let unfocused = halves(&state);
-    assert!(!state.vm_divider_label(60, false).contains("←/→ switch"));
+    assert!(!state.vm_divider_label(60, false).contains("←/→ choose"));
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
     state.render(11, 60);
     assert_eq!(halves(&state), unfocused);
     let label = state.vm_divider_label(60, false);
-    assert!(label.contains("←/→ switch"), "{label}");
+    assert!(label.contains("←/→ choose"), "{label}");
     state.tabs_focused = false;
     state.bar_focused = vec![];
     state.render(11, 60);
     assert_eq!(halves(&state), unfocused);
-    assert!(!state.vm_divider_label(60, false).contains("←/→ switch"));
+    assert!(!state.vm_divider_label(60, false).contains("←/→ choose"));
 
     // With no hocus to ask, the bar's keys still come first while it has them.
     state.vms.owner = None;
@@ -1898,7 +1898,7 @@ fn the_bar_hint_takes_the_vm_divider_not_a_row() {
     state.tabs_focused = true;
     state.bar_focused = vec![state.own_client_id];
     let label = state.vm_divider_label(60, false);
-    assert!(label.contains("←/→ switch"), "{label}");
+    assert!(label.contains("←/→ choose"), "{label}");
 }
 
 /// A status on the divider - a request queued, running or still running after its
@@ -1934,7 +1934,7 @@ fn a_vm_status_keeps_the_bar_hint_while_the_bar_has_the_keys() {
             _ => ", still running",
         };
         assert!(own.contains(expected), "{case}: {own}");
-        assert!(!own.contains("←/→ switch"), "{case}: {own}");
+        assert!(!own.contains("←/→ choose"), "{case}: {own}");
 
         // A running request's seconds can tick between two labels, so those are compared
         // by the status's text rather than whole.
@@ -1942,7 +1942,7 @@ fn a_vm_status_keeps_the_bar_hint_while_the_bar_has_the_keys() {
         state.tabs_focused = true;
         state.bar_focused = vec![state.own_client_id];
         let label = state.vm_divider_label(60, false);
-        let bar = label.find("←/→ switch");
+        let bar = label.find("←/→ choose");
         assert!(
             bar.is_some_and(|at| label[..at].contains(expected)),
             "{case}: {label}"
@@ -1957,7 +1957,7 @@ fn a_vm_status_keeps_the_bar_hint_while_the_bar_has_the_keys() {
         state.tabs_focused = false;
         state.bar_focused = vec![];
         let back = state.vm_divider_label(60, false);
-        assert!(!back.contains("←/→ switch"), "{case}: {back}");
+        assert!(!back.contains("←/→ choose"), "{case}: {back}");
         assert!(!timeless || back == own, "{case}: {back}");
     }
 }
@@ -1981,7 +1981,7 @@ fn a_quiet_vm_list_gives_the_bar_hint_a_row_while_the_bar_has_the_keys() {
         state.render(11, 60);
         assert_eq!(state.vms.last_list_rows, 10, "{owner:?}");
         let label = state.vm_divider_label(60, true);
-        assert!(label.contains("←/→ switch"), "{owner:?}: {label}");
+        assert!(label.contains("←/→ choose"), "{owner:?}: {label}");
         assert_eq!(
             state.footer_hint(),
             None,
@@ -2010,4 +2010,29 @@ fn a_whole_panel_show_does_not_poll_an_inactive_vm_child() {
     state.poll_vms();
     assert!(!state.vms.visible);
     assert!(state.vms.pending.is_none());
+}
+
+#[test]
+fn queued_bar_keys_and_paste_stay_out_of_content() {
+    let mut state = State::default();
+    state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+    for key in [
+        BareKey::Right,
+        BareKey::Right,
+        BareKey::Left,
+        BareKey::Down,
+        BareKey::Char('j'),
+        BareKey::Char('/'),
+        BareKey::Char('?'),
+    ] {
+        assert!(state.on_key(KeyWithModifier::new(key)));
+        assert!(state.tabs_focused);
+    }
+    assert!(!state.on_paste("queued paste"));
+    assert!(state.tabs_focused);
+    for key in [BareKey::Enter, BareKey::Tab, BareKey::Esc] {
+        state.take_ring_stop(Some(hocus_proto::vms::STOP_TABS));
+        assert!(state.on_key(KeyWithModifier::new(key)));
+        assert!(!state.tabs_focused);
+    }
 }

@@ -1045,15 +1045,15 @@ layout {{
         )))
         .start();
     yinz.wait_until("Wasm requests its own permissions", |grid| {
-        grid.contains("[Wasm]") && grid.contains("Allow? (y/n)")
+        grid.contains(" Wasm │") && grid.contains("Allow? (y/n)")
     });
     yinz.send_stdin(b"y");
     yinz.wait_until("native bar over Wasm content", |grid| {
-        grid.contains("[Wasm]") && grid.contains("Received events")
+        grid.contains(" Wasm │") && grid.contains("Received events")
     });
     yinz.run_cli_action(CliAction::NextPaneTab);
     yinz.wait_until("selected child requests its own permissions", |grid| {
-        grid.contains("[TypeScript]") && grid.contains("Allow? (y/n)")
+        grid.contains(" TypeScript │") && grid.contains("Allow? (y/n)")
     });
     yinz.send_stdin(b"y");
     yinz.wait_until("TypeScript loaded in the selected slot", |grid| {
@@ -1065,7 +1065,7 @@ layout {{
     });
     yinz.run_cli_action(CliAction::PreviousPaneTab);
     yinz.wait_until("Wasm retained", |grid| {
-        grid.contains("[Wasm]") && grid.contains("Received events")
+        grid.contains(" Wasm │") && grid.contains("Received events")
     });
     yinz.run_cli_action(CliAction::NextPaneTab);
     yinz.wait_until(
@@ -1073,19 +1073,14 @@ layout {{
         |grid| grid.contains("TYPESCRIPT keys=1 hides=1") && !grid.contains("hidden_updates=0"),
     );
     yinz.run_cli_action(CliAction::FocusPaneTabs);
-    yinz.send_stdin(b"\x1b[D");
-    yinz.wait_until("bar focus preserves input isolation", |grid| {
-        grid.contains("[Wasm]")
+    yinz.send_stdin(b"\x1b[Dj?\x1b[C\rx");
+    yinz.wait_until("only the key after Enter reaches content", |grid| {
+        grid.contains("TYPESCRIPT keys=2 hides=1")
     });
-    yinz.send_stdin(b"\x1b[C");
-    yinz.wait_until("bar input did not reach content", |grid| {
-        grid.contains("TYPESCRIPT keys=1 hides=2")
-    });
-    yinz.send_stdin(b"\r");
     yinz.send_stdin(b"c");
     yinz.wait_until(
         "a child can close without removing its fixed slot",
-        |grid| grid.contains("[TypeScript]") && grid.contains("Closed (r: reopen)"),
+        |grid| grid.contains(" TypeScript │") && grid.contains("Closed (r: reopen)"),
     );
     yinz.send_stdin(b"r");
     yinz.wait_until("closed child reopens as a fresh instance", |grid| {
@@ -1094,7 +1089,7 @@ layout {{
     yinz.run_cli_action(CliAction::NextPaneTab);
     yinz.wait_until(
         "a failed child exposes retry without losing the bar",
-        |grid| grid.contains("[Retry]") && grid.contains("r: retry"),
+        |grid| grid.contains(" Retry │") && grid.contains("r: retry"),
     );
     fs::write(
         &failing,
@@ -1109,11 +1104,11 @@ layout {{
     yinz.run_cli_action(CliAction::PreviousPaneTab);
     let peer = yinz.attach_client(TERMINAL_SIZE);
     peer.wait_until("new client sees the shared selection", |grid| {
-        grid.contains("[TypeScript]")
+        grid.contains(" TypeScript │") && grid.contains("TYPESCRIPT keys=0")
     });
     yinz.run_cli_action(CliAction::PreviousPaneTab);
     peer.wait_until("selection changes for both clients", |grid| {
-        grid.contains("[Wasm]")
+        grid.contains(" Wasm │") && grid.contains("Received events")
     });
     peer.quit();
     yinz.quit();

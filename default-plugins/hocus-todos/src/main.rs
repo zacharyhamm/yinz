@@ -160,9 +160,12 @@ impl YinzPlugin for State {
 }
 impl State {
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.tabs_focused {
+            return self.dispatch_key(key);
+        }
         // Cycle the whole panel one corner clockwise - the same gesture the conversation has.
-        // Taken before everything else, because where the keys are inside the panel changes
-        // nothing about what it means: not a box being typed in, not the tab bar, not the
+        // Taken before the content handlers, because where the keys are inside the panel changes
+        // nothing about what it means: not a box being typed in, not the
         // reader, not an armed question - which stays armed and on screen, since moving the
         // panel answers nothing it asked - and not the key sheet, which stays up. hocus owns
         // both overlays' geometry, so this asks rather than moves. Nothing to redraw: the move
@@ -288,15 +291,10 @@ impl State {
         ));
     }
     fn key_sheet(&self) -> Vec<(String, String)> {
-        let mut rows = if self.bar_has_keys() {
-            sheet(&[
-                ("←/→", "switch tab"),
-                ("Enter ↓ j Tab/Esc", "into the tab's list"),
-                ("Shift+Tab", "to the conversation's box"),
-            ])
-        } else {
-            self.todo_key_sheet()
-        };
+        if self.bar_has_keys() {
+            return sheet(tabs::BAR_KEYS);
+        }
+        let mut rows = self.todo_key_sheet();
         rows.extend(sheet(PANEL_KEYS));
         rows
     }
@@ -304,56 +302,34 @@ impl State {
         if self.key_sheet_scroll.is_none() || self.last_rows < 2 || self.last_cols == 0 {
             return None;
         }
+        if self.bar_has_keys() {
+            let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
+            return Some(agents::fit_keys(&segments, self.last_cols));
+        }
         Some(agents::fit_keys(
             &["Esc/? close", "j/k scroll"],
             self.last_cols,
         ))
     }
     fn dispatch_key(&mut self, key: KeyWithModifier) -> bool {
-        if self.box_ahead_of_the_bar() {
-            return self.todo_key(key);
-        }
-        let left_bar = self.tabs_focused;
         if self.tabs_focused {
-            match key.bare_key {
-                BareKey::Left | BareKey::Right if key.has_no_modifiers() => {
-                    run_action(
-                        if key.bare_key == BareKey::Left {
-                            actions::Action::PreviousPaneTab
-                        } else {
-                            actions::Action::NextPaneTab
-                        },
-                        BTreeMap::new(),
-                    );
-                    return true;
-                },
-                BareKey::Tab if key.has_modifiers(&[KeyModifier::Shift]) => {
-                    self.tabs_focused = false;
-                    if let Some(id) = self.pane_tabs {
-                        let _ = focus_pane_tabs(id, false);
-                    }
-                    self.yield_to_chat(wire::STOP_INPUT);
-                    return true;
-                },
-                _ => {
+            if key.bare_key == BareKey::Tab && key.has_modifiers(&[KeyModifier::Shift]) {
+                self.keys_to_the_list();
+                if let Some(id) = self.pane_tabs {
+                    let _ = focus_pane_tabs(id, false);
+                }
+                self.yield_to_chat(wire::STOP_INPUT);
+            } else {
+                if key.has_no_modifiers()
+                    && matches!(key.bare_key, BareKey::Enter | BareKey::Tab | BareKey::Esc)
+                {
                     self.keys_to_the_list();
-                    if let Some(id) = self.pane_tabs {
-                        let _ = focus_pane_tabs(id, false);
-                    }
-                    if matches!(
-                        key.bare_key,
-                        BareKey::Tab
-                            | BareKey::Esc
-                            | BareKey::Enter
-                            | BareKey::Down
-                            | BareKey::Char('j')
-                    ) {
-                        return true;
-                    }
-                },
+                }
+                tabs::forward_bar_key(key);
             }
+            return true;
         }
-        self.todo_key(key) || left_bar
+        self.todo_key(key)
     }
     fn keys_to_the_list(&mut self) {
         self.tabs_focused = false;
@@ -392,18 +368,11 @@ impl State {
     fn typing(&self) -> bool {
         matches!(self.todos.mode, todos::Mode::Input { .. })
     }
-    fn box_ahead_of_the_bar(&self) -> bool {
-        false
-    }
     fn on_paste(&mut self, text: &str) -> bool {
-        let changed = self.todo_paste(text);
-        if changed && self.tabs_focused {
-            self.keys_to_the_list();
-            if let Some(id) = self.pane_tabs {
-                let _ = focus_pane_tabs(id, false);
-            }
+        if self.tabs_focused {
+            return false;
         }
-        changed
+        self.todo_paste(text)
     }
     fn on_mouse(&mut self, mouse: Mouse) -> bool {
         match mouse {
@@ -446,7 +415,7 @@ impl State {
                 let _ = focus_pane_tabs(id, false);
             }
         }
-        self.todo_mouse(mouse) || left_bar
+        self.todo_mouse(mouse)
     }
 }
 fn own_pane(manifest: &PaneManifest, own_plugin_id: PluginId) -> Option<&PaneInfo> {

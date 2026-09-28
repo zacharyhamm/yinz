@@ -2380,7 +2380,8 @@ impl Tab {
             .filter_map(|(id, tabs)| {
                 let focused = tabs.info.bar_focused.contains(&client_id);
                 tabs.info.bar_focused.retain(|client| *client != client_id);
-                focused.then_some(*id)
+                let viewed = tabs.views.remove(&client_id).is_some();
+                (focused || viewed).then_some(*id)
             })
             .collect();
         for id in changed {
@@ -4403,6 +4404,7 @@ impl Tab {
         raw_input_bytes: Vec<u8>,
         raw_input_bytes_are_kitty: bool,
         client_id: ClientId,
+        completion: Option<NotificationEnd>,
     ) -> Result<bool> {
         // returns true if a UI update should be triggered (eg. if a command pane
         // was closed with ctrl-c)
@@ -4425,7 +4427,7 @@ impl Tab {
             raw_input_bytes_are_kitty,
             pane_id,
             Some(client_id),
-            None,
+            completion,
         )
         .with_context(|| format!("failed to write to active terminal for client {client_id}"))
     }
@@ -4456,6 +4458,9 @@ impl Tab {
             .get_active_pane_id(client_id)
             .ok_or_else(|| anyhow!("no active pane for client {client_id}"))
             .with_context(err_context)?;
+        if self.pane_tabs_input(active_pane_id, &None, Some(client_id))? {
+            return Ok(());
+        }
         self.paste_to_pane_id(bytes, active_pane_id, completion)
     }
 
@@ -4472,6 +4477,11 @@ impl Tab {
         if self.pane_tabs_input(pane_id, key_with_modifier, client_id)? {
             return Ok(true);
         }
+        // Only client input may wait on the plugin executor: synchronous plugin writes
+        // would otherwise wait for a barrier queued behind their own running event.
+        let wait_for_plugin_input = completion_tx
+            .as_ref()
+            .is_some_and(NotificationEnd::requires_input_barrier);
         let err_context = || format!("failed to write to pane with id {pane_id:?}");
 
         let mut should_update_ui = false;
@@ -4630,6 +4640,13 @@ impl Tab {
                             Event::Key(key_with_modifier),
                         )]))
                         .with_context(err_context)?;
+                    if wait_for_plugin_input && active_pane.pane_tabs().is_some() {
+                        if let Some(completion) = completion_tx {
+                            self.senders
+                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                                .with_context(err_context)?;
+                        }
+                    }
                 },
                 Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
                     let mut plugin_updates = vec![];
@@ -4639,6 +4656,13 @@ impl Tab {
                     self.senders
                         .send_to_plugin(PluginInstruction::Update(plugin_updates))
                         .with_context(err_context)?;
+                    if wait_for_plugin_input && active_pane.pane_tabs().is_some() {
+                        if let Some(completion) = completion_tx {
+                            self.senders
+                                .send_to_plugin(PluginInstruction::InputBarrier(pid, completion))
+                                .with_context(err_context)?;
+                        }
+                    }
                 },
                 Some(AdjustedInput::PermissionRequestResult(permissions, status)) => {
                     if active_pane.query_should_be_suppressed() {

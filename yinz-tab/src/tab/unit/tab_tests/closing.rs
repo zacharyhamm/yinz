@@ -81,7 +81,7 @@ fn no_ui_fullscreen_editor_exit_reveals_floating_survivor() {
     assert!(!tab.tiled_panes.fullscreen_is_active());
     assert!(tab.get_pane_with_id(floating).unwrap().selectable());
     let receiver = install_pty_writer_capture(&mut tab);
-    tab.write_to_active_terminal(&None, b"x".to_vec(), false, client)
+    tab.write_to_active_terminal(&None, b"x".to_vec(), false, client, None)
         .unwrap();
     assert!(matches!(drain_pty_writer(&receiver).as_slice(),
         [PtyWriteInstruction::Write(bytes, terminal, _)]

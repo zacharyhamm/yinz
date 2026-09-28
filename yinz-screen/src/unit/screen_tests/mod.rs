@@ -231,6 +231,7 @@ fn send_cli_action_to_server(
             default_mode,
             None,
             leaves_clipboard_message,
+            true, // is_client_input
         )
         .unwrap();
     }
@@ -254,6 +255,7 @@ fn route_arbitrary_action_to_server(
         default_mode,
         None,
         false,
+        true, // is_client_input
     )
     .unwrap();
 }

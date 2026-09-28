@@ -4,6 +4,7 @@ use super::thread_main::is_typable_text;
 use super::{active_tab, active_tab_and_connected_client_id, Screen};
 use crate::panes::PaneId;
 use crate::plugins::{PluginId, PluginInstruction};
+use crate::route::NotificationEnd;
 use crate::tab::Tab;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ impl Screen {
         is_kitty_keyboard_protocol: bool,
         client_id: ClientId,
         keybind_intercepts: &HashMap<ClientId, PluginId>,
+        completion: Option<NotificationEnd>,
     ) -> Result<bool> {
         if let Some(plugin_id) = keybind_intercepts.get(&client_id) {
             if let Some(key_with_modifier) = key_with_modifier {
@@ -103,6 +105,7 @@ impl Screen {
                                         raw_bytes,
                                         is_kitty_keyboard_protocol,
                                         client_id,
+                                        completion,
                                     ),
                                 };
                                 if let Ok(true) = write_result {

@@ -359,9 +359,13 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted"];
+    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
+        "InputBarrier",
+        PluginInstruction::InputBarrier(PluginId::new(1), crate::route::NotificationEnd::new(tokio::sync::oneshot::channel().0)),
+        "Update"
+    ), (
         "PostMessagesToPluginWorker",
         PluginInstruction::PostMessagesToPluginWorker(
             PluginId::new(1),

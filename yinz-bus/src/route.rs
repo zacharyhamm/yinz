@@ -20,6 +20,7 @@ pub struct ActionCompletionResult {
 // that it can be included in various other larger structs - DO NOT RELY ON CLONING IT!
 pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
+    requires_input_barrier: bool,
     exit_status: Option<i32>,
     unblock_condition: Option<UnblockCondition>,
     affected_pane_id: Option<PaneId>, // optional payload of the pane id affected by this action
@@ -54,6 +55,7 @@ impl Clone for NotificationEnd {
         // Always clone as None - only the original holder should signal completion
         NotificationEnd {
             channel: None,
+            requires_input_barrier: self.requires_input_barrier,
             exit_status: self.exit_status,
             unblock_condition: self.unblock_condition,
             affected_pane_id: self.affected_pane_id,
@@ -69,6 +71,7 @@ impl NotificationEnd {
     pub fn new(sender: oneshot::Sender<ActionCompletionResult>) -> Self {
         NotificationEnd {
             channel: Some(sender),
+            requires_input_barrier: false,
             exit_status: None,
             unblock_condition: None,
             affected_pane_id: None,
@@ -79,12 +82,23 @@ impl NotificationEnd {
         }
     }
 
+    pub fn new_client_input(sender: oneshot::Sender<ActionCompletionResult>) -> Self {
+        let mut completion = Self::new(sender);
+        completion.requires_input_barrier = true;
+        completion
+    }
+
+    pub fn requires_input_barrier(&self) -> bool {
+        self.requires_input_barrier
+    }
+
     pub fn new_with_condition(
         sender: oneshot::Sender<ActionCompletionResult>,
         unblock_condition: UnblockCondition,
     ) -> Self {
         NotificationEnd {
             channel: Some(sender),
+            requires_input_barrier: false,
             exit_status: None,
             unblock_condition: Some(unblock_condition),
             affected_pane_id: None,

@@ -191,11 +191,11 @@ fn pane_bracketed_paste_ignored_when_not_in_bracketed_paste_mode() {
 
     let bracketed_paste_start = vec![27, 91, 50, 48, 48, 126]; // \u{1b}[200~
     let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126]; // \u{1b}[201
-    tab.write_to_active_terminal(&None, bracketed_paste_start, false, client_id)
+    tab.write_to_active_terminal(&None, bracketed_paste_start, false, client_id, None)
         .unwrap();
-    tab.write_to_active_terminal(&None, "test".as_bytes().to_vec(), false, client_id)
+    tab.write_to_active_terminal(&None, "test".as_bytes().to_vec(), false, client_id, None)
         .unwrap();
-    tab.write_to_active_terminal(&None, bracketed_paste_end, false, client_id)
+    tab.write_to_active_terminal(&None, bracketed_paste_end, false, client_id, None)
         .unwrap();
 
     pty_instruction_bus.exit();

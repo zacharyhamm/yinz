@@ -1077,7 +1077,7 @@ fn render_title(state: &mut State, cols: usize) {
     let note_width = note.as_ref().map_or(0, |note| note.width() + 1);
     state.chat_tab_width = cols.saturating_sub(note_width);
     for cell in chat_tabs(state, state.chat_tab_width) {
-        print_text_with_coordinates(cell.styled(), cell.x, 0, Some(cell.width), None);
+        print_text_with_coordinates(tabs::styled(&cell), cell.x, 0, Some(cell.width), None);
     }
     if let Some(note) = note {
         let x = cols.saturating_sub(note.width());
@@ -1158,11 +1158,7 @@ pub(crate) fn format_tokens(tokens: u64) -> String {
 /// opening question, short enough that several fit in a narrow overlay.
 const TAB_TITLE_COLS: usize = 18;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum TabTarget {
-    Tab(usize),
-    Reveal(usize),
-}
+pub(crate) use yinz_types::tab_bar::TabTarget;
 
 pub(crate) type TabCell = tabs::TabCell<TabTarget>;
 
@@ -1214,81 +1210,7 @@ pub(crate) fn chat_tabs(state: &State, width: usize) -> Vec<TabCell> {
             },
         })
         .collect();
-    let widths: Vec<usize> = labels.iter().map(|label| label.width()).collect();
-    if widths.iter().sum::<usize>() <= width {
-        return lay_out(&labels, 0, labels.len(), width, state.chat_tab, focus);
-    }
-
-    // Grow the window outward from `keep` — rightward first, so the tabs after
-    // the one you are on are what you see — until nothing more fits, leaving a
-    // two columns for each arrow and divider the window will need.
-    let mut start = keep;
-    let mut end = keep + 1;
-    let mut used = widths[keep];
-    loop {
-        // Counted even for an edge the next step would reach, which only ever
-        // leaves a column spare.
-        let arrows = usize::from(start > 0) + usize::from(end < labels.len());
-        let room = width.saturating_sub(arrows * 2);
-        if end < labels.len() && used + widths[end] <= room {
-            used += widths[end];
-            end += 1;
-        } else if start > 0 && used + widths[start - 1] <= room {
-            start -= 1;
-            used += widths[start];
-        } else {
-            break;
-        }
-    }
-    lay_out(&labels, start, end, width, state.chat_tab, focus)
-}
-
-/// Print-ready cells for the tabs in `start..end`, with an arrow on either
-/// side that has tabs hidden past it.
-fn lay_out(
-    labels: &[String],
-    start: usize,
-    end: usize,
-    width: usize,
-    active: usize,
-    focus: Option<usize>,
-) -> Vec<TabCell> {
-    let mut cells = Vec::new();
-    let mut x = 0;
-    let mut full = false;
-    // Stops at the first cell that does not fit, rather than skipping it: a
-    // later, narrower one would otherwise be drawn in its place.
-    let mut push = |text: String, active: bool, focused: bool, target: TabTarget| {
-        let w = text.width();
-        if full || x + w > width {
-            full = true;
-            return;
-        }
-        cells.push(TabCell {
-            x,
-            width: w,
-            text,
-            active,
-            focused,
-            target,
-        });
-        x += w;
-    };
-    if start > 0 {
-        push("←│".to_owned(), false, false, TabTarget::Reveal(start - 1));
-    }
-    for (tab, label) in labels.iter().enumerate().take(end).skip(start) {
-        push(
-            label.clone(),
-            tab == active,
-            focus == Some(tab),
-            TabTarget::Tab(tab),
-        );
-    }
-    if end < labels.len() {
-        push("→│".to_owned(), false, false, TabTarget::Reveal(end));
-    }
-    cells
+    yinz_types::tab_bar::overflow(&labels, width, state.chat_tab, focus, keep)
 }
 
 /// The slice of transcript lines a render draws, and whether the anchor is what

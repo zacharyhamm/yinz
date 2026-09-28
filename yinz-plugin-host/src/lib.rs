@@ -344,6 +344,9 @@ pub fn plugin_thread_main(
             PluginInstruction::Update(updates) => {
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
             },
+            PluginInstruction::InputBarrier(plugin_id, completion) => {
+                wasm_bridge.input_barrier(plugin_id, completion);
+            },
             PluginInstruction::DenoTick(plugin_id, _client_id, generation) => {
                 wasm_bridge.deno_tick(plugin_id, generation, shutdown_send.clone());
             },

@@ -34,8 +34,8 @@
 //! walk five stops, not two: the panel's own tab bar (Agents, Todos, VMs, Swamp), this pane's
 //! list and history halves, then the conversation's tab bar and its input box, and forward
 //! from the box wraps back round onto the panel's tab bar. That bar is the one keyboard route
-//! between the four tabs - `←`/`→` switch, `Enter`, `↓`, `j`, `Tab` and `Esc` drop into the
-//! tab's list, and any other key goes to the list too, doing there what it always does. The
+//! between the four tabs: `←`/`→` highlight, `Enter` activates, and `Tab`/`Esc` return to the
+//! active tab's list. Other keys and paste are consumed while the bar has focus. The
 //! two crossings that leave this pane are requests - `wire::AGENT_STRIP_YIELD`, the same shape
 //! as the Esc and Ctrl-o ones, because hocus holds this pane's plugin id and this pane holds
 //! none of hocus's - and the ones that arrive land through `wire::AGENT_STRIP_TAKE`, which
@@ -1341,6 +1341,10 @@ impl State {
         if self.last_rows < 2 || self.last_cols == 0 {
             return None;
         }
+        if self.bar_has_keys() {
+            let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
+            return Some(agents::fit_keys(&segments, self.last_cols));
+        }
         if self.key_sheet_scroll.is_some() {
             // Measured against the rows the sheet is about to get - the pane less the tab bar
             // and this row - since the footer is settled before the sheet is drawn, and in the
@@ -1351,12 +1355,6 @@ impl State {
                 false => &["Esc/? close"],
             };
             return Some(agents::fit_keys(segments, self.last_cols));
-        }
-        // Not while the search box is being typed in, which takes the keys ahead of the bar
-        // (see `on_key`): the hint follows the keys rather than the highlight.
-        if self.bar_has_keys() && !self.box_ahead_of_the_bar() {
-            let segments: Vec<&str> = tabs::BAR_HINT.split(" · ").collect();
-            return Some(agents::fit_hints(&segments, self.last_cols));
         }
         let (segments, keep) = self.agents_hints();
         let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -1532,16 +1530,7 @@ impl State {
     fn key_sheet(&self) -> Vec<(String, String)> {
         // The panel's own tab bar is the panel's, whichever tab it is on.
         if self.bar_has_keys() {
-            let mut rows = sheet(&[
-                ("←/→", "switch tab"),
-                ("Enter ↓ j", "into the tab's list"),
-                ("Tab/Esc", "into the tab's list"),
-                ("Shift+Tab", "to the conversation's box"),
-                ("other keys", "go to the list, and act there"),
-                ("click a tab", "switch to it"),
-            ]);
-            rows.extend(sheet(PANEL_KEYS));
-            return rows;
+            return sheet(tabs::BAR_KEYS);
         }
         self.agents_key_sheet()
     }
@@ -1765,11 +1754,6 @@ impl State {
         live.iter().filter(|row| waiting_row(row)).count()
     }
 
-    /// The search box takes text before the host bar handles navigation.
-    fn box_ahead_of_the_bar(&self) -> bool {
-        self.search_editing
-    }
-
     /// Whether a key typed now is text for a box rather than a command - which is when `?` is
     /// a question mark and not the key sheet.
     ///
@@ -1864,9 +1848,12 @@ impl State {
     }
 
     fn on_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.tabs_focused {
+            return self.dispatch_key(key);
+        }
         // Cycle the whole panel one corner clockwise - the same gesture the conversation has.
-        // Taken before everything else, because where the keys are inside the panel changes
-        // nothing about what it means: not a box being typed in, not the tab bar, not the
+        // Taken before the content handlers, because where the keys are inside the panel changes
+        // nothing about what it means: not a box being typed in, not the
         // reader, not an armed question - which stays armed and on screen, since moving the
         // panel answers nothing it asked - and not the key sheet, which stays up. hocus owns
         // both overlays' geometry, so this asks rather than moves. Nothing to redraw: the move
@@ -1944,53 +1931,28 @@ impl State {
 
     /// Hand a key to whatever in the panel is answering keys now.
     fn dispatch_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.tabs_focused {
+            if key.bare_key == BareKey::Tab && key.has_modifiers(&[KeyModifier::Shift]) {
+                self.keys_to_the_list();
+                if let Some(id) = self.pane_tabs {
+                    let _ = focus_pane_tabs(id, false);
+                }
+                self.yield_to_chat(wire::STOP_INPUT);
+            } else {
+                if key.has_no_modifiers()
+                    && matches!(key.bare_key, BareKey::Enter | BareKey::Tab | BareKey::Esc)
+                {
+                    self.keys_to_the_list();
+                }
+                tabs::forward_bar_key(key);
+            }
+            return true;
+        }
         if self.search_editing {
             return self.search_key(key);
         }
-        // A burst can already be queued in the child when it yields to the native bar.
-        // Route those keys through the same host actions instead of changing this fixed view.
-        let left_bar = self.tabs_focused;
-        if self.tabs_focused {
-            match key.bare_key {
-                BareKey::Left | BareKey::Right if key.has_no_modifiers() => {
-                    run_action(
-                        if key.bare_key == BareKey::Left {
-                            actions::Action::PreviousPaneTab
-                        } else {
-                            actions::Action::NextPaneTab
-                        },
-                        BTreeMap::new(),
-                    );
-                    return true;
-                },
-                BareKey::Tab if key.has_modifiers(&[KeyModifier::Shift]) => {
-                    self.tabs_focused = false;
-                    if let Some(id) = self.pane_tabs {
-                        let _ = focus_pane_tabs(id, false);
-                    }
-                    self.yield_to_chat(wire::STOP_INPUT);
-                    return true;
-                },
-                _ => {
-                    self.keys_to_the_list();
-                    if let Some(id) = self.pane_tabs {
-                        let _ = focus_pane_tabs(id, false);
-                    }
-                    if matches!(
-                        key.bare_key,
-                        BareKey::Tab
-                            | BareKey::Esc
-                            | BareKey::Enter
-                            | BareKey::Down
-                            | BareKey::Char('j')
-                    ) {
-                        return true;
-                    }
-                },
-            }
-        }
         let noted = self.open_note.take().is_some();
-        self.agents_key(key) || noted || left_bar
+        self.agents_key(key) || noted
     }
 
     /// A key on the Agents surface.
@@ -2505,6 +2467,9 @@ impl State {
     /// if it went somewhere - would fire them; so it goes nowhere, and says so by drawing
     /// nothing new.
     fn on_paste(&mut self, text: &str) -> bool {
+        if self.tabs_focused {
+            return false;
+        }
         if self.search_editing {
             let line = single_line(text);
             if line.is_empty() {
@@ -3131,7 +3096,7 @@ impl State {
     }
 
     /// Off the tab bar and onto the surface's list - not its history or details half. What
-    /// `Tab`, `Enter`, `↓`, `j` and `Esc` on the bar do, and what a click on a tab does.
+    /// `Tab`, `Enter` and `Esc` on the bar do, and what a click on a tab does.
     fn keys_to_the_list(&mut self) {
         self.tabs_focused = false;
         self.bar_focused

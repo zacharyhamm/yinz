@@ -1335,8 +1335,14 @@ impl MouseHandler {
             event_for_pane.position = relative_position;
             if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
                 if !pane.position_is_on_frame(&click_event.position) {
-                    tab.write_to_active_terminal(&None, mouse_event.into_bytes(), false, client_id)
-                        .with_context(err_context)?;
+                    tab.write_to_active_terminal(
+                        &None,
+                        mouse_event.into_bytes(),
+                        false,
+                        client_id,
+                        None,
+                    )
+                    .with_context(err_context)?;
                 }
             }
         } else {
@@ -1381,8 +1387,14 @@ impl MouseHandler {
             if let Some(mouse_event) =
                 pane_with_selection.mouse_left_click_release(&relative_position)
             {
-                tab.write_to_active_terminal(&None, mouse_event.into_bytes(), false, client_id)
-                    .with_context(err_context)?;
+                tab.write_to_active_terminal(
+                    &None,
+                    mouse_event.into_bytes(),
+                    false,
+                    client_id,
+                    None,
+                )
+                .with_context(err_context)?;
             } else {
                 let relative_position = pane_with_selection.relative_position(&position);
                 pane_with_selection.end_selection(&relative_position, client_id);
@@ -1655,6 +1667,7 @@ impl MouseHandler {
                             mouse_event.into_bytes(),
                             false,
                             client_id,
+                            None,
                         )
                         .with_context(err_context)?;
                     }
