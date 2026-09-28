@@ -1487,6 +1487,9 @@ impl State {
                 keys.push("Enter read".to_owned());
             }
             let keep = keys.len();
+            if self.cursor_event().is_some() {
+                keys.push("y copy".to_owned());
+            }
             if self.open_target().is_some() {
                 keys.push("o file".to_owned());
             }
@@ -1603,6 +1606,7 @@ impl State {
             rows.extend([
                 ("↑/↓ j/k", "the previous or next event"),
                 ("Enter", "read the event in full"),
+                ("y", "copy the whole event"),
                 ("o", "open the file the event names"),
                 ("click", "point at an event; again reads it"),
                 ("PgUp/PgDn", "scroll the history"),
@@ -2129,6 +2133,7 @@ impl State {
                 // on the event is the whole of what can be offered here — and a notification
                 // whose output file is what you actually want is the case this exists for.
                 BareKey::Char('o') if self.focus == Focus::History => return self.open_the_file(),
+                BareKey::Char('y') if self.focus == Focus::History => return self.copy_the_event(),
                 // The page keys are the history's from either half, since the list follows its
                 // selection and has no page of its own; the wheel scrolls whichever half is
                 // under the pointer.
@@ -4356,11 +4361,13 @@ impl State {
     }
 
     /// What `y` would put on the clipboard: in a folding reader the fold under the `>`, and
-    /// otherwise - a prose event, or the source `v` put up - the whole event exactly as it
-    /// arrived. So `v` then `y` is how a folded event is copied whole: the thing itself, not
+    /// otherwise - a selected history event, a prose event, or the source `v` put up - the
+    /// whole event exactly as it arrived. So `v` then `y` copies a folded event whole, not
     /// our reading of it. `y` says which of the two it took (`copy_the_event`).
     fn copy_target(&self) -> Option<String> {
-        let reading = self.reading.as_ref()?;
+        let Some(reading) = self.reading.as_ref() else {
+            return self.cursor_event().map(|event| event.text.to_string());
+        };
         let fold = (!reading.raw)
             .then(|| reading.sections.get(reading.cursor))
             .flatten();
