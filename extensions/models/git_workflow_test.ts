@@ -23,7 +23,7 @@ const originalCommand = Deno.Command;
 class Command extends originalCommand {
     constructor(command: string | URL, opts: Deno.CommandOptions) {
         super(command, opts);
-        if (command === "zellij") {
+        if (command === "yinz") {
             this.spawn = () => ({
                 stdin: new WritableStream<Uint8Array>(),
                 output: () => this.output(),
@@ -97,7 +97,7 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
         targetBranch: "main",
         gate: ["/usr/bin/true"],
         vmSync: { mode: "local" as const },
-        binary: "zellij",
+        binary: "yinz",
         work: "work",
         session: "session",
         key: "dirty",
@@ -126,7 +126,7 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
     class PaneCommand extends originalCommand {
         constructor(command: string | URL, options: Deno.CommandOptions) {
             super(command, options);
-            if (command !== "zellij") return;
+            if (command !== "yinz") return;
             let input = "";
             const reply = Promise.withResolvers<Deno.CommandOutput>();
             this.spawn = () => ({
@@ -291,7 +291,7 @@ Deno.test("foreground Git commands preserve results, dismissal, and dispatch gua
     }
     Deno.Command = PaneCommand;
     // Fixture workers name no live session; only the stranded scenario may notice.
-    Deno.env.set("ZELLIJ_COMMIT_SESSION_POLL_SECONDS", "3600");
+    Deno.env.set("YINZ_COMMIT_SESSION_POLL_SECONDS", "3600");
     try {
         await Deno.mkdir(main);
         await git(main, "init", "-b", "main");
@@ -397,7 +397,7 @@ await import(${
                     path,
                     "rev-parse",
                     "--absolute-git-dir",
-                )) + "/zellij-workflow.lock"
+                )) + "/yinz-workflow.lock"
             ),
         );
         // A released waiter's kernel request can be granted and dropped a moment
@@ -498,7 +498,7 @@ for path in sys.argv[2:]:
         await locked(c, [source, main], async () => {
             visible = spawnWorker(visibleDirectory, {
                 expectedEvidence: staleEvidence,
-            }, { ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS: "0" });
+            }, { YINZ_COMMIT_LOCK_NOTICE_SECONDS: "0" });
             await visible.waitFor("no longer exists");
             const text = visible.output();
             assert(text.startsWith("Commit and rebase: " + source), text);
@@ -552,8 +552,8 @@ for path in sys.argv[2:]:
                 assert(await Deno.readTextFile(path) === "", path);
             }
             expired = spawnWorker(expiredDirectory, {}, {
-                ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS: "0",
-                ZELLIJ_COMMIT_LOCK_WAIT_SECONDS: "1",
+                YINZ_COMMIT_LOCK_NOTICE_SECONDS: "0",
+                YINZ_COMMIT_LOCK_WAIT_SECONDS: "1",
             });
             await expired.waitFor("Press Enter to return.");
         });
@@ -588,25 +588,25 @@ for path in sys.argv[2:]:
         // Session probes resolve the binary from repoDir, even in a different cwd.
         const strandedDirectory = dir + "/stranded-worker";
         await Deno.mkdir(strandedDirectory);
-        await Deno.symlink("/usr/bin/true", strandedDirectory + "/zellij");
+        await Deno.symlink("/usr/bin/true", strandedDirectory + "/yinz");
         const stranded = spawnWorker(strandedDirectory, {
-            binary: "./zellij",
+            binary: "./yinz",
             repoDir: strandedDirectory,
             expectedEvidence: staleEvidence,
-        }, { ZELLIJ_COMMIT_SESSION_POLL_SECONDS: "0.2" });
+        }, { YINZ_COMMIT_SESSION_POLL_SECONDS: "0.2" });
         await stranded.waitFor("is gone; releasing checkout locks");
         await stranded.reading;
         assert((await stranded.child.status).code === 124, stranded.output());
         assert(stranded.output().includes("Press Enter to return."));
         await checkLocks(false);
         // Through the model method, an expired lock wait is an ordinary failed result.
-        Deno.env.set("ZELLIJ_COMMIT_LOCK_WAIT_SECONDS", "1");
-        Deno.env.set("ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS", "0");
+        Deno.env.set("YINZ_COMMIT_LOCK_WAIT_SECONDS", "1");
+        Deno.env.set("YINZ_COMMIT_LOCK_NOTICE_SECONDS", "0");
         try {
             await locked(c, [source, main], () => run("lock-expired"));
         } finally {
-            Deno.env.delete("ZELLIJ_COMMIT_LOCK_WAIT_SECONDS");
-            Deno.env.delete("ZELLIJ_COMMIT_LOCK_NOTICE_SECONDS");
+            Deno.env.delete("YINZ_COMMIT_LOCK_WAIT_SECONDS");
+            Deno.env.delete("YINZ_COMMIT_LOCK_NOTICE_SECONDS");
         }
         assert(
             result().exitCode === 124 &&
@@ -973,7 +973,7 @@ for path in sys.argv[2:]:
         );
     } finally {
         Deno.Command = originalCommand;
-        Deno.env.delete("ZELLIJ_COMMIT_SESSION_POLL_SECONDS");
+        Deno.env.delete("YINZ_COMMIT_SESSION_POLL_SECONDS");
         dismissal.resolve();
         if (pane!) {
             try {
@@ -1165,7 +1165,7 @@ Deno.test("guarded Git extension rejects dirty/stale evidence, rebases, integrat
             targetBranch: "main",
             gate: ["cargo", "x", "ci", "check"],
             vmSync: { ...sync, vm: undefined },
-            binary: "zellij",
+            binary: "yinz",
         };
         await Deno.writeTextFile(source + "/file", "topic\n");
         await methods.verify_checkout.execute(args, c);
@@ -1411,7 +1411,7 @@ Deno.test("rebase conflicts are inspected and abort is explicit; unknown dispatc
             targetBranch: "main",
             gate: ["true"],
             vmSync: sync,
-            binary: "zellij",
+            binary: "yinz",
         };
         await Deno.writeTextFile(source + "/file", "topic\n");
         await methods.guarded_commit.execute({

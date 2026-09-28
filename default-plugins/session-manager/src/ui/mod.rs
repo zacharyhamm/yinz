@@ -1,9 +1,9 @@
 pub mod components;
 pub mod welcome_screen;
 use std::time::Duration;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::TabPosition;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::TabPosition;
+use yinz_tile::prelude::*;
 
 use crate::session_list::{SelectedIndex, SessionList};
 use components::{
@@ -343,7 +343,7 @@ impl TabUiInfo {
 pub struct PaneUiInfo {
     pub name: String,
     pub exit_code: Option<i32>,
-    pub pane_id: zellij_tile::prelude::PaneId,
+    pub pane_id: yinz_tile::prelude::PaneId,
 }
 
 impl PaneUiInfo {

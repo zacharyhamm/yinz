@@ -1,0 +1,50 @@
+[package]
+name = "yinz-server"
+version.workspace = true
+authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
+edition.workspace = true
+description = "The server-side library for Yinz"
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-routing = { path = "../yinz-routing", version = "0.45.0" }
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-storage = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-types = { workspace = true }
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-panes = { path = "../yinz-panes", version = "0.45.0" }
+yinz-plugin-host = { path = "../yinz-plugin-host", version = "0.45.0" }
+yinz-pty = { path = "../yinz-pty", version = "0.45.0" }
+yinz-screen = { path = "../yinz-screen", version = "0.45.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-process = { path = "../yinz-process", version = "0.45.0" }
+interprocess = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+daemonize = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true, features = ["fs", "hostname", "poll", "process", "signal", "socket", "term", "uio", "user"] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+serde_json = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }
+tempfile = "3.2.0"
+
+# `test = false` keeps `cargo test` (and therefore `cargo x test`) from building and running the
+# bench binary in test mode, which would slow the test command down for no coverage gain.
+[[bench]]
+name = "multi_pane_render"
+harness = false
+test = false

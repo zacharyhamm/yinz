@@ -1,7 +1,7 @@
 use super::*;
 use hocus_proto::store::Local;
 use std::cell::RefCell;
-use zellij_tile::prelude::Mutation;
+use yinz_tile::prelude::Mutation;
 
 struct Interleaved<F> {
     backend: Local,

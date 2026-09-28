@@ -1,0 +1,33 @@
+[package]
+name = "yinz-server-os"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The yinz server's OS backend: ptys, pane supervisors, remote panes and client writers"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-ipc = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { version = "0.1.50", default-features = false }
+interprocess = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+close_fds = "0.3.2"
+libc = { workspace = true }
+nix = { workspace = true, features = ["fs", "hostname", "ioctl", "poll", "process", "signal", "socket", "term", "uio", "user"] }
+
+[dev-dependencies]
+hegeltest = "0.29.3"
+yinz-test-support = { path = "../yinz-test-support" }

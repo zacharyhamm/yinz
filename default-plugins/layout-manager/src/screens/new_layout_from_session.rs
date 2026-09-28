@@ -1,8 +1,8 @@
 use super::{ErrorScreen, KeyResponse, LayoutListScreen, OptimisticUpdate, Screen};
 use crate::ui::LayoutDetail;
 use crate::DisplayLayout;
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{Button, Form, FormEvent, Select, TextInput};
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::{Button, Form, FormEvent, Select, TextInput};
 
 const NAME_FIELD: &str = "name";
 const TARGET_FIELD: &str = "target";

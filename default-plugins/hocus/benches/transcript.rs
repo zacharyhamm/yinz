@@ -172,8 +172,8 @@ fn long_run() -> AgentRun {
     AgentRun {
         id: "claude:bench".to_owned(),
         pane_id: 1,
-        zellij_session_name: "bench".to_owned().into(),
-        host_id: zellij_tile::prelude::HostId::default(),
+        yinz_session_name: "bench".to_owned().into(),
+        host_id: yinz_tile::prelude::HostId::default(),
         origin_run_id: None,
         previous_run_id: None,
         session_id: "bench".to_owned(),

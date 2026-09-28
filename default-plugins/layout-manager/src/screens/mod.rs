@@ -3,7 +3,7 @@ mod layout_list;
 mod new_layout_from_session;
 mod rename_layout;
 
-use zellij_tile::prelude::LayoutMetadata;
+use yinz_tile::prelude::LayoutMetadata;
 
 pub use import_layout::ImportLayoutScreen;
 pub use layout_list::LayoutListScreen;
@@ -29,7 +29,7 @@ impl Default for Screen {
     }
 }
 
-/// Optimistic state updates to apply before Zellij confirms
+/// Optimistic state updates to apply before Yinz confirms
 #[derive(Clone, Debug)]
 pub enum OptimisticUpdate {
     Delete(String), // file_name

@@ -272,14 +272,14 @@ keybinds clear-defaults=true {{
             SwitchToMode "Locked"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "zellij:about" {{
+            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
             SwitchToMode "Locked"
         }}
         bind "l" {{
-            LaunchOrFocusPlugin "zellij:layout-manager" {{
+            LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -515,14 +515,14 @@ keybinds clear-defaults=true {{
             SwitchToMode "Normal"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "zellij:about" {{
+            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
             SwitchToMode "Normal"
         }}
         bind "l" {{
-            LaunchOrFocusPlugin "zellij:layout-manager" {{
+            LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -758,14 +758,14 @@ keybinds clear-defaults=true {{
             SwitchToMode "Normal"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "zellij:about" {{
+            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
             SwitchToMode "Normal"
         }}
         bind "l" {{
-            LaunchOrFocusPlugin "zellij:layout-manager" {{
+            LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -982,14 +982,14 @@ keybinds clear-defaults=true {{
             SwitchToMode "Normal"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "zellij:about" {{
+            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
             SwitchToMode "Normal"
         }}
         bind "l" {{
-            LaunchOrFocusPlugin "zellij:layout-manager" {{
+            LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -1205,14 +1205,14 @@ keybinds clear-defaults=true {
             SwitchToMode "Normal"
         }
         bind "a" {
-            LaunchOrFocusPlugin "zellij:about" {
+            LaunchOrFocusPlugin "yinz:about" {
                 floating true
                 move_to_focused_tab true
             };
             SwitchToMode "Normal"
         }
         bind "l" {
-            LaunchOrFocusPlugin "zellij:layout-manager" {
+            LaunchOrFocusPlugin "yinz:layout-manager" {
                 floating true
                 move_to_focused_tab true
             };
@@ -1425,14 +1425,14 @@ keybinds clear-defaults=true {{
             SwitchToMode "Normal"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "zellij:about" {{
+            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
             SwitchToMode "Normal"
         }}
         bind "l" {{
-            LaunchOrFocusPlugin "zellij:layout-manager" {{
+            LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -1541,12 +1541,12 @@ mod tests {
 
     #[test]
     fn every_preset_and_the_default_config_bind_the_notification_browser() {
-        use zellij_config::config::Config;
-        use zellij_types::data::{InputMode, KeyWithModifier};
-        use zellij_types::geometry::Direction;
-        use zellij_types::input::actions::Action;
+        use yinz_config::config::Config;
+        use yinz_types::data::{InputMode, KeyWithModifier};
+        use yinz_types::geometry::Direction;
+        use yinz_types::input::actions::Action;
 
-        let canonical_text = include_str!("../../../zellij-config/assets/config/default.kdl");
+        let canonical_text = include_str!("../../../yinz-config/assets/config/default.kdl");
         let canonical = Config::from_kdl(canonical_text, None).unwrap();
         for (text, exit_mode) in [
             (canonical_text.to_owned(), InputMode::Normal),
@@ -1615,11 +1615,11 @@ mod tests {
 
     #[test]
     fn generated_presets_preserve_agent_bindings_after_parsing_and_saving() {
-        use {zellij_config::config::Config, zellij_types::input::actions::Action};
-        use {zellij_types::data::InputMode, zellij_types::data::KeyWithModifier};
+        use {yinz_config::config::Config, yinz_types::input::actions::Action};
+        use {yinz_types::data::InputMode, yinz_types::data::KeyWithModifier};
 
         let canonical = Config::from_kdl(
-            include_str!("../../../zellij-config/assets/config/default.kdl"),
+            include_str!("../../../yinz-config/assets/config/default.kdl"),
             None,
         )
         .unwrap();

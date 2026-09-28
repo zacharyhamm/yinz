@@ -7,11 +7,11 @@ use shared::{render_current_path, render_instruction_line, render_search_term};
 use state::{refresh_directory, State};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let plugin_ids = get_plugin_ids();
         self.initial_cwd = plugin_ids.initial_cwd;

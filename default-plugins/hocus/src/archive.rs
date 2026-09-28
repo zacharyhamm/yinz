@@ -1,11 +1,11 @@
 use crate::message::{Ask, Message, Picker, PickerKind, PickerRow};
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 /// Where the session lists a hocus-agents instance. Session plugin locations are always the
 /// resolved form, never the bare alias a pane's `plugin_url` can carry.
-pub(crate) const AGENT_LIST_LOCATION: &str = "zellij:hocus-agents";
+pub(crate) const AGENT_LIST_LOCATION: &str = "yinz:hocus-agents";
 
 // ---------------------------------------------------------------------------
 // The archive

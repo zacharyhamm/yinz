@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::ui_components::{back_to_presets, info_line};
 

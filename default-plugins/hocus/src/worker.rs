@@ -1,6 +1,6 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 // ---------------------------------------------------------------------------
 // Workers — separate wasm instances of this same binary, driven only by
@@ -17,7 +17,7 @@ use zellij_tile::prelude::*;
 #[derive(Default, Serialize, Deserialize)]
 struct IoWorker;
 
-impl ZellijWorker<'_> for IoWorker {
+impl YinzWorker<'_> for IoWorker {
     fn on_message(&mut self, message: String, payload: String) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
             return;

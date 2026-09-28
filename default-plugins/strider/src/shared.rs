@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub fn render_instruction_line(y: usize, max_cols: usize) {
     if max_cols > 78 {
@@ -36,7 +36,7 @@ pub fn render_list_tip(y: usize, max_cols: usize) {
 /// This lives in the shared forms library now — it was the only piece of list
 /// windowing in the tree, and the select boxes there need exactly it. Kept
 /// under its old name because six call sites in this plugin use it.
-pub use zellij_tile::ui_components::forms::list_window as calculate_list_bounds;
+pub use yinz_tile::ui_components::forms::list_window as calculate_list_bounds;
 
 pub fn render_search_term(search_term: &str) {
     let prompt = "FIND: ";

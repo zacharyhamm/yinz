@@ -30,12 +30,12 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
     )
     .context(err_context)?;
     // Native compiler workers must re-exec this checkout's production binary, never libtest.
-    cmd!(sh, "{cargo} build --bin zellij")
+    cmd!(sh, "{cargo} build --bin yinz")
         .run()
         .context(err_context)?;
     let _worker = sh.push_env(
-        "ZELLIJ_COMPILATION_WORKER",
-        crate::project_root().join("target/debug/zellij"),
+        "YINZ_COMPILATION_WORKER",
+        crate::project_root().join("target/debug/yinz"),
     );
 
     let nextest_available = cmd!(sh, "{cargo} nextest --version")
@@ -49,7 +49,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         } else {
             &[]
         };
-        cmd!(sh, "{cargo} nextest run -p zellij-integration-tests")
+        cmd!(sh, "{cargo} nextest run -p yinz-integration-tests")
             .args(serial_args)
             .args(&flags.args)
             .run()
@@ -63,7 +63,7 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
         println!(">> expect false failures in snapshot tests that record session names; install cargo-nextest for a run that means something");
         cmd!(
             sh,
-            "{cargo} test -p zellij-integration-tests -- --test-threads=1"
+            "{cargo} test -p yinz-integration-tests -- --test-threads=1"
         )
         .args(&flags.args)
         .run()
@@ -75,31 +75,31 @@ pub fn integration_test(sh: &Shell, flags: flags::IntegrationTest) -> anyhow::Re
 /// Check that the two builds `integration_test` runs resolve the same features for every package
 /// they share.
 ///
-/// `cargo build --bin zellij` and the suite's `-p zellij-integration-tests` build resolve
+/// `cargo build --bin yinz` and the suite's `-p yinz-integration-tests` build resolve
 /// features separately. A feature only one of them asks for, such as nix's `ioctl` from the
-/// root-only zellij-server-os, builds that package and every crate above it a second time in each
+/// root-only yinz-server-os, builds that package and every crate above it a second time in each
 /// `x integration-test`. No build fails over it, so this compares what the two resolve.
 pub fn check_shared_features(sh: &Shell) -> anyhow::Result<()> {
     let _pd = sh.push_dir(crate::project_root());
     let cargo = crate::cargo()?;
     let format = ["--prefix", "none", "-f", "{p} [{f}]"];
-    let binary = cmd!(sh, "{cargo} tree -q -p zellij -e normal,build")
+    let binary = cmd!(sh, "{cargo} tree -q -p yinz -e normal,build")
         .args(format)
         .read()
-        .context("failed to resolve the zellij binary's dependencies")?;
+        .context("failed to resolve the yinz binary's dependencies")?;
     // Dev-dependencies too: the suite's tests are what gets built.
     let suite = cmd!(
         sh,
-        "{cargo} tree -q -p zellij-integration-tests -e normal,build,dev"
+        "{cargo} tree -q -p yinz-integration-tests -e normal,build,dev"
     )
     .args(format)
     .read()
-    .context("failed to resolve zellij-integration-tests' dependencies")?;
+    .context("failed to resolve yinz-integration-tests' dependencies")?;
     let diverging = diverging_features(&binary, &suite);
     anyhow::ensure!(
         diverging.is_empty(),
-        "these packages resolve different features for the zellij binary and for \
-         zellij-integration-tests, so `x integration-test` builds them and every crate above them \
+        "these packages resolve different features for the yinz binary and for \
+         yinz-integration-tests, so `x integration-test` builds them and every crate above them \
          twice. Request the feature where both graphs see it, such as [workspace.dependencies]:\n{}",
         diverging.join("\n")
     );

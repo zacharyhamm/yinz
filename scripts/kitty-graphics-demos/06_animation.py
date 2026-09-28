@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Transmit a base frame, add two more frames (a=f), then switch the displayed frame with
-a=a,c=<n>. Per the module docs, zellij composes and selects real frames but has no playback
+a=a,c=<n>. Per the module docs, yinz composes and selects real frames but has no playback
 clock, so a=a,s=2 (autoplay) is accepted and ignored -- driving c= yourself is what actually
 changes the screen."""
 import time

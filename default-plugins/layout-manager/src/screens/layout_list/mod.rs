@@ -4,8 +4,8 @@ use super::{ErrorScreen, KeyResponse, OptimisticUpdate, Screen};
 use crate::ui::{Controls, LayoutDetail, LayoutsTable};
 use crate::DisplayLayout;
 use search::SearchState;
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::InputAction;
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::InputAction;
 
 #[derive(Clone)]
 pub struct LayoutListScreen {

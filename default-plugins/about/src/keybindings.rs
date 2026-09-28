@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Feature {

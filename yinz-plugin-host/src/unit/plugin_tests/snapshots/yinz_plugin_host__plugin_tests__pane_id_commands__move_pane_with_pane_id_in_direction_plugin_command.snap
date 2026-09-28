@@ -1,0 +1,14 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/pane_id_commands.rs
+expression: "format!(\"{:#?}\", screen_instruction)"
+---
+Some(
+    MovePaneWithPaneIdInDirection(
+        Terminal(
+            TerminalId(
+                2,
+            ),
+        ),
+        Left,
+    ),
+)

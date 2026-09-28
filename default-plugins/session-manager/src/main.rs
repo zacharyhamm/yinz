@@ -7,8 +7,8 @@ mod single_screen;
 mod ui;
 use std::collections::BTreeMap;
 use uuid::Uuid;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::*;
 
 use new_session_info::NewSessionInfo;
 use notifications::Notifications;
@@ -65,7 +65,7 @@ pub(crate) struct State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.is_welcome_screen = configuration
             .get("welcome_screen")
@@ -774,7 +774,7 @@ impl State {
                 should_render = true;
             },
             // ponytail: <ENTER> is a no-op until replay lands - the row carries the recording id
-            // that `zellij recordings export` (and replay) take.
+            // that `yinz recordings export` (and replay) take.
             BareKey::Char(character) if key.has_no_modifiers() && character != '\n' => {
                 self.recordings.handle_character(character);
                 should_render = true;
@@ -1132,7 +1132,7 @@ impl State {
             ActiveScreen::NewSession => {
                 if self.new_session_info.name().len() >= 108 {
                     // this is due to socket path limitations
-                    // TODO: get this from Zellij (for reference: this is part of the interprocess
+                    // TODO: get this from Yinz (for reference: this is part of the interprocess
                     // package, we should get if from there if possible because it's configurable
                     // through the package)
                     self.show_error("Session name must be shorter than 108 bytes");
@@ -1201,7 +1201,7 @@ impl State {
                 if self.is_welcome_screen {
                     // the welcome screen has done its job and now we need to quit this temporary
                     // session so as not to leave garbage sessions behind
-                    quit_zellij();
+                    quit_yinz();
                 } else if switched_session {
                     close_self();
                 } else {
@@ -1216,7 +1216,7 @@ impl State {
                     if self.is_welcome_screen {
                         // the welcome screen has done its job and now we need to quit this temporary
                         // session so as not to leave garbage sessions behind
-                        quit_zellij();
+                        quit_yinz();
                     } else {
                         close_self();
                     }
@@ -1281,7 +1281,7 @@ impl State {
                             self.single_screen_state.search_term.clear();
                             self.single_screen_state.selected_index = None;
                             if self.is_welcome_screen {
-                                quit_zellij();
+                                quit_yinz();
                             } else if switched_session {
                                 close_self();
                             } else {
@@ -1313,7 +1313,7 @@ impl State {
                                         None,
                                     );
                                     if self.is_welcome_screen {
-                                        quit_zellij();
+                                        quit_yinz();
                                     } else {
                                         close_self();
                                     }
@@ -1324,7 +1324,7 @@ impl State {
                             if self.resurrectable_sessions.has_session(&typed_name) {
                                 switch_session(Some(&SessionName::new(typed_name)));
                                 if self.is_welcome_screen {
-                                    quit_zellij();
+                                    quit_yinz();
                                 } else {
                                     close_self();
                                 }
@@ -1362,7 +1362,7 @@ impl State {
                         self.single_screen_state.search_term.clear();
                         self.single_screen_state.transition_to_search();
                         if self.is_welcome_screen {
-                            quit_zellij();
+                            quit_yinz();
                         } else if switched_session {
                             close_self();
                         } else {
@@ -1401,7 +1401,7 @@ impl State {
     }
     fn arm_refresh_timer(&mut self) {
         if !self.refresh_timer_armed {
-            set_timeout(zellij_tile::prelude::FractionalSeconds::new(1.0));
+            set_timeout(yinz_tile::prelude::FractionalSeconds::new(1.0));
             self.refresh_timer_armed = true;
         }
     }

@@ -1,0 +1,22 @@
+[package]
+name = "yinz-firecracker-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The yinz-firecracker VM provider behind Yinz's Firecracker panes (Linux only)"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-config = { workspace = true }
+yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-runtime = { workspace = true }
+yinz-session = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+highway = { version = "=1.2.0", default-features = false, features = ["std"] }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

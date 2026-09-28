@@ -1,5 +1,5 @@
 // Start an agent, check its work, and return failures for a bounded number of retries.
-import z, { definePlugin } from "zellij:plugin";
+import z, { definePlugin } from "yinz:plugin";
 const lines: string[] = [];
 let status = "starting";
 const tail = (text: string, n: number): string =>

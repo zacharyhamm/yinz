@@ -1,9 +1,0 @@
----
-source: zellij-integration-tests/tests/app.rs
-expression: normalized(&grid_snapshot)
----
- Zellij (test)  [1] EDITING SCROLLBACK  + 
-$ SCROLLBACK_MARKER_ONE
-SCROLLBACK_MARKER_TWO
-█
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

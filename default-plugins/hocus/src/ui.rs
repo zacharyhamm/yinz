@@ -1,6 +1,6 @@
 //! Text wrapping and screen layout.
 //!
-//! Zellij wipes the plugin's grid and repaints it fully on every render, and
+//! Yinz wipes the plugin's grid and repaints it fully on every render, and
 //! gives plugins no scrollback of their own, so everything on screen is
 //! recomputed here from `State` each time and all scroll state is ours.
 
@@ -8,7 +8,7 @@ use hocus_proto::markdown::{self, MdLine, MdStyle, StyledChar};
 use hocus_proto::tabs;
 use hocus_proto::text::{wrap, wrap_input, WrappedLine};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::api::ConfigError;
 use crate::wand;
@@ -1951,7 +1951,7 @@ mod tests {
     // -- the input box's wrapping -------------------------------------------
 
     /// The bug the trailing empty row exists for: a full row put the cursor at
-    /// column `cols`, one past the last column, and zellij hides a plugin cursor
+    /// column `cols`, one past the last column, and yinz hides a plugin cursor
     /// that sits outside the pane. The wrapper itself lives in `hocus_proto::text`
     /// now; the prompt it has to leave room for is still ours.
     #[test]

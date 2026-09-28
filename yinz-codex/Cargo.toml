@@ -1,0 +1,29 @@
+[package]
+name = "yinz-codex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binds a Codex UI's conversation to its Yinz pane over a shared app-server daemon"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-runtime = { workspace = true }
+yinz-session = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { version = "0.3", features = ["sink"] }
+libc = { workspace = true }
+nix = { workspace = true, features = ["process", "user"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.30" }
+
+[dev-dependencies]
+uuid = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }

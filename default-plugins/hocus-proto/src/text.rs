@@ -1,1 +1,1 @@
-pub use zellij_tile::text::*;
+pub use yinz_tile::text::*;

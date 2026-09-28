@@ -1,4 +1,4 @@
-import { methods, resources } from "./_lib/zellij_methods.ts";
+import { methods, resources } from "./_lib/yinz_methods.ts";
 import { Context, digest } from "./_lib/workflow.ts";
 import { Evidence } from "./_lib/git_checkout.ts";
 function assert(v: unknown): asserts v {

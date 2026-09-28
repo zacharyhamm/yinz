@@ -1,0 +1,199 @@
+use super::*;
+use std::os::unix::fs::{symlink, PermissionsExt};
+
+#[test]
+fn codex_wrappers_use_the_execution_hosts_binary_outside_path() {
+    let root = tempfile::tempdir().unwrap();
+    let host_bin = root.path().join("host yinz");
+    yinz_test_support::write_warm_script(&host_bin, "printf '%s\\n' \"$@\"");
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    symlink("/usr/bin/env", bin.join("env")).unwrap();
+    let (program, args) = yinz_runtime::agent::launch::wrap_codex(
+        "/opt/codex cli".into(),
+        vec![
+            "resume".into(),
+            "--last".into(),
+            "prompt with spaces=kept".into(),
+        ],
+    );
+    assert!(resolve_command_with_path(
+        &RunCommand {
+            command: program.clone().into(),
+            ..Default::default()
+        },
+        Some(bin.as_os_str()),
+    )
+    .is_none());
+
+    for with_env in [false, true] {
+        let mut cmd = RunCommand {
+            command: program.clone().into(),
+            args: args.clone(),
+            ..Default::default()
+        };
+        let mut expected = cmd.clone();
+        expected.command = host_bin.clone();
+        if with_env {
+            cmd.command = "env".into();
+            cmd.args.splice(
+                ..0,
+                [
+                    format!("PATH={}", bin.display()),
+                    "SETTING=value with spaces=kept".into(),
+                    program.clone(),
+                ],
+            );
+            expected = cmd.clone();
+            expected.args[2] = host_bin.to_str().unwrap().into();
+        }
+        resolve_codex_wrapper(&host_bin, &mut cmd.command, &mut cmd.args).unwrap();
+        assert_eq!(cmd, expected);
+        let output = std::process::Command::new(&cmd.command)
+            .args(&cmd.args)
+            .env("PATH", &bin)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{}\n", args.join("\n"))
+        );
+    }
+}
+
+#[test]
+fn codex_wrapper_resolution_leaves_other_commands_and_explicit_paths_unchanged() {
+    for (program, args) in [
+        ("codex", vec![]),
+        ("yinz", vec!["action", "new-pane"]),
+        ("yinz", vec!["hocus"]),
+        ("env", vec!["PATH=/remote/bin", "codex"]),
+        (
+            "env",
+            vec!["PATH=/remote/bin", "yinz", "action", "new-pane"],
+        ),
+        ("env", vec!["PATH=/remote/bin"]),
+        ("/other/yinz", vec!["hocus", "codex", "--"]),
+        (
+            "env",
+            vec!["PATH=/remote/bin", "/other/yinz", "hocus", "codex", "--"],
+        ),
+    ] {
+        let requested = RunCommand {
+            command: program.into(),
+            args: args.into_iter().map(String::from).collect(),
+            ..Default::default()
+        };
+        let mut resolved = requested.clone();
+        resolve_codex_wrapper(
+            Path::new("/remote/bin/yinz"),
+            &mut resolved.command,
+            &mut resolved.args,
+        )
+        .unwrap();
+        assert_eq!(resolved, requested);
+    }
+}
+
+#[test]
+fn command_lookup_agrees_with_execution_in_the_child_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().canonicalize().unwrap();
+    let bin = cwd.join("bin");
+    let blocked = cwd.join("blocked");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::create_dir(&blocked).unwrap();
+    symlink("/usr/bin/true", bin.join("run-me")).unwrap();
+    symlink("/usr/bin/true", cwd.join("local-only")).unwrap();
+    std::fs::write(blocked.join("run-me"), b"not executable").unwrap();
+    std::fs::set_permissions(
+        blocked.join("run-me"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+
+    for (command, path, expected) in [
+        ("run-me", "bin", Some(bin.join("run-me"))),
+        ("run-me", "blocked:bin", Some(bin.join("run-me"))),
+        ("local-only", "", Some(cwd.join("local-only"))),
+        ("local-only", "bin", None),
+        ("./run-me", "bin", None),
+        ("./bin/run-me", "blocked", Some(bin.join("run-me"))),
+        ("run-me", "blocked", None),
+    ] {
+        let cmd = RunCommand {
+            command: command.into(),
+            cwd: Some(cwd.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_command_with_path(&cmd, Some(path.as_ref())),
+            expected,
+            "command={command}, PATH={path}"
+        );
+        let executed = std::process::Command::new(command)
+            .current_dir(&cwd)
+            .env("PATH", path)
+            .status();
+        assert_eq!(
+            executed.is_ok(),
+            expected.is_some(),
+            "command={command}, PATH={path}"
+        );
+        if let Ok(status) = executed {
+            assert!(status.success());
+        }
+    }
+}
+
+#[test]
+fn command_lookup_works_after_the_current_directory_is_removed() {
+    const CHILD_ENV: &str = "YINZ_TEST_REMOVED_COMMAND_CWD";
+    if env::var_os(CHILD_ENV).is_none() {
+        // Isolate the process-wide cwd change even when run with cargo test.
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "command::tests::command_lookup_works_after_the_current_directory_is_removed",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().canonicalize().unwrap().join("missing");
+    env::set_current_dir(dir.path()).unwrap();
+    dir.close().unwrap();
+    assert!(env::current_dir().is_err());
+
+    for cwd in [None, Some(missing)] {
+        for path in ["/usr/bin", "relative:/usr/bin", ":/usr/bin"] {
+            let cmd = RunCommand {
+                command: "true".into(),
+                cwd: cwd.clone(),
+                ..Default::default()
+            };
+            let mut child = std::process::Command::new(&cmd.command);
+            // Match both spawn paths' fallback when the requested cwd is missing.
+            if let Some(cwd) = cmd.cwd.as_ref().filter(|cwd| cwd.is_dir()) {
+                child.current_dir(cwd);
+            }
+            assert!(child.env("PATH", path).status().unwrap().success());
+            assert_eq!(
+                resolve_command_with_path(&cmd, Some(path.as_ref())),
+                Some(PathBuf::from("/usr/bin/true")),
+                "cwd={cwd:?}, PATH={path}"
+            );
+        }
+    }
+}

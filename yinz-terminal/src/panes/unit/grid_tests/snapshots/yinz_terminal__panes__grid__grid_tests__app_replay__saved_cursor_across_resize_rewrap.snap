@@ -1,0 +1,8 @@
+---
+source: yinz-terminal/src/panes/./unit/grid_tests/app_replay.rs
+expression: "format!(\"{:?}\", grid)"
+---
+00 (C): 12345678
+01 (W): 12345678
+02 (W): 1234567Z
+03 (W): 12345678

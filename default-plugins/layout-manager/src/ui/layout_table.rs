@@ -2,7 +2,7 @@ use super::text_utils::{
     get_last_modified_string, get_layout_display_info, truncate_with_ellipsis,
 };
 use crate::DisplayLayout;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 fn create_table_row(
     name: &str,

@@ -7,13 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 use {
-    zellij_ipc::ipc::ClientToServerMsg, zellij_ipc::ipc::IpcReceiverWithContext,
-    zellij_ipc::ipc::IpcRecv, zellij_ipc::ipc::ServerToClientMsg,
-    zellij_types::agent::report::AgentReportState,
+    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcReceiverWithContext,
+    yinz_ipc::ipc::IpcRecv, yinz_ipc::ipc::ServerToClientMsg,
+    yinz_types::agent::report::AgentReportState,
 };
 
 fn command(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_zellij"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yinz"));
     cmd.args([
         "--session",
         "report-test",
@@ -22,12 +22,12 @@ fn command(dir: &std::path::Path) -> Command {
         "--pane-id",
         "7",
     ])
-    .env("ZELLIJ_SOCKET_DIR", dir)
+    .env("YINZ_SOCKET_DIR", dir)
     .env("TMPDIR", dir)
     .env("HOME", dir)
     .env("XDG_CONFIG_HOME", dir)
-    .env("ZELLIJ_HOOK_TRACE", "1")
-    .env_remove("ZELLIJ_PANE_REF")
+    .env("YINZ_HOOK_TRACE", "1")
+    .env_remove("YINZ_PANE_REF")
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
@@ -37,24 +37,24 @@ fn command(dir: &std::path::Path) -> Command {
 /// Pay macOS's first-exec cost before a test arms its clock.
 ///
 /// macOS validates a freshly built binary's code signature on its first exec and caches it per
-/// file: measured here at 5.4s for the 138MB debug `zellij`, against 50ms for every later exec.
+/// file: measured here at 5.4s for the 138MB debug `yinz`, against 50ms for every later exec.
 /// A test whose subject is a deadline must not be timing that. Same trap, and same remedy, as
-/// `zellij_test_support::write_warm_script`.
+/// `yinz_test_support::write_warm_script`.
 fn warm_binary() {
     static WARM: std::sync::Once = std::sync::Once::new();
     WARM.call_once(|| {
-        Command::new(env!("CARGO_BIN_EXE_zellij"))
+        Command::new(env!("CARGO_BIN_EXE_yinz"))
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .expect("failed to warm the zellij binary");
+            .expect("failed to warm the yinz binary");
     });
 }
 
 fn listener(dir: &std::path::Path) -> interprocess::local_socket::Listener {
-    let socket_dir = dir.join(&*zellij_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+    let socket_dir = dir.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     std::fs::create_dir_all(&socket_dir).unwrap();
     ListenerOptions::new()
         .name(
@@ -84,7 +84,7 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         let launcher_sockets = dir.path().join("launcher");
         let listener = listener(&launcher_sockets);
         let registry = std::path::Path::new("/tmp")
-            .join(format!("zellij-{}", nix::unistd::Uid::current()))
+            .join(format!("yinz-{}", nix::unistd::Uid::current()))
             .join("codex");
         std::fs::create_dir_all(&registry).unwrap();
         let registration = tempfile::tempdir_in(registry).unwrap();
@@ -94,8 +94,8 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         let binding = serde_json::json!({
                 "thread_id": thread,
                 "env": {
-                    "ZELLIJ_SESSION_NAME":"report-test", "ZELLIJ_PANE_ID":"15",
-                    "ZELLIJ_SOCKET_DIR": launcher_sockets
+                    "YINZ_SESSION_NAME":"report-test", "YINZ_PANE_ID":"15",
+                    "YINZ_SOCKET_DIR": launcher_sockets
                 }
         });
         std::fs::write(
@@ -103,17 +103,17 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
             binding.to_string(),
         )
         .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_zellij"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
         command
             .args(["hocus", "codex-report"])
-            .env("ZELLIJ_SOCKET_DIR", dir.path().join("daemon"))
+            .env("YINZ_SOCKET_DIR", dir.path().join("daemon"))
             .env("TMPDIR", dir.path())
             .env_remove("XDG_RUNTIME_DIR")
-            .env("ZELLIJ_PANE_REF", "aaaaaaaaaaaa")
-            .env("ZELLIJ_SESSION_NAME", "old-session")
-            .env("ZELLIJ_PANE_ID", "20")
-            .env("ZELLIJ_REMOTE_PANE_TOKEN", "old-remote-pane")
-            .env("ZELLIJ_SWAMP_OWNER", "old-workflow")
+            .env("YINZ_PANE_REF", "aaaaaaaaaaaa")
+            .env("YINZ_SESSION_NAME", "old-session")
+            .env("YINZ_PANE_ID", "20")
+            .env("YINZ_REMOTE_PANE_TOKEN", "old-remote-pane")
+            .env("YINZ_SWAMP_OWNER", "old-workflow")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -137,14 +137,13 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         };
         assert_eq!(
             report.pane_id,
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(15))
+            yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(15))
         );
         let event = report.event.unwrap();
         assert_eq!(event.session_id.as_deref(), Some(thread.as_str()));
         assert_eq!(event.kind, "codex");
         assert!(
-            serde_json::from_str::<serde_json::Value>(&event.raw).unwrap()
-                ["_zellij_workflow_owner"]
+            serde_json::from_str::<serde_json::Value>(&event.raw).unwrap()["_yinz_workflow_owner"]
                 .is_null()
         );
         receiver
@@ -169,7 +168,7 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
 fn bypassed_codex_launches_preserve_arguments_and_socket_config_is_not_pane_identity() {
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("codex");
-    zellij_test_support::write_warm_script(&program, "printf '%s\\n' \"$@\"\nexit 23\n");
+    yinz_test_support::write_warm_script(&program, "printf '%s\\n' \"$@\"\nexit 23\n");
     let cases: &[(&[&str], bool)] = &[
         (&["prompt without a pane"], false),
         (&["-c", "model=example", "exec", "prompt with spaces"], true),
@@ -204,20 +203,20 @@ fn bypassed_codex_launches_preserve_arguments_and_socket_config_is_not_pane_iden
         (&["--new-option", "value"], true),
     ];
     for (args, pane) in cases {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_zellij"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
         command
             .args(["hocus", "codex", "--command"])
             .arg(&program)
             .arg("--")
             .args(*args)
-            .env("ZELLIJ_SOCKET_DIR", dir.path())
+            .env("YINZ_SOCKET_DIR", dir.path())
             .env("TMPDIR", dir.path())
-            .env("ZELLIJ_SESSION_NAME", "session-without-a-pane")
-            .env_remove("ZELLIJ_PANE_REF")
-            .env_remove("ZELLIJ_PANE_ID")
-            .env_remove("ZELLIJ_REMOTE_PANE_TOKEN");
+            .env("YINZ_SESSION_NAME", "session-without-a-pane")
+            .env_remove("YINZ_PANE_REF")
+            .env_remove("YINZ_PANE_ID")
+            .env_remove("YINZ_REMOTE_PANE_TOKEN");
         if *pane {
-            command.env("ZELLIJ_PANE_ID", "15");
+            command.env("YINZ_PANE_ID", "15");
         }
         let output = command.output().unwrap();
         assert_eq!(
@@ -238,15 +237,15 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::{net::UnixStream, process::CommandExt};
 
-    const CHILD_ENV: &str = "ZELLIJ_TEST_CODEX_PANE";
+    const CHILD_ENV: &str = "YINZ_TEST_CODEX_PANE";
     if let Some(root) = std::env::var_os(CHILD_ENV) {
         let root = std::path::Path::new(&root);
         let mut peer = UnixStream::connect(root.join("test.sock")).unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
         let mut replies = BufReader::new(peer.try_clone().unwrap());
-        assert!(std::env::var_os("ZELLIJ_PANE_REF").is_none());
-        let pane = std::env::var("ZELLIJ_PANE_ID").unwrap();
+        assert!(std::env::var_os("YINZ_PANE_REF").is_none());
+        let pane = std::env::var("YINZ_PANE_ID").unwrap();
         for case in [
             "accepted",
             "missing-pane",
@@ -260,40 +259,40 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
             "empty-remote-token",
             "detached-daemon",
         ] {
-            let mut reporter = Command::new(root.join("zellij"));
+            let mut reporter = Command::new(root.join("yinz"));
             reporter
                 .args(["hocus", "codex-report"])
-                .env("ZELLIJ_SOCKET_DIR", root.join("socket-alias"))
+                .env("YINZ_SOCKET_DIR", root.join("socket-alias"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             match case {
                 "missing-pane" => {
-                    reporter.env_remove("ZELLIJ_PANE_ID");
+                    reporter.env_remove("YINZ_PANE_ID");
                 },
                 "invalid-pane" => {
-                    reporter.env("ZELLIJ_PANE_ID", "invalid");
+                    reporter.env("YINZ_PANE_ID", "invalid");
                 },
                 "missing-session" => {
-                    reporter.env_remove("ZELLIJ_SESSION_NAME");
+                    reporter.env_remove("YINZ_SESSION_NAME");
                 },
                 "invalid-session" => {
-                    reporter.env("ZELLIJ_SESSION_NAME", "..");
+                    reporter.env("YINZ_SESSION_NAME", "..");
                 },
                 "mismatched-session" => {
-                    reporter.env("ZELLIJ_SESSION_NAME", "other-session");
+                    reporter.env("YINZ_SESSION_NAME", "other-session");
                 },
                 "invalid-reference" => {
-                    reporter.env("ZELLIJ_PANE_REF", "invalid");
+                    reporter.env("YINZ_PANE_REF", "invalid");
                 },
                 "empty-reference" => {
-                    reporter.env("ZELLIJ_PANE_REF", "");
+                    reporter.env("YINZ_PANE_REF", "");
                 },
                 "remote-token" => {
-                    reporter.env("ZELLIJ_REMOTE_PANE_TOKEN", "stale-token");
+                    reporter.env("YINZ_REMOTE_PANE_TOKEN", "stale-token");
                 },
                 "empty-remote-token" => {
-                    reporter.env("ZELLIJ_REMOTE_PANE_TOKEN", "");
+                    reporter.env("YINZ_REMOTE_PANE_TOKEN", "");
                 },
                 "detached-daemon" => unsafe {
                     // Keep the live pane and its environment, but leave its Unix session.
@@ -329,24 +328,24 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
     struct Session(tempfile::TempDir);
     impl Session {
         fn command(&self) -> Command {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_zellij"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
             for key in [
                 "HOME",
                 "XDG_CONFIG_HOME",
                 "XDG_DATA_HOME",
                 "XDG_CACHE_HOME",
                 "TMPDIR",
-                "ZELLIJ_SOCKET_DIR",
+                "YINZ_SOCKET_DIR",
             ] {
                 command.env(key, self.0.path());
             }
             for key in [
-                "ZELLIJ",
-                "ZELLIJ_PANE_ID",
-                "ZELLIJ_PANE_REF",
-                "ZELLIJ_SESSION_NAME",
-                "ZELLIJ_REMOTE_PANE_TOKEN",
-                "ZELLIJ_SWAMP_OWNER",
+                "YINZ",
+                "YINZ_PANE_ID",
+                "YINZ_PANE_REF",
+                "YINZ_SESSION_NAME",
+                "YINZ_REMOTE_PANE_TOKEN",
+                "YINZ_SWAMP_OWNER",
             ] {
                 command.env_remove(key);
             }
@@ -371,8 +370,8 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
     let session = Session(tempfile::tempdir().unwrap());
     let root = session.0.path();
     std::os::unix::fs::symlink(root, root.join("socket-alias")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_zellij"), root.join("zellij")).unwrap();
-    let socket_dir = root.join(&*zellij_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_yinz"), root.join("yinz")).unwrap();
+    let socket_dir = root.join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR);
     std::fs::create_dir_all(&socket_dir).unwrap();
     let _other_session =
         std::os::unix::net::UnixListener::bind(socket_dir.join("other-session")).unwrap();
@@ -452,7 +451,7 @@ fn diagnostics(dir: &std::path::Path) -> String {
     std::fs::read_dir(dir)
         .unwrap()
         .filter_map(|entry| {
-            let path = entry.ok()?.path().join("zellij-log/zellij.log");
+            let path = entry.ok()?.path().join("yinz-log/yinz.log");
             std::fs::read_to_string(path).ok()
         })
         .collect()
@@ -568,7 +567,7 @@ fn reporter_bounds_unclosed_stdin_even_when_diagnostics_cannot_be_written() {
 fn codex_router_bounds_unclosed_stdin_without_configuration_or_logging() {
     warm_binary();
     let started = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zellij"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yinz"))
         .args(["hocus", "codex-report"])
         .env("TMPDIR", "/dev/null")
         .env("XDG_CONFIG_HOME", "/dev/null")
@@ -600,7 +599,7 @@ fn oversized_reports_use_the_existing_bounded_payload() {
         IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) => report,
         _ => panic!("expected a report"),
     };
-    assert!(report.event.unwrap().raw.len() <= zellij_types::agent::HOOK_BROADCAST_MAX_BYTES);
+    assert!(report.event.unwrap().raw.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
     receiver
         .get_sender::<ServerToClientMsg>()
         .unwrap()
@@ -614,7 +613,7 @@ fn oversized_reports_use_the_existing_bounded_payload() {
 #[test]
 fn installed_scripts_keep_neutral_output_after_reporter_failure() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_zellij"))
+    let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
         .args(["hocus", "hooks", "install"])
         .env("HOME", dir.path())
         .env("CODEX_HOME", dir.path().join(".codex"))
@@ -632,12 +631,12 @@ fn installed_scripts_keep_neutral_output_after_reporter_failure() {
         let started = Instant::now();
         let mut child = Command::new("sh")
             .arg(dir.path().join(agent).join("hocus/hocus-hook.sh"))
-            .env("ZELLIJ_SESSION_NAME", "missing")
-            .env("ZELLIJ_PANE_ID", "7")
-            .env("ZELLIJ_SOCKET_DIR", dir.path())
+            .env("YINZ_SESSION_NAME", "missing")
+            .env("YINZ_PANE_ID", "7")
+            .env("YINZ_SOCKET_DIR", dir.path())
             .env("TMPDIR", dir.path())
-            .env_remove("ZELLIJ_PANE_REF")
-            .env_remove("ZELLIJ_REMOTE_PANE_TOKEN")
+            .env_remove("YINZ_PANE_REF")
+            .env_remove("YINZ_REMOTE_PANE_TOKEN")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -662,11 +661,11 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
             cmd.args(["--state", "busy", "--kind", "codex"]);
         }
         cmd.env(
-            "ZELLIJ_PANE_REF",
+            "YINZ_PANE_REF",
             "invalid-reference-that-must-not-be-resolved",
         )
-        .env("ZELLIJ_SESSION_NAME", "stale-session")
-        .env("ZELLIJ_PANE_ID", "999");
+        .env("YINZ_SESSION_NAME", "stale-session")
+        .env("YINZ_PANE_ID", "999");
         let mut child = cmd.spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let mut receiver =
@@ -677,7 +676,7 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
         };
         assert_eq!(
             report.pane_id,
-            zellij_types::data::PaneId::Terminal(zellij_types::internal_ids::TerminalId::new(7))
+            yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7))
         );
         assert!(report.event.is_none());
         assert_eq!(matches!(report.state, AgentReportState::Clear), clear);

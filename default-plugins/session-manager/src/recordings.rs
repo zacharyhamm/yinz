@@ -1,12 +1,12 @@
-use zellij_tile::prelude::ElapsedMicros;
-use zellij_tile::prelude::RecordingId;
-use zellij_tile::prelude::SessionName;
+use yinz_tile::prelude::ElapsedMicros;
+use yinz_tile::prelude::RecordingId;
+use yinz_tile::prelude::SessionName;
 #[cfg(test)]
-use zellij_tile::prelude::TerminalId;
+use yinz_tile::prelude::TerminalId;
 #[cfg(test)]
-use zellij_tile::prelude::UnixMicros;
-use zellij_tile::prelude::{RecordingSummary, SearchHit};
-use zellij_tile::shim::*;
+use yinz_tile::prelude::UnixMicros;
+use yinz_tile::prelude::{RecordingSummary, SearchHit};
+use yinz_tile::shim::*;
 
 #[derive(Debug, Default)]
 pub struct RecordingRow {
@@ -171,7 +171,7 @@ impl Recordings {
             Some(i) => i - 1,
         });
     }
-    /// The `recording_id` under the cursor, for `zellij recordings export` (and, later, replay).
+    /// The `recording_id` under the cursor, for `yinz recordings export` (and, later, replay).
     #[allow(dead_code)] // the hook replay will hang off
     pub fn selected_recording_id(&self) -> Option<RecordingId> {
         self.selected_index

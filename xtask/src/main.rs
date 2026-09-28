@@ -33,7 +33,7 @@ mod remote_test;
 mod test;
 mod test_run;
 // Keep the build driver independent of the host runtime's dependency graph.
-#[path = "../../zellij-runtime/src/owned_dir.rs"]
+#[path = "../../yinz-runtime/src/owned_dir.rs"]
 mod owned_dir;
 
 use anyhow::Context;
@@ -49,7 +49,7 @@ use xshell::Shell;
 /// flags xtask itself owns.
 ///
 /// xflags matches every `-`-prefixed token before `--` against the command's own declaration, so
-/// `cargo x test -p zellij-server` dies with ``unexpected flag: `-p` `` long before the forwarding
+/// `cargo x test -p yinz-server` dies with ``unexpected flag: `-p` `` long before the forwarding
 /// code in `test::test` sees it. `insert_forwarding_separator` puts the `--` in for the caller.
 const FORWARDING_COMMANDS: &[(&str, &[&str])] = &[
     ("test", &["-h", "--help"]),
@@ -166,7 +166,7 @@ pub fn status(msg: &str) {
 
 fn deprecation_notice() -> anyhow::Result<()> {
     Err(anyhow::anyhow!(
-        " !!! cargo make has been deprecated by zellij !!!
+        " !!! cargo make has been deprecated by yinz !!!
 
 Our build system is now `cargo xtask`. Don't worry, you won't have to install
 anything!
@@ -221,8 +221,8 @@ mod tests {
     #[test]
     fn a_package_selector_is_forwarded() {
         assert_eq!(
-            split(&["xtask", "test", "-p", "zellij-server"]),
-            ["xtask", "test", "--", "-p", "zellij-server"]
+            split(&["xtask", "test", "-p", "yinz-server"]),
+            ["xtask", "test", "--", "-p", "yinz-server"]
         );
     }
 
@@ -237,8 +237,8 @@ mod tests {
     #[test]
     fn an_explicit_separator_is_left_alone() {
         assert_eq!(
-            split(&["xtask", "test", "--", "-p", "zellij-server"]),
-            ["xtask", "test", "--", "-p", "zellij-server"]
+            split(&["xtask", "test", "--", "-p", "yinz-server"]),
+            ["xtask", "test", "--", "-p", "yinz-server"]
         );
     }
 
@@ -262,8 +262,8 @@ mod tests {
             ["xtask", "build", "-p", "--release"]
         );
         assert_eq!(
-            split(&["xtask", "install", "/path/to/zellij"]),
-            ["xtask", "install", "/path/to/zellij"]
+            split(&["xtask", "install", "/path/to/yinz"]),
+            ["xtask", "install", "/path/to/yinz"]
         );
         assert_eq!(split(&["xtask", "ci", "check"]), ["xtask", "ci", "check"]);
     }

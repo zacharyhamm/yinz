@@ -1,9 +1,9 @@
 [package]
 name = "strider"
 version = "0.2.0"
-authors = ["Brooks J Rady <b.j.rady@gmail.com>"]
+authors = ["Zachary Hamm <hamm.zachary@gmail.com>"]
 edition.workspace = true
-description = "A simplified ranger clone written as a Zellij plugin"
+description = "A simplified ranger clone written as a Yinz plugin"
 license.workspace = true
 
 
@@ -11,7 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }
 pretty-bytes = { workspace = true }
 fuzzy-matcher = { workspace = true }
 unicode-width = { workspace = true }

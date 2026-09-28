@@ -1,0 +1,124 @@
+---
+source: yinz-integration-tests/tests/about_plugin.rs
+expression: "rendered_pages.join(\"\\n\")"
+---
+=== Nested Sessions
+ Yinz (test)  [0] Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │      Nested Sessions                                                                   │
+               │                                                                                        │
+               │      Yinz now detects when it is started inside another Yinz session.                  │
+               │      Allowing you to decide between (SESSION mode, returns to NORMAL):                 │
+               │                                                                                        │
+               │      1. Zoom in and control this session                                               │
+               │         The session will take up the whole screen and can be toggled on and off.       │
+               │         SESSION mode + <f> - Toggle host session fullscreen                            │
+               │      2. Control this session on focus                                                  │
+               │         When this pane gains focus, keybindings will be sent to this session.          │
+               │         You can then ascend back to the current session.                               │
+               │         SESSION mode + <]> - Focus the host (outer) session                            │
+               │         SESSION mode + <[> - Focus the guest (inner) session                           │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <ESC> - Go back                                                                   │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
+=== Kitty Graphics Protocol
+ Yinz (test)  [0] Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │            Kitty Graphics Protocol                                                     │
+               │                                                                                        │
+               │            Yinz now implements the Kitty graphics protocol.                            │
+               │            Images displayed by image viewers, plotting libraries and                   │
+               │            documentation tools are rendered inside panes, and keep working             │
+               │            when panes are scrolled, moved, resized or stacked.                         │
+               │                                                                                        │
+               │            The host terminal needs to support the protocol as well.                    │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <ESC> - Go back                                                                   │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
+=== Scroll By Command
+ Yinz (test)  [0] Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │       Scroll By Command                                                                │
+               │                                                                                        │
+               │       Yinz can now navigate the commands marked by the shell (OSC 133):                │
+               │                                                                                        │
+               │       SCROLL mode + <[> / <]> - Scroll to the previous / next command                  │
+               │       SCROLL mode + <m> - Select the command at the scroll position                    │
+               │       SCROLL mode + <c> - Copy the output of the last command                          │
+               │                                                                                        │
+               │       - Hold <Alt> with the mouse wheel to scroll through commands.                    │
+               │       - Triple-click to select an entire command.                                      │
+               │         ↳ Opt out of triple-click selection with: osc133_command_selection false       │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <ESC> - Go back                                                                   │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
+=== New UI
+ Yinz (test)  [0] Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │           New UI                                                                       │
+               │                                                                                        │
+               │           The Yinz interface has been redesigned.                                      │
+               │                                                                                        │
+               │           1. Title frames: pane frames are now off by default, leaving only            │
+               │              the title line if there is more than one pane in a tab. For a             │
+               │              single pane, the tab's title will be the pane's title.                    │
+               │              Opt out with: pane_frame_style "full"                                     │
+               │           2. Stacked lists: pane stacks have been redesigned to appear in a            │
+               │              compact list above the whole stack, allowing the full list of             │
+               │              panes to be seen in one place, rather than both above and below           │
+               │              the expanded pane.                                                        │
+               │              Opt out with: stacked_pane_list false                                     │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <ESC> - Go back                                                                   │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT   
+=== Focus Last Pane and Fullscreen Floating Panes
+ Yinz (test)  [0] Tab #1  + 
+$
+               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │           Focus Last Pane and Fullscreen Floating Panes                                │
+               │                                                                                        │
+               │           A new action returns focus to the pane that was focused before the           │
+               │           current one, so that two panes can be alternated with a single               │
+               │           keypress.                                                                    │
+               │                                                                                        │
+               │           PANE mode + <;> - Focus the last focused pane                                │
+               │                                                                                        │
+               │           Floating panes can now be made fullscreen, just like tiled panes.            │
+               │           The focused floating pane expands over the whole viewport, or over           │
+               │           the entire screen when hiding the UI.                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │                                                                                        │
+               │Help: <ESC> - Go back                                                                   │
+               └────────────────────────────────────────────────────────────────────────────────────────┘
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

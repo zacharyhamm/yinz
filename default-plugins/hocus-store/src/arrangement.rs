@@ -1,6 +1,6 @@
 use hocus_proto::{projects, wire::PollReply};
 use std::{collections::BTreeMap, path::Path};
-use zellij_tile::prelude::ProjectPaneGroup;
+use yinz_tile::prelude::ProjectPaneGroup;
 
 fn configuration_root(common_dir: Option<&str>, fallback: &str) -> String {
     common_dir
@@ -107,7 +107,7 @@ pub fn classify(
 mod tests {
     use super::*;
     use hocus_proto::{agents, location::Location};
-    use zellij_tile::prelude::TabId;
+    use yinz_tile::prelude::TabId;
 
     fn pane(id: u32, cwd: &str) -> agents::AgentPane {
         agents::AgentPane {
@@ -131,7 +131,7 @@ mod tests {
             repositories,
             activity: agents::Activity::new(),
             manual_kinds: BTreeMap::new(),
-            zellij_session_name: String::new().into(),
+            yinz_session_name: String::new().into(),
             tab_projects: BTreeMap::new(),
             focused: None,
             hooks: agents::HookFeeds::new(),

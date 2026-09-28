@@ -6,8 +6,8 @@
 //! given are one thing. They used to be two copies that drifted apart, so a hint added to one
 //! layout silently never reached the other; the layout now only contributes a [`HintRenderer`].
 
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
 
 use crate::{
     action_key, action_key_group, keybind_pipe_key, plugin_launch_key, the_modes_own_key, LinePart,
@@ -326,9 +326,9 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Detach", "Detach", action_key(&km, &[A::Detach])),
         hint("Session Manager", "Manager", plugin_launch_key(&km, "session-manager")),
         hint("Configure", "Config", plugin_launch_key(&km, "configuration")),
-        hint("Layout Manager", "Layouts", plugin_launch_key(&km, "zellij:layout-manager")),
+        hint("Layout Manager", "Layouts", plugin_launch_key(&km, "yinz:layout-manager")),
         hint("Plugin Manager", "Plugins", plugin_launch_key(&km, "plugin-manager")),
-        hint("About", "About", plugin_launch_key(&km, "zellij:about")),
+        hint("About", "About", plugin_launch_key(&km, "yinz:about")),
         hint("Notifications", "Notif",
             action_key(&km, &[A::SwitchToMode{input_mode: IM::Notifications}])),
         hint("Select pane", "Select", to_base_mode),

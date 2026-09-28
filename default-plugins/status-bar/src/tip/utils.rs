@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rand::prelude::{IndexedRandom, IteratorRandom};
 
-use zellij_tile::prelude::get_zellij_version;
+use yinz_tile::prelude::get_yinz_version;
 
 use super::cache::LocalCache;
 use super::consts::{DEFAULT_CACHE_FILE_PATH, MAX_CACHE_HITS};
@@ -40,9 +40,9 @@ pub fn get_cached_tip_name() -> String {
         Ok(cache) => cache,
     };
 
-    let zellij_version = get_zellij_version();
-    if zellij_version.ne(local_cache.get_version()) {
-        local_cache.set_version(zellij_version);
+    let yinz_version = get_yinz_version();
+    if yinz_version.ne(local_cache.get_version()) {
+        local_cache.set_version(yinz_version);
         local_cache.clear().unwrap();
     }
 

@@ -3,7 +3,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use pretty_bytes::converter::convert as pretty_bytes;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::file_list_view::FsEntry;
 

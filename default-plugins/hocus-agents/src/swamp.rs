@@ -7,7 +7,7 @@ use hocus_proto::swamp::swamp_lab::{self, api::SearchQuery, types as lab, Client
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use zellij_tile::ui_components::forms::{
+use yinz_tile::ui_components::forms::{
     viewport, Combo, Form, FormEvent, InputAction, Rect, RenderBuffer, Select, TextInput,
 };
 
@@ -203,7 +203,7 @@ pub(super) struct View {
     // starts available; a PaneUpdate must confirm the pane is shown.
     //
     // `surface_hidden` is the tab-level `Event::Visible`, which also fires - false, then true -
-    // when hocus carries the panel to another Zellij tab without it ever leaving the screen. So
+    // when hocus carries the panel to another Yinz tab without it ever leaving the screen. So
     // it only gates polling. The panel-level signals, `pane_visible` (the pane suppressed or
     // not) and `panel_hidden` (hocus's `vms::VISIBILITY`), are the ones that mean the panel was
     // put away: they close the filter editor and drop the message about what was typed in it,
@@ -778,7 +778,7 @@ impl View {
         let cap = rows.saturating_sub(2).clamp(1, most);
         // Errors carry text from the Lab and from hocus: nothing in them may reach the screen
         // as a control sequence.
-        let note = zellij_tile::text::sanitize(&note).replace('\n', " ");
+        let note = yinz_tile::text::sanitize(&note).replace('\n', " ");
         let action = note
             .rsplit_once(" · ")
             // Room for it after an ellipsis, should the message have to be cut.
@@ -787,7 +787,7 @@ impl View {
             Some((body, action)) => (body, Some(action)),
             None => (note.as_str(), None),
         };
-        let wrapped = zellij_tile::text::wrap(body, cols);
+        let wrapped = yinz_tile::text::wrap(body, cols);
         let tail = action.map_or_else(String::new, |action| format!(" · {action}"));
         let mut lines = wrapped.clone();
         if let Some(action) = action {
@@ -942,7 +942,7 @@ impl State {
     }
 
     /// The tab-level `Event::Visible`. Only polling follows it: hocus carrying the panel to
-    /// another Zellij tab sends a false and a true without the panel leaving the screen, and
+    /// another Yinz tab sends a false and a true without the panel leaving the screen, and
     /// that used to close an open filter, throw away what was typed in it and flash
     /// "Loading…" while the login was read again - twice, counting the way back.
     pub(super) fn swamp_visibility(&mut self, visible: bool) -> bool {
@@ -2333,7 +2333,7 @@ fn status_label(status: &str) -> &str {
 }
 
 fn fit(text: &str, cols: usize) -> String {
-    let text = zellij_tile::text::sanitize(text).replace('\n', " ");
+    let text = yinz_tile::text::sanitize(text).replace('\n', " ");
     agents::cut_to_width(text, cols)
 }
 
@@ -2425,7 +2425,7 @@ fn styled_line(runs: &[(&str, markdown::MdStyle)]) -> markdown::MdLine {
     runs.iter()
         .rev()
         .fold(markdown::MdLine::blank(), |line, (text, style)| {
-            line.prepend(&zellij_tile::text::sanitize(text), *style)
+            line.prepend(&yinz_tile::text::sanitize(text), *style)
         })
 }
 
@@ -2539,7 +2539,7 @@ fn detail_lines(detail: &Detail, cols: usize) -> Vec<markdown::MdLine> {
         markdown::Options::compact(),
     ));
     lines.extend(
-        zellij_tile::text::wrap(&format!("Comments ({})", detail.comments.len()), cols)
+        yinz_tile::text::wrap(&format!("Comments ({})", detail.comments.len()), cols)
             .into_iter()
             .map(markdown::MdLine::plain),
     );
@@ -5211,7 +5211,7 @@ mod tests {
         assert_eq!(state.swamp.selected_number(), Some(2180));
     }
 
-    /// hocus carrying the panel to another Zellij tab is a `Visible(false)` and a
+    /// hocus carrying the panel to another Yinz tab is a `Visible(false)` and a
     /// `Visible(true)` with the panel on screen the whole time.
     #[test]
     fn a_tab_switch_that_carries_the_panel_keeps_the_open_filter_and_the_login() {

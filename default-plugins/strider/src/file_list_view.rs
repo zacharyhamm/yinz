@@ -4,7 +4,7 @@ use pretty_bytes::converter::convert as pretty_bytes;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct FileListView {

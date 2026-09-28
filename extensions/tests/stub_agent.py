@@ -11,15 +11,15 @@ import tty
 import time
 
 process_started = time.monotonic()
-remote = 'ZELLIJ_REMOTE_PANE_TOKEN' in os.environ
-binary = 'zellij' if remote else os.environ['SWAMP_SMOKE_ZELLIJ']
+remote = 'YINZ_REMOTE_PANE_TOKEN' in os.environ
+binary = 'yinz' if remote else os.environ['SWAMP_SMOKE_YINZ']
 settings = termios.tcgetattr(sys.stdin)
 tty.setraw(sys.stdin)
 print('\x1b[?2004h', end='', flush=True)
 
 
 def report(hook, **fields):
-    payload = dict(hook_event_name=hook, session_id='stub-' + os.environ.get('ZELLIJ_REMOTE_PANE_TOKEN', os.environ.get('ZELLIJ_PANE_ID', '')), cwd=os.getcwd(), **fields)
+    payload = dict(hook_event_name=hook, session_id='stub-' + os.environ.get('YINZ_REMOTE_PANE_TOKEN', os.environ.get('YINZ_PANE_ID', '')), cwd=os.getcwd(), **fields)
     kind = os.environ.get('SWAMP_SMOKE_KIND', 'claude')
     command = [binary, '--pty-broker', 'report', kind] if remote else [binary, 'action', 'agent-report', '--kind', kind, '--hook-json']
     subprocess.run(command, input=json.dumps(payload).encode(), check=True)
@@ -129,7 +129,7 @@ try:
         report('Stop', last_assistant_message=message)
         if '--exit' in sys.argv:
             if not remote:
-                with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'exit-' + os.environ['ZELLIJ_PANE_ID']), 'w') as stamp:
+                with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'exit-' + os.environ['YINZ_PANE_ID']), 'w') as stamp:
                     stamp.write(str(time.monotonic()))
                 if prompt.startswith('Fix the failed tests'):
                     with open(os.path.join(os.environ['SWAMP_SMOKE_ROOT'], 'helper-exit'), 'w') as stamp:

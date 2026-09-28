@@ -132,8 +132,8 @@ mod tests {
 
     #[test]
     fn default_script_writes_to_the_given_path() {
-        let script = build(&BTreeMap::new(), "/tmp/zellij-file-finder-7.sel");
-        assert!(script.contains("esac > '/tmp/zellij-file-finder-7.sel'"));
+        let script = build(&BTreeMap::new(), "/tmp/yinz-file-finder-7.sel");
+        assert!(script.contains("esac > '/tmp/yinz-file-finder-7.sel'"));
     }
 
     #[test]

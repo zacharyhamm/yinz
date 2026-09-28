@@ -1,7 +1,7 @@
 use ansi_term::{unstyled_len, ANSIString, ANSIStrings, Style};
 
 use crate::{action_key, style_key_with_modifier, LinePart};
-use zellij_tile::prelude::{actions::Action, *};
+use yinz_tile::prelude::{actions::Action, *};
 
 macro_rules! strings {
     ($ANSIStrings:expr) => {{

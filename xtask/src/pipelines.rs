@@ -93,7 +93,7 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
             ""
         };
         println!(
-            "Note: installing a '{profile}' build: the zellij binary's own code is \
+            "Note: installing a '{profile}' build: the yinz binary's own code is \
              unoptimized{plugins}. 'cargo x install' installs a release build."
         );
     }
@@ -108,12 +108,12 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
     };
     // `sh.copy_file` accepts a directory destination, keep supporting that
     let destination = if destination.is_dir() {
-        destination.join("zellij")
+        destination.join("yinz")
     } else {
         destination
     };
     sh.change_dir(crate::project_root());
-    let binary = crate::target_dir().join(profile_dir).join("zellij");
+    let binary = crate::target_dir().join(profile_dir).join("yinz");
     // Copy to a temp file and rename, rather than overwriting in place: on macOS an in-place
     // overwrite keeps the inode, so the kernel serves its cached (now stale) code signature and
     // SIGKILLs the binary on exec. A rename gives it a fresh inode.
@@ -132,18 +132,18 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
         // excluded.
         if provider_excluded_by_args(&flags.args) {
             println!(
-                "Skipping zellij-firecracker: not part of this build \
+                "Skipping yinz-firecracker: not part of this build \
                  (build it with 'cargo x build --profile {profile}')"
             );
         } else {
             println!();
-            let msg = ">> Building 'zellij-firecracker'";
+            let msg = ">> Building 'yinz-firecracker'";
             crate::status(msg);
             println!("{}", msg);
             let cargo = crate::cargo().with_context(err_context)?;
             match cmd!(
                 sh,
-                "{cargo} build --profile {profile} --bin zellij-firecracker"
+                "{cargo} build --profile {profile} --bin yinz-firecracker"
             )
             .args(&flags.args)
             .run()
@@ -151,17 +151,17 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
                 Ok(()) => {
                     let provider = crate::target_dir()
                         .join(profile_dir)
-                        .join("zellij-firecracker");
-                    let provider_destination = destination.with_file_name("zellij-firecracker");
+                        .join("yinz-firecracker");
+                    let provider_destination = destination.with_file_name("yinz-firecracker");
                     let provider_tmp = provider_destination.with_extension("xtask-install-tmp");
                     sh.copy_file(&provider, &provider_tmp)
                         .with_context(err_context)?;
                     std::fs::rename(provider_tmp, &provider_destination)
                         .with_context(err_context)?;
                 },
-                // The provider is an optional companion: a zellij that built and installed fine
+                // The provider is an optional companion: a yinz that built and installed fine
                 // should not be held back by it.
-                Err(err) => println!("Skipping zellij-firecracker: {err}"),
+                Err(err) => println!("Skipping yinz-firecracker: {err}"),
             }
         }
     }
@@ -186,8 +186,8 @@ pub fn install(sh: &Shell, flags: flags::Install) -> anyhow::Result<()> {
 
 /// Whether forwarded `cargo build` args restrict the build to bins other than the provider.
 ///
-/// A `--bin` filter is the only way an `install` can legitimately not want a `zellij-firecracker`
-/// beside its `zellij`: a forwarded `--target` moves the `zellij` binary too, and copying that
+/// A `--bin` filter is the only way an `install` can legitimately not want a `yinz-firecracker`
+/// beside its `yinz`: a forwarded `--target` moves the `yinz` binary too, and copying that
 /// fails before this question is asked. The profile is not forwarded here - `install --profile`
 /// picks it, and the provider follows it.
 #[cfg(target_os = "linux")]
@@ -208,19 +208,19 @@ fn provider_excluded_by_args(args: &[std::ffi::OsString]) -> bool {
             names.push(name.to_owned());
         }
     }
-    filtered && !names.iter().any(|name| name == "zellij-firecracker")
+    filtered && !names.iter().any(|name| name == "yinz-firecracker")
 }
 
 /// Where the binary at `binary` looks for its installed builtins: `(user, system)`.
 ///
 /// Asked of the binary rather than recomputed here, because every input is the binary's -
 /// `PREFIX` is baked in at compile time, the XDG answer is platform-specific, and the
-/// `builtins/<version>` shape is zellij-runtime's to define. xtask cannot depend on zellij-runtime
+/// `builtins/<version>` shape is yinz-runtime's to define. xtask cannot depend on yinz-runtime
 /// without compiling the whole tree to run anything.
 fn builtin_dirs_of(sh: &Shell, binary: &Path) -> anyhow::Result<(PathBuf, PathBuf)> {
     let output = cmd!(sh, "{binary} setup --print-builtin-plugin-dir")
         .read()
-        .context("failed to ask the built zellij where its builtin plugins go")?;
+        .context("failed to ask the built yinz where its builtin plugins go")?;
     let mut user = None;
     let mut system = None;
     for line in output.lines() {
@@ -233,7 +233,7 @@ fn builtin_dirs_of(sh: &Shell, binary: &Path) -> anyhow::Result<(PathBuf, PathBu
     match (user, system) {
         (Some(user), Some(system)) => Ok((user, system)),
         _ => anyhow::bail!(
-            "unexpected output from `zellij setup --print-builtin-plugin-dir`:\n{output}"
+            "unexpected output from `yinz setup --print-builtin-plugin-dir`:\n{output}"
         ),
     }
 }
@@ -255,14 +255,14 @@ fn install_builtins(
         },
     };
 
-    // The versioned dir is shared by every installed zellij of this version, so wasm built for
+    // The versioned dir is shared by every installed yinz of this version, so wasm built for
     // another profile replaces what they all load - and an unoptimized plugin is noticeably
     // slower. Say so before writing, while the user can still stop and use --no-builtins or
     // --builtins-dir instead.
     if profile != "release" {
         eprintln!(
             ">> Note: installing '{profile}' plugin wasm, which is unoptimized and replaces the \
-             release wasm every installed zellij of this version loads. Re-run \
+             release wasm every installed yinz of this version loads. Re-run \
              'cargo x install <dest>' with no --profile to put the release wasm back, or pass \
              --no-builtins / --builtins-dir to leave {} alone.",
             dir.display()
@@ -347,7 +347,7 @@ fn refresh_legacy_builtin(
 
 /// Remove wasm in the versioned dir that no plugin crate produces any more - a plugin deleted
 /// from the workspace must not keep loading - and point out sibling version dirs, which are
-/// left alone because another installed zellij may still be that version.
+/// left alone because another installed yinz may still be that version.
 fn prune_builtins(dir: &Path, installed: &[&str]) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir)
         .with_context(|| format!("failed to read {}", dir.display()))?
@@ -375,7 +375,7 @@ fn prune_builtins(dir: &Path, installed: &[&str]) -> anyhow::Result<()> {
         .collect();
     if !stale.is_empty() {
         stale.sort();
-        eprintln!(">> Builtins of other zellij versions are still installed; delete them once no zellij of that version remains:");
+        eprintln!(">> Builtins of other yinz versions are still installed; delete them once no yinz of that version remains:");
         for path in stale {
             eprintln!("     {path}");
         }
@@ -383,7 +383,7 @@ fn prune_builtins(dir: &Path, installed: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run zellij debug build.
+/// Run yinz debug build.
 pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
     let err_context =
         |flags: &flags::Run| format!("failed to run pipeline 'run' with args {:?}", flags);
@@ -446,7 +446,7 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
     };
 
     let cargo = crate::cargo().with_context(|| err_context(&flags))?;
-    let mut cmd = cmd!(sh, "{cargo} run").args(["--package", "zellij", "--"]);
+    let mut cmd = cmd!(sh, "{cargo} run").args(["--package", "yinz", "--"]);
     if let Some(data_dir) = data_dir {
         cmd = cmd.args(["--data-dir", &format!("{}", data_dir.display())]);
     }
@@ -520,21 +520,16 @@ mod tests {
 
         #[test]
         fn a_bin_filter_without_the_provider_excludes_it() {
-            assert!(excluded(&["--bin", "zellij"]));
-            assert!(excluded(&["--bin=zellij"]));
+            assert!(excluded(&["--bin", "yinz"]));
+            assert!(excluded(&["--bin=yinz"]));
         }
 
         #[test]
         fn a_bin_filter_naming_the_provider_does_not() {
-            assert!(!excluded(&["--bin", "zellij-firecracker"]));
-            assert!(!excluded(&["--bin=zellij-firecracker"]));
-            assert!(!excluded(&[
-                "--bin",
-                "zellij",
-                "--bin",
-                "zellij-firecracker"
-            ]));
-            assert!(!excluded(&["--bin=zellij", "--bin=zellij-firecracker"]));
+            assert!(!excluded(&["--bin", "yinz-firecracker"]));
+            assert!(!excluded(&["--bin=yinz-firecracker"]));
+            assert!(!excluded(&["--bin", "yinz", "--bin", "yinz-firecracker"]));
+            assert!(!excluded(&["--bin=yinz", "--bin=yinz-firecracker"]));
         }
 
         #[test]

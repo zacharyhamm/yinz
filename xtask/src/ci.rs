@@ -1,4 +1,4 @@
-//! Tasks related to zellij CI
+//! Tasks related to yinz CI
 use crate::{
     build,
     flags::{self, BuildRelease, Check, CiCmd, Cross, E2e},
@@ -82,7 +82,7 @@ fn e2e_build(sh: &Shell) -> anyhow::Result<()> {
 
 /// Keep the path used in E2E snapshots stable across architectures.
 fn link_e2e_binary(binary: &Path) -> anyhow::Result<()> {
-    let link = crate::target_dir().join("zellij");
+    let link = crate::target_dir().join("yinz");
     match std::fs::remove_file(&link) {
         Ok(()) => {},
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
@@ -132,17 +132,17 @@ pub fn build_linux_release(sh: &Shell) -> anyhow::Result<PathBuf> {
     let user = format!("{}:{}", unsafe { libc::getuid() }, unsafe {
         libc::getgid()
     });
-    let image = "zellij-test-builder:trixie-slim";
+    let image = "yinz-test-builder:trixie-slim";
     cmd!(
         sh,
         "docker build --platform {platform} -t {image} -f docker/linux-builder.Dockerfile docker"
     )
     .run()
     .context("failed to build the Debian test builder; Docker is required")?;
-    let binary = Path::new(target).join("release/zellij");
+    let binary = Path::new(target).join("release/yinz");
     let executable = target_dir.join(&binary);
     // Podman also exposes a `docker` CLI; keep its rootless mapping aligned with --user.
-    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {project_mount} -v {target_mount} -w {project} -e {home} -e {cargo_home} {image} cargo build --locked --release --target {target} --bin zellij")
+    cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {project_mount} -v {target_mount} -w {project} -e {home} -e {cargo_home} {image} cargo build --locked --release --target {target} --bin yinz")
         .env("PODMAN_USERNS", "keep-id")
         .run().context("failed to build the GNU/Linux test binary in Debian")?;
     cmd!(sh, "docker run --rm --platform {platform} --user {user} -v {target_mount} {image} {executable} --version")
@@ -205,7 +205,7 @@ fn e2e_test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
             .map_err(anyhow::Error::new)?;
 
             // plugin system tests are run here because they're medium-slow
-            let _pd = sh.push_dir(Path::new("zellij-plugin-host"));
+            let _pd = sh.push_dir(Path::new("yinz-plugin-host"));
             println!();
             let msg = ">> Testing Plugin System".to_string();
             crate::status(&msg);

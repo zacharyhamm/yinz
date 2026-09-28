@@ -1,5 +1,5 @@
 // Reader/editor for shared:todo; todo-extension.ts owns the schema.
-import z, { definePlugin, type DataRecord, type Mutation } from "zellij:plugin";
+import z, { definePlugin, type DataRecord, type Mutation } from "yinz:plugin";
 const namespace = "shared:todo";
 const D = z.data;
 let todos: DataRecord[] = [];

@@ -1,13 +1,13 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use uuid::Uuid;
-use zellij_tile::prelude::TabPosition;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::TabPosition;
+use yinz_tile::prelude::*;
 
 use std::collections::{BTreeMap, HashMap};
 
 pub struct SearchResult {
-    plugin_id: zellij_tile::prelude::PluginId,
+    plugin_id: yinz_tile::prelude::PluginId,
     plugin_info: PluginInfo,
     indices: Vec<usize>,
     score: i64,
@@ -15,7 +15,7 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn new(
-        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_id: yinz_tile::prelude::PluginId,
         plugin_info: &PluginInfo,
         indices: Vec<usize>,
         score: i64,
@@ -503,7 +503,7 @@ struct State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.userspace_configuration = configuration;
         subscribe(&[
@@ -713,7 +713,7 @@ impl State {
     }
     pub fn render_plugin(
         &self,
-        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_id: yinz_tile::prelude::PluginId,
         plugin_info: &PluginInfo,
         is_selected: bool,
         is_expanded: bool,
@@ -849,7 +849,7 @@ impl State {
     }
     fn render_tab_line(
         &self,
-        plugin_id: zellij_tile::prelude::PluginId,
+        plugin_id: yinz_tile::prelude::PluginId,
         max_width: usize,
     ) -> NestedListItem {
         let tab_of_plugin_id = self
@@ -943,10 +943,7 @@ impl State {
             self.expanded_indices.retain(|i| i != selected_index);
         }
     }
-    pub fn get_tab_of_plugin_id(
-        &self,
-        plugin_id: zellij_tile::prelude::PluginId,
-    ) -> Option<String> {
+    pub fn get_tab_of_plugin_id(&self, plugin_id: yinz_tile::prelude::PluginId) -> Option<String> {
         self.plugin_id_to_tab_position
             .get(&plugin_id)
             .and_then(|plugin_id| self.tab_position_to_tab_name.get(plugin_id))

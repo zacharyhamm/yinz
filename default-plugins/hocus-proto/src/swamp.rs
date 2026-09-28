@@ -10,7 +10,7 @@ pub use swamp_lab;
 
 use std::collections::BTreeMap;
 use swamp_lab::Method;
-use zellij_tile::prelude::HttpVerb;
+use yinz_tile::prelude::HttpVerb;
 
 pub fn verb(method: Method) -> HttpVerb {
     match method {
@@ -24,7 +24,7 @@ pub fn verb(method: Method) -> HttpVerb {
 /// Send `request` through the host; the reply arrives as a `WebRequestResult`
 /// carrying `context`.
 pub fn send(request: swamp_lab::Request, context: BTreeMap<String, String>) {
-    zellij_tile::prelude::web_request(
+    yinz_tile::prelude::web_request(
         request.url,
         verb(request.method),
         request.headers,

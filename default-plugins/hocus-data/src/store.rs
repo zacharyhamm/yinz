@@ -21,14 +21,14 @@
 //! temporary file.
 //!
 //! That `Local` is the genuine `PluginDataStore` and not a hand-written fake is
-//! what makes this affordable. `zellij_storage::plugin_data_store` is compiled for
+//! what makes this affordable. `yinz_storage::plugin_data_store` is compiled for
 //! everything except wasm, so the predicates, the upserts, FTS5 and the
 //! truncation rules under test are the same code that runs in a session. There
 //! is no second implementation to keep honest.
 
-use zellij_tile::prelude::DataRevision;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::DataRevision;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::*;
 
 /// The namespace hocus and hocus-store share.
 ///
@@ -313,7 +313,7 @@ pub fn job_def() -> EntityDef {
         // prompts into this session.
         //
         // The machine and not the session, because jobs are restored at load and the session
-        // name has not arrived yet — see hocus-proto's `jobs::job_uid`. `zellij_session_name`
+        // name has not arrived yet — see hocus-proto's `jobs::job_uid`. `yinz_session_name`
         // is recorded beside it as attribution, not as part of the key.
         //
         // Empty on jobs armed before this existed. Those are left alone rather than adopted:
@@ -321,7 +321,7 @@ pub fn job_def() -> EntityDef {
         // is worse than dropping them.
         .attr(AttrDef::text("host_id").indexed().required().default(""))
         .attr(
-            AttrDef::text("zellij_session_name")
+            AttrDef::text("yinz_session_name")
                 .indexed()
                 .required()
                 .default(""),
@@ -341,7 +341,7 @@ pub fn job_def() -> EntityDef {
 /// pane id. Pruned as panes go, so a stale row names a pane id that has since been reused only
 /// until the next snapshot.
 ///
-/// The session is part of the key because this namespace is not one: every zellij server on a
+/// The session is part of the key because this namespace is not one: every yinz server on a
 /// machine shares one store, so a bare pane id made session A's pane 5 and session B's pane 5
 /// into one row — each overwriting the other's kind, and A's prune deleting B's rows outright.
 ///
@@ -355,7 +355,7 @@ pub fn agent_latch_def() -> EntityDef {
     EntityDef::new("agent_latch", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(
-            AttrDef::text("zellij_session_name")
+            AttrDef::text("yinz_session_name")
                 .indexed()
                 .required()
                 .default(""),
@@ -371,7 +371,7 @@ pub fn agent_summary_def() -> EntityDef {
     EntityDef::new("agent_summary", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(
-            AttrDef::text("zellij_session_name")
+            AttrDef::text("yinz_session_name")
                 .indexed()
                 .required()
                 .default(""),
@@ -392,9 +392,9 @@ pub fn agent_run_def() -> EntityDef {
     EntityDef::new("agent_run", 3)
         .attr(AttrDef::int("pane_id").indexed().required())
         .attr(AttrDef::text("session_id").indexed().required().default(""))
-        .attr(AttrDef::text("zellij_session_name").indexed())
+        .attr(AttrDef::text("yinz_session_name").indexed())
         // The machine whose server recorded this run. Half of the run's owner, with
-        // `zellij_session_name` — see hocus-proto's `agents::rows::Owner`. A run adopted after
+        // `yinz_session_name` — see hocus-proto's `agents::rows::Owner`. A run adopted after
         // a warp is claimed by writing both, and the guarded close that hands it over names
         // both, so a session called `main` on one machine cannot close a run belonging to
         // `main` on another. Empty on every run written before the store could be shared
@@ -690,7 +690,7 @@ mod host_stub {
         }
     }
 
-    const UNAVAILABLE: &str = "the plugin data store is only reachable from inside zellij";
+    const UNAVAILABLE: &str = "the plugin data store is only reachable from inside yinz";
 
     fn unavailable<T>() -> Result<T, String> {
         Err(UNAVAILABLE.to_owned())
@@ -732,14 +732,14 @@ pub use host_stub::Host;
 #[cfg(not(target_family = "wasm"))]
 mod local {
     use super::*;
-    use zellij_storage::plugin_data_store::PluginDataStore;
+    use yinz_storage::plugin_data_store::PluginDataStore;
 
     /// The id [`Local`] hands back from `watch`. Non-zero so that a plugin
     /// storing "no watch" as zero can still tell the two apart.
     pub const LOCAL_WATCH_ID: DataWatchId = DataWatchId::new(1);
 
     /// The real store over a temporary file, for tests and for anything that
-    /// wants to exercise this crate without a running zellij.
+    /// wants to exercise this crate without a running yinz.
     ///
     /// Not a fake: this is the same engine, so a predicate that compiles here
     /// compiles in a session, and a truncation rule that bites here bites there.
@@ -1182,9 +1182,9 @@ mod tests {
 
         store
             .apply(vec![Mutation::put("project")
-                .uid("zellij")
-                .set("name", "zellij")
-                .set("root", "/src/zellij")
+                .uid("yinz")
+                .set("name", "yinz")
+                .set("root", "/src/yinz")
                 .build()])
             .expect("written");
 
@@ -1194,7 +1194,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows.get(&rows.rows[0], "root"),
-            Some(&DataValue::Text("/src/zellij".to_owned()))
+            Some(&DataValue::Text("/src/yinz".to_owned()))
         );
     }
 

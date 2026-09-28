@@ -8,7 +8,7 @@
 //! request shape and in the event stream, and in nothing else: both are parsed
 //! down to the same [`SseItem`]s, so no caller knows which one is in use.
 //!
-//! Nothing in this module calls the Zellij host, so it is all unit-testable on
+//! Nothing in this module calls the Yinz host, so it is all unit-testable on
 //! the host triple (see `make test`).
 
 use serde::{Deserialize, Serialize};
@@ -30,10 +30,10 @@ pub use hocus_proto::llm::{
 pub const DEFAULT_SEARCH_URL: &str = "http://localhost:8888";
 /// Bare name, so an installed dobbs is found on PATH without configuration.
 pub const DEFAULT_DOBBS: &str = "dobbs";
-/// The same, for the `zellij` the VM tools shell out to. A bare name is right for an
-/// installed Zellij; a development checkout whose `zellij` is not the one on PATH sets
-/// `zellij_path`, because a mismatched build can speak a different provider protocol.
-pub const DEFAULT_ZELLIJ: &str = "zellij";
+/// The same, for the `yinz` the VM tools shell out to. A bare name is right for an
+/// installed Yinz; a development checkout whose `yinz` is not the one on PATH sets
+/// `yinz_path`, because a mismatched build can speak a different provider protocol.
+pub const DEFAULT_YINZ: &str = "yinz";
 /// How many times in a row the model may call tools before the tools are taken
 /// away and it has to answer from what it has. Without this a model that keeps
 /// re-listing panes bills the user forever.
@@ -44,7 +44,7 @@ pub const SEARCH_RESULTS: usize = 8;
 pub const CONTEXT_MAX_BYTES: usize = 262_144;
 pub const TOOL_RESULT_BYTES: usize = 8 * 1024;
 pub const TOOL_RESULTS_BYTES: usize = 64 * 1024;
-const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Zellij tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. Use or state only IDs a tool result gave; if one was cut off, recover it with `tool_result_read` or look it up, never infer it from nearby IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Swamp workflows: load the `workflow` family. Use workflow_search/get/schema, diagnose with workflow_run_get/logs/reports/data, then workflow_edit, workflow_validate and workflow_resume. Prepare replacement definitions from workflow_get source.content to preserve all fields. Pass the complete prior workflow_get result as expected for edit/delete. After failures inspect reports before changing or retrying. Existing-run controls require exact run UUIDs. Never repeat a mutation after an uncertain response. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Swamp Lab issues, no active project needed: `swamp_issue_search`/`swamp_issue_get`, and `swamp_issue_create`/`swamp_issue_comment` to write. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. Author TypeScript plugins yourself with `.ts` filenames; do not spawn an agent. Start with `plugin_docs section=quickstart`; extensionless names select TypeScript. Use `plugin_docs` as authority; `query=` before sections. `plugin_write` creates files and confirms grants. For edits: `plugin_outline`/`plugin_search`, `plugin_read` the range, then `plugin_edit` (`edits` batches). Never re-send a whole file you did not just write. `plugin_check name=…` checks saved files; `source` checks drafts. Writes/edits format and require strict types/lint. Fix diagnostics before reload. Create dependencies first. `plugin_format`: draft `source` or confirmed saved-file formatting with backup. Run `plugin_test` before reload. Recover omitted payloads with `tool_result_read` by call ID. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `zellij.agent` - section `sdk_helpers`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
+const TOOL_FIRST_PROMPT: &str = "You are Hocus. Use native Yinz tools. Before ID actions, call `list_session` unless the prior result gave IDs; use `list_other_sessions` for cross-session IDs. Use or state only IDs a tool result gave; if one was cut off, recover it with `tool_result_read` or look it up, never infer it from nearby IDs. `warp_pane_here`/`warp_tab_here` bring a listed pane or tab from another session into this one; there is no tool for the other direction, so a request to send one out is answered by asking hocus in the destination session. Use only `tab_id`/`pane_id`, never `tab_number`. Do not verify mutations or retry failed pane moves. When executing an approved plan, treat its findings and decisions as settled: do not repeat its research, and call only the tools needed to apply and verify it. `send_input` controls running programs. No arbitrary commands. Swamp workflows: load the `workflow` family. Use workflow_search/get/schema, diagnose with workflow_run_get/logs/reports/data, then workflow_edit, workflow_validate and workflow_resume. Prepare replacement definitions from workflow_get source.content to preserve all fields. Pass the complete prior workflow_get result as expected for edit/delete. After failures inspect reports before changing or retrying. Existing-run controls require exact run UUIDs. Never repeat a mutation after an uncertain response. Active-project code: `find_files`/`search_files`/`read_file`; history: `git_log`/`git_show`; GitHub metadata: GET-only `github_read`. Swamp Lab issues, no active project needed: `swamp_issue_search`/`swamp_issue_get`, and `swamp_issue_create`/`swamp_issue_comment` to write. Call `agent_list` before agent actions; `agent_spawn` starts a new one, and `branch` cuts it a git worktree named after the branch; an agent outside a linked worktree needs `allow_outside_worktree`. Past agent work, every session on this machine: `agent_history_search` finds it, `agent_runs` lists runs, `agent_run` reads one - a hit's `run_id` and `revision` read around it. You author skills yourself with `skill_list`/`skill_read`/`skill_write`; `skill_enable`/`skill_disable` change one tier. Author TypeScript plugins yourself with `.ts` filenames; do not spawn an agent. Start with `plugin_docs section=quickstart`; extensionless names select TypeScript. Use `plugin_docs` as authority; `query=` before sections. `plugin_write` creates files and confirms grants. For edits: `plugin_outline`/`plugin_search`, `plugin_read` the range, then `plugin_edit` (`edits` batches). Never re-send a whole file you did not just write. `plugin_check name=…` checks saved files; `source` checks drafts. Writes/edits format and require strict types/lint. Fix diagnostics before reload. Create dependencies first. `plugin_format`: draft `source` or confirmed saved-file formatting with backup. Run `plugin_test` before reload. Recover omitted payloads with `tool_result_read` by call ID. `plugin_reload` for the first render or the load error (`headless` for a plugin with no pane, answered from its log), `plugin_log` for what it logged; a plugin that runs agents uses TypeScript async functions and `yinz.agent` - section `sdk_helpers`, example `example_agent_harness`; inspect project source only when the docs leave a required detail unanswered or check/reload reports a mismatch; `plugin_list` is the user's plugin folder. Firecracker VMs: `vm_list` for every VM and its worktree and branch, then `vm_changes`/`vm_sync`/`vm_close` by name. Not every tool named here is in \
 the tools array: the rest are loaded on demand, and calling one by name loads its family and \
 runs it, so call the tool you want rather than asking for it. `tools_load` is there for when \
 you do not know the name. Make independent calls together.";
@@ -104,10 +104,10 @@ pub struct Config {
     /// order: `~/.dobbs/remote.addr`, then the local daemon's addr file.
     pub dobbs_addr: Option<String>,
     pub dobbs_token: Option<String>,
-    /// The `zellij` binary the VM tools shell out to. Managing a Firecracker VM means
+    /// The `yinz` binary the VM tools shell out to. Managing a Firecracker VM means
     /// running the provider, which is a subprocess the CLI owns and a wasm plugin has
-    /// no way to start itself. Defaults to `zellij`, i.e. whatever is on PATH.
-    pub zellij: String,
+    /// no way to start itself. Defaults to `yinz`, i.e. whatever is on PATH.
+    pub yinz: String,
     pub system_prompt: Option<String>,
     /// DeepSeek's opt-in thinking control. Omitted for endpoints that do not
     /// understand it.
@@ -115,7 +115,7 @@ pub struct Config {
     /// Optional reasoning effort, using the union of the values accepted by
     /// DeepSeek and OpenAI-compatible reasoning endpoints.
     pub reasoning_effort: Option<String>,
-    /// Whether to advertise the Zellij tool set. On by default, but hocus points
+    /// Whether to advertise the Yinz tool set. On by default, but hocus points
     /// at arbitrary endpoints and plenty of local models fail outright when sent
     /// a `tools` array, so it needs an off switch.
     pub tools: bool,
@@ -200,8 +200,8 @@ impl Config {
         );
         let dobbs_addr = non_empty(kdl, "dobbs_addr").or_else(|| non_empty(env, "DOBBS_ADDR"));
         let dobbs_token = non_empty(kdl, "dobbs_token").or_else(|| non_empty(env, "DOBBS_TOKEN"));
-        let zellij = expand_home(
-            &non_empty(kdl, "zellij_path").unwrap_or_else(|| DEFAULT_ZELLIJ.to_owned()),
+        let yinz = expand_home(
+            &non_empty(kdl, "yinz_path").unwrap_or_else(|| DEFAULT_YINZ.to_owned()),
             env,
         );
         let system_prompt = non_empty(kdl, "system_prompt");
@@ -278,7 +278,7 @@ impl Config {
                 dobbs,
                 dobbs_addr,
                 dobbs_token,
-                zellij,
+                yinz,
                 system_prompt,
                 thinking,
                 reasoning_effort,
@@ -292,12 +292,12 @@ impl Config {
                     .unwrap_or(CONTEXT_MAX_BYTES),
             }),
             // The environment we see is the one captured when the *session*
-            // started, so "I exported it after launching zellij" is by far the
+            // started, so "I exported it after launching yinz" is by far the
             // most common cause. Say so rather than just reporting it missing.
             None => Err(ConfigError {
                 message: format!(
                     "No API key found: ${api_key_env} is not set.\n\nSet it in the environment \
-                     the Zellij session was started from — exporting it after launching zellij \
+                     the Yinz session was started from — exporting it after launching yinz \
                      will not be picked up. Or set api_key_env in the plugin configuration to \
                      name a different variable."
                 ),
@@ -323,7 +323,7 @@ impl Config {
     }
 }
 
-/// Expand a leading `~/` against `$HOME`. Nothing downstream does it: Zellij
+/// Expand a leading `~/` against `$HOME`. Nothing downstream does it: Yinz
 /// hands a command's argv straight to exec, so a configured `~/dobbs/dobbs`
 /// would fail with a bare "No such file or directory" naming nothing at all.
 /// Left alone when `HOME` is absent, which is more honest than guessing.

@@ -10,7 +10,7 @@
 //! pushes the line off the end of the terminal.
 
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::LinePart;
 
@@ -207,7 +207,7 @@ impl Clock {
     /// which is the honest answer for a caller that could not ask rather than a wrong one.
     pub fn at(epoch_ms: i64, utc_offset_secs: i32) -> Self {
         let at = civil_from_epoch_ms(
-            zellij_tile::prelude::SignedUnixMillis::new(epoch_ms),
+            yinz_tile::prelude::SignedUnixMillis::new(epoch_ms),
             utc_offset_secs,
         );
         let month = MONTH_NAMES
@@ -287,13 +287,13 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, agent)| PaneInfo {
-                id: zellij_tile::prelude::PaneId::from_legacy(i as u32, false),
+                id: yinz_tile::prelude::PaneId::from_legacy(i as u32, false),
                 agent,
                 ..Default::default()
             })
             .collect();
         PaneManifest {
-            panes: [(zellij_tile::prelude::TabPosition::new(0), panes)]
+            panes: [(yinz_tile::prelude::TabPosition::new(0), panes)]
                 .into_iter()
                 .collect(),
         }

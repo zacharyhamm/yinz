@@ -1,5 +1,5 @@
 // Write as hocus/todo.ts; registers todo_add, todo_list and todo_complete.
-import z, { definePlugin, type Json } from "zellij:plugin";
+import z, { definePlugin, type Json } from "yinz:plugin";
 const namespace = "shared:todo";
 const D = z.data;
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.

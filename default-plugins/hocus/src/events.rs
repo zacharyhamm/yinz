@@ -1,7 +1,7 @@
 use crate::message::{Ask, Message, Status, StreamState, UserOrigin};
 use crate::*;
 use std::collections::BTreeMap;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[cfg(test)]
 thread_local! {
@@ -29,7 +29,7 @@ impl State {
         key.bare_key == BareKey::Char('c') && key.has_modifiers(&[KeyModifier::Ctrl])
     }
 
-    /// Re-resolve the config after Zellij reports the KDL block changed.
+    /// Re-resolve the config after Yinz reports the KDL block changed.
     ///
     /// Gated on `self.granted` — before the grant `self.env` is empty, and
     /// resolving against it would replace a "waiting for permission" state with
@@ -42,7 +42,7 @@ impl State {
     }
 
     /// Hocus is written for a *shared* plugin: one instance serving every
-    /// attached client. Zellij only does that when the KDL block asks for it,
+    /// attached client. Yinz only does that when the KDL block asks for it,
     /// and silently gives each client its own instance otherwise — which looks
     /// fine alone and splits into unrelated conversations the moment someone
     /// else attaches. Say so rather than let that be discovered.
@@ -53,7 +53,7 @@ impl State {
             return;
         }
         self.messages.push(Message::notice(
-            "hocus is missing `shared true` in its plugin configuration. Without it Zellij \
+            "hocus is missing `shared true` in its plugin configuration. Without it Yinz \
              gives every attached client its own copy of the plugin, and they will not share \
              a conversation."
                 .to_owned(),
@@ -117,7 +117,7 @@ impl State {
                 self.warn_if_not_shared();
                 self.warn_bad_geometry();
                 // The agent daemon needs this grant only for the initial snapshot;
-                // afterwards it follows Zellij's pane events.
+                // afterwards it follows Yinz's pane events.
                 self.subscribe_to_agentd();
                 self.env = get_session_environment_variables();
                 // Here rather than in `load` for the same reason as the environment: a
@@ -138,7 +138,7 @@ impl State {
                 message: "Permission denied.\n\nhocus needs web access (to reach the API) and \
                           read access to session environment variables (to find your API key). \
                           Grants are cached by the plugin's absolute .wasm path — delete this \
-                          plugin's entry from permissions.kdl in Zellij's cache directory and \
+                          plugin's entry from permissions.kdl in Yinz's cache directory and \
                           reload to be asked again."
                     .to_owned(),
                 base_url: api::DEFAULT_BASE_URL.to_owned(),
@@ -434,7 +434,7 @@ impl State {
         self.vm_panel_owner = current.as_ref().and_then(hocus_proto::vms::panel_owner);
         // A plugin pane's id is the plugin's id, so the manifest says which instances have a
         // pane; the plugin list alone cannot tell a headless instance from a pane's copy.
-        let pane_ids: BTreeSet<zellij_tile::prelude::PluginId> = current
+        let pane_ids: BTreeSet<yinz_tile::prelude::PluginId> = current
             .as_ref()
             .map(|session| {
                 session
@@ -507,7 +507,7 @@ impl State {
         false
     }
 
-    fn remove_extension_owner(&mut self, owner: zellij_tile::prelude::PluginId) {
+    fn remove_extension_owner(&mut self, owner: yinz_tile::prelude::PluginId) {
         // A call waiting on this owner, in whichever chat sent it, will never be
         // answered: say so now rather than after the timeout. Decided before the owner's
         // tools go, since the head is matched to the owner through them.
@@ -547,7 +547,7 @@ impl State {
 
     pub(crate) fn on_extension_registration(
         &mut self,
-        owner: zellij_tile::prelude::PluginId,
+        owner: yinz_tile::prelude::PluginId,
         payload: Option<&str>,
     ) -> bool {
         let Some(payload) = payload else {
@@ -631,7 +631,7 @@ impl State {
 
     pub(crate) fn on_extension_result(
         &mut self,
-        owner: zellij_tile::prelude::PluginId,
+        owner: yinz_tile::prelude::PluginId,
         payload: Option<&str>,
     ) -> bool {
         let Some(payload) = payload else {
@@ -654,7 +654,7 @@ impl State {
 
     fn finish_extension_result(
         &mut self,
-        owner: zellij_tile::prelude::PluginId,
+        owner: yinz_tile::prelude::PluginId,
         result: extensions::ToolResult,
     ) -> bool {
         if !matches!(self.status, Status::AwaitingExtension) {
@@ -811,7 +811,7 @@ impl State {
                     tabs.tabs
                         .iter()
                         .find(|slot| {
-                            slot.descriptor.location == "zellij:hocus-agents"
+                            slot.descriptor.location == "yinz:hocus-agents"
                                 && slot
                                     .descriptor
                                     .configuration
@@ -836,7 +836,7 @@ impl State {
                     PaneId::Plugin(id)
                         if matches!(
                             pane.plugin_url.as_deref(),
-                            Some("hocus-agents" | "zellij:hocus-agents")
+                            Some("hocus-agents" | "yinz:hocus-agents")
                         ) && pane.is_floating
                             && pane.multipane.is_none() =>
                     {
@@ -1811,7 +1811,7 @@ impl State {
         }
         // Only the terminal chunk renders. Mid-stream chunks arrive once per
         // socket read (~50/s), and every plugin render costs the host a full
-        // screen composite on the same thread that services every other Zellij
+        // screen composite on the same thread that services every other Yinz
         // action — rendering per chunk freezes the whole session for the length
         // of the reply. The spinner timer repaints the arriving text instead.
         done
@@ -1867,7 +1867,7 @@ impl State {
     /// The message for a Slack tool whose `dobbs` could not be executed, or
     /// `None` when this is any other kind of result.
     ///
-    /// Matched on the stderr string rather than the code alone: Zellij uses
+    /// Matched on the stderr string rather than the code alone: Yinz uses
     /// exit code 2 both for a failure to spawn and, unavoidably, for a command
     /// that ran and exited 2 by itself.
     pub(crate) fn slack_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
@@ -1882,13 +1882,13 @@ impl State {
         let dobbs = self.cfg.as_ref().ok().map(|cfg| cfg.dobbs.as_str())?;
         Some(format!(
             "dobbs could not be run: \"{dobbs}\" does not exist or is not executable.\n\n\
-             Set dobbs_path in the hocus plugin block of ~/.config/zellij/config.kdl to the \
+             Set dobbs_path in the hocus plugin block of ~/.config/yinz/config.kdl to the \
              binary's absolute path — a leading ~/ is expanded, but nothing else is. Tell the \
              user this; do not try other commands to find dobbs yourself."
         ))
     }
 
-    /// The message for a VM tool whose `zellij` could not be executed, or `None` when
+    /// The message for a VM tool whose `yinz` could not be executed, or `None` when
     /// this is any other kind of result. Same shape and reason as `slack_exec_hint`.
     fn vm_exec_hint(&self, exit_code: Option<i32>, stderr: &[u8]) -> Option<String> {
         let head = self.pending.front()?;
@@ -1898,12 +1898,12 @@ impl State {
         if !String::from_utf8_lossy(stderr).contains("os error 2") {
             return None;
         }
-        let zellij = self.cfg.as_ref().ok().map(|cfg| cfg.zellij.as_str())?;
+        let yinz = self.cfg.as_ref().ok().map(|cfg| cfg.yinz.as_str())?;
         Some(format!(
-            "zellij could not be run: \"{zellij}\" does not exist or is not executable.\n\n\
-             Set zellij_path in the hocus plugin block of ~/.config/zellij/config.kdl to the \
+            "yinz could not be run: \"{yinz}\" does not exist or is not executable.\n\n\
+             Set yinz_path in the hocus plugin block of ~/.config/yinz/config.kdl to the \
              binary's absolute path — a leading ~/ is expanded, but nothing else is. Tell the \
-             user this; do not try other commands to find zellij yourself."
+             user this; do not try other commands to find yinz yourself."
         ))
     }
 
@@ -2024,7 +2024,7 @@ impl State {
     /// The path is re-resolved rather than carried:
     /// `resolve_plugin_file` is pure and was already given the same folder and name, so it
     /// cannot answer differently here, and a reload must be built from an absolute path -
-    /// `zellij_runtime::plugin_location::parse_plugin_location` joins a relative `file:` path onto the cwd, which
+    /// `yinz_runtime::plugin_location::parse_plugin_location` joins a relative `file:` path onto the cwd, which
     /// `start_or_reload_plugin` always supplies.
     pub(crate) fn start_plugin_load(&mut self) -> bool {
         let Some(head) = self.pending.front() else {
@@ -2269,7 +2269,7 @@ impl State {
             return self.send_swamp_issue(&head, exit_code, stdout, stderr);
         }
 
-        // Zellij reports a command it could not even start as exit code 2 with
+        // Yinz reports a command it could not even start as exit code 2 with
         // the raw io::Error as the whole of stderr — "No such file or directory
         // (os error 2)", naming nothing. For a Slack tool the model never sees
         // the argv, so that message is undiagnosable from inside the

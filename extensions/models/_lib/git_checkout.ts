@@ -25,7 +25,7 @@ export const Evidence = z.object({
 });
 export const Args = z.object({
     source: Literal.min(1),
-    binary: Literal.min(1).default("zellij"),
+    binary: Literal.min(1).default("yinz"),
     target: Literal.min(1),
     targetBranch: Ref.default("main"),
     gate: z.array(Literal).min(1).default(["cargo", "x", "ci", "check"]),
@@ -296,7 +296,7 @@ export async function locked<T>(
             ),
         );
         for (const dir of [...new Set(dirs)].sort()) {
-            const path = `${dir}/zellij-workflow.lock`;
+            const path = `${dir}/yinz-workflow.lock`;
             const file = await Deno.open(path, { create: true, write: true });
             locks.push(file);
             await acquire(file, path, options, c.signal);

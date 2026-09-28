@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 /// A tab is addressed one way only. A display position is not a `tab_id`, so
 /// there is no second field for the model to reach for and no pair of
@@ -216,8 +216,8 @@ fn swapping_requires_exactly_two_panes() {
     assert_eq!(
         two.swap_pane_ids().unwrap(),
         [
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3)),
-            PaneId::Plugin(zellij_tile::prelude::PluginId::new(4))
+            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(3)),
+            PaneId::Plugin(yinz_tile::prelude::PluginId::new(4))
         ]
     );
 

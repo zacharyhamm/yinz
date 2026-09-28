@@ -170,7 +170,7 @@ use hocus_proto::panel_text::{divider_line, scroll_readout, wrap_words};
 use hocus_proto::tabs::{self, TabCell};
 use hocus_proto::wire;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Default)]
 struct State {
@@ -704,7 +704,7 @@ const POLL_TICK_SECS: f64 = 2.0;
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.native_tabs = true;
         self.surface = match configuration.get("view").map(String::as_str) {
@@ -713,7 +713,7 @@ impl ZellijPlugin for State {
             _ => Surface::Agents,
         };
         subscribe(&self.surface.subscriptions());
-        set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
+        set_timeout(yinz_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
         set_selectable(true);
         set_self_mouse_selection_support(true);
         let ids = get_plugin_ids();
@@ -846,7 +846,7 @@ impl ZellijPlugin for State {
             // column keeps ticking; a redraw only where an age is actually on screen, so a
             // pane showing nothing time-dependent still costs nothing to leave open.
             Event::Timer(_) => {
-                set_timeout(zellij_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
+                set_timeout(yinz_tile::prelude::FractionalSeconds::new(POLL_TICK_SECS));
                 let now = now_ms();
                 let vm_changed = self.surface == Surface::Vms && self.poll_vms();
                 // The other requests here with a deadline: a triage handed to hocus that was
@@ -1639,7 +1639,7 @@ impl State {
         .into_iter()
         .map(|(label, plugin, view)| PaneTabDescriptor {
             label: label.into(),
-            location: format!("zellij:{plugin}"),
+            location: format!("yinz:{plugin}"),
             initial_cwd: Some(self.initial_cwd.clone()),
             configuration: if view.is_empty() {
                 BTreeMap::new()
@@ -2153,7 +2153,7 @@ impl State {
     fn search_box(&self, cols: usize) -> (String, usize) {
         let prompt = "Search: ";
         let cursor = self.search_query.chars().count();
-        zellij_tile::ui_components::forms::viewport(prompt, &self.search_query, cursor, cols)
+        yinz_tile::ui_components::forms::viewport(prompt, &self.search_query, cursor, cols)
     }
 
     /// What a filtered Agents view is called, drawn on the surface's first row above the list,
@@ -3596,7 +3596,7 @@ impl State {
     /// Run from every panel-level hide: `hide_the_panel`, the manifest reporting this pane
     /// suppressed (`own_pane_changed`), and hocus's `vms::VISIBILITY` going false. Never from
     /// the tab-level `Event::Visible`, which fires in pairs when hocus carries the panel to
-    /// another Zellij tab without it ever leaving the screen.
+    /// another Yinz tab without it ever leaving the screen.
     fn end_visit(&mut self) {
         self.tabs_focused = false;
         self.focus = Focus::List;
@@ -5077,10 +5077,9 @@ impl State {
         // Once per run, here rather than in the draw path. The offset is asked for the
         // instant the run began, not for now, so a run from before a daylight-saving change
         // is read back with the offset it started under.
-        self.run_offset_secs = get_local_utc_offset(zellij_tile::prelude::SignedUnixMillis::new(
-            run.started_at_ms,
-        ))
-        .unwrap_or(0);
+        self.run_offset_secs =
+            get_local_utc_offset(yinz_tile::prelude::SignedUnixMillis::new(run.started_at_ms))
+                .unwrap_or(0);
         let parsed = match self.run.take() {
             Some(LoadedRun { mut parsed, .. }) => {
                 parsed.update(&run);
@@ -5641,7 +5640,7 @@ mod tests {
         let mut run = a_run();
         run.id = "nearest".into();
         assert!(state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&run).unwrap()),
             &None,
@@ -5761,7 +5760,7 @@ mod tests {
             assert_eq!(state.selected_revision(), Some(revision));
             // A detail already in flight for the preceding hit must not settle this anchor.
             assert!(!state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &Some(serde_json::to_string(&run).unwrap()),
                 &Some(BTreeMap::from([(
@@ -5773,7 +5772,7 @@ mod tests {
             state.render(40, 80);
             assert_eq!(state.pending_history_revision, Some(revision));
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &Some(serde_json::to_string(&run).unwrap()),
                 &Some(BTreeMap::from([(
@@ -5795,7 +5794,7 @@ mod tests {
             let scroll = state.history_scroll;
             run.entries.last_mut().unwrap().text.push('!');
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &Some(serde_json::to_string(&run).unwrap()),
                 &Some(BTreeMap::from([(
@@ -6085,7 +6084,7 @@ mod tests {
     /// An `AGENT_STRIP_TAKE` naming `stop`, as hocus sends it when the ring steps in.
     fn take(stop: &str) -> PipeMessage {
         PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_STRIP_TAKE,
             &None,
             &Some(BTreeMap::from([(
@@ -7020,7 +7019,7 @@ mod tests {
                 detail: detail.to_owned(),
             };
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RESUME_RESULT,
                 &Some(serde_json::to_string(&result).expect("encoded")),
                 &None,
@@ -7083,7 +7082,7 @@ mod tests {
         state.set_rows(unfocused(archive()));
         state.selected = 1;
         state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&a_run()).expect("encoded")),
             &None,
@@ -7138,7 +7137,7 @@ mod tests {
 
         let send = |state: &mut State, run: &agents::AgentRun| {
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &Some(serde_json::to_string(run).expect("encoded")),
                 &None,
@@ -7196,7 +7195,7 @@ mod tests {
             let mut strip = with_summary(strip(), 3, "Ran the tests.", false);
             strip.summaries.get_mut(&3).expect("pushed").created_at_ms = created_at_ms;
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_STRIP,
                 &Some(serde_json::to_string(&strip).expect("encoded")),
                 &None,
@@ -8559,7 +8558,7 @@ mod tests {
         let generation = state.generation;
         let send = |state: &mut State, run: &agents::AgentRun| {
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &Some(serde_json::to_string(run).expect("encoded")),
                 &None,
@@ -9298,7 +9297,7 @@ mod tests {
             created_at_ms: None,
         });
         state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &Some(serde_json::to_string(&run).unwrap()),
             &None,
@@ -9400,7 +9399,7 @@ mod tests {
             cells("claude", "hocus", "fix the pane exit teardown", Some(now)),
             cells(
                 "codex",
-                "zellij",
+                "yinz",
                 "add the archive table",
                 Some(now - 7_200_000),
             ),
@@ -9408,21 +9407,21 @@ mod tests {
         let columns = archive_columns(&rows, 60);
         assert_eq!(
             (columns.age, columns.kind, columns.worktree),
-            (true, 6, 6),
+            (true, 6, 5),
             "the widest cell in each column, and the age gutter",
         );
         let drawn: Vec<String> = rows.iter().map(|row| drawn(&columns, now, row)).collect();
         assert_eq!(
             drawn,
             [
-                "now claude  hocus   fix the pane exit teardown",
-                " 2h codex   zellij  add the archive table",
+                "now claude  hocus  fix the pane exit teardown",
+                " 2h codex   yinz   add the archive table",
             ],
         );
         for row in &drawn {
             assert_eq!(
                 row.find("fix").or_else(|| row.find("add")),
-                Some(agents::AGE_WIDTH + 6 + COLUMN_GAP + 6 + COLUMN_GAP),
+                Some(agents::AGE_WIDTH + 6 + COLUMN_GAP + 5 + COLUMN_GAP),
                 "every prompt starts in the same column",
             );
         }
@@ -9567,8 +9566,8 @@ mod tests {
         agents::AgentRun {
             id: "claude:session-1".to_owned(),
             pane_id: 3,
-            zellij_session_name: "zellij".to_owned().into(),
-            host_id: zellij_tile::prelude::HostId::default(),
+            yinz_session_name: "yinz".to_owned().into(),
+            host_id: yinz_tile::prelude::HostId::default(),
             origin_run_id: None,
             previous_run_id: None,
             session_id: "session-1".to_owned(),
@@ -10259,7 +10258,7 @@ mod tests {
                 detail: String::new(),
             };
             PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RESUME_RESULT,
                 &Some(serde_json::to_string(&result).expect("encoded")),
                 &None,
@@ -10375,7 +10374,7 @@ mod tests {
         let empty = serde_json::to_string(&unfocused(Vec::new())).expect("encoded");
         assert!(
             state.pipe(PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_STRIP,
                 &Some(empty),
                 &None,
@@ -10791,7 +10790,7 @@ mod tests {
         state.run = None;
         let failed = |run_id: &str| {
             PipeMessage::new(
-                PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+                PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
                 wire::AGENT_RUN_DETAIL,
                 &None,
                 &Some(BTreeMap::from([
@@ -10824,7 +10823,7 @@ mod tests {
         state.set_rows(unfocused(archive()));
         state.selected = 1;
         assert!(state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_RUN_DETAIL,
             &None,
             &Some(BTreeMap::from([
@@ -11172,7 +11171,7 @@ mod tests {
         }
         let empty = serde_json::to_string(&unfocused(Vec::new())).expect("encoded");
         assert!(state.pipe(PipeMessage::new(
-            PipeSource::Plugin(zellij_tile::prelude::PluginId::new(0)),
+            PipeSource::Plugin(yinz_tile::prelude::PluginId::new(0)),
             wire::AGENT_STRIP,
             &Some(empty),
             &None,
@@ -11326,7 +11325,7 @@ mod tests {
         };
         todos.todos.mode = todos::Mode::Input {
             action: todos::InputAction::Add { parent_id: None },
-            input: zellij_tile::ui_components::forms::TextInput::new(String::new()),
+            input: yinz_tile::ui_components::forms::TextInput::new(String::new()),
             refusal: None,
         };
         for mut state in [agents, vms, todos] {

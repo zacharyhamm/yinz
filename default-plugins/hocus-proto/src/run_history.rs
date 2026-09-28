@@ -19,12 +19,12 @@
 //! the crate.
 
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::HostId;
-use zellij_types::internal_ids::SessionName;
+use yinz_tile::prelude::HostId;
+use yinz_types::internal_ids::SessionName;
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
 use crate::store::{self, Backend};
-use zellij_tile::prelude::{FetchRequest, Pred, SortDir};
+use yinz_tile::prelude::{FetchRequest, Pred, SortDir};
 
 /// Runs one listing may return. A page the model reads, not a page a UI scrolls.
 pub const MAX_RUNS: usize = 50;
@@ -92,11 +92,11 @@ const MAX_SCOPE_SCAN: usize = 4_000;
 /// is every run on this machine, or on every machine sharing a Postgres.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filter {
-    /// One zellij session's runs, by name.
+    /// One yinz session's runs, by name.
     ///
     /// A session name is only unique within a machine, so this is worth pairing with
     /// [`Filter::host_id`] on a shared store — two machines can each have a `main`.
-    pub zellij_session_name: Option<SessionName>,
+    pub yinz_session_name: Option<SessionName>,
     /// One machine's runs, by its host id. See `agents::rows::Owner`.
     ///
     /// Left `None` by default, and deliberately: "have I had an agent look at this before" is a
@@ -121,7 +121,7 @@ impl Filter {
     fn pred(&self) -> Option<Pred> {
         let mut preds = Vec::new();
         if let Some(session) = self.session() {
-            preds.push(Pred::eq("zellij_session_name", session));
+            preds.push(Pred::eq("yinz_session_name", session));
         }
         if let Some(host_id) = self
             .host_id
@@ -154,7 +154,7 @@ impl Filter {
     }
 
     fn session(&self) -> Option<&str> {
-        self.zellij_session_name
+        self.yinz_session_name
             .as_ref()
             .map(|name| name.as_str().trim())
             .filter(|name| !name.is_empty())
@@ -792,7 +792,7 @@ fn hits_for(
     Ok(hits_from_rows(&rows, query))
 }
 
-fn hits_from_rows(rows: &zellij_tile::prelude::DataRows, query: &str) -> Vec<Hit> {
+fn hits_from_rows(rows: &yinz_tile::prelude::DataRows, query: &str) -> Vec<Hit> {
     let mut hits = Vec::new();
     for (run_id, entries) in rows::entries_from_rows(rows) {
         for entry in entries {
@@ -899,7 +899,7 @@ mod tests {
     use super::*;
     use crate::agents::{AgentRun, RunOutcome};
     use crate::store::{self, shared_defs};
-    use zellij_tile::prelude::EntityDef;
+    use yinz_tile::prelude::EntityDef;
 
     #[test]
     fn predecessors_follow_only_links_and_report_incomplete_prefixes() {
@@ -970,8 +970,8 @@ mod tests {
     }
 
     /// One entry row as the v1 definition held it: no `host_id`, which came later.
-    fn old_entry_put(run_id: &str, entry: &RunEntry) -> zellij_tile::prelude::Mutation {
-        zellij_tile::prelude::Mutation::put(rows::ENTRY_ENTITY)
+    fn old_entry_put(run_id: &str, entry: &RunEntry) -> yinz_tile::prelude::Mutation {
+        yinz_tile::prelude::Mutation::put(rows::ENTRY_ENTITY)
             .uid(format!("{run_id}#{}", entry.revision))
             .set("run_id", run_id)
             .set("revision", entry.revision as i64)
@@ -984,7 +984,7 @@ mod tests {
         AgentRun {
             id: id.to_owned(),
             pane_id: 7,
-            zellij_session_name: session.to_owned().into(),
+            yinz_session_name: session.to_owned().into(),
             host_id: HostId::new(HOST),
             origin_run_id: None,
             previous_run_id: None,
@@ -1169,7 +1169,7 @@ mod tests {
     fn a_search_is_narrowed_to_one_session() {
         let backend = seeded();
         let filter = Filter {
-            zellij_session_name: Some("other".to_owned().into()),
+            yinz_session_name: Some("other".to_owned().into()),
             ..Filter::default()
         };
         let found = search(&backend, &filter, None, "parser", 10).unwrap();
@@ -1298,7 +1298,7 @@ mod tests {
         write(&backend, &elsewhere);
 
         let this_session = Filter {
-            zellij_session_name: Some("main".to_owned().into()),
+            yinz_session_name: Some("main".to_owned().into()),
             host_id: Some(HostId::new(HOST)),
             ..Filter::default()
         };
@@ -1361,15 +1361,15 @@ mod tests {
         // `created_at_ms`.
         let before = EntityDef::new("agent_run_entry", 1)
             .attr(
-                zellij_tile::prelude::AttrDef::text("run_id")
+                yinz_tile::prelude::AttrDef::text("run_id")
                     .indexed()
                     .required(),
             )
-            .attr(zellij_tile::prelude::AttrDef::int("revision").required())
-            .attr(zellij_tile::prelude::AttrDef::text("event_id"))
-            .attr(zellij_tile::prelude::AttrDef::text("kind").required())
-            .attr(zellij_tile::prelude::AttrDef::text("text").required())
-            .attr(zellij_tile::prelude::AttrDef::int("created_at_ms"));
+            .attr(yinz_tile::prelude::AttrDef::int("revision").required())
+            .attr(yinz_tile::prelude::AttrDef::text("event_id"))
+            .attr(yinz_tile::prelude::AttrDef::text("kind").required())
+            .attr(yinz_tile::prelude::AttrDef::text("text").required())
+            .attr(yinz_tile::prelude::AttrDef::int("created_at_ms"));
         backend.define(&before).expect("the old definition");
         // Hand-written rather than through `rows::entry_mutation`, which sets columns this
         // definition does not have: the point is a row as the old schema really held it.
@@ -1400,15 +1400,15 @@ mod tests {
         let owner = store::Local::shared("hocus-store");
         let before = EntityDef::new("agent_run_entry", 1)
             .attr(
-                zellij_tile::prelude::AttrDef::text("run_id")
+                yinz_tile::prelude::AttrDef::text("run_id")
                     .indexed()
                     .required(),
             )
-            .attr(zellij_tile::prelude::AttrDef::int("revision").required())
-            .attr(zellij_tile::prelude::AttrDef::text("event_id"))
-            .attr(zellij_tile::prelude::AttrDef::text("kind").required())
-            .attr(zellij_tile::prelude::AttrDef::text("text").required())
-            .attr(zellij_tile::prelude::AttrDef::int("created_at_ms"));
+            .attr(yinz_tile::prelude::AttrDef::int("revision").required())
+            .attr(yinz_tile::prelude::AttrDef::text("event_id"))
+            .attr(yinz_tile::prelude::AttrDef::text("kind").required())
+            .attr(yinz_tile::prelude::AttrDef::text("text").required())
+            .attr(yinz_tile::prelude::AttrDef::int("created_at_ms"));
         owner.define(&before).expect("the old definition");
         // The run the entry belongs to, so annotating a hit has somewhere to look.
         owner
@@ -1466,7 +1466,7 @@ mod tests {
         assert_eq!(by_kind[0].kind, "codex");
 
         let by_session = Filter {
-            zellij_session_name: Some("main".to_owned().into()),
+            yinz_session_name: Some("main".to_owned().into()),
             ..Filter::default()
         };
         let by_session = list_runs(&backend, &by_session, 10, 0).unwrap().headers;

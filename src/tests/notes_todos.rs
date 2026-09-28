@@ -7,17 +7,17 @@ use std::{
 };
 
 fn command(dir: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_zellij"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_yinz"));
     cmd.env("HOME", dir)
         .env("XDG_CONFIG_HOME", dir)
         .env("XDG_DATA_HOME", dir)
         .env("XDG_CACHE_HOME", dir)
-        .env("ZELLIJ_SOCKET_DIR", dir)
+        .env("YINZ_SOCKET_DIR", dir)
         .env("TMPDIR", dir)
-        .env_remove("ZELLIJ")
-        .env_remove("ZELLIJ_SESSION_NAME")
-        .env_remove("ZELLIJ_PANE_ID")
-        .env_remove("ZELLIJ_PANE_REF")
+        .env_remove("YINZ")
+        .env_remove("YINZ_SESSION_NAME")
+        .env_remove("YINZ_PANE_ID")
+        .env_remove("YINZ_PANE_REF")
         .env("SHELL", "/bin/sh")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -64,7 +64,7 @@ fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
     let dir = session.0.path();
     let config = dir.join("config.kdl");
     let layout = dir.join("layout.kdl");
-    std::fs::write(&config, "plugins { hocus-store location=\"zellij:hocus-store\"; }\nload_plugins clear-defaults=true { \"hocus-store\"; }\ndetachable_panes false\n").unwrap();
+    std::fs::write(&config, "plugins { hocus-store location=\"yinz:hocus-store\"; }\nload_plugins clear-defaults=true { \"hocus-store\"; }\ndetachable_panes false\n").unwrap();
     std::fs::write(&layout, "layout { pane command=\"/bin/sh\"; }\n").unwrap();
     let started = command(dir)
         .arg("--config")
@@ -148,10 +148,8 @@ fn notes_todos_skill_install_uses_custom_codex_home_and_defaults_to_both_agents(
     assert!(dry.status.success());
     assert!(!codex_home.exists());
     assert!(install(&[]).status.success());
-    let codex = codex_home.join("skills/zellij-notes-todos/SKILL.md");
-    let claude = temp
-        .path()
-        .join(".claude/skills/zellij-notes-todos/SKILL.md");
+    let codex = codex_home.join("skills/yinz-notes-todos/SKILL.md");
+    let claude = temp.path().join(".claude/skills/yinz-notes-todos/SKILL.md");
     assert_eq!(
         std::fs::read(&codex).unwrap(),
         std::fs::read(&claude).unwrap()

@@ -2,7 +2,7 @@
 //!
 //! Currently has the following functions:
 //!
-//! - [`build`]: Builds general cargo projects (i.e. zellij components) with `cargo build`
+//! - [`build`]: Builds general cargo projects (i.e. yinz components) with `cargo build`
 use crate::flags;
 use anyhow::Context;
 use sha2::{Digest, Sha256};
@@ -21,7 +21,7 @@ const PLUGIN_BUILD_FILES: &[&str] = &[
     "xtask/src/build.rs",
 ];
 
-/// Build the plugins and the zellij binary.
+/// Build the plugins and the yinz binary.
 ///
 /// Build behavior is controlled by the [`flags`](flags::Build). Calls some variation of `cargo
 /// build` under the hood.
@@ -40,7 +40,7 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
     }
     let profile = profile_of(&flags);
 
-    // zellij-plugin-api requires protobuf definition files to be present. Usually these are
+    // yinz-plugin-api requires protobuf definition files to be present. Usually these are
     // auto-generated with `build.rs`-files, but this is currently broken for us.
     // See [this PR][1] for details.
     //
@@ -51,24 +51,24 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
         ensure_plugins(sh, profile)?;
     }
 
-    // The zellij binary, and with it every library crate, for the native target.
+    // The yinz binary, and with it every library crate, for the native target.
     if !flags.plugins_only {
         println!();
-        let msg = ">> Building 'zellij'";
+        let msg = ">> Building 'yinz'";
         crate::status(msg);
         println!("{}", msg);
 
         cmd!(sh, "{cargo} build --profile {profile}")
             .args(&flags.args)
             .run()
-            .context("failed to build 'zellij'")?;
+            .context("failed to build 'yinz'")?;
     }
 
     Ok(())
 }
 
 fn plugins_force() -> bool {
-    std::env::var_os("ZELLIJ_FORCE_PLUGINS").is_some()
+    std::env::var_os("YINZ_FORCE_PLUGINS").is_some()
 }
 
 /// The cargo profile a [`flags::Build`] asks for: an explicit `--profile` wins, otherwise
@@ -94,7 +94,7 @@ pub fn profile_dir(profile: &str) -> &str {
 
 /// The crates built for wasm32-wasip1: every package under `default-plugins` with a binary, by
 /// package name, which is also its wasm file stem. Library crates, `hocus-proto` and `hocus-data`
-/// among them, build as dependencies of a plugin or of the zellij binary, so a new library needs
+/// among them, build as dependencies of a plugin or of the yinz binary, so a new library needs
 /// no entry here.
 pub const PLUGINS: &[&str] = &[
     "compact-bar",
@@ -146,7 +146,7 @@ pub fn release_plugin_path(plugin_name: &str) -> PathBuf {
     wasm_target_path("release", plugin_name)
 }
 
-/// Where the debug plugin build leaves a plugin - what a debug zellij looks for first.
+/// Where the debug plugin build leaves a plugin - what a debug yinz looks for first.
 pub fn debug_plugin_path(plugin_name: &str) -> PathBuf {
     wasm_target_path("debug", plugin_name)
 }
@@ -204,8 +204,8 @@ pub(crate) const DEV_OPT_LEVEL: &str = "CARGO_PROFILE_DEV_OPT_LEVEL";
 /// Profile settings the wasm plugin build gets on top of the workspace `Cargo.toml`.
 ///
 /// `[profile.dev.package."*"] opt-level = 3` keeps `wasmi` and the host's dependencies fast in
-/// a dev build, but it deliberately excludes workspace members - and the plugins, `zellij-tile`,
-/// `zellij-plugin-api`, `hocus-proto` and `hocus-data` all are. Left at opt-level 0 with DWARF
+/// a dev build, but it deliberately excludes workspace members - and the plugins, `yinz-tile`,
+/// `yinz-plugin-api`, `hocus-proto` and `hocus-data` all are. Left at opt-level 0 with DWARF
 /// they are 20-100× slower under the interpreter on exactly the per-event decode path (a
 /// `--profile dev` install once cost hocus 74 s of keystroke latency), and a plugin test loads
 /// the same wasm.
@@ -288,7 +288,7 @@ fn plugin_build_environment_variable(key: &std::ffi::OsStr) -> bool {
         key.as_ref(),
         "CARGO"
             | "CARGO_ENCODED_RUSTFLAGS"
-            // zellij-runtime, which the plugins build, bakes it in with `option_env!`, so cargo
+            // yinz-runtime, which the plugins build, bakes it in with `option_env!`, so cargo
             // rebuilds when it changes.
             | "PREFIX"
             | "RUSTC"
@@ -404,7 +404,7 @@ fn hash_plugin_files(root: &Path, dep_infos: &[PathBuf]) -> Option<Sha256> {
 
 /// Make sure every plugin's wasm is present and fresh under
 /// `target/wasm32-wasip1/<profile dir>`, building only when the inputs changed since the last
-/// build of that profile (or `ZELLIJ_FORCE_PLUGINS` is set).
+/// build of that profile (or `YINZ_FORCE_PLUGINS` is set).
 pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     let missing = PLUGINS
         .iter()
@@ -414,7 +414,7 @@ pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     if !stale {
         let msg = format!(
             ">> Plugins ({profile}) unchanged since last build, skipping \
-             (set ZELLIJ_FORCE_PLUGINS=1 to rebuild)"
+             (set YINZ_FORCE_PLUGINS=1 to rebuild)"
         );
         crate::status(&msg);
         eprintln!("{}", msg);
@@ -430,7 +430,7 @@ pub fn ensure_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
 }
 
 /// Build all plugins in a single invocation so Cargo can unify transitive dependency features
-/// across all of them and compile shared crates (e.g. zellij-plugin-api) only once.
+/// across all of them and compile shared crates (e.g. yinz-plugin-api) only once.
 fn build_plugins(sh: &Shell, profile: &str) -> anyhow::Result<()> {
     let cargo = crate::cargo()?;
     let mut base_cmd = cmd!(
@@ -496,18 +496,18 @@ fn run_proto_codegen(sh: &Shell, force: bool) {
 
     let specs: &[(&str, &str, &str)] = &[
         (
-            "zellij-plugin-api/assets",
-            "zellij-plugin-api/src",
+            "yinz-plugin-api/assets",
+            "yinz-plugin-api/src",
             "generated_plugin_api.rs",
         ),
         (
-            "zellij-ipc/assets/prost_ipc",
-            "zellij-ipc/src/client_server_contract",
+            "yinz-ipc/assets/prost_ipc",
+            "yinz-ipc/src/client_server_contract",
             "generated_client_server_api.rs",
         ),
         (
-            "zellij-ipc/assets/prost_nested_session",
-            "zellij-ipc/src/nested_session_contract",
+            "yinz-ipc/assets/prost_nested_session",
+            "yinz-ipc/src/nested_session_contract",
             "generated_nested_session_api.rs",
         ),
     ];

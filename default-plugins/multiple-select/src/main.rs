@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
 
 #[derive(Debug, Default)]
 pub struct App {
-    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
+    own_plugin_id: Option<yinz_tile::prelude::PluginId>,
     own_client_id: Option<ClientId>,
     own_tab_index: Option<TabPosition>,
     total_tabs_in_session: Option<usize>,
@@ -25,7 +25,7 @@ pub struct App {
 
 register_plugin!(App);
 
-impl ZellijPlugin for App {
+impl YinzPlugin for App {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
             EventType::Key,
@@ -270,7 +270,7 @@ impl App {
             {
                 self.highlighted_at = Some(Instant::now());
                 highlight_and_unhighlight_panes(vec![PaneId::Plugin(own_plugin_id)], vec![]);
-                set_timeout(zellij_tile::prelude::FractionalSeconds::new(0.4));
+                set_timeout(yinz_tile::prelude::FractionalSeconds::new(0.4));
             }
         }
     }
@@ -313,7 +313,7 @@ impl App {
             BareKey::Char('c') => self.close_grouped_panes(),
             BareKey::Tab => self.next_coordinates(),
             BareKey::Esc => {
-                self.ungroup_panes_in_zellij();
+                self.ungroup_panes_in_yinz();
                 self.close_self();
             },
             _ => return false,
@@ -384,28 +384,28 @@ impl App {
         self.execute_action_and_close(|pane_ids| {
             break_panes_to_new_tab(pane_ids, None, true);
         });
-        self.ungroup_panes_in_zellij();
+        self.ungroup_panes_in_yinz();
     }
 
     pub fn stack_grouped_panes(&mut self) {
         self.execute_action_and_close(|pane_ids| {
             stack_panes(pane_ids.to_vec());
         });
-        self.ungroup_panes_in_zellij();
+        self.ungroup_panes_in_yinz();
     }
 
     pub fn float_grouped_panes(&mut self) {
         self.execute_action_and_close(|pane_ids| {
             float_multiple_panes(pane_ids.to_vec());
         });
-        self.ungroup_panes_in_zellij();
+        self.ungroup_panes_in_yinz();
     }
 
     pub fn embed_grouped_panes(&mut self) {
         self.execute_action_and_close(|pane_ids| {
             embed_multiple_panes(pane_ids.to_vec());
         });
-        self.ungroup_panes_in_zellij();
+        self.ungroup_panes_in_yinz();
     }
 
     pub fn break_grouped_panes_right(&mut self) {
@@ -454,7 +454,7 @@ impl App {
         });
     }
 
-    pub fn ungroup_panes_in_zellij(&mut self) {
+    pub fn ungroup_panes_in_yinz(&mut self) {
         let all_grouped_panes: Vec<PaneId> = self
             .all_client_grouped_panes
             .values()

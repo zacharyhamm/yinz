@@ -1,6 +1,6 @@
 //! The plugin-data store suite against a real Postgres, in a container.
 //!
-//! `zellij-storage/src/plugin_data_store/tests/` runs every test once per database engine. The
+//! `yinz-storage/src/plugin_data_store/tests/` runs every test once per database engine. The
 //! SQLite half runs under `cargo x test` like anything else; the Postgres half needs a server,
 //! sits behind the `postgres-tests` cargo feature, and runs here.
 //!
@@ -24,14 +24,14 @@ const COMPOSE_FILE: &str = "docker-compose.postgres.yml";
 /// A project name of our own, for the reason `remote_test.rs` gives: without one every compose
 /// file invoked from the repository root lands in one project, and each file's containers are
 /// orphans of the other.
-const COMPOSE_PROJECT: &str = "zellij-postgres";
+const COMPOSE_PROJECT: &str = "yinz-postgres";
 /// Where the server is published. Matches the compose file's port mapping.
 const PORT: u16 = 54329;
 /// The connection string the tests use. Credentials match the compose file's environment.
-const URL: &str = "postgres://zellij:zellij@127.0.0.1:54329/zellij_test?sslmode=disable";
+const URL: &str = "postgres://yinz:yinz@127.0.0.1:54329/yinz_test?sslmode=disable";
 /// How the test binary learns the URL; read by `plugin_data_store/tests/postgres.rs`.
-const URL_ENV: &str = "ZELLIJ_PLUGIN_DATA_TEST_URL";
-const CA_ENV: &str = "ZELLIJ_PLUGIN_DATA_TEST_CA";
+const URL_ENV: &str = "YINZ_PLUGIN_DATA_TEST_URL";
+const CA_ENV: &str = "YINZ_PLUGIN_DATA_TEST_CA";
 /// How long to wait for the server to accept connections after `up`.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// One process per test, each with a connection of its own; the compose file allows 300.
@@ -94,7 +94,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
     let result = if crate::test::nextest_available(sh, &cargo) {
         cmd!(
             sh,
-            "{cargo} nextest run -p zellij-storage --features postgres-tests --profile unit -j {PARALLELISM} -E {filter}"
+            "{cargo} nextest run -p yinz-storage --features postgres-tests --profile unit -j {PARALLELISM} -E {filter}"
         )
         .env(URL_ENV, URL)
         .args(args)
@@ -106,7 +106,7 @@ fn test(sh: &Shell, args: Vec<OsString>) -> anyhow::Result<()> {
         );
         cmd!(
             sh,
-            "{cargo} test -p zellij-storage --features postgres-tests --lib postgres"
+            "{cargo} test -p yinz-storage --features postgres-tests --lib postgres"
         )
         .env(URL_ENV, URL)
         // The bootstrap deadline test deliberately holds the shared schema lock.
@@ -162,9 +162,9 @@ fn wait_for_postgres(sh: &Shell) -> anyhow::Result<()> {
                 "postgres",
                 "pg_isready",
                 "-U",
-                "zellij",
+                "yinz",
                 "-d",
-                "zellij_test",
+                "yinz_test",
             ],
         )
         .quiet()

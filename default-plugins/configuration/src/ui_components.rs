@@ -1,5 +1,5 @@
 use crate::{Screen, WIDTH_BREAKPOINTS};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub fn top_tab_menu(cols: usize, current_screen: &Screen, colors: &Styling) {
     let background = colors.text_unselected.background;

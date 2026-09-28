@@ -1,9 +1,9 @@
-/** Real lifecycle checks: deno run -A extensions/tests/managed_server.ts /absolute/zellij */
+/** Real lifecycle checks: deno run -A extensions/tests/managed_server.ts /absolute/yinz */
 const binary = Deno.args[0];
-if (!binary) throw new Error("Pass the built Zellij binary");
+if (!binary) throw new Error("Pass the built Yinz binary");
 // Re-exec with a disposable trust anchor before either runtime initializes TLS.
-if (!Deno.env.get("ZELLIJ_TEST_TLS_CERT")) {
-    const tls = await Deno.makeTempDir({prefix: "zellij-managed-tls-"});
+if (!Deno.env.get("YINZ_TEST_TLS_CERT")) {
+    const tls = await Deno.makeTempDir({prefix: "yinz-managed-tls-"});
     const cert = `${tls}/cert.pem`, key = `${tls}/key.pem`;
     const wrongCert = `${tls}/wrong.pem`, wrongKey = `${tls}/wrong-key.pem`;
     try {
@@ -11,7 +11,7 @@ if (!Deno.env.get("ZELLIJ_TEST_TLS_CERT")) {
         if (!generated.success) throw new Error("Cannot generate test TLS certificate");
         const wrong = await new Deno.Command("openssl", {args: ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=wrong-ip-test", "-addext", "subjectAltName=IP:127.0.0.2", "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=serverAuth", "-keyout", wrongKey, "-out", wrongCert], stdout: "null", stderr: "null"}).output();
         if (!wrong.success) throw new Error("Cannot generate wrong-IP TLS certificate");
-        const child = new Deno.Command(Deno.execPath(), {args: ["run", "-A", import.meta.filename!, binary], env: {ZELLIJ_TEST_TLS_CERT: cert, ZELLIJ_TEST_TLS_KEY: key, ZELLIJ_TEST_WRONG_CERT: wrongCert, SSL_CERT_FILE: cert, DENO_CERT: cert}}).spawn();
+        const child = new Deno.Command(Deno.execPath(), {args: ["run", "-A", import.meta.filename!, binary], env: {YINZ_TEST_TLS_CERT: cert, YINZ_TEST_TLS_KEY: key, YINZ_TEST_WRONG_CERT: wrongCert, SSL_CERT_FILE: cert, DENO_CERT: cert}}).spawn();
         const status = await child.status;
         if (!status.success) throw new Error("Managed lifecycle checks failed");
     } finally {
@@ -19,7 +19,7 @@ if (!Deno.env.get("ZELLIJ_TEST_TLS_CERT")) {
     }
     Deno.exit(0);
 }
-const root = await Deno.makeTempDir({ prefix: "zellij-managed-server-" });
+const root = await Deno.makeTempDir({ prefix: "yinz-managed-server-" });
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const roots: string[] = [];
@@ -61,7 +61,7 @@ async function statePath(cwd: string) {
             enc.encode(await Deno.realPath(cwd)),
         ),
     );
-    return `/tmp/zellij-swamp-${Deno.uid()}/${
+    return `/tmp/yinz-swamp-${Deno.uid()}/${
         Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
     }/endpoint.json`;
 }
@@ -73,12 +73,12 @@ async function lifecycle(cwd: string, action: string, ok = true) {
 }
 async function show(cwd: string, run: string) {
     const history = JSON.parse((await command(cwd, [binary, "workflow", "show", run, "--json"])).text);
-    if (history.id !== run) throw new Error("Zellij TLS request returned the wrong saved run");
+    if (history.id !== run) throw new Error("Yinz TLS request returned the wrong saved run");
 }
 async function rejectTls(cwd: string, run: string, env: Record<string, string> = {}) {
     const result = await new Deno.Command(binary, {args: ["workflow", "show", run, "--json"], cwd, env, stdout: "piped", stderr: "piped"}).output();
     if (result.success || !dec.decode(result.stderr).includes("managed Swamp WebSocket connection failed")) {
-        throw new Error("Zellij did not reject the invalid TLS certificate at connection time");
+        throw new Error("Yinz did not reject the invalid TLS certificate at connection time");
     }
 }
 async function setup(name: string) {
@@ -257,12 +257,12 @@ try {
             (await cli(first, "workflow", "history", "get", run)).status ===
                 "suspended",
     );
-    await Deno.mkdir(`${first}/.zellij`, {recursive: true});
-    await Deno.writeTextFile(`${first}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
+    await Deno.mkdir(`${first}/.yinz`, {recursive: true});
+    await Deno.writeTextFile(`${first}/.yinz/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
     if (JSON.parse((await lifecycle(first, "status")).text).bind !== "127.0.0.1") {
         throw new Error("bind changed before explicit restart");
     }
-    await Deno.writeTextFile(`${first}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("ZELLIJ_TEST_TLS_CERT"), "key-file": Deno.env.get("ZELLIJ_TEST_TLS_KEY")}}));
+    await Deno.writeTextFile(`${first}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("YINZ_TEST_TLS_CERT"), "key-file": Deno.env.get("YINZ_TEST_TLS_KEY")}}));
     await lifecycle(first, "stop");
     await lifecycle(first, "restart");
     const rebound = JSON.parse((await lifecycle(first, "status")).text);
@@ -271,8 +271,8 @@ try {
     }
     const restarted = await state(first);
     await show(first, run);
-    await rejectTls(first, run, {SSL_CERT_FILE: Deno.env.get("ZELLIJ_TEST_WRONG_CERT")!, SSL_CERT_DIR: root});
-    await Deno.writeTextFile(`${first}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
+    await rejectTls(first, run, {SSL_CERT_FILE: Deno.env.get("YINZ_TEST_WRONG_CERT")!, SSL_CERT_DIR: root});
+    await Deno.writeTextFile(`${first}/.yinz/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
     await lifecycle(first, "restart");
     if (!(await state(first)).url.startsWith("wss://[::1]:")) throw new Error("History check requires IPv6 TLS");
     await show(first, run);
@@ -353,9 +353,9 @@ try {
     if ((await state(first)).child_pid !== endpoint.child_pid) {
         throw new Error("cancellation replaced the shared server");
     }
-    await Deno.mkdir(`${second}/.zellij`, {recursive: true});
-    await Deno.writeTextFile(`${second}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("ZELLIJ_TEST_TLS_CERT"), "key-file": Deno.env.get("ZELLIJ_TEST_TLS_KEY")}}));
-    await Deno.writeTextFile(`${second}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
+    await Deno.mkdir(`${second}/.yinz`, {recursive: true});
+    await Deno.writeTextFile(`${second}/.swamp/serve.yaml`, JSON.stringify({tls: {"cert-file": Deno.env.get("YINZ_TEST_TLS_CERT"), "key-file": Deno.env.get("YINZ_TEST_TLS_KEY")}}));
+    await Deno.writeTextFile(`${second}/.yinz/swamp-workflows.kdl`, 'agent_exit { server_bind "::"; }');
     await lifecycle(second, "restart");
     const ipv6 = JSON.parse((await lifecycle(second, "status")).text);
     if (ipv6.bind !== "::" || !ipv6.dashboardUrl.startsWith("https://[::1]:")) {
@@ -367,7 +367,7 @@ try {
     }
     const ipv6Call = await connect(second);
     await ipv6Call("workflow.history.search", {});
-    await Deno.writeTextFile(`${second}/.zellij/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
+    await Deno.writeTextFile(`${second}/.yinz/swamp-workflows.kdl`, 'agent_exit { server_bind "0.0.0.0"; }');
     await lifecycle(second, "restart");
     const endpointPath = await statePath(second);
     const savedEndpoint = await Deno.readTextFile(endpointPath);

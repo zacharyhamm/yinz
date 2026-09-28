@@ -1,0 +1,5 @@
+---
+source: yinz-tab/src/tab/./unit/tab_integration_tests/mouse.rs
+expression: "format!(\"{:?}\", hover_panes)"
+---
+{ClientId(1): Terminal(TerminalId(1))}

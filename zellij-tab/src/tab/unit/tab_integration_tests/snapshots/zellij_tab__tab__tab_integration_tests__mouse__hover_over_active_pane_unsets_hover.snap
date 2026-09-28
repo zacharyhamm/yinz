@@ -1,5 +1,0 @@
----
-source: zellij-tab/src/tab/./unit/tab_integration_tests/mouse.rs
-expression: "format!(\"{:?}\", hover_panes)"
----
-{}

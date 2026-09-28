@@ -1,0 +1,43 @@
+[package]
+name = "yinz-screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The yinz server's screen thread: tabs, focus, overlays and rendering to clients"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-panes = { path = "../yinz-panes", version = "0.45.0" }
+yinz-tab = { path = "../yinz-tab", version = "0.45.0" }
+yinz-routing = { path = "../yinz-routing", version = "0.45.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-config = { workspace = true }
+yinz-host-protocol = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-session = { workspace = true }
+yinz-storage = { workspace = true }
+yinz-types = { workspace = true }
+# For `ellipsize`, shared with the tab bars so the two ends of a lent pane title agree on how a
+# title is cut. The crate is leaf-level (ansi_term and unicode-width only), so this is acyclic.
+yinz-tile-utils = { path = "../yinz-tile-utils" }
+anyhow = { workspace = true }
+crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+log = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+unicode-width = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+yinz-cli = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }
+hegeltest = "0.29.3"
+insta = "1.48"
+interprocess = { workspace = true }
+tempfile = "3.2.0"
+tokio = { workspace = true, features = ["sync"] }
+vte = { workspace = true }

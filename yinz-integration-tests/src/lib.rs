@@ -1,0 +1,55 @@
+// test comment line 1 - this is just harmless placeholder text for a test change
+// test comment line 2 - this is just harmless placeholder text for a test change
+// test comment line 3 - this is just harmless placeholder text for a test change
+// test comment line 4 - this is just harmless placeholder text for a test change
+// test comment line 5 - this is just harmless placeholder text for a test change
+// test comment line 6 - this is just harmless placeholder text for a test change
+// test comment line 7 - this is just harmless placeholder text for a test change
+// test comment line 8 - this is just harmless placeholder text for a test change
+// test comment line 9 - this is just harmless placeholder text for a test change
+// test comment line 10 - this is just harmless placeholder text for a test change
+// test comment 1
+// test comment 2
+// test comment 3
+// test comment 4
+// test comment 5
+#![cfg(unix)]
+
+pub mod client_screen;
+pub mod fake_client_os_api;
+pub mod fake_pty;
+pub mod fake_server_os_api;
+pub mod harness;
+pub mod keys;
+pub mod kitty_protocol;
+pub mod nested;
+pub mod runner;
+pub mod test_env;
+
+pub use client_screen::{
+    col, AnsiCode, CellStyle, ClientScreen, Coord, CoordBuilder, CursorPosition, GridSnapshot,
+};
+pub use fake_pty::{FakePtyHandle, WarpFailure};
+pub use harness::{
+    claim_first_terminal_and_wait_for_prompt, split_down_and_wait_for_prompt,
+    split_right_and_wait_for_prompt, start_yinz, tab_bar_shows_no_lone_pane_id, PROMPT,
+    TERMINAL_SIZE,
+};
+pub use nested::{
+    composite_contains_settled_guest_grid, guest_ascended_bar_settled, host_descended_bar_settled,
+    host_descended_bar_with_ascend_keys_settled, wait_for_settled_composite,
+    NestedDepthThreeHarness, NestedHarness,
+};
+pub use runner::{assert_same_rendered_grid, normalized, TestClient, TestRunner, TestSession};
+pub use yinz_types::data::LayoutInfo;
+pub use yinz_types::pane_size::Size;
+
+use std::time::Duration;
+
+pub fn default_timeout() -> Duration {
+    std::env::var("YINZ_TEST_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(10))
+}

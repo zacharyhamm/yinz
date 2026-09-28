@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Default)]
 pub struct State {

@@ -1,18 +1,18 @@
 ---
 services:
-  zellij-e2e:
+  yinz-e2e:
     build:
       context: ./docker
       dockerfile: e2e-sshd.Dockerfile
-    container_name: zellij-e2e
-    hostname: zellij-e2e
+    container_name: yinz-e2e
+    hostname: yinz-e2e
     volumes:
       - type: bind
         source: ./target
-        target: /usr/src/zellij
+        target: /usr/src/yinz
       - type: bind
         source: ./src/tests/fixtures
-        target: /usr/src/zellij/fixtures
+        target: /usr/src/yinz/fixtures
     ports:
       - "127.0.0.1:2222:2222/tcp"
     restart: unless-stopped

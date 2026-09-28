@@ -1,7 +1,7 @@
 use super::*;
 use crate::workflows;
 use serde_json::json;
-use zellij_tile::prelude::PluginId;
+use yinz_tile::prelude::PluginId;
 
 fn workflow_state() -> State {
     let mut state = project_state();
@@ -9,7 +9,7 @@ fn workflow_state() -> State {
         PluginId::new(7),
         PluginInstance {
             configuration: BTreeMap::new(),
-            location: "zellij:swamp-bridge".into(),
+            location: "yinz:swamp-bridge".into(),
             has_pane: true,
         },
     );
@@ -194,7 +194,7 @@ fn workflow_calls_follow_parked_chats_and_require_the_active_project_and_bridge(
         PluginId::new(9),
         PluginInstance {
             configuration: BTreeMap::new(),
-            location: "zellij:swamp-bridge".into(),
+            location: "yinz:swamp-bridge".into(),
             has_pane: false,
         },
     );

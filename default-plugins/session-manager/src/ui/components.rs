@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::*;
 
 use crate::single_screen::UnifiedSearchResult;
 use crate::ui::{PaneUiInfo, SessionUiInfo, TabUiInfo};
@@ -1732,7 +1732,7 @@ pub fn render_unsaved_changes_line(
 // Since this plugin predates the UI components, this is a developer
 // convenience to keep the coloration of dialogs organized by descriptive names
 //
-// It will be obviated once everything is migrated to UI components from zellij-tile
+// It will be obviated once everything is migrated to UI components from yinz-tile
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Colors {
     pub palette: Styling,

@@ -8,4 +8,4 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
+yinz-tile = { path = "../../yinz-tile" }

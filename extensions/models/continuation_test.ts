@@ -1,4 +1,4 @@
-import { methods } from "./_lib/zellij_methods.ts";
+import { methods } from "./_lib/yinz_methods.ts";
 import { Context } from "./_lib/workflow.ts";
 
 function assert(value: unknown): asserts value {
@@ -27,7 +27,7 @@ if request['method'] == 'swamp_dispatch':
     path.write_text(json.dumps(request))
     assert request['operation'] == 'workflow.run'
     assert request['payload']['noSupersede'] is True
-    assert request['payload']['inputs']['testReturn'] == dict(workflow='@hammz/zellij-review-integration', phase='resolved')
+    assert request['payload']['inputs']['testReturn'] == dict(workflow='@hammz/yinz-review-integration', phase='resolved')
     assert request['payload']['inputs']['rebasePrompt'] == 'Configured resolver: stage, then exit.'
     assert request['payload']['inputs']['commitAgent'] == dict(kind='codex', model='commit-model', effort='medium')
     for role in ('reviewAgent', 'reviewFixAgent', 'rebaseAgent', 'testFixAgent'):
@@ -65,7 +65,7 @@ print(json.dumps(dict(result=result)))
         }
     > = [];
     const c: Context = {
-        modelType: { normalized: "@hammz/zellij" },
+        modelType: { normalized: "@hammz/yinz" },
         modelId: "original",
         dataRepository: {
             findAllGlobal: () =>
@@ -127,7 +127,7 @@ print(json.dumps(dict(result=result)))
     const input = methods.continue_flow.arguments.parse({
         work: "work",
         key: "continue",
-        workflow: "@hammz/zellij-review-integration",
+        workflow: "@hammz/yinz-review-integration",
         inputs: {
             flowVersion: 3,
             launch: "work",
@@ -177,7 +177,7 @@ print(json.dumps(dict(result=result)))
             inputs: {
                 ...input.inputs,
                 testReturn: {
-                    workflow: "@hammz/zellij-review-integration",
+                    workflow: "@hammz/yinz-review-integration",
                     phase: "cleanup",
                 },
             },

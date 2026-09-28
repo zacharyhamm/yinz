@@ -17,7 +17,7 @@ services:
     build:
       context: docker
       dockerfile: postgres.Dockerfile
-    container_name: zellij-postgres-test
+    container_name: yinz-postgres-test
     command:
       - postgres
       - -c
@@ -35,9 +35,9 @@ services:
       - -c
       - ssl_key_file=/tls/server.key
     environment:
-      POSTGRES_USER: zellij
-      POSTGRES_PASSWORD: zellij
-      POSTGRES_DB: zellij_test
+      POSTGRES_USER: yinz
+      POSTGRES_PASSWORD: yinz
+      POSTGRES_DB: yinz_test
     tmpfs:
       - /var/lib/postgresql/data
     ports:
@@ -45,7 +45,7 @@ services:
       # developer's local Postgres on 5432 is neither needed nor disturbed.
       - "127.0.0.1:54329:5432/tcp"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U zellij -d zellij_test"]
+      test: ["CMD-SHELL", "pg_isready -U yinz -d yinz_test"]
       interval: 2s
       timeout: 2s
       retries: 30

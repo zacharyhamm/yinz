@@ -2,6 +2,6 @@
 //! render benchmark also imports — see `src/lib.rs`.
 
 use hocus::State;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 register_plugin!(State);

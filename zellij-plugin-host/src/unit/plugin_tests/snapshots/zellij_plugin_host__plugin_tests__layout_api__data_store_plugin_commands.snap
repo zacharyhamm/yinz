@@ -1,7 +1,0 @@
----
-source: zellij-plugin-host/src/./unit/plugin_tests/layout_api.rs
-expression: "format!(\"{:#?}\", plugin_bytes_event)"
----
-Some(
-    "Data store: created true, rows [\"fixing a rebase conflict\", \"writing the changelog\"], search hits 1, count 2, watch true\n\r",
-)

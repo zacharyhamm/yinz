@@ -1,0 +1,26 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/self_and_pane_commands.rs
+expression: "format!(\"{:#?}\", new_tab_event)"
+---
+Some(
+    ClosePane(
+        Plugin(
+            PluginId(
+                1,
+            ),
+        ),
+        None,
+        Some(
+            NotificationEnd {
+                channel: None,
+                exit_status: None,
+                unblock_condition: None,
+                affected_pane_id: None,
+                affected_tab_id: None,
+                error_message: None,
+                stdout_message: None,
+            },
+        ),
+        None,
+    ),
+)

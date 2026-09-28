@@ -13,7 +13,7 @@ fn swap_planner_maps_each_unique_shared_edge_to_its_direction() {
             plan_swap(
                 &[source.clone(), target],
                 source.id,
-                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))
+                PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2))
             )
             .unwrap(),
             expected
@@ -31,7 +31,7 @@ fn swap_planner_rejects_panes_that_cannot_be_safely_swapped() {
     );
 
     let mut other_tab = target.clone();
-    other_tab.tab_position = Some(zellij_tile::prelude::TabPosition::new(1));
+    other_tab.tab_position = Some(yinz_tile::prelude::TabPosition::new(1));
     assert_eq!(
         plan_swap(&[source.clone(), other_tab], source.id, target.id).unwrap_err(),
         "swap_panes needs both panes in the same tab"
@@ -95,7 +95,7 @@ fn swap_planner_rejects_an_edge_with_multiple_possible_neighbors() {
 }
 
 #[test]
-fn planners_reject_tabs_where_zellij_will_not_move_tiled_panes() {
+fn planners_reject_tabs_where_yinz_will_not_move_tiled_panes() {
     let source = positioned_pane(1, 0, 0, 10, 10);
     let target = positioned_pane(2, 10, 0, 10, 10);
 
@@ -113,7 +113,7 @@ fn planners_reject_tabs_where_zellij_will_not_move_tiled_panes() {
     assert!(plan_swap(
         &[floating_layer, target],
         source.id,
-        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(2))
+        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(2))
     )
     .is_err());
 }

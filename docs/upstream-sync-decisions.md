@@ -1,5 +1,8 @@
 # Upstream Sync Decisions
 
+Each entry records an upstream Zellij change that yinz did not adapt. Upstream commit
+titles and paths keep their Zellij names (`zellij-*`). Fork paths use yinz names (`yinz-*`).
+
 ## 2026-08-11 — Realign raw-byte buffer with keyboard parser
 
 - Upstream commits: `1d1d5c1101e608dea8cfc429af44ed455b3b06ee`
@@ -15,8 +18,8 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: The fork already has scroll-mode sync on focus (`zellij-server/src/screen/input_modes.rs`, now `zellij-screen/src/screen/input_modes.rs`; `sync_scroll_mode_on_focus`) with tests. The upstream change only adds a preference toggle, at the cost of ~60 LOC across 9 files, a new `Options` protobuf field, and ~12 snapshot updates. Nobody on the fork has asked to turn the sync off.
-- Reconsider only if: A fork user wants scroll-mode sync disabled, or the user reopens this decision. If adapted, copy the `mouse_scroll_resize` plumbing site for site and take only the early-return hunk in `input_modes.rs`; the `None` mode_info fallback is redundant because `zellij-server/src/lib.rs` sends `ChangeMode` right after `AddClient`.
+- Reason: The fork already has scroll-mode sync on focus (`yinz-screen/src/screen/input_modes.rs`; `sync_scroll_mode_on_focus`) with tests. The upstream change only adds a preference toggle, at the cost of ~60 LOC across 9 files, a new `Options` protobuf field, and ~12 snapshot updates. Nobody on the fork has asked to turn the sync off.
+- Reconsider only if: A fork user wants scroll-mode sync disabled, or the user reopens this decision. If adapted, copy the `mouse_scroll_resize` plumbing site for site and take only the early-return hunk in `input_modes.rs`; the `None` mode_info fallback is redundant because `yinz-server/src/lib.rs` sends `ChangeMode` right after `AddClient`.
 
 ## 2026-08-28 — Start a session with an initial command (`zellij attach -c name -- cmd`)
 
@@ -24,8 +27,8 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: `zellij -s name --layout-string 'layout { pane command="cmd" }'` already covers the use case, and `zellij action new-tab -- cmd` covers a running session. The port is ~200 LOC of contract plumbing (`ClientInfo::New`, `CliAssets`, `spawn_tabs`, `actions.rs`, protobuf) through the fork's most-diverged files plus 26 test-literal edits, for an ergonomic gain no hocus workflow needs.
-- Reconsider only if: A hocus workflow needs `zellij attach -c <name> -- <cmd>` directly, or the user reopens this decision.
+- Reason: `yinz -s name --layout-string 'layout { pane command="cmd" }'` already covers the use case, and `yinz action new-tab -- cmd` covers a running session. The port is ~200 LOC of contract plumbing (`ClientInfo::New`, `CliAssets`, `spawn_tabs`, `actions.rs`, protobuf) through the fork's most-diverged files plus 26 test-literal edits, for an ergonomic gain no hocus workflow needs.
+- Reconsider only if: A hocus workflow needs `yinz attach -c <name> -- <cmd>` directly, or the user reopens this decision.
 
 ## 2026-08-28 — Notify floating panes when their tab is hidden
 
@@ -33,7 +36,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask hocus popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`zellij-server/src/tab/mod.rs`, now `zellij-tab/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
+- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask hocus popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`yinz-tab/src/tab/mod.rs`; upstream `zellij-server/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
 - Reconsider only if: The user reopens this decision. The upstream regression test can be lifted on its own at any time.
 
 ## 2026-08-28 — IPC: distinguish disconnect from an undecodable frame (`IpcReceiveError`, `try_recv_*`)
@@ -51,7 +54,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Not applicable. The fork sizes every tab to one session-wide surface (`zellij-server/src/screen/tab_layout.rs`, now `zellij-screen/src/screen/tab_layout.rs`; `tab_surface_size` ignores the tab id and returns `session_size()`), so a vacated tab cannot change size and a client cannot be larger than the tab it lands in. Upstream's per-tab sizing model is a deliberate fork divergence. The upstream `clients.rs` tests would fail by design.
+- Reason: Not applicable. The fork sizes every tab to one session-wide surface (`yinz-screen/src/screen/tab_layout.rs`; `tab_surface_size` ignores the tab id and returns `session_size()`), so a vacated tab cannot change size and a client cannot be larger than the tab it lands in. Upstream's per-tab sizing model is a deliberate fork divergence. The upstream `clients.rs` tests would fail by design.
 - Reconsider only if: The fork adopts per-tab sizing, or the user reopens this decision.
 
 ## 2026-08-28 — Warning cleanups: `from_i32` migration, `Path` import cfg, doubled `#[test]`, dead `stacked_pane_list` field, `base64` API
@@ -60,7 +63,7 @@
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Already done or not applicable. Fork commit `5c8720f08` migrated `from_i32` to `try_from(..).ok()`; `TiledPanes` has no `stacked_pane_list` field; `zellij-client/src/lib.rs` already gates the async runtime; the kitty test already uses `BASE64_ENCODER`. The `Path` import in `input/config.rs` is used by ungated fork code (`write_config_to_disk`), so the cfg gate would break the wasm build. The kdl tests moved to `kdl/unit/` and have no doubled attribute.
+- Reason: Already done or not applicable. Fork commit `5c8720f08` migrated `from_i32` to `try_from(..).ok()`; `TiledPanes` has no `stacked_pane_list` field; `yinz-client/src/lib.rs` already gates the async runtime; the kitty test already uses `BASE64_ENCODER`. The `Path` import in `input/config.rs` is used by ungated fork code (`write_config_to_disk`), so the cfg gate would break the wasm build. The kdl tests moved to `kdl/unit/` and have no doubled attribute.
 - Reconsider only if: The user reopens this decision.
 
 ## 2026-08-28 — Alt-scroll `MouseEvent` test constructors
@@ -128,8 +131,8 @@
 
 ## 2026-08-29 — Builtin plugin wasm is no longer checked in (standing note)
 
-- Decision: `zellij-utils/assets/plugins/*.wasm` is gitignored; the wasm lives under `target/wasm32-wasip1/` and is installed by `cargo x install`.
-- Consequence for syncs: an upstream commit that touches `assets/plugins/*.wasm` now merges as a modify/delete conflict. Resolve with `git rm zellij-utils/assets/plugins/<name>.wasm`; the plugin sources are what get adapted.
+- Decision: `yinz-config/assets/plugins/*.wasm` is gitignored; the wasm lives under `target/wasm32-wasip1/` and is installed by `cargo x install`.
+- Consequence for syncs: an upstream commit that touches `zellij-utils/assets/plugins/*.wasm` now merges as a modify/delete conflict. Resolve with `git rm zellij-utils/assets/plugins/<name>.wasm`; the plugin sources are what get adapted.
 - Reconsider only if: The user reopens this decision.
 
 ## 2026-09-22 — Session-probe receive timeout
@@ -138,7 +141,7 @@
 - Upstream range: `e839bfffa586992364309a685b2c71f3b23c247e..fa131c8b4a99bf2370a30bed112e168eec90df34`
 - Fork baseline: `main` at `f2c1d9812c2053257c98fd86879bbf564ff6379f`
 - Decision: Skip
-- Reason: The fork already sets 500 ms receive and send timeouts in zellij-session/src/sessions.rs. It also bounds connection attempts, probes sessions concurrently, and distinguishes an unresponsive server from an absent session. Existing real-socket tests cover this behavior. The upstream five-second receive timeout adds no protection and would increase the wait.
+- Reason: The fork already sets 500 ms receive and send timeouts in yinz-session/src/sessions.rs. It also bounds connection attempts, probes sessions concurrently, and distinguishes an unresponsive server from an absent session. Existing real-socket tests cover this behavior. The upstream five-second receive timeout adds no protection and would increase the wait.
 - Reconsider only if: The user reopens this decision.
 
 ## 2026-09-22 — Spelling corrections in retained text

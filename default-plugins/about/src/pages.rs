@@ -1,9 +1,9 @@
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use zellij_tile::prelude::actions::Action;
+use yinz_tile::prelude::actions::Action;
 
 use crate::active_component::{ActiveComponent, ClickAction};
 use crate::keybindings::{
@@ -25,7 +25,6 @@ pub struct Page {
     title: Option<Text>,
     components_to_render: Vec<RenderedComponent>,
     has_hover: bool,
-    hovering_over_link: bool,
     menu_item_is_selected: bool,
     pub is_main_screen: bool,
     pub kind: PageKind,
@@ -33,22 +32,19 @@ pub struct Page {
 
 impl Page {
     pub fn new_main_screen(
-        link_executable: Rc<RefCell<String>>,
-        zellij_version: String,
+        yinz_version: String,
         base_mode: Rc<RefCell<InputMode>>,
         is_release_notes: bool,
         keybinding_state: Rc<RefCell<KeybindingState>>,
     ) -> Self {
         let has_missing_binds = keybinding_state.borrow().has_missing_binds();
         let main_screen_builder: Rc<dyn Fn() -> Page> = Rc::new({
-            let link_executable = link_executable.clone();
-            let zellij_version = zellij_version.clone();
+            let yinz_version = yinz_version.clone();
             let base_mode = base_mode.clone();
             let keybinding_state = keybinding_state.clone();
             move || {
                 Page::new_main_screen(
-                    link_executable.clone(),
-                    zellij_version.clone(),
+                    yinz_version.clone(),
                     base_mode.clone(),
                     is_release_notes,
                     keybinding_state.clone(),
@@ -58,7 +54,7 @@ impl Page {
         let page = Page::new()
             .main_screen()
             .with_kind(PageKind::MainScreen)
-            .with_title(main_screen_title(zellij_version.clone(), is_release_notes))
+            .with_title(main_screen_title(yinz_version.clone(), is_release_notes))
             .with_bulletin_list(BulletinList::new(whats_new_title()).with_items(vec![
                     ActiveComponent::new(TextOrCustomRender::Text(main_menu_item(
                         "Nested Sessions",
@@ -110,31 +106,9 @@ impl Page {
                         move || Page::new_pane_focus(keybinding_state, main_screen_builder)
                     })),
                 ]));
-        page.with_paragraph(vec![ComponentLine::new(vec![
-            ActiveComponent::new(TextOrCustomRender::Text(support_the_developer_text())),
-            ActiveComponent::new(TextOrCustomRender::Text(sponsors_link_text_unselected()))
-                .with_hover(TextOrCustomRender::CustomRender(
-                    Box::new(sponsors_link_text_selected),
-                    Box::new(sponsors_link_text_selected_len),
-                ))
-                .with_left_click_action(ClickAction::new_open_link(
-                    "https://github.com/sponsors/imsnif".to_owned(),
-                    link_executable.clone(),
-                )),
-        ])])
-        .with_help(if is_release_notes {
-            Box::new(move |hovering_over_link, menu_item_is_selected| {
-                release_notes_main_help(
-                    hovering_over_link,
-                    menu_item_is_selected,
-                    has_missing_binds,
-                )
-            })
-        } else {
-            Box::new(move |hovering_over_link, menu_item_is_selected| {
-                main_screen_help_text(hovering_over_link, menu_item_is_selected, has_missing_binds)
-            })
-        })
+        page.with_help(Box::new(move |menu_item_is_selected| {
+            main_screen_help_text(menu_item_is_selected, has_missing_binds)
+        }))
     }
     pub fn new_nested_sessions(
         keybinding_state: Rc<RefCell<KeybindingState>>,
@@ -169,9 +143,7 @@ impl Page {
             .with_title(Text::new("Nested Sessions").color_range(0, ..))
             .with_paragraph(vec![
                 ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new(
-                        "Zellij now detects when it is started inside another Zellij session.",
-                    ),
+                    Text::new("Yinz now detects when it is started inside another Yinz session."),
                 ))]),
                 ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
                     Text::new(format!(
@@ -190,9 +162,7 @@ impl Page {
         ) {
             page = page.with_paragraph(missing_binds_note);
         }
-        page.with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-            esc_to_go_back_help()
-        }))
+        page.with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help()))
     }
     pub fn new_pane_focus(
         keybinding_state: Rc<RefCell<KeybindingState>>,
@@ -231,9 +201,7 @@ impl Page {
         {
             page = page.with_paragraph(missing_binds_note);
         }
-        page.with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-            esc_to_go_back_help()
-        }))
+        page.with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help()))
     }
     pub fn new_scroll_by_command(
         keybinding_state: Rc<RefCell<KeybindingState>>,
@@ -257,10 +225,8 @@ impl Page {
             .with_title(Text::new("Scroll By Command").color_range(0, ..))
             .with_paragraph(vec![ComponentLine::new(vec![ActiveComponent::new(
                 TextOrCustomRender::Text(
-                    Text::new(
-                        "Zellij can now navigate the commands marked by the shell (OSC 133):",
-                    )
-                    .color_substring(2, "OSC 133"),
+                    Text::new("Yinz can now navigate the commands marked by the shell (OSC 133):")
+                        .color_substring(2, "OSC 133"),
                 ),
             )])])
             .with_paragraph(command_bind_lines)
@@ -282,9 +248,7 @@ impl Page {
         ) {
             page = page.with_paragraph(missing_binds_note);
         }
-        page.with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-            esc_to_go_back_help()
-        }))
+        page.with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help()))
     }
     pub fn new_update_keybindings(
         keybinding_state: Rc<RefCell<KeybindingState>>,
@@ -383,7 +347,7 @@ impl Page {
                         })),
                     ActiveComponent::new(TextOrCustomRender::Text(Text::new(")"))),
                 ])])
-                .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
+                .with_help(Box::new(|_menu_item_is_selected| {
                     Text::new("Help: <y> - Add Keybindings, <n> - Cancel, <ESC> - Go back")
                         .color_substring(1, "<y>")
                         .color_substring(1, "<n>")
@@ -393,9 +357,7 @@ impl Page {
                 .with_paragraph(vec![ComponentLine::new(vec![ActiveComponent::new(
                     TextOrCustomRender::Text(keybinding_status_text(&status)),
                 )])])
-                .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-                    esc_to_go_back_help()
-                })),
+                .with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help())),
         }
     }
     fn new_kitty_graphics() -> Page {
@@ -403,7 +365,7 @@ impl Page {
             .with_title(Text::new("Kitty Graphics Protocol").color_range(0, ..))
             .with_paragraph(vec![
                 ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
-                    Text::new("Zellij now implements the Kitty graphics protocol.")
+                    Text::new("Yinz now implements the Kitty graphics protocol.")
                         .color_substring(2, "Kitty graphics protocol"),
                 ))]),
                 ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
@@ -421,15 +383,13 @@ impl Page {
                     "The host terminal needs to support the protocol as well.",
                 )),
             )])])
-            .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-                esc_to_go_back_help()
-            }))
+            .with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help()))
     }
     fn new_ui() -> Page {
         Page::new()
             .with_title(Text::new("New UI").color_range(0, ..))
             .with_paragraph(vec![ComponentLine::new(vec![ActiveComponent::new(
-                TextOrCustomRender::Text(Text::new("The Zellij interface has been redesigned.")),
+                TextOrCustomRender::Text(Text::new("The Yinz interface has been redesigned.")),
             )])])
             .with_paragraph(vec![
                 ComponentLine::new(vec![ActiveComponent::new(TextOrCustomRender::Text(
@@ -458,9 +418,7 @@ impl Page {
                 ))]),
                 config_option_line("stacked_pane_list false"),
             ])
-            .with_help(Box::new(|_hovering_over_link, _menu_item_is_selected| {
-                esc_to_go_back_help()
-            }))
+            .with_help(Box::new(|_menu_item_is_selected| esc_to_go_back_help()))
     }
 }
 
@@ -729,7 +687,6 @@ impl Page {
             title: None,
             components_to_render: vec![],
             has_hover: false,
-            hovering_over_link: false,
             menu_item_is_selected: false,
             is_main_screen: false,
             kind: PageKind::Other,
@@ -757,7 +714,7 @@ impl Page {
             .push(RenderedComponent::Paragraph(paragraph));
         self
     }
-    pub fn with_help(mut self, help_text_fn: Box<dyn Fn(bool, bool) -> Text>) -> Self {
+    pub fn with_help(mut self, help_text_fn: Box<dyn Fn(bool) -> Text>) -> Self {
         self.components_to_render
             .push(RenderedComponent::HelpText(help_text_fn));
         self
@@ -807,9 +764,8 @@ impl Page {
         None
     }
     pub fn handle_mouse_hover(&mut self, x: usize, y: usize) -> bool {
-        let previous_help = (self.hovering_over_link, self.menu_item_is_selected);
+        let previous_help = self.menu_item_is_selected;
         self.has_hover = false;
-        self.hovering_over_link = false;
         self.menu_item_is_selected = false;
         let mut changed = false;
         let mut hover = |component: &mut ActiveComponent, selectable: bool| {
@@ -819,7 +775,6 @@ impl Page {
             } else if component.handle_hover_at_position(x, y) {
                 self.has_hover = true;
                 self.menu_item_is_selected = selectable;
-                self.hovering_over_link = !self.menu_item_is_selected;
             }
             changed |= was_active != component.is_active;
         };
@@ -841,7 +796,7 @@ impl Page {
                 _ => {},
             }
         }
-        changed || previous_help != (self.hovering_over_link, self.menu_item_is_selected)
+        changed || previous_help != self.menu_item_is_selected
     }
     fn move_selection_up(&mut self) {
         match self.position_of_active_selectable() {
@@ -968,34 +923,11 @@ impl Page {
             } else {
                 columns.saturating_sub(base_x * 2)
             };
-            let rendered_rows = rendered_component.render(
-                base_x,
-                y,
-                rows,
-                columns,
-                self.hovering_over_link,
-                self.menu_item_is_selected,
-            );
+            let rendered_rows =
+                rendered_component.render(base_x, y, rows, columns, self.menu_item_is_selected);
             current_y += rendered_rows + 1; // 1 for the line space between components
         }
     }
-}
-
-fn sponsors_link_text_unselected() -> Text {
-    Text::new("https://github.com/sponsors/imsnif")
-}
-
-fn sponsors_link_text_selected(x: usize, y: usize) -> usize {
-    print!(
-        "\u{1b}[{};{}H\u{1b}[m\u{1b}[1;4mhttps://github.com/sponsors/imsnif",
-        y + 1,
-        x + 1
-    );
-    34
-}
-
-fn sponsors_link_text_selected_len() -> usize {
-    34
 }
 
 // Text components
@@ -1005,41 +937,15 @@ fn whats_new_title() -> Text {
 
 fn main_screen_title(version: String, is_release_notes: bool) -> Text {
     if is_release_notes {
-        let title_text = format!("Hi there, welcome to Zellij {}!", version);
-        Text::new(title_text).color_range(2, 21..=27 + version.chars().count())
+        let title_text = format!("Hi there, welcome to Yinz {}!", version);
+        Text::new(title_text).color_range(2, 21..=25 + version.chars().count())
     } else {
-        let title_text = format!("Zellij {}", version);
+        let title_text = format!("Yinz {}", version);
         Text::new(title_text).color_range(2, ..)
     }
 }
 
-fn main_screen_help_text(
-    hovering_over_link: bool,
-    menu_item_is_selected: bool,
-    has_missing_binds: bool,
-) -> Text {
-    if hovering_over_link {
-        return link_hover_help();
-    }
-    let mut help_text = String::from("Help: <↓↑> - Navigate");
-    if menu_item_is_selected {
-        help_text.push_str(", <ENTER> - Learn More");
-    }
-    if has_missing_binds {
-        help_text.push_str(", <u> - Update Keybindings");
-    }
-    help_text.push_str(", <ESC> - Dismiss");
-    color_help_keys(help_text)
-}
-
-fn release_notes_main_help(
-    hovering_over_link: bool,
-    menu_item_is_selected: bool,
-    has_missing_binds: bool,
-) -> Text {
-    if hovering_over_link {
-        return link_hover_help();
-    }
+fn main_screen_help_text(menu_item_is_selected: bool, has_missing_binds: bool) -> Text {
     let mut help_text = String::from("Help: <↓↑> - Navigate");
     if menu_item_is_selected {
         help_text.push_str(", <ENTER> - Learn More");
@@ -1061,12 +967,6 @@ fn color_help_keys(help_text: String) -> Text {
         .color_substring(1, "<?>")
 }
 
-fn link_hover_help() -> Text {
-    Text::new("Help: Click or Shift-Click to open in browser")
-        .color_range(3, 6..=10)
-        .color_range(3, 15..=25)
-}
-
 fn esc_to_go_back_help() -> Text {
     let help_text = "Help: <ESC> - Go back".to_string();
     Text::new(help_text).color_range(1, 6..=10)
@@ -1074,11 +974,6 @@ fn esc_to_go_back_help() -> Text {
 
 fn main_menu_item(item_name: &str) -> Text {
     Text::new(item_name).color_range(0, ..)
-}
-
-fn support_the_developer_text() -> Text {
-    let support_text = "Please support the Zellij developer <3: ".to_string();
-    Text::new(support_text).color_range(3, ..)
 }
 
 pub enum TextOrCustomRender {
@@ -1117,7 +1012,7 @@ impl std::fmt::Debug for TextOrCustomRender {
 }
 
 enum RenderedComponent {
-    HelpText(Box<dyn Fn(bool, bool) -> Text>),
+    HelpText(Box<dyn Fn(bool) -> Text>),
     BulletinList(BulletinList),
     Paragraph(Vec<ComponentLine>),
 }
@@ -1139,7 +1034,6 @@ impl RenderedComponent {
         y: usize,
         rows: usize,
         columns: usize,
-        hovering_over_link: bool,
         menu_item_is_selected: bool,
     ) -> usize {
         let mut rendered_rows = 0;
@@ -1147,7 +1041,7 @@ impl RenderedComponent {
             RenderedComponent::HelpText(text) => {
                 rendered_rows += 1;
                 print_text_with_coordinates(
-                    text(hovering_over_link, menu_item_is_selected),
+                    text(menu_item_is_selected),
                     0,
                     y,
                     Some(columns),
@@ -1323,7 +1217,6 @@ mod tests {
         assert!(page.menu_item_is_selected);
         assert!(!page.handle_mouse_hover(2, 0));
         assert!(page.handle_mouse_hover(1, 1));
-        assert!(page.hovering_over_link);
         assert!(!page.menu_item_is_selected);
         assert!(!page.handle_mouse_hover(2, 1));
         assert!(page.handle_mouse_hover(20, 1));

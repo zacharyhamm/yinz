@@ -1,7 +1,7 @@
 //! Native tools backed by the authenticated, managed Swamp bridge.
 use crate::{extensions, tools::ToolCall, State, Status, FRAME_SECONDS};
 use serde_json::{json, Value};
-use zellij_tile::prelude::PluginId;
+use yinz_tile::prelude::PluginId;
 
 pub const TOOLS: &[&str] = &[
     "workflow_search",
@@ -169,7 +169,7 @@ pub fn uncertain_result(call: Option<&ToolCall>, rpc_id: &str, message: &str) ->
         "recovery":"Inspect persisted definitions, run history, approvals or question submissions before retrying. The mutation may already have occurred."});
     if call.is_some_and(|call| call.name == "workflow_launch") {
         let mut filter = format!(
-            "has(tags.zellijOperation) && tags.zellijOperation.contains({})",
+            "has(tags.yinzOperation) && tags.yinzOperation.contains({})",
             json!(rpc_id)
         );
         if args["inputs"]["launch"].is_string() && args["inputs"]["session"].is_string() {
@@ -191,9 +191,9 @@ pub struct Pending {
 
 #[cfg(target_arch = "wasm32")]
 fn launch_bridge(payload: String) {
-    zellij_tile::shim::pipe_message_to_plugin(
-        zellij_tile::prelude::MessageToPlugin::new(extensions::CALL)
-            .with_plugin_url("zellij:swamp-bridge")
+    yinz_tile::shim::pipe_message_to_plugin(
+        yinz_tile::prelude::MessageToPlugin::new(extensions::CALL)
+            .with_plugin_url("yinz:swamp-bridge")
             .with_payload(payload),
     );
 }
@@ -203,7 +203,7 @@ fn launch_bridge(_payload: String) {}
 impl State {
     fn verified_workflow_bridge(&self, owner: PluginId) -> bool {
         #[cfg(target_arch = "wasm32")]
-        return zellij_tile::shim::get_session_list().is_ok_and(|snapshot| {
+        return yinz_tile::shim::get_session_list().is_ok_and(|snapshot| {
             snapshot
                 .live_sessions
                 .iter()
@@ -212,13 +212,13 @@ impl State {
                     session
                         .plugins
                         .get(&owner)
-                        .is_some_and(|p| p.location == "zellij:swamp-bridge")
+                        .is_some_and(|p| p.location == "yinz:swamp-bridge")
                 })
         });
         #[cfg(not(target_arch = "wasm32"))]
         self.plugin_instances
             .get(&owner)
-            .is_some_and(|p| p.location == "zellij:swamp-bridge")
+            .is_some_and(|p| p.location == "yinz:swamp-bridge")
     }
     pub(crate) fn start_workflow_tool(&mut self, call: &ToolCall) -> bool {
         let request = (|| {
@@ -227,7 +227,7 @@ impl State {
             let mut owners = self
                 .plugin_instances
                 .iter()
-                .filter(|(_, p)| p.location == "zellij:swamp-bridge");
+                .filter(|(_, p)| p.location == "yinz:swamp-bridge");
             let owner = owners.next().map(|(id, _)| *id);
             if owners.next().is_some() {
                 return Err("multiple Swamp bridges; select one session bridge".to_owned());

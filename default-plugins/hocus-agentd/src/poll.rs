@@ -7,8 +7,8 @@
 
 use hocus_proto::projects::{Repository, WorktreeStatus};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::*;
 
 fn current_session() -> Option<SessionInfo> {
     get_session_list()
@@ -24,7 +24,7 @@ fn current_session() -> Option<SessionInfo> {
 /// `None` for every pane the user opened as a shell. The host resolves this one from
 /// the pane's foreground process instead, which is what detection actually wants.
 pub fn pane_running_command(pane_id: u32) -> Option<String> {
-    get_pane_running_command(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+    get_pane_running_command(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
         pane_id,
     )))
     .ok()
@@ -33,7 +33,7 @@ pub fn pane_running_command(pane_id: u32) -> Option<String> {
 }
 
 pub fn pane_cwd(pane_id: u32) -> Option<String> {
-    get_pane_cwd(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+    get_pane_cwd(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
         pane_id,
     )))
     .ok()
@@ -49,7 +49,7 @@ pub fn pane_git_probe(
     refresh_token: Option<&str>,
 ) -> Result<Option<PaneGitProbe>, String> {
     get_pane_git_probe_with_refresh(
-        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
         cwd,
         refresh_token.map(str::to_owned),
     )
@@ -72,7 +72,7 @@ pub struct PaneSample {
     pub is_scrolled: bool,
     /// Milliseconds since the pane's process last wrote to its pty, if it ever has.
     /// `None` means it never wrote anything this session.
-    pub last_output_ms_ago: Option<zellij_tile::prelude::ElapsedMillis>,
+    pub last_output_ms_ago: Option<yinz_tile::prelude::ElapsedMillis>,
 }
 
 impl PaneSample {
@@ -94,7 +94,7 @@ impl PaneSample {
 /// content and must not reset the idle counter when the pane is resized.
 pub fn read_pane(pane_id: u32) -> PaneSample {
     match get_pane_scrollback(
-        PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+        PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
         false,
     ) {
         Ok(contents) => {

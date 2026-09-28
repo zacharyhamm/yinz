@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Debug, Default)]
 pub struct Notifications {
@@ -253,9 +253,9 @@ mod tests {
 
     fn notification(id: u64, message: &str) -> NotificationInfo {
         NotificationInfo {
-            id: zellij_tile::prelude::NotificationId::new(id),
+            id: yinz_tile::prelude::NotificationId::new(id),
             message: message.to_owned(),
-            received_at_unix_ms: zellij_tile::prelude::UnixMillis::new(id),
+            received_at_unix_ms: yinz_tile::prelude::UnixMillis::new(id),
         }
     }
 

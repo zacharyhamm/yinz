@@ -4,7 +4,7 @@ use super::*;
 /// the response lands, or the model is answered before it was asked.
 #[test]
 fn a_search_defers_until_its_response_arrives() {
-    let mut state = searching_state("zellij");
+    let mut state = searching_state("yinz");
     let call = state.pending.front().cloned().unwrap();
 
     assert!(!state.run_head(&call), "the queue must wait");
@@ -13,19 +13,19 @@ fn a_search_defers_until_its_response_arrives() {
 
     let rendered = state.on_response(
         200,
-        br#"{"results":[{"title":"Zellij","url":"https://zellij.dev","content":"a workspace"}]}"#,
+        br#"{"results":[{"title":"Yinz","url":"https://example.com","content":"a workspace"}]}"#,
         &BTreeMap::from([("tool_call_id".to_owned(), "mine".to_owned())]),
     );
 
     assert!(rendered);
     let results = tool_results(&state);
     assert_eq!(results.len(), 1);
-    assert!(results[0].content.contains("https://zellij.dev"));
+    assert!(results[0].content.contains("https://example.com"));
 }
 
 #[test]
 fn a_search_response_for_a_call_we_are_not_waiting_on_is_ignored() {
-    let mut state = searching_state("zellij");
+    let mut state = searching_state("yinz");
     state.status = Status::AwaitingSearch;
 
     let rendered = state.on_response(
@@ -42,7 +42,7 @@ fn a_search_response_for_a_call_we_are_not_waiting_on_is_ignored() {
 /// A dead SearxNG must answer the call rather than hang the tool loop.
 #[test]
 fn a_failed_search_is_reported_as_the_tools_result() {
-    let mut state = searching_state("zellij");
+    let mut state = searching_state("yinz");
     state.status = Status::AwaitingSearch;
 
     state.on_response(

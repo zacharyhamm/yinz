@@ -1,5 +1,5 @@
 use crate::keybind_utils::KeybindProcessor;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 /// One tooltip cell: the key text, the action text, and the x/y it renders at.
 type TooltipComponent = (Text, Text, usize, usize);

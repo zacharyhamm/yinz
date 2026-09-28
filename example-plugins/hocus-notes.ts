@@ -1,5 +1,5 @@
 // A read-only note listing with tags and todo links; never fetches note bodies.
-import z, { definePlugin, type DataRecord } from "zellij:plugin";
+import z, { definePlugin, type DataRecord } from "yinz:plugin";
 const namespace = "shared:hocus";
 const D = z.data;
 let notes: DataRecord[] = [];

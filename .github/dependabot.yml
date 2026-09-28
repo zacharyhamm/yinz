@@ -16,14 +16,14 @@ updates:
       # Allow only direct updates
       - dependency-name: "log"
   - package-ecosystem: "cargo"
-    directory: "/zellij-runtime/"
+    directory: "/yinz-runtime/"
     schedule:
       interval: "monthly"
     allow:
       - dependency-name: "log"
       - dependency-name: "log4rs"
   - package-ecosystem: "cargo"
-    directory: "/zellij-cli/"
+    directory: "/yinz-cli/"
     schedule:
       interval: "monthly"
     allow:

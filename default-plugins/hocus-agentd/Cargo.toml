@@ -8,9 +8,9 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-zellij-tile = { path = "../../zellij-tile" }
-# Already built for wasm through zellij-tile; only for the transport frame limit.
-zellij-runtime = { workspace = true }
+yinz-tile = { path = "../../yinz-tile" }
+# Already built for wasm through yinz-tile; only for the transport frame limit.
+yinz-runtime = { workspace = true }
 hocus-proto = { path = "../hocus-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }

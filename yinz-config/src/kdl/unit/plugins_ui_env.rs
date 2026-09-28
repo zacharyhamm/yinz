@@ -1,0 +1,144 @@
+use super::*;
+
+#[test]
+fn plugins_to_string() {
+    let fake_config = r##"
+        plugins {
+            tab-bar location="yinz:tab-bar"
+            status-bar location="yinz:status-bar"
+            strider location="yinz:strider"
+            compact-bar location="yinz:compact-bar"
+            session-manager location="yinz:session-manager"
+            welcome-screen location="yinz:session-manager" {
+                welcome_screen true
+            }
+            filepicker location="yinz:strider" {
+                cwd "/"
+            }
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized =
+        crate::kdl::plugin_aliases::from_kdl(document.get("plugins").unwrap()).unwrap();
+    let serialized = crate::kdl::plugin_aliases::to_kdl(&deserialized, true);
+    let deserialized_from_serialized = crate::kdl::plugin_aliases::from_kdl(
+        serialized
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("plugins")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        deserialized, deserialized_from_serialized,
+        "Deserialized serialized config equals original config"
+    );
+    insta::assert_snapshot!(serialized.to_string());
+}
+
+#[test]
+fn plugins_to_string_with_file() {
+    let fake_config = r##"
+        plugins {
+            tab-bar location="yinz:tab-bar"
+            filepicker location="file:/path/to/my/plugin.wasm" {
+                cwd "/"
+            }
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized =
+        crate::kdl::plugin_aliases::from_kdl(document.get("plugins").unwrap()).unwrap();
+    let serialized = crate::kdl::plugin_aliases::to_kdl(&deserialized, true);
+    let deserialized_from_serialized = crate::kdl::plugin_aliases::from_kdl(
+        serialized
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("plugins")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        deserialized, deserialized_from_serialized,
+        "Deserialized serialized config equals original config"
+    );
+    insta::assert_snapshot!(serialized.to_string());
+}
+
+#[test]
+fn ui_config_to_string() {
+    let fake_config = r##"
+        ui {
+            pane_frames {
+                rounded_corners true
+                hide_session_name true
+            }
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = UiConfig::from_kdl(document.get("ui").unwrap()).unwrap();
+    let serialized = UiConfig::to_kdl(&deserialized).unwrap();
+    let deserialized_from_serialized = UiConfig::from_kdl(
+        serialized
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("ui")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        deserialized, deserialized_from_serialized,
+        "Deserialized serialized config equals original config"
+    );
+    insta::assert_snapshot!(serialized.to_string());
+}
+
+#[test]
+fn ui_config_to_string_with_no_ui_config() {
+    let fake_config = r##"
+        ui {
+            pane_frames {
+            }
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = UiConfig::from_kdl(document.get("ui").unwrap()).unwrap();
+    assert_eq!(UiConfig::to_kdl(&deserialized), None);
+}
+
+#[test]
+fn env_vars_to_string() {
+    let fake_config = r##"
+        env {
+            foo "bar"
+            bar "foo"
+            thing 1
+            baz "true"
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = environment_variables_from_kdl(document.get("env").unwrap()).unwrap();
+    let serialized = environment_variables_to_kdl(&deserialized).unwrap();
+    let deserialized_from_serialized = environment_variables_from_kdl(
+        serialized
+            .to_string()
+            .parse::<KdlDocument>()
+            .unwrap()
+            .get("env")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        deserialized, deserialized_from_serialized,
+        "Deserialized serialized config equals original config"
+    );
+    insta::assert_snapshot!(serialized.to_string());
+}
+
+#[test]
+fn env_vars_to_string_with_no_env_vars() {
+    let fake_config = r##"
+        env {
+        }"##;
+    let document: KdlDocument = fake_config.parse().unwrap();
+    let deserialized = environment_variables_from_kdl(document.get("env").unwrap()).unwrap();
+    assert_eq!(environment_variables_to_kdl(&deserialized), None);
+}

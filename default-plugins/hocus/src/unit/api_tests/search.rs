@@ -11,8 +11,8 @@ fn search_query_url_normalises_every_shape_of_base() {
         "  http://localhost:8888/search/  ",
     ] {
         assert_eq!(
-            search_query_url(base, "zellij"),
-            "http://localhost:8888/search?q=zellij&format=json",
+            search_query_url(base, "yinz"),
+            "http://localhost:8888/search?q=yinz&format=json",
             "{base}"
         );
     }
@@ -37,12 +37,12 @@ fn search_query_url_escapes_multibyte_characters_per_utf8_byte() {
 #[test]
 fn search_results_renders_title_url_and_snippet() {
     let body = br#"{"results":[
-        {"title":"Zellij","url":"https://zellij.dev","content":"A terminal workspace.","score":9},
-        {"title":"Docs","url":"https://zellij.dev/docs","content":"","engine":"google"}
+        {"title":"Yinz","url":"https://example.com","content":"A terminal workspace.","score":9},
+        {"title":"Docs","url":"https://example.com/docs","content":"","engine":"google"}
     ]}"#;
     assert_eq!(
         search_results(body, 8),
-        "Zellij\nhttps://zellij.dev\nA terminal workspace.\n\nDocs\nhttps://zellij.dev/docs"
+        "Yinz\nhttps://example.com\nA terminal workspace.\n\nDocs\nhttps://example.com/docs"
     );
 }
 

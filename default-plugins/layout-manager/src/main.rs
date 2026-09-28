@@ -6,7 +6,7 @@ use errors::format_kdl_error;
 use screens::{KeyResponse, OptimisticUpdate, Screen};
 use std::collections::BTreeMap;
 use ui::{get_last_modified_string, get_layout_display_info};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 #[derive(Clone)]
 pub enum DisplayLayout {
@@ -209,7 +209,7 @@ impl State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         subscribe(&[
             EventType::PastedText,

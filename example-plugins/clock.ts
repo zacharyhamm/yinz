@@ -1,5 +1,5 @@
-// zellij plugin --floating -- file:$PWD/example-plugins/clock.ts
-import z, { definePlugin } from "zellij:plugin";
+// yinz plugin --floating -- file:$PWD/example-plugins/clock.ts
+import z, { definePlugin } from "yinz:plugin";
 let label = "the time is";
 z.on("Key", (key) => {
   if (key.bare_key === "Esc") z.command("CloseSelf");

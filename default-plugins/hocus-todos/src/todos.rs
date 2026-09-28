@@ -4,10 +4,10 @@ use hocus_proto::store::{self, Backend, Host};
 use hocus_proto::{projects, todos};
 use std::collections::HashMap;
 use std::ops::Range;
-use zellij_tile::prelude::{
+use yinz_tile::prelude::{
     DataRevision, DataRows, DataWatchId, FetchRequest, Mutation, Pred, SortDir, WatchMode,
 };
-use zellij_tile::ui_components::forms::{self, TextInput};
+use yinz_tile::ui_components::forms::{self, TextInput};
 
 #[derive(Default)]
 pub(super) struct View {
@@ -1742,7 +1742,7 @@ impl State {
                     ("no projects yet".into(), false),
                     ("start an agent in a git checkout,".into(), true),
                     (
-                        "or: zellij action project-remember NAME --root DIR".into(),
+                        "or: yinz action project-remember NAME --root DIR".into(),
                         true,
                     ),
                 ];
@@ -2393,7 +2393,7 @@ fn collect_ids(items: &[todos::Item], ids: &mut Vec<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zellij_tile::prelude::DataValue;
+    use yinz_tile::prelude::DataValue;
 
     fn item(id: u64, text: &str, done: bool, children: Vec<todos::Item>) -> todos::Item {
         todos::Item {
@@ -3788,7 +3788,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert!(joined(&state).contains("zellij action project-remember NAME --root DIR"));
+        assert!(joined(&state).contains("yinz action project-remember NAME --root DIR"));
         let hints = state.todo_divider(80, 0, 0).line;
         assert!(
             !hints.contains("a add") && hints.contains("Ctrl-r reload"),
@@ -3874,7 +3874,7 @@ mod tests {
                 ("no projects yet".to_owned(), false),
                 ("start an agent in a".to_owned(), true),
                 ("git checkout,".to_owned(), true),
-                ("or: zellij action".to_owned(), true),
+                ("or: yinz action".to_owned(), true),
                 ("project-remember NAME".to_owned(), true),
                 ("--root DIR".to_owned(), true),
             ]
@@ -3886,7 +3886,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ");
             assert!(
-                joined.contains("zellij action project-remember NAME --root DIR"),
+                joined.contains("yinz action project-remember NAME --root DIR"),
                 "{cols}: {joined}"
             );
         }

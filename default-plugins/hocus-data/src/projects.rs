@@ -4,7 +4,7 @@ use crate::location::Location;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use zellij_tile::prelude::{DataRevision, DataRowId, DataRows, DataValue, Mutation, Pred};
+use yinz_tile::prelude::{DataRevision, DataRowId, DataRows, DataValue, Mutation, Pred};
 
 /// A comparison key only: stored origins and Git configuration keep their spelling.
 /// Unknown forms live in a separate key space and compare exactly.
@@ -177,7 +177,7 @@ impl Repository {
     ///
     /// The repository half is the *primary* checkout, not this folder, which is
     /// the whole reason it is worth printing: a worktree kept at
-    /// `zellij/.worktrees/topic` is named `topic` by its own folder, and that
+    /// `yinz/.worktrees/topic` is named `topic` by its own folder, and that
     /// says nothing about which repository it belongs to. See
     /// [`repository_name`] for how the primary is read out of `common_dir`.
     ///
@@ -1463,7 +1463,7 @@ mod tests {
     // ----------------------------------------------------------------- rows
 
     use crate::store::{self, Backend};
-    use zellij_tile::prelude::FetchRequest;
+    use yinz_tile::prelude::FetchRequest;
 
     fn backend() -> store::Local {
         let backend = store::Local::shared("hocus_store");
@@ -2301,13 +2301,13 @@ mod tests {
     #[test]
     fn an_unregistered_checkout_labels_itself() {
         let probed = Probed::from([(
-            here("/somewhere/zellij"),
-            repository("/somewhere/zellij", "/somewhere/zellij/.git", Some("main")),
+            here("/somewhere/yinz"),
+            repository("/somewhere/yinz", "/somewhere/yinz/.git", Some("main")),
         )]);
 
         assert_eq!(
-            label_for_cwd(&probed, &Registry::new(), &here("/somewhere/zellij")).as_deref(),
-            Some("zellij"),
+            label_for_cwd(&probed, &Registry::new(), &here("/somewhere/yinz")).as_deref(),
+            Some("yinz"),
         );
     }
 

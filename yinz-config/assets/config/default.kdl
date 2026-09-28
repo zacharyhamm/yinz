@@ -1,0 +1,987 @@
+// If you'd like to override the default keybindings completely, be sure to change "keybinds" to "keybinds clear-defaults=true"
+keybinds {
+    normal {
+        // uncomment this and adjust key if using copy_on_select=false
+        // bind "Alt c" { Copy; }
+    }
+    locked {
+        // Ctrl+g waits 250ms before unlocking. Follow it with plain g within
+        // that time to send Ctrl+g to the terminal and stay locked. Change the
+        // window with `locked_escape_timeout_ms`, or set it to 0 to unlock
+        // immediately and never quote Ctrl+g.
+        bind "Ctrl g" { SwitchToMode "Normal"; }
+    }
+    resize {
+        bind "Ctrl n" { SwitchToMode "Normal"; }
+        bind "h" "Left" { Resize "Increase Left"; }
+        bind "j" "Down" { Resize "Increase Down"; }
+        bind "k" "Up" { Resize "Increase Up"; }
+        bind "l" "Right" { Resize "Increase Right"; }
+        bind "H" { Resize "Decrease Left"; }
+        bind "J" { Resize "Decrease Down"; }
+        bind "K" { Resize "Decrease Up"; }
+        bind "L" { Resize "Decrease Right"; }
+        bind "=" "+" { Resize "Increase"; }
+        bind "-" { Resize "Decrease"; }
+    }
+    pane {
+        bind "Ctrl p" { SwitchToMode "Normal"; }
+        bind "h" "Left" { MoveFocus "Left"; }
+        bind "l" "Right" { MoveFocus "Right"; }
+        bind "j" "Down" { MoveFocus "Down"; }
+        bind "k" "Up" { MoveFocus "Up"; }
+        bind "p" { SwitchFocus; }
+        bind ";" { FocusLastPane; }
+        bind "n" { NewPane; SwitchToMode "Normal"; }
+        bind "d" { NewPane "Down"; SwitchToMode "Normal"; }
+        bind "r" { NewPane "Right"; SwitchToMode "Normal"; }
+        bind "s" { NewPane "stacked"; SwitchToMode "Normal"; }
+        bind "x" { CloseFocus; SwitchToMode "Normal"; }
+        bind "f" { ToggleFocusFullscreen; SwitchToMode "Normal"; }
+        bind "Shift f" { ToggleFocusNoUiFullscreen; SwitchToMode "Normal"; }
+        bind "z" { TogglePaneFrames; SwitchToMode "Normal"; }
+        bind "w" { ToggleFloatingPanes; SwitchToMode "Normal"; }
+        bind "e" { TogglePaneEmbedOrFloating; SwitchToMode "Normal"; }
+        bind "c" { SwitchToMode "RenamePane"; PaneNameInput 0;}
+        bind "i" { TogglePanePinned; SwitchToMode "Normal"; }
+        bind "v" { SwitchToMode "Select"; }
+    }
+    select {
+        bind "h" "Left" { MoveTextSelection "Left"; }
+        bind "j" "Down" { MoveTextSelection "Down"; }
+        bind "k" "Up" { MoveTextSelection "Up"; }
+        bind "l" "Right" { MoveTextSelection "Right"; }
+        bind "o" { SwapTextSelectionEnds; }
+        bind "Enter" { Copy; SwitchToMode "Normal"; }
+        bind "Ctrl c" { SwitchToMode "Normal"; }
+    }
+    move {
+        bind "Ctrl h" { SwitchToMode "Normal"; }
+        bind "n" "Tab" { MovePane; }
+        bind "p" { MovePaneBackwards; }
+        bind "h" "Left" { MovePane "Left"; }
+        bind "j" "Down" { MovePane "Down"; }
+        bind "k" "Up" { MovePane "Up"; }
+        bind "l" "Right" { MovePane "Right"; }
+    }
+    tab {
+        bind "a" { ArrangePanesByProject; SwitchToMode "normal"; }
+        bind "Ctrl t" { SwitchToMode "Normal"; }
+        bind "r" { SwitchToMode "RenameTab"; TabNameInput 0; }
+        bind "h" "Left" "Up" "k" { GoToPreviousTab; }
+        bind "l" "Right" "Down" "j" { GoToNextTab; }
+        bind "n" { NewTab; SwitchToMode "Normal"; }
+        bind "x" { CloseTab; SwitchToMode "Normal"; }
+        bind "s" { ToggleActiveSyncTab; SwitchToMode "Normal"; }
+        bind "b" { BreakPane; SwitchToMode "Normal"; }
+        bind "]" { BreakPaneRight; SwitchToMode "Normal"; }
+        bind "[" { BreakPaneLeft; SwitchToMode "Normal"; }
+        bind "1" { GoToTab 1; SwitchToMode "Normal"; }
+        bind "2" { GoToTab 2; SwitchToMode "Normal"; }
+        bind "3" { GoToTab 3; SwitchToMode "Normal"; }
+        bind "4" { GoToTab 4; SwitchToMode "Normal"; }
+        bind "5" { GoToTab 5; SwitchToMode "Normal"; }
+        bind "6" { GoToTab 6; SwitchToMode "Normal"; }
+        bind "7" { GoToTab 7; SwitchToMode "Normal"; }
+        bind "8" { GoToTab 8; SwitchToMode "Normal"; }
+        bind "9" { GoToTab 9; SwitchToMode "Normal"; }
+        bind "Tab" { ToggleTab; }
+    }
+    scroll {
+        bind "Ctrl s" { SwitchToMode "Normal"; }
+        bind "e" { EditScrollback; SwitchToMode "Normal"; }
+        bind "s" { SwitchToMode "EnterSearch"; SearchInput 0; }
+        bind "Ctrl c" { ScrollToBottom; SwitchToMode "Normal"; }
+        bind "j" "Down" { ScrollDown; }
+        bind "k" "Up" { ScrollUp; }
+        bind "Ctrl f" "PageDown" "Right" "l" { PageScrollDown; }
+        bind "Ctrl b" "PageUp" "Left" "h" { PageScrollUp; }
+        bind "d" { HalfPageScrollDown; }
+        bind "u" { HalfPageScrollUp; }
+        bind "[" { ScrollToPreviousPrompt; }
+        bind "]" { ScrollToNextPrompt; }
+        bind "m" { SelectCommandAtScrollPosition; }
+        bind "c" { CopyLastCommandOutput; SwitchToMode "Normal"; }
+        // uncomment this and adjust key if using copy_on_select=false
+        // bind "Alt c" { Copy; }
+    }
+    search {
+        bind "Ctrl s" { SwitchToMode "Normal"; }
+        bind "Ctrl c" { ScrollToBottom; SwitchToMode "Normal"; }
+        bind "j" "Down" { ScrollDown; }
+        bind "k" "Up" { ScrollUp; }
+        bind "Ctrl f" "PageDown" "Right" "l" { PageScrollDown; }
+        bind "Ctrl b" "PageUp" "Left" "h" { PageScrollUp; }
+        bind "d" { HalfPageScrollDown; }
+        bind "u" { HalfPageScrollUp; }
+        bind "[" { ScrollToPreviousPrompt; }
+        bind "]" { ScrollToNextPrompt; }
+        bind "m" { SelectCommandAtScrollPosition; }
+        bind "n" { Search "down"; }
+        bind "p" { Search "up"; }
+        bind "c" { SearchToggleOption "CaseSensitivity"; }
+        bind "w" { SearchToggleOption "Wrap"; }
+        bind "o" { SearchToggleOption "WholeWord"; }
+    }
+    entersearch {
+        bind "Ctrl c" "Esc" { SwitchToMode "Scroll"; }
+        bind "Enter" { SwitchToMode "Search"; }
+    }
+    renametab {
+        bind "Ctrl c" { SwitchToMode "Normal"; }
+        bind "Esc" { UndoRenameTab; SwitchToMode "Tab"; }
+    }
+    renamepane {
+        bind "Ctrl c" { SwitchToMode "Normal"; }
+        bind "Esc" { UndoRenamePane; SwitchToMode "Pane"; }
+    }
+    session {
+        bind "Ctrl o" { SwitchToMode "Normal"; }
+        bind "Ctrl s" { SwitchToMode "Scroll"; }
+        bind "n" { SwitchToMode "Notifications"; }
+        bind "d" { Detach; }
+        bind "]" { FocusHostSession; SwitchToMode "Normal"; }
+        bind "[" { FocusGuestSession; SwitchToMode "Normal"; }
+        bind "f" { ToggleHostFullscreen; SwitchToMode "Normal"; }
+        bind "w" {
+            LaunchOrFocusPlugin "session-manager" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "c" {
+            LaunchOrFocusPlugin "configuration" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "p" {
+            LaunchOrFocusPlugin "plugin-manager" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "a" {
+            LaunchOrFocusPlugin "yinz:about" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "l" {
+            LaunchOrFocusPlugin "yinz:layout-manager" {
+                floating true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+    }
+    agent {
+        bind "Ctrl e" { SwitchToMode "Normal"; }
+        bind "n" {
+            LaunchOrFocusPlugin "hocus-new-agent" {
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "d" {
+            LaunchOrFocusPlugin "hocus-duplicate-agent" {
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        bind "f" {
+            LaunchOrFocusPlugin "hocus-fork-agent" {
+                floating true
+                overlay true
+                modal true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        // Bring the panel up with the keyboard on the agent list, rather than
+        // in the conversation. The list is its own pane, the left half of the
+        // panel: this reveals it if it was hidden and opens one if there is
+        // none. It comes back on the tab you left it on - Agents, Todos, VMs or
+        // Swamp - with the keyboard in that tab's list, whichever stop had it
+        // when the panel went away. The conversation comes up beside it either
+        // way — the panel is one thing with one visibility — it simply does not
+        // take the focus.
+        //
+        // `awaits_placement` says hocus puts this pane where it goes, so don't
+        // paint it at the centered default it is born with in the meantime —
+        // otherwise opening one half flashes in the middle of the screen, on
+        // top of the other. The key is part of plugin identity, like `overlay`,
+        // so it has to match what the halves launch each other with.
+        bind "a" {
+            LaunchOrFocusPlugin "hocus-agents" {
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        // The same for the conversation, the right half of the panel: the whole
+        // panel comes up, cut at the split, with the keyboard here. An agent
+        // list that was hidden comes back with it, and a panel with no list at
+        // all — you closed its pane — opens one.
+        //
+        // These two are the way *in*, not the way across. Once the panel is up the
+        // keyboard moves with Tab and Shift+Tab, which walk one ring of five stops:
+        // the panel's own tab bar (Agents, Todos, VMs, Swamp), the tab's list, its
+        // second half (the history on Agents, the details on VMs), the chat tab
+        // bar and the box you type in - and round again. A tab with no second
+        // half has four. A box with a draft in it keeps Tab for completing a
+        // /command or an @agent — Esc lets go of the box, keeping the draft, and
+        // Tab walks again. Alt h and Alt l also cross between the list and the
+        // conversation. Past the panel's outer edge they carry on from the pane
+        // hidden under it, as they would without the panel: to a tiled pane that
+        // way, which puts the panel away as a click on it does, or nowhere, which
+        // changes nothing. While the panel has the keys they never switch tabs.
+        //
+        // Clicking a pane under the panel, or moving the keyboard to one, puts the
+        // whole panel away as Esc does, and these two bring it back. A modal
+        // opened over the panel, such as New agent, does not put it away. The
+        // panel follows you to another tab without the keyboard: moving the
+        // keyboard to another pane there puts it away, but clicking the pane
+        // that already has the keyboard changes nothing, so click the panel or
+        // press one of these two first, then Esc.
+        bind "c" {
+            LaunchOrFocusPlugin "hocus" {
+                floating true
+                overlay true
+                awaits_placement true
+                move_to_focused_tab true
+            };
+            SwitchToMode "Normal"
+        }
+        // Move the panel one corner clockwise, wherever the keyboard is, while the
+        // panel is up. The message names no plugin, so it goes to the plugins
+        // already running and starts none: with hocus not running this does
+        // nothing, and a hidden panel stays where it is. Inside the panel Ctrl o
+        // does the same, but only in Locked mode - in every other mode Ctrl o
+        // enters Session mode, and no plugin sees it.
+        bind "o" {
+            MessagePlugin { name "agent_strip_reposition"; };
+            SwitchToMode "Normal"
+        }
+    }
+    notifications {
+        bind "Esc" { SwitchToMode "Normal"; }
+        bind "Down" "j" { MoveNotificationSelection "Down"; }
+        bind "Up" "k" { MoveNotificationSelection "Up"; }
+        bind "Space" { ToggleNotificationDetail; }
+        // Activating a notification leaves the mode on its own, so Enter needs no SwitchToMode
+        bind "Enter" { ActivateNotification; }
+    }
+    tmux {
+        bind "[" { SwitchToMode "Scroll"; }
+        bind "Ctrl b" { Write 2; SwitchToMode "Normal"; }
+        bind "\"" { NewPane "Down"; SwitchToMode "Normal"; }
+        bind "%" { NewPane "Right"; SwitchToMode "Normal"; }
+        bind "z" { ToggleFocusFullscreen; SwitchToMode "Normal"; }
+        bind "c" { NewTab; SwitchToMode "Normal"; }
+        bind "," { SwitchToMode "RenameTab"; }
+        bind "p" { GoToPreviousTab; SwitchToMode "Normal"; }
+        bind "n" { GoToNextTab; SwitchToMode "Normal"; }
+        bind "Left" { MoveFocus "Left"; SwitchToMode "Normal"; }
+        bind "Right" { MoveFocus "Right"; SwitchToMode "Normal"; }
+        bind "Down" { MoveFocus "Down"; SwitchToMode "Normal"; }
+        bind "Up" { MoveFocus "Up"; SwitchToMode "Normal"; }
+        bind "h" { MoveFocus "Left"; SwitchToMode "Normal"; }
+        bind "l" { MoveFocus "Right"; SwitchToMode "Normal"; }
+        bind "j" { MoveFocus "Down"; SwitchToMode "Normal"; }
+        bind "k" { MoveFocus "Up"; SwitchToMode "Normal"; }
+        bind "o" { FocusNextPane; }
+        bind "d" { Detach; }
+        bind "Space" { NextSwapLayout; }
+        bind "x" { CloseFocus; SwitchToMode "Normal"; }
+    }
+    shared_except "locked" "select" {
+        bind "Ctrl g" { SwitchToMode "Locked"; }
+        bind "Ctrl q" { Quit; }
+        bind "Alt f" { ToggleFloatingPanes; }
+        bind "Alt n" { NewPane; }
+        // Fuzzy-find a file in the project of the focused pane. Needs `fzf` on PATH.
+        // The picker opens in a floating pane; the file then opens in that same pane,
+        // which closes when the editor or viewer quits.
+        bind "Alt e" {
+            LaunchOrFocusPlugin "file-finder" {
+                floating true
+                overlay true
+                move_to_focused_tab true
+            }
+        }
+        bind "Alt i" { MoveTab "Left"; }
+        bind "Alt o" { MoveTab "Right"; }
+        bind "Alt h" "Alt Left" { MoveFocusOrTab "Left"; }
+        bind "Alt l" "Alt Right" { MoveFocusOrTab "Right"; }
+        bind "Alt j" "Alt Down" { MoveFocus "Down"; }
+        bind "Alt k" "Alt Up" { MoveFocus "Up"; }
+        bind "Alt =" "Alt +" { Resize "Increase"; }
+        bind "Alt -" { Resize "Decrease"; }
+        bind "Alt [" { PreviousSwapLayout; }
+        bind "Alt ]" { NextSwapLayout; }
+        bind "Alt p" { TogglePaneInGroup; }
+        bind "Alt Shift p" { ToggleGroupMarking; }
+    }
+    shared_except "normal" "locked" "notifications" {
+        bind "Enter" "Esc" { SwitchToMode "Normal"; }
+    }
+    shared_except "pane" "locked" {
+        bind "Ctrl p" { SwitchToMode "Pane"; }
+    }
+    shared_except "resize" "locked" {
+        bind "Ctrl n" { SwitchToMode "Resize"; }
+    }
+    shared_except "scroll" "locked" {
+        bind "Ctrl s" { SwitchToMode "Scroll"; }
+    }
+    shared_except "session" "locked" {
+        bind "Ctrl o" { SwitchToMode "Session"; }
+    }
+    shared_except "tab" "locked" {
+        bind "Ctrl t" { SwitchToMode "Tab"; }
+    }
+    shared_except "move" "locked" {
+        bind "Ctrl h" { SwitchToMode "Move"; }
+    }
+    shared_except "tmux" "locked" {
+        bind "Ctrl b" { SwitchToMode "Tmux"; }
+    }
+    shared_except "agent" "locked" {
+        bind "Ctrl e" { SwitchToMode "Agent"; }
+    }
+}
+
+// Plugin aliases - can be used to change the implementation of Yinz
+// changing these requires a restart to take effect
+plugins {
+    tab-bar location="yinz:tab-bar"
+    status-bar location="yinz:status-bar"
+    strider location="yinz:strider"
+    compact-bar location="yinz:compact-bar"
+    session-manager location="yinz:session-manager"
+    welcome-screen location="yinz:session-manager" {
+        welcome_screen true
+    }
+    filepicker location="yinz:strider" {
+        cwd "/"
+    }
+    configuration location="yinz:configuration"
+    plugin-manager location="yinz:plugin-manager"
+    about location="yinz:about"
+    // The shipped TypeScript hooks, so `hooks { agent_exit "agent-exit" }` below and
+    // `yinz action set-hook agent_waiting agent-policy --write` can name them by alias.
+    context-menu location="yinz:context-menu"
+    agent-policy location="yinz:agent-policy"
+    agent-exit location="yinz:agent-exit"
+    // Fuzzy file finder for the project of the focused pane, bound to Alt e above.
+    // Requires `fzf` on PATH.
+    //
+    // Files open in the editor Yinz already uses elsewhere (scrollback_editor, then
+    // $EDITOR, $VISUAL, vi). Add `open_<extension>` entries to route particular types
+    // somewhere else instead; `{}` stands for the file path, and is appended if you
+    // leave it out. `open_default` catches everything unmatched.
+    //
+    //     open_md  "glow -p"
+    //     open_png "chafa"
+    //     open_pdf "zathura {}"
+    //
+    // Other keys: `file_command` replaces the file listing (default: git-tracked and
+    // untracked-not-ignored files from the git root, or `find` outside a checkout),
+    // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
+    // `file_command` and `fzf_args` are spliced into a shell script as written.
+    file-finder location="yinz:file-finder"
+    // Keys here configure the OpenAI-compatible endpoint for the whole of hocus:
+    // `base_url`, `model`, and `api_key_env` (the *name* of the variable holding the
+    // key - never the key itself, which belongs in the environment the session is
+    // started from). See the plugin's own docs for `system_prompt`, `tools`,
+    // `max_tool_rounds`, `search_url` and the `dobbs_*` keys.
+    //
+    //   search_proxy   a SOCKS5 proxy (e.g. "socks5://127.0.0.1:1080") that
+    //                  `web_search` requests are sent through - nothing else hocus
+    //                  does. Useful when the agent only reaches the network via a
+    //                  sidecar, e.g. tailscale. Unset sends `web_search` direct.
+    //
+    //   api             which wire protocol the endpoint speaks. "chat" is
+    //                   `/v1/chat/completions`, which every OpenAI-compatible
+    //                   provider implements. "responses" is OpenAI's `/v1/responses`,
+    //                   the only endpoint that accepts `reasoning_effort` and a tool
+    //                   set in the same request - on chat/completions OpenAI's
+    //                   reasoning models reject the pair with a 400. Defaults to
+    //                   "responses" against OpenAI's own endpoint (base_url
+    //                   api.openai.com) and "chat" against everything else; set it
+    //                   explicitly to override either way. Both are derived from
+    //                   the same `base_url`.
+    //
+    //   reasoning_effort  how hard a reasoning model should think, one of "none",
+    //                     "minimal", "low", "medium", "high", "xhigh", "max" (the
+    //                     union of what OpenAI, DeepSeek and OpenRouter accept).
+    //                     Defaults to "medium" only where all three conditions that
+    //                     make the field safe hold: OpenAI's own endpoint, api
+    //                     "responses", and a model that reasons (gpt-5, o1, o3, o4).
+    //                     Unset otherwise - the field is simply omitted - since
+    //                     sending it where it is not expected is the problem this
+    //                     key exists to avoid: gpt-4o-mini rejects it outright, and
+    //                     chat/completions rejects it beside a tool set.
+    //
+    //   reasoning_echo  "false" stops hocus handing a thinking model its own
+    //                   `reasoning_content` back on the tool-calling turns of the
+    //                   transcript. On otherwise, because DeepSeek's thinking mode
+    //                   refuses the request without it and the tool loop cannot
+    //                   finish. Nothing is ever sent that the endpoint did not
+    //                   stream first, so this only matters for an endpoint that
+    //                   emits thinking and then rejects it on input - DeepSeek's
+    //                   own older `deepseek-reasoner` being the one known case.
+    //
+    //   stream_usage    "false" stops hocus asking the endpoint for a final
+    //                   `usage` chunk (`stream_options.include_usage`), which is
+    //                   what feeds the per-chat input/output totals. On
+    //                   otherwise. Only for an endpoint or proxy that rejects
+    //                   the `stream_options` field outright; without it the
+    //                   title shows no totals unless usage arrives anyway.
+    //                   A provider that reports what it charged (OpenRouter's
+    //                   `usage.cost`) also has the chat's cost shown beside
+    //                   the totals; hocus never estimates one.
+    //
+    // Typing `/plan <what to plan>` in the chat turns on planning mode: only the
+    // tools that read anything are advertised to the model, so it researches and
+    // writes a plan instead of acting. When the plan lands it waits for an answer -
+    // `/execute` leaves the mode and carries it out, `n` keeps planning, and
+    // `/plan off` leaves the mode with the plan left unrun in the transcript.
+    //
+    // hocus-agentd reads this same block - not its own - for the idle summaries it
+    // makes, so the endpoint is configured once:
+    //
+    //   summaries      "false" switches off the summary hocus-agentd asks for each
+    //                  time an agent stops working. On otherwise; each summary is one
+    //                  small request per agent per busy-to-idle transition.
+    //
+    //                  A Claude Code pane with `yinz hocus hooks install` run against
+    //                  it is summarised from what the agent itself said at the end of
+    //                  the turn, rather than from a reading of its screen - and where
+    //                  there is no API key at all it still gets a short summary taken
+    //                  straight from that message, with no request and no pane rename.
+    //                  Setting this to "false" switches off that fallback too. See
+    //                  docs/AGENT_HOOKS.md.
+    //   summary_model  the model those summaries are asked of. Defaults to `model`;
+    //                  set it to point the cheap work somewhere cheaper.
+    //
+    // hocus draws itself as one overlay panel in the bottom-left corner of the
+    // screen — over a tab rather than beside it, so no tab is shrunk to make
+    // room. The panel is two panes butted together: the agent list on the left,
+    // the conversation on the right, with a divider between them. Drag the
+    // divider with the mouse to move it, or type `/split 40` (columns) or
+    // `/split 35%` in the conversation; a bare `/split` says where it is. Four
+    // keys size the panel, and hocus re-places it whenever the terminal is
+    // resized:
+    //
+    //   width   the whole panel's width. A percentage of the screen ("60%",
+    //           the default) or a fixed number of columns ("120"). Never less
+    //           than 26 columns per half on screen, or as much of the screen
+    //           as there is when it is narrower than that.
+    //   height  the panel's height. A percentage of the screen ("66%", the
+    //           default) or a fixed number of rows ("30"). The panel is anchored
+    //           to the bottom, so this grows upward. Never less than 8 rows,
+    //           for the same reason: below that there is no conversation to
+    //           read. A smaller width or height than these is raised to them.
+    //   split   the agent list's share of the width. A percentage of the panel
+    //           ("50%", the default) or a fixed number of columns ("40"); the
+    //           conversation gets the rest. Neither half is drawn narrower than
+    //           24 columns while the panel has room for both; a narrower panel
+    //           is split evenly. A number of columns becomes a share of the
+    //           panel when it is set, so the list grows and shrinks with it.
+    //           This is the starting point: dragging the divider or `/split`
+    //           sets the split for the rest of the session, as a ratio, so it
+    //           survives a resize. Editing `split` here while the session runs
+    //           moves the divider too; an edit to anything else leaves it where
+    //           you put it.
+    //   pad     cells of clear screen left around the panel on every side.
+    //           Default 3, capped at a quarter of the screen - and shrunk
+    //           further, to nothing if need be, whenever what it would leave
+    //           is too small for the panel. The inset gives way before it does,
+    //           which is what keeps hocus usable in a small terminal: below the
+    //           minimum the panel takes the whole screen and draws less around
+    //           the conversation - the rules around the input box first, then
+    //           the help line, then the title bar - rather than refusing to
+    //           draw at all.
+    //
+    // A value hocus cannot read - "0.4", "60.5%", a word, a percentage for `pad` -
+    // is named in a notice in the conversation, and its default is used instead.
+    // Resize mode (`Ctrl n`, then the arrows) or a Ctrl + drag of the panel's
+    // border resizes the whole panel as well; a size set that way is kept for the
+    // rest of the session, over later `width` and `height` edits.
+    //
+    // Esc steps back before it hides. It leaves whatever the panel is in first -
+    // an event being read, a question, a search, the previous-runs or waiting
+    // view, a tab bar, the key sheet, a box with a draft in it - and only then
+    // puts the whole panel away, without unloading it: the conversation, the
+    // parked chats and anything still streaming are all still there. Clicking
+    // a pane under the panel, or moving the keyboard to one, puts it away the
+    // same way - on a tab the panel followed you to, a pane other than the one
+    // that already has the keyboard. `Ctrl e c` brings the whole of it back with
+    // the keyboard in the conversation and `Ctrl e a` with the keyboard on the
+    // agent list; either restores the split, and either opens the half that is
+    // missing if you closed one. A click moves the keyboard between the halves
+    // too, as Alt h and Alt l do.
+    //
+    // `Ctrl e o` moves the panel to the next corner, and every press moves it: it
+    // steps one corner clockwise around the four corners of the screen, at the
+    // size it already has, then starts over. A bare Ctrl o does the same from
+    // inside the panel, but only in Locked mode: everywhere else Ctrl o enters
+    // Session mode before the panel sees it. It works on a panel you have
+    // dragged, too - the press carries on from where the drag left it, and
+    // dragging either half's frame moves the whole panel, split and all.
+    hocus location="yinz:hocus" {
+        shared true
+        // width "60%"
+        // height "66%"
+        // split "50%"
+        // pad "3"
+    }
+    // The agent list: the left half of the panel, or the whole of it when there
+    // is no conversation beside it. Shared for the same reason hocus is: the strip it
+    // draws is pushed by the one hocus instance, and there is one panel per
+    // session. Sized by hocus's `width`, `height` and `split`, above.
+    hocus-todos location="yinz:hocus-todos"
+    hocus-agents location="yinz:hocus-agents" {
+        shared true
+    }
+    hocus-new-agent location="yinz:hocus-new-agent"
+    hocus-duplicate-agent location="yinz:hocus-new-agent" {
+        duplicate_focused true
+    }
+    // The same modal again, asking one question first: which agent to start in the
+    // focused pane's place. It opens on an agent *other* than the one running, which is
+    // the whole reason to fork rather than duplicate.
+    hocus-fork-agent location="yinz:hocus-new-agent" {
+        fork_focused true
+    }
+    // Shared for the same reason hocus is: one instance owns the event-fed
+    // agent snapshot for the whole session.
+    hocus-agentd location="yinz:hocus-agentd" {
+        shared true
+    }
+    // Answers `yinz pipe` for the project registry and the todo lists, and
+    // discovers projects from the agent snapshot. The data itself lives in the
+    // plugin data store, which hocus reads directly. Shared for the same reason
+    // as the others: two instances would both answer the same broadcast.
+    hocus-store location="yinz:hocus-store" {
+        shared true
+    }
+}
+
+// Plugins to load in the background when a new session starts
+// This block adds to the built-in defaults; `load_plugins clear-defaults=true`
+// replaces them instead
+load_plugins {
+    // Watches for coding agents from session start, rather than only while a
+    // hocus pane is open. Named by alias, not by "yinz:hocus-agentd", so the
+    // `shared true` above applies — plugin identity is (location,
+    // configuration), and the bare url would load a second, unshared watcher.
+    "hocus-agentd"
+    "hocus-store"
+    "yinz:link"
+    // "file:/path/to/my-plugin.wasm"
+    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
+    // "file:/path/to/my-plugin.ts"     // a TypeScript plugin; see docs/DENO_PLUGINS.md
+}
+
+// Hook points a plugin can own: a moment in the session's life. Each takes one plugin url,
+// or an empty string to leave the point unhooked. See docs/DENO_PLUGINS.md "Hooks".
+// (Requires restart)
+//
+// hooks {
+//     agent_exit "yinz:agent-exit"            // opened in place of an exited agent pane
+//     agent_waiting "file:my-policy.ts"       // headless: a plugin in the plugin folder
+//     context_menu "yinz:context-menu"        // answers right-clicks, with context_menu_on_right_click true
+// }
+
+// Choose what to do when yinz receives SIGTERM, SIGINT, SIGQUIT or SIGHUP
+// eg. when terminal window with an active yinz session is closed
+// (Requires restart)
+// Options:
+//   - detach (Default)
+//   - quit
+//
+// on_force_close "quit"
+
+// Choose how to handle a nested Yinz session detected running inside a pane
+// Options:
+//   - ask (Default - prompt with a modal to zoom in or control on focus)
+//   - fullscreen (always zoom into the nested session)
+//   - descend (always control the nested session on focus)
+//   - never (never prompt or descend; do it manually)
+//
+// nested_session_handling "ask"
+
+// Which escape sequence desktop notifications coming from panes are
+// forwarded to the host terminal with.
+// Options:
+//   - "auto" (Default — detect from the host terminal environment)
+//   - "osc9" (the legacy iTerm2 protocol, understood by most terminals)
+//   - "osc99" (kitty's notification protocol)
+//   - "bell" (ring the terminal bell instead)
+//   - "off" (do not forward notifications to the host terminal)
+//
+// host_notification_protocol "auto"
+
+//  Send a request for a simplified ui (without arrow fonts) to plugins
+//  Options:
+//    - true
+//    - false (Default)
+//
+// simplified_ui true
+
+// Choose the path to the default shell that yinz will use for opening new panes
+// Default: $SHELL
+//
+// default_shell "fish"
+
+// Choose the path to override cwd that yinz will use for opening new panes
+//
+// default_cwd ""
+
+// Toggle between having pane frames around the panes
+// Options:
+//   - true (default)
+//   - false
+//
+// pane_frames true
+
+// Set the pane frame style when pane_frames is enabled
+// Options:
+//   - titles (default - draw a title above each pane)
+//   - full (draw a full frame around each pane)
+//   - none (equivalent to pane_frames false)
+//
+// pane_frame_style "titles"
+
+// The corner notifications appear in - they stack downwards from a top corner
+// and upwards from a bottom one
+// Options:
+//   - top-left
+//   - top-right (default)
+//   - bottom-left
+//   - bottom-right
+//
+// notification_position "top-right"
+
+// How long a notification stays on screen, in seconds
+//
+// notification_timeout 10
+
+// Toggle between having Yinz lay out panes according to a predefined set of layouts whenever possible
+// Options:
+//   - true (default)
+//   - false
+//
+// auto_layout true
+
+// Whether sessions should be serialized to the cache folder (including their tabs/panes, cwds and running commands) so that they can later be resurrected
+// (Requires restart)
+// Options:
+//   - true (default)
+//   - false
+//
+// session_serialization false
+
+// Record terminal pane output in the local recording database.
+// session_recording false
+
+// Record raw terminal input. This can include passwords and other secrets.
+// This option has an effect only when session_recording is true.
+// session_recording_input false
+
+// Where plugin data is stored. Unset (default): a SQLite file in the data dir.
+// A postgres:// URL stores plugin data in that database instead, so that every
+// machine using it sees the same rows; session recordings stay local either way.
+// The URL may carry a password, so keep this file private.
+// sslmode: disable uses plaintext, prefer (default) permits plaintext if the server
+// declines TLS, and require refuses plaintext. TLS always verifies trust and hostname.
+// Certificate verification failures do not fall back to plaintext.
+// plugin_data_url "postgres://yinz:secret@db.example.com/yinz?sslmode=require"
+// For a custom CA, add sslrootcert with a PEM file containing one or more certificates.
+// These certificates supplement system trust. The file is read again on reconnect.
+// Percent-encode special characters in the path. Relative paths use the server's working directory.
+// sslrootcert applies only to URLs and is not loaded when sslmode=disable.
+// plugin_data_url "postgres://yinz:secret@db.example.com/yinz?sslmode=require&sslrootcert=/path/ca.pem"
+// plugin_data_url "postgres://yinz:secret@127.0.0.1:5432/yinz?sslmode=disable"
+// The schema the store owns inside that database.
+// plugin_data_schema "yinz_plugin_data"
+
+// Whether pane viewports are serialized along with the session, default is false
+// (Requires restart)
+// Options:
+//   - true
+//   - false (default)
+//
+// serialize_pane_viewport true
+
+// Scrollback lines to serialize along with the pane viewport when serializing sessions, 0
+// defaults to the scrollback size. If this number is higher than the scrollback size, it will
+// also default to the scrollback size. This does nothing if `serialize_pane_viewport` is not true.
+// (Requires restart)
+//
+// scrollback_lines_to_serialize 10000
+
+// Define color themes for Yinz
+// For more examples, see: https://github.com/zacharyhamm/yinz/tree/main/yinz-config/assets/themes
+// Once these themes are defined, one of them should to be selected in the "theme" section of this file
+//
+// themes {
+//     dracula {
+//         fg 248 248 242
+//         bg 40 42 54
+//         red 255 85 85
+//         green 80 250 123
+//         yellow 241 250 140
+//         blue 98 114 164
+//         magenta 255 121 198
+//         orange 255 184 108
+//         cyan 139 233 253
+//         black 0 0 0
+//         white 255 255 255
+//     }
+// }
+
+// Choose the theme that is specified in the themes section.
+// Default: default
+//
+// theme "default"
+
+// Themes to use when the host terminal reports a dark or light color palette.
+// Both must be set for automatic switching to take place, otherwise `theme`
+// remains authoritative. Until the host terminal reports (or if it never does),
+// the dark theme is used.
+//
+// theme_dark "nightfox"
+// theme_light "dayfox"
+
+// Pin the session to a dark or light appearance, ignoring what the host
+// terminal reports. Resolved before the first render. When unset, the host
+// terminal decides.
+// Options: dark, light
+//
+// explicit_theme_hue "dark"
+
+// The name of the default layout to load on startup
+// Default: "default"
+// (Requires restart)
+//
+// default_layout "compact"
+
+// Choose the mode that yinz uses when starting up.
+// Default: normal
+//
+// default_mode "locked"
+
+// Toggle enabling the mouse mode.
+// On certain configurations, or terminals this could
+// potentially interfere with copying text.
+// (Requires restart)
+// Options:
+//   - true (default)
+//   - false
+//
+// mouse_mode false
+
+// Run each pane's process under a small supervisor process, so that panes
+// survive their session's server exiting - for instance if it is killed or
+// crashes. List survivors with `yinz pty-host list`, put one back on screen
+// with `yinz pty-host adopt <id>`, or give up on it with `yinz pty-host
+// kill <id>`. This is also what lets `yinz action warp-pane` move a running
+// pane from one session to another, and `yinz action warp-tab` move a whole
+// tab.
+// Read once when the session is created; attaching later will not change it.
+// (Requires restart)
+// Options:
+//   - true (default)
+//   - false
+//
+// detachable_panes false
+
+// Configure the scroll back buffer size
+// This is the number of lines yinz stores for each pane in the scroll back
+// buffer. Excess number of lines are discarded in a FIFO fashion.
+// (Requires restart)
+// Valid values: positive integers
+// Default value: 10000
+//
+// scroll_buffer_size 10000
+
+// Provide a command to execute when copying text. The text will be piped to
+// the stdin of the program to perform the copy. This can be used with
+// terminal emulators which do not support the OSC 52 ANSI control sequence
+// that will be used by default if this option is not set.
+// Examples:
+//
+// copy_command "xclip -selection clipboard" // x11
+// copy_command "wl-copy"                    // wayland
+// copy_command "pbcopy"                     // osx
+
+// Choose the destination for copied text
+// Allows using the primary selection buffer (on x11/wayland) instead of the system clipboard.
+// Does not apply when using copy_command.
+// Options:
+//   - system (default)
+//   - primary
+//
+// copy_clipboard "primary"
+
+// Enable or disable automatic copy (and clear) of selection when releasing mouse
+// Default: true
+//
+// copy_on_select false
+
+// Path to the default editor to use to edit pane scrollbuffer
+// Default: $EDITOR or $VISUAL
+//
+// scrollback_editor "/usr/bin/vim"
+
+// When attaching to an existing session with other users,
+// should the session be mirrored (true)
+// or should each user have their own cursor (false)
+// (Requires restart)
+// Default: false
+//
+// mirror_session true
+
+// The folder in which Yinz will look for layouts
+// (Requires restart)
+//
+// layout_dir "/path/to/my/layout_dir"
+
+// The folder in which Yinz will look for builtin plugin WASM files
+// It falls back to the installed builtin plugins when a file is not present
+//
+// builtin_plugins_dir "/path/to/my/builtin_plugins_dir"
+
+// The folder in which Yinz will look for themes
+// (Requires restart)
+//
+// theme_dir "/path/to/my/theme_dir"
+
+// The folder in which Yinz will look for plugins you wrote yourself
+// (Requires restart)
+//
+// user_plugin_dir "/path/to/my/plugins"
+
+// Enable or disable the rendering of styled and colored underlines (undercurl).
+// May need to be disabled for certain unsupported terminals
+// (Requires restart)
+// Default: true
+//
+// styled_underlines false
+
+// Enable or disable writing of session metadata to disk (if disabled, other sessions might not know
+// metadata info on this session)
+// (Requires restart)
+// Default: false
+//
+// disable_session_metadata true
+
+// Enable or disable support for the enhanced Kitty Keyboard Protocol (the host terminal must also support it)
+// (Requires restart)
+// Default: true (if the host terminal supports it)
+//
+// support_kitty_keyboard_protocol false
+
+// Ask the host terminal to report the modifier keys themselves, so the UI can show
+// something for as long as eg. Alt is held. Needs Kitty Keyboard flags that also make
+// every printable key arrive as an escape code: AltGr glyphs, dead keys and IME input
+// will stop working. US-ASCII, shifted punctuation included, keeps working on a terminal
+// that supports reporting alternate keys. (Requires restart) Default: false
+//
+// report_modifier_keys true
+
+// Enable or disable support for the Kitty Graphics Protocol, used to display images (the host terminal must also support it)
+// (Requires restart)
+// Default: true (if the host terminal supports it)
+//
+// support_kitty_graphics_protocol false
+
+// Whether to stack panes when resizing beyond a certain size
+// Default: true
+//
+// stacked_resize false
+
+// The smallest tiled pane worth giving a newly spawned coding agent, as a terminal
+// size. Before an agent pane joins a tab, yinz projects the area each tiled pane
+// would have if the tab's tiled panes (floating ones aside) shared the viewport
+// equally, and compares it with columns x rows. A tab that would fall below it
+// sends the agent to the roomiest other tab that stays above it, or to a new tab.
+// Set either to 0 to always open agents where they were asked for.
+// Default: 80 and 24
+//
+// agent_pane_min_columns 80
+// agent_pane_min_rows 24
+
+// Whether to let programs running inside panes read the paste buffer (clipboard)
+// with the OSC 52 escape sequence. When enabled, any program in any pane -
+// including one running on a remote machine over SSH - can read the clipboard
+// without the user being asked.
+// Default: false
+//
+// dangerously_enable_paste_buffer_read true
+
+// Whether stacked panes display as a list with the expanded pane pinned to the bottom
+// Default: true
+//
+// stacked_pane_list false
+
+// Whether to show release notes on first version run
+// Default: true
+//
+// show_release_notes false
+
+// Whether to enable mouse hover effects and pane grouping functionality
+// Default: true
+//
+// advanced_mouse_actions false
+
+// Whether Ctrl+ScrollWheel resizes panes
+// Default: true
+//
+// mouse_scroll_resize false
+
+// Whether to enable mouse hover visual effects (frame highlight and help text)
+// Default: true
+//
+// mouse_hover_effects false
+
+// Whether triple-clicking inside command output marked by the shell (OSC 133) selects
+// the command and its output instead of the logical line
+// Default: true
+//
+// osc133_command_selection false
+
+// Characters that terminate a word when double-clicking to select it
+// whitespace is always a separator and need not be listed here
+// Default: "[]{}<>()"
+//
+// word_separators "[]{}<>()"
+
+// Whether to output OSC8 hyperlink sequences
+// Default: true
+//
+// osc8_hyperlinks false
+
+// A command to run (will be wrapped with sh -c and provided the RESURRECT_COMMAND env variable)
+// after Yinz attempts to discover a command inside a pane when resurrecting sessions, the STDOUT
+// of this command will be used instead of the discovered RESURRECT_COMMAND
+// can be useful for removing wrappers around commands
+// Note: be sure to escape backslashes and similar characters properly
+//
+// post_command_discovery_hook "echo $RESURRECT_COMMAND | sed <your_regex_here>"

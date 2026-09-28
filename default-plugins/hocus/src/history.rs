@@ -17,9 +17,9 @@
 //! should be would write that nothing back over them.
 
 use hocus_proto::store::{self, Backend};
-use zellij_tile::prelude::DataRowId;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::DataRowId;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::*;
 
 use crate::tools::ToolCall;
 use crate::{Message, Plan, Reasoning, ReasoningKey, Role, TokenUsage, UserOrigin};

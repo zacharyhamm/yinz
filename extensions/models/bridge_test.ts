@@ -6,7 +6,7 @@ import {
     StartupPromptText,
 } from "./_lib/bridge.ts";
 import { checked, Context } from "./_lib/workflow.ts";
-import { methods, resources } from "./_lib/zellij_methods.ts";
+import { methods, resources } from "./_lib/yinz_methods.ts";
 
 function assert(value: unknown): asserts value {
     if (!value) throw new Error("assertion failed");
@@ -169,7 +169,7 @@ Deno.test("256 KiB UTF-8 prompts use one stdin JSON line and a full-text digest"
         binary,
         `#!/usr/bin/env python3
 import sys, json, hashlib
-assert sys.argv[-1] == 'zellij:swamp-bridge'
+assert sys.argv[-1] == 'yinz:swamp-bridge'
 line = sys.stdin.readline()
 assert not sys.stdin.read()
 request = json.loads(line)
@@ -346,7 +346,7 @@ Deno.test("commands default to background and accept foreground explicitly", () 
 Deno.test("bridge timings correlate attempts without logging payloads or failures", async () => {
     const { bridge } = await import("./_lib/bridge.ts");
     const dir = await Deno.makeTempDir();
-    const previous = Deno.env.get("ZELLIJ_SWAMP_TIMING");
+    const previous = Deno.env.get("YINZ_SWAMP_TIMING");
     const logs: string[] = [];
     const binary = dir + "/bridge";
     const c = {
@@ -377,10 +377,10 @@ Deno.test("bridge timings correlate attempts without logging payloads or failure
             prompt: "secret-prompt",
             token: "secret-token",
         };
-        Deno.env.delete("ZELLIJ_SWAMP_TIMING");
+        Deno.env.delete("YINZ_SWAMP_TIMING");
         assert(await bridge(c, request) === "secret-output");
         assert(logs.length === 0);
-        Deno.env.set("ZELLIJ_SWAMP_TIMING", "1");
+        Deno.env.set("YINZ_SWAMP_TIMING", "1");
         assert(await bridge(c, request) === "secret-output");
         await Deno.writeTextFile(
             binary,
@@ -460,8 +460,8 @@ print(json.dumps({'result': {'work':'work','key':'key','request':'{}','incarnati
                 "error",
         );
     } finally {
-        if (previous === undefined) Deno.env.delete("ZELLIJ_SWAMP_TIMING");
-        else Deno.env.set("ZELLIJ_SWAMP_TIMING", previous);
+        if (previous === undefined) Deno.env.delete("YINZ_SWAMP_TIMING");
+        else Deno.env.set("YINZ_SWAMP_TIMING", previous);
         await Deno.remove(dir, { recursive: true });
     }
 });

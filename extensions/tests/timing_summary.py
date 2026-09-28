@@ -21,7 +21,7 @@ for root in args.fixtures:
     lines = []
     for path in root.glob('*.logs.json'):
         lines.extend(json.loads(path.read_text())['lines'])
-    for path in root.glob('zellij.log*'):
+    for path in root.glob('yinz.log*'):
         lines.extend(path.read_text().splitlines())
     for line in lines:
         if line in seen or 'swamp_timing ' not in line:
@@ -44,7 +44,7 @@ for root in args.fixtures:
     measured['fixture'] = str(root)
     measured['binaries'] = {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-        for name in ('zellij', 'swamp')
+        for name in ('yinz', 'swamp')
     }
     measured['reportSourceSha256'] = hashlib.sha256((root / 'main/extensions/reports/workflow.ts').read_bytes()).hexdigest()
     measured['phases'] = [dict(layer=k[0], phase=k[1], method=k[2], count=len(v),

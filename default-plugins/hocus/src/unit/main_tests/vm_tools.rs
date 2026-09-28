@@ -5,7 +5,7 @@ use super::*;
 
 fn vm_ready_state() -> State {
     tools::test_seams::CURRENT_SESSION.with_borrow_mut(|session| {
-        *session = Some(zellij_tile::prelude::SessionInfo {
+        *session = Some(yinz_tile::prelude::SessionInfo {
             name: "test-session".to_owned().into(),
             is_current_session: true,
             ..Default::default()
@@ -13,7 +13,7 @@ fn vm_ready_state() -> State {
     });
     let mut state = ready_state();
     // VM tools must not rely on the daemon's state, including its session name.
-    state.zellij_session_name = Default::default();
+    state.yinz_session_name = Default::default();
     state
 }
 
@@ -202,7 +202,7 @@ fn a_failing_cli_is_reported_with_what_it_said() {
 }
 
 #[test]
-fn a_missing_zellij_binary_is_named_in_the_tool_result() {
+fn a_missing_yinz_binary_is_named_in_the_tool_result() {
     let mut state = vm_ready_state();
     answer(
         &mut state,
@@ -213,8 +213,8 @@ fn a_missing_zellij_binary_is_named_in_the_tool_result() {
         &[],
     );
     let result = &tool_results(&state)[0].content;
-    assert!(result.starts_with("zellij could not be run"), "{result}");
-    assert!(result.contains("zellij_path"), "{result}");
+    assert!(result.starts_with("yinz could not be run"), "{result}");
+    assert!(result.contains("yinz_path"), "{result}");
 }
 
 #[test]

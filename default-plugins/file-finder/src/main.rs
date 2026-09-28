@@ -24,7 +24,7 @@
 //! ## Why the pane survives fzf exiting
 //!
 //! Every plugin-opened command pane is created with `hold_on_close = true` (hardcoded
-//! in `zellij-plugin-host/src/zellij_exports.rs`). So when fzf exits the pane is
+//! in `yinz-plugin-host/src/yinz_exports.rs`). So when fzf exits the pane is
 //! *held* rather than closed, `Event::CommandPaneExited` arrives while the pane still
 //! exists, and it can be replaced in place. That is what makes "the same floating pane"
 //! literally true rather than a new pane at the same coordinates.
@@ -35,10 +35,10 @@ mod script;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use zellij_tile::prelude::ProcessId;
+use yinz_tile::prelude::ProcessId;
 
 use opener::{opener_for, Opener};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 /// Config keys for the floating pane's geometry, and the defaults if unset.
 ///
@@ -85,16 +85,16 @@ struct State {
     /// Where the finder script writes the selected path.
     out_path: PathBuf,
     /// This plugin's own pane id, used to notice when focus lands back on it.
-    plugin_id: zellij_tile::prelude::PluginId,
+    plugin_id: yinz_tile::prelude::PluginId,
     stage: Stage,
 }
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         // No `request_permission` here, deliberately. A builtin plugin — one loaded from
-        // a `zellij:` location — is granted every gated call unconditionally by
+        // a `yinz:` location — is granted every gated call unconditionally by
         // `check_command_permission`. Asking anyway would strand this plugin: the
         // permission dialog is drawn *in the requesting plugin's pane*, and this plugin
         // hides itself immediately, so the answer would never come.
@@ -105,7 +105,7 @@ impl ZellijPlugin for State {
 
         let plugin_ids = get_plugin_ids();
         self.plugin_id = plugin_ids.plugin_id;
-        self.out_path = selection_path(plugin_ids.zellij_pid, self.plugin_id);
+        self.out_path = selection_path(plugin_ids.yinz_pid, self.plugin_id);
 
         subscribe(&[
             EventType::CommandPaneExited,
@@ -140,7 +140,7 @@ impl ZellijPlugin for State {
             },
             Event::PluginConfigurationChanged(configuration) => {
                 // A running plugin's KDL block is otherwise frozen at server start, so
-                // without this an opener fix needs a whole Zellij restart.
+                // without this an opener fix needs a whole Yinz restart.
                 self.config = configuration;
             },
             _ => {},
@@ -228,14 +228,14 @@ impl State {
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
         let opened = match opener_for(&self.config, &selection) {
-            Opener::ZellijEditor => {
+            Opener::YinzEditor => {
                 let mut file = FileToOpen::new(&selection);
                 if let Some(cwd) = cwd {
                     file = file.with_cwd(cwd);
                 }
                 // Routing through the host means the server picks the editor
                 // (scrollback_editor → $EDITOR → $VISUAL → vi) exactly as it does for
-                // every other "open a file" path in Zellij.
+                // every other "open a file" path in Yinz.
                 open_edit_pane_in_place_of_pane_id(target, file, true, BTreeMap::new())
             },
             Opener::Command { path, args } => {
@@ -340,18 +340,18 @@ fn finder_title(label: Option<String>) -> String {
 /// Both halves of the name are load-bearing. `plugin_id` alone is not unique: it comes
 /// from a counter that restarts at 0 in every server, and the default layout loads
 /// tab-bar and status-bar ahead of us, so this plugin is `2` in more or less every
-/// session there has ever been. Two Zellij sessions open on one machine would then read
+/// session there has ever been. Two Yinz sessions open on one machine would then read
 /// and unlink one another's selection file, and an unlink that lands between the script
 /// writing a pick and this plugin reading it is indistinguishable from a cancel: the
 /// overlay just closes and the file never opens.
 ///
-/// `zellij_pid` is the server's own pid, so it separates sessions the way the name needs.
+/// `yinz_pid` is the server's own pid, so it separates sessions the way the name needs.
 /// It also separates the integration tests, which are separate processes and were losing
 /// each other's selections exactly this way.
-fn selection_path(zellij_pid: ProcessId, plugin_id: zellij_tile::prelude::PluginId) -> PathBuf {
+fn selection_path(yinz_pid: ProcessId, plugin_id: yinz_tile::prelude::PluginId) -> PathBuf {
     PathBuf::from(format!(
-        "/tmp/zellij-file-finder-{}-{}.sel",
-        zellij_pid, plugin_id
+        "/tmp/yinz-file-finder-{}-{}.sel",
+        yinz_pid, plugin_id
     ))
 }
 
@@ -404,14 +404,14 @@ mod tests {
         assert_eq!(Stage::Idle.pane_id(), None);
         assert_eq!(
             Stage::Finding {
-                pane_id: zellij_tile::prelude::TerminalId::new(3)
+                pane_id: yinz_tile::prelude::TerminalId::new(3)
             }
             .pane_id(),
             Some(TerminalId::new(3))
         );
         assert_eq!(
             Stage::Opened {
-                pane_id: zellij_tile::prelude::TerminalId::new(9)
+                pane_id: yinz_tile::prelude::TerminalId::new(9)
             }
             .pane_id(),
             Some(TerminalId::new(9))
@@ -421,8 +421,8 @@ mod tests {
     #[test]
     fn the_title_names_the_tree_being_searched() {
         assert_eq!(
-            finder_title(Some("zellij (main)".to_owned())),
-            "Find file — zellij (main)"
+            finder_title(Some("yinz (main)".to_owned())),
+            "Find file — yinz (main)"
         );
     }
 
@@ -436,12 +436,12 @@ mod tests {
     #[test]
     fn host_out_path_is_the_selection_file_under_the_host_mount() {
         let state = State {
-            out_path: PathBuf::from("/tmp/zellij-file-finder-4.sel"),
+            out_path: PathBuf::from("/tmp/yinz-file-finder-4.sel"),
             ..Default::default()
         };
         assert_eq!(
             state.host_out_path(),
-            PathBuf::from("/host/tmp/zellij-file-finder-4.sel")
+            PathBuf::from("/host/tmp/yinz-file-finder-4.sel")
         );
     }
 
@@ -450,8 +450,8 @@ mod tests {
     #[test]
     fn two_sessions_do_not_share_a_selection_file() {
         assert_ne!(
-            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(2)),
-            selection_path(ProcessId::new(1001), zellij_tile::prelude::PluginId::new(2))
+            selection_path(ProcessId::new(1000), yinz_tile::prelude::PluginId::new(2)),
+            selection_path(ProcessId::new(1001), yinz_tile::prelude::PluginId::new(2))
         );
     }
 
@@ -459,8 +459,8 @@ mod tests {
     #[test]
     fn two_finders_in_one_session_do_not_share_a_selection_file() {
         assert_ne!(
-            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(2)),
-            selection_path(ProcessId::new(1000), zellij_tile::prelude::PluginId::new(5))
+            selection_path(ProcessId::new(1000), yinz_tile::prelude::PluginId::new(2)),
+            selection_path(ProcessId::new(1000), yinz_tile::prelude::PluginId::new(5))
         );
     }
 

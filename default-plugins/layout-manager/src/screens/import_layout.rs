@@ -3,8 +3,8 @@ use crate::errors::{format_kdl_error, ErrorScreen};
 use crate::ui::{truncate_with_ellipsis_start, LayoutDetail, Title};
 use crate::{DisplayLayout, LayoutInfo};
 use unicode_width::UnicodeWidthStr;
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{InputAction, TextInput};
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::{InputAction, TextInput};
 
 #[derive(Clone)]
 pub struct ImportLayoutScreen {

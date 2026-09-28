@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Upstream"
+  short_description: "Review upstream Zellij changes for yinz"
+  default_prompt: "Use $sync-upstream to review new upstream Zellij changes for yinz."

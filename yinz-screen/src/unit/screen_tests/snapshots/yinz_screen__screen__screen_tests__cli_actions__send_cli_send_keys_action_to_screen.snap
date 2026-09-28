@@ -1,0 +1,25 @@
+---
+source: yinz-screen/src/screen/../unit/screen_tests/cli_actions.rs
+assertion_line: 225
+expression: "format!(\"{:#?}\", received_write_instructions)"
+---
+[
+    Write(
+        [
+            1,
+        ],
+        TerminalId(
+            0,
+        ),
+        None,
+    ),
+    Write(
+        [
+            120,
+        ],
+        TerminalId(
+            0,
+        ),
+        None,
+    ),
+]

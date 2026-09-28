@@ -1,9 +1,9 @@
 use super::*;
 use hocus_proto::notes;
 use hocus_proto::panes::terminal_panes;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::TabPosition;
 
 fn state_with(messages: Vec<Message>, status: Status) -> State {
     State {
@@ -64,7 +64,7 @@ fn ready_state() -> State {
         // id, so a state that has never heard a snapshot writes none. Standing in for the
         // first one. The host is named rather than left empty so that a helper which forgot to
         // write it fails a test instead of matching the pre-migration rows.
-        zellij_session_name: "test-session".to_owned().into(),
+        yinz_session_name: "test-session".to_owned().into(),
         host_id: HostId::new("test-host"),
         cfg: Config::resolve(
             &BTreeMap::new(),
@@ -287,7 +287,7 @@ fn state_with_worktrees() -> State {
 /// `branch`.
 fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -298,7 +298,7 @@ fn worktree_snapshot(seq: u64, branch: &str) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned().into(),
+                yinz_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (
@@ -641,7 +641,7 @@ fn stored_note(state: &State, id: u64) -> Option<notes::Note> {
 
 fn pane_info(id: u32, title: &str, command: Option<&str>) -> PaneInfo {
     PaneInfo {
-        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
+        id: yinz_tile::prelude::PaneId::from_legacy(id, false),
         title: title.to_owned(),
         terminal_command: command.map(str::to_owned),
         ..PaneInfo::default()
@@ -704,7 +704,7 @@ fn agent_snapshot(seq: u64) -> PipeMessage {
 /// A snapshot carrying `seq` and the panes it saw.
 fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -712,7 +712,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
                 panes: Some(panes),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned().into(),
+                yinz_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::new(),
                 focused: None,
@@ -734,7 +734,7 @@ fn agent_snapshot_with(seq: u64, panes: Vec<agents::AgentPane>) -> PipeMessage {
 /// with the nested layout, so this is the shape a real session produces.
 fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(1)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(1)),
         name: wire::AGENT_SNAPSHOT.to_owned(),
         payload: Some(
             serde_json::to_string(&PollReply {
@@ -745,7 +745,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
                 ]),
                 activity: agents::Activity::new(),
                 manual_kinds: BTreeMap::new(),
-                zellij_session_name: "test-session".to_owned().into(),
+                yinz_session_name: "test-session".to_owned().into(),
                 tab_projects: BTreeMap::new(),
                 repositories: BTreeMap::from([
                     (
@@ -777,7 +777,7 @@ fn nested_worktree_snapshot(seq: u64, focused: Option<u32>) -> PipeMessage {
 /// As a plugin asker sends one: a plugin-sourced pipe carrying a `wire::Ask`.
 fn ask(text: &str) -> PipeMessage {
     PipeMessage {
-        source: PipeSource::Plugin(zellij_tile::prelude::PluginId::new(7)),
+        source: PipeSource::Plugin(yinz_tile::prelude::PluginId::new(7)),
         name: wire::ASK.to_owned(),
         payload: Some(
             serde_json::to_string(&wire::Ask {
@@ -845,11 +845,11 @@ mod web_search;
 #[test]
 fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     let mut state = idle_state();
-    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.own_plugin_id = yinz_tile::prelude::PluginId::new(7);
     state.last_pane_title = Some("hocus — a-model".to_owned());
 
     let mut own = pane_info(7, "hocus — a-model", None);
-    own.id = zellij_tile::prelude::PaneId::from_legacy(own.id.legacy_parts().0, true);
+    own.id = yinz_tile::prelude::PaneId::from_legacy(own.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![own.clone()]));
     assert_eq!(
         state.last_pane_title.as_deref(),
@@ -858,7 +858,7 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
     );
 
     let mut renamed = pane_info(7, "something else", None);
-    renamed.id = zellij_tile::prelude::PaneId::from_legacy(renamed.id.legacy_parts().0, true);
+    renamed.id = yinz_tile::prelude::PaneId::from_legacy(renamed.id.legacy_parts().0, true);
     state.on_panes(manifest(vec![renamed]));
     assert_eq!(
         state.last_pane_title, None,

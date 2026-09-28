@@ -1,0 +1,7 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/layout_api.rs
+expression: "format!(\"{:#?}\", plugin_bytes_event)"
+---
+Some(
+    "Layout dump error: IoError: The layout was not found, File: nonexistent_layout_xyz\n\r",
+)

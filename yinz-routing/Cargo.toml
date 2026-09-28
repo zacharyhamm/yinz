@@ -1,0 +1,20 @@
+[package]
+name = "yinz-routing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Synchronous action dispatch over the yinz thread bus"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-ipc = { workspace = true }
+crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+log = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true }

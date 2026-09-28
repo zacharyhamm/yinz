@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{LinePart, ARROW_SEPARATOR};
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
-use zellij_tile_utils::style;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
+use yinz_tile_utils::style;
 
 /// The rendered tab line plus the ranges the new-tab button and the active tab occupy in it, for
 /// hover and click hit-testing.
@@ -215,7 +215,7 @@ fn tab_line_prefix(
 ) -> (Vec<LinePart>, Option<(usize, usize)>) {
     // fall back to our own name if the host couldn't tell us its hostname
     let prefix_text = if hostname.is_empty() {
-        " Zellij ".to_string()
+        " Yinz ".to_string()
     } else {
         format!(" {} ", hostname)
     };

@@ -1,0 +1,25 @@
+[package]
+name = "yinz-session"
+description = "Session discovery and lifecycle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lints]
+workspace = true
+[dependencies]
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+anyhow = { workspace = true }
+kdl = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+names = { workspace = true }
+interprocess = { workspace = true }
+[dev-dependencies]
+expect-test = "1.4.1"
+tempfile = { workspace = true }
+insta = "1.48"
+hegeltest = "0.29.3"

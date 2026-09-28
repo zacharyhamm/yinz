@@ -1,7 +1,0 @@
----
-source: zellij-integration-tests/tests/nested_fullscreen.rs
-expression: normalized(&fullscreen_grid)
----
- Zellij (test-0 ▸ test-1 ▸ test-2)  [0] Tab #1  + 
-█
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

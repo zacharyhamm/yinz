@@ -9,7 +9,7 @@
 //! The conversation half (the transcript mapping, the tool specs, the SSE framing) stays in
 //! hocus, which is the only thing that has a conversation.
 //!
-//! Nothing here calls the Zellij host, so all of it runs on the host triple.
+//! Nothing here calls the Yinz host, so all of it runs on the host triple.
 
 use std::collections::BTreeMap;
 

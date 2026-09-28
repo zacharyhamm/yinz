@@ -1,6 +1,6 @@
 // A command sequence in one pane, preserving each step's scrollback.
 // This demonstrates pane commands; project automation belongs in a Swamp workflow.
-import z, { definePlugin, type PaneSequence, type PaneStep } from "zellij:plugin";
+import z, { definePlugin, type PaneSequence, type PaneStep } from "yinz:plugin";
 let host = "",
   sequence: PaneSequence | undefined,
   skill = "deploy";

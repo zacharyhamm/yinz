@@ -1,9 +1,9 @@
 use super::*;
 use crate::archive::AGENT_LIST_LOCATION;
 use hocus_proto::store::Backend;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::TabPosition;
 
 /// The strip rows hocus pushes to the agents pane: agents grouped under the
 /// project and branch headers, computed from the snapshot it holds.
@@ -220,7 +220,7 @@ fn seed_run(state: &State, session_id: &str, host: Option<&str>, ended: bool) {
     let run = agents::AgentRun {
         id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
-        zellij_session_name: "main".to_owned().into(),
+        yinz_session_name: "main".to_owned().into(),
         host_id: HostId::new("test-host"),
         origin_run_id: None,
         previous_run_id: None,
@@ -302,7 +302,7 @@ fn a_run_that_cannot_be_resumed_says_why() {
 #[test]
 fn a_run_detail_hocus_cannot_read_is_answered_with_why() {
     let state = state_with_panes();
-    let panel = zellij_tile::prelude::PluginId::new(9);
+    let panel = yinz_tile::prelude::PluginId::new(9);
 
     let missing = state.run_detail_message(panel, "claude:never-heard-of-it", Some(4));
     assert_eq!(missing.message_name, wire::AGENT_RUN_DETAIL);
@@ -336,7 +336,7 @@ fn a_run_detail_hocus_cannot_read_is_answered_with_why() {
 #[test]
 fn a_search_hits_history_counts_the_older_entries_it_leaves_out() {
     let state = state_with_panes();
-    let panel = zellij_tile::prelude::PluginId::new(9);
+    let panel = yinz_tile::prelude::PluginId::new(9);
     seed_run(&state, "session-1", None, true);
     let host = HostId::new("test-host");
     let run_id = agents::run_id("claude", 3, "session-1", 10, &host);
@@ -555,7 +555,7 @@ fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
 }
 
 /// One `AGENT_SELECTION` from the agents pane.
-fn selection(plugin_id: zellij_tile::prelude::PluginId, pane_id: Option<u32>) -> PipeMessage {
+fn selection(plugin_id: yinz_tile::prelude::PluginId, pane_id: Option<u32>) -> PipeMessage {
     PipeMessage {
         source: PipeSource::Plugin(plugin_id),
         name: wire::AGENT_SELECTION.to_owned(),
@@ -775,7 +775,7 @@ fn the_strip_goes_to_every_agent_list_and_nothing_else() {
     let mut state = state_with_summary(2);
     list_plugin(&mut state, PluginId::new(12), AGENT_LIST_LOCATION);
     list_plugin(&mut state, PluginId::new(13), AGENT_LIST_LOCATION);
-    list_plugin(&mut state, PluginId::new(14), "zellij:tab-bar");
+    list_plugin(&mut state, PluginId::new(14), "yinz:tab-bar");
     for (id, view) in [(15, "vms"), (16, "swamp")] {
         list_plugin(&mut state, PluginId::new(id), AGENT_LIST_LOCATION);
         state

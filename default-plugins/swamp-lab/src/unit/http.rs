@@ -90,7 +90,7 @@ fn a_rate_limit_carries_its_retry_after() {
 
 #[test]
 fn a_request_that_never_reached_the_server_is_a_transport_error() {
-    // What zellij reports when the connection itself failed.
+    // What yinz reports when the connection itself failed.
     assert_eq!(
         parse_empty(400, &BTreeMap::new(), b"Connection refused (os error 111)"),
         Err(Error::Transport("Connection refused (os error 111)".into()))

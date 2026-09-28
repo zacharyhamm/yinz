@@ -1,0 +1,13 @@
+---
+source: yinz-plugin-host/src/./unit/plugin_tests/plugin_lifecycle_commands.rs
+expression: "format!(\"{:#?}\", list_clients_instruction)"
+---
+ListClientsToPlugin(
+    PluginId(
+        0,
+    ),
+    ClientId(
+        1,
+    ),
+    None,
+)

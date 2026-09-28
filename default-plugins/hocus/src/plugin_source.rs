@@ -13,7 +13,7 @@ use regex::RegexBuilder;
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::ops::Range;
-use zellij_tile::plugin_authoring;
+use yinz_tile::plugin_authoring;
 
 // Search ------------------------------------------------------------------------------------
 
@@ -129,7 +129,7 @@ pub fn outline_answer(name: &str, source: &str) -> String {
     let entries = match crate::tools::check_report(
         name,
         source,
-        zellij_tile::plugin_authoring::PluginCheckMode::Syntax,
+        yinz_tile::plugin_authoring::PluginCheckMode::Syntax,
     ) {
         Ok(report) if report.diagnostics.is_empty() => report.outline,
         Ok(report) => return report.diagnostics.join("\n"),

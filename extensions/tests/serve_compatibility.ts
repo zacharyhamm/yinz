@@ -1,7 +1,7 @@
 /** Installed-binary gate: deno run --allow-all extensions/tests/serve_compatibility.ts
- * Uses a disposable local datastore. No Zellij session or production data is touched.
+ * Uses a disposable local datastore. No Yinz session or production data is touched.
  */
-const root = await Deno.makeTempDir({ prefix: "zellij-serve-compatibility-" });
+const root = await Deno.makeTempDir({ prefix: "yinz-serve-compatibility-" });
 const env = Deno.env.toObject();
 for (const key of Object.keys(env)) {
     if (key.startsWith("SWAMP_")) delete env[key];
@@ -137,28 +137,28 @@ try {
     const help = await cli("help", "serve");
     console.log(`Swamp: ${help.version}`);
     await cli("repo", "init", root, "--tool", "none");
-    await cli("vault", "create", "local_encryption", "zellij-probe");
+    await cli("vault", "create", "local_encryption", "yinz-probe");
     await cli(
         "access",
         "token",
         "mint",
-        "zellij-probe",
+        "yinz-probe",
         "--principal",
-        "user:zellij-probe",
+        "user:yinz-probe",
         "--vault",
-        "zellij-probe",
+        "yinz-probe",
         "--duration",
         "10m",
     );
     const revealed =
-        (await cli("access", "token", "reveal", "zellij-probe", "--yes")).token;
+        (await cli("access", "token", "reveal", "yinz-probe", "--yes")).token;
     if (typeof revealed !== "string" || !revealed) {
         throw new Error("Token reveal returned no credential");
     }
     token = revealed;
     await cli("model", "create", "command/shell", "probe");
     await cli("workflow", "schema", "get");
-    const workflow = await cli("workflow", "create", "zellij-detach-probe");
+    const workflow = await cli("workflow", "create", "yinz-detach-probe");
     await Deno.writeTextFile(
         workflow.path,
         JSON.stringify({
@@ -211,7 +211,7 @@ try {
         const definition = await cli(
             "workflow",
             "create",
-            `zellij-nested-${level}`,
+            `yinz-nested-${level}`,
         );
         const child = nested.at(-1);
         await Deno.writeTextFile(
@@ -256,7 +256,7 @@ try {
             "--auth-mode",
             "token",
             "--admins",
-            "user:zellij-probe",
+            "user:yinz-probe",
             "--no-schedule",
             "--json",
             "--no-telemetry",
@@ -416,7 +416,7 @@ try {
         return false;
     });
     // The request validator must preserve `from`, not silently strip it.
-    const fromProbe = await cli("workflow", "create", "zellij-from-probe");
+    const fromProbe = await cli("workflow", "create", "yinz-from-probe");
     const fromClient = await connect(url.href);
     async function reply(id: string) {
         for (;;) {
@@ -497,11 +497,11 @@ try {
         );
     }
     const parent = nested.at(-1)!;
-    const ownership = "zellij-nested-owner";
+    const ownership = "yinz-nested-owner";
     fromClient.send("workflow.run", "nested-run", {
         workflowIdOrName: parent.id,
         noSupersede: true,
-        runtimeTags: { zellijOperation: ownership },
+        runtimeTags: { yinzOperation: ownership },
     });
     await until("native grandchild entered held step", async () => {
         try {
@@ -517,7 +517,7 @@ try {
         "history",
         "search",
         "--filter",
-        `has(tags.zellijOperation) && tags.zellijOperation == "${ownership}"`,
+        `has(tags.yinzOperation) && tags.yinzOperation == "${ownership}"`,
     );
     if (
         owned.results.length !== 3 ||
@@ -530,7 +530,7 @@ try {
                 },
             ) => run.workflowName === definition.name &&
                 run.status === "running" &&
-                run.tags?.zellijOperation === ownership
+                run.tags?.yinzOperation === ownership
             )
         )
     ) {

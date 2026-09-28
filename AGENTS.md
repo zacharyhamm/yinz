@@ -1,4 +1,4 @@
-# Zellij
+# Yinz
 
 Rust Cargo workspace with a client/server split over IPC, Wasm plugins, and
 embedded TypeScript plugins running on Deno. Configuration uses KDL.
@@ -51,7 +51,7 @@ Symlink `target/` if needed. Builtin Wasm is not checked in.
 to override. `--profile dev` leaves the host unoptimized. Wasm in the debug
 artifact directory defaults to opt-level 2. `CARGO_PROFILE_DEV_OPT_LEVEL` and
 `CARGO_PROFILE_DEV_DEBUG` override its profile settings. Embedded TypeScript
-builtins live in `zellij-deno-builtins/assets/plugins/`.
+builtins live in `yinz-deno-builtins/assets/plugins/`.
 
 ### Arguments and test selection
 
@@ -61,16 +61,16 @@ Put xtask flags first. Remaining arguments go to:
 |---|---|
 | `x test`, `x integration-test` | `cargo nextest run` |
 | `x build`, `x install` | Native `cargo build`; excludes the Wasm build |
-| `x run` | Zellij |
+| `x run` | Yinz |
 | `x bench` | Criterion |
 | `x ci e2e` | E2E runner |
 
 Default to tests for the changed crate or behavior:
 
 ```sh
-cargo x test -p zellij-server
+cargo x test -p yinz-server
 cargo x test some_test_name
-cargo x test -p zellij-screen -E 'test(/^screen::screen_tests::tabs::/)'
+cargo x test -p yinz-screen -E 'test(/^screen::screen_tests::tabs::/)'
 cargo x integration-test -E 'test(resize)' -j 16
 ```
 
@@ -90,23 +90,23 @@ Nextest runs each test in a separate process; bare `cargo test` does not.
 
 Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 
-- Shared libraries, plugin-facing APIs, or assets under `zellij-config/`,
-  `zellij-project-config/`, `zellij-deno-builtins/`, `zellij-plugin-api/`,
-  `zellij-plugin-location/`, `zellij-ipc/`, `zellij-host-protocol/`, or
+- Shared libraries, plugin-facing APIs, or assets under `yinz-config/`,
+  `yinz-project-config/`, `yinz-deno-builtins/`, `yinz-plugin-api/`,
+  `yinz-plugin-location/`, `yinz-ipc/`, `yinz-host-protocol/`, or
   `default-plugins/hocus-data/` (linked by the hocus plugins and the plugin host).
-- Render paths in `zellij-panes/`, `zellij-terminal/` or `zellij-terminal-graphics/`,
-  key encoding in `zellij-key-codec/`, screen/tab/pty plumbing (`zellij-screen/`,
-  `zellij-tab/`, `zellij-pty/`), `zellij-plugin-host/`, or `zellij-plugin-authoring/`.
+- Render paths in `yinz-panes/`, `yinz-terminal/` or `yinz-terminal-graphics/`,
+  key encoding in `yinz-key-codec/`, screen/tab/pty plumbing (`yinz-screen/`,
+  `yinz-tab/`, `yinz-pty/`), `yinz-plugin-host/`, or `yinz-plugin-authoring/`.
 - Dependencies, toolchain, `xtask`, multiple crates, or regenerated snapshots.
 
-In-process whole-app tests use a fake OS backend. The real `zellij-server-os/`
-backend runs end to end only in tests that spawn the `zellij` binary, mainly the
+In-process whole-app tests use a fake OS backend. The real `yinz-server-os/`
+backend runs end to end only in tests that spawn the `yinz` binary, mainly the
 root package's tests and the integration suite's plugin-test sessions. For
-`zellij-server-os/` changes, run `cargo x test -p zellij-server-os -p zellij`
+`yinz-server-os/` changes, run `cargo x test -p yinz-server-os -p yinz`
 and `cargo x integration-test -j 16`, plus `cargo x remote-test` or
 `cargo x firecracker-test` when remote or VM spawning changes.
 
-For `zellij-storage/src/plugin_data_store/`, also run the Postgres suite.
+For `yinz-storage/src/plugin_data_store/`, also run the Postgres suite.
 Full test and integration suites bind TCP and Unix sockets: use sandbox
 escalation on the first attempt.
 
@@ -116,13 +116,13 @@ escalation on the first attempt.
   Check for competing runs in other worktrees and rerun failures alone before
   attributing timeouts to regressions. There are no known pre-existing
   integration failures.
-- Use `zellij-test-support`'s `Watched<T>::wait_until(what, timeout, predicate)`
+- Use `yinz-test-support`'s `Watched<T>::wait_until(what, timeout, predicate)`
   instead of sleeps. Screen and plugin instruction logs already use it.
 - Wait for render **content**, not `snapshots.last()` or a render count. See
-  `wait_for_settled_render` in `zellij-screen/src/unit/screen_tests/mod.rs`.
+  `wait_for_settled_render` in `yinz-screen/src/unit/screen_tests/mod.rs`.
   Count renders only when the test controls a batch with a fixed count, and
   explain why scheduling cannot change it in a comment.
-- Use `zellij_test_support::write_warm_script` for executable stubs. The first
+- Use `yinz_test_support::write_warm_script` for executable stubs. The first
   execution can take seconds on macOS. Give tests ample time unless timing is
   the behavior under test. Do not convert existing sleeps in bulk.
 
@@ -141,45 +141,45 @@ escalation on the first attempt.
 
 | Path | Purpose |
 |---|---|
-| `zellij-server/` | Session bootstrap, client routing, server thread |
-| `zellij-screen/` | Screen thread: tabs, focus, overlays, rendering to clients |
-| `zellij-pty/` | Pty thread: spawning and supervising pane processes |
-| `zellij-tab/` | `Tab`: pane composition, focus, pane tabs, swap layouts, mouse, pane groups, clipboard |
-| `zellij-panes/` | `Pane` trait, panes, pane managers, frames, layout application |
-| `zellij-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
-| `zellij-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
-| `zellij-routing/` | Action dispatch and completion waits |
-| `zellij-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
-| `zellij-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
-| `zellij-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
-| `zellij-firecracker-provider/` | The `zellij-firecracker` VM provider (Linux only) |
-| `zellij-swamp/` | Managed Swamp servers and the workflow client |
-| `zellij-codex/` | Codex conversation-to-pane binding for `zellij hocus codex` |
-| `zellij-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |
-| `zellij-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `zellij_terminal::panes::{kitty_graphics, sixel}` |
-| `zellij-client/` | Input handling and terminal I/O |
-| `zellij-types/`, `zellij-runtime/`, `zellij-storage/` | Shared models, host services, persistence |
-| `zellij-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `zellij_runtime::plugin_location` |
-| `zellij-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
-| `zellij-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
-| `zellij-config/`, `zellij-plugin-api/`, `zellij-ipc/` | Config, plugin wire API, transport |
-| `zellij-project-config/` | Project workflow settings in `.zellij/swamp-workflows.kdl` |
-| `zellij-deno-builtins/` | Embedded TypeScript builtin plugin sources |
-| `zellij-session/`, `zellij-cli/` | Session lifecycle, serialization, CLI |
-| `zellij-tile/`, `zellij-tile-utils/` | Plugin-facing API |
-| `zellij-tile-markdown/` | CommonMark to styled terminal lines for plugins |
-| `zellij-test-support/` | Condition waits and warm scripts for tests |
+| `yinz-server/` | Session bootstrap, client routing, server thread |
+| `yinz-screen/` | Screen thread: tabs, focus, overlays, rendering to clients |
+| `yinz-pty/` | Pty thread: spawning and supervising pane processes |
+| `yinz-tab/` | `Tab`: pane composition, focus, pane tabs, swap layouts, mouse, pane groups, clipboard |
+| `yinz-panes/` | `Pane` trait, panes, pane managers, frames, layout application |
+| `yinz-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
+| `yinz-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
+| `yinz-routing/` | Action dispatch and completion waits |
+| `yinz-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |
+| `yinz-plugin-authoring/` | V8-free plugin checks and writes; compilation-worker protocol and client |
+| `yinz-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
+| `yinz-firecracker-provider/` | The `yinz-firecracker` VM provider (Linux only) |
+| `yinz-swamp/` | Managed Swamp servers and the workflow client |
+| `yinz-codex/` | Codex conversation-to-pane binding for `yinz hocus codex` |
+| `yinz-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |
+| `yinz-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `yinz_terminal::panes::{kitty_graphics, sixel}` |
+| `yinz-client/` | Input handling and terminal I/O |
+| `yinz-types/`, `yinz-runtime/`, `yinz-storage/` | Shared models, host services, persistence |
+| `yinz-plugin-location/` | Plugin URL parsing, also built for Wasm; re-exported as `yinz_runtime::plugin_location` |
+| `yinz-key-codec/` | Kitty and legacy key encoding and decoding, vendored termwiz input parser |
+| `yinz-host-protocol/` | Host-query and desktop-notification (OSC 9/99/777) types shared by terminal, bus and screen |
+| `yinz-config/`, `yinz-plugin-api/`, `yinz-ipc/` | Config, plugin wire API, transport |
+| `yinz-project-config/` | Project workflow settings in `.yinz/swamp-workflows.kdl` |
+| `yinz-deno-builtins/` | Embedded TypeScript builtin plugin sources |
+| `yinz-session/`, `yinz-cli/` | Session lifecycle, serialization, CLI |
+| `yinz-tile/`, `yinz-tile-utils/` | Plugin-facing API |
+| `yinz-tile-markdown/` | CommonMark to styled terminal lines for plugins |
+| `yinz-test-support/` | Condition waits and warm scripts for tests |
 | `default-plugins/` | Builtin Wasm crates |
 | `default-plugins/hocus-data/` | Hocus store seam, entity schemas, project/todo/note registry; re-exported by `hocus-proto`, linked by the plugin host |
-| `zellij-integration-tests/` | Whole-app tests |
-| `src/tests/e2e/`, `zellij-server/tests/` | Docker E2E and remote-pane tests |
+| `yinz-integration-tests/` | Whole-app tests |
+| `src/tests/e2e/`, `yinz-server/tests/` | Docker E2E and remote-pane tests |
 | `docker/`, `docker-compose.postgres.yml` | Test containers |
 | `xtask/` | Build and test commands |
 
 ## Conventions
 
 - Return `Result` instead of unwrapping. Import
-  `zellij_runtime::errors::prelude::*`, add `.context(...)` to every `Result`,
+  `yinz_runtime::errors::prelude::*`, add `.context(...)` to every `Result`,
   use `anyhow!()` for ad-hoc errors, and log with `.non_fatal()`.
 - Fix lint warnings or use `#[expect(lint, reason = "…")]` on the affected item.
   `cargo x lint` rejects file-level `allow`/`expect`, including through
@@ -188,9 +188,9 @@ escalation on the first attempt.
   `[workspace.lints.clippy]` in `Cargo.toml`.
 - Put tests in adjacent `unit/` directories, not top-level `tests/`.
   Review `.snap` diffs and commit snapshot updates for intentional changes.
-- After changing protobufs in `zellij-plugin-api/assets/` or
-  `zellij-ipc/assets/`, regenerate with `cargo x proto`.
-- Debug logs: `$TMPDIR/zellij-<UID>/zellij-log/zellij.log`, truncated at 100KB.
+- After changing protobufs in `yinz-plugin-api/assets/` or
+  `yinz-ipc/assets/`, regenerate with `cargo x proto`.
+- Debug logs: `$TMPDIR/yinz-<UID>/yinz-log/yinz.log`, truncated at 100KB.
   `--debug` also dumps raw pty bytes per pane.
 
 ## Shared plugin data
@@ -198,7 +198,7 @@ escalation on the first attempt.
 One `plugin-data.db` serves all local servers. With `plugin_data_url` set to
 Postgres, one database can serve multiple machines.
 
-- Scope server rows by **both `host_id` and `zellij_session_name`**, using
+- Scope server rows by **both `host_id` and `yinz_session_name`**, using
   `hocus_proto::agents::rows::Owner`. Carry `PluginIds.host_id` from startup.
   Do not call `get_plugin_ids()` in library code: it reads real stdin in native tests.
 - An empty `host_id` marks legacy data. Preserve legacy runs and import markers
@@ -217,8 +217,8 @@ Postgres, one database can serve multiple machines.
 
 ## Swamp integration
 
-Zellij manages local Swamp servers and runs project-owned Swamp workflows
-through `zellij workflow`. The supervisor is in `zellij-swamp/src/lib.rs`.
+Yinz manages local Swamp servers and runs project-owned Swamp workflows
+through `yinz workflow`. The supervisor is in `yinz-swamp/src/lib.rs`.
 
 Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
 
@@ -237,14 +237,14 @@ Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
 ## Plugins, hooks, and skills
 
 - Before changing the Deno runtime or SDK, read
-  [its local instructions](zellij-plugin-host/src/deno/CLAUDE.md).
+  [its local instructions](yinz-plugin-host/src/deno/CLAUDE.md).
 - For Kitty graphics conformance, read
-  [the graphics instructions](zellij-terminal-graphics/src/kitty_graphics/CLAUDE.md).
+  [the graphics instructions](yinz-terminal-graphics/src/kitty_graphics/CLAUDE.md).
 - For render benchmarks, use [the bench skill](.agents/skills/bench/SKILL.md).
-- `zellij hocus hooks install` connects Claude/Codex state hooks to
-  `zellij action agent-report`, updating `PaneInfo.agent` and notifying plugins.
-  This differs from the session `hooks { … }` config in `zellij-types/src/input/hooks.rs`.
+- `yinz hocus hooks install` connects Claude/Codex state hooks to
+  `yinz action agent-report`, updating `PaneInfo.agent` and notifying plugins.
+  This differs from the session `hooks { … }` config in `yinz-types/src/input/hooks.rs`.
 - Hocus reads `SKILL.md` prompts for `/<name> [text]` only from
   `<project root>/.hocus/skills/<name>/` and
-  `~/.config/zellij/plugins/hocus/skills/<name>/`, never `.claude/skills`.
+  `~/.config/yinz/plugins/hocus/skills/<name>/`, never `.claude/skills`.
   Implementation: `default-plugins/hocus/src/skills.rs`.

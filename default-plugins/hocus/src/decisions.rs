@@ -5,7 +5,7 @@ use hocus_proto::decisions::{self, Endpoint, Request};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use zellij_tile::prelude::{web_request, HttpVerb};
+use yinz_tile::prelude::{web_request, HttpVerb};
 
 pub(crate) const REVIEW_CONTEXT: &str = "tool_review_id";
 const REVIEW_TIMEOUT: Duration = Duration::from_secs(30);
@@ -104,12 +104,10 @@ impl State {
             let env = self
                 .env
                 .iter()
-                .filter(|(key, _)| {
-                    matches!(key.as_str(), "ZELLIJ_CONFIG_FILE" | "ZELLIJ_CONFIG_DIR")
-                })
+                .filter(|(key, _)| matches!(key.as_str(), "YINZ_CONFIG_FILE" | "YINZ_CONFIG_DIR"))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            Ok(Some((cfg.zellij.clone(), env)))
+            Ok(Some((cfg.yinz.clone(), env)))
         } else {
             Ok(None)
         }

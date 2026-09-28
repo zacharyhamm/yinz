@@ -1,12 +1,12 @@
 # kitty graphics protocol demos
 
 Small standalone Python scripts (stdlib only — no Pillow) that emit real kitty graphics
-protocol escape sequences, for manually exercising `zellij-terminal-graphics/src/kitty_graphics`
+protocol escape sequences, for manually exercising `yinz-terminal-graphics/src/kitty_graphics`
 in a running terminal. These complement the automated conformance suite
-(`zellij-terminal-graphics/src/kitty_graphics`, `zellij-terminal/src/panes/unit/grid_tests/kitty_*`,
-`zellij-integration-tests/tests/kitty_graphics*`);
-they're for looking at the result with your own eyes, e.g. inside a zellij pane, or for
-comparing zellij's rendering against a real kitty/wezterm/ghostty.
+(`yinz-terminal-graphics/src/kitty_graphics`, `yinz-terminal/src/panes/unit/grid_tests/kitty_*`,
+`yinz-integration-tests/tests/kitty_graphics*`);
+they're for looking at the result with your own eyes, e.g. inside a yinz pane, or for
+comparing yinz's rendering against a real kitty/wezterm/ghostty.
 
 ## Run
 

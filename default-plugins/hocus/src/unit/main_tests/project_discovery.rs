@@ -1,5 +1,5 @@
 use super::*;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::TabId;
 
 #[test]
 fn an_agent_folder_becomes_a_project_on_the_poll() {
@@ -174,10 +174,10 @@ fn an_unregistered_checkout_names_its_tab_after_the_repository() {
     let mut state = state_with_tab(TabId::new(9));
     poll(
         &mut state,
-        vec![shell_in(4, "/somewhere/zellij", TabId::new(9))],
+        vec![shell_in(4, "/somewhere/yinz", TabId::new(9))],
     );
 
-    assert_eq!(state.tab_project_labels[&TabId::new(9)], "zellij");
+    assert_eq!(state.tab_project_labels[&TabId::new(9)], "yinz");
     assert!(state.projects.is_empty());
 }
 
@@ -426,7 +426,7 @@ fn poll_reply_round_trips_through_json() {
         }]),
         activity,
         manual_kinds: BTreeMap::new(),
-        zellij_session_name: "test-session".to_owned().into(),
+        yinz_session_name: "test-session".to_owned().into(),
         tab_projects: BTreeMap::new(),
         repositories: BTreeMap::from([(
             Location::local("/tmp/work"),

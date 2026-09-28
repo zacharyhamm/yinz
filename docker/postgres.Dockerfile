@@ -5,10 +5,10 @@ FROM postgres:17-alpine
 RUN apk add --no-cache openssl \
     && mkdir /tls \
     && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -subj '/CN=Zellij unused test CA' -addext 'basicConstraints=critical,CA:TRUE' \
+        -subj '/CN=Yinz unused test CA' -addext 'basicConstraints=critical,CA:TRUE' \
         -keyout /tls/unused.key -out /tls/ca-bundle.pem \
     && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -subj '/CN=Zellij Postgres test CA' -addext 'basicConstraints=critical,CA:TRUE' \
+        -subj '/CN=Yinz Postgres test CA' -addext 'basicConstraints=critical,CA:TRUE' \
         -keyout /tls/ca.key -out /tls/ca.pem \
     && openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' \
         -addext 'subjectAltName=DNS:localhost' \

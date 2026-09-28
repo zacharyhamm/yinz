@@ -7,11 +7,11 @@ mod tooltip;
 
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::TabNumber;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::TabNumber;
+use yinz_tile::prelude::TabPosition;
 
 use tab::get_tab_to_focus;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use crate::clipboard_utils::{system_clipboard_error, text_copied_hint};
 use crate::line::{tab_line, tab_line_prefix_width, tab_separator};
@@ -64,7 +64,7 @@ struct State {
 
     // Plugin configuration
     config: BTreeMap<String, String>,
-    own_plugin_id: Option<zellij_tile::prelude::PluginId>,
+    own_plugin_id: Option<yinz_tile::prelude::PluginId>,
     toggle_tooltip_key: Option<String>,
 
     // Tooltip state
@@ -88,7 +88,7 @@ struct TabRenderData {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         let plugin_ids = get_plugin_ids();
         self.own_plugin_id = Some(plugin_ids.plugin_id);
@@ -371,7 +371,7 @@ impl State {
     fn detect_tooltip_presence(&self, pane_manifest: &PaneManifest) -> bool {
         for panes in pane_manifest.panes.values() {
             for pane in panes {
-                if pane.plugin_url == Some("zellij:compact-bar".to_owned())
+                if pane.plugin_url == Some("yinz:compact-bar".to_owned())
                     && pane.pane_x != pane.pane_content_x
                 {
                     return true;
@@ -451,7 +451,7 @@ impl State {
         tooltip_config.insert(CONFIG_IS_TOOLTIP.to_string(), "true".to_string());
 
         MessageToPlugin::new(name)
-            .with_plugin_url("zellij:OWN_URL")
+            .with_plugin_url("yinz:OWN_URL")
             .with_plugin_config(tooltip_config)
             .with_floating_pane_coordinates(self.calculate_tooltip_coordinates())
             .new_plugin_instance_should_have_pane_title(format!("{:?}", mode))

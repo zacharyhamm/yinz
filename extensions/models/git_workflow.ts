@@ -312,7 +312,7 @@ async function foreground(
         // After a dispatch attempt, retain the directory until completion is
         // verified and the final abort check passes: the worker may still write.
         const directory = await Deno.makeTempDir({
-            prefix: "zellij-commit-",
+            prefix: "yinz-commit-",
         });
         let dispatchAttempted = false;
         let verified = false;

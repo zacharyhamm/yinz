@@ -262,7 +262,7 @@ fn confirming_a_pane_tool_singles_out_that_pane() {
     assert!(matches!(state.status, Status::ConfirmingTool));
     assert_eq!(
         state.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(7)))
+        Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(7)))
     );
 }
 
@@ -296,7 +296,7 @@ fn answering_takes_the_mark_back_off() {
         state.on_chunk("hocus-1", b"", true, None);
         assert_eq!(
             state.spotlight,
-            Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(3))),
+            Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(3))),
             "{answer}: the mark goes up to begin with"
         );
 
@@ -321,14 +321,14 @@ fn the_mark_travels_with_a_parked_chat() {
     assert_eq!(state.spotlight, None, "the foreground keeps nothing");
     assert_eq!(
         parked.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
+        Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(5)))
     );
 
     state.put_chat(parked);
 
     assert_eq!(
         state.spotlight,
-        Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(5)))
+        Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(5)))
     );
 }
 
@@ -367,7 +367,7 @@ fn aborting_answers_every_outstanding_call() {
 fn the_confirmation_toast_is_clickable_and_names_the_chat_that_asked() {
     tools::test_seams::reset();
     let mut state = ready_state();
-    state.own_plugin_id = zellij_tile::prelude::PluginId::new(7);
+    state.own_plugin_id = yinz_tile::prelude::PluginId::new(7);
     state.chat_id = Some(42);
 
     let frame = tool_call_frame(
@@ -383,7 +383,7 @@ fn the_confirmation_toast_is_clickable_and_names_the_chat_that_asked() {
     let (_, pane, chat_id) = toasts.first().expect("the ask went up as a toast");
     assert_eq!(
         *pane,
-        PaneId::Plugin(zellij_tile::prelude::PluginId::new(7)),
+        PaneId::Plugin(yinz_tile::prelude::PluginId::new(7)),
         "the click brings hocus itself back"
     );
     assert_eq!(*chat_id, Some(42), "onto the chat that asked");

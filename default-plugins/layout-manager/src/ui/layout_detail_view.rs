@@ -1,6 +1,6 @@
 use super::text_utils::{get_layout_display_info, truncate_with_ellipsis, wrap_text_to_width};
 use crate::DisplayLayout;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub struct LayoutDetail<'a> {
     layout: &'a DisplayLayout,

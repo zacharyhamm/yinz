@@ -1,7 +1,7 @@
-//! The tool set the model uses to drive Zellij.
+//! The tool set the model uses to drive Yinz.
 //!
 //! Split in two halves. Everything above the dispatch section is pure and
-//! host-testable; `dispatch` and its helpers call the Zellij host and are not.
+//! host-testable; `dispatch` and its helpers call the Yinz host and are not.
 //! That split is load-bearing rather than stylistic: `host_run_plugin_command`
 //! is a no-op on non-wasm32 targets, so a value-returning shim called from a
 //! host-triple test reads no reply and answers with its neutral value.
@@ -12,9 +12,9 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use zellij_tile::prelude::DataRevision;
-use zellij_tile::prelude::SupervisorId;
-use zellij_tile::prelude::TabId;
+use yinz_tile::prelude::DataRevision;
+use yinz_tile::prelude::SupervisorId;
+use yinz_tile::prelude::TabId;
 
 use hocus_proto::launch;
 use hocus_proto::location::Location;
@@ -22,8 +22,8 @@ use hocus_proto::paths;
 use hocus_proto::projects::{self, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use zellij_tile::plugin_authoring;
-use zellij_tile::prelude::{
+use yinz_tile::plugin_authoring;
+use yinz_tile::prelude::{
     validate_firecracker_vm_name, FloatingPaneCoordinates, GitCheckout, PaneId, PaneTarget,
     PercentOrFixed, PermissionType, SessionInfo, WarpPlacement,
 };
@@ -56,7 +56,7 @@ pub struct ToolCall {
 /// that stops.
 pub fn call_needs_confirmation(call: &ToolCall) -> bool {
     match call.name.as_str() {
-        // Opening a bare pane is a shell the user drives, like `zellij action
+        // Opening a bare pane is a shell the user drives, like `yinz action
         // new-pane`, and does not ask. Naming a `command` up front is the model
         // choosing what runs on this machine — that is the confirmable part, and
         // leaving it unconfirmed is a prompt-injection path to local execution.
@@ -271,7 +271,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
                 return Some("opens a new pane running an agent".to_owned());
             };
             let (program, _) =
-                zellij_tile::agent::unwrapped_program_and_args(&command.path, &command.args)
+                yinz_tile::agent::unwrapped_program_and_args(&command.path, &command.args)
                     .unwrap_or((&command.path, &command.args));
             let mut sentence = format!("opens a new pane running `{}`", program.display());
             // The one flag worth a sentence of its own: an agent that never asks.
@@ -360,15 +360,15 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // The authoring act: an LLM putting code into the user's config dir. It is inert until
         // something loads it, which is why the write is the prompt and the reload is not.
         "project_config_write" => {
-            "writes the proposed .zellij/swamp-workflows.kdl workflow settings; stale changes are refused"
+            "writes the proposed .yinz/swamp-workflows.kdl workflow settings; stale changes are refused"
                 .to_owned()
         },
         "plugin_write" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
             let file = plugin_source::file_name(name);
             let mut sentence = match args.overwrite {
-                true => format!("replaces {file} in your Zellij plugin folder"),
-                false => format!("writes {file} into your Zellij plugin folder"),
+                true => format!("replaces {file} in your Yinz plugin folder"),
+                false => format!("writes {file} into your Yinz plugin folder"),
             };
             // The approval of the source is the approval of what it asks for: saying yes here
             // is what grants these, so they have to be in the sentence being said yes to.
@@ -384,15 +384,15 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         // An edit is the same act as a write - model-written code landing in the config dir -
         // in a smaller package. `State` adds any newly requested permissions after reading
         // and applying the edit to the complete source.
-        "plugin_format" => format!("formats {} in your Zellij plugin folder and keeps a backup", args.name.as_deref().unwrap_or("a plugin")),
+        "plugin_format" => format!("formats {} in your Yinz plugin folder and keeps a backup", args.name.as_deref().unwrap_or("a plugin")),
         "plugin_edit" => {
             let name = args.name.as_deref().unwrap_or("a plugin");
             let file = plugin_source::file_name(name);
             match args.edits.as_ref().map_or(1, Vec::len) {
                 n if n > 1 => {
-                    format!("changes {file} in your Zellij plugin folder in {n} places")
+                    format!("changes {file} in your Yinz plugin folder in {n} places")
                 },
-                _ => format!("changes {file} in your Zellij plugin folder"),
+                _ => format!("changes {file} in your Yinz plugin folder"),
             }
         },
         "skill_write" => {
@@ -656,11 +656,11 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
         // The agent tools address a terminal and say so: `agent_host_call`
         // rewrites them into pane-addressed primitives with `is_plugin: false`.
         "agent_send" | "agent_control" => Some(PaneId::Terminal(
-            zellij_tile::prelude::TerminalId::new(pane_id),
+            yinz_tile::prelude::TerminalId::new(pane_id),
         )),
         "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
-            true => Some(PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_id))),
-            false => Some(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(
+            true => Some(PaneId::Plugin(yinz_tile::prelude::PluginId::new(pane_id))),
+            false => Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(
                 pane_id,
             ))),
         },
@@ -731,7 +731,7 @@ pub fn parse_command(line: &str) -> Result<(String, String), String> {
 // Specs
 // ---------------------------------------------------------------------------
 
-/// A pane is addressed by the `(id, is_plugin)` pair Zellij uses, because `id`
+/// A pane is addressed by the `(id, is_plugin)` pair Yinz uses, because `id`
 /// alone is only unique within its kind. Repeated in several schemas rather
 /// than factored into a `$ref`: not every provider resolves references.
 fn pane_properties() -> Value {
@@ -947,7 +947,7 @@ pub fn specs() -> Value {
                     },
                     "firecracker_image": {
                         "type": "string",
-                        "description": "Image from zellij-firecracker image build --name; \
+                        "description": "Image from yinz-firecracker image build --name; \
                                         needs firecracker_vm.",
                     },
                 },
@@ -956,7 +956,7 @@ pub fn specs() -> Value {
         tool(
             "new_remote_pane",
             "Open a shell or command pane whose process runs on another machine over ssh. \
-             Needs a zellij of the same version on the remote machine's PATH.",
+             Needs a yinz of the same version on the remote machine's PATH.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1584,7 +1584,7 @@ pub fn specs() -> Value {
         tool(
             "agent_spawn",
             "Start a coding agent in a new pane; `branch` cuts a git worktree for it first. Not \
-             for writing Zellij plugins - use plugin_write.",
+             for writing Yinz plugins - use plugin_write.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1667,7 +1667,7 @@ pub fn specs() -> Value {
                     },
                     "firecracker_image": {
                         "type": "string",
-                        "description": "Image from zellij-firecracker image build --name.",
+                        "description": "Image from yinz-firecracker image build --name.",
                     },
                 },
             }),
@@ -1859,7 +1859,7 @@ pub fn specs() -> Value {
         // Shared authoring names select TypeScript by default.
         tool(
             "plugin_docs",
-            "Zellij plugin authoring, TypeScript and JavaScript. Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
+            "Yinz plugin authoring, TypeScript and JavaScript. Read before writing. Default section=index lists sections and sizes. query searches all sections or the named section with a regex, returning section:LINE:text. Use start_line/line_count to read a section range.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1880,7 +1880,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_outline",
-            "One plugin's shape without its body: every function, zellij.on handler, require, \
+            "One plugin's shape without its body: every function, yinz.on handler, require, \
              permission request, data.define and hocus tool registration with its line number, \
              so the plugin_read after it can be a range. `name` as for plugin_read.",
             json!({
@@ -1910,8 +1910,8 @@ pub fn specs() -> Value {
                 "required": ["query"],
             }),
         ),
-        tool("project_config_read", "Read active project .zellij/swamp-workflows.kdl source and settings.", json!({"type":"object","properties":{}})),
-        tool("project_config_write", "Confirm and write .zellij/swamp-workflows.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
+        tool("project_config_read", "Read active project .yinz/swamp-workflows.kdl source and settings.", json!({"type":"object","properties":{}})),
+        tool("project_config_write", "Confirm and write .yinz/swamp-workflows.kdl. expected is the exact previous source, null if absent. Does not execute CI.", json!({"type":"object","properties":{"source":{"type":"string"},"expected":{"type":["string","null"]}},"required":["source","expected"]})),
         tool(
             "plugin_read",
             "Read JS/TS plugin source: 300 lines from start_line=1 unless line_count is set. Use .js, .mjs, .ts or .mts for Deno; extensionless names select TypeScript. Use plugin_outline or plugin_search before you edit.",
@@ -1996,7 +1996,7 @@ pub fn specs() -> Value {
              load error. plugin_log has what it logged. With `headless` the plugin runs \
              without a pane, as one shared instance for the session - for a plugin that \
              watches and drives rather than draws, such as an agent harness - and the answer \
-             is the tail of its log instead of a render; write it with `zellij.trace(true)` \
+             is the tail of its log instead of a render; write it with `yinz.trace(true)` \
              or the configuration `trace \"true\"` to see what it did.",
             json!({
                 "type": "object",
@@ -2009,7 +2009,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "plugin_log",
-            "The last lines a plugin wrote with zellij.log or print. `line_count` defaults \
+            "The last lines a plugin wrote with yinz.log or print. `line_count` defaults \
              to 50.",
             json!({
                 "type": "object",
@@ -2348,7 +2348,7 @@ pub const FAMILIES: &[Family] = &[
     },
     Family {
         name: "plugin",
-        summary: "write, edit, search, check, reload and read Zellij JS/TS plugins",
+        summary: "write, edit, search, check, reload and read Yinz JS/TS plugins",
         deferred: true,
         tools: &[
             "project_config_read",
@@ -2605,9 +2605,9 @@ pub struct PaneRef {
 impl PaneRef {
     fn id(&self) -> PaneId {
         if self.is_plugin {
-            PaneId::Plugin(zellij_tile::prelude::PluginId::new(self.pane_id))
+            PaneId::Plugin(yinz_tile::prelude::PluginId::new(self.pane_id))
         } else {
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(self.pane_id))
+            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(self.pane_id))
         }
     }
 }
@@ -2654,7 +2654,7 @@ struct PanePosition {
     id: PaneId,
     /// An option rather than a sentinel: panes with no tab would otherwise compare as
     /// "the same tab" in `plan_swap`.
-    tab_position: Option<zellij_tile::prelude::TabPosition>,
+    tab_position: Option<yinz_tile::prelude::TabPosition>,
     x: usize,
     y: usize,
     columns: usize,
@@ -3120,12 +3120,12 @@ impl Args {
     /// One write per key, and the text as its own bracketed paste, rather than
     /// a single `text + key` buffer. Both ends match on whole buffers: a TUI
     /// sees `"hello\r"` as one chunk that is neither a keypress nor a clean
-    /// paste, so the Enter never submits; and Zellij's own key adjustment
+    /// paste, so the Enter never submits; and Yinz's own key adjustment
     /// (LNM `\r` -> `\r\n`, cursor-key-mode arrows) only fires for a buffer
     /// that is exactly one key. The paste-end marker is what makes the CR that
     /// follows unambiguously a keypress, with no dependence on read timing.
     ///
-    /// `bracket_paste` is for terminal panes only: Zellij drops a marker that
+    /// `bracket_paste` is for terminal panes only: Yinz drops a marker that
     /// is a buffer of its own when the pane is not in bracketed paste mode.
     /// A plugin pane treats the markers differently again — it swallows
     /// everything between them and delivers it as one `Event::PastedText`,
@@ -3290,7 +3290,7 @@ pub const SLACK_TOOLS: [&str; 5] = [
 
 /// The `dobbs` arguments a Slack call becomes, without the binary itself — the
 /// caller prepends that, since only it has the config. Pure so the mapping is
-/// testable off-host; nothing here talks to dobbs or to Zellij.
+/// testable off-host; nothing here talks to dobbs or to Yinz.
 pub fn slack_argv(name: &str, args: &Args) -> Result<Vec<String>, String> {
     fn required<'a>(value: &'a Option<String>, field: &str) -> Result<&'a str, String> {
         match value.as_deref().map(str::trim) {
@@ -3361,7 +3361,7 @@ pub const PROJECT_READ_TOOLS: [&str; 6] = [
     "github_read",
 ];
 
-/// The tools that manage Firecracker VMs, all four by shelling out to the `zellij` CLI.
+/// The tools that manage Firecracker VMs, all four by shelling out to the `yinz` CLI.
 ///
 /// Intercepted in `run_head` for the same reason the Slack tools are: managing a VM means
 /// running the provider, a subprocess with a JSON protocol on its stdin, and a wasm plugin
@@ -3373,15 +3373,10 @@ pub const VM_TOOLS: [&str; 4] = ["vm_list", "vm_changes", "vm_sync", "vm_close"]
 /// The argv for one VM tool, or the reason it will not run.
 ///
 /// Pure, so the argv every tool sends is testable without a host. The VM name is checked
-/// here rather than left to the CLI: a name Zellij would refuse is a mistake the model can
+/// here rather than left to the CLI: a name Yinz would refuse is a mistake the model can
 /// fix from the message, and it should not cost a process to find out.
-pub fn vm_argv(
-    name: &str,
-    args: &Args,
-    zellij: &str,
-    session: &str,
-) -> Result<Vec<String>, String> {
-    let mut argv = vec![zellij.to_owned(), "firecracker".to_owned()];
+pub fn vm_argv(name: &str, args: &Args, yinz: &str, session: &str) -> Result<Vec<String>, String> {
+    let mut argv = vec![yinz.to_owned(), "firecracker".to_owned()];
     if name == "vm_list" {
         // Machine-wide on purpose: the question "what VMs are there" is answered
         // wrongly by this session's alone. A VM another session holds is still one the
@@ -3424,7 +3419,7 @@ pub const SKILL_TOOLS: [&str; 5] = [
 pub const SKILL_FILE_TOOLS: [&str; 4] =
     ["skill_read", "skill_write", "skill_enable", "skill_disable"];
 
-/// The tools that read and write the user's own Zellij plugin folder.
+/// The tools that read and write the user's own Yinz plugin folder.
 ///
 /// Intercepted in `run_head` for the same reason the file tools are: they need the plugin
 /// folder, which the host exposes as the `/plugins` root (and names through
@@ -3453,9 +3448,9 @@ pub const PLUGIN_TOOLS: [&str; 14] = [
 pub fn check_report(
     name: &str,
     source: &str,
-    mode: zellij_tile::plugin_authoring::PluginCheckMode,
-) -> Result<zellij_tile::plugin_authoring::PluginCheckReport, String> {
-    zellij_tile::shim::check_plugin(name, source, mode)
+    mode: yinz_tile::plugin_authoring::PluginCheckMode,
+) -> Result<yinz_tile::plugin_authoring::PluginCheckReport, String> {
+    yinz_tile::shim::check_plugin(name, source, mode)
 }
 
 // Native tests use the same parser as the host; native plugins cannot make host calls.
@@ -3469,7 +3464,7 @@ pub fn check_report(
     let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
     let path = plugin_authoring::resolve_plugin_file(dir.path(), name)?;
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
-    Ok(zellij_plugin_authoring::check_source(&path, source, mode))
+    Ok(yinz_plugin_authoring::check_source(&path, source, mode))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(test)))]
@@ -3508,7 +3503,7 @@ pub fn semantic_report(name: &str, source: &str) -> String {
     match check_report(
         name,
         source,
-        zellij_tile::plugin_authoring::PluginCheckMode::Semantic,
+        yinz_tile::plugin_authoring::PluginCheckMode::Semantic,
     ) {
         Err(error) => error,
         Ok(report) => {
@@ -3593,7 +3588,7 @@ pub fn uncompilable_write(call: &ToolCall) -> Option<String> {
     if call.name == "project_config_write" {
         let args = Args::parse(&call.arguments).ok()?;
         return match args.source {
-            Some(source) => zellij_tile::project_config::parse(&source).err(),
+            Some(source) => yinz_tile::project_config::parse(&source).err(),
             None => Some("source is required".into()),
         };
     }
@@ -3617,7 +3612,7 @@ pub fn plugin_log_answer(name: &str, lines: Result<String, String>) -> String {
     let name = plugin_source::file_name(name);
     match lines {
         Ok(lines) if lines.trim().is_empty() => format!(
-            "no log lines from {name} yet. A plugin writes one with zellij.log(...) or \
+            "no log lines from {name} yet. A plugin writes one with yinz.log(...) or \
              print(...); a load or runtime error is shown in its pane, not here."
         ),
         Ok(lines) => lines.trim_end_matches('\n').to_owned(),
@@ -3628,7 +3623,7 @@ pub fn plugin_log_answer(name: &str, lines: Result<String, String>) -> String {
 /// Said by every plugin tool when the host could not resolve a folder, so the answer to "where
 /// would this go" is the same one whichever tool was asked.
 pub const NO_PLUGIN_FOLDER: &str = "no plugin folder is configured; set `user_plugin_dir` in the \
-                                    Zellij config, or start a session where the config dir can \
+                                    Yinz config, or start a session where the config dir can \
                                     be found";
 
 /// The root the host mounts the user's plugin folder at, for every `fs_*` command.
@@ -3745,7 +3740,7 @@ pub fn lines_in_range(contents: &str, start: usize, end: usize) -> String {
 
 /// The plugin names a listing answers with: supported sources under `root`, one folder deep, as the
 /// name the tools take back (`keys.ts`, `app/ui.ts`) rather than as a path.
-pub fn listing_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
+pub fn listing_names(root: &str, entries: &[yinz_tile::prelude::FsEntry]) -> Vec<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     let mut names: Vec<String> = entries
         .iter()
@@ -3898,7 +3893,7 @@ pub const FOLDER_READ_BYTES: usize = 1 << 20;
 
 /// The plugins that have a backup, by the name a listing prints: `keys.bak.ts` under `root`
 /// says `keys.ts` does.
-pub fn backed_up_names(root: &str, entries: &[zellij_tile::prelude::FsEntry]) -> Vec<String> {
+pub fn backed_up_names(root: &str, entries: &[yinz_tile::prelude::FsEntry]) -> Vec<String> {
     let prefix = format!("{}/", root.trim_end_matches('/'));
     entries
         .iter()
@@ -3978,7 +3973,7 @@ pub fn resolve_in_root(project: &Project, path: Option<&str>) -> Result<String, 
 /// checked; nothing else here comes from the model without landing in an
 /// argument of its own.
 ///
-/// Zellij execs this directly, so there is no shell to quote for and a value
+/// Yinz execs this directly, so there is no shell to quote for and a value
 /// that looks like a flag cannot become one: every path follows a `--`, and
 /// every pattern follows the option that consumes it.
 pub fn file_argv(name: &str, args: &Args, target: &str) -> Result<Vec<String>, String> {
@@ -4211,12 +4206,12 @@ fn glob_for(pattern: &str) -> String {
     }
 }
 
-/// Zellij hands back the stable id of the tab the panes landed in, which is
+/// Yinz hands back the stable id of the tab the panes landed in, which is
 /// exactly what every Hocus tab tool takes, so it goes straight to the model.
 fn moved_panes_result(tab_id: Option<TabId>) -> String {
     match tab_id {
         Some(id) => format!("moved to tab_id {id}"),
-        None => "zellij did not move the panes; call list_session and check the pane ids and the \
+        None => "yinz did not move the panes; call list_session and check the pane ids and the \
              destination tab"
             .to_owned(),
     }
@@ -4266,7 +4261,7 @@ fn percent_or_fixed(name: &str, value: &str, allow_zero: bool) -> Result<Percent
 
 /// Refuse a move the session cannot satisfy, naming the argument that is wrong.
 ///
-/// Zellij answers a bad tab or a stale pane id with a bare "did not move", which
+/// Yinz answers a bad tab or a stale pane id with a bare "did not move", which
 /// leaves the model to guess which of its arguments was the problem. The snapshot
 /// needed to answer properly is one we already have.
 ///
@@ -4357,12 +4352,12 @@ pub fn session_listing(session: &SessionInfo) -> Value {
 mod host {
     use super::*;
     use std::path::PathBuf;
-    use zellij_tile::prelude::*;
+    use yinz_tile::prelude::*;
 
     /// Write a pane's agent record to the session, for every reader of the manifest.
     pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
         set_pane_agent(
-            PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id)),
+            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
             Some(agent),
         );
     }
@@ -4373,16 +4368,16 @@ mod host {
     /// has no other writer while a confirmation is open, so the gap is a formality.
     pub fn plugin_fs_write(path: &str, source: &str, overwrite: bool) -> Result<bool, String> {
         let path = std::path::Path::new(path);
-        if !overwrite && zellij_tile::shim::fs_metadata(path)?.is_some() {
+        if !overwrite && yinz_tile::shim::fs_metadata(path)?.is_some() {
             return Ok(false);
         }
-        zellij_tile::shim::fs_write(path, source.as_bytes(), false, true)?;
+        yinz_tile::shim::fs_write(path, source.as_bytes(), false, true)?;
         Ok(true)
     }
 
     /// A plugin's source at `path` under `/plugins`.
     pub fn plugin_fs_read(path: &str) -> Result<String, String> {
-        let bytes = zellij_tile::shim::fs_read(std::path::Path::new(path), None)?;
+        let bytes = yinz_tile::shim::fs_read(std::path::Path::new(path), None)?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -4390,38 +4385,38 @@ mod host {
     /// enormous file must not be what stalls the plugin thread. The host checks the size before
     /// reading, so an oversize file is an error rather than a truncated source.
     pub fn plugin_fs_read_capped(path: &str, max_bytes: usize) -> Result<String, String> {
-        let bytes = zellij_tile::shim::fs_read(std::path::Path::new(path), Some(max_bytes))?;
+        let bytes = yinz_tile::shim::fs_read(std::path::Path::new(path), Some(max_bytes))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Every entry under `root`, one folder deep - the depth a module name can reach. A root
     /// that is not there yet is an empty listing: the folder is made by the first write.
-    pub fn plugin_fs_list(root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>, String> {
+    pub fn plugin_fs_list(root: &str) -> Result<Vec<yinz_tile::prelude::FsEntry>, String> {
         let root_path = std::path::Path::new(root);
-        if zellij_tile::shim::fs_metadata(root_path)?.is_none() {
+        if yinz_tile::shim::fs_metadata(root_path)?.is_none() {
             return Ok(Vec::new());
         }
-        let mut entries = zellij_tile::shim::fs_list(root_path)?;
+        let mut entries = yinz_tile::shim::fs_list(root_path)?;
         let folders: Vec<String> = entries
             .iter()
             .filter(|entry| entry.metadata.is_some_and(|m| m.is_dir))
             .map(|entry| entry.path.clone())
             .collect();
         for folder in folders {
-            entries.extend(zellij_tile::shim::fs_list(std::path::Path::new(&folder))?);
+            entries.extend(yinz_tile::shim::fs_list(std::path::Path::new(&folder))?);
         }
         Ok(entries)
     }
 
     /// Whether the plugin at `path` under `/plugins` is there to be loaded.
     pub fn plugin_fs_exists(path: &str) -> Result<bool, String> {
-        Ok(zellij_tile::shim::fs_metadata(std::path::Path::new(path))?.is_some())
+        Ok(yinz_tile::shim::fs_metadata(std::path::Path::new(path))?.is_some())
     }
 
-    /// The last `lines` lines of zellij's log about the plugin `name`, read by the host: the
+    /// The last `lines` lines of yinz's log about the plugin `name`, read by the host: the
     /// log is outside every root a plugin can reach, and the host holds its path.
     pub fn plugin_log_tail(name: &str, lines: usize) -> Result<String, String> {
-        zellij_tile::shim::read_plugin_log(name, lines)
+        yinz_tile::shim::read_plugin_log(name, lines)
     }
 
     pub fn dispatch(call: &ToolCall) -> String {
@@ -4506,9 +4501,9 @@ mod host {
     /// model to half-supply, so the check lives in one place.
     fn with_pane(args: &Args, body: impl FnOnce(PaneId) -> String) -> String {
         match (args.pane_id, args.is_plugin) {
-            (Some(id), Some(true)) => body(PaneId::Plugin(zellij_tile::prelude::PluginId::new(id))),
+            (Some(id), Some(true)) => body(PaneId::Plugin(yinz_tile::prelude::PluginId::new(id))),
             (Some(id), Some(false)) => {
-                body(PaneId::Terminal(zellij_tile::prelude::TerminalId::new(id)))
+                body(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(id)))
             },
             _ => {
                 "pane_id and is_plugin are both required; call list_session to get them".to_owned()
@@ -4595,7 +4590,7 @@ mod host {
             .collect();
 
         if sessions.is_empty() {
-            return "no other zellij sessions are running".to_owned();
+            return "no other yinz sessions are running".to_owned();
         }
         json!({ "sessions": sessions }).to_string()
     }
@@ -4638,9 +4633,9 @@ mod host {
         }
         match warp_pane_from_session(
             if args.is_plugin.unwrap_or(false) {
-                PaneId::Plugin(zellij_tile::prelude::PluginId::new(pane_id))
+                PaneId::Plugin(yinz_tile::prelude::PluginId::new(pane_id))
             } else {
-                PaneId::Terminal(zellij_tile::prelude::TerminalId::new(pane_id))
+                PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id))
             },
             &SessionName::new(from_session),
             placement,
@@ -4877,7 +4872,7 @@ mod host {
                 let (id, is_plugin) = split_pane_id(pane);
                 json!({ "opened": true, "pane_id": id, "is_plugin": is_plugin }).to_string()
             },
-            None => "zellij did not open the pane".to_owned(),
+            None => "yinz did not open the pane".to_owned(),
         }
     }
 
@@ -4894,7 +4889,7 @@ mod host {
     /// Load the plugin at `path` without a pane, as one shared instance for the session - or,
     /// when an instance is already running (`running` is its id, from the session's plugin
     /// list), reload that one in place, so a second call never starts a second copy.
-    pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
+    pub fn reload_plugin_headless(path: &str, running: Option<yinz_tile::prelude::PluginId>) {
         match running {
             Some(id) => reload_plugin_with_id(id),
             None => load_new_plugin(
@@ -4938,7 +4933,7 @@ mod host {
 
     /// Start the agent: the host plans the argv, cuts the branch or worktree `spec` names,
     /// opens the pane and records it as an agent's - `PluginCommand::SpawnAgent`, which is
-    /// also what the New agent modal's button and a TypeScript plugin's `zellij.agent.spawn` call, the
+    /// also what the New agent modal's button and a TypeScript plugin's `yinz.agent.spawn` call, the
     /// point being that there is one answer to "what does starting an agent do".
     ///
     /// `source` is the repository a checkout is made in; `cwd` is where the pane runs when
@@ -4963,7 +4958,7 @@ mod host {
         if let Err(error) = launch::plan(spec) {
             return error;
         }
-        match zellij_tile::shim::spawn_agent(
+        match yinz_tile::shim::spawn_agent(
             spec.clone(),
             Some(source),
             cwd.map(PathBuf::from),
@@ -4997,12 +4992,12 @@ mod host {
                 .unwrap_or_else(|| focused_cwd().display().to_string()),
         );
         match new_tab(args.name.clone(), cwd) {
-            // Zellij hands back the stable tab id, not the position. Every tab
+            // Yinz hands back the stable tab id, not the position. Every tab
             // tool takes tab_id, so there is nothing to resolve: the session
             // list is written to disk once a second and cannot hold the new tab
             // yet anyway.
             Some(tab_id) => json!({ "opened": true, "tab_id": tab_id }).to_string(),
-            None => "zellij did not open the tab".to_owned(),
+            None => "yinz did not open the tab".to_owned(),
         }
     }
 
@@ -5276,7 +5271,7 @@ pub fn plugin_headless_report(name: &str, path: &str, log: Result<String, String
             "loaded {path} headless (no pane; one shared instance). It has logged nothing yet - \
              a load error is in the log too, so nothing is a good sign, but only plugin_log \
              later, or what it does to the session, proves it runs. Write it with \
-             zellij.trace(true) to see every command it dispatches."
+             yinz.trace(true) to see every command it dispatches."
         ),
         Ok(lines) => format!(
             "loaded {path} headless (no pane; one shared instance). The last lines it logged \
@@ -5337,7 +5332,7 @@ pub fn plugin_load_report(path: &str, observed: Option<PluginObservation>) -> St
 /// Native builds exist only to run the unit tests; nothing there dispatches.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn dispatch(_call: &ToolCall) -> String {
-    "tools are unavailable outside zellij".to_owned()
+    "tools are unavailable outside yinz".to_owned()
 }
 
 /// Off wasm the ask is recorded - the VM the spec names, and whether the host was told to
@@ -5357,7 +5352,7 @@ pub fn spawn_agent(
             automatic_firecracker_vm,
         })
     });
-    "tools are unavailable outside zellij".to_owned()
+    "tools are unavailable outside yinz".to_owned()
 }
 
 /// Native tests supply the host snapshot explicitly.
@@ -5370,7 +5365,7 @@ pub fn current_session_info() -> Result<SessionInfo, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn new_pane_with_context(_args: &Args, _context: BTreeMap<String, String>) -> String {
-    "tools are unavailable outside zellij".to_owned()
+    "tools are unavailable outside yinz".to_owned()
 }
 
 /// Test seams for plugin tools, which off wasm have no host to talk to. Per thread, so tests
@@ -5395,16 +5390,16 @@ pub mod test_seams {
         pub static PLUGIN_WRITE_CALLS: Cell<usize> = const { Cell::new(0) };
         pub static PLUGIN_WRITES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_CHECK_CALLS: Cell<usize> = const { Cell::new(0) };
-        pub static PLUGIN_ENTRIES: RefCell<Option<Vec<zellij_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
+        pub static PLUGIN_ENTRIES: RefCell<Option<Vec<yinz_tile::prelude::FsEntry>>> = const { RefCell::new(None) };
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
-        pub static HEADLESS_RELOADS: RefCell<Vec<Option<zellij_tile::prelude::PluginId>>> = const { RefCell::new(Vec::new()) };
+        pub static HEADLESS_RELOADS: RefCell<Vec<Option<yinz_tile::prelude::PluginId>>> = const { RefCell::new(Vec::new()) };
         /// What each `spawn_agent` asked the host for, in order.
         pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
         /// Every `toast_for_chat`, in order: the text, the pane the click focuses, and the chat
-        /// the click names. The raw `zellij_tile` shims write protobuf to real stdout in a native
+        /// the click names. The raw `yinz_tile` shims write protobuf to real stdout in a native
         /// test binary, so a toast is only observable through a seam.
         pub static TOASTS: RefCell<Vec<(String, super::PaneId, Option<u64>)>> = const { RefCell::new(Vec::new()) };
     }
@@ -5442,7 +5437,7 @@ pub mod test_seams {
 
 /// Off wasm the ask is recorded - which instance, if any, was named - for the tests to read.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload_plugin_headless(path: &str, running: Option<zellij_tile::prelude::PluginId>) {
+pub fn reload_plugin_headless(path: &str, running: Option<yinz_tile::prelude::PluginId>) {
     test_seams::HEADLESS_RELOADS.with_borrow_mut(|asked| asked.push(running));
     reload_plugin(path);
 }
@@ -5459,13 +5454,12 @@ pub fn reload_plugin(_path: &str) {
 
 /// Off wasm there is no session to hold the record; the tests read `manual_kinds`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn report_pane_agent(_pane_id: u32, _agent: zellij_tile::prelude::AgentInfo) {}
+pub fn report_pane_agent(_pane_id: u32, _agent: yinz_tile::prelude::AgentInfo) {}
 
 /// What every plugin file tool answers off wasm, where there is no host and no plugin folder:
 /// the tests cover the pure halves, and this is the sentence the tool loop passes through.
 #[cfg(not(target_arch = "wasm32"))]
-pub const PLUGIN_FOLDER_UNREACHABLE: &str =
-    "the plugin folder is only reachable from inside zellij";
+pub const PLUGIN_FOLDER_UNREACHABLE: &str = "the plugin folder is only reachable from inside yinz";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn plugin_fs_write(path: &str, source: &str, _overwrite: bool) -> Result<bool, String> {
@@ -5497,7 +5491,7 @@ pub fn plugin_fs_read_capped(path: &str, max_bytes: usize) -> Result<String, Str
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn plugin_fs_list(_root: &str) -> Result<Vec<zellij_tile::prelude::FsEntry>, String> {
+pub fn plugin_fs_list(_root: &str) -> Result<Vec<yinz_tile::prelude::FsEntry>, String> {
     test_seams::PLUGIN_ENTRIES
         .with_borrow(Clone::clone)
         .ok_or_else(|| PLUGIN_FOLDER_UNREACHABLE.to_owned())
@@ -5532,14 +5526,14 @@ pub fn grant_permissions(_path: &str, permissions: &[PermissionType]) {
 /// the `y` still lands in hocus.
 #[cfg(target_arch = "wasm32")]
 pub fn raise_spotlight(pane: PaneId, label: String) {
-    zellij_tile::shim::reveal_pane_with_id(pane, Some(label));
+    yinz_tile::shim::reveal_pane_with_id(pane, Some(label));
 }
 
 /// Take the mark back off. The reveal is not undone — you are left where the
 /// answer was given, which is where the thing you agreed to just happened.
 #[cfg(target_arch = "wasm32")]
 pub fn drop_spotlight(pane: PaneId) {
-    zellij_tile::shim::highlight_and_unhighlight_panes(vec![], vec![pane]);
+    yinz_tile::shim::highlight_and_unhighlight_panes(vec![], vec![pane]);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5559,7 +5553,7 @@ pub fn toast_for_chat(text: &str, pane: PaneId, chat_id: Option<u64>) {
     // takes `None` for a chat it cannot name and reveals the panel, which is the half of the
     // click that never needed one. Dropping it instead would leave the host focusing a pane hocus
     // was never told about.
-    zellij_tile::shim::notify_with_click(
+    yinz_tile::shim::notify_with_click(
         text,
         pane,
         hocus_proto::wire::TOAST_CLICK,

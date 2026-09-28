@@ -20,215 +20,200 @@ pub fn check_dependency_boundaries(sh: &Shell) -> anyhow::Result<()> {
 }
 
 const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
-    ("zellij-types", &[]),
-    ("zellij-plugin-location", &["zellij-types"]),
+    ("yinz-types", &[]),
+    ("yinz-plugin-location", &["yinz-types"]),
+    ("yinz-runtime", &["yinz-types", "yinz-plugin-location"]),
+    ("yinz-key-codec", &["yinz-types"]),
+    ("yinz-host-protocol", &["yinz-types"]),
+    ("yinz-storage", &["yinz-types", "yinz-runtime"]),
+    ("yinz-project-config", &["yinz-types", "yinz-runtime"]),
     (
-        "zellij-runtime",
-        &["zellij-types", "zellij-plugin-location"],
+        "yinz-config",
+        &["yinz-types", "yinz-runtime", "yinz-project-config"],
     ),
-    ("zellij-key-codec", &["zellij-types"]),
-    ("zellij-host-protocol", &["zellij-types"]),
-    ("zellij-storage", &["zellij-types", "zellij-runtime"]),
-    ("zellij-project-config", &["zellij-types", "zellij-runtime"]),
+    ("yinz-deno-builtins", &["yinz-runtime"]),
+    ("yinz-plugin-api", &["yinz-types", "yinz-plugin-location"]),
     (
-        "zellij-config",
-        &["zellij-types", "zellij-runtime", "zellij-project-config"],
-    ),
-    ("zellij-deno-builtins", &["zellij-runtime"]),
-    (
-        "zellij-plugin-api",
-        &["zellij-types", "zellij-plugin-location"],
+        "yinz-plugin-authoring",
+        &["yinz-types", "yinz-runtime", "yinz-plugin-api"],
     ),
     (
-        "zellij-plugin-authoring",
-        &["zellij-types", "zellij-runtime", "zellij-plugin-api"],
+        "yinz-ipc",
+        &["yinz-types", "yinz-runtime", "yinz-plugin-api"],
     ),
     (
-        "zellij-ipc",
-        &["zellij-types", "zellij-runtime", "zellij-plugin-api"],
+        "yinz-session",
+        &["yinz-types", "yinz-runtime", "yinz-config", "yinz-ipc"],
     ),
     (
-        "zellij-session",
+        "yinz-cli",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-config",
-            "zellij-ipc",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-key-codec",
+            "yinz-storage",
+            "yinz-config",
+            "yinz-plugin-api",
+            "yinz-ipc",
+            "yinz-session",
+        ],
+    ),
+    ("yinz-terminal-graphics", &["yinz-types"]),
+    (
+        "yinz-terminal",
+        &[
+            "yinz-types",
+            "yinz-host-protocol",
+            "yinz-runtime",
+            "yinz-ipc",
+            "yinz-terminal-graphics",
         ],
     ),
     (
-        "zellij-cli",
+        "yinz-process",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-key-codec",
-            "zellij-storage",
-            "zellij-config",
-            "zellij-plugin-api",
-            "zellij-ipc",
-            "zellij-session",
-        ],
-    ),
-    ("zellij-terminal-graphics", &["zellij-types"]),
-    (
-        "zellij-terminal",
-        &[
-            "zellij-types",
-            "zellij-host-protocol",
-            "zellij-runtime",
-            "zellij-ipc",
-            "zellij-terminal-graphics",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-ipc",
+            "yinz-test-support",
         ],
     ),
     (
-        "zellij-process",
+        "yinz-swamp",
+        &["yinz-runtime", "yinz-project-config", "yinz-test-support"],
+    ),
+    (
+        "yinz-codex",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-ipc",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-session",
+            "yinz-process",
+            "yinz-test-support",
         ],
     ),
     (
-        "zellij-swamp",
+        "yinz-firecracker-provider",
         &[
-            "zellij-runtime",
-            "zellij-project-config",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-config",
+            "yinz-session",
+            "yinz-process",
         ],
     ),
     (
-        "zellij-codex",
+        "yinz-bus",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-session",
-            "zellij-process",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-storage",
+            "yinz-config",
+            "yinz-ipc",
+            "yinz-session",
+            "yinz-host-protocol",
+            "yinz-process",
+            "yinz-test-support",
         ],
     ),
     (
-        "zellij-firecracker-provider",
+        "yinz-server-os",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-config",
-            "zellij-session",
-            "zellij-process",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-ipc",
+            "yinz-process",
+            "yinz-bus",
+            "yinz-test-support",
         ],
     ),
     (
-        "zellij-bus",
+        "yinz-routing",
+        &["yinz-bus", "yinz-types", "yinz-runtime", "yinz-ipc"],
+    ),
+    (
+        "yinz-panes",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-storage",
-            "zellij-config",
-            "zellij-ipc",
-            "zellij-session",
-            "zellij-host-protocol",
-            "zellij-process",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-key-codec",
+            "yinz-config",
+            "yinz-ipc",
+            "yinz-terminal",
+            "yinz-bus",
+            "yinz-tile",
         ],
     ),
     (
-        "zellij-server-os",
+        "yinz-tab",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-ipc",
-            "zellij-process",
-            "zellij-bus",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-key-codec",
+            "yinz-config",
+            "yinz-ipc",
+            "yinz-terminal",
+            "yinz-bus",
+            "yinz-panes",
         ],
     ),
     (
-        "zellij-routing",
-        &["zellij-bus", "zellij-types", "zellij-runtime", "zellij-ipc"],
-    ),
-    (
-        "zellij-panes",
+        "yinz-plugin-host",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-key-codec",
-            "zellij-config",
-            "zellij-ipc",
-            "zellij-terminal",
-            "zellij-bus",
-            "zellij-tile",
-        ],
-    ),
-    (
-        "zellij-tab",
-        &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-key-codec",
-            "zellij-config",
-            "zellij-ipc",
-            "zellij-terminal",
-            "zellij-bus",
-            "zellij-panes",
-        ],
-    ),
-    (
-        "zellij-plugin-host",
-        &[
-            "zellij-terminal",
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-key-codec",
-            "zellij-storage",
-            "zellij-config",
-            "zellij-deno-builtins",
-            "zellij-plugin-api",
-            "zellij-plugin-authoring",
-            "zellij-ipc",
-            "zellij-session",
-            "zellij-process",
-            "zellij-swamp",
-            "zellij-bus",
-            "zellij-routing",
-            "zellij-tile",
-            "zellij-tile-markdown",
-            "zellij-test-support",
+            "yinz-terminal",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-key-codec",
+            "yinz-storage",
+            "yinz-config",
+            "yinz-deno-builtins",
+            "yinz-plugin-api",
+            "yinz-plugin-authoring",
+            "yinz-ipc",
+            "yinz-session",
+            "yinz-process",
+            "yinz-swamp",
+            "yinz-bus",
+            "yinz-routing",
+            "yinz-tile",
+            "yinz-tile-markdown",
+            "yinz-test-support",
             "hocus-data",
         ],
     ),
     (
-        "zellij-screen",
+        "yinz-screen",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-storage",
-            "zellij-config",
-            "zellij-ipc",
-            "zellij-session",
-            "zellij-cli",
-            "zellij-terminal",
-            "zellij-host-protocol",
-            "zellij-bus",
-            "zellij-routing",
-            "zellij-panes",
-            "zellij-tab",
-            "zellij-tile-utils",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-storage",
+            "yinz-config",
+            "yinz-ipc",
+            "yinz-session",
+            "yinz-cli",
+            "yinz-terminal",
+            "yinz-host-protocol",
+            "yinz-bus",
+            "yinz-routing",
+            "yinz-panes",
+            "yinz-tab",
+            "yinz-tile-utils",
+            "yinz-test-support",
         ],
     ),
     (
-        "zellij-pty",
+        "yinz-pty",
         &[
-            "zellij-types",
-            "zellij-runtime",
-            "zellij-storage",
-            "zellij-ipc",
-            "zellij-session",
-            "zellij-bus",
-            "zellij-test-support",
+            "yinz-types",
+            "yinz-runtime",
+            "yinz-storage",
+            "yinz-ipc",
+            "yinz-session",
+            "yinz-bus",
+            "yinz-test-support",
         ],
     ),
-    ("hocus-data", &["zellij-tile", "zellij-storage"]),
+    ("hocus-data", &["yinz-tile", "yinz-storage"]),
 ];
 
 /// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and
@@ -240,25 +225,25 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
 /// The TypeScript builtins' tests hold their files to the runtime's name list, but the builtins
 /// name no crate, so the sources the plugin host embeds never wait on or rebuild with the runtime.
 const DEV_ONLY_DEPENDENCIES: &[(&str, &[&str])] = &[
-    ("zellij-ipc", &["zellij-plugin-api"]),
-    ("zellij-cli", &["zellij-plugin-api"]),
-    ("zellij-screen", &["zellij-cli", "zellij-test-support"]),
+    ("yinz-ipc", &["yinz-plugin-api"]),
+    ("yinz-cli", &["yinz-plugin-api"]),
+    ("yinz-screen", &["yinz-cli", "yinz-test-support"]),
     (
-        "zellij-pty",
-        &["zellij-ipc", "zellij-storage", "zellij-test-support"],
+        "yinz-pty",
+        &["yinz-ipc", "yinz-storage", "yinz-test-support"],
     ),
-    ("zellij-tab", &["zellij-config", "zellij-ipc"]),
-    ("zellij-panes", &["zellij-config", "zellij-tile"]),
-    ("zellij-deno-builtins", &["zellij-runtime"]),
+    ("yinz-tab", &["yinz-config", "yinz-ipc"]),
+    ("yinz-panes", &["yinz-config", "yinz-tile"]),
+    ("yinz-deno-builtins", &["yinz-runtime"]),
 ];
 
 /// The package that composes the concrete backends into the running program.
-const COMPOSITION_ROOT: &str = "zellij";
+const COMPOSITION_ROOT: &str = "yinz";
 
 /// Crates only `COMPOSITION_ROOT` may depend on, under any dependency kind or target. They hold
 /// concrete backends that every other crate reaches only through a trait, so this rule covers
 /// every workspace member, including those `LIBRARY_DEPENDENCIES` does not list.
-const ROOT_ONLY_DEPENDENCIES: &[&str] = &["zellij-server-os"];
+const ROOT_ONLY_DEPENDENCIES: &[&str] = &["yinz-server-os"];
 
 /// Features that exist only for other crates' tests. Enabled from a normal or build dependency,
 /// one is compiled into everything that links the crate, the release binary included, and every
@@ -266,9 +251,9 @@ const ROOT_ONLY_DEPENDENCIES: &[&str] = &["zellij-server-os"];
 const TEST_ONLY_FEATURES: &[&str] = &["test-support"];
 
 /// Crates that must build no JavaScript or Wasm engine and nothing that links one.
-/// `zellij-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
+/// `yinz-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
 /// and Hocus's native tests check plugin sources through it without waiting for the plugin host.
-const ENGINE_FREE: &[&str] = &["zellij-plugin-authoring", "hocus"];
+const ENGINE_FREE: &[&str] = &["yinz-plugin-authoring", "hocus"];
 const ENGINES: &[&str] = &[
     "deno_core",
     "deno_ast",
@@ -276,10 +261,10 @@ const ENGINES: &[&str] = &[
     "wasmi",
     "wasmi_core",
     "wasmi_wasi",
-    "zellij-plugin-host",
-    "zellij-bus",
-    "zellij-process",
-    "zellij-terminal",
+    "yinz-plugin-host",
+    "yinz-bus",
+    "yinz-process",
+    "yinz-terminal",
 ];
 
 fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
@@ -368,8 +353,8 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(
-        !workspace.iter().any(|p| p["name"] == "zellij-utils"),
-        "zellij-utils must not be reintroduced"
+        !workspace.iter().any(|p| p["name"] == "yinz-utils"),
+        "yinz-utils must not be reintroduced"
     );
     validate_engine_free(&workspace)
 }
@@ -439,7 +424,7 @@ mod tests {
         });
         metadata["packages"].as_array_mut().unwrap().push(json!({
             "id": "hocus", "name": "hocus",
-            "dependencies": [{"name": "zellij-plugin-authoring", "kind": "dev", "target": null}]
+            "dependencies": [{"name": "yinz-plugin-authoring", "kind": "dev", "target": null}]
         }));
         metadata["workspace_members"]
             .as_array_mut()
@@ -468,9 +453,9 @@ mod tests {
             .collect();
         for (name, dependencies) in [
             (COMPOSITION_ROOT, root_dependencies),
-            ("zellij-server", vec![]),
-            ("zellij-client", vec![]),
-            ("zellij-integration-tests", vec![]),
+            ("yinz-server", vec![]),
+            ("yinz-client", vec![]),
+            ("yinz-integration-tests", vec![]),
         ] {
             metadata["packages"].as_array_mut().unwrap().push(json!({
                 "id": name, "name": name, "dependencies": dependencies
@@ -482,26 +467,26 @@ mod tests {
         }
         validate_dependency_boundaries(&metadata).unwrap();
         for (source, destination) in [
-            ("zellij-types", "zellij-cli"),
-            ("zellij-bus", "zellij-routing"),
-            ("zellij-bus", "zellij-terminal"),
-            ("zellij-bus", "zellij-server-os"),
-            ("zellij-panes", "zellij-server-os"),
-            ("zellij-routing", "zellij-server-os"),
-            ("zellij-plugin-host", "zellij-server-os"),
-            ("zellij-server", "zellij-server-os"),
-            ("zellij-client", "zellij-server-os"),
-            ("zellij-integration-tests", "zellij-server-os"),
-            ("zellij-panes", "zellij-routing"),
-            ("zellij-panes", "zellij-tab"),
-            ("zellij-tab", "zellij-routing"),
-            ("zellij-tab", "zellij-server-os"),
-            ("zellij-routing", "zellij-plugin-host"),
-            ("zellij-routing", "zellij-server"),
-            ("zellij-routing", "zellij-panes"),
+            ("yinz-types", "yinz-cli"),
+            ("yinz-bus", "yinz-routing"),
+            ("yinz-bus", "yinz-terminal"),
+            ("yinz-bus", "yinz-server-os"),
+            ("yinz-panes", "yinz-server-os"),
+            ("yinz-routing", "yinz-server-os"),
+            ("yinz-plugin-host", "yinz-server-os"),
+            ("yinz-server", "yinz-server-os"),
+            ("yinz-client", "yinz-server-os"),
+            ("yinz-integration-tests", "yinz-server-os"),
+            ("yinz-panes", "yinz-routing"),
+            ("yinz-panes", "yinz-tab"),
+            ("yinz-tab", "yinz-routing"),
+            ("yinz-tab", "yinz-server-os"),
+            ("yinz-routing", "yinz-plugin-host"),
+            ("yinz-routing", "yinz-server"),
+            ("yinz-routing", "yinz-panes"),
             // Authoring reads its two constants from the runtime so Hocus's native tests do not
             // build configuration.
-            ("zellij-plugin-authoring", "zellij-config"),
+            ("yinz-plugin-authoring", "yinz-config"),
         ] {
             let index = metadata["packages"]
                 .as_array()
@@ -564,11 +549,11 @@ mod tests {
             .unwrap()
             .push(json!(COMPOSITION_ROOT));
         for (source, destination) in [
-            ("zellij-plugin-host", "zellij-plugin-authoring"),
-            ("zellij-tab", "zellij-panes"),
-            ("zellij-screen", "zellij-panes"),
-            ("zellij-screen", "zellij-tab"),
-            (COMPOSITION_ROOT, "zellij-plugin-api"),
+            ("yinz-plugin-host", "yinz-plugin-authoring"),
+            ("yinz-tab", "yinz-panes"),
+            ("yinz-screen", "yinz-panes"),
+            ("yinz-screen", "yinz-tab"),
+            (COMPOSITION_ROOT, "yinz-plugin-api"),
         ] {
             let index = metadata["packages"]
                 .as_array()
@@ -609,17 +594,17 @@ mod tests {
     #[test]
     fn engine_free_crates_reject_engines_directly_and_through_workspace_crates() {
         let allowed = allowed_workspace();
-        const AUTHORING: &str = "zellij-plugin-authoring";
+        const AUTHORING: &str = "yinz-plugin-authoring";
         for (source, destination, kind, rejected_for) in [
-            ("hocus", "zellij-plugin-host", "dev", Some("hocus")),
+            ("hocus", "yinz-plugin-host", "dev", Some("hocus")),
             ("hocus", "deno_core", "build", Some("hocus")),
             (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
             (AUTHORING, "v8", "normal", Some(AUTHORING)),
             (AUTHORING, "wasmi_wasi", "normal", Some(AUTHORING)),
-            ("zellij-runtime", "deno_ast", "build", Some(AUTHORING)),
-            ("zellij-types", "zellij-bus", "normal", Some(AUTHORING)),
+            ("yinz-runtime", "deno_ast", "build", Some(AUTHORING)),
+            ("yinz-types", "yinz-bus", "normal", Some(AUTHORING)),
             // A dependency's dev-dependencies are not built.
-            ("zellij-runtime", "deno_core", "dev", None),
+            ("yinz-runtime", "deno_core", "dev", None),
         ] {
             let mut metadata = allowed.clone();
             let package = metadata["packages"]

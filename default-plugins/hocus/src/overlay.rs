@@ -1,9 +1,9 @@
 //! Hocus owns one overlay placement; the host owns its two child slots and divider.
 
 use std::collections::BTreeMap;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::TabPosition;
 
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use hocus_proto::launch;
 
@@ -91,7 +91,7 @@ fn split_widths(ratio: u16, rows: usize, cols: usize) -> (usize, usize) {
         direction: MultipaneDirection::LeftRight,
         ratio,
     };
-    let outer = zellij_types::pane_size::PaneGeom::from(&Size { rows, cols });
+    let outer = yinz_types::pane_size::PaneGeom::from(&Size { rows, cols });
     let ([list, conversation], _) = split.geometry(outer, true, MIN_HALF_COLS);
     (list.cols.as_usize(), conversation.cols.as_usize())
 }
@@ -477,7 +477,7 @@ impl State {
         #[cfg(not(target_family = "wasm"))]
         let result: Result<Option<MultipaneInfo>, String> = {
             let _ = (id, split);
-            Err("multipanes require the zellij host".into())
+            Err("multipanes require the yinz host".into())
         };
         if let Ok(Some(info)) = result {
             self.multipane = Some(info);
@@ -554,7 +554,7 @@ impl State {
         #[cfg(not(target_family = "wasm"))]
         let result: Result<Option<MultipaneInfo>, String> = {
             let _ = command;
-            Err("multipanes require the zellij host".into())
+            Err("multipanes require the yinz host".into())
         };
         if let Ok(Some(info)) = result {
             self.agents_plugin = self

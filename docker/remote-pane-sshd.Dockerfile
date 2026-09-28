@@ -56,8 +56,8 @@ RUN useradd --create-home --user-group --uid 1000 --shell /bin/bash --password '
 # profile runs *after* that and may override it, exactly as under real ssh. A
 # login pane must therefore see /opt/profile-bin and an explicit-command pane,
 # which reads no profile, must not.
-RUN printf 'export ZELLIJ_REMOTE_LOGIN_MARKER=profile-was-sourced\nexport PATH="/opt/profile-bin:$PATH"\n' \
-    > /etc/profile.d/zellij-remote-login-marker.sh
+RUN printf 'export YINZ_REMOTE_LOGIN_MARKER=profile-was-sourced\nexport PATH="/opt/profile-bin:$PATH"\n' \
+    > /etc/profile.d/yinz-remote-login-marker.sh
 
 COPY remote-pane-sshd_config /etc/ssh/sshd_config
 COPY remote-pane-entrypoint.sh /usr/local/bin/entrypoint.sh

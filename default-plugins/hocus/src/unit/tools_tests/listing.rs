@@ -1,7 +1,7 @@
 use super::*;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::TabPosition;
-use zellij_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::TabPosition;
+use yinz_tile::prelude::{PaneInfo, PaneManifest, TabInfo};
 
 fn tab(position: usize, tab_id: TabId, name: &str) -> TabInfo {
     TabInfo {
@@ -15,7 +15,7 @@ fn tab(position: usize, tab_id: TabId, name: &str) -> TabInfo {
 
 fn pane(id: u32, title: &str) -> PaneInfo {
     PaneInfo {
-        id: zellij_tile::prelude::PaneId::from_legacy(id, false),
+        id: yinz_tile::prelude::PaneId::from_legacy(id, false),
         title: title.to_owned(),
         is_selectable: true,
         ..Default::default()

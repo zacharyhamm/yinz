@@ -8,53 +8,53 @@ mod tests;
 mod workflow;
 
 #[cfg(target_os = "windows")]
-compile_error!("Zellij does not support Windows");
+compile_error!("Yinz does not support Windows");
 
 use clap::Parser;
-use zellij_runtime::{envs, logging::*};
+use yinz_runtime::{envs, logging::*};
 use {
-    zellij_cli::args::CliAction, zellij_cli::args::CliArgs, zellij_cli::args::Command,
-    zellij_cli::args::Sessions, zellij_cli::setup::Setup,
-    zellij_runtime::consts::create_config_and_cache_folders, zellij_types::data::UnblockCondition,
+    yinz_cli::args::CliAction, yinz_cli::args::CliArgs, yinz_cli::args::Command,
+    yinz_cli::args::Sessions, yinz_cli::setup::Setup,
+    yinz_runtime::consts::create_config_and_cache_folders, yinz_types::data::UnblockCondition,
 };
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some(zellij_swamp::SUPERVISOR_FLAG) {
+    if std::env::args().nth(1).as_deref() == Some(yinz_swamp::SUPERVISOR_FLAG) {
         let result = std::env::args_os()
             .nth(2)
             .ok_or_else(|| anyhow::anyhow!("missing Swamp control checkout"))
-            .and_then(|root| zellij_swamp::supervise(root.into()));
+            .and_then(|root| yinz_swamp::supervise(root.into()));
         if let Err(error) = result {
             eprintln!("{error:#}");
             std::process::exit(1);
         }
         return;
     }
-    zellij_server::run_compilation_worker();
-    zellij_server::plugin_testing::run_worker();
+    yinz_server::run_compilation_worker();
+    yinz_server::plugin_testing::run_worker();
     if std::env::args().nth(1).as_deref() == Some("--plugin-test-server") {
-        zellij_runtime::logging::configure_logger();
+        yinz_runtime::logging::configure_logger();
         let socket: std::path::PathBuf = std::env::args_os()
             .nth(2)
             .expect("test server socket")
             .into();
-        let os = zellij_server_os::get_server_os_input().expect("test server OS");
+        let os = yinz_server_os::get_server_os_input().expect("test server OS");
         let owner_socket = socket.clone();
         std::thread::spawn(move || {
             use std::io::Read;
             let _ = std::io::stdin().read(&mut [0]);
             loop {
-                if let Ok(stream) = zellij_ipc::consts::ipc_connect(&owner_socket) {
-                    let _ = zellij_ipc::ipc::IpcSenderWithContext::<
-                        zellij_ipc::ipc::ClientToServerMsg,
+                if let Ok(stream) = yinz_ipc::consts::ipc_connect(&owner_socket) {
+                    let _ = yinz_ipc::ipc::IpcSenderWithContext::<
+                        yinz_ipc::ipc::ClientToServerMsg,
                     >::new(stream)
-                    .send_client_msg(zellij_ipc::ipc::ClientToServerMsg::KillSession);
+                    .send_client_msg(yinz_ipc::ipc::ClientToServerMsg::KillSession);
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
-        zellij_server::start_server_impl(Box::new(os), socket, true);
+        yinz_server::start_server_impl(Box::new(os), socket, true);
         return;
     }
     let process_started = std::time::Instant::now();
@@ -64,8 +64,8 @@ fn main() {
     // also close the descriptors it inherited from the server before anything
     // opens a new one, so it sets up its own logging afterwards.
     #[cfg(unix)]
-    if let Some(label) = zellij_server::pty_host::pty_host_invocation() {
-        zellij_server::pty_host::run_pty_host(label);
+    if let Some(label) = yinz_server::pty_host::pty_host_invocation() {
+        yinz_server::pty_host::run_pty_host(label);
     }
 
     // A broker is reached over ssh, which runs a *login-less* command with a
@@ -73,12 +73,12 @@ fn main() {
     // supervisor. `ensure` must also keep stdout clean — its one JSON line is
     // the contract the connecting side parses.
     #[cfg(unix)]
-    if let Some(mode) = zellij_server::pty_host::remote::broker::broker_invocation() {
+    if let Some(mode) = yinz_server::pty_host::remote::broker::broker_invocation() {
         let result = match mode.as_str() {
-            "ensure" => zellij_server::pty_host::remote::broker::ensure(),
-            "serve" => zellij_server::pty_host::remote::broker::serve_forever(),
-            "report" => zellij_server::pty_host::remote::broker::report_agent_hook(process_started),
-            other => Err(zellij_runtime::errors::prelude::anyhow!(
+            "ensure" => yinz_server::pty_host::remote::broker::ensure(),
+            "serve" => yinz_server::pty_host::remote::broker::serve_forever(),
+            "report" => yinz_server::pty_host::remote::broker::report_agent_hook(process_started),
+            other => Err(yinz_runtime::errors::prelude::anyhow!(
                 "unknown --pty-broker mode {other:?}, expected 'ensure', 'serve' or 'report'"
             )),
         };
@@ -101,9 +101,9 @@ fn main() {
     }
     if matches!(
         &opts.command,
-        Some(Command::Hocus(zellij_cli::args::Hocus::CodexReport))
+        Some(Command::Hocus(yinz_cli::args::Hocus::CodexReport))
     ) {
-        let result = hocus_hooks::hocus(zellij_cli::args::Hocus::CodexReport);
+        let result = hocus_hooks::hocus(yinz_cli::args::Hocus::CodexReport);
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     configure_logger();
@@ -117,7 +117,7 @@ fn main() {
     // exiting here.
     #[cfg(unix)]
     if let Some(Command::PtyHosts(pty_hosts)) = opts.command.clone() {
-        if !matches!(pty_hosts, zellij_cli::args::PtyHosts::Adopt { .. }) {
+        if !matches!(pty_hosts, yinz_cli::args::PtyHosts::Adopt { .. }) {
             if let Err(e) = commands::pty_hosts(pty_hosts) {
                 eprintln!("Error: {e:#}");
                 std::process::exit(1);
@@ -135,7 +135,7 @@ fn main() {
     }
 
     if let Some(Command::Firecracker(command)) = opts.command.clone() {
-        let config = match zellij_cli::setup::load_config(&opts) {
+        let config = match yinz_cli::setup::load_config(&opts) {
             Ok(config) => config,
             Err(error) => {
                 eprintln!("Error: {error}");
@@ -174,7 +174,7 @@ fn main() {
         let data_dir = opts
             .data_dir
             .clone()
-            .unwrap_or_else(zellij_runtime::home::get_default_data_dir);
+            .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
         if let Err(e) = commands::recordings(rec, data_dir) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -183,7 +183,7 @@ fn main() {
     }
 
     {
-        let config = zellij_cli::setup::load_config(&opts).ok();
+        let config = yinz_cli::setup::load_config(&opts).ok();
         if let Some(Command::Action(cli_action)) = opts.command {
             commands::send_action_to_session(*cli_action, opts.session, config);
             std::process::exit(0);
@@ -245,8 +245,8 @@ fn main() {
 
             let command_cli_action = CliAction::NewPane {
                 command,
-                // `zellij run`/`edit` stay local for now; remote panes are
-                // reached through `zellij action new-pane --remote-host`.
+                // `yinz run`/`edit` stay local for now; remote panes are
+                // reached through `yinz action new-pane --remote-host`.
                 remote_host: None,
                 firecracker: None,
                 firecracker_image: None,
@@ -458,7 +458,7 @@ fn main() {
         // fast path in `main()` did not catch it. There is no control channel on
         // fd 3 in that case; say so rather than blocking on a read forever.
         eprintln!(
-            "--pty-host is an internal flag: zellij spawns pane supervisors itself. \
+            "--pty-host is an internal flag: yinz spawns pane supervisors itself. \
              There is nothing to run by hand."
         );
         std::process::exit(1);
@@ -469,7 +469,7 @@ fn main() {
             .cloned()
             .or_else(|| envs::get_session_name().ok().map(|name| name.into_string()))
         {
-            let config = zellij_cli::setup::load_config(&opts).ok();
+            let config = yinz_cli::setup::load_config(&opts).ok();
             let options = Setup::from_cli_args(&opts).ok().map(|r| r.2);
             let new_layout_cli_action = CliAction::NewTab {
                 layout: opts.layout.clone(),

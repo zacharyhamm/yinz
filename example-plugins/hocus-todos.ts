@@ -1,5 +1,5 @@
 // Read Hocus's shared todo tree. Hocus owns its schema and mutation invariants.
-import z, { definePlugin, type DataRecord } from "zellij:plugin";
+import z, { definePlugin, type DataRecord } from "yinz:plugin";
 const namespace = "shared:hocus";
 const D = z.data;
 let items: DataRecord[] = [],

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sample a zellij server's plugin-executor and screen threads' CPU, per second.
+# Sample a yinz server's plugin-executor and screen threads' CPU, per second.
 #
 #   scripts/plugin-thread-cpu.sh <session_name> [seconds] [hook_count]
 #
@@ -11,14 +11,14 @@
 # `plugin-exec-N job stats` lines the server logs every 10s.
 set -euo pipefail
 
-# Which zellij to drive — a lab run points this at a checkout build.
-zellij=${ZELLIJ_BIN:-zellij}
+# Which yinz to drive — a lab run points this at a checkout build.
+yinz=${YINZ_BIN:-yinz}
 
 session=${1:?usage: plugin-thread-cpu.sh <session_name> [seconds] [hook_count]}
 seconds=${2:-30}
 hooks=${3:-}
 
-pid=$(pgrep -f "zellij --server .*/${session}$" | head -1)
+pid=$(pgrep -f "yinz --server .*/${session}$" | head -1)
 [ -n "$pid" ] || { echo "no server found for session '$session'" >&2; exit 1; }
 tick=$(getconf CLK_TCK)
 

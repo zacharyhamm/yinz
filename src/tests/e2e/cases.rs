@@ -1,15 +1,15 @@
 /*
  *
  * NOTE: These tests are very heavy and are used as smoke tests just to verify the app is working
- * end-to-end. Avoid adding new ones, preferring instead to use the zellij-integration-tests module
+ * end-to-end. Avoid adding new ones, preferring instead to use the yinz-integration-tests module
  * it tests the app as a whole, only mocking the OS interaction parts
  *
 */
 #![allow(unused)]
 
 use insta::assert_snapshot;
-use zellij_types::pane_size::Size;
-use zellij_types::position::{Column, Line, Position};
+use yinz_types::pane_size::Size;
+use yinz_types::position::{Column, Line, Position};
 
 use rand::RngExt;
 use regex::Regex;
@@ -323,7 +323,7 @@ pub fn quit_and_resurrect_session() {
             .add_step(Step {
                 name: "Confirm quitting the session",
                 instruction: |mut remote_terminal: RemoteTerminal| -> bool {
-                    if remote_terminal.snapshot_contains("Quit Zellij?") {
+                    if remote_terminal.snapshot_contains("Quit Yinz?") {
                         remote_terminal.send_key(b"\t\r");
                         true
                     } else {
@@ -335,7 +335,7 @@ pub fn quit_and_resurrect_session() {
                 name: "Resurrect session by attaching",
                 instruction: |mut remote_terminal: RemoteTerminal| -> bool {
                     let mut step_is_complete = false;
-                    if remote_terminal.snapshot_contains("Bye from Zellij!") {
+                    if remote_terminal.snapshot_contains("Bye from Yinz!") {
                         remote_terminal.attach_to_original_session();
                         step_is_complete = true;
                     }

@@ -1,0 +1,27 @@
+[package]
+name = "yinz-pty"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The yinz server's pty thread: spawning and supervising pane processes over the bus"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-runtime = { workspace = true }
+yinz-session = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+yinz-ipc = { workspace = true }
+yinz-storage = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }
+async-trait = { version = "0.1.50", default-features = false }
+crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }
+interprocess = { workspace = true }

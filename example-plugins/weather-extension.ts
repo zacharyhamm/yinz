@@ -1,10 +1,10 @@
 // Install as hocus/weather.ts in the user plugin directory, then plugin_reload it.
-import { definePlugin, zellij } from "zellij:plugin";
+import { definePlugin, yinz } from "yinz:plugin";
 
 export default definePlugin({
   async load() {
-    await zellij.waitForPermissions(["MessageAndLaunchOtherPlugins"]);
-    zellij.hocus.tools({
+    await yinz.waitForPermissions(["MessageAndLaunchOtherPlugins"]);
+    yinz.hocus.tools({
       forecast: {
         description: "Return a demonstration forecast for a city.",
         parameters: {

@@ -1,7 +1,7 @@
 // The tool schemas are one `json!` literal each, and the largest is past the default limit.
 #![recursion_limit = "256"]
 
-//! hocus — chat with an OpenAI-compatible endpoint from a Zellij popup.
+//! hocus — chat with an OpenAI-compatible endpoint from a Yinz popup.
 //!
 //! A library so the wasm entry point (`src/main.rs`) and the render benchmark
 //! (`benches/transcript.rs`) can both see it; a bin crate has nothing to import.
@@ -27,11 +27,11 @@ mod tools;
 mod transitions;
 mod vm_panel;
 pub use transitions::{Confirmation, PromptKind};
-use zellij_tile::prelude::DataWatchId;
-use zellij_tile::prelude::HostId;
-use zellij_tile::prelude::TabId;
-use zellij_tile::prelude::TabPosition;
-use zellij_types::internal_ids::SessionName;
+use yinz_tile::prelude::DataWatchId;
+use yinz_tile::prelude::HostId;
+use yinz_tile::prelude::TabId;
+use yinz_tile::prelude::TabPosition;
+use yinz_types::internal_ids::SessionName;
 pub mod ui;
 mod wand;
 mod worker;
@@ -49,10 +49,10 @@ use hocus_proto::wire::{self, PollReply, PollRequest};
 use hocus_proto::{agents, launch, projects, todos};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
-use zellij_tile::ui_components::forms::{InputAction, TextInput};
+use yinz_tile::ui_components::forms::{InputAction, TextInput};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 use api::{Config, ConfigError, SseItem, SseParser, ToolCallAccumulator, DEFAULT_MAX_TOOL_ROUNDS};
 use tools::ToolCall;
@@ -65,7 +65,7 @@ const MAX_TOOL_OUTPUT: usize = 40_000;
 /// Spinner frame duration. The timer is one-shot, so this is also how often the
 /// plugin wakes itself while waiting — and only while waiting.
 ///
-/// ponytail: 10 Hz repaints the whole pane grid, since Zellij gives plugins no
+/// ponytail: 10 Hz repaints the whole pane grid, since Yinz gives plugins no
 /// partial redraw. Cheap for a popup, and bounded by how long the wait lasts.
 /// Slow this down if it ever shows up in a profile.
 const FRAME_SECONDS: f64 = 0.1;
@@ -492,10 +492,10 @@ pub struct State {
     /// Plugin configuration from the KDL block, kept for re-resolution.
     kdl: BTreeMap<String, String>,
     /// The session environment, captured once the permission grant makes it
-    /// readable. Zellij froze it when the session started and never revises it,
+    /// readable. Yinz froze it when the session started and never revises it,
     /// so re-reading it later would cost a host call to learn nothing.
     pub env: BTreeMap<String, String>,
-    /// Where the user's own Zellij plugins live, captured once the permission grant makes it
+    /// Where the user's own Yinz plugins live, captured once the permission grant makes it
     /// readable. Empty means the host could not resolve one, in which case there is nowhere to
     /// write a plugin and the plugin tools say so rather than guessing at a path.
     pub user_plugin_dir: String,
@@ -508,10 +508,10 @@ pub struct State {
     /// Valid `hocus/*.{ts,js,mjs,mts}` files from the latest scan, keyed by their namespace.
     extension_files: BTreeMap<String, String>,
     /// Running plugin ids whose resolved file location agrees with their Hocus launch config.
-    extension_instances: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
+    extension_instances: BTreeMap<yinz_tile::prelude::PluginId, (String, String)>,
     /// Every running plugin by id, from the session's plugin list - what a headless
     /// `plugin_reload` looks the running instance up in.
-    plugin_instances: BTreeMap<zellij_tile::prelude::PluginId, PluginInstance>,
+    plugin_instances: BTreeMap<yinz_tile::prelude::PluginId, PluginInstance>,
     /// `mono_ms` when the foreground chat's awaited extension call was sent;
     /// `poll_extension_call` gives up on it after `extensions::CALL_TIMEOUT_MS`. Parked chats
     /// carry their own in `Chat::extension_call_started_ms`.
@@ -726,8 +726,8 @@ pub struct State {
     /// machine rather than per session, so a row about "pane 5" is meaningless without it —
     /// see `store::agent_latch_def`. Empty until the first snapshot, and nothing per-pane is
     /// written while it is.
-    zellij_session_name: SessionName,
-    /// The machine this hocus runs on, read once at load. With `zellij_session_name` it is what
+    yinz_session_name: SessionName,
+    /// The machine this hocus runs on, read once at load. With `yinz_session_name` it is what
     /// owns this session's rows in the shared store — see `agents::rows::Owner`.
     host_id: HostId,
     /// Whether `restore_pane_rows` has run. It waits for the session name, so it cannot ride
@@ -781,7 +781,7 @@ pub struct State {
     /// tools, both already behind a model round trip, so they are fetched when
     /// asked for. That drops the largest thing hocus used to hold a copy of.
     projects: projects::Registry,
-    project_ids: BTreeMap<String, zellij_tile::prelude::DataRowId>,
+    project_ids: BTreeMap<String, yinz_tile::prelude::DataRowId>,
     /// The watch feeding `projects`, so a change event can be told from another
     /// plugin's.
     project_watch: DataWatchId,
@@ -841,7 +841,7 @@ pub struct State {
     ///
     /// Cached rather than asked for each time: `get_plugin_ids` is a host round-trip, and the
     /// overlay paths want it on every `TabUpdate`. It never changes for the life of the plugin.
-    pub(crate) own_plugin_id: zellij_tile::prelude::PluginId,
+    pub(crate) own_plugin_id: yinz_tile::prelude::PluginId,
     /// The pane title last asserted with `rename_plugin_pane`, so a render that
     /// would restate the same one does not.
     ///
@@ -965,7 +965,7 @@ pub struct State {
     /// Learned from the first `AGENT_SELECTION` rather than assumed, because a plugin
     /// pane is only known by its id — a title is a name the user can change, and a url
     /// cannot tell two instances apart.
-    agents_plugin: Option<zellij_tile::prelude::PluginId>,
+    agents_plugin: Option<yinz_tile::prelude::PluginId>,
     panel_tabs: Option<PaneTabsInfo>,
     /// Every `show`/`hide` this plugin asked the host for, as `(pane, shown)`.
     ///
@@ -1083,7 +1083,7 @@ impl Default for State {
             suppressed_panes: Vec::new(),
             repositories: BTreeMap::new(),
             manual_kinds: BTreeMap::new(),
-            zellij_session_name: SessionName::default(),
+            yinz_session_name: SessionName::default(),
             host_id: HostId::default(),
             restored_pane_rows: false,
             pending_agent_panes: BTreeSet::new(),
@@ -1125,7 +1125,7 @@ impl Default for State {
             tabs: Vec::new(),
             last_focused_agent: None,
             focused_pane: None,
-            own_plugin_id: zellij_tile::prelude::PluginId::new(0),
+            own_plugin_id: yinz_tile::prelude::PluginId::new(0),
             last_pane_title: None,
             surface_rows: 0,
             surface_cols: 0,
@@ -1177,7 +1177,7 @@ impl Default for State {
     }
 }
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.kdl = configuration;
         let ids = get_plugin_ids();
@@ -1201,7 +1201,7 @@ impl ZellijPlugin for State {
             EventType::BeforeClose,
             // A running plugin's KDL block is otherwise frozen at server start:
             // even an explicit reload replays the configuration captured then,
-            // so without this a config fix needs a whole Zellij restart.
+            // so without this a config fix needs a whole Yinz restart.
             EventType::PluginConfigurationChanged,
             EventType::SessionUpdate,
             // Worker replies. Not subscribing means they are silently dropped.
@@ -1257,7 +1257,7 @@ impl ZellijPlugin for State {
             // that last one is new, and is the reason to mention it here.
             //
             // Not worth re-prompting everyone over: hot-reloading a builtin
-            // keeps the `zellij:` location and resolves to the freshly built
+            // keeps the `yinz:` location and resolves to the freshly built
             // wasm anyway (see `BUILTIN_PLUGIN_DEBUG_DIR`), so a `file:` load is
             // a thing you have to go out of your way to do.
         ]);
@@ -1316,16 +1316,13 @@ impl ZellijPlugin for State {
         }
         if matches!(
             pipe_message.name.as_str(),
-            "zellij_rpc_reply" | "zellij_rpc_progress"
+            "yinz_rpc_reply" | "yinz_rpc_progress"
         ) {
             if let (PipeSource::Plugin(owner), Some(payload)) =
                 (&pipe_message.source, &pipe_message.payload)
             {
-                if self.on_workflow_reply(
-                    *owner,
-                    payload,
-                    pipe_message.name == "zellij_rpc_progress",
-                ) {
+                if self.on_workflow_reply(*owner, payload, pipe_message.name == "yinz_rpc_progress")
+                {
                     return true;
                 }
             }
@@ -1460,7 +1457,7 @@ impl ZellijPlugin for State {
             return false;
         };
         self.agent_seq = seq;
-        self.zellij_session_name = reply.zellij_session_name;
+        self.yinz_session_name = reply.yinz_session_name;
         // The first snapshot is the first thing that says which session's panes these are, and
         // so the first moment the per-pane rows can be read. See `restore_pane_rows`.
         self.restore_pane_rows();
@@ -1609,8 +1606,8 @@ impl State {
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             // Somebody clicked a toast hocus raised. The host has already focused our pane; this
             // arm is what makes the click land on the conversation the toast was actually about.
-            Event::CustomMessage(name, payload) if name.starts_with("__zellij_plugin_test:") => {
-                self.on_plugin_test_result(&name["__zellij_plugin_test:".len()..], &payload)
+            Event::CustomMessage(name, payload) if name.starts_with("__yinz_plugin_test:") => {
+                self.on_plugin_test_result(&name["__yinz_plugin_test:".len()..], &payload)
             },
             Event::CustomMessage(name, payload) if name == wire::TOAST_CLICK => {
                 self.on_toast_click(payload.parse::<u64>().ok())

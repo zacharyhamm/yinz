@@ -1,0 +1,35 @@
+[package]
+name = "yinz-cli"
+description = "Command line interface for Yinz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lints]
+workspace = true
+[dependencies]
+yinz-types = { workspace = true }
+yinz-runtime = { workspace = true }
+yinz-key-codec = { workspace = true }
+yinz-config = { workspace = true }
+yinz-ipc = { workspace = true }
+yinz-session = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+miette = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+kdl = { workspace = true }
+humantime = { workspace = true }
+suggest = { workspace = true }
+unicode-width = { workspace = true }
+clap_complete = { version = "4.6", default-features = false }
+[dev-dependencies]
+yinz-plugin-api = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
+insta = "1.48"
+hegeltest = "0.29.3"

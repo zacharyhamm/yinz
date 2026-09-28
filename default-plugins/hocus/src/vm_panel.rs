@@ -2,7 +2,7 @@ use crate::archive::AGENT_LIST_LOCATION;
 use crate::{api, tools, State, MAX_TOOL_OUTPUT};
 use hocus_proto::vms::{self, Operation, Request, ResultMessage, Snapshot};
 use std::collections::BTreeMap;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub(crate) const CONTEXT: &str = "vm_panel";
 const VALIDATE: &str = "vm_panel_validate";
@@ -87,15 +87,15 @@ impl State {
 
     fn launch_vm_panel_command(&self, request: &Request, validate: bool) -> Result<(), String> {
         // Resolving this path does not require an API key or a working model configuration.
-        let zellij = api::expand_home(
+        let yinz = api::expand_home(
             self.kdl
-                .get("zellij_path")
+                .get("yinz_path")
                 .map(String::as_str)
                 .filter(|path| !path.trim().is_empty())
-                .unwrap_or(api::DEFAULT_ZELLIJ),
+                .unwrap_or(api::DEFAULT_YINZ),
             &self.env,
         );
-        let argv = panel_argv(request, validate, &zellij)?;
+        let argv = panel_argv(request, validate, &yinz)?;
         let mut context = BTreeMap::from([(CONTEXT.to_owned(), request.request_id.to_string())]);
         if validate {
             context.insert(VALIDATE.to_owned(), "true".into());
@@ -104,9 +104,7 @@ impl State {
             &argv.iter().map(String::as_str).collect::<Vec<_>>(),
             self.env
                 .iter()
-                .filter(|(key, _)| {
-                    matches!(key.as_str(), "ZELLIJ_CONFIG_FILE" | "ZELLIJ_CONFIG_DIR")
-                })
+                .filter(|(key, _)| matches!(key.as_str(), "YINZ_CONFIG_FILE" | "YINZ_CONFIG_DIR"))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
             ".".into(),
@@ -229,7 +227,7 @@ fn failure(exit: Option<i32>, output: &str) -> String {
     }
 }
 
-fn panel_argv(request: &Request, validate: bool, zellij: &str) -> Result<Vec<String>, String> {
+fn panel_argv(request: &Request, validate: bool, yinz: &str) -> Result<Vec<String>, String> {
     let operation = if validate {
         Operation::List
     } else {
@@ -247,7 +245,7 @@ fn panel_argv(request: &Request, validate: bool, zellij: &str) -> Result<Vec<Str
     let mut argv = tools::vm_argv(
         operation.tool(),
         &args,
-        zellij,
+        yinz,
         target
             .map(|target| target.session.as_str())
             .unwrap_or_default(),
@@ -321,14 +319,14 @@ mod tests {
                 (
                     PluginId::new(0),
                     PluginInfo {
-                        location: "zellij:hocus".into(),
+                        location: "yinz:hocus".into(),
                         configuration: hocus_proto::launch::overlay_configuration(),
                     },
                 ),
                 (
                     PluginId::new(7),
                     PluginInfo {
-                        location: "zellij:hocus-agents".into(),
+                        location: "yinz:hocus-agents".into(),
                         configuration: BTreeMap::from([("view".into(), "vms".into())]),
                     },
                 ),
@@ -476,10 +474,10 @@ mod tests {
                 target: Some(expected.clone()),
             };
             assert_eq!(
-                panel_argv(&request, true, "/zellij").unwrap(),
-                ["/zellij", "firecracker", "list", "--json"]
+                panel_argv(&request, true, "/yinz").unwrap(),
+                ["/yinz", "firecracker", "list", "--json"]
             );
-            let argv = panel_argv(&request, false, "/zellij").unwrap();
+            let argv = panel_argv(&request, false, "/yinz").unwrap();
             assert_eq!(argv[6], "--expected-identity");
             assert_eq!(
                 serde_json::from_str::<vms::Identity>(&argv[7]).unwrap(),
@@ -487,8 +485,8 @@ mod tests {
             );
             let mut incomplete = request;
             incomplete.target.as_mut().unwrap().generation = None;
-            assert!(panel_argv(&incomplete, true, "/zellij").is_err());
-            assert!(panel_argv(&incomplete, false, "/zellij").is_err());
+            assert!(panel_argv(&incomplete, true, "/yinz").is_err());
+            assert!(panel_argv(&incomplete, false, "/yinz").is_err());
         }
     }
 

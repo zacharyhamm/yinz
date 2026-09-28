@@ -1,0 +1,16 @@
+[package]
+name = "yinz-key-codec"
+description = "Terminal key protocol encoding and decoding for Yinz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-types = { workspace = true }
+bitflags = { version = "2.5.0", default-features = false }
+
+[dev-dependencies]
+hegeltest = "0.29.3"

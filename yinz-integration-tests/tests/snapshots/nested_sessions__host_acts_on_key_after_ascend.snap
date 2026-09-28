@@ -1,0 +1,29 @@
+---
+source: yinz-integration-tests/tests/nested_sessions.rs
+assertion_line: 401
+expression: normalized(&host_after_new_pane)
+---
+ Yinz (test)  Tab #1  + 
+                       [0] Yinz:test-1                     │                         [1] Pane #2
+ Yinz (test)  [0] Tab #1  +                          │$
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+ Descend: Ctrl + <o> + <[>                                 │
+───────────────────────────────────────────────────────────┤
+                         [2] Pane #3                       │
+$ █                                                        │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+                                                           │
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

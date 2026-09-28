@@ -136,7 +136,7 @@ fn plugin_stamp_follows_the_dep_info_not_mtimes_or_unlisted_files() {
         "default-plugins/example/README.md",
         "default-plugins/example/src/unit/main_tests.rs",
         // A stale plugin binary lying around is output, not input.
-        "zellij-config/assets/plugins/tab-bar.wasm",
+        "yinz-config/assets/plugins/tab-bar.wasm",
     ] {
         write(root, file, file);
     }
@@ -159,7 +159,7 @@ fn plugin_stamp_follows_the_dep_info_not_mtimes_or_unlisted_files() {
     for unlisted in [
         "default-plugins/example/README.md",
         "default-plugins/example/src/unit/main_tests.rs",
-        "zellij-config/assets/plugins/tab-bar.wasm",
+        "yinz-config/assets/plugins/tab-bar.wasm",
     ] {
         write(root, unlisted, "changed\n");
     }
@@ -193,8 +193,8 @@ fn an_include_str_input_invalidates_the_plugin_stamp() {
         "default-plugins/hocus/skills/project-setup/SKILL.md",
         "example-plugins/clock.ts",
         "example-plugins/with space.ts",
-        "zellij-plugin-host/Cargo.toml",
-        "zellij-plugin-host/src/deno/sdk.d.ts",
+        "yinz-plugin-host/Cargo.toml",
+        "yinz-plugin-host/src/deno/sdk.d.ts",
     ];
     for file in included.iter().chain(&[
         "default-plugins/hocus/Cargo.toml",
@@ -212,8 +212,8 @@ fn an_include_str_input_invalidates_the_plugin_stamp() {
             "default-plugins/hocus/src/main.rs",
             &from_src("example-plugins/clock.ts"),
             &from_src("example-plugins/with space.ts"),
-            &from_src("zellij-plugin-host/Cargo.toml"),
-            &from_src("zellij-plugin-host/src/deno/sdk.d.ts"),
+            &from_src("yinz-plugin-host/Cargo.toml"),
+            &from_src("yinz-plugin-host/src/deno/sdk.d.ts"),
         ],
     )];
 
@@ -421,7 +421,7 @@ fn profile_flag_wins_over_release() {
 #[test]
 fn plugin_hash_tracks_effective_external_cargo_config() {
     let base = std::env::temp_dir().join(format!(
-        "zellij-xtask-cargo-config-{}-{}",
+        "yinz-xtask-cargo-config-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

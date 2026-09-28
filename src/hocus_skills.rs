@@ -1,8 +1,8 @@
 //! The portable skill is part of the binary; installation is explicit.
 use std::{fs, io::Write, path::Path};
-use zellij_runtime::errors::prelude::*;
+use yinz_runtime::errors::prelude::*;
 
-const SKILL: &str = include_str!("../assets/skills/zellij-notes-todos/SKILL.md");
+const SKILL: &str = include_str!("../assets/skills/yinz-notes-todos/SKILL.md");
 
 pub(crate) fn install(path: &Path, dry_run: bool, force: bool) -> Result<()> {
     match fs::read(path) {
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn skill_install_is_explicit_idempotent_and_preserves_other_files() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("skills/zellij-notes-todos/SKILL.md");
+        let path = temp.path().join("skills/yinz-notes-todos/SKILL.md");
         install(&path, true, false).unwrap();
         assert!(!path.parent().unwrap().exists());
         install(&path, false, false).unwrap();

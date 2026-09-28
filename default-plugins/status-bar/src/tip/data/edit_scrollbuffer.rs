@@ -5,8 +5,8 @@ use ansi_term::{
 };
 
 use crate::{action_key, style_key_with_modifier, LinePart};
-use zellij_tile::prelude::{actions::Action, *};
-use zellij_tile_utils::palette_match;
+use yinz_tile::prelude::{actions::Action, *};
+use yinz_tile_utils::palette_match;
 
 macro_rules! strings {
     ($ANSIStrings:expr) => {{

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Name=Yinz
+Type=Application
+Comment=Manage Your Terminal Applications
+Terminal=true
+Exec=yinz
+Categories=ConsoleOnly;System;
+GenericName=Terminal Multiplexer

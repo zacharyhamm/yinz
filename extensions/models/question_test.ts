@@ -25,7 +25,7 @@ Deno.test("all question kinds stay pending unattended and accept one run-bound a
     const encoder = new TextEncoder();
     const c: Context = {
         repoDir: "/tmp",
-        globalArgs: { session: "test", binary: "zellij", timeoutMs: 1000 },
+        globalArgs: { session: "test", binary: "yinz", timeoutMs: 1000 },
         signal: new AbortController().signal,
         logger: { info() {} },
         readResource: (n) =>

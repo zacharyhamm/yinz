@@ -1,8 +1,8 @@
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use zellij_tile::prelude::PaneId;
-use zellij_tile::prelude::SessionName;
-use zellij_tile::prelude::TabPosition;
+use yinz_tile::prelude::PaneId;
+use yinz_tile::prelude::SessionName;
+use yinz_tile::prelude::TabPosition;
 
 use crate::ui::{
     components::{Colors, LineToRender, ListItem},

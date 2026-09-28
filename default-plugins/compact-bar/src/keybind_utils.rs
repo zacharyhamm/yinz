@@ -1,7 +1,7 @@
 use crate::action_types::ActionType;
 use std::collections::HashSet;
-use zellij_tile::prelude::actions::Action;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::actions::Action;
+use yinz_tile::prelude::*;
 
 pub struct KeybindProcessor;
 
@@ -775,7 +775,7 @@ impl KeybindProcessor {
                     |action: &Action| action.launches_plugin("session-manager"),
                     |action: &Action| action.launches_plugin("plugin-manager"),
                     |action: &Action| action.launches_plugin("configuration"),
-                    |action: &Action| action.launches_plugin("zellij:about"),
+                    |action: &Action| action.launches_plugin("yinz:about"),
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },

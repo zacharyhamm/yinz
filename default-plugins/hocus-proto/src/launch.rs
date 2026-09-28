@@ -1,7 +1,7 @@
 //! Starting a coding agent from a hocus plugin.
 //!
 //! The planner — what to run, and what Git setup to do first — lives in
-//! `zellij_runtime::agent::launch` so the server can answer a TypeScript plugin's `zellij.agent.spawn`
+//! `yinz_runtime::agent::launch` so the server can answer a TypeScript plugin's `yinz.agent.spawn`
 //! with the very same code; it is re-exported here whole, so every caller in this crate and
 //! its plugins reads `launch::plan`, `launch::Spec` and the permission-mode tables as before.
 //! What stays here is what only a wasm plugin can do or need: the host call, the VM naming,
@@ -10,11 +10,11 @@
 //! [`open`] cannot be pure — it is a host call — so it is gated the way [`crate::store::Host`]
 //! is, with a stub on the host triple that fails loudly rather than quietly answering nothing.
 
-pub use zellij_tile::agent::launch::*;
+pub use yinz_tile::agent::launch::*;
 
 use std::cell::Cell;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zellij_tile::prelude::{SpawnedAgent, HOCUS_AGENT_PANE_CONTEXT};
+use yinz_tile::prelude::{SpawnedAgent, HOCUS_AGENT_PANE_CONTEXT};
 
 /// A VM used by exactly one automatic agent when no worktree will be mirrored.
 pub fn unique_firecracker_vm() -> String {
@@ -42,7 +42,7 @@ pub fn unique_firecracker_vm() -> String {
 /// after and mirror: the modal's VM name is a placeholder the host replaces.
 #[cfg(target_family = "wasm")]
 pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<SpawnedAgent, String> {
-    zellij_tile::shim::spawn_agent(
+    yinz_tile::shim::spawn_agent(
         spec.clone(),
         Some(source_directory),
         None,
@@ -61,12 +61,12 @@ pub fn open(spec: &Spec, source_directory: std::path::PathBuf) -> Result<Spawned
 /// half, and should say so instead of passing against a pane that was never opened.
 #[cfg(not(target_family = "wasm"))]
 pub fn open(_spec: &Spec, _source_directory: std::path::PathBuf) -> Result<SpawnedAgent, String> {
-    Err("agents cannot be started outside zellij".to_owned())
+    Err("agents cannot be started outside yinz".to_owned())
 }
 
 /// The plugin alias for each of the two hocus panes.
 ///
-/// Aliases rather than `zellij:` urls: plugin identity is (location, configuration), an alias
+/// Aliases rather than `yinz:` urls: plugin identity is (location, configuration), an alias
 /// contributes its own block - `shared true` - to that configuration, and the keybindings open
 /// both halves by alias. A second spelling would open a second pane rather than reach the one
 /// already there.

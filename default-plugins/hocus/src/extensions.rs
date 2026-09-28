@@ -4,18 +4,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_arch = "wasm32")]
-use zellij_tile::prelude::MessageToPlugin;
+use yinz_tile::prelude::MessageToPlugin;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub const DISCOVER: &str = "hocus_extension_discover";
 pub const REGISTER: &str = "hocus_extension_register";
-/// A tool call travels as a `zellij.rpc` call, which the prelude answers for the extension: the
-/// extension's `zellij.hocus.tools { name = { ..., handler = fn } }` registers a handler named
+/// A tool call travels as a `yinz.rpc` call, which the prelude answers for the extension: the
+/// extension's `yinz.hocus.tools { name = { ..., handler = fn } }` registers a handler named
 /// `hocus_tool:<name>`, and the reply comes back on the rpc reply message, addressed to this
 /// plugin's id.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub const CALL: &str = "zellij_rpc_call";
-pub const RESULT: &str = "zellij_rpc_reply";
+pub const CALL: &str = "yinz_rpc_call";
+pub const RESULT: &str = "yinz_rpc_reply";
 /// The rpc handler prefix hocus calls a tool under.
 pub const TOOL_HANDLER_PREFIX: &str = "hocus_tool:";
 /// How long a call may go unanswered before hocus gives up on it: an extension that raised
@@ -59,7 +59,7 @@ struct RegistrationTool {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExtensionTool {
-    pub owner: zellij_tile::prelude::PluginId,
+    pub owner: yinz_tile::prelude::PluginId,
     pub path: String,
     pub namespace: String,
     pub local_name: String,
@@ -86,8 +86,8 @@ impl ExtensionTool {
 #[derive(Default)]
 pub struct Registry {
     tools: BTreeMap<String, ExtensionTool>,
-    owners: BTreeMap<zellij_tile::prelude::PluginId, BTreeSet<String>>,
-    identities: BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
+    owners: BTreeMap<yinz_tile::prelude::PluginId, BTreeSet<String>>,
+    identities: BTreeMap<yinz_tile::prelude::PluginId, (String, String)>,
 }
 
 impl Registry {
@@ -107,14 +107,14 @@ impl Registry {
             .collect()
     }
 
-    pub fn owner_for_path(&self, path: &str) -> Option<zellij_tile::prelude::PluginId> {
+    pub fn owner_for_path(&self, path: &str) -> Option<yinz_tile::prelude::PluginId> {
         self.identities
             .iter()
             .find(|(_, (_, registered_path))| registered_path == path)
             .map(|(owner, _)| *owner)
     }
 
-    pub fn remove_owner(&mut self, owner: zellij_tile::prelude::PluginId) {
+    pub fn remove_owner(&mut self, owner: yinz_tile::prelude::PluginId) {
         self.identities.remove(&owner);
         if let Some(names) = self.owners.remove(&owner) {
             for name in names {
@@ -125,10 +125,10 @@ impl Registry {
 
     pub fn register(
         &mut self,
-        owner: zellij_tile::prelude::PluginId,
+        owner: yinz_tile::prelude::PluginId,
         payload: &str,
         discovered: &BTreeMap<String, String>,
-        instances: &BTreeMap<zellij_tile::prelude::PluginId, (String, String)>,
+        instances: &BTreeMap<yinz_tile::prelude::PluginId, (String, String)>,
         reserved: &BTreeSet<String>,
     ) -> Result<Vec<String>, String> {
         if payload.len() > MAX_REGISTRATION_BYTES {
@@ -315,7 +315,7 @@ pub fn namespace_for_path<'a>(dir: &str, path: &'a str) -> Option<&'a str> {
 
 #[cfg(target_arch = "wasm32")]
 pub fn discover() {
-    zellij_tile::shim::pipe_message_to_plugin(MessageToPlugin::new(DISCOVER));
+    yinz_tile::shim::pipe_message_to_plugin(MessageToPlugin::new(DISCOVER));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -323,7 +323,7 @@ pub fn discover() {}
 
 #[cfg(target_arch = "wasm32")]
 pub fn load(path: &str, namespace: &str) {
-    zellij_tile::shim::load_new_plugin(
+    yinz_tile::shim::load_new_plugin(
         format!("file:{path}"),
         BTreeMap::from([
             ("hocus_extension_name".to_owned(), namespace.to_owned()),
@@ -361,18 +361,18 @@ pub fn load(_path: &str, _namespace: &str) {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn reload(owner: zellij_tile::prelude::PluginId) {
-    zellij_tile::shim::reload_plugin_with_id(owner);
+pub fn reload(owner: yinz_tile::prelude::PluginId) {
+    yinz_tile::shim::reload_plugin_with_id(owner);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn reload(_owner: zellij_tile::prelude::PluginId) {
+pub fn reload(_owner: yinz_tile::prelude::PluginId) {
     test_seams::count_load();
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn call(owner: zellij_tile::prelude::PluginId, payload: String) {
-    zellij_tile::shim::pipe_message_to_plugin(
+pub fn call(owner: yinz_tile::prelude::PluginId, payload: String) {
+    yinz_tile::shim::pipe_message_to_plugin(
         MessageToPlugin::new(CALL)
             .with_destination_plugin_id(owner)
             .with_payload(payload),
@@ -380,7 +380,7 @@ pub fn call(owner: zellij_tile::prelude::PluginId, payload: String) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn call(_owner: zellij_tile::prelude::PluginId, _payload: String) {}
+pub fn call(_owner: yinz_tile::prelude::PluginId, _payload: String) {}
 
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();

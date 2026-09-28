@@ -4,7 +4,7 @@ pub mod data;
 pub mod utils;
 
 use crate::LinePart;
-use zellij_tile::prelude::*;
+use yinz_tile::prelude::*;
 
 pub type TipFn = fn(&ModeInfo) -> LinePart;
 

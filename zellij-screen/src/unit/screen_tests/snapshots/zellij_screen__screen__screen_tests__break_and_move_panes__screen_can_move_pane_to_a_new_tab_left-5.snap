@@ -1,6 +1,0 @@
----
-source: zellij-screen/src/screen/../unit/screen_tests/break_and_move_panes.rs
-assertion_line: 715
-expression: "format!(\"{}\", snapshot_count)"
----
-4

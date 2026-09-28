@@ -11,8 +11,8 @@ use hocus_proto::{
     store::{self, Backend},
     wire::{self, PollReply},
 };
-use zellij_tile::prelude::*;
-use zellij_tile::ui_components::forms::{
+use yinz_tile::prelude::*;
+use yinz_tile::ui_components::forms::{
     viewport_window, Button, Checkbox, Combo, Dialog, Form, FormEvent, Rect, Select, TextInput,
 };
 
@@ -115,7 +115,7 @@ struct State {
     /// project is derived from.
     source_directory: PathBuf,
     projects: Registry,
-    plugin_id: zellij_tile::prelude::PluginId,
+    plugin_id: yinz_tile::prelude::PluginId,
     /// The tab this modal is on, off the last `PaneUpdate` that had it: what the panel hide
     /// names, so only the panel drawn over the new agent's tab goes (see `hand_over_focus`).
     /// A manifest without this pane keeps the last one known.
@@ -226,7 +226,7 @@ impl Default for State {
                 .status_row(),
             source_directory: PathBuf::from("."),
             projects: Registry::new(),
-            plugin_id: zellij_tile::prelude::PluginId::new(0),
+            plugin_id: yinz_tile::prelude::PluginId::new(0),
             own_tab: None,
             job: Job::New,
             firecracker_image_edited: false,
@@ -241,7 +241,7 @@ impl Default for State {
 
 register_plugin!(State);
 
-impl ZellijPlugin for State {
+impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.source_directory = configuration
             .get("caller_cwd")
@@ -369,7 +369,7 @@ impl ZellijPlugin for State {
         if pipe_message.name == "swamp-pane-ack" && self.workflow_result_pending {
             if let Some((plugin, _, _)) = &self.workflow_reply {
                 if pipe_message.source
-                    == PipeSource::Plugin(zellij_tile::prelude::PluginId::new(*plugin))
+                    == PipeSource::Plugin(yinz_tile::prelude::PluginId::new(*plugin))
                 {
                     self.workflow_reply = None;
                     self.workflow_result_pending = false;
@@ -1044,7 +1044,7 @@ impl State {
             self.workflow_focus = pane;
             pipe_message_to_plugin(
                 MessageToPlugin::new("swamp-pane-result")
-                    .with_destination_plugin_id(zellij_tile::prelude::PluginId::new(*plugin))
+                    .with_destination_plugin_id(yinz_tile::prelude::PluginId::new(*plugin))
                     .with_payload(
                         serde_json::json!({"work": work, "key": key,
                     "choice": if pane.is_some() { "started" } else { "cancelled" }, "pane_id": pane})
@@ -1205,7 +1205,7 @@ impl State {
             (None, None) => {
                 let form = self.dialog.form();
                 let hint = match form.focused_id() {
-                    Some(FIRECRACKER) => Some("First use: zellij-firecracker setup"),
+                    Some(FIRECRACKER) => Some("First use: yinz-firecracker setup"),
                     Some(FIRECRACKER_IMAGE) if form.checked(FIRECRACKER) => {
                         Some("Blank uses the default VM image")
                     },
@@ -1416,7 +1416,7 @@ fn spec(form: &Form) -> launch::Spec {
         worktree_dir: (form.checked(CREATE_BRANCH) && form.checked(WORKTREE))
             .then(|| form.text(PATH).to_owned()),
         reuse: Some(form.checked(REUSE)),
-        // The modal's exemption from the guard `agent_spawn` and `zellij.agent.spawn` are
+        // The modal's exemption from the guard `agent_spawn` and `yinz.agent.spawn` are
         // held to. Unticking "Use worktree" is a person looking straight at the box and
         // saying so, which is the whole of what the override asks a caller to do; making
         // them tick a second box beside it would say nothing the first did not.
@@ -1449,7 +1449,7 @@ fn selected_agent_option(form: &Form, id: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The form as the pair Zellij wants. Kept as its own function because the tests
+/// The form as the pair Yinz wants. Kept as its own function because the tests
 /// below check the translation, and because it is the one place the modal could
 /// still say something `launch` cannot.
 fn request(form: &Form) -> Result<(CommandToRun, GitCheckout), String> {
@@ -1506,12 +1506,12 @@ mod tests {
             pane_id: 7,
             title: format!("{kind} agent"),
             command: Some(kind.to_owned()),
-            cwd: Some("/work/zellij".to_owned()),
+            cwd: Some("/work/yinz".to_owned()),
             host: None,
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
+            tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some(kind.to_owned()),
             agent: None,
         }
@@ -1534,7 +1534,7 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::from([
-            project("zellij", "/work/zellij"),
+            project("yinz", "/work/yinz"),
             project("dobbs", "/work/dobbs"),
         ])
     }
@@ -1590,13 +1590,13 @@ mod tests {
     fn project_worktree_defaults_reset_on_selection_and_allow_overrides() {
         let mut state = State {
             projects: registry(),
-            source_directory: PathBuf::from("/work/zellij"),
+            source_directory: PathBuf::from("/work/yinz"),
             ..Default::default()
         };
-        state.projects.get_mut("zellij").unwrap().worktree_dir = Some("../zellij trees".into());
+        state.projects.get_mut("yinz").unwrap().worktree_dir = Some("../yinz trees".into());
         state.projects.get_mut("dobbs").unwrap().worktree_dir = Some("/tmp/dobbs trees".into());
         state.fill_projects();
-        assert_eq!(state.dialog.form().text(PATH), "../zellij trees");
+        assert_eq!(state.dialog.form().text(PATH), "../yinz trees");
         state.set_text(PATH, "/manual");
         assert_eq!(
             spec(state.dialog.form()).worktree_dir.as_deref(),
@@ -1617,7 +1617,7 @@ mod tests {
             .unwrap()
             .select_index(0);
         state.changed(PROJECT);
-        assert_eq!(state.dialog.form().text(PATH), "../zellij trees");
+        assert_eq!(state.dialog.form().text(PATH), "../yinz trees");
     }
 
     #[test]
@@ -1627,13 +1627,13 @@ mod tests {
             source_directory: PathBuf::from("/outside/linked"),
             ..Default::default()
         };
-        state.projects.get_mut("zellij").unwrap().worktree_dir = Some("../saved trees".into());
+        state.projects.get_mut("yinz").unwrap().worktree_dir = Some("../saved trees".into());
         state.fill_projects();
         let context = BTreeMap::from([
             (GIT_PROBE.to_owned(), WORKTREES_PROBE.to_owned()),
             (GIT_PROBE_ID.to_owned(), state.git_probe.to_string()),
         ]);
-        let output = "worktree /work/zellij\n\nworktree /outside/linked\n";
+        let output = "worktree /work/yinz\n\nworktree /outside/linked\n";
         assert!(state.finish_git_probe(Some(0), output, &context));
         assert_eq!(state.dialog.form().text(PATH), "../saved trees");
         state.set_text(PATH, "/manual");
@@ -1655,7 +1655,7 @@ mod tests {
             .set_text("topic".into());
         state.changed(BRANCH);
         let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.path, PathBuf::from("zellij"));
+        assert_eq!(command.path, PathBuf::from("yinz"));
         assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
         assert!(
             matches!(checkout, GitCheckout::NewWorktree { branch, base, path }
@@ -1667,7 +1667,7 @@ mod tests {
     fn choosing_firecracker_keeps_host_worktree_setup() {
         let mut state = State {
             projects: registry(),
-            source_directory: PathBuf::from("/work/zellij"),
+            source_directory: PathBuf::from("/work/yinz"),
             ..Default::default()
         };
         state.fill_projects();
@@ -1714,7 +1714,7 @@ mod tests {
     fn firecracker_fields_explain_setup_defaults_and_inactive_images() {
         let mut state = State::default();
         for (field, enabled, expected) in [
-            (FIRECRACKER, false, "First use: zellij-firecracker setup"),
+            (FIRECRACKER, false, "First use: yinz-firecracker setup"),
             (
                 FIRECRACKER_IMAGE,
                 false,
@@ -2236,15 +2236,15 @@ mod tests {
         // A worktree below the project root is still the project's.
         let mut state = State {
             projects: registry(),
-            source_directory: PathBuf::from("/work/zellij/.worktrees/topic"),
+            source_directory: PathBuf::from("/work/yinz/.worktrees/topic"),
             ..Default::default()
         };
         state.fill_projects();
 
         assert_eq!(state.dialog.form().fields()[0].id(), PROJECT);
         let select = state.dialog.form().select_by_id(PROJECT).unwrap();
-        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "zellij"]);
-        assert_eq!(select.selected_option(), Some("zellij"));
+        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "yinz"]);
+        assert_eq!(select.selected_option(), Some("yinz"));
     }
 
     /// The finding this fixes: the caller's own folder had no option at all once
@@ -2253,7 +2253,7 @@ mod tests {
     /// modal was opened from.
     #[test]
     fn the_current_directory_is_offered_from_inside_a_project() {
-        let worktree = PathBuf::from("/work/zellij/.worktrees/topic");
+        let worktree = PathBuf::from("/work/yinz/.worktrees/topic");
         let mut state = State {
             projects: registry(),
             source_directory: worktree.clone(),
@@ -2322,7 +2322,7 @@ mod tests {
         state.fill_projects();
 
         let select = state.dialog.form().select_by_id(PROJECT).unwrap();
-        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "zellij"]);
+        assert_eq!(select.options(), [CURRENT_DIRECTORY, "dobbs", "yinz"]);
         assert_eq!(select.selected_option(), Some(CURRENT_DIRECTORY));
 
         let (options, selected) = project_options(&Registry::new(), Path::new("/elsewhere"));
@@ -2334,7 +2334,7 @@ mod tests {
     fn the_agent_is_created_in_the_selected_projects_root() {
         let mut state = State {
             projects: registry(),
-            source_directory: PathBuf::from("/work/zellij"),
+            source_directory: PathBuf::from("/work/yinz"),
             ..Default::default()
         };
         state.fill_projects();
@@ -2369,11 +2369,11 @@ mod tests {
     #[test]
     fn firecracker_image_defaults_follow_the_project_until_edited() {
         let mut projects = registry();
-        projects.get_mut("zellij").unwrap().firecracker_image = Some("rust".to_owned());
+        projects.get_mut("yinz").unwrap().firecracker_image = Some("rust".to_owned());
         projects.get_mut("dobbs").unwrap().firecracker_image = Some("ruby".to_owned());
         let mut state = State {
             projects,
-            source_directory: PathBuf::from("/work/zellij"),
+            source_directory: PathBuf::from("/work/yinz"),
             ..Default::default()
         };
         state.fill_projects();
@@ -2407,7 +2407,7 @@ mod tests {
             .form_mut()
             .select_by_id_mut(PROJECT)
             .unwrap()
-            .select_option("zellij");
+            .select_option("yinz");
         state.changed(PROJECT);
         assert_eq!(state.dialog.form().text(FIRECRACKER_IMAGE), "");
     }
@@ -2418,9 +2418,9 @@ mod tests {
     /// there means - and the rest are written the way the field is labelled.
     #[test]
     fn the_worktree_suggestions_are_the_directories_the_linked_checkouts_live_in() {
-        let porcelain = "worktree /work/zellij\nHEAD abcd\nbranch refs/heads/main\n\
-             \nworktree /work/zellij/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
-             \nworktree /work/zellij/.worktrees/other\nHEAD ef02\nbranch refs/heads/other\n\
+        let porcelain = "worktree /work/yinz\nHEAD abcd\nbranch refs/heads/main\n\
+             \nworktree /work/yinz/.worktrees/topic\nHEAD ef01\nbranch refs/heads/topic\n\
+             \nworktree /work/yinz/.worktrees/other\nHEAD ef02\nbranch refs/heads/other\n\
              \nworktree /elsewhere/detached\nHEAD 2345\ndetached\n";
         assert_eq!(
             worktree_suggestions(porcelain),
@@ -2430,7 +2430,7 @@ mod tests {
         );
         // A repository with no linked worktrees has nothing to suggest, and a
         // folder that is not a checkout answers with nothing at all.
-        assert!(worktree_suggestions("worktree /work/zellij\nbranch refs/heads/main\n").is_empty());
+        assert!(worktree_suggestions("worktree /work/yinz\nbranch refs/heads/main\n").is_empty());
         assert!(worktree_suggestions("").is_empty());
     }
 
@@ -2459,7 +2459,7 @@ mod tests {
         }
         assert!(state.finish_git_probe(
             Some(0),
-            "worktree /work/zellij\n\nworktree /work/zellij/.worktrees/topic\n",
+            "worktree /work/yinz\n\nworktree /work/yinz/.worktrees/topic\n",
             &context(WORKTREES_PROBE, 3),
         ));
         assert_eq!(
@@ -2517,7 +2517,7 @@ mod tests {
         assert_eq!(select.selected_option(), Some("Claude"));
         // Forking onto the same agent is a duplicate, and stays one keypress away.
         assert!(select.options().iter().any(|option| option == "Codex"));
-        assert_eq!(state.note.as_deref(), Some("forking codex in zellij"));
+        assert_eq!(state.note.as_deref(), Some("forking codex in yinz"));
         assert!(state.error.is_none());
 
         assert_eq!(
@@ -2690,7 +2690,7 @@ mod tests {
     #[test]
     fn the_fork_note_names_the_folder_and_the_machine() {
         let pane = agent_pane("codex");
-        assert_eq!(fork_note(&pane, "codex"), "forking codex in zellij");
+        assert_eq!(fork_note(&pane, "codex"), "forking codex in yinz");
         assert_eq!(
             fork_note(
                 &AgentPane {
@@ -2699,7 +2699,7 @@ mod tests {
                 },
                 "codex"
             ),
-            "forking codex in zellij on builder"
+            "forking codex in yinz on builder"
         );
         // A pane the daemon has no cwd for still says what it is forking.
         assert_eq!(
@@ -2978,13 +2978,13 @@ mod tests {
             assert_eq!(duplicate.target, target);
             let fork = command_in_context(&pane, "codex").unwrap();
             if target.is_local() {
-                assert_eq!(fork.path, PathBuf::from("zellij"));
+                assert_eq!(fork.path, PathBuf::from("yinz"));
                 assert_eq!(fork.args, ["hocus", "codex", "--command", "codex", "--"]);
             } else {
                 assert_eq!(fork.path, PathBuf::from("codex"));
             }
             assert_eq!(
-                zellij_tile::agent::agent_kind_of(&fork.path, &fork.args).as_deref(),
+                yinz_tile::agent::agent_kind_of(&fork.path, &fork.args).as_deref(),
                 Some("codex")
             );
             assert_eq!(fork.cwd, duplicate.cwd);
@@ -3025,7 +3025,7 @@ mod tests {
             firecracker_image: None,
             firecracker_worktree: None,
             status: agents::AgentStatus::Running,
-            tab: Some((zellij_tile::prelude::TabId::new(1), "work".to_owned())),
+            tab: Some((yinz_tile::prelude::TabId::new(1), "work".to_owned())),
             detected: Some("cursor".to_owned()),
             agent: None,
         };
@@ -3088,7 +3088,7 @@ mod tests {
     /// another client's tab is not over the new agent, and leaves itself up.
     #[test]
     fn the_hide_names_the_modals_tab() {
-        let me = PaneId::Plugin(zellij_tile::prelude::PluginId::new(12));
+        let me = PaneId::Plugin(yinz_tile::prelude::PluginId::new(12));
         let two_tabs = |modal_tab: usize| PaneManifest {
             panes: std::collections::HashMap::from([
                 (
@@ -3114,7 +3114,7 @@ mod tests {
 
         // Every manifest moves it, and one without the modal keeps the last one known.
         let mut state = State {
-            plugin_id: zellij_tile::prelude::PluginId::new(12),
+            plugin_id: yinz_tile::prelude::PluginId::new(12),
             ..Default::default()
         };
         state.update(Event::PaneUpdate(two_tabs(1)));

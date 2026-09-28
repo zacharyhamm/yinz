@@ -70,21 +70,21 @@ fn check_clippy() -> anyhow::Result<PathBuf> {
 const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
     // prost output, included as-is: it nests `mod api { mod api { .. } }` by construction
     (
-        "zellij-ipc/src/client_server_contract/mod.rs",
+        "yinz-ipc/src/client_server_contract/mod.rs",
         "clippy::module_inception",
     ),
     (
-        "zellij-ipc/src/nested_session_contract/mod.rs",
+        "yinz-ipc/src/nested_session_contract/mod.rs",
         "clippy::module_inception",
     ),
     // vendored from termwiz; its doc comments are not ours to reflow
     (
-        "zellij-key-codec/src/vendored/termwiz/input.rs",
+        "yinz-key-codec/src/vendored/termwiz/input.rs",
         "clippy::doc_lazy_continuation",
     ),
     // the store's test files run once per engine, so one file is deliberately two modules
     (
-        "zellij-storage/src/plugin_data_store/tests/mod.rs",
+        "yinz-storage/src/plugin_data_store/tests/mod.rs",
         "clippy::duplicate_mod",
     ),
     // the dockerised e2e smoke suite, `#[ignore]`d and behind the `e2e` feature; a scaffold
