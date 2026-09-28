@@ -20,9 +20,7 @@ zellij-deno-builtins = { workspace = true }
 zellij-ipc = { workspace = true }
 zellij-key-codec = { workspace = true }
 zellij-plugin-api = { workspace = true }
-# `test-support` exposes the worker spawn counter the loader and plugin tests assert against;
-# enabled here rather than in dev-dependencies for consistent build and test selection.
-zellij-plugin-authoring = { workspace = true, features = ["test-support"] }
+zellij-plugin-authoring = { workspace = true }
 zellij-session = { workspace = true }
 zellij-storage = { workspace = true }
 zellij-runtime = { workspace = true }

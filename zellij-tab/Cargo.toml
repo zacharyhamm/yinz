@@ -5,20 +5,12 @@ edition.workspace = true
 license.workspace = true
 description = "The zellij server's tab: pane composition, focus, swap layouts, mouse and pane groups"
 
-[features]
-# Test helpers on `Tab` and `CopyOptions` that `zellij-screen`'s screen tests drive. Its normal
-# dependency enables this feature for consistent build and test selection.
-test-support = []
-
 [lints]
 workspace = true
 
 [dependencies]
 zellij-bus = { path = "../zellij-bus", version = "0.45.0" }
-# The tab tests drive the pane layer's test helpers too. `test-support` sits on the normal
-# dependency, as zellij-screen's does, so that `build`, `run`, unit tests and lint all resolve the
-# same feature set for zellij-panes.
-zellij-panes = { path = "../zellij-panes", version = "0.45.0", features = ["test-support"] }
+zellij-panes = { path = "../zellij-panes", version = "0.45.0" }
 zellij-terminal = { path = "../zellij-terminal", version = "0.45.0" }
 zellij-key-codec = { workspace = true }
 zellij-runtime = { workspace = true }

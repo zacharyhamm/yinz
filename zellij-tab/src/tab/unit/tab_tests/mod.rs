@@ -150,11 +150,19 @@ fn tab_resize_right(tab: &mut Tab, id: ClientId) {
 }
 
 fn create_new_tab(size: Size, stacked_resize: bool) -> Tab {
+    create_new_tab_with_senders(
+        size,
+        stacked_resize,
+        ThreadSenders::default().silently_fail_on_send(),
+    )
+}
+
+/// `create_new_tab` with the given senders, which every pane container clones at construction.
+fn create_new_tab_with_senders(size: Size, stacked_resize: bool, senders: ThreadSenders) -> Tab {
     let index = 0;
     let position = 0;
     let name = String::new();
     let os_api = Box::new(FakeInputOutput {});
-    let senders = ThreadSenders::default().silently_fail_on_send();
     let max_panes = None;
     let mode_info = ModeInfo::default();
     let style = Style::default();

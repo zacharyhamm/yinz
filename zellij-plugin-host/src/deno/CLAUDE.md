@@ -67,7 +67,8 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   `deno_core`, `deno_ast` or this crate; `ENGINE_FREE` in `xtask/src/metadata.rs` enforces that
   for it and for Hocus. Anything needing V8 or SWC belongs on the worker side, here.
   `zellij_plugin_host::plugin_authoring` re-exports it for the server and the CLI. Its
-  `test-support` feature is the worker spawn counter this crate's tests assert against.
+  always-on `worker::spawn_count` is what this crate's loader and plugin tests assert deltas
+  against.
 - **Events keep their serde shape.** `update(event)` and `on(type, payload, raw)` receive the
   externally tagged Rust enum as JSON - positional tuples, `null` in absent slots - with two
   deliberate exceptions built in Rust: `PaneRenderReport` is re-keyed `terminal_3` (`event.rs`),

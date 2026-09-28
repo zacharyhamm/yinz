@@ -1376,10 +1376,6 @@ impl FloatingPanes {
         self.set_pane_active_at(pane_id);
         self.set_force_render();
     }
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_active_pane_for_client(&mut self, pane_id: PaneId, client_id: ClientId) {
-        self.active_panes.insert(client_id, pane_id, &self.panes);
-    }
     pub fn fullscreen_is_active(&self) -> bool {
         self.fullscreen_pane_id.is_some()
     }

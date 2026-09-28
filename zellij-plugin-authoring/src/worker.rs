@@ -121,10 +121,8 @@ fn request(path: &Path, source: &str, declarations: bool, operation: Operation) 
 
 /// How many workers this process has spawned. Tests assert deltas against it, never
 /// absolutes: under `cargo test` every test in the binary shares the counter.
-#[cfg(any(test, feature = "test-support"))]
 static SPAWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(any(test, feature = "test-support"))]
 pub fn spawn_count() -> usize {
     SPAWNS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -235,7 +233,6 @@ fn supervise_cancel(
             .context("spawn worker")?,
         owns_group,
     );
-    #[cfg(any(test, feature = "test-support"))]
     SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stdin = child.0.stdin.take().context("worker stdin")?;
     let mut stdout = child.0.stdout.take().context("worker stdout")?;

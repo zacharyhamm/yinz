@@ -264,6 +264,11 @@ const COMPOSITION_ROOT: &str = "zellij";
 /// every workspace member, including those `LIBRARY_DEPENDENCIES` does not list.
 const ROOT_ONLY_DEPENDENCIES: &[&str] = &["zellij-server-os"];
 
+/// Features that exist only for other crates' tests. Enabled from a normal or build dependency,
+/// one is compiled into everything that links the crate, the release binary included, and every
+/// build has it on, so a `cfg(any(test, feature = "test-support"))` gate excludes nothing.
+const TEST_ONLY_FEATURES: &[&str] = &["test-support"];
+
 /// Crates that must build no JavaScript or Wasm engine and nothing that links one.
 /// `zellij-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
 /// and Hocus's native tests check plugin sources through it without waiting for the plugin host.
@@ -304,6 +309,31 @@ fn validate_dependency_boundaries(metadata: &Value) -> anyhow::Result<()> {
                 anyhow::bail!(
                     "{} may not depend on {target}; only {COMPOSITION_ROOT} may (kind: {}, target: {})",
                     package["name"].as_str().context("Missing package name")?,
+                    dependency["kind"],
+                    dependency["target"]
+                );
+            }
+        }
+    }
+    for package in &workspace {
+        for dependency in package["dependencies"]
+            .as_array()
+            .context("Missing dependencies in Cargo metadata")?
+        {
+            if dependency["kind"] == "dev" {
+                continue;
+            }
+            let features = dependency["features"].as_array().into_iter().flatten();
+            if let Some(feature) = features
+                .filter_map(Value::as_str)
+                .find(|feature| TEST_ONLY_FEATURES.contains(feature))
+            {
+                anyhow::bail!(
+                    "{} may enable {}'s {feature} feature only from a dev-dependency (kind: {}, target: {})",
+                    package["name"].as_str().context("Missing package name")?,
+                    dependency["name"]
+                        .as_str()
+                        .context("Missing dependency name")?,
                     dependency["kind"],
                     dependency["target"]
                 );
@@ -516,6 +546,60 @@ mod tests {
                         .to_string()
                         .contains(&format!(
                             "{source} may depend on {destination} only as a dev-dependency"
+                        )));
+                }
+            }
+            metadata["packages"][index]["dependencies"] = original;
+        }
+    }
+
+    /// The first four edges are the ones that once shipped test helpers in the release binary.
+    #[test]
+    fn test_only_features_are_enabled_only_from_dev_dependencies() {
+        let mut metadata = allowed_workspace();
+        metadata["packages"].as_array_mut().unwrap().push(json!({
+            "id": COMPOSITION_ROOT, "name": COMPOSITION_ROOT, "dependencies": []
+        }));
+        metadata["workspace_members"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(COMPOSITION_ROOT));
+        for (source, destination) in [
+            ("zellij-plugin-host", "zellij-plugin-authoring"),
+            ("zellij-tab", "zellij-panes"),
+            ("zellij-screen", "zellij-panes"),
+            ("zellij-screen", "zellij-tab"),
+            (COMPOSITION_ROOT, "zellij-plugin-api"),
+        ] {
+            let index = metadata["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|p| p["name"] == source)
+                .unwrap();
+            let original = metadata["packages"][index]["dependencies"].clone();
+            for (kind, feature) in [
+                (json!("dev"), "test-support"),
+                (json!(null), "unrelated"),
+                (json!("build"), "unrelated"),
+            ] {
+                metadata["packages"][index]["dependencies"] = json!([{
+                    "name": destination, "kind": kind, "target": null, "features": [feature]
+                }]);
+                validate_dependency_boundaries(&metadata).unwrap();
+            }
+            for kind in [json!(null), json!("build")] {
+                for target in [json!(null), json!("cfg(unix)")] {
+                    metadata["packages"][index]["dependencies"] = json!([{
+                        "name": destination, "rename": "innocent_alias", "optional": true,
+                        "kind": kind, "target": target, "features": ["unrelated", "test-support"]
+                    }]);
+                    assert!(validate_dependency_boundaries(&metadata)
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!(
+                            "{source} may enable {destination}'s test-support feature only from \
+                             a dev-dependency"
                         )));
                 }
             }

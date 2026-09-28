@@ -4049,7 +4049,6 @@ impl Tab {
     }
     /// When `pane_id`'s unanswered wait started, for a test that needs to tell one blink from
     /// a restarted one.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn pane_agent_attention_since(&self, pane_id: PaneId) -> Option<Instant> {
         self.rendered_pane(pane_id)
             .and_then(|pane| pane.agent_attention_since())
@@ -5362,8 +5361,9 @@ impl Tab {
     /// the output, rather than wherever the last character chunk happened to land. A caller that
     /// paints *above* the tabs - the session's toasts do - must therefore not use this: it has to
     /// call `render_panes` for every tab, paint its own layer, and only then place the cursor with
-    /// `render_cursor_last`. See `Screen::render_to_clients`.
-    #[cfg(any(test, feature = "test-support"))]
+    /// `render_cursor_last`. See `Screen::render_to_clients`. Production always does, so this is
+    /// only for tests that draw one tab on its own.
+    #[cfg(test)]
     pub fn render(
         &mut self,
         output: &mut Output,
@@ -8004,16 +8004,14 @@ impl Tab {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    /// `handle_mouse_event_with_passthrough` for a client not descended into any pane.
+    #[cfg(test)]
     pub fn handle_mouse_event(
         &mut self,
         event: &MouseEvent,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
-        if self.pane_tabs_mouse(event, client_id)? {
-            return Ok(MouseEffect::state_changed());
-        }
-        MouseHandler::handle_mouse_event(self, event, client_id, None)
+        self.handle_mouse_event_with_passthrough(event, client_id, None)
     }
 
     /// `passthrough_pane_id` is the pane the client is descended into, if any: alt+mouse over
@@ -8094,7 +8092,6 @@ impl Tab {
     /// Whether this tab has been told it is on screen. The other half of [`Tab::visible`]: a tab
     /// a client was moved into without this being set renders for nobody. Only the tests ask -
     /// production code sets it and reads it off `Screen::active_tab_ids` instead.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn is_visible(&self) -> bool {
         self.tab_visible
     }
@@ -10036,7 +10033,6 @@ impl Tab {
 /// `unit/screen_tests/overlays.rs` drives a random sequence of operations and calls this after
 /// each one, and the characterization tests call it at their assertion points. Invariants that
 /// only become true once overlays have their own collection are noted and added there.
-#[cfg(any(test, feature = "test-support"))]
 impl Tab {
     pub fn assert_invariants(&self) {
         // 1. A pane lives in exactly one collection.
@@ -10207,7 +10203,7 @@ impl CopyOptions {
 }
 
 /// The options a test tab copies with: no command, the default clipboard, copy on select.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Default for CopyOptions {
     fn default() -> Self {
         Self {
