@@ -2,6 +2,7 @@
 const CLIENT_1: zellij_types::internal_ids::ClientId = zellij_types::internal_ids::ClientId::new(1);
 
 use super::*;
+use crate::capturing_os::CapturingOs;
 use crate::plugins::PluginInstruction;
 use crate::thread_bus::ThreadSenders;
 use std::collections::HashMap;
@@ -404,10 +405,11 @@ fn a_client_disconnect_cancels_its_pending_escape() {
     // the client says nothing and goes away, which the route thread reads as EOF
     drop(client);
 
+    let os = CapturingOs::default();
     crate::route::route_thread_main(
         session_data.clone(),
         session_state,
-        Box::new(StubOs),
+        Box::new(os.clone()),
         SenderWithContext::new(to_server),
         IpcReceiverWithContext::new(accepted),
         CLIENT_1,
@@ -432,98 +434,12 @@ fn a_client_disconnect_cancels_its_pending_escape() {
         matches!(instruction, ServerInstruction::RemoveClient(CLIENT_1)),
         "expected RemoveClient, got {instruction:?}"
     );
-}
-
-/// An OS API for a route thread that only ever sees EOF: nothing here is reached, and reaching
-/// anything is the failure.
-struct StubOs;
-
-impl crate::os_input_output::ServerOsApi for StubOs {
-    fn set_terminal_size_using_terminal_id(
-        &self,
-        _: TerminalId,
-        _: u16,
-        _: u16,
-        _: Option<u16>,
-        _: Option<u16>,
-    ) -> Result<()> {
-        unimplemented!()
-    }
-    fn spawn_terminal(
-        &self,
-        _: zellij_types::input::command::TerminalAction,
-        _: Box<
-            dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
-                + Send,
-        >,
-        _: Option<std::path::PathBuf>,
-    ) -> Result<(
-        TerminalId,
-        Box<dyn crate::os_input_output::AsyncReader>,
-        Option<zellij_types::internal_ids::ProcessId>,
-    )> {
-        unimplemented!()
-    }
-    fn write_to_tty_stdin(&self, _: TerminalId, _: &[u8]) -> Result<usize> {
-        unimplemented!()
-    }
-    fn tcdrain(&self, _: TerminalId) -> Result<()> {
-        unimplemented!()
-    }
-    fn kill(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn force_kill(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn send_sigint(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn send_sigcont(&self, _: zellij_types::internal_ids::ProcessId) -> Result<()> {
-        unimplemented!()
-    }
-    fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> {
-        Box::new(StubOs)
-    }
-    fn send_to_client(&self, _: ClientId, _: zellij_ipc::ipc::ServerToClientMsg) -> Result<()> {
-        unimplemented!()
-    }
-    fn new_client(
-        &mut self,
-        _: ClientId,
-        _: interprocess::local_socket::Stream,
-    ) -> Result<zellij_ipc::ipc::IpcReceiverWithContext<ClientToServerMsg>> {
-        unimplemented!()
-    }
-    fn remove_client(&mut self, _: ClientId) -> Result<()> {
-        unimplemented!()
-    }
-    fn load_palette(&self) -> zellij_types::data::Palette {
-        unimplemented!()
-    }
-    fn get_cwd(&self, _: zellij_types::internal_ids::ProcessId) -> Option<std::path::PathBuf> {
-        unimplemented!()
-    }
-    fn write_to_file(&mut self, _: String, _: Option<String>) -> Result<()> {
-        unimplemented!()
-    }
-    fn re_run_command_in_terminal(
-        &self,
-        _: TerminalId,
-        _: zellij_types::input::command::RunCommand,
-        _: Box<
-            dyn Fn(crate::panes::PaneId, Option<i32>, zellij_types::input::command::RunCommand)
-                + Send,
-        >,
-    ) -> Result<(
-        Box<dyn crate::os_input_output::AsyncReader>,
-        Option<zellij_types::internal_ids::ProcessId>,
-    )> {
-        unimplemented!()
-    }
-    fn clear_terminal_id(&self, _: TerminalId) -> Result<()> {
-        unimplemented!()
-    }
+    // there is nobody left to write to: not even the unblock that follows a handled message
+    let sent = os.server_to_client_messages.lock().unwrap();
+    assert!(
+        sent.is_empty(),
+        "a client that only hung up was sent {sent:?}"
+    );
 }
 
 /// The four `SessionMetaData` helpers that cancel a pending escape. The two other cancel

@@ -3303,7 +3303,7 @@ impl Screen {
                 worktree.display().to_string(),
             );
             payload.insert("agent_session".to_owned(), self.session_name.to_string());
-            if let Some(executable) = crate::os_input_output::server_binary() {
+            if let Some(executable) = zellij_runtime::own_binary::server_binary() {
                 payload.insert(
                     "agent_zellij_executable".to_owned(),
                     executable.display().to_string(),

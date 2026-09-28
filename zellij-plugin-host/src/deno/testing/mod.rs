@@ -27,7 +27,7 @@ const OUTPUT_LIMIT: usize = 32 * 1024;
 pub fn binary() -> Result<PathBuf> {
     std::env::var_os("ZELLIJ_COMPILATION_WORKER")
         .map(PathBuf::from)
-        .or_else(|| zellij_bus::os_input_output::server_binary().cloned())
+        .or_else(|| zellij_runtime::own_binary::server_binary().cloned())
         .or_else(|| std::env::current_exe().ok())
         .context("locate installed zellij")
 }
