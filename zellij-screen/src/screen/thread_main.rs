@@ -3,10 +3,11 @@ use zellij_types::internal_ids::NotificationId;
 use zellij_types::internal_ids::TabId;
 
 use super::{
-    active_tab, active_tab_and_connected_client_id, denormalize_notification_response,
-    Notification, NotificationRecord, Screen, ScreenInstruction,
+    active_tab, active_tab_and_connected_client_id, Notification, NotificationRecord, Screen,
+    ScreenInstruction,
 };
 use crate::background_jobs::BackgroundJob;
+use crate::notifications::denormalize_notification_response;
 use crate::os_input_output::ResizeCache;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
