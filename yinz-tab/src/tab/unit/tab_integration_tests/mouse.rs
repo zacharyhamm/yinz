@@ -198,6 +198,254 @@ fn plugin_wheel_receives_its_relative_position_before_each_scroll() {
 }
 
 #[test]
+fn focused_plugin_receives_a_right_press_on_its_content_as_a_right_click() {
+    use yinz_types::data::{Event, Mouse};
+
+    let coordinates = FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(10)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Fixed(20)),
+        height: Some(PercentOrFixed::Fixed(10)),
+        ..Default::default()
+    };
+    let placements = [
+        NewPanePlacement::Tiled {
+            direction: None,
+            borderless: None,
+        },
+        NewPanePlacement::Floating(Some(coordinates.clone())),
+        NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates))),
+    ];
+    for placement in placements {
+        let label = format!("{placement:?}");
+        let is_tiled = matches!(placement, NewPanePlacement::Tiled { .. });
+        let client_id = ClientId::new(1);
+        let plugin_id = crate::PluginId::new(2);
+        let pane_id = PaneId::Plugin(plugin_id);
+        let (mut tab, receiver) = create_new_tab_with_plugin_receiver(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+        );
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            placement,
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+        assert_eq!(tab.get_active_pane_id(client_id), Some(pane_id), "{label}");
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        let line = (pane.get_content_y() + 2) as i32;
+        let content = Position::new(line, (pane.get_content_x() + 3) as u16);
+        let left_border = Position::new(line, pane.x() as u16);
+        assert!(pane.position_is_on_frame(&left_border), "{label}");
+        let mouse_events = || -> Vec<_> {
+            receiver
+                .try_iter()
+                .flat_map(|(instruction, _)| match instruction {
+                    PluginInstruction::Update(events) => events,
+                    _ => Vec::new(),
+                })
+                .filter_map(|(pid, client, event)| match event {
+                    Event::Mouse(mouse) => Some((pid, client, mouse)),
+                    _ => None,
+                })
+                .collect()
+        };
+        mouse_events();
+
+        // Only the press is a click: the drag and release after it, the middle button and a
+        // right press on the frame send nothing.
+        for event in [
+            MouseEvent::new_right_press_event(content),
+            MouseEvent::new_right_motion_event(content),
+            MouseEvent::new_right_release_event(content),
+            MouseEvent::new_middle_press_event(content),
+            MouseEvent::new_middle_release_event(content),
+            MouseEvent::new_right_press_event(left_border),
+            MouseEvent::new_right_release_event(left_border),
+        ] {
+            tab.handle_mouse_event(&event, client_id).unwrap();
+        }
+        assert_eq!(
+            mouse_events(),
+            vec![(Some(plugin_id), Some(client_id), Mouse::RightClick(2, 3))],
+            "{label}"
+        );
+
+        // A context menu takes the right press instead.
+        tab.update_context_menu_on_right_click(true);
+        let effect = tab
+            .handle_mouse_event(&MouseEvent::new_right_press_event(content), client_id)
+            .unwrap();
+        assert!(effect.open_context_menu.is_some(), "{label}");
+        assert_eq!(mouse_events(), vec![], "{label}");
+        tab.update_context_menu_on_right_click(false);
+
+        // An unfocused plugin gets no right click. Only the tiled plugin stays on screen when
+        // the terminal beside it takes focus.
+        if is_tiled {
+            let terminal = tab
+                .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+                .unwrap();
+            let terminal_content = Position::new(
+                (terminal.get_content_y() + 2) as i32,
+                (terminal.get_content_x() + 3) as u16,
+            );
+            tab.handle_mouse_event(
+                &MouseEvent::new_left_press_event(terminal_content),
+                client_id,
+            )
+            .unwrap();
+            tab.handle_mouse_event(
+                &MouseEvent::new_left_release_event(terminal_content),
+                client_id,
+            )
+            .unwrap();
+            assert_eq!(
+                tab.get_active_pane_id(client_id),
+                Some(PaneId::Terminal(TerminalId::new(1)))
+            );
+            mouse_events();
+            tab.handle_mouse_event(&MouseEvent::new_right_press_event(content), client_id)
+                .unwrap();
+            assert_eq!(mouse_events(), vec![]);
+        }
+    }
+}
+
+#[test]
+fn multipane_plugin_hears_no_right_click_on_the_container_frame_or_divider() {
+    use yinz_types::data::{Event, Mouse};
+
+    let client_id = ClientId::new(1);
+    let left_id = crate::PluginId::new(2);
+    let left = PaneId::Plugin(left_id);
+    let right = PaneId::Plugin(crate::PluginId::new(3));
+    let (mut tab, receiver) = create_new_tab_with_plugin_receiver(
+        Size {
+            cols: 121,
+            rows: 20,
+        },
+        ModeInfo::default(),
+    );
+    let coordinates = |x| FloatingPaneCoordinates {
+        x: Some(PercentOrFixed::Fixed(x)),
+        y: Some(PercentOrFixed::Fixed(2)),
+        width: Some(PercentOrFixed::Fixed(30)),
+        height: Some(PercentOrFixed::Fixed(10)),
+        ..Default::default()
+    };
+    for (pane_id, x) in [(left, 2), (right, 32)] {
+        tab.new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::Overlay(OverlayPlacement::dismissible(Some(coordinates(x)))),
+            Some(client_id),
+            None,
+        )
+        .unwrap();
+    }
+    tab.create_multipane(
+        [left, right],
+        yinz_types::multipane::MultipaneSplit {
+            direction: yinz_types::multipane::MultipaneDirection::LeftRight,
+            ratio: 5000,
+        },
+        0,
+        OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
+            width: Some(PercentOrFixed::Fixed(60)),
+            ..coordinates(2)
+        })),
+    )
+    .unwrap();
+    // The first child is the one a press on the container's frame or divider routes to.
+    tab.focus_pane_with_id(left, false, false, client_id)
+        .unwrap();
+    assert_eq!(tab.get_active_pane_id(client_id), Some(left));
+    let outer = tab.overlay_panes.outer_geom(left).unwrap();
+    let pane = tab.overlay_panes.get_pane(left).unwrap();
+    let line = (pane.get_content_y() + 2) as i32;
+    let column = (pane.get_content_x() + 3) as u16;
+    let content = Position::new(line, column);
+    let divider = Position::new(line, (pane.x() + pane.cols()) as u16);
+    assert!(tab.overlay_panes.seam_at(&divider).is_some());
+    let frame = [
+        Position::new(line, outer.x as u16),
+        Position::new(outer.y as i32, column),
+        Position::new((outer.y + outer.rows.as_usize() - 1) as i32, column),
+        Position::new(line, (outer.x + outer.cols.as_usize() - 1) as u16),
+        divider,
+    ];
+    // Each lies outside the child's own geometry, so its own frame check cannot see it.
+    for position in frame {
+        assert!(!pane.contains(&position), "{position:?}");
+        assert!(
+            tab.overlay_panes.position_is_on_frame(left, &position)
+                || tab.overlay_panes.seam_at(&position).is_some(),
+            "{position:?}"
+        );
+    }
+    let mouse_events = || -> Vec<_> {
+        receiver
+            .try_iter()
+            .flat_map(|(instruction, _)| match instruction {
+                PluginInstruction::Update(events) => events,
+                _ => Vec::new(),
+            })
+            .filter_map(|(pid, client, event)| match event {
+                Event::Mouse(mouse) => Some((pid, client, mouse)),
+                _ => None,
+            })
+            .collect()
+    };
+    mouse_events();
+
+    for position in frame {
+        for event in [
+            MouseEvent::new_right_press_event(position),
+            MouseEvent::new_right_release_event(position),
+        ] {
+            tab.handle_mouse_event(&event, client_id).unwrap();
+        }
+        assert_eq!(mouse_events(), vec![], "{position:?}");
+        assert_eq!(
+            tab.get_active_pane_id(client_id),
+            Some(left),
+            "{position:?}"
+        );
+    }
+
+    // Hover still follows the pointer onto the divider, and the content still takes a click.
+    tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(divider), client_id)
+        .unwrap();
+    let hovers = mouse_events();
+    assert!(
+        matches!(
+            hovers.as_slice(),
+            [(Some(pid), Some(client), Mouse::Hover(..))] if *pid == left_id && *client == client_id
+        ),
+        "{hovers:?}"
+    );
+    tab.handle_mouse_event(&MouseEvent::new_right_press_event(content), client_id)
+        .unwrap();
+    assert_eq!(
+        mouse_events(),
+        vec![(Some(left_id), Some(client_id), Mouse::RightClick(2, 3))]
+    );
+}
+
+#[test]
 fn hidden_surface_overlay_owns_mouse_events() {
     let size = Size {
         cols: 121,
