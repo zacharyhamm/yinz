@@ -9,12 +9,12 @@ description = "The yinz server's panes, pane managers, frames and layout applica
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-ipc = { workspace = true }
 yinz-key-codec = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
-yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.0" }
 ansi_term = { workspace = true }
 kasuari = { version = "0.4.12", default-features = false }
 log = { workspace = true }

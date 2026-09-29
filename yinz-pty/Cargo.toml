@@ -9,7 +9,7 @@ description = "The yinz server's pty thread: spawning and supervising pane proce
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-runtime = { workspace = true }
 yinz-session = { workspace = true }
 yinz-types = { workspace = true }

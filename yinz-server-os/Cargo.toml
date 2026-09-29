@@ -9,8 +9,8 @@ description = "The yinz server's OS backend: ptys, pane supervisors, remote pane
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
-yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
+yinz-process = { path = "../yinz-process", version = "0.1.0" }
 yinz-ipc = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }

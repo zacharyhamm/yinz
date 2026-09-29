@@ -27,14 +27,14 @@ yinz-session = { workspace = true }
 yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-storage = { workspace = true }
-yinz-process = { path = "yinz-process", version = "0.45.0" }
+yinz-process = { path = "yinz-process", version = "0.1.0" }
 yinz-codex = { workspace = true }
 yinz-firecracker-provider = { workspace = true }
 yinz-swamp = { workspace = true }
 tokio = { workspace = true }
-yinz-client = { path = "yinz-client/", version = "0.45.0" }
-yinz-server = { path = "yinz-server/", version = "0.45.0" }
-yinz-server-os = { path = "yinz-server-os", version = "0.45.0" }
+yinz-client = { path = "yinz-client/", version = "0.1.0" }
+yinz-server = { path = "yinz-server/", version = "0.1.0" }
+yinz-server-os = { path = "yinz-server-os", version = "0.1.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
@@ -143,7 +143,7 @@ members = [
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/zacharyhamm/yinz"
-version = "0.45.0"
+version = "0.1.0"
 # NOTE: When updating this, modify `channel` in `rust-toolchain.toml` accordingly
 rust-version = "1.97"
 
@@ -173,24 +173,24 @@ too_many_arguments = "allow"
 result_large_err = "allow"
 
 [workspace.dependencies]
-yinz-cli = { path = "yinz-cli", version = "0.45.0" }
-yinz-session = { path = "yinz-session", version = "0.45.0" }
-yinz-ipc = { path = "yinz-ipc", version = "0.45.0" }
-yinz-plugin-api = { path = "yinz-plugin-api", version = "0.45.0" }
-yinz-plugin-authoring = { path = "yinz-plugin-authoring", version = "0.45.0" }
-yinz-config = { path = "yinz-config", version = "0.45.0" }
-yinz-project-config = { path = "yinz-project-config", version = "0.45.0" }
-yinz-deno-builtins = { path = "yinz-deno-builtins", version = "0.45.0" }
-yinz-storage = { path = "yinz-storage", version = "0.45.0" }
-yinz-types = { path = "yinz-types", version = "0.45.0" }
-yinz-runtime = { path = "yinz-runtime", version = "0.45.0" }
-yinz-plugin-location = { path = "yinz-plugin-location", version = "0.45.0" }
-yinz-key-codec = { path = "yinz-key-codec", version = "0.45.0" }
-yinz-host-protocol = { path = "yinz-host-protocol", version = "0.45.0" }
-yinz-codex = { path = "yinz-codex", version = "0.45.0" }
-yinz-firecracker-provider = { path = "yinz-firecracker-provider", version = "0.45.0" }
-yinz-swamp = { path = "yinz-swamp", version = "0.45.0" }
-yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.45.0" }
+yinz-cli = { path = "yinz-cli", version = "0.1.0" }
+yinz-session = { path = "yinz-session", version = "0.1.0" }
+yinz-ipc = { path = "yinz-ipc", version = "0.1.0" }
+yinz-plugin-api = { path = "yinz-plugin-api", version = "0.1.0" }
+yinz-plugin-authoring = { path = "yinz-plugin-authoring", version = "0.1.0" }
+yinz-config = { path = "yinz-config", version = "0.1.0" }
+yinz-project-config = { path = "yinz-project-config", version = "0.1.0" }
+yinz-deno-builtins = { path = "yinz-deno-builtins", version = "0.1.0" }
+yinz-storage = { path = "yinz-storage", version = "0.1.0" }
+yinz-types = { path = "yinz-types", version = "0.1.0" }
+yinz-runtime = { path = "yinz-runtime", version = "0.1.0" }
+yinz-plugin-location = { path = "yinz-plugin-location", version = "0.1.0" }
+yinz-key-codec = { path = "yinz-key-codec", version = "0.1.0" }
+yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.0" }
+yinz-codex = { path = "yinz-codex", version = "0.1.0" }
+yinz-firecracker-provider = { path = "yinz-firecracker-provider", version = "0.1.0" }
+yinz-swamp = { path = "yinz-swamp", version = "0.1.0" }
+yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.0" }
 ansi_term = { version = "0.12.1", default-features = false }
 anyhow = { version = "1.0.70", default-features = false, features = ["backtrace", "std"] }
 async-trait = { version = "0.1", default-features = false }

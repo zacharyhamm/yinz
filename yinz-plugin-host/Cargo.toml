@@ -10,10 +10,10 @@ workspace = true
 
 [dependencies]
 hocus-data = { path = "../default-plugins/hocus-data" }
-yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.0" }
 vte = { workspace = true }
-yinz-routing = { path = "../yinz-routing", version = "0.45.0" }
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-routing = { path = "../yinz-routing", version = "0.1.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-config = { workspace = true }
 yinz-deno-builtins = { workspace = true }
 yinz-ipc = { workspace = true }
@@ -24,7 +24,7 @@ yinz-session = { workspace = true }
 yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
-yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-process = { path = "../yinz-process", version = "0.1.0" }
 yinz-swamp = { workspace = true }
 yinz-tile = { path = "../yinz-tile" }
 yinz-tile-markdown = { path = "../yinz-tile-markdown" }

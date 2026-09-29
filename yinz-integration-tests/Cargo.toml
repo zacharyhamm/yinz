@@ -21,8 +21,8 @@ yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 # The kitty conformance suite's command builders and reply grammar, for `kitty_protocol`.
 yinz-terminal-graphics = { workspace = true }
-yinz-client = { path = "../yinz-client", version = "0.45.0" }
-yinz-server = { path = "../yinz-server", version = "0.45.0" }
+yinz-client = { path = "../yinz-client", version = "0.1.0" }
+yinz-server = { path = "../yinz-server", version = "0.1.0" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }

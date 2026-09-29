@@ -4,12 +4,12 @@ expression: normalized(&grid)
 ---
  Yinz (test)  [0] Tab #1  + 
 $
-               ┌ Release Notes 0.45.0 ───────────────────────────────────────────────────────── PIN [ ] ┐
+               ┌ Release Notes 0.1.0 ────────────────────────────────────────────────────────── PIN [ ] ┐
                │                                                                                        │
                │                                                                                        │
                │                                                                                        │
                │                                                                                        │
-               │                    Hi there, welcome to Yinz 0.45.0!                                   │
+               │                    Hi there, welcome to Yinz 0.1.0!                                    │
                │                                                                                        │
                │                    What's new?                                                         │
                │                    1. Nested Sessions                                                  │
