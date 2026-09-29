@@ -2359,16 +2359,14 @@ impl Grid {
         let (scroll_region_top, scroll_region_bottom) = self.scroll_region;
         self.pad_lines_until(scroll_region_bottom, EMPTY_TERMINAL_CHARACTER);
         for _ in 0..count {
-            if self.cursor.y >= scroll_region_top && self.cursor.y <= scroll_region_bottom {
-                let mut pad_character = EMPTY_TERMINAL_CHARACTER;
-                pad_character.styles = self.cursor.pending_styles.clone();
-                let columns = VecDeque::from(vec![pad_character; self.width]);
-                self.scroll_region_content_down(
-                    scroll_region_top,
-                    scroll_region_bottom,
-                    Row::from_columns(columns).canonical(),
-                );
-            }
+            let mut pad_character = EMPTY_TERMINAL_CHARACTER;
+            pad_character.styles = self.cursor.pending_styles.clone();
+            let columns = VecDeque::from(vec![pad_character; self.width]);
+            self.scroll_region_content_down(
+                scroll_region_top,
+                scroll_region_bottom,
+                Row::from_columns(columns).canonical(),
+            );
         }
         self.output_buffer
             .update_lines(scroll_region_top, scroll_region_bottom);
@@ -2967,6 +2965,9 @@ impl Grid {
     }
     pub fn set_scroll_region(&mut self, top_line_index: usize, bottom_line_index: Option<usize>) {
         let bottom_line_index = bottom_line_index.unwrap_or(self.height.saturating_sub(1));
+        if top_line_index >= bottom_line_index || bottom_line_index >= self.height {
+            return;
+        }
         self.scroll_region = (top_line_index, bottom_line_index);
         let mut pad_character = EMPTY_TERMINAL_CHARACTER;
         pad_character.styles = self.cursor.pending_styles.clone();
@@ -5600,10 +5601,6 @@ impl Perform for Grid {
                         std::cmp::min(self.height.saturating_sub(1), bottom.saturating_sub(1))
                     });
                 self.set_scroll_region(top, bottom);
-                if self.erasure_mode {
-                    self.move_cursor_to_line(top, EMPTY_TERMINAL_CHARACTER);
-                    self.move_cursor_to_beginning_of_line();
-                }
             } else {
                 self.set_scroll_region_to_viewport_size();
             }
