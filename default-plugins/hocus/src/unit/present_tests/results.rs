@@ -9,49 +9,13 @@ fn opening_a_pane_reports_the_id_the_next_command_needs() {
     assert!(shown.contains('7'), "{shown}");
 }
 
-/// `register_spawned` glues its note onto `new_pane`'s JSON before the
-/// result ever reaches us, so the suffix has to be split back off.
 #[test]
-fn a_spawned_agent_reports_the_kind_it_was_registered_as() {
-    let raw = r#"{"opened":true,"pane_id":9} (registered as claude)"#;
-    assert_eq!(
-        present(&call("agent_spawn", "{}"), raw),
-        Some("Spawned an agent in pane 9.\nRegistered as claude.\n".to_owned())
-    );
-}
-
-#[test]
-fn a_spawn_without_a_registration_still_reads() {
-    let raw = r#"{"opened":true,"pane_id":9}"#;
-    assert_eq!(
-        present(&call("agent_spawn", "{}"), raw),
-        Some("Spawned an agent in pane 9.\n".to_owned())
-    );
-}
-
-/// The git route reports where it put the agent. That is the part the user cannot
-/// see from the pane id alone, and the part they will need to `cd` to later.
-#[test]
-fn a_spawn_that_cut_a_worktree_says_which_branch_and_where() {
-    let raw = r#"{"opened":true,"pane_id":9,"is_plugin":false,
-        "branch":"fix-parser","cwd":"/work/hocus/.worktrees/fix-parser"}"#;
-    let shown = present(&call("agent_spawn", "{}"), raw).expect("presented");
-    assert!(shown.contains("fix-parser"), "{shown}");
-    assert!(
-        shown.contains("/work/hocus/.worktrees/fix-parser"),
-        "{shown}"
-    );
-}
-
-/// A branch switched in place has no new folder to name, and saying nothing is
-/// better than naming the one it was already in.
-#[test]
-fn a_spawn_that_only_switched_branch_names_the_branch_alone() {
-    let raw = r#"{"opened":true,"pane_id":9,"branch":"topic"}"#;
-    assert_eq!(
-        present(&call("agent_spawn", "{}"), raw),
-        Some("Spawned an agent in pane 9.\nOn a new branch topic.\n".to_owned())
-    );
+fn an_agent_response_keeps_outcome_and_actual_checkout_visible() {
+    let raw = r#"{"outcome":"ok","spawned":{"pane_id":"terminal_9","branch":"topic","cwd":"/work/tree"}}"#;
+    let shown = present(&call("agent_spawn", "{}"), raw).unwrap();
+    for value in ["ok", "terminal", "9", "topic", "/work/tree"] {
+        assert!(shown.contains(value), "{shown}");
+    }
 }
 
 #[test]

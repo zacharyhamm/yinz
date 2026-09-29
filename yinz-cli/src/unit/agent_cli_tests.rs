@@ -56,7 +56,7 @@ fn agent_commands_require_explicit_targets_and_one_prompt_source() {
     ));
     assert!(matches!(
         AgentCli::try_parse_from(["agent", "spawn", "--kind", "codex", "--cwd", ".", "--branch", "review-auth", "--json"]).unwrap().command,
-        Agent::Spawn { kind, branch: Some(branch), json: true, .. } if kind == "codex" && branch == "review-auth"
+        Agent::Spawn { kind, branch: Some(branch), json: true, .. } if kind.as_deref() == Some("codex") && branch == "review-auth"
     ));
 }
 
@@ -88,4 +88,37 @@ fn recovery_requires_conversation_and_explicit_empty_draft_confirmation() {
             ..
         }
     ));
+}
+
+#[test]
+fn archive_options_keep_the_service_contract() {
+    use clap::Parser;
+    let cli = AgentCli::try_parse_from([
+        "agent",
+        "runs",
+        "--host-id",
+        "host",
+        "--run-session",
+        "session",
+        "--limit",
+        "7",
+        "--offset",
+        "14",
+    ])
+    .unwrap();
+    let Agent::Archive(command) = cli.command else {
+        panic!("archive command");
+    };
+    let yinz_types::input::actions::Action::CliPipe {
+        payload: Some(payload),
+        ..
+    } = command.action().unwrap()
+    else {
+        panic!("archive pipe");
+    };
+    let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"op":"agent_runs","args":{"host_id":"host","run_session":"session","limit":7,"offset":14},"structured_reply":true})
+    );
 }

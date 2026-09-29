@@ -91,24 +91,14 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
                 )?;
             }
         },
-        Workflow::Show { run, json } => {
-            if json {
-                let session =
-                    crate::commands::resolve_session_for_stream(session, "inspect workflows in");
-                let action = yinz_cli::notes_todos::pipe_action(
-                    "workflow_action",
-                    serde_json::json!({"tool":"workflow_run_get","args":{"run":run},"directory":cwd}),
-                );
-                println!("{}", yinz_client::store_client::request(&session, action)?);
-            } else {
-                open_view(
-                    &binary,
-                    session.as_deref(),
-                    &snapshot.root,
-                    Some(&run),
-                    None,
-                )?;
-            }
+        Workflow::Show { run } => {
+            open_view(
+                &binary,
+                session.as_deref(),
+                &snapshot.root,
+                Some(&run),
+                None,
+            )?;
         },
         Workflow::Answer {
             run,

@@ -1,50 +1,67 @@
 ---
 name: yinz-agents
-description: Launch and coordinate coding agents in Yinz panes, inspect observed state, and search run history and predecessor chains through the Yinz CLI.
+description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, and inspect their durable archives.
 ---
 
-Use `yinz --session NAME action context` and `agent-list` to discover targets.
-Agent operations require the background `hocus-agentd` plugin; archive queries
-require `hocus-store`. Neither requires Hocus chat. Use explicit pane IDs for
-input and controls. Register an existing agent with `agent-register PANE KIND`.
+Use `yinz --session NAME agent ...`. Start with `agent list --json`.
+Use `--project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
+Basic live operations do not require Hocus chat, `hocus-agentd`, or `hocus-store`.
+Registration requires `hocus-agentd`. Archive queries require `hocus-store`.
+
+A pane ID identifies the current terminal target, such as `terminal_3`.
+A conversation ID identifies the provider conversation and guards against replacement.
+A run ID identifies a durable archive record. Do not substitute one ID for another.
+
+Use this sequence:
 
 ```sh
-yinz --session main action agent-spawn --kind codex --project work   --branch feature --model MODEL --prompt-file prompt.md
-yinz --session main action agent-send 3 --file follow-up.md --enter
-yinz --session main action agent-control 3 interrupt
-yinz --session main action agent-wait terminal_3 idle --timeout 120
+yinz --session main agent spawn --kind codex --project work --branch feature --json
+yinz --session main agent wait terminal_3 --until idle --timeout 2m --json
+yinz --session main agent status terminal_3 --json
+yinz --session main agent prompt terminal_3 --file prompt.md --conversation CONVERSATION_ID --wait --timeout 10m --json
+yinz --session main agent read terminal_3 --conversation CONVERSATION_ID --lines 100 --json
 ```
 
-Launch uses the shared worktree planner. Branch names normally create isolated
-worktrees; collisions choose a fresh suffix. Inspect the returned branch and
-path. `--reuse true` explicitly selects existing work. To run in a primary
-checkout, deliberately set `--allow-outside-worktree true`. Model, effort,
-permission mode, base, worktree directory, and Firecracker options are shown by
-`agent-spawn --help`. `--file PATH` or `--file -` accepts the complete
-AgentSpawnSpec JSON; explicit flags override file values. Prompts accept files/stdin.
-Keep permission choices within the user's authorization.
+Use the actual pane and conversation IDs from the responses.
+Check `ready`, `status_available`, and `prompt_supported` before submission.
+An idle state alone does not establish readiness or prove task success.
+A completed turn does not verify the resulting work. Run the checks that the task requires.
+Guarded prompts support Claude Code and Codex. Other agent kinds support launch and inspection.
+Use general pane input for deliberate interaction with other kinds. Do not fall back automatically to raw input.
 
-State is an observation. `idle` does not prove task success. Read pane output,
-run messages, and the resulting files/tests before reporting completion. A send
-or control response says `dispatched`; verify the effect. A timeout or disconnect
-can leave a mutation's result unknown. Read state before repeating it.
+Live commands return `AgentResponse` with `--json`. Check `outcome` even when the command exits nonzero.
+`submitted` means the provider acknowledged the prompt. `completed` means that correlated turn ended.
+Handle `needs_input`, `failed`, `interrupted`, `target_changed`, and `target_closed` before continuing.
+`timed_out` or a lost connection leaves the result uncertain. Inspect before retrying a mutation.
+The `acknowledged` and `turn_id` fields describe the original submission.
+
+If an uncertain submission leaves a draft, read the pane and clear that draft deliberately.
+Then confirm the conversation and empty input before restoring readiness:
 
 ```sh
-yinz --session main action agent-runs --project work --limit 20
-yinz --session main action agent-run RUN_ID --from-revision 1 --limit 20
-yinz --session main action agent-history-search 'rollback' --project work
-yinz --session main action agent-predecessors RUN_ID
+yinz --session main agent send-keys terminal_3 Esc --conversation CONVERSATION_ID --json
+yinz --session main agent recover terminal_3 --conversation CONVERSATION_ID --confirm-empty --json
 ```
 
-History defaults to the whole shared archive. Narrow with `--host-id` and
-`--run-session` together when selecting one server's records. Use exact run IDs,
-`next_offset` for run pages, and `next_revision` for timeline pages. `--revision`
-reads around a search hit. Honor truncation and predecessor diagnostics; an empty
-partial search is not proof that no history exists. Use native Git/GitHub tools
-for repository work, and cron, Swamp, or agent automations for recurring execution.
+Recovery requires a live idle agent and no active submission or paste write.
+Use ordinary pane commands to close or restart a pane.
 
-For an SSH agent, verify an existing remote worktree first, then pass
-`--remote-host HOST --cwd /absolute/remote/worktree --allow-outside-worktree true`.
-The explicit override acknowledges that the local guard cannot inspect SSH
-paths. Branch creation and project defaults operate on local checkouts; do not
-combine them with SSH. Use existing pane SSH/warp commands to move a running pane.
+`agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.
+Spawn rejects `prompt` and `reuse_prompt`, including fields in JSON. Use spawn, wait, then prompt.
+Use `--reuse` only when the existing branch or worktree is the intended target.
+Otherwise collisions produce a fresh branch and worktree. Project defaults supply worktree directories and VM images.
+Read `agent spawn --help` for model, effort, permissions, resume, and Firecracker options.
+For SSH, provide an absolute `--cwd` and `--remote-host`. Verify the remote worktree and explicitly use `--allow-outside-worktree`.
+SSH launches cannot use local project, branch, worktree, or VM options. General pane creation owns arbitrary programs.
+Register an existing pane with `agent register NUMERIC_PANE_ID KIND`.
+
+```sh
+yinz --session main agent runs --project work --limit 20 --offset 0
+yinz --session main agent run RUN_ID --from-revision 1 --limit 20
+yinz --session main agent history-search 'rollback' --project work
+yinz --session main agent predecessors RUN_ID
+```
+
+Archive commands return their existing JSON shapes without `--json`.
+Preserve pagination cursors and filters. Use both host and session filters for one server's records.
+Workflow runs are separate from agent turns and agent archive runs.

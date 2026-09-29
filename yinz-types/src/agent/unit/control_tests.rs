@@ -277,3 +277,19 @@ fn worker_human_waits_match_the_parent_without_acknowledging_it() {
         }
     }
 }
+
+#[test]
+fn older_spawn_requests_preserve_explicit_vm_names() {
+    let request: AgentRequest = serde_json::from_value(serde_json::json!({"Spawn": {
+        "spec": {"kind":"codex", "firecracker":"review", "branch":"topic"},
+        "cwd":"/repo", "project":null, "remote_host":null
+    }}))
+    .unwrap();
+    assert!(
+        matches!(&request, AgentRequest::Spawn { automatic_firecracker_vm: false, spec, .. } if spec.firecracker.as_deref() == Some("review"))
+    );
+    assert_eq!(
+        serde_json::from_str::<AgentRequest>(&serde_json::to_string(&request).unwrap()).unwrap(),
+        request
+    );
+}

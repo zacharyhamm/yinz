@@ -1,3 +1,6 @@
+#[path = "agent_control.rs"]
+mod agent_control;
+pub use agent_control::control_agent;
 #[path = "multipanes.rs"]
 mod multipanes;
 
@@ -386,6 +389,54 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     match check_command_permission(env, &command) {
         (PermissionStatus::Granted, _) => match command {
+            PluginCommand::AgentControl { id, request } => {
+                let mut request: yinz_types::agent::control::AgentRequest =
+                    serde_json::from_str(&request).context("decode agent request")?;
+                if let yinz_types::agent::control::AgentRequest::Spawn {
+                    spec,
+                    cwd,
+                    project,
+                    remote_host,
+                    ..
+                } = &mut request
+                {
+                    if remote_host.is_none() {
+                        if let Some(path) = cwd.as_mut().filter(|path| path.is_relative()) {
+                            *path = translate_plugin_path(env, path.clone());
+                        }
+                    }
+                    if cwd.is_none()
+                        && project.is_none()
+                        && remote_host.is_none()
+                        && (spec.firecracker.is_none() || spec.branch.is_some())
+                    {
+                        *cwd = Some(env.plugin_cwd.clone());
+                    }
+                }
+                let senders = env.senders.clone();
+                let data = env.data_access.clone();
+                let target = env.plugin_id;
+                let client = env.client_id;
+                let generation = env.deno_generation;
+                get_tokio_runtime().spawn_blocking(move || {
+                    let response = control_agent(request, client, &senders, &data);
+                    let mut payload = serde_json::json!({"id":id,"response":response});
+                    if let Some(spawned) = &response.spawned {
+                        payload["response"]["spawned"]["pane_id"] =
+                            spawned.pane_id.to_string().into();
+                    }
+                    let payload = payload.to_string();
+                    senders
+                        .send_to_plugin(PluginInstruction::for_plugin_event(
+                            target,
+                            client,
+                            generation,
+                            Event::CustomMessage("agent-response".into(), payload),
+                        ))
+                        .context("deliver agent response")
+                        .non_fatal();
+                });
+            },
             PluginCommand::SwampRequest {
                 directory,
                 id,
@@ -2820,6 +2871,7 @@ fn spawn_agent(
             source,
             cwd,
             automatic_firecracker_vm,
+            false,
             host_workflow,
             &env.data_access,
         )?;
@@ -2855,6 +2907,7 @@ fn prepare_agent(
     source: PathBuf,
     cwd: Option<PathBuf>,
     automatic_firecracker_vm: bool,
+    mirror_project: bool,
     host_workflow: bool,
     data_access: &DataAccess,
 ) -> Result<PreparedAgent, String> {
@@ -2870,7 +2923,10 @@ fn prepare_agent(
     // all - `place_agent` leaves the guest's own workspace alone - so there is no host
     // checkout for the guard to have an opinion about. Computed once, here, so the two
     // cannot come to disagree about which case this is.
-    let guest_only = command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made;
+    let guest_only = command.target.is_firecracker()
+        && !automatic_firecracker_vm
+        && !checkout_made
+        && !mirror_project;
     // An agent loose in the checkout the user is working in - or in a folder that is no
     // repository at all - is a thing to ask for, not a thing to fall into by leaving
     // `branch` out. The resolved folder is what is checked, not the spec: a branch held
@@ -2897,7 +2953,7 @@ fn prepare_agent(
         &mut command,
         folder.clone(),
         automatic_firecracker_vm,
-        checkout_made,
+        checkout_made || mirror_project,
     )?;
     Ok(PreparedAgent {
         command,
@@ -2919,24 +2975,27 @@ fn prewarm_agent_workflows(folder: PathBuf) {
 /// Launch an agent for a direct CLI request, using the same planner and checkout policy as plugins.
 pub fn spawn_agent_for_cli(
     mut spec: AgentSpawnSpec,
-    cwd: PathBuf,
+    cwd: Option<PathBuf>,
+    project: Option<String>,
+    remote_host: Option<String>,
+    automatic_firecracker_vm: bool,
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> SpawnAgentResponse {
-    let (command, _) = yinz_runtime::agent::launch::plan(&spec)?;
-    if yinz_types::agent::kind_from_program_and_args(&command.path, &command.args).is_none() {
-        return Err("agent spawn requires a recognized agent command".into());
+    if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
+        return Err(
+            "spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt".into(),
+        );
     }
-    spec.env
-        .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
-    let cwd = cwd.canonicalize().map_err(|error| {
-        format!(
-            "failed to resolve agent directory {}: {error}",
-            cwd.display()
-        )
-    })?;
-    let prepared = prepare_agent(&spec, cwd, None, false, false, data_access)?;
+    let prepared = agent_control::prepare_automation_agent(
+        &mut spec,
+        cwd,
+        project,
+        remote_host,
+        automatic_firecracker_vm,
+        data_access,
+    )?;
     let command = prepared.command;
     let action = RunCommandAction {
         command: command.path,
@@ -3098,18 +3157,18 @@ impl WorktreeGuard {
 /// of it.
 ///
 /// A local pane simply runs there. A Firecracker pane mirrors the folder into the guest when
-/// the folder is the agent's to work in: a checkout the host just made, or any folder when
+/// the folder is the agent's to work in: a checkout the host just made, a selected project, or any folder when
 /// the VM is `automatic` - named after that folder, so that agents on one checkout share one
-/// VM. A named VM with no checkout made is the other case, and the one `agent_spawn
+/// VM. A named VM with no host checkout is the other case, and the one `agent_spawn
 /// firecracker=true` outside a project asks for: nothing of this machine goes into the guest,
 /// the name stands, and the pane starts in the VM's own workspace - a VM of the agent's own.
 fn place_agent(
     command: &mut CommandToRun,
     folder: PathBuf,
     automatic_firecracker_vm: bool,
-    checkout_made: bool,
+    mirror_checkout: bool,
 ) -> Result<(), String> {
-    if command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made {
+    if command.target.is_firecracker() && !automatic_firecracker_vm && !mirror_checkout {
         return Ok(());
     }
     apply_git_checkout_to_command(command, folder, automatic_firecracker_vm)
@@ -8275,7 +8334,11 @@ pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
 ) -> (PermissionStatus, Option<PermissionType>) {
-    if matches!(command, PluginCommand::SwampRequest { .. }) && !plugin_env.plugin.is_builtin() {
+    if matches!(
+        command,
+        PluginCommand::SwampRequest { .. } | PluginCommand::AgentControl { .. }
+    ) && !plugin_env.plugin.is_builtin()
+    {
         return (PermissionStatus::Denied, Some(PermissionType::RunCommands));
     }
     if plugin_env.plugin.is_builtin() {
@@ -8401,6 +8464,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneBackground
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
+        | CommandType::AgentControl
         | CommandType::SwampRequest
         | CommandType::RunCommandInPane
         | CommandType::SpawnAgent

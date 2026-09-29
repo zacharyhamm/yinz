@@ -232,6 +232,7 @@ export interface CommandArgs {
   TestPlugin: {name: string; options: PluginTestOptions; request_id: string};
   CancelPluginTest: string;
   CheckPlugin: {name: string; source: string; mode: PluginCheckMode};
+  AgentControl: {id: string; request: string};
   SwampRequest: {directory: string; id: string; operation: string; payload: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
   ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetYinzVersion: undefined;

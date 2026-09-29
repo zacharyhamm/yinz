@@ -43,17 +43,6 @@ pub fn present(call: &ToolCall, result: &str) -> Option<String> {
     let args = serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null);
     let name = call.name.as_str();
 
-    // `agent_spawn` answers with `new_pane`'s JSON and a note glued on the end
-    // by `State::register_spawned`, which runs before `finish_head`. Split here
-    // rather than in its own arm so what remains parses like any other result.
-    let (result, registered) = match name {
-        "agent_spawn" => match result.split_once(" (registered as ") {
-            Some((json, rest)) => (json, rest.strip_suffix(')')),
-            None => (result, None),
-        },
-        _ => (result, None),
-    };
-
     // The only test for "this is machine output" that does not guess: no error
     // sentence any tool returns is valid JSON.
     let json = serde_json::from_str::<Value>(result)
@@ -84,7 +73,7 @@ pub fn present(call: &ToolCall, result: &str) -> Option<String> {
         "list_other_sessions" => other_sessions(&json),
         "list_orphaned_panes" => orphans(&json),
         "project_list" => projects(&json),
-        "agent_list" => agents(&json),
+        "agent_list" => agent_statuses(&json),
         "todo_list" => todo_list(&json),
         "todo_search" => todo_search(&json),
         "new_pane" => opened_pane(&json),
@@ -99,7 +88,6 @@ pub fn present(call: &ToolCall, result: &str) -> Option<String> {
         "note_add" | "note_edit" | "note_archive" | "note_delete" | "note_link" => {
             note_written(name, &json)
         },
-        "agent_spawn" => spawned(&json, registered),
         _ => None,
     };
     // A tool's own arm declining is not a reason to fall back to raw JSON: the
@@ -317,7 +305,7 @@ pub fn skills_listing(registry: &crate::skills::Registry, user_dir: &str) -> Str
 }
 
 /// Whether a tool belongs to a family, by whole word rather than by substring:
-/// `rename` is a pane command, `read_pane` is too, and `agent_send` must not be
+/// `rename` is a pane command, `read_pane` is too, and `agent_prompt` must not be
 /// dragged in by `send`.
 fn in_family(name: &str, prefix: &str) -> bool {
     name == prefix || name.split('_').any(|word| word == prefix)
@@ -533,49 +521,6 @@ fn projects(value: &Value) -> Option<String> {
     Some(out)
 }
 
-/// The agents, grouped the way the agent strip groups them — project, then
-/// branch, then the agents themselves.
-///
-/// `agents::strip_rows` builds exactly this shape, but from the pane snapshot
-/// and four registries; all we have here is the JSON `agents::list_json`
-/// already flattened. So the grouping is rebuilt rather than reused.
-fn agents(value: &Value) -> Option<String> {
-    // `agents::list_json` answers with a bare array, not an object.
-    let agents = value.as_array().map_or(&[][..], |items| items);
-    if agents.is_empty() {
-        return Some(heading("agents") + "_none_\n");
-    }
-
-    // Grouped rather than assumed grouped: `list_json` walks the pane snapshot
-    // in pane order, so agents of one project can arrive interleaved. A
-    // BTreeMap also puts the headers in a stable order between calls, which a
-    // listing the user re-reads should have.
-    let mut groups: std::collections::BTreeMap<(String, String), Vec<&Value>> = Default::default();
-    for agent in agents {
-        let project = or_else(text(agent, "project"), "no project");
-        let branch = or_else(text(agent, "branch"), "no branch");
-        groups.entry((project, branch)).or_default().push(agent);
-    }
-
-    let mut out = heading("agents");
-    for ((project, branch), agents) in groups {
-        out.push_str(&format!(
-            "\n**{}** · {}\n\n",
-            inline(&project),
-            inline(&branch)
-        ));
-        for agent in agents {
-            out.push_str(&format!(
-                "- `{}` {} — {}\n",
-                number(agent, "pane_id"),
-                idle(agent),
-                inline(&text(agent, "title"))
-            ));
-        }
-    }
-    Some(out)
-}
-
 /// `text` with a stand-in for the empty case, which every grouping header needs.
 fn or_else(text: String, fallback: &str) -> String {
     if text.is_empty() {
@@ -585,27 +530,35 @@ fn or_else(text: String, fallback: &str) -> String {
     }
 }
 
-/// An agent's status, with `idle_seconds` folded in the way the strip folds it
-/// (`agents::status_cell`): running and never idle is busy, under a minute is
-/// idle, beyond that it is worth saying how long.
-fn idle(agent: &Value) -> String {
-    let status = text(agent, "status");
-    if status != "running" {
-        return status;
+fn agent_statuses(value: &Value) -> Option<String> {
+    if text(value, "outcome") != "ok" {
+        return None;
     }
-    // An agent that reports for itself has already said which word this is - see
-    // `agents::status_cell`. Deriving one from `idle_seconds` here as well would be a
-    // third place deciding busy from idle, and the one most likely to disagree.
-    let state = text(agent, "state");
-    if !state.is_empty() {
-        return state;
+    let statuses = value.get("agents")?.as_array()?;
+    let mut out = heading("agents");
+    if statuses.is_empty() {
+        out.push_str("_none_\n");
     }
-    match agent.get("idle_seconds").and_then(Value::as_u64) {
-        None => "running".to_owned(),
-        Some(0) => "busy".to_owned(),
-        Some(seconds) if seconds < 60 => "idle".to_owned(),
-        Some(seconds) => format!("idle {}m", seconds / 60),
+    for status in statuses {
+        let agent = &status["agent"];
+        out.push_str(&format!(
+            "- `{}` {} — {} · ready: {}\n",
+            inline(&text(status, "pane_id")),
+            inline(&text(agent, "kind")),
+            inline(&text(agent, "state").to_lowercase()),
+            flag(status, "ready")
+        ));
+        for detail in [
+            text(agent, "detail"),
+            text(agent, "waiting_on"),
+            text(status, "cwd"),
+        ] {
+            if !detail.is_empty() {
+                out.push_str(&format!("  {}\n", inline(&detail)));
+            }
+        }
     }
+    Some(out)
 }
 
 fn todo_list(value: &Value) -> Option<String> {
@@ -985,7 +938,7 @@ const ACKS: &[(&str, &str, &str)] = &[
     ("rerun_pane", "rerun", "Re-ran {pane}."),
     ("send_input", "input sent", "Sent the input to {pane}."),
     (
-        "agent_send",
+        "agent_prompt",
         "input sent",
         "Sent the message to the agent in {pane}.",
     ),
@@ -1038,34 +991,6 @@ fn opened_pane(value: &Value) -> Option<String> {
 
 fn opened_tab(value: &Value) -> Option<String> {
     flag(value, "opened").then(|| format!("Opened tab `{}`.\n", number(value, "tab_id")))
-}
-
-/// The pane a spawned agent landed in, and the kind it was registered as if
-/// `present` split one off the end of the result.
-fn spawned(value: &Value, registered: Option<&str>) -> Option<String> {
-    if !flag(value, "opened") {
-        return None;
-    }
-    let mut out = format!("Spawned an agent in pane {}.\n", number(value, "pane_id"));
-    // Only the git path sets these, and it is the path that wrote to the user's
-    // repository — so where it put the agent is the part worth reading back.
-    let branch = text(value, "branch");
-    if !branch.is_empty() {
-        let cwd = text(value, "cwd");
-        if cwd.is_empty() {
-            out.push_str(&format!("On a new branch {}.\n", inline(&branch)));
-        } else {
-            out.push_str(&format!(
-                "On a new branch {} in {}.\n",
-                inline(&branch),
-                inline(&cwd)
-            ));
-        }
-    }
-    if let Some(kind) = registered {
-        out.push_str(&format!("Registered as {}.\n", inline(kind)));
-    }
-    Some(out)
 }
 
 fn todo_written(name: &str, value: &Value) -> Option<String> {

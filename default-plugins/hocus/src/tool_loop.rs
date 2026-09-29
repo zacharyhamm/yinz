@@ -1,5 +1,4 @@
 use crate::message::{Job, Message, Status};
-use crate::worker::read_pane_text;
 use crate::*;
 use hocus_proto::location::Location;
 use hocus_proto::notes;
@@ -165,6 +164,9 @@ impl State {
     /// Dispatch the head. Returns whether the queue advanced — `false` means the
     /// result is deferred and `pump_tools` must stop and wait.
     pub(crate) fn run_head(&mut self, call: &ToolCall) -> bool {
+        if crate::agent_control::TOOLS.contains(&call.name.as_str()) {
+            return self.start_agent_tool(call);
+        }
         if crate::operations::TOOLS.contains(&call.name.as_str()) {
             return self.start_background_tool(call, false);
         }
@@ -1530,13 +1532,9 @@ impl State {
                 | "note_get"
                 | "note_search"
                 | "agent_register"
-                | "agent_list"
                 | "agent_runs"
                 | "agent_run"
                 | "agent_history_search"
-                | "agent_send"
-                | "agent_control"
-                | "agent_spawn"
         ) {
             return None;
         }
@@ -1567,12 +1565,10 @@ impl State {
             "note_get" => self.note_get(&args),
             "note_search" => self.note_search(&args),
             "agent_register" => self.agent_register(&args),
-            "agent_list" => self.agent_list(&args),
             "agent_runs" => self.agent_runs(&args),
             "agent_run" => self.agent_run(&args),
             "agent_history_search" => self.agent_history_search(&args),
-            "agent_spawn" => self.agent_spawn(&args),
-            _ => self.agent_act(call, &args),
+            _ => "unknown local tool".into(),
         })
     }
 
@@ -2521,40 +2517,6 @@ impl State {
         format!("registered pane {pane_id} as {kind}")
     }
 
-    /// Every agent, with the tail of what each one is showing.
-    pub(crate) fn agent_list(&self, args: &tools::Args) -> String {
-        let selected = args.project.as_deref().or(self.active_project.as_deref());
-        let project = match selected {
-            Some(name) => match self.projects.get(name) {
-                Some(project) => Some(project),
-                None => return format!("unknown project {name}; call project_list"),
-            },
-            None => None,
-        };
-        let panes: Vec<agents::AgentPane> = self
-            .panes
-            .iter()
-            .filter(|pane| {
-                project.is_none_or(|project| {
-                    Self::pane_location(pane)
-                        .and_then(|location| self.project_for_cwd(&location))
-                        .is_some_and(|owner| owner.name == project.name)
-                })
-            })
-            .cloned()
-            .collect();
-        agents::list_json(
-            &panes,
-            &self.manual_kinds,
-            &self.activity,
-            &self.pane_projects(),
-            &self.pane_branches(),
-            &self.summaries,
-            &self.hooks,
-            read_pane_text,
-        )
-    }
-
     // -- reading what agents have already done -------------------------
     //
     // Three tools over `run_history`, and one filter between them. They read the
@@ -2841,76 +2803,6 @@ impl State {
         .to_string()
     }
 
-    /// `agent_send` and `agent_control`, which do their own work through the tool
-    /// that already does it. Nothing here talks to the host directly.
-    pub(crate) fn agent_act(&mut self, call: &ToolCall, args: &tools::Args) -> String {
-        match self.agent_host_call(call, args) {
-            Ok(host) => tools::dispatch(&host),
-            Err(error) => error,
-        }
-    }
-
-    /// Start an agent, and register the kind the caller gave against the pane id.
-    ///
-    /// One route: `tools::spawn_agent`, the host command the New agent modal's button and a
-    /// TypeScript plugin's `yinz.agent.spawn` also call, so `agent=cursor model=x prompt=y` means
-    /// the same argv and the same worktree defaults everywhere. `launch::plan` is run here
-    /// first only to say what the host will refuse before anything is opened - and to know
-    /// whether a checkout is being made, which decides what `cwd` means: with one, the
-    /// folder is the repository to cut it in; without, it is where the pane runs, with no
-    /// git work at all (`command=zsh cwd=/tmp` keeps working).
-    pub(crate) fn agent_spawn(&mut self, args: &tools::Args) -> String {
-        let spec = match self.agent_spawn_spec(args, launch::unique_firecracker_vm) {
-            Ok((spec, _)) => spec,
-            Err(error) => return error,
-        };
-        let firecracker = spec
-            .firecracker
-            .as_deref()
-            .is_some_and(|name| !name.trim().is_empty());
-        // What to run *and* which route to take are both `launch`'s to say — down to
-        // which of `agent` and `command` is missing when both are. Routing on the
-        // checkout rather than on `args.branch` is what keeps the two in step: a
-        // branch of nothing but spaces is no branch to `launch`, and would otherwise
-        // send this down the git route to do no git work.
-        let (command, checkout) = match launch::plan(&spec) {
-            Ok(planned) => planned,
-            Err(error) => return error,
-        };
-        if let Some(kind) = args.kind.as_deref() {
-            if !agents::valid_kind(kind) {
-                return "kind must be 1 to 32 characters of a-z, 0-9, _ or -".to_owned();
-            }
-        }
-        let cwd = match self.agent_cwd(args) {
-            Ok(cwd) => cwd,
-            Err(error) => return error,
-        };
-        let project_firecracker =
-            firecracker && (args.project.is_some() || self.active_project.is_some());
-        let no_checkout = matches!(checkout, GitCheckout::Current);
-        // With no project, `cwd` can only be the caller's: a path on this machine. Handed to
-        // the guest as its working directory it would not exist there, and the agent would
-        // start wherever the broker happens to be. A project's root is mirrored instead - the
-        // host treats it as the checkout to mirror and the provider supplies the guest folder.
-        if no_checkout && !project_firecracker && command.target.is_firecracker() && cwd.is_some() {
-            return "cwd is a path on this machine, and a Firecracker agent starts in the \
-                    VM's workspace; leave cwd unset or name a project"
-                .to_owned();
-        }
-        let run_in = if no_checkout && !project_firecracker {
-            cwd.clone()
-        } else {
-            None
-        };
-        // A VM is named after the folder it mirrors when there is one: the checkout being cut,
-        // or the project's root. Outside both there is no folder for the agent at all, and the
-        // unique name stands - the isolated VM `firecracker=true` promises, one per agent.
-        let automatic_vm = firecracker && (!no_checkout || project_firecracker);
-        let result = tools::spawn_agent(args, &spec, cwd, run_in, automatic_vm);
-        self.register_spawned(args.kind.as_deref(), &result)
-    }
-
     /// The spec `agent_spawn` hands the planner: the call's own reading, with the
     /// selected project's `worktree_dir` and Firecracker image filled in, and an
     /// automatic VM named by `automatic_vm` when `firecracker` asks for one.
@@ -2969,84 +2861,6 @@ impl State {
             .cwd
             .clone()
             .or_else(|| project.map(|project| project.root.clone())))
-    }
-
-    /// Fold a spawn's kind into `manual_kinds`, keyed by the pane id `new_pane`
-    /// reported. The pane is not necessarily in the snapshot yet, so its id stays
-    /// pending until one arrives. No kind means detection covers it.
-    pub(crate) fn register_spawned(&mut self, kind: Option<&str>, result: &str) -> String {
-        let pane_id = serde_json::from_str::<serde_json::Value>(result)
-            .ok()
-            .and_then(|value| value["pane_id"].as_u64());
-        match (kind, pane_id) {
-            (Some(kind), Some(pane_id)) => {
-                let pane_id = pane_id as u32;
-                self.manual_kinds.insert(pane_id, kind.to_owned());
-                self.pending_agent_panes.insert(pane_id);
-                pipe_message_to_plugin(MessageToPlugin::new("agent_action").with_payload(serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind}}).to_string()));
-                format!("{result} (registered as {kind})")
-            },
-            _ => result.to_owned(),
-        }
-    }
-
-    /// The existing tool call an agent call means, or why it means none.
-    ///
-    /// Pure, so every mapping is testable on the host triple — which matters, because
-    /// this is what keeps `agent_control close` from reaching a pane the user never
-    /// called an agent.
-    pub(crate) fn agent_host_call(
-        &self,
-        call: &ToolCall,
-        args: &tools::Args,
-    ) -> Result<ToolCall, String> {
-        let Some(pane_id) = args.pane_id else {
-            return Err("pane_id is required".to_owned());
-        };
-        if !self.is_agent(pane_id) {
-            return Err(format!(
-                "pane {pane_id} is not an agent; call agent_list, or agent_register it first"
-            ));
-        }
-        // An agent is always a terminal pane, so is_plugin is settled here rather
-        // than asked of the model.
-        let (name, arguments) = match call.name.as_str() {
-            // Empty input is left to send_input, which already refuses it.
-            "agent_send" => (
-                "send_input",
-                serde_json::json!({
-                    "pane_id": pane_id,
-                    "is_plugin": false,
-                    "text": args.text,
-                    "keys": args.keys,
-                }),
-            ),
-            _ => match args.action.as_deref() {
-                Some("interrupt") => (
-                    "send_input",
-                    serde_json::json!({
-                        "pane_id": pane_id,
-                        "is_plugin": false,
-                        "keys": ["ctrl_c"],
-                    }),
-                ),
-                Some("restart") => (
-                    "rerun_pane",
-                    serde_json::json!({ "pane_id": pane_id, "is_plugin": false }),
-                ),
-                Some("close") => (
-                    "close_pane",
-                    serde_json::json!({ "pane_id": pane_id, "is_plugin": false }),
-                ),
-                Some(other) => return Err(format!("unknown agent action: {other}")),
-                None => return Err("action is required".to_owned()),
-            },
-        };
-        Ok(ToolCall {
-            id: call.id.clone(),
-            name: name.to_owned(),
-            arguments: arguments.to_string(),
-        })
     }
 
     /// Whether this pane is an agent right now: in the last snapshot, and either

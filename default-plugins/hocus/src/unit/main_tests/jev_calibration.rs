@@ -227,7 +227,7 @@ fn cases() -> Vec<Case> {
     let mut send = case(
         "agent_send_text",
         Expect::Pass,
-        "agent_send",
+        "agent_prompt",
         json!({"pane_id": 3, "text": "also update the changelog"}),
         "tell the codex in pane 3 to also update the changelog",
     );
@@ -371,8 +371,8 @@ fn cases() -> Vec<Case> {
     let mut close = case(
         "agent_control_close_unrequested",
         Expect::Fail,
-        "agent_control",
-        json!({"pane_id": 3, "action": "close"}),
+        "close_pane",
+        json!({"pane_id": 3, "is_plugin": false}),
         "how is the codex in pane 3 doing?",
     );
     close.state.manual_kinds.insert(3, "codex".into());

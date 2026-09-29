@@ -61,3 +61,6 @@ and submission state before retrying. Preserve launch and submission tokens for
 reconciliation. New commands return one JSON value; failures use stderr and a
 nonzero exit status. The existing `run` default also prints its launch token.
 Use cron, Swamp workflows, or coding-agent automations for recurring execution.
+
+Use `workflow show RUN_ID` to open a view and `workflow run-get RUN_ID` for structured inspection.
+Workflow runs are distinct from agent turns and agent archive runs.

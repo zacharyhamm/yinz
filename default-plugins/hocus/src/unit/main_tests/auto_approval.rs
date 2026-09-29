@@ -564,7 +564,7 @@ fn a_response_from_before_reload_cannot_approve_a_new_call() {
 }
 
 #[test]
-fn an_authorized_codex_launch_includes_the_prompt_and_cwd_then_dispatches() {
+fn an_approved_legacy_spawn_prompt_still_cannot_dispatch() {
     tools::test_seams::reset();
     let mut state = review_state();
     let prompt = "Fix the parser regression and run its tests.";
@@ -598,14 +598,20 @@ fn an_authorized_codex_launch_includes_the_prompt_and_cwd_then_dispatches() {
     assert_eq!(arguments["agent"], "codex");
     assert_eq!(arguments["prompt"], prompt);
     assert_eq!(arguments["cwd"], "/work/hocus");
-    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert!(calls.is_empty()));
+    assert!(
+        state.workflow_call.is_none(),
+        "spawn prompt fields cannot dispatch, even after approval"
+    );
     assert!(respond(&mut state, context, pass()));
     assert!(state.pending.is_empty());
     assert_eq!(
         tool_results(&state)[0].tool_call_id.as_deref(),
         Some("spawn-1")
     );
-    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert_eq!(calls.len(), 1));
+    assert!(
+        state.workflow_call.is_none(),
+        "spawn prompt fields cannot dispatch, even after approval"
+    );
 }
 
 #[test]
@@ -674,8 +680,10 @@ fn agent_launch_reviews_bind_the_selected_project_root() {
             assert!(respond(&mut state, context, pass()));
             assert_eq!(matches!(state.status, Status::ConfirmingTool), changed);
             assert_eq!(tool_results(&state).len(), usize::from(!changed));
-            tools::test_seams::SPAWN_AGENT_CALLS
-                .with_borrow(|calls| assert_eq!(calls.len(), usize::from(!changed)));
+            assert!(
+                state.workflow_call.is_none(),
+                "spawn prompt fields cannot dispatch, even after approval"
+            );
         }
     }
 }
@@ -703,7 +711,10 @@ fn invalid_agent_project_directories_require_manual_confirmation() {
         state.pump_tools();
         assert!(matches!(state.status, Status::ConfirmingTool), "{invalid}");
         assert!(tool_results(&state).is_empty());
-        tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert!(calls.is_empty()));
+        assert!(
+            state.workflow_call.is_none(),
+            "spawn prompt fields cannot dispatch, even after approval"
+        );
     }
 }
 
@@ -1564,8 +1575,10 @@ fn agent_launch_reviews_bind_the_project_launch_defaults() {
             changed,
             "{change}"
         );
-        tools::test_seams::SPAWN_AGENT_CALLS
-            .with_borrow(|calls| assert_eq!(calls.len(), usize::from(!changed), "{change}"));
+        assert!(
+            state.workflow_call.is_none(),
+            "spawn prompt fields cannot dispatch, even after approval"
+        );
     }
 }
 

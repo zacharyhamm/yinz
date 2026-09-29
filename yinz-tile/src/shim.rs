@@ -721,6 +721,15 @@ pub fn open_command_pane_in_git_checkout_near_plugin_with_automatic_firecracker_
 /// the pane and what it got - the branch and folder it actually landed on, which are not
 /// always the ones asked for - or the error text. See `PluginCommand::SpawnAgent` for the arguments, and for
 /// what `automatic_firecracker_vm` decides about a Firecracker spec's VM.
+pub fn agent_control(
+    id: String,
+    request: &yinz_types::agent::control::AgentRequest,
+) -> Result<(), String> {
+    let request = serde_json::to_string(request).map_err(|error| error.to_string())?;
+    send(PluginCommand::AgentControl { id, request });
+    Ok(())
+}
+
 pub fn spawn_agent(
     spec: AgentSpawnSpec,
     source_directory: Option<PathBuf>,

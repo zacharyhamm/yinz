@@ -839,6 +839,10 @@ pub enum ScreenInstruction {
     },
     SetCliEventSubscribersPresent(bool),
     AgentControl(yinz_types::agent::control::AgentRequest, ClientId),
+    AgentControlReply(
+        yinz_types::agent::control::AgentRequest,
+        std::sync::mpsc::Sender<yinz_types::agent::control::AgentResponse>,
+    ),
     AgentSpawned(yinz_types::agent::SpawnedAgent),
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),

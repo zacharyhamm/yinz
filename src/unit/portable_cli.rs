@@ -195,7 +195,7 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         success(session.run(&["action", "context", "--pane-id", id], None))["project"],
         "work"
     );
-    success(session.run(&["action", "agent-register", id, "reviewer"], None));
+    success(session.run(&["agent", "register", id, "reviewer"], None));
     success(session.run(
         &[
             "action",
@@ -210,26 +210,50 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         &["action", "project-assign", "other", "--tab-id", "0"],
         None,
     ));
-    let assigned = success(session.run(&["action", "agent-list", "--project", "other"], None));
+    let assigned = success(session.run(&["agent", "list", "--project", "other", "--json"], None));
     assert!(
-        assigned
+        assigned["agents"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|agent| agent["pane_id"] == id.parse::<u32>().unwrap()),
+            .any(|agent| agent["pane_id"] == pane),
         "explicit tab assignment must outrank cwd discovery"
     );
     success(session.run(&["action", "project-assign", "work", "--tab-id", "0"], None));
     success(session.run(&["action", "project-forget", "other"], None));
-    success(session.run(&["action", "agent-wait", pane, "idle"], None));
+    assert!(!session
+        .run(
+            &[
+                "agent",
+                "wait",
+                pane,
+                "--until",
+                "idle",
+                "--timeout",
+                "1ms",
+                "--json"
+            ],
+            None
+        )
+        .status
+        .success());
     let waiter = session
         .cmd(&["action", "pane-wait", pane, "--contains", "CLI_CHANGED"])
         .spawn()
         .unwrap();
-    success(session.run(
-        &["action", "agent-send", id, "--file", "-", "--enter"],
-        Some("printf CLI_CHANGED"),
-    ));
+    assert!(session
+        .run(
+            &[
+                "action",
+                "write-chars",
+                "--pane-id",
+                pane,
+                "printf CLI_CHANGED\n"
+            ],
+            None
+        )
+        .status
+        .success());
     let waited = waiter.wait_with_output().unwrap();
     if !waited.status.success() {
         eprintln!(
@@ -327,10 +351,10 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         .unwrap()
         .iter()
         .any(|entity| entity["namespace"] == "plugin:yinz:swamp-bridge"));
-    let runs = success(session.run(&["action", "agent-runs", "--project", "renamed"], None));
+    let runs = success(session.run(&["agent", "runs", "--project", "renamed"], None));
     assert!(runs["runs"].is_array());
     failure(
-        session.run(&["action", "agent-run", "missing-run"], None),
+        session.run(&["agent", "run", "missing-run"], None),
         "no such run",
     );
     let panes = success(session.run(&["action", "list-panes", "--json"], None));
@@ -356,21 +380,25 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         .status()
         .unwrap()
         .success());
+    let executable = session.0.path().join("codex");
+    yinz_test_support::write_warm_script(
+        &executable,
+        "#!/bin/sh\nprintf AGENT_READY\nexec /bin/sh\n",
+    );
     let spawned = success(
         session.run(
-            &["action", "agent-spawn", "--file", "-"],
+            &["agent", "spawn", "--file", "-", "--json"],
             Some(
                 &json!({
-                    "command":"/bin/sh", "args":["-c", "printf AGENT_READY; exec /bin/sh"],
+                    "command":executable, "hooks":false,
                     "project":"renamed", "branch":"review", "base":"HEAD"
                 })
                 .to_string(),
             ),
         ),
     );
-    let spawned_pane: yinz_types::pane_id::PaneId =
-        serde_json::from_value(spawned["pane_id"].clone()).unwrap();
-    let spawned_pane = spawned_pane.to_string();
+    let spawned = &spawned["spawned"];
+    let spawned_pane = spawned["pane_id"].as_str().unwrap().to_owned();
     assert_eq!(spawned["branch"], "review");
     assert!(Path::new(spawned["cwd"].as_str().unwrap())
         .join(".git")
@@ -386,8 +414,8 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         None,
     ));
     let spawned_id = spawned_pane.strip_prefix("terminal_").unwrap();
-    success(session.run(&["action", "agent-register", spawned_id, "reviewer"], None));
-    success(session.run(&["action", "agent-wait", &spawned_pane, "idle"], None));
+    success(session.run(&["agent", "register", spawned_id, "reviewer"], None));
+    success(session.run(&["agent", "read", &spawned_pane, "--json"], None));
     // Reload the metadata owner with no chat loaded, then query its persisted assignment.
     assert!(session
         .run(
@@ -400,7 +428,10 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         success(session.run(&["action", "context", "--pane-id", id], None))["project"],
         "renamed"
     );
-    success(session.run(&["action", "agent-control", spawned_id, "close"], None));
+    assert!(session
+        .run(&["action", "close-pane", "--pane-id", &spawned_pane], None)
+        .status
+        .success());
     success(session.run(&["action", "pane-wait", &spawned_pane, "--closed"], None));
 }
 

@@ -1377,7 +1377,26 @@ impl State {
         let Some(started) = self.extension_call_started_ms else {
             return false;
         };
-        let timeout = if self
+        let timeout = if let Some(call) = self
+            .pending
+            .front()
+            .filter(|call| crate::agent_control::TOOLS.contains(&call.name.as_str()))
+        {
+            tools::Args::parse(&call.arguments)
+                .map(|args| {
+                    args.timeout_ms
+                        .unwrap_or(if call.name == "agent_spawn" {
+                            120_000
+                        } else if args.wait {
+                            600_000
+                        } else {
+                            30_000
+                        })
+                        .min(yinz_tile::agent::control::MAX_TIMEOUT_MS)
+                        + 5000
+                })
+                .unwrap_or(35_000)
+        } else if self
             .pending
             .front()
             .is_some_and(|call| crate::operations::TOOLS.contains(&call.name.as_str()))

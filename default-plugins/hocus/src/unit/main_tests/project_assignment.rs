@@ -135,29 +135,6 @@ fn an_unassigned_active_tab_clears_the_project_context() {
 }
 
 #[test]
-fn project_agent_lists_use_pane_folders() {
-    let mut state = state_with_panes();
-    state.projects.insert(
-        "hocus".to_owned(),
-        projects::validate("hocus", "/work/hocus").unwrap(),
-    );
-    state.panes[0].cwd = Some("/work/hocus/src".to_owned());
-    state.panes[1].cwd = Some("/work/other".to_owned());
-    state.repositories = ["/work/hocus/src", "/work/other"]
-        .into_iter()
-        .map(|cwd| (Location::local(cwd), checkout(cwd)))
-        .collect();
-    state.manual_kinds.insert(4, "reviewer".to_owned());
-
-    let list = state
-        .run_local(&agent_call("agent_list", r#"{"project":"hocus"}"#))
-        .unwrap();
-    let list: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(list.as_array().unwrap().len(), 1);
-    assert_eq!(list[0]["pane_id"], 3);
-}
-
-#[test]
 fn project_agent_lists_include_matching_remote_worktrees() {
     let mut state = state_with_panes();
     let mut project = projects::validate("hocus", "/work/hocus").unwrap();
@@ -487,32 +464,17 @@ fn forgetting_a_project_waits_for_a_confirmation() {
 }
 
 #[test]
-fn an_agent_list_names_the_folder_and_the_project() {
-    let mut state = state_with_tab(TabId::new(9));
-    poll(
-        &mut state,
-        vec![agent_in(3, "/work/hocus/src", TabId::new(9))],
-    );
-
-    let list = state.run_local(&agent_call("agent_list", "{}")).unwrap();
-    let list: serde_json::Value = serde_json::from_str(&list).unwrap();
-    assert_eq!(list[0]["cwd"], "/work/hocus/src");
-    assert_eq!(list[0]["project"], "src");
-}
-
-#[test]
 fn project_agent_spawn_rejects_a_folder_outside_the_root() {
     let mut state = idle_state();
     state.projects.insert(
         "hocus".to_owned(),
         projects::validate("hocus", "/work/hocus").unwrap(),
     );
+    let args =
+        tools::Args::parse(r#"{"command":"codex","project":"hocus","cwd":"/work/other"}"#).unwrap();
     assert_eq!(
-        state.run_local(&agent_call(
-            "agent_spawn",
-            r#"{"command":"codex","project":"hocus","cwd":"/work/other"}"#,
-        )),
-        Some("cwd must be inside project hocus".to_owned()),
+        state.agent_cwd(&args).unwrap_err(),
+        "cwd must be inside project hocus"
     );
 }
 

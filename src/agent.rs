@@ -11,7 +11,6 @@ use yinz_types::agent::control::{
 use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
-    let (request, json, timeout) = request(command, &mut std::io::stdin())?;
     let explicit = opts.session.clone().or_else(|| {
         yinz_runtime::envs::get_session_name()
             .ok()
@@ -26,6 +25,22 @@ pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
         )?,
     };
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
+    let action = match &command {
+        Agent::Archive(archive) => Some(archive.action().map_err(anyhow::Error::msg)?),
+        Agent::Register { pane_id, kind } => Some(yinz_cli::notes_todos::pipe_action(
+            "agent_action",
+            serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind},"structured_reply":true}),
+        )),
+        _ => None,
+    };
+    if let Some(action) = action {
+        println!(
+            "{}",
+            yinz_client::store_client::request(&session.into(), action)?
+        );
+        return Ok(0);
+    }
+    let (request, json, timeout) = request(command, &mut std::io::stdin())?;
     let response = exchange(&session, request, timeout)?;
     print_response(&response, json, &mut std::io::stdout().lock())?;
     Ok(
@@ -43,7 +58,10 @@ pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
 fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool, Duration)> {
     let mut timeout = Duration::from_secs(30);
     let (request, json) = match command {
-        Agent::List { json } => (AgentRequest::List, json),
+        Agent::List { project, json } => (AgentRequest::List { project }, json),
+        Agent::Archive(_) | Agent::Register { .. } => {
+            bail!("archive and registration use background services")
+        },
         Agent::Status {
             target,
             conversation,
@@ -57,6 +75,12 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
         ),
         Agent::Spawn {
             kind,
+            file,
+            project,
+            remote_host,
+            firecracker,
+            firecracker_image,
+            worktree,
             cwd,
             branch,
             base,
@@ -69,31 +93,79 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
             allow_outside_worktree,
             json,
         } => {
-            let cwd = cwd
-                .canonicalize()
-                .context("cannot resolve agent working directory")?;
-            if !cwd.is_dir() {
-                bail!(
-                    "agent working directory is not a directory: {}",
-                    cwd.display()
-                );
-            }
-            let spec = AgentSpawnSpec {
-                kind: Some(kind),
-                branch,
-                base,
-                worktree_dir,
-                model,
-                effort,
-                permission_mode,
-                resume,
-                reuse: Some(reuse),
-                allow_outside_worktree: Some(allow_outside_worktree),
-                ..Default::default()
+            let mut input = if let Some(file) = file {
+                let mut source = String::new();
+                if file == Path::new("-") {
+                    stdin
+                        .read_to_string(&mut source)
+                        .context("read spawn configuration")?;
+                } else {
+                    source = std::fs::read_to_string(file).context("read spawn configuration")?;
+                }
+                serde_json::from_str::<serde_json::Value>(&source)
+                    .context("parse spawn configuration")?
+            } else {
+                serde_json::json!({})
             };
-            yinz_runtime::agent::launch::plan(&spec).map_err(|error| anyhow!(error))?;
+            let fields = input
+                .as_object_mut()
+                .context("spawn configuration must be an object")?;
+            if fields.contains_key("prompt") || fields.contains_key("reuse_prompt") {
+                bail!("spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt");
+            }
+            let overrides = serde_json::json!({"kind":kind,"project":project,"remote_host":remote_host,
+                "firecracker":firecracker,"firecracker_image":firecracker_image,"worktree":worktree,
+                "cwd":cwd,"branch":branch,"base":base,"worktree_dir":worktree_dir,"model":model,
+                "effort":effort,"permission_mode":permission_mode,"resume":resume});
+            fields.extend(
+                overrides
+                    .as_object()
+                    .context("spawn overrides")?
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+            if reuse {
+                fields.insert("reuse".into(), true.into());
+            }
+            if allow_outside_worktree {
+                fields.insert("allow_outside_worktree".into(), true.into());
+            }
+            let spec: AgentSpawnSpec =
+                serde_json::from_value(input.clone()).context("parse launch options")?;
+            let project: Option<String> =
+                serde_json::from_value(input["project"].clone()).context("parse project")?;
+            let remote_host: Option<String> =
+                serde_json::from_value(input["remote_host"].clone()).context("parse SSH host")?;
+            let mut cwd: Option<std::path::PathBuf> =
+                serde_json::from_value(input["cwd"].clone()).context("parse cwd")?;
+            if remote_host.is_none() {
+                if let Some(path) = cwd {
+                    cwd = Some(std::path::absolute(path).context("resolve cwd")?);
+                } else if project.is_none()
+                    && (spec
+                        .firecracker
+                        .as_deref()
+                        .is_none_or(|vm| vm.trim().is_empty())
+                        || spec
+                            .branch
+                            .as_deref()
+                            .is_some_and(|branch| !branch.trim().is_empty()))
+                {
+                    cwd = Some(std::env::current_dir().context("read cwd")?);
+                }
+            }
             timeout = Duration::from_secs(120);
-            (AgentRequest::Spawn { spec, cwd }, json)
+            (
+                AgentRequest::Spawn {
+                    automatic_firecracker_vm: false,
+                    spec,
+                    cwd,
+                    project,
+                    remote_host,
+                },
+                json,
+            )
         },
         Agent::Prompt {
             target,

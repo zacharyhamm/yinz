@@ -36,7 +36,7 @@ mod watch_filesystem;
 mod yinz_exports;
 use log::info;
 pub use yinz_bus::plugins::*;
-pub use yinz_exports::spawn_agent_for_cli;
+pub use yinz_exports::{control_agent, spawn_agent_for_cli};
 
 pub(crate) use pinned_executor::PinnedExecutor;
 pub use yinz_process::{firecracker, pty_host};

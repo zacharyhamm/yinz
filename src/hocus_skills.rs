@@ -4,10 +4,6 @@ use yinz_runtime::errors::prelude::*;
 
 const SKILL: &str = include_str!("../assets/skills/yinz-notes-todos/SKILL.md");
 
-pub(crate) fn install(path: &Path, dry_run: bool, force: bool) -> Result<()> {
-    install_content(path, SKILL, dry_run, force)
-}
-
 fn install_content(path: &Path, content: &str, dry_run: bool, force: bool) -> Result<()> {
     match fs::read(path) {
         Ok(bytes) if bytes == content.as_bytes() => {
@@ -151,18 +147,18 @@ mod tests {
     fn skill_install_is_explicit_idempotent_and_preserves_other_files() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("skills/yinz-notes-todos/SKILL.md");
-        install(&path, true, false).unwrap();
+        install_content(&path, SKILL, true, false).unwrap();
         assert!(!path.parent().unwrap().exists());
-        install(&path, false, false).unwrap();
+        install_content(&path, SKILL, false, false).unwrap();
         let unrelated = path.with_file_name("personal.md");
         fs::write(&unrelated, "mine").unwrap();
-        install(&path, false, false).unwrap();
+        install_content(&path, SKILL, false, false).unwrap();
         fs::write(&path, "custom instructions").unwrap();
-        assert!(install(&path, false, false).is_err());
-        assert!(install(&path, true, false).is_err());
-        install(&path, true, true).unwrap();
+        assert!(install_content(&path, SKILL, false, false).is_err());
+        assert!(install_content(&path, SKILL, true, false).is_err());
+        install_content(&path, SKILL, true, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "custom instructions");
-        install(&path, false, true).unwrap();
+        install_content(&path, SKILL, false, true).unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), SKILL);
         assert_eq!(fs::read_to_string(unrelated).unwrap(), "mine");
     }

@@ -48,3 +48,6 @@ Exit waits report process exit; inspect `exit_status` for success. Closing a pan
 is a separate condition. Timeout, disconnection, and unexpected disappearance
 fail. New structured commands produce one JSON value on stdout; check exit status
 before parsing. Diagnostics go to stderr.
+
+For agent coordination, use the yinz-agents skill and `yinz agent`.
+Pane output and exit waits do not prove an agent accepted or completed a task.

@@ -117,5 +117,5 @@ Use `action context` and `list-tabs --json` to verify live associations.
 
 Use `yinz action COMMAND --help` for the full flags. The skill is installed by
 `yinz skills install yinz-notes-todos --agent claude|codex|opencode|all`.
-The legacy `yinz hocus skills install` still installs this skill only.
+Use `yinz skills install` to install selected topics for coding agents.
 `--dry-run` previews paths. `--force` explicitly replaces differing skill content.

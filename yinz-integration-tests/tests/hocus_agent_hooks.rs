@@ -158,7 +158,7 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
         grid_snapshot.contains("agents")
     });
     let listed = yinz.snapshot().to_string();
-    let pane_id = agent_pane_id(&listed);
+    let pane_id = agent_pane_id(&mut yinz);
     assert!(
         !listed.contains("waiting"),
         "nothing has reported anything yet:\n{listed}"
@@ -249,19 +249,27 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
     );
 }
 
-/// The pane id `agent_list` drew, off the grid.
-///
-/// The list is presented rather than printed as JSON: hocus renders the markdown, so
-/// one agent is a line reading `• 0 running — claude`. This takes the number off the
-/// first such line.
-fn agent_pane_id(screen: &str) -> u32 {
-    screen
-        .lines()
-        .find_map(|line| {
-            let rest = line.trim().strip_prefix('\u{2022}')?;
-            rest.split_whitespace().next()?.parse().ok()
-        })
-        .unwrap_or_else(|| panic!("agent_list listed no pane:\n{screen}"))
+// These fixtures run sleep with an agent title. Discover the general pane before
+// sending its first provider hook; inferred titles are not authoritative agent records.
+fn agent_pane_id(yinz: &mut TestSession) -> u32 {
+    let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{output}");
+    let panes: serde_json::Value = serde_json::from_str(&output).unwrap();
+    panes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pane| pane["is_plugin"] == false)
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap() as u32
 }
 
 #[test]
@@ -281,7 +289,7 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
     });
     submit(&yinz, "/agent_list {}");
     yinz.wait_until("the daemon found the pane", |grid| grid.contains("agents"));
-    let pane_id = agent_pane_id(&yinz.snapshot().to_string());
+    let pane_id = agent_pane_id(&mut yinz);
     clear(&yinz, "agents");
     for payload in [
         r#"{"hook_event_name":"UserPromptSubmit","session_id":"conversation","prompt":"Inspect the parser"}"#,
@@ -388,8 +396,10 @@ fn delayed_daemon_events_do_not_overwrite_newer_pane_state() {
     yinz.send_stdin(b"y");
     yinz.wait_until("permissions granted", |grid| !grid.contains("Allow? (y/n)"));
     submit(&yinz, "/agent_list {}");
-    yinz.wait_until("the daemon found the pane", |grid| grid.contains("•"));
-    let pane_id = agent_pane_id(&yinz.snapshot().to_string());
+    yinz.wait_until("the initial agent list returned", |grid| {
+        grid.contains("agents")
+    });
+    let pane_id = agent_pane_id(&mut yinz);
     clear(&yinz, "•");
 
     for (hook, expected, mark) in [
@@ -423,8 +433,8 @@ fn delayed_daemon_events_do_not_overwrite_newer_pane_state() {
         let (code, output) = yinz.run_actions_reporting(actions);
         assert_eq!(code, 0, "{output}");
         submit(&yinz, "/agent_list {}");
-        yinz.wait_until("the daemon has processed the delayed Stop", |grid| {
-            grid.contains("•") && grid.contains("idle")
+        yinz.wait_until("the authoritative list retains the current state", |grid| {
+            grid.contains("•") && grid.contains(&expected.to_lowercase())
         });
         assert_eq!(pane_agent(&mut yinz, pane_id)["state"], expected);
         yinz.wait_until("the status bar retains the current state", |grid| {
@@ -484,8 +494,10 @@ keybinds {{
     yinz.send_stdin(b"y");
     yinz.wait_until("permissions granted", |grid| !grid.contains("Allow? (y/n)"));
     submit(&yinz, "/agent_list {}");
-    yinz.wait_until("the daemon found the pane", |grid| grid.contains("•"));
-    let pane_id = agent_pane_id(&yinz.snapshot().to_string());
+    yinz.wait_until("the initial agent list returned", |grid| {
+        grid.contains("agents")
+    });
+    let pane_id = agent_pane_id(&mut yinz);
     clear(&yinz, "•");
 
     let record = |yinz: &mut TestSession| {
@@ -600,7 +612,7 @@ fn opencode_events_report_the_pane_and_a_question_waits() {
     yinz.wait_until("the daemon has found the agent pane", |grid| {
         grid.contains("agents")
     });
-    let pane_id = agent_pane_id(&yinz.snapshot().to_string());
+    let pane_id = agent_pane_id(&mut yinz);
     clear(&yinz, "agents");
 
     // A prompt, then a tool starting: busy, naming the tool.

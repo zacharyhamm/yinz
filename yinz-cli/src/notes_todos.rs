@@ -12,57 +12,6 @@ pub enum NotesTodos {
     ProjectRename { name: String, new_name: String },
     /// Merge duplicate project identities, preserving the target's settings.
     ProjectMerge { source: String, target: String },
-    /// List agent run headers with pagination across the archive.
-    AgentRuns {
-        #[clap(long)]
-        project: Option<String>,
-        #[clap(long)]
-        host_id: Option<String>,
-        #[clap(long)]
-        run_session: Option<String>,
-        #[clap(long)]
-        kind: Option<String>,
-        #[clap(long)]
-        since_ms: Option<i64>,
-        #[clap(long)]
-        active: Option<bool>,
-        #[clap(long, default_value_t = 20)]
-        limit: usize,
-        #[clap(long, default_value_t = 0)]
-        offset: usize,
-    },
-    /// Read an exact run and a bounded page of its timeline.
-    AgentRun {
-        run_id: String,
-        #[clap(long, conflicts_with = "from_revision")]
-        revision: Option<u64>,
-        #[clap(long)]
-        from_revision: Option<u64>,
-        #[clap(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Search recorded agent messages and prompts.
-    AgentHistorySearch {
-        query: String,
-        #[clap(long)]
-        run_id: Option<String>,
-        #[clap(long)]
-        project: Option<String>,
-        #[clap(long)]
-        host_id: Option<String>,
-        #[clap(long)]
-        run_session: Option<String>,
-        #[clap(long)]
-        kind: Option<String>,
-        #[clap(long)]
-        since_ms: Option<i64>,
-        #[clap(long)]
-        active: Option<bool>,
-        #[clap(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Follow recorded predecessor links from an exact run ID.
-    AgentPredecessors { run_id: String },
     /// List remembered projects.
     ProjectList,
     /// Remember a project name and absolute root.
@@ -256,10 +205,6 @@ impl NotesTodos {
         let query = matches!(
             self,
             Self::ProjectList
-                | Self::AgentRuns { .. }
-                | Self::AgentRun { .. }
-                | Self::AgentHistorySearch { .. }
-                | Self::AgentPredecessors { .. }
                 | Self::TodoList { .. }
                 | Self::TodoSearch { .. }
                 | Self::NoteList { .. }

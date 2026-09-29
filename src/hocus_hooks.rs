@@ -65,25 +65,6 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
             return yinz_codex::report(&std::env::current_exe().context("find this yinz binary")?);
         },
         Hocus::Hooks(hooks) => hooks,
-        Hocus::Skills(yinz_cli::args::HocusSkills::Install {
-            agent,
-            dry_run,
-            force,
-        }) => {
-            return for_each_agent(selected_agents(Some(agent), false)?, |agent| {
-                let root = agent_root(
-                    agent,
-                    std::env::var_os("CODEX_HOME"),
-                    std::env::var_os("XDG_CONFIG_HOME"),
-                    home,
-                )?;
-                crate::hocus_skills::install(
-                    &root.join("skills/yinz-notes-todos/SKILL.md"),
-                    dry_run,
-                    force,
-                )
-            });
-        },
     };
     match hooks {
         HocusHooks::Install {

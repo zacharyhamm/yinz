@@ -24,9 +24,6 @@ pub fn wait(session: &SessionName, request: Wait) -> Result<serde_json::Value> {
         ),
         Wait::PaneWait {
             pane_id, timeout, ..
-        }
-        | Wait::AgentWait {
-            pane_id, timeout, ..
         } => (
             *pane_id,
             *timeout,
@@ -85,9 +82,6 @@ fn observe(
                     };
                     let satisfied = match request {
                         Wait::PaneWait { exited: true, .. } => pane.exited,
-                        Wait::AgentWait { state, .. } => pane.agent.as_ref().is_some_and(|agent| {
-                            agent.state.to_string().eq_ignore_ascii_case(state)
-                        }),
                         _ => false,
                     };
                     if satisfied {

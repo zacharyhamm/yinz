@@ -12,6 +12,12 @@ use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEven
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_id::PaneId;
 
+#[derive(Clone, Debug)]
+pub(super) enum Reply {
+    Client(ClientId),
+    Host(std::sync::mpsc::Sender<AgentResponse>),
+}
+
 pub(super) struct WorkerWaits {
     parent: AgentInfo,
     waits: std::collections::BTreeMap<String, Option<String>>,
@@ -24,7 +30,7 @@ pub(super) struct Lifecycle {
 }
 
 pub(super) struct Pending {
-    client: Option<ClientId>,
+    client: Option<Reply>,
     pane: PaneId,
     kind: String,
     conversation: Option<String>,
@@ -190,6 +196,9 @@ impl Screen {
         Some(AgentStatus {
             pane_id,
             session: self.session_name.to_string(),
+            host_id: yinz_runtime::host_identity::host_id(),
+            tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
+            target: info.target,
             cwd,
             branch: self
                 .agent_launches
@@ -227,7 +236,14 @@ impl Screen {
         })
     }
 
-    fn agent_reply(&self, client: ClientId, response: AgentResponse) {
+    fn agent_reply(&self, reply: &Reply, response: AgentResponse) {
+        let client = match reply {
+            Reply::Client(client) => *client,
+            Reply::Host(sender) => {
+                let _ = sender.send(response);
+                return;
+            },
+        };
         if let Some(os) = &self.bus.os_input {
             os.send_to_client(client, ServerToClientMsg::AgentControl(response))
                 .context("reply to agent command")
@@ -248,9 +264,13 @@ impl Screen {
     }
 
     pub(super) fn agent_control(&mut self, request: AgentRequest, client: ClientId) {
+        self.agent_control_with_reply(request, Reply::Client(client));
+    }
+
+    pub(super) fn agent_control_with_reply(&mut self, request: AgentRequest, client: Reply) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
-            List => {
+            List { .. } => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.agents = self
                     .tabs
@@ -259,11 +279,11 @@ impl Screen {
                     .filter_map(|id| self.agent_status(id))
                     .filter(|status| status.agent.state != AgentState::Exited)
                     .collect();
-                self.agent_reply(client, response);
+                self.agent_reply(&client, response);
                 return;
             },
             Spawn { .. } => {
-                self.agent_reply(client, AgentResponse::new(AgentOutcome::Rejected));
+                self.agent_reply(&client, AgentResponse::new(AgentOutcome::Rejected));
                 return;
             },
             Recover {
@@ -298,7 +318,7 @@ impl Screen {
         };
         let reject = |screen: &Self, outcome, message: &str| {
             screen.agent_reply(
-                client,
+                &client,
                 screen.agent_result(pane, outcome, Some(message.into())),
             );
         };
@@ -352,7 +372,7 @@ impl Screen {
                 if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
                     lifecycle.input_revision = Some(revision);
                 }
-                self.agent_reply(client, self.agent_result(pane, AgentOutcome::Ok, None));
+                self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
             },
             Status { .. } => {
                 let outcome = if status.status_available {
@@ -360,7 +380,7 @@ impl Screen {
                 } else {
                     AgentOutcome::StatusUnavailable
                 };
-                self.agent_reply(client, self.agent_result(pane, outcome, None));
+                self.agent_reply(&client, self.agent_result(pane, outcome, None));
             },
             Read { lines, .. } => {
                 if lines == 0 || lines > 100_000 {
@@ -379,7 +399,7 @@ impl Screen {
                 last.reverse();
                 let mut response = self.agent_result(pane, AgentOutcome::Ok, None);
                 response.output = Some(last.join("\n"));
-                self.agent_reply(client, response);
+                self.agent_reply(&client, response);
             },
             SendKeys { keys, .. } => {
                 if !status.status_available || !self.agent_process_matches(pane, &status.agent.kind)
@@ -420,7 +440,7 @@ impl Screen {
                     .try_for_each(|key| self.agent_write_key(pane, key));
                 match result {
                     Ok(()) => {
-                        self.agent_reply(client, self.agent_result(pane, AgentOutcome::Ok, None))
+                        self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None))
                     },
                     Err(error) => reject(self, AgentOutcome::Failed, &error.to_string()),
                 }
@@ -472,7 +492,7 @@ impl Screen {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 self.agent_controls.push(Pending {
-                    client: Some(client),
+                    client: Some(client.clone()),
                     pane,
                     kind: status.agent.kind.clone(),
                     conversation: status.agent.session_id,
@@ -524,7 +544,7 @@ impl Screen {
                     return;
                 };
                 self.agent_controls.push(Pending {
-                    client: Some(client),
+                    client: Some(client.clone()),
                     pane,
                     kind: status.agent.kind,
                     conversation: status.agent.session_id,
@@ -541,7 +561,7 @@ impl Screen {
                 });
                 self.refresh_agent_controls();
             },
-            List | Spawn { .. } => {},
+            List { .. } | Spawn { .. } => {},
         }
     }
 
@@ -557,7 +577,7 @@ impl Screen {
         outcome: AgentOutcome,
         message: Option<String>,
     ) {
-        if let Some(client) = pending.client {
+        if let Some(client) = &pending.client {
             let mut response = self.agent_result(pending.pane, outcome, message);
             if let Some(prompt) = &pending.prompt {
                 if matches!(
@@ -915,7 +935,7 @@ impl Screen {
 
     pub(super) fn detach_agent_controls(&mut self, client: ClientId) {
         self.agent_controls.retain_mut(|pending| {
-            if pending.client == Some(client) {
+            if matches!(pending.client, Some(Reply::Client(id)) if id == client) {
                 pending.client = None;
                 return pending.prompt.is_some();
             }

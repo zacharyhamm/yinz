@@ -2822,6 +2822,10 @@ pub enum PluginCommand {
     OpenCommandPaneInPlace(CommandToRun, Context),
     SubscribePaneOutput(Option<BTreeMap<String, String>>),
     /// Builtin-only managed Swamp request. Replies use correlated CustomMessage events.
+    AgentControl {
+        id: String,
+        request: String,
+    },
     SwampRequest {
         directory: PathBuf,
         id: String,

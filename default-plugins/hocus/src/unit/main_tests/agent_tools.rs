@@ -102,175 +102,6 @@ fn a_manual_kind_lasts_until_its_pane_closes() {
     assert!(state.manual_kinds.is_empty(), "the pane closed, so it goes");
 }
 
-/// Off wasm every host call is a stub, so this checks which panes were listed and
-/// what was said about them, not what they were showing.
-#[test]
-fn agent_list_covers_detected_and_registered_panes_only() {
-    let mut state = state_with_panes();
-    state.run_local(&agent_call(
-        "agent_register",
-        r#"{"pane_id":4,"kind":"reviewer"}"#,
-    ));
-
-    let list = state.run_local(&agent_call("agent_list", "{}")).unwrap();
-    let list: serde_json::Value = serde_json::from_str(&list).unwrap();
-    let list = list.as_array().unwrap();
-
-    assert_eq!(list.len(), 2);
-    assert_eq!(list[0]["pane_id"], 3);
-    assert_eq!(list[0]["kind"], "codex");
-    assert_eq!(list[0]["source"], "auto");
-    assert_eq!(list[0]["status"], "running");
-    assert_eq!(list[1]["pane_id"], 4);
-    assert_eq!(list[1]["kind"], "reviewer");
-    assert_eq!(list[1]["source"], "manual");
-}
-
-#[test]
-fn agent_list_is_empty_before_the_first_pane_update() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.run_local(&agent_call("agent_list", "{}")),
-        Some("[]".into()),
-    );
-}
-
-#[test]
-fn agent_spawn_rejects_no_command_and_a_kind_that_is_not_a_word() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.run_local(&agent_call("agent_spawn", "{}")),
-        Some("an agent or a command is required".into()),
-    );
-    assert_eq!(
-        state.run_local(&agent_call(
-            "agent_spawn",
-            r#"{"command":"zsh","kind":"code review"}"#
-        )),
-        Some("kind must be 1 to 32 characters of a-z, 0-9, _ or -".into()),
-    );
-    assert!(state.manual_kinds.is_empty());
-}
-
-/// The dispatch itself needs the host, so what is tested here is the half that
-/// does not: folding `new_pane`'s answer back into the kinds.
-#[test]
-fn a_spawned_kind_is_registered_against_the_pane_new_pane_reported() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.register_spawned(
-            Some("reviewer"),
-            r#"{"opened":true,"pane_id":7,"is_plugin":false}"#
-        ),
-        r#"{"opened":true,"pane_id":7,"is_plugin":false} (registered as reviewer)"#,
-    );
-    assert_eq!(
-        state.manual_kinds.get(&7).map(String::as_str),
-        Some("reviewer")
-    );
-    assert!(state.pending_agent_panes.contains(&7));
-
-    // The subscribe reply can beat the pane-created event back to hocus.
-    // That early snapshot must not discard the override it just sent.
-    assert!(!state.set_panes(Vec::new()));
-    assert_eq!(
-        state.manual_kinds.get(&7).map(String::as_str),
-        Some("reviewer")
-    );
-
-    state.set_panes(terminal_panes(
-        &manifest(vec![pane_info(7, "zsh", Some("zsh"))]),
-        &[],
-    ));
-    assert!(!state.pending_agent_panes.contains(&7));
-    assert_eq!(
-        state.manual_kinds.get(&7).map(String::as_str),
-        Some("reviewer")
-    );
-
-    assert!(state.set_panes(Vec::new()));
-    assert!(!state.manual_kinds.contains_key(&7));
-
-    // No kind, or no pane in the answer: the result passes through untouched.
-    assert_eq!(
-        state.register_spawned(None, r#"{"opened":true,"pane_id":8,"is_plugin":false}"#),
-        r#"{"opened":true,"pane_id":8,"is_plugin":false}"#,
-    );
-    assert_eq!(
-        state.register_spawned(Some("scout"), "yinz did not open the pane"),
-        "yinz did not open the pane",
-    );
-    assert!(state.manual_kinds.is_empty());
-}
-
-/// The whole of `agent_control`, compared as the complete host call it becomes.
-/// A wrong pane kind or a wrong tool here is a killed pane.
-#[test]
-fn every_agent_action_maps_onto_the_tool_that_already_does_it() {
-    let state = state_with_panes();
-    for (arguments, name, mapped) in [
-        (
-            r#"{"pane_id":3,"text":"go","keys":["enter"]}"#,
-            "send_input",
-            r#"{"is_plugin":false,"keys":["enter"],"pane_id":3,"text":"go"}"#,
-        ),
-        (
-            r#"{"pane_id":3,"action":"interrupt"}"#,
-            "send_input",
-            r#"{"is_plugin":false,"keys":["ctrl_c"],"pane_id":3}"#,
-        ),
-        (
-            r#"{"pane_id":3,"action":"restart"}"#,
-            "rerun_pane",
-            r#"{"is_plugin":false,"pane_id":3}"#,
-        ),
-        (
-            r#"{"pane_id":3,"action":"close"}"#,
-            "close_pane",
-            r#"{"is_plugin":false,"pane_id":3}"#,
-        ),
-    ] {
-        let call = agent_call(
-            if arguments.contains("action") {
-                "agent_control"
-            } else {
-                "agent_send"
-            },
-            arguments,
-        );
-        let args = tools::Args::parse(arguments).unwrap();
-        let host = state.agent_host_call(&call, &args).unwrap();
-        assert_eq!(host.name, name, "{arguments}");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&host.arguments).unwrap(),
-            serde_json::from_str::<serde_json::Value>(mapped).unwrap(),
-            "{arguments}"
-        );
-        assert_eq!(host.id, call.id, "the result still answers the call");
-    }
-}
-
-#[test]
-fn agent_tools_refuse_a_pane_that_is_not_an_agent_and_an_action_that_is_not_one() {
-    let mut state = state_with_panes();
-    assert_eq!(
-        state.run_local(&agent_call(
-            "agent_control",
-            r#"{"pane_id":3,"action":"pause"}"#
-        )),
-        Some("unknown agent action: pause".into()),
-    );
-    // Pane 4 is a plain shell that nobody registered.
-    assert_eq!(
-        state.run_local(&agent_call("agent_send", r#"{"pane_id":4,"text":"go"}"#)),
-        Some("pane 4 is not an agent; call agent_list, or agent_register it first".into()),
-    );
-    assert_eq!(
-        state.run_local(&agent_call("agent_send", r#"{"text":"go"}"#)),
-        Some("pane_id is required".into()),
-    );
-}
-
 /// A closed pane leaves the snapshot, and with it every way to send to it.
 #[test]
 fn a_closed_agent_can_no_longer_be_sent_to() {
@@ -280,13 +111,9 @@ fn a_closed_agent_can_no_longer_be_sent_to() {
     assert!(!state.is_agent(3));
 }
 
-/// What the latch changes for the tools, stated on purpose: an agent that is
-/// busy shelling out is still an agent, so `agent_send` reaches it and the
-/// keys land in whatever it is running. That is what a human at the keyboard
-/// would get, and it is the only way to interrupt a tool run — losing that
-/// would be worse than the surprise.
+/// A latched agent stays visible while it runs a shell command.
 #[test]
-fn a_shelled_out_agent_can_still_be_sent_to() {
+fn a_shelled_out_agent_stays_visible() {
     let mut state = state_with_panes();
     let shelled_out = agents::AgentPane {
         title: "zsh".to_owned(),
@@ -327,8 +154,8 @@ fn agent_changes_do_not_post_to_chat() {
 #[test]
 fn a_model_agent_action_is_confirmed_and_a_typed_one_is_not() {
     for (name, arguments) in [
-        ("agent_send", r#"{"pane_id":3,"text":"go"}"#),
-        ("agent_control", r#"{"pane_id":3,"action":"close"}"#),
+        ("agent_prompt", r#"{"pane_id":3,"text":"go"}"#),
+        ("agent_send_keys", r#"{"pane_id":3,"keys":["Esc"]}"#),
     ] {
         let mut state = State {
             stream: state_streaming(Vec::new(), "hocus-1").stream,
@@ -346,147 +173,9 @@ fn a_model_agent_action_is_confirmed_and_a_typed_one_is_not() {
 
     // Typing the command is the confirmation, so it runs on the spot.
     let mut state = state_with_panes();
-    state.run_manual(r#"/agent_control pane_id=3 action=close"#);
+    state.run_manual(r#"/agent_send_keys pane_id=3 keys=["Esc"]"#);
     assert!(!matches!(state.status, Status::ConfirmingTool));
-    assert_eq!(tool_results(&state).len(), 1);
-}
-
-/// The two routes `agent_spawn` takes. Neither can run here — the pane opening is
-/// a host call either way — so what is checked is *which* one was chosen, by the
-/// error each returns: `new_pane` goes through `tools::dispatch`, the git route
-/// through `launch::open`, and their stubs say different things.
-#[test]
-fn a_branch_is_what_sends_a_spawn_through_the_git_route() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.run_local(&agent_call("agent_spawn", r#"{"agent":"claude"}"#)),
-        Some("tools are unavailable outside yinz".into()),
-    );
-    assert_eq!(
-        state.run_local(&agent_call(
-            "agent_spawn",
-            r#"{"agent":"claude","branch":"fix-parser"}"#
-        )),
-        Some("tools are unavailable outside yinz".into()),
-    );
-}
-
-#[test]
-fn triage_agent_spawn_refuses_missing_projects_instead_of_using_the_active_one() {
-    let mut state = state_with_project();
-    tools::test_seams::reset();
-    for project in ["swamp", "swamp-extensions"] {
-        let args = serde_json::json!({
-            "agent": "claude", "model": "opus", "project": project,
-            "branch": "issue-2180", "reuse": true,
-            "prompt": "triage issue 2180", "reuse_prompt": "resume issue 2180",
-        });
-        assert_eq!(
-            state.run_local(&agent_call("agent_spawn", &args.to_string())),
-            Some(format!("unknown project {project}; call project_list"))
-        );
-    }
-    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| assert!(calls.is_empty()));
-}
-
-/// Outside a project, `cwd` is the caller's own directory, and the `new_pane` route
-/// would pass it into the guest untranslated. The refusal comes before the host
-/// call; the same spawn without a cwd reaches it.
-#[test]
-fn a_firecracker_spawn_outside_a_project_refuses_a_host_cwd() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.run_local(&agent_call(
-            "agent_spawn",
-            r#"{"agent":"claude","firecracker":true,"cwd":"/home/me/src"}"#
-        )),
-        Some(
-            "cwd is a path on this machine, and a Firecracker agent starts in the VM's \
-             workspace; leave cwd unset or name a project"
-                .into()
-        ),
-    );
-    assert!(state.manual_kinds.is_empty());
-    assert_eq!(
-        state.run_local(&agent_call(
-            "agent_spawn",
-            r#"{"agent":"claude","firecracker":true}"#
-        )),
-        Some("tools are unavailable outside yinz".into()),
-    );
-}
-
-/// `firecracker=true` promises a VM per agent unless there is a folder to share: the host is
-/// told to name the VM after the folder only when a checkout is being cut or a project is
-/// selected. Outside both, the unique name hocus generated reaches the host as the VM to run
-/// in, and nothing of this machine is mirrored - two agents started from one directory get
-/// two VMs.
-#[test]
-fn a_firecracker_spawn_without_a_checkout_or_project_keeps_its_own_vm() {
-    let spawns = || {
-        tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| {
-            calls
-                .iter()
-                .map(|call| {
-                    (
-                        call.firecracker.clone().unwrap_or_default(),
-                        call.automatic_firecracker_vm,
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-    };
-
-    let mut state = idle_state();
-    tools::test_seams::reset();
-    state.run_local(&agent_call(
-        "agent_spawn",
-        r#"{"agent":"claude","firecracker":true}"#,
-    ));
-    state.run_local(&agent_call(
-        "agent_spawn",
-        r#"{"agent":"claude","firecracker":true}"#,
-    ));
-    let isolated = spawns();
-    assert_eq!(isolated.len(), 2, "{isolated:?}");
-    for (vm, automatic) in &isolated {
-        assert!(vm.starts_with("hocus-agent-"), "{vm}");
-        assert!(!automatic, "{vm} would be renamed after the focused folder");
-    }
-    assert_ne!(isolated[0].0, isolated[1].0, "two agents, two VMs");
-
-    tools::test_seams::reset();
-    state.run_local(&agent_call(
-        "agent_spawn",
-        r#"{"agent":"claude","firecracker":true,"branch":"fix-parser"}"#,
-    ));
-    assert_eq!(
-        spawns()
-            .iter()
-            .map(|(_, automatic)| *automatic)
-            .collect::<Vec<_>>(),
-        vec![true],
-        "a checkout is a folder to name the VM after"
-    );
-
-    let mut state = state_with_project();
-    tools::test_seams::reset();
-    state.run_local(&agent_call(
-        "agent_spawn",
-        r#"{"agent":"claude","firecracker":true}"#,
-    ));
-    assert_eq!(
-        spawns()
-            .iter()
-            .map(|(_, automatic)| *automatic)
-            .collect::<Vec<_>>(),
-        vec![true],
-        "a project's root is a folder to name the VM after"
-    );
-
-    tools::test_seams::reset();
-    state.run_local(&agent_call("agent_spawn", r#"{"agent":"claude"}"#));
-    assert_eq!(spawns(), vec![(String::new(), false)], "no VM at all");
+    assert!(matches!(state.status, Status::AwaitingExtension));
 }
 
 #[test]
@@ -618,18 +307,6 @@ fn a_projects_firecracker_image_is_kept_cleared_or_updated_by_the_project_tools(
     assert!(remember(&mut state, r#"{"name":"other","firecracker_image":"rust"}"#).is_err());
 }
 
-/// `agent` and `command` are alternatives, and the schema cannot say so — this is
-/// where a call naming neither is turned back.
-#[test]
-fn a_spawn_naming_no_agent_and_no_command_is_refused_before_any_git_work() {
-    let mut state = idle_state();
-    assert_eq!(
-        state.run_local(&agent_call("agent_spawn", r#"{"branch":"fix-parser"}"#)),
-        Some("an agent or a command is required".into()),
-    );
-    assert!(state.manual_kinds.is_empty());
-}
-
 /// The prompt and the model are the agent's own arguments, not hocus's: they reach
 /// the pane as argv, in the order `launch` puts them in.
 #[test]
@@ -699,31 +376,118 @@ fn registration_metadata_is_owned_by_the_daemon() {
 }
 
 #[test]
-fn project_worktree_defaults_reach_the_host_only_for_worktrees() {
-    let mut state = idle_state();
-    let mut project = projects::validate("trees", "/work/trees").unwrap();
-    project.worktree_dir = Some("../saved trees".into());
-    state.projects.insert(project.name.clone(), project);
-    state.active_project = Some("trees".into());
-    tools::test_seams::reset();
-    for args in [
-        r#"{"agent":"codex","branch":"topic"}"#,
-        r#"{"agent":"codex","branch":"other","worktree_dir":"/override"}"#,
-        r#"{"agent":"codex","branch":"local","worktree":false}"#,
-        r#"{"agent":"codex"}"#,
-    ] {
-        assert_eq!(
-            state.run_local(&agent_call("agent_spawn", args)),
-            Some("tools are unavailable outside yinz".into())
-        );
+fn live_agent_tools_build_guarded_requests_and_reject_spawn_prompts() {
+    use yinz_tile::agent::control::AgentRequest;
+    let state = idle_state();
+    let request = state.agent_request(&agent_call("agent_prompt", r#"{"pane_id":"terminal_7","text":"review","conversation":"thread","wait":true,"timeout_ms":1234}"#)).unwrap();
+    assert!(
+        matches!(request, AgentRequest::Prompt { expected_session_id: Some(id), prompt, wait: true, timeout_ms: 1234, .. } if id == "thread" && prompt == "review")
+    );
+    for field in ["prompt", "reuse_prompt"] {
+        for value in [serde_json::Value::Null, "act now".into()] {
+            let call = agent_call(
+                "agent_spawn",
+                &serde_json::json!({"agent":"codex",field:value}).to_string(),
+            );
+            assert!(state
+                .agent_request(&call)
+                .unwrap_err()
+                .contains("spawn does not accept"));
+        }
     }
-    tools::test_seams::SPAWN_AGENT_CALLS.with_borrow(|calls| {
-        assert_eq!(
-            calls
-                .iter()
-                .map(|call| call.worktree_dir.as_deref())
-                .collect::<Vec<_>>(),
-            vec![Some("../saved trees"), Some("/override"), None, None]
-        );
-    });
+    assert!(state
+        .agent_request(&agent_call("agent_send", r#"{"pane_id":7}"#))
+        .is_err());
+    assert!(state
+        .agent_request(&agent_call("agent_control", r#"{"pane_id":7}"#))
+        .is_err());
+}
+
+#[test]
+fn live_agent_reply_requires_the_pending_correlation_id() {
+    let mut state = idle_state();
+    let call = agent_call("agent_status", r#"{"pane_id":7}"#);
+    state.pending.push_back(call.clone());
+    assert!(!state.start_agent_tool(&call));
+    assert!(matches!(state.status, Status::AwaitingExtension));
+    assert!(!state.on_agent_response(r#"{"id":"unrelated","response":{"outcome":"ok"}}"#));
+    assert!(state.workflow_call.is_some());
+    let id = state.workflow_call.as_ref().unwrap().rpc_id.clone();
+    assert!(state.on_agent_response(
+        &serde_json::json!({"id":id,"response":{"outcome":"target_changed","acknowledged":false}})
+            .to_string()
+    ));
+    assert!(state.workflow_call.is_none());
+    assert!(tool_results(&state)
+        .iter()
+        .any(|result| result.content.contains("target_changed")));
+}
+
+#[test]
+fn lost_agent_reply_is_an_uncertain_agent_outcome() {
+    let call = agent_call(
+        "agent_prompt",
+        r#"{"pane_id":"terminal_7","text":"review"}"#,
+    );
+    let response: yinz_tile::agent::control::AgentResponse = serde_json::from_str(
+        &workflows::uncertain_result(Some(&call), "request", "Response lost"),
+    )
+    .unwrap();
+    assert_eq!(
+        response.outcome,
+        yinz_tile::agent::control::AgentOutcome::TimedOut
+    );
+    assert!(response.message.unwrap().contains("outcome unknown"));
+}
+
+#[test]
+fn spawn_cwd_uses_focus_only_when_a_host_checkout_is_needed() {
+    use yinz_tile::agent::control::AgentRequest;
+    let mut state = idle_state();
+    for (arguments, expected, consult_focus) in [
+        (r#"{"agent":"codex"}"#, Some("/focused/checkout"), true),
+        (
+            r#"{"agent":"codex","branch":"topic","firecracker":true}"#,
+            Some("/focused/checkout"),
+            true,
+        ),
+        (
+            r#"{"agent":"codex","cwd":"/explicit"}"#,
+            Some("/explicit"),
+            false,
+        ),
+        (r#"{"agent":"codex","project":"work"}"#, None, false),
+        (r#"{"agent":"codex","remote_host":"server"}"#, None, false),
+        (r#"{"agent":"codex","firecracker":true}"#, None, false),
+    ] {
+        let mut consulted = false;
+        let request = state
+            .agent_request_with_focus(&agent_call("agent_spawn", arguments), || {
+                consulted = true;
+                Some("/focused/checkout".into())
+            })
+            .unwrap();
+        let AgentRequest::Spawn {
+            cwd,
+            automatic_firecracker_vm,
+            spec,
+            ..
+        } = request
+        else {
+            panic!("spawn");
+        };
+        assert_eq!(cwd, expected.map(Into::into), "{arguments}");
+        assert_eq!(consulted, consult_focus, "{arguments}");
+        assert_eq!(automatic_firecracker_vm, spec.firecracker.is_some());
+    }
+    let call = agent_call("agent_spawn", r#"{"agent":"codex"}"#);
+    // None preserves the host's plugin-startup-directory fallback on lookup failure.
+    assert!(matches!(
+        state.agent_request_with_focus(&call, || None).unwrap(),
+        AgentRequest::Spawn { cwd: None, .. }
+    ));
+    state.active_project = Some("selected".into());
+    assert!(
+        matches!(state.agent_request_with_focus(&call, || panic!("project takes precedence")).unwrap(), AgentRequest::Spawn { cwd: None, project: Some(project), .. } if project == "selected")
+    );
 }

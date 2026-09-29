@@ -86,6 +86,9 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
     response.agents.push(AgentStatus {
         pane_id: "terminal_7".parse().unwrap(),
         session: "development".into(),
+        host_id: "host".into(),
+        tab_id: None,
+        target: Default::default(),
         agent: AgentInfo {
             kind: "codex".into(),
             state: AgentState::Idle,
@@ -137,4 +140,128 @@ fn recovery_request_preserves_the_explicit_assertion_and_pinned_conversation() {
     assert!(
         matches!(request, AgentRequest::Recover { expected_session_id, confirm_empty: true, .. } if expected_session_id == "conversation")
     );
+}
+
+fn spawn_args(flags: &[&str], input: serde_json::Value) -> serde_json::Value {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    let cli = Cli::try_parse_from(
+        ["agent", "spawn", "--file", "-"]
+            .into_iter()
+            .chain(flags.iter().copied()),
+    )
+    .unwrap();
+    let (request, _, _) = request(cli.command, &mut input.to_string().as_bytes()).unwrap();
+    serde_json::to_value(request).unwrap()["Spawn"].clone()
+}
+#[test]
+fn spawn_resolves_local_cwd_after_merging_flags_and_json() {
+    let caller = std::env::current_dir().unwrap();
+    for (flags, input, expected) in [
+        (
+            vec!["--cwd", "from-flags"],
+            serde_json::json!({"cwd":"from-json"}),
+            caller.join("from-flags"),
+        ),
+        (
+            vec![],
+            serde_json::json!({"cwd":"from-json"}),
+            caller.join("from-json"),
+        ),
+        (
+            vec!["--cwd", "/absolute"],
+            serde_json::json!({}),
+            std::path::PathBuf::from("/absolute"),
+        ),
+        (
+            vec![],
+            serde_json::json!({"cwd":"/absolute"}),
+            std::path::PathBuf::from("/absolute"),
+        ),
+        (
+            vec!["--remote-host", "ssh", "--cwd", "relative"],
+            serde_json::json!({}),
+            std::path::PathBuf::from("relative"),
+        ),
+        (
+            vec![],
+            serde_json::json!({"remote_host":"ssh","cwd":"/remote"}),
+            std::path::PathBuf::from("/remote"),
+        ),
+        (
+            vec![],
+            serde_json::json!({"remote_host":null,"project":"work","cwd":"relative"}),
+            caller.join("relative"),
+        ),
+    ] {
+        assert_eq!(
+            spawn_args(&flags, input)["cwd"],
+            serde_json::json!(expected)
+        );
+    }
+}
+
+#[test]
+fn spawn_defaults_cwd_only_when_a_host_checkout_is_needed() {
+    let caller = serde_json::json!(std::env::current_dir().unwrap());
+    for input in [
+        serde_json::json!({}),
+        serde_json::json!({"cwd":null,"project":null,"remote_host":null}),
+        serde_json::json!({"firecracker":"vm","branch":"topic"}),
+        serde_json::json!({"firecracker":"vm","branch":"topic","worktree":false,"cwd":null}),
+    ] {
+        assert_eq!(spawn_args(&[], input)["cwd"], caller);
+    }
+    for input in [
+        serde_json::json!({"firecracker":"vm"}),
+        serde_json::json!({"firecracker":"vm","cwd":null}),
+        serde_json::json!({"firecracker":"vm","branch":"  "}),
+        serde_json::json!({"project":"work","cwd":null}),
+        serde_json::json!({"remote_host":"ssh","cwd":null}),
+    ] {
+        assert!(spawn_args(&[], input)["cwd"].is_null());
+    }
+    assert_eq!(
+        spawn_args(
+            &["--firecracker", "vm", "--branch", "topic"],
+            serde_json::json!({"cwd":null})
+        )["cwd"],
+        caller
+    );
+    assert!(spawn_args(&["--firecracker", "vm"], serde_json::json!({}))["cwd"].is_null());
+}
+
+#[test]
+fn spawn_rejects_opening_prompt_fields_in_json_including_null() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    for field in ["prompt", "reuse_prompt"] {
+        for value in [serde_json::Value::Null, "act now".into()] {
+            let cli = Cli::try_parse_from(["agent", "spawn", "--file", "-"]).unwrap();
+            let source = serde_json::json!({"kind":"codex",field:value}).to_string();
+            assert!(request(cli.command, &mut source.as_bytes())
+                .unwrap_err()
+                .to_string()
+                .contains("spawn does not accept"));
+        }
+    }
+}
+
+#[test]
+fn cli_named_branch_vm_disables_automatic_naming() {
+    let request = spawn_args(
+        &["--firecracker", "review", "--branch", "topic"],
+        serde_json::json!({"kind":"codex"}),
+    );
+    assert_eq!(request["automatic_firecracker_vm"], false);
+    assert_eq!(request["spec"]["firecracker"], "review");
+    assert_eq!(request["spec"]["branch"], "topic");
 }

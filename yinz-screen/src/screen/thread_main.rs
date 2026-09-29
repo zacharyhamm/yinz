@@ -3068,6 +3068,12 @@ pub fn screen_thread_main(
                 ScreenInstruction::AgentSpawned(agent) => {
                     screen.agent_launches.insert(agent.pane_id, agent);
                 },
+                ScreenInstruction::AgentControlReply(request, reply) => {
+                    screen.agent_control_with_reply(
+                        request,
+                        super::agent_control::Reply::Host(reply),
+                    );
+                },
                 ScreenInstruction::AgentControl(request, client) => {
                     screen.agent_control(request, client);
                 },

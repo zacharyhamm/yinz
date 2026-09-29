@@ -38,12 +38,12 @@ fn the_command_list_is_grouped_and_plain() {
     assert!(!listed.contains('`') && !listed.contains('#'), "{listed}");
 }
 
-/// `agent_send` must land under agents, not be dragged into panes by a
+/// `agent_send_keys` must land under agents, not be dragged into panes by a
 /// substring match on `send`.
 #[test]
 fn a_family_matches_whole_words_not_substrings() {
-    assert!(in_family("agent_send", "agent"));
-    assert!(!in_family("agent_send", "pane"));
+    assert!(in_family("agent_send_keys", "agent"));
+    assert!(!in_family("agent_send_keys", "pane"));
     assert!(in_family("close_pane", "pane"));
     assert!(in_family("rename", "rename"));
 }
