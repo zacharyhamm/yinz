@@ -158,6 +158,11 @@ fn isolate_process_environment(test_root: &Path) {
     std::env::set_var("YINZ_HOSTNAME", TEST_HOSTNAME);
     std::env::remove_var("YINZ");
     std::env::remove_var("YINZ_SESSION_NAME");
+    // An outer yinz pane would otherwise make CLI requests claim that pane as their caller
+    // once the in-process server sets YINZ_SESSION_NAME to the test session.
+    std::env::remove_var("YINZ_PANE_ID");
+    std::env::remove_var("YINZ_PANE_REF");
+    std::env::remove_var("YINZ_AGENT_PANE");
     std::env::remove_var("YINZ_CONFIG_FILE");
     std::env::remove_var("YINZ_CONFIG_DIR");
     std::env::set_current_dir(test_root.join("cwd")).unwrap();
