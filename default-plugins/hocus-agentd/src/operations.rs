@@ -1,6 +1,5 @@
 use super::*;
 use serde_json::{json, Value};
-use yinz_tile::agent::AgentSpawnSpec;
 
 impl State {
     pub(crate) fn prune_closed_tab_assignments(
@@ -205,46 +204,6 @@ impl State {
                     json!({"host_id":self.host_id,"session":session.name,"pane":pane,"tab_id":tab,"project":project,"root":project.and_then(|name| registry.get(name)).map(|p| &p.root),"services":services,"missing":missing,"ambiguous":ambiguous,"pane_candidates":panes,"projects":registry.values().collect::<Vec<_>>()}),
                 )
             },
-            "agent_list" => {
-                let project = args.get("project").and_then(Value::as_str);
-                if project.is_some_and(|name| !registry.contains_key(name)) {
-                    return Err("unknown project; use project-list".into());
-                }
-                let selected: Vec<_> = panes
-                    .iter()
-                    .filter(|pane| {
-                        project
-                            .is_none_or(|name| owners.get(&pane.pane_id).is_some_and(|p| p == name))
-                    })
-                    .cloned()
-                    .collect();
-                let output = agents::list_json(
-                    &selected,
-                    &self.manual_kinds,
-                    &self.activity,
-                    &owners,
-                    &panes
-                        .iter()
-                        .filter_map(|pane| {
-                            Some((
-                                pane.pane_id,
-                                self.repositories
-                                    .get(&self.pane_location(pane)?)?
-                                    .branch
-                                    .clone()?,
-                            ))
-                        })
-                        .collect(),
-                    &self.summaries,
-                    &self.hooks,
-                    |id| {
-                        get_pane_scrollback(PaneId::Terminal(TerminalId::new(id)), false)
-                            .map(|pane| pane.viewport.join("\n"))
-                            .unwrap_or_default()
-                    },
-                );
-                serde_json::from_str(&output).map_err(|error| error.to_string())
-            },
             "agent_register" => {
                 let id = id()?;
                 let kind = text("kind")?;
@@ -351,111 +310,17 @@ impl State {
                 }
                 Ok(json!({"url":url,"reloaded":running,"dispatched":true}))
             },
-            "agent_spawn" => {
-                let mut spec: AgentSpawnSpec =
-                    serde_json::from_value(args.clone()).map_err(|error| error.to_string())?;
-                if let Some(host) = args.get("remote_host").and_then(Value::as_str) {
-                    if args.get("project").is_some()
-                        || spec.branch.is_some()
-                        || spec.worktree_dir.is_some()
-                        || spec.worktree.is_some()
-                        || spec.firecracker.is_some()
-                    {
-                        return Err("SSH agents use an existing remote checkout: pass --cwd without project, branch, worktree or VM options".into());
-                    }
-                    if spec.allow_outside_worktree != Some(true) {
-                        return Err("the local worktree guard cannot inspect SSH paths; verify the remote worktree and explicitly pass --allow-outside-worktree true".into());
-                    }
-                    let cwd = std::path::PathBuf::from(text("cwd")?);
-                    if !cwd.is_absolute() {
-                        return Err("SSH cwd must be absolute".into());
-                    }
-                    let (mut command, _) = hocus_proto::launch::plan(&spec)?;
-                    command.target = PaneTarget::from_parts(Some(host), None, None, None)?;
-                    command.cwd = Some(cwd.clone());
-                    let context = agent_pane_context(&command);
-                    let pane_id = open_command_pane(command, context)
-                        .ok_or("could not open SSH agent pane")?;
-                    if let Some(kind) = spec.kind.as_deref() {
-                        set_pane_agent(
-                            pane_id,
-                            Some(agents::registered_agent(
-                                kind,
-                                Some(cwd.display().to_string()),
-                            )),
-                        );
-                    }
-                    return Ok(
-                        json!({"pane_id":pane_id,"cwd":cwd,"branch":null,"remote_host":host}),
-                    );
-                }
-                let project = args
-                    .get("project")
-                    .and_then(Value::as_str)
-                    .map(|name| {
-                        registry
-                            .get(name)
-                            .ok_or("unknown project; use project-list")
-                    })
-                    .transpose()?;
-                apply_project_defaults(&mut spec, project);
-                let cwd = args
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| project.map(|p| p.root.clone()));
-                let (_, checkout) = hocus_proto::launch::plan(&spec)?;
-                let current = matches!(checkout, GitCheckout::Current);
-                let vm = spec.firecracker.is_some();
-                if vm && current && project.is_none() && cwd.is_some() {
-                    return Err("a Firecracker cwd must come from a mirrored project".into());
-                }
-                let source = cwd.clone().map(std::path::PathBuf::from);
-                let run_in = (current && !vm).then_some(source.clone()).flatten();
-                serde_json::to_value(spawn_agent(
-                    spec,
-                    source,
-                    run_in,
-                    None,
-                    BTreeMap::from([("hocus_agent_host_cwd".into(), "true".into())]),
-                    vm && current && project.is_some(),
-                    false,
-                )?)
-                .map_err(|error| error.to_string())
-            },
-            "agent_send" | "agent_control" | "pane_rerun" => {
+            "pane_rerun" => {
                 let id = id()?;
-                let pane = panes
-                    .iter()
-                    .find(|pane| pane.pane_id == id)
-                    .ok_or("terminal pane is unavailable")?;
-                if op.starts_with("agent_") && agents::classify(pane, &self.manual_kinds).is_none()
-                {
-                    return Err("pane is not an agent; use agent-register if intended".into());
-                }
                 let pane_id = PaneId::Terminal(TerminalId::new(id));
-                if op == "pane_rerun" {
-                    let info = get_pane_info(pane_id).ok_or("terminal pane is unavailable")?;
-                    if !info.is_held {
-                        return Err("pane is not a held command".into());
-                    }
-                    if let Some(reason) = info.restart_error {
-                        return Err(reason);
-                    }
-                    rerun_command_pane(TerminalId::new(id));
-                } else if op == "agent_send" {
-                    write_chars_to_pane_id(text("text")?, pane_id);
-                    if args.get("enter").and_then(Value::as_bool) == Some(true) {
-                        write_to_pane_id(vec![13], pane_id);
-                    }
-                } else {
-                    match text("action")? {
-                        "interrupt" => write_to_pane_id(vec![3], pane_id),
-                        "escape" => write_to_pane_id(vec![27], pane_id),
-                        "close" => close_terminal_pane(TerminalId::new(id)),
-                        _ => return Err("action must be interrupt, escape or close".into()),
-                    }
+                let info = get_pane_info(pane_id).ok_or("terminal pane is unavailable")?;
+                if !info.is_held {
+                    return Err("pane is not a held command".into());
                 }
+                if let Some(reason) = info.restart_error {
+                    return Err(reason);
+                }
+                rerun_command_pane(TerminalId::new(id));
                 Ok(json!({"pane_id":id,"dispatched":true}))
             },
             "pane_move_to_tab" => {
@@ -538,33 +403,6 @@ impl State {
             },
             _ => Err(format!("unknown agent operation {op}")),
         }
-    }
-}
-
-fn agent_pane_context(command: &CommandToRun) -> BTreeMap<String, String> {
-    BTreeMap::from([(
-        HOCUS_AGENT_PANE_CONTEXT.to_owned(),
-        agent_kind_of(&command.path, &command.args).unwrap_or_else(|| "true".to_owned()),
-    )])
-}
-
-fn apply_project_defaults(spec: &mut AgentSpawnSpec, project: Option<&projects::Project>) {
-    if spec.worktree_dir.is_none()
-        && spec
-            .branch
-            .as_deref()
-            .is_some_and(|branch| !branch.trim().is_empty())
-        && spec.worktree != Some(false)
-    {
-        spec.worktree_dir = project.and_then(|p| p.worktree_dir.clone());
-    }
-    if spec.firecracker_image.is_none()
-        && spec
-            .firecracker
-            .as_deref()
-            .is_some_and(|vm| !vm.trim().is_empty())
-    {
-        spec.firecracker_image = project.and_then(|p| p.firecracker_image.clone());
     }
 }
 

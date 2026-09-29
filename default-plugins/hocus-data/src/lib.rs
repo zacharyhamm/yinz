@@ -12,6 +12,7 @@
 //! decide is in the pure half that the linking crates' own tests exercise — against the real
 //! store engine over a temporary file.
 
+pub mod git_probe;
 pub mod location;
 pub mod notes;
 pub mod paths;

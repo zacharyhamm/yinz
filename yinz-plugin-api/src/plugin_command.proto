@@ -265,6 +265,7 @@ enum CommandName {
   ArrangeProjectPanes = 285;
   SubscribePaneOutput = 286;
   SwampRequest = 287;
+  AgentControl = 296;
   SetPaneSubtitle = 288;
   CheckPlugin = 289;
   TestPlugin = 290;
@@ -282,6 +283,7 @@ message PluginCommand {
   CommandName name = 1;
   oneof payload {
     string pane_tabs_payload = 236;
+    string agent_control_payload = 237;
     string create_multipane_payload = 233;
     string update_multipane_payload = 234;
     string replace_multipane_child_payload = 235;

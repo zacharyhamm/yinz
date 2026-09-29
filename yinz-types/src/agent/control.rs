@@ -11,14 +11,20 @@ pub const MAX_TIMEOUT_MS: u64 = 86_400_000;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
-    List,
+    List {
+        project: Option<String>,
+    },
     Status {
         pane_id: PaneId,
         expected_session_id: Option<String>,
     },
     Spawn {
         spec: AgentSpawnSpec,
-        cwd: PathBuf,
+        cwd: Option<PathBuf>,
+        project: Option<String>,
+        remote_host: Option<String>,
+        #[serde(default)]
+        automatic_firecracker_vm: bool,
     },
     Prompt {
         pane_id: PaneId,
@@ -93,6 +99,9 @@ pub struct AgentStatus {
     #[serde(with = "pane_string")]
     pub pane_id: PaneId,
     pub session: String,
+    pub host_id: crate::internal_ids::HostId,
+    pub tab_id: Option<crate::internal_ids::TabId>,
+    pub target: crate::command::PaneTarget,
     pub agent: AgentInfo,
     pub cwd: Option<String>,
     pub branch: Option<String>,

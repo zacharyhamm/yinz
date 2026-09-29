@@ -139,7 +139,7 @@ fn notes_todos_skill_install_uses_custom_codex_home_and_defaults_to_both_agents(
     let install = |args: &[&str]| {
         command(temp.path())
             .env("CODEX_HOME", &codex_home)
-            .args(["hocus", "skills", "install"])
+            .args(["skills", "install", "yinz-notes-todos"])
             .args(args)
             .output()
             .unwrap()

@@ -15,6 +15,7 @@
 // test comment 5
 //! Command line arguments, action conversion, setup, and presentation.
 pub mod actions;
+pub mod agent_archive;
 pub mod args;
 #[cfg(test)]
 #[path = "unit/cross_contracts.rs"]

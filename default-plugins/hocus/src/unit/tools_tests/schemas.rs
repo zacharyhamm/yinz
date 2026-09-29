@@ -1,34 +1,15 @@
 use super::*;
 
-/// `agent_control` is the one tool whose argument is a verb rather than a target,
-/// so the set of verbs has to be closed at the schema, not at dispatch.
-#[test]
-fn agent_control_schema_has_a_closed_action_set() {
-    let specs = specs();
-    let control = specs
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|spec| spec["function"]["name"] == "agent_control")
-        .unwrap();
-    let parameters = &control["function"]["parameters"];
-    assert_eq!(
-        parameters["properties"]["action"]["enum"],
-        json!(["interrupt", "restart", "close"]),
-    );
-    assert_eq!(parameters["required"], json!(["pane_id", "action"]));
-}
-
 /// An agent is always a terminal pane, so no agent tool takes `is_plugin` — and
-/// `agent_send` takes either input form alone, so neither is required.
+/// guarded prompts require text, and deliberate key input requires keys.
 #[test]
 fn agent_schemas_require_a_pane_and_never_a_pane_kind() {
     let specs = specs();
     for (name, required) in [
         ("agent_register", json!(["pane_id", "kind"])),
         ("agent_list", Value::Null),
-        ("agent_send", json!(["pane_id"])),
-        ("agent_control", json!(["pane_id", "action"])),
+        ("agent_prompt", json!(["pane_id", "text"])),
+        ("agent_send_keys", json!(["pane_id", "keys"])),
         // The one agent tool with no pane to name: its pane does not exist yet.
         // Nothing is required at the schema either — `agent` and `command` are
         // alternatives, which JSON Schema's `required` cannot say and dispatch can.
@@ -139,7 +120,7 @@ fn hocus_prompt_contract_keeps_tool_specific_routing_cues() {
         ("schedule", &["unschedule"][..]),
         ("slack_read", &["backfill"][..]),
         ("slack_post", &["immediately"][..]),
-        ("agent_send", &["listed agent"][..]),
+        ("agent_prompt", &["idle ready agent"][..]),
         ("find_files", &["active project"][..]),
         ("search_files", &["active project"][..]),
         ("read_file", &["active project"][..]),

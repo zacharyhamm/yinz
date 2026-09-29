@@ -256,6 +256,7 @@ pub enum ScreenContext {
     Paste,
     SetPaneColor,
     AgentControl,
+    AgentControlReply,
     AgentSpawned,
     AgentReport,
     SetPaneAgent,

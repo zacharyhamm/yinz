@@ -1633,6 +1633,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::ProjectConfigRead => PluginCommand::ProjectConfigRead {
             directory: strings(tc).into(),
         },
+        CommandType::AgentControl => PluginCommand::AgentControl {
+            id: strings(tc),
+            request: strings(tc),
+        },
         CommandType::SwampRequest => PluginCommand::SwampRequest {
             directory: strings(tc).into(),
             id: strings(tc),

@@ -315,11 +315,14 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
         for request in [
             prompt.clone(),
             AgentRequest::Spawn {
+                automatic_firecracker_vm: false,
                 spec: AgentSpawnSpec {
                     kind: Some("zsh".into()),
                     ..Default::default()
                 },
-                cwd: dir.path().to_path_buf(),
+                cwd: Some(dir.path().to_path_buf()),
+                project: None,
+                remote_host: None,
             },
         ] {
             sender
@@ -368,12 +371,14 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
             )));
         }
         expected.push(ServerToClientMsg::UnblockInputThread);
-        let mut rejected = AgentResponse::new(AgentOutcome::Failed);
-        rejected.message = Some(if ready {
-            "agent spawn requires a recognized agent command".into()
+        let mut rejected = AgentResponse::new(if ready {
+            AgentOutcome::Rejected
         } else {
-            "session is not ready".into()
+            AgentOutcome::StatusUnavailable
         });
+        if ready {
+            rejected.message = Some("agent spawn requires a recognized agent command".into());
+        }
         expected.push(ServerToClientMsg::AgentControl(rejected));
         expected.push(ServerToClientMsg::UnblockInputThread);
         assert_eq!(replies, &expected);
@@ -469,29 +474,4 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
             "the probe bypassed client registration"
         );
     }
-}
-
-#[test]
-fn agent_spawn_registration_failure_retains_created_pane_and_checkout() {
-    let (tx, rx) = channels::unbounded();
-    drop(rx);
-    let senders = ThreadSenders {
-        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
-        ..Default::default()
-    };
-    let spawned = yinz_types::agent::SpawnedAgent {
-        pane_id: yinz_types::pane_id::PaneId::Terminal(TerminalId::new(17)),
-        cwd: Some("/actual/checkout".into()),
-        branch: Some("actual-branch".into()),
-    };
-    let response = register_spawned_agent(&senders, spawned.clone());
-    assert_eq!(
-        response.outcome,
-        yinz_types::agent::control::AgentOutcome::Failed
-    );
-    assert_eq!(response.spawned, Some(spawned));
-    assert!(response
-        .message
-        .unwrap()
-        .contains("launch registration failed"));
 }

@@ -50,20 +50,3 @@ pub(crate) fn post_log(
         ));
     }
 }
-
-/// What a terminal pane is showing, routed through the existing `read_pane` rather
-/// than a second host call, so there is only one implementation of "read a pane" to
-/// get wrong. Used by `agent_list` previews and the busy/idle poll.
-pub(crate) fn read_pane_text(pane_id: u32) -> String {
-    let call = ToolCall {
-        id: String::new(),
-        name: "read_pane".to_owned(),
-        arguments: serde_json::json!({
-            "pane_id": pane_id,
-            "is_plugin": false,
-            "full_scrollback": false,
-        })
-        .to_string(),
-    };
-    tools::dispatch(&call)
-}

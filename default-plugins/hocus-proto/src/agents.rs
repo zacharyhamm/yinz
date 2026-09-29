@@ -1390,7 +1390,6 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
 /// hand, and what the daemon last said about each idle pane, so a hocus reload keeps both.
 /// hocus is the only writer; see `store::agent_latch_def` and `store::agent_summary_def`.
 pub mod rows {
-    use super::SessionName;
     use super::{
         summary_says_same, AgentRun, AgentRunHeader, HostId, RunEntry, RunEntryKind, Summaries,
         Summary,
@@ -1401,40 +1400,8 @@ pub mod rows {
         DataRows, DataValue, FetchRequest, Mutation, Pred, PutBuilder, SortDir, MAX_FETCH_ROWS,
     };
 
-    /// Which server a row belongs to: the machine, and the session on it.
-    ///
-    /// One type rather than two arguments because forgetting the host half is exactly the bug
-    /// this exists to prevent, and a pair of `&str` parameters invites it — the two were a
-    /// single `yinz_session_name` for as long as the store was per-machine, and every call
-    /// site that scopes a row would otherwise have to remember to grow a second one.
-    ///
-    /// A session name alone stopped being an owner when `plugin_data_url` could point at
-    /// Postgres: two machines can each run a session called `main`, and the pane ids those
-    /// sessions hand out mean nothing to each other. It was never quite stable either, since a
-    /// session can be renamed — the host half is what a row keeps across that.
-    #[derive(Debug, Clone, Default, PartialEq, Eq)]
-    pub struct Owner {
-        pub host_id: HostId,
-        pub yinz_session_name: SessionName,
-    }
-
-    impl Owner {
-        pub fn new(host_id: HostId, yinz_session_name: SessionName) -> Self {
-            Owner {
-                host_id,
-                yinz_session_name,
-            }
-        }
-
-        /// Whether this names a session at all.
-        ///
-        /// The session name arrives from the daemon's first snapshot and is empty until then, so
-        /// callers hold back their per-pane reads and writes until it is known — see
-        /// `restore_pane_rows`. The host id is available from load and is not part of the test.
-        pub fn is_known(&self) -> bool {
-            !self.yinz_session_name.is_empty()
-        }
-    }
+    use crate::store::owned_by;
+    pub use crate::store::{owned_rows_request, Owner};
 
     pub const LATCH_ENTITY: &str = "agent_latch";
     pub const SUMMARY_ENTITY: &str = "agent_summary";
@@ -1682,20 +1649,6 @@ pub mod rows {
         format!("{}:{}:{}", owner.host_id, owner.yinz_session_name, pane_id)
     }
 
-    /// Only this server's rows. Every prune and every restore is scoped by it, so one session
-    /// closing a pane cannot delete another's row for the pane id it happens to share.
-    ///
-    /// Strict about the host, and stays that way. The rows this reaches are latches and
-    /// summaries, whose pre-migration copies name a pane in a server that is gone — they are
-    /// deleted by [`stale_unowned_delete_mutations`], not adopted. Runs are the other case, and
-    /// use [`owned_or_unclaimed`].
-    fn owned_by(owner: &Owner) -> Pred {
-        Pred::eq("host_id", owner.host_id.clone()).and(Pred::eq(
-            "yinz_session_name",
-            owner.yinz_session_name.clone(),
-        ))
-    }
-
     /// This server's rows, and the rows that name no server at all — which are also this
     /// server's, since there was only one machine when they were written.
     ///
@@ -1743,12 +1696,6 @@ pub mod rows {
     fn owner_values(put: PutBuilder, owner: &Owner) -> PutBuilder {
         put.set("host_id", owner.host_id.clone())
             .set("yinz_session_name", owner.yinz_session_name.clone())
-    }
-
-    /// This server's latches, or summaries — `entity` is [`LATCH_ENTITY`] or
-    /// [`SUMMARY_ENTITY`].
-    pub fn owned_rows_request(entity: &str, owner: &Owner) -> FetchRequest {
-        FetchRequest::entity(entity).filter(owned_by(owner))
     }
 
     /// Rows left behind by earlier versions of these entities: the one that keyed on the pane id

@@ -161,6 +161,14 @@ fn is_run_id(value: &str) -> bool {
 }
 
 pub fn uncertain_result(call: Option<&ToolCall>, rpc_id: &str, message: &str) -> String {
+    if call.is_some_and(|call| crate::agent_control::TOOLS.contains(&call.name.as_str())) {
+        use yinz_tile::agent::control::{AgentOutcome, AgentResponse};
+        let mut response = AgentResponse::new(AgentOutcome::TimedOut);
+        response.message = Some(format!(
+            "{message}; outcome unknown. Inspect agent status and output before retrying; recover only after confirming empty input."
+        ));
+        return json!(response).to_string();
+    }
     if call.is_some_and(|call| crate::operations::TOOLS.contains(&call.name.as_str())) {
         return json!({"error":{"code":"transport_unknown","message":message},"request_id":rpc_id,"recovery":"Read the affected state before retrying. The mutation may already have occurred; it was not retried."}).to_string();
     }

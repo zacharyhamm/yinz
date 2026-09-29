@@ -6,8 +6,9 @@ fn confirmation_policy_lists_tools_correctly() {
         "rerun_pane",
         "clear_pane",
         "send_input",
-        "agent_send",
-        "agent_control",
+        "agent_prompt",
+        "agent_send_keys",
+        "agent_recover",
         "project_forget",
         "project_merge",
         "slack_post",
@@ -53,6 +54,9 @@ fn confirmation_policy_lists_tools_correctly() {
         "unschedule",
         "agent_register",
         "agent_list",
+        "agent_status",
+        "agent_read",
+        "agent_wait",
         "close_pane",
         "close_tab",
         // A todo tool only writes to a file of the user's own notes.
@@ -108,9 +112,9 @@ fn every_advertised_tool_is_covered_by_the_confirmation_table() {
         .iter()
         .map(|spec| spec["function"]["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 125);
+    assert_eq!(names.len(), 129);
     let confirmed = names.iter().filter(|name| needs_confirmation(name)).count();
-    assert_eq!(confirmed, 30);
+    assert_eq!(confirmed, 31);
 }
 
 /// The invariant the name table cannot state on its own: whatever decides to
@@ -317,24 +321,6 @@ fn a_local_pane_whose_arguments_do_not_parse_still_stops() {
     )));
 }
 
-/// `agent_control`'s argument is a verb, and interrupting is not restarting.
-#[test]
-fn agent_control_says_which_of_its_verbs_is_about_to_run() {
-    let restart = consequence(&call(
-        "agent_control",
-        r#"{"pane_id":7,"action":"restart"}"#,
-    ));
-    assert_eq!(
-        restart,
-        Some("restarts the agent in pane 7, losing its conversation".into())
-    );
-    let close = consequence(&call("agent_control", r#"{"pane_id":7,"action":"close"}"#));
-    assert_eq!(
-        close,
-        Some("closes pane 7 and the agent running in it".into())
-    );
-}
-
 /// Arguments the model got wrong are exactly when a prompt must not go quiet.
 #[test]
 fn a_consequence_survives_arguments_that_do_not_parse() {
@@ -419,15 +405,21 @@ fn the_target_respects_which_kind_of_pane_the_id_is() {
 }
 
 /// The agent tools address a terminal and don't take `is_plugin` at all —
-/// `agent_host_call` rewrites them into primitives with `is_plugin: false`.
+/// Agent input always targets a terminal pane.
 #[test]
 fn an_agent_call_targets_its_terminal_without_being_told() {
     assert_eq!(
-        confirmation_target(&call("agent_send", r#"{"pane_id":9,"text":"hi"}"#)),
+        confirmation_target(&call(
+            "agent_prompt",
+            r#"{"pane_id":"terminal_9","text":"hi"}"#
+        )),
         Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(9)))
     );
     assert_eq!(
-        confirmation_target(&call("agent_control", r#"{"pane_id":9,"action":"close"}"#)),
+        confirmation_target(&call(
+            "agent_send_keys",
+            r#"{"pane_id":9,"action":"close"}"#
+        )),
         Some(PaneId::Terminal(yinz_tile::prelude::TerminalId::new(9)))
     );
 }

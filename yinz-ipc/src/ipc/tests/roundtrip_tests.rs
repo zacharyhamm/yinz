@@ -210,18 +210,21 @@ fn test_client_messages() {
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     for expected_session_id in [None, Some("conversation-7".to_owned())] {
         for request in [
-            AgentRequest::List,
+            AgentRequest::List { project: None },
             AgentRequest::Status {
                 pane_id,
                 expected_session_id: expected_session_id.clone(),
             },
             AgentRequest::Spawn {
+                automatic_firecracker_vm: false,
                 spec: yinz_types::agent::AgentSpawnSpec {
                     kind: Some("codex".into()),
                     branch: Some("review-auth".into()),
                     ..Default::default()
                 },
-                cwd: "/repo".into(),
+                cwd: Some("/repo".into()),
+                project: None,
+                remote_host: None,
             },
             AgentRequest::Prompt {
                 pane_id,
@@ -4530,6 +4533,9 @@ fn test_server_messages() {
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     let status = AgentStatus {
         pane_id,
+        host_id: "host".into(),
+        tab_id: None,
+        target: Default::default(),
         session: "development".into(),
         agent: AgentInfo {
             kind: "codex".into(),

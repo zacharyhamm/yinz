@@ -14,11 +14,11 @@ those plugins. CLI catalog access includes private namespaces; this does not
 change plugin permissions. Queries and writes require `--namespace`.
 
 A fetch file is the existing FetchRequest JSON. For example, after discovering
-the `project` entity in `shared:hocus`:
+an application entity in its namespace:
 
 ```sh
-yinz --session main data fetch --namespace shared:hocus --file - <<'JSON'
-{"entity":"project","filter":null,"search":null,"sort":[],"select":["id","uid","rev","name","root"],"limit":50,"offset":0,"after_id":null}
+yinz --session main data fetch --namespace YOUR_NAMESPACE --file - <<'JSON'
+{"entity":"YOUR_ENTITY","filter":null,"search":null,"sort":[],"select":["id","uid","rev"],"limit":50,"offset":0,"after_id":null}
 JSON
 ```
 

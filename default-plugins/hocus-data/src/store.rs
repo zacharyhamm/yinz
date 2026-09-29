@@ -30,6 +30,54 @@ use yinz_tile::prelude::DataRevision;
 use yinz_tile::prelude::HostId;
 use yinz_tile::prelude::*;
 
+/// Which server a row belongs to: the machine, and the session on it.
+///
+/// One type rather than two arguments because forgetting the host half is exactly the bug
+/// this exists to prevent, and a pair of `&str` parameters invites it — the two were a
+/// single `yinz_session_name` for as long as the store was per-machine, and every call
+/// site that scopes a row would otherwise have to remember to grow a second one.
+///
+/// A session name alone stopped being an owner when `plugin_data_url` could point at
+/// Postgres: two machines can each run a session called `main`, and the pane ids those
+/// sessions hand out mean nothing to each other. It was never quite stable either, since a
+/// session can be renamed — the host half is what a row keeps across that.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Owner {
+    pub host_id: HostId,
+    pub yinz_session_name: SessionName,
+}
+
+impl Owner {
+    pub fn new(host_id: HostId, yinz_session_name: SessionName) -> Self {
+        Owner {
+            host_id,
+            yinz_session_name,
+        }
+    }
+
+    /// Whether this names a session at all.
+    ///
+    /// The session name arrives from the daemon's first snapshot and is empty until then, so
+    /// callers hold back their per-pane reads and writes until it is known — see
+    /// `restore_pane_rows`. The host id is available from load and is not part of the test.
+    pub fn is_known(&self) -> bool {
+        !self.yinz_session_name.is_empty()
+    }
+}
+
+/// Strictly match both halves of a server's row ownership.
+pub fn owned_by(owner: &Owner) -> Pred {
+    Pred::eq("host_id", owner.host_id.clone()).and(Pred::eq(
+        "yinz_session_name",
+        owner.yinz_session_name.clone(),
+    ))
+}
+
+/// Fetch only rows belonging to this host and session, before applying a limit.
+pub fn owned_rows_request(entity: &str, owner: &Owner) -> FetchRequest {
+    FetchRequest::entity(entity).filter(owned_by(owner))
+}
+
 /// The namespace hocus and hocus-store share.
 ///
 /// Shared rather than private because a plugin's private namespace is derived
@@ -179,8 +227,8 @@ const LEGACY_HOST: &str = "";
 ///
 /// Adding the column was an `ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT ''`, so every row
 /// written before it came out of the migration naming nobody. A reader that wants those rows
-/// counted as its own asks with this; one that does not — hocus-proto's
-/// `agents::rows::owned_by` and `jobs` — spells the strict equality itself, and says why.
+/// counted as its own asks with this; strict readers use [`owned_by`] or, for jobs,
+/// host equality without accepting legacy rows.
 pub fn host_or_legacy(host_id: &HostId) -> Pred {
     Pred::eq("host_id", host_id).or(Pred::eq("host_id", LEGACY_HOST))
 }

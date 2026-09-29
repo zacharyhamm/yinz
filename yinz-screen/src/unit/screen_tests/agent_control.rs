@@ -1741,3 +1741,83 @@ fn recovery_rejects_busy_waiting_unreported_and_dead_targets() {
         assert!(finish_paste(&writes).is_empty());
     }
 }
+
+#[test]
+fn host_bridge_and_cli_share_readiness_identity_outcomes_and_recovery() {
+    for bridge in [false, true] {
+        for end in ["Stop", "StopFailure", "Interrupt", "timeout", "replacement"] {
+            let (mut screen, messages, writes) = setup("codex");
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let submit = |screen: &mut Screen, request| {
+                if bridge {
+                    screen.agent_control_with_reply(
+                        request,
+                        crate::screen::agent_control::Reply::Host(sender.clone()),
+                    );
+                } else {
+                    screen.agent_control(request, CLIENT);
+                }
+            };
+            let answers = || {
+                if bridge {
+                    receiver.try_iter().collect::<Vec<_>>()
+                } else {
+                    replies(&messages, CLIENT)
+                }
+            };
+            submit(&mut screen, prompt(true));
+            assert_eq!(answers()[0].outcome, AgentOutcome::StatusUnavailable);
+            report(&mut screen, hook("SessionStart"));
+            submit(
+                &mut screen,
+                AgentRequest::Status {
+                    pane_id: PANE,
+                    expected_session_id: Some("wrong".into()),
+                },
+            );
+            assert_eq!(answers()[0].outcome, AgentOutcome::TargetChanged);
+            submit(&mut screen, prompt(true));
+            assert!(answers().is_empty(), "PTY writes are not acknowledgements");
+            submit(&mut screen, prompt(true));
+            assert_eq!(answers()[0].outcome, AgentOutcome::Rejected);
+            finish_paste(&writes);
+            if end == "timeout" {
+                screen.agent_controls[0].deadline = Some(Instant::now());
+                screen.refresh_agent_controls();
+                let result = answers().pop().unwrap();
+                assert_eq!(result.outcome, AgentOutcome::TimedOut);
+                assert!(!result.acknowledged);
+                submit(&mut screen, prompt(true));
+                assert_eq!(answers()[0].outcome, AgentOutcome::Rejected);
+                report(&mut screen, hook("Stop"));
+                submit(&mut screen, recover());
+                let result = answers().pop().unwrap();
+                assert_eq!(result.outcome, AgentOutcome::Ok);
+                assert!(result.agents[0].ready);
+            } else if end == "replacement" {
+                let mut replacement = hook("SessionStart");
+                replacement.session_id = "replacement".into();
+                report(&mut screen, replacement);
+                assert_eq!(answers()[0].outcome, AgentOutcome::TargetChanged);
+            } else {
+                report(&mut screen, hook("UserPromptSubmit"));
+                assert!(
+                    answers().is_empty(),
+                    "wait observes this turn after acceptance"
+                );
+                report(&mut screen, hook(end));
+                let result = answers().pop().unwrap();
+                assert_eq!(
+                    result.outcome,
+                    match end {
+                        "Stop" => AgentOutcome::Completed,
+                        "StopFailure" => AgentOutcome::Failed,
+                        _ => AgentOutcome::Interrupted,
+                    }
+                );
+                assert!(result.acknowledged);
+                assert_eq!(result.turn_id.as_deref(), Some("turn"));
+            }
+        }
+    }
+}

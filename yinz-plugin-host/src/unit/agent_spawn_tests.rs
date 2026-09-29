@@ -75,7 +75,10 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
                 branch: Some("review".into()),
                 ..Default::default()
             },
-            root.clone(),
+            Some(root.clone()),
+            None,
+            None,
+            false,
             crate::ClientId::new(1),
             &senders,
             &data_access,
@@ -94,7 +97,10 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
             kind: Some("codex".into()),
             ..Default::default()
         },
-        root.clone(),
+        Some(root.clone()),
+        None,
+        None,
+        false,
         crate::ClientId::new(1),
         &senders,
         &data_access,
@@ -107,7 +113,10 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
             branch: Some("invalid".into()),
             ..Default::default()
         },
-        root.clone(),
+        Some(root.clone()),
+        None,
+        None,
+        false,
         crate::ClientId::new(1),
         &senders,
         &data_access,
@@ -115,4 +124,202 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
     .unwrap_err();
     assert!(refused.contains("recognized agent command"));
     assert!(!root.join(".worktrees/invalid").exists());
+}
+
+#[test]
+fn automation_spawn_rejects_prompts_and_local_options_for_ssh_before_opening_a_pane() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    for field in ["prompt", "reuse_prompt"] {
+        let spec =
+            serde_json::from_value(serde_json::json!({"kind":"codex",field:"work"})).unwrap();
+        let error = spawn_agent_for_cli(
+            spec,
+            None,
+            None,
+            None,
+            false,
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        )
+        .unwrap_err();
+        assert!(error.contains("spawn does not accept"));
+    }
+    for input in [
+        serde_json::json!({"kind":"codex"}),
+        serde_json::json!({"kind":"codex","allow_outside_worktree":true,"branch":"topic"}),
+        serde_json::json!({"kind":"codex","allow_outside_worktree":true,"firecracker":"vm"}),
+    ] {
+        let mut spec = serde_json::from_value(input).unwrap();
+        assert!(agent_control::prepare_automation_agent(
+            &mut spec,
+            Some("/remote".into()),
+            None,
+            Some("server".into()),
+            false,
+            &data
+        )
+        .is_err());
+    }
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        allow_outside_worktree: Some(true),
+        ..Default::default()
+    };
+    assert!(agent_control::prepare_automation_agent(
+        &mut spec,
+        Some("relative".into()),
+        None,
+        Some("server".into()),
+        false,
+        &data
+    )
+    .is_err());
+    let prepared = agent_control::prepare_automation_agent(
+        &mut spec,
+        Some("/remote/not-on-this-host".into()),
+        None,
+        Some("server".into()),
+        false,
+        &data,
+    )
+    .unwrap();
+    assert!(prepared.command.target.is_remote());
+    assert_eq!(
+        prepared.command.cwd,
+        Some("/remote/not-on-this-host".into())
+    );
+}
+
+#[test]
+fn agent_spawn_registration_failure_retains_created_pane_and_checkout() {
+    let (tx, rx) = channels::unbounded();
+    drop(rx);
+    let senders = ThreadSenders {
+        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let spawned = yinz_types::agent::SpawnedAgent {
+        pane_id: yinz_types::pane_id::PaneId::Terminal(TerminalId::new(17)),
+        cwd: Some("/actual/checkout".into()),
+        branch: Some("actual-branch".into()),
+    };
+    let response = agent_control::register_spawned_agent(&senders, spawned.clone());
+    assert_eq!(
+        response.outcome,
+        yinz_types::agent::control::AgentOutcome::Failed
+    );
+    assert_eq!(response.spawned, Some(spawned));
+    assert!(response
+        .message
+        .unwrap()
+        .contains("launch registration failed"));
+}
+
+#[test]
+fn plugin_agent_control_resolves_only_local_relative_directories() {
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest};
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let child = root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    let mut env = crate::test_env::test_env();
+    env.plugin.location = yinz_types::input::layout::RunPluginLocation::Yinz(
+        yinz_types::data::PluginTag::new("hocus"),
+    );
+    env.plugin_cwd = root.clone();
+    env.data_access = std::sync::Arc::new(DataAccess::sqlite(&root.join("data")));
+    let (to_pty, pty_rx) = channels::unbounded();
+    let (to_plugin, plugin_rx) = channels::unbounded();
+    env.senders = ThreadSenders {
+        to_pty: Some(SenderWithContext::new(to_pty)),
+        to_plugin: Some(SenderWithContext::new(to_plugin)),
+        ..Default::default()
+    }
+    .silently_fail_on_send();
+
+    for (cwd, remote_host, expected) in [
+        (Some(PathBuf::from(".")), None, Some(root.clone())),
+        (Some(PathBuf::from("child")), None, Some(child)),
+        (Some(root.clone()), None, Some(root.clone())),
+        (None, None, Some(root.clone())),
+        (
+            Some(PathBuf::from("/host/remote")),
+            Some("server".to_owned()),
+            Some(PathBuf::from("/host/remote")),
+        ),
+        (Some(PathBuf::from(".")), Some("server".to_owned()), None),
+    ] {
+        let request = AgentRequest::Spawn {
+            spec: AgentSpawnSpec {
+                kind: Some("codex".into()),
+                allow_outside_worktree: Some(true),
+                ..Default::default()
+            },
+            cwd,
+            project: None,
+            remote_host: remote_host.clone(),
+            automatic_firecracker_vm: false,
+        };
+        run_plugin_command(
+            &mut env,
+            PluginCommand::AgentControl {
+                id: "test".into(),
+                request: serde_json::to_string(&request).unwrap(),
+            },
+        )
+        .unwrap();
+        if let Some(expected) = &expected {
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(
+                Some(TerminalAction::RunCommand(command)),
+                _,
+                _,
+                _,
+                _,
+                Some(mut completion),
+                _,
+            ) = instruction
+            else {
+                panic!("expected agent spawn");
+            };
+            assert_eq!(command.cwd.as_ref(), Some(expected));
+            assert_eq!(
+                command.target,
+                match remote_host {
+                    Some(host) => yinz_types::command::PaneTarget::ssh(&host).unwrap(),
+                    None => yinz_types::command::PaneTarget::Local,
+                }
+            );
+            completion.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(7)));
+        }
+        let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let PluginInstruction::Update(events) = instruction else {
+            panic!("expected agent response");
+        };
+        let Event::CustomMessage(name, payload) = &events[0].2 else {
+            panic!("expected custom message");
+        };
+        assert_eq!(name, "agent-response");
+        let payload: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(
+            payload["response"]["outcome"],
+            serde_json::to_value(if expected.is_some() {
+                AgentOutcome::Ok
+            } else {
+                AgentOutcome::Rejected
+            })
+            .unwrap(),
+            "{payload}"
+        );
+        if expected.is_none() {
+            assert!(payload["response"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("SSH cwd must be absolute"));
+            assert!(pty_rx.try_recv().is_err());
+        }
+    }
 }

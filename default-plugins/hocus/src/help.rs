@@ -310,14 +310,12 @@ const TOOL_HELP: &[(&str, &str)] = &[
         "agent_list",
         "Show the panes that hold coding agents, with the state of each agent. In a tab that belongs to a project, the tool shows the agents of that project only; give a project to see a different one. The other agent tools need the pane IDs from this list.",
     ),
-    (
-        "agent_send",
-        "Send text to an agent from agent_list, and then the named keys. A prompt usually needs the enter key after the text. The tool refuses a pane that it does not hold as an agent: use agent_register first.",
-    ),
-    (
-        "agent_control",
-        "Stop, start again, or close an agent from agent_list. An interrupt sends one Ctrl+c, thus an agent that does not obey Ctrl+c continues. A restart works on an agent that runs as a command, and changes nothing on an agent in a shell pane. A close stops the agent and closes the pane. The tool refuses a pane that it does not hold as an agent.",
-    ),
+    ("agent_prompt", "Submit text to a ready idle Claude Code or Codex agent. Pin conversation, inspect acknowledgement and outcome, and use wait to observe this turn. Completion does not verify the work."),
+    ("agent_send_keys", "Send deliberate keys using Yinz key syntax. Pin conversation. Use ordinary pane tools for close or restart."),
+    ("agent_status", "Inspect provider identity and authoritative readiness. An inferred idle observation does not authorize a prompt."),
+    ("agent_wait", "Wait for lifecycle state. An idle wait also checks readiness. Timeout leaves the outcome uncertain."),
+    ("agent_read", "Read the latest retained terminal output, guarded by conversation when supplied."),
+    ("agent_recover", "After inspecting the pane and clearing its draft, pin conversation and confirm_empty to restore readiness. Active submissions cannot be recovered."),
     (
         "agent_runs",
         "Show what the agents in this archive did, the most recent first. Every session sharing it is included, and a session that stopped is included too. Take a run_id from here to agent_run. With this_session, the tool answers with an error until the daemon knows the name of this session.",
@@ -332,7 +330,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_spawn",
-        "Start a coding agent in a new pane. Give agent for a known agent, or command for a different program; a call with neither is an error. Give kind to name an agent that hocus does not know: lowercase letters, digits, _ or -, up to 32 characters. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in the explicit worktree_dir, then the saved project worktree_dir, then .worktrees/. Relative directories resolve against the primary checkout; absolute and sibling directories are supported, with no shell variable or ~ expansion; with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a yinz TypeScript plugin, use plugin_write instead of an agent.",
+        "Start a coding agent in a new pane. Give agent or a recognized agent command. Use general pane tools for arbitrary programs. Spawn rejects prompt and reuse_prompt. Use spawn, wait, then prompt. Give branch to cut a new branch. The branch gets a git worktree of its own, named after it, in the explicit worktree_dir, then the saved project worktree_dir, then .worktrees/. Relative directories resolve against the primary checkout; absolute and sibling directories are supported, with no shell variable or ~ expansion; with worktree set to false, this checkout moves to the new branch instead. A branch or worktree name already taken is cut afresh as <branch>-2, unless reuse says the existing one is the work you mean. An agent that would start anywhere but a linked worktree - the primary checkout, or a folder that is no repository - is refused unless allow_outside_worktree says so. A cwd outside the project is an error. Give permission_mode as skip for no permission checks, or as one of the modes of the agent itself. To write a yinz TypeScript plugin, use plugin_write instead of an agent.",
     ),
     (
         "slack_status",

@@ -1,0 +1,74 @@
+use clap::Subcommand;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
+#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+pub enum AgentArchive {
+    /// List agent run headers with pagination across the archive.
+    #[clap(name = "runs")]
+    AgentRuns {
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long)]
+        host_id: Option<String>,
+        #[clap(long)]
+        run_session: Option<String>,
+        #[clap(long)]
+        kind: Option<String>,
+        #[clap(long)]
+        since_ms: Option<i64>,
+        #[clap(long)]
+        active: Option<bool>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+        #[clap(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read an exact run and a bounded page of its timeline.
+    #[clap(name = "run")]
+    AgentRun {
+        run_id: String,
+        #[clap(long, conflicts_with = "from_revision")]
+        revision: Option<u64>,
+        #[clap(long)]
+        from_revision: Option<u64>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Search recorded agent messages and prompts.
+    #[clap(name = "history-search")]
+    AgentHistorySearch {
+        query: String,
+        #[clap(long)]
+        run_id: Option<String>,
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long)]
+        host_id: Option<String>,
+        #[clap(long)]
+        run_session: Option<String>,
+        #[clap(long)]
+        kind: Option<String>,
+        #[clap(long)]
+        since_ms: Option<i64>,
+        #[clap(long)]
+        active: Option<bool>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Follow recorded predecessor links from an exact run ID.
+    #[clap(name = "predecessors")]
+    AgentPredecessors { run_id: String },
+}
+
+impl AgentArchive {
+    pub fn action(&self) -> Result<yinz_types::input::actions::Action, String> {
+        let mut request = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        request["args"]
+            .as_object_mut()
+            .ok_or("invalid archive arguments")?
+            .retain(|_, value| !value.is_null());
+        request["structured_reply"] = true.into();
+        Ok(crate::notes_todos::pipe_action("store_query", request))
+    }
+}

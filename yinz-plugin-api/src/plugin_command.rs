@@ -2962,6 +2962,14 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for SetPaneAgentRun"),
             },
+            Some(CommandName::AgentControl) => match protobuf_plugin_command.payload {
+                Some(Payload::AgentControlPayload(payload)) => {
+                    let (id, request) = serde_json::from_str(&payload)
+                        .map_err(|_| "invalid agent control payload")?;
+                    Ok(PluginCommand::AgentControl { id, request })
+                },
+                _ => Err("Mismatched payload for AgentControl"),
+            },
             Some(CommandName::SwampRequest) => match protobuf_plugin_command.payload {
                 Some(Payload::SwampRequestPayload(p)) => Ok(PluginCommand::SwampRequest {
                     directory: p.directory.into(),
@@ -5378,6 +5386,13 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: pane_id.try_into().ok(),
                     run_id,
                 })),
+            }),
+            PluginCommand::AgentControl { id, request } => Ok(ProtobufPluginCommand {
+                name: CommandName::AgentControl as i32,
+                payload: Some(Payload::AgentControlPayload(
+                    serde_json::to_string(&(id, request))
+                        .map_err(|_| "invalid agent control payload")?,
+                )),
             }),
             PluginCommand::SwampRequest {
                 directory,
@@ -7966,6 +7981,7 @@ mod tests {
                 | PluginCommand::SetPaneAgentRun { .. }
                 | PluginCommand::SpawnAgent { .. }
                 | PluginCommand::SwampRequest { .. }
+                | PluginCommand::AgentControl { .. }
                 | PluginCommand::ProjectConfigRead { .. }
                 | PluginCommand::ProjectConfigWrite { .. }
                 | PluginCommand::SetQuitNotice { .. }

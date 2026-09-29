@@ -45,39 +45,13 @@ fn a_session_with_no_tabs_says_so_rather_than_showing_braces() {
     assert_eq!(shown, Some("## session w\n\n_no tabs_\n".to_owned()));
 }
 
-/// `agents::list_json` answers with a bare array, and in pane order — so the
-/// grouping has to be built here, not assumed.
 #[test]
-fn agents_group_under_their_project_and_branch() {
-    let raw = r#"[
-        {"pane_id":1,"status":"running","title":"one","project":"a","branch":"main",
-         "idle_seconds":0},
-        {"pane_id":2,"status":"running","title":"two","project":"b","branch":"topic",
-         "idle_seconds":180},
-        {"pane_id":3,"status":"running","title":"three","project":"a","branch":"main"}]"#;
-    let shown = present(&call("agent_list", "{}"), raw).expect("presented");
-    assert!(shown.contains("**a** · main"), "{shown}");
-    assert!(shown.contains("**b** · topic"), "{shown}");
-    // Interleaved input, one header each.
-    assert_eq!(shown.matches("**a** · main").count(), 1, "{shown}");
-    assert!(shown.contains("`1` busy — one"), "{shown}");
-    assert!(shown.contains("`2` idle 3m — two"), "{shown}");
-    // No `idle_seconds` yet means the poll has not seen it.
-    assert!(shown.contains("`3` running — three"), "{shown}");
-}
-
-#[test]
-fn an_agent_without_a_project_still_gets_a_header() {
-    let raw = r#"[{"pane_id":1,"status":"exited","title":"x"}]"#;
-    let shown = present(&call("agent_list", "{}"), raw).expect("presented");
-    assert!(shown.contains("**no project** · no branch"), "{shown}");
-    assert!(shown.contains("`1` exited — x"), "{shown}");
-}
-
-#[test]
-fn no_agents_says_none() {
-    let shown = present(&call("agent_list", "{}"), "[]");
-    assert_eq!(shown, Some("## agents\n\n_none_\n".to_owned()));
+fn authoritative_agent_list_keeps_readiness_separate_from_state() {
+    let raw = r#"{"outcome":"ok","agents":[{"pane_id":"terminal_1","agent":{"kind":"codex","state":"Idle"},"ready":false,"status_available":true}]}"#;
+    let shown = present(&call("agent_list", "{}"), raw).unwrap();
+    for value in ["codex", "idle", "ready", "false"] {
+        assert!(shown.contains(value), "{shown}");
+    }
 }
 
 /// The shape `todos::list_json` builds, including the child nesting.

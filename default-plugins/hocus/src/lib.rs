@@ -6,6 +6,7 @@
 //! A library so the wasm entry point (`src/main.rs`) and the render benchmark
 //! (`benches/transcript.rs`) can both see it; a bin crate has nothing to import.
 
+mod agent_control;
 mod api;
 mod approval;
 mod archive;
@@ -1613,6 +1614,9 @@ impl State {
             // arm is what makes the click land on the conversation the toast was actually about.
             Event::CustomMessage(name, payload) if name.starts_with("__yinz_plugin_test:") => {
                 self.on_plugin_test_result(&name["__yinz_plugin_test:".len()..], &payload)
+            },
+            Event::CustomMessage(name, payload) if name == "agent-response" => {
+                self.on_agent_response(&payload)
             },
             Event::CustomMessage(name, payload) if name == wire::TOAST_CLICK => {
                 self.on_toast_click(payload.parse::<u64>().ok())

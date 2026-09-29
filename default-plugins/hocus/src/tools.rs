@@ -130,8 +130,9 @@ pub fn needs_confirmation(name: &str) -> bool {
             | "send_input"
             | "swamp_issue_create"
             | "swamp_issue_comment"
-            | "agent_send"
-            | "agent_control"
+            | "agent_prompt"
+            | "agent_send_keys"
+            | "agent_recover"
             // These remove a project the user meant to keep.
             | "project_forget"
             | "project_merge"
@@ -251,13 +252,9 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "rerun_pane" => format!("re-runs {pane}, killing whatever it is running now"),
         "clear_pane" => format!("throws away {pane}'s scrollback; it cannot be scrolled back"),
         "send_input" => format!("types into {pane}, as if you had typed it yourself"),
-        "agent_send" => format!("types into the agent in {pane}, as if you had typed it yourself"),
-        "agent_control" => match args.action.as_deref() {
-            Some("interrupt") => format!("interrupts the agent in {pane} mid-run"),
-            Some("restart") => format!("restarts the agent in {pane}, losing its conversation"),
-            Some("close") => format!("closes {pane} and the agent running in it"),
-            _ => format!("interrupts, restarts or closes the agent in {pane}"),
-        },
+        "agent_prompt" => format!("types into the agent in {pane}, as if you had typed it yourself"),
+        "agent_send_keys" => format!("sends deliberate keys to the agent in {pane}"),
+        "agent_recover" => format!("restores readiness for the agent in {pane} after confirming its draft is empty"),
         // Only the shape that stops: a spawn with no prompt is not confirmed, so
         // it has nothing to say here. See `call_needs_confirmation`.
         "agent_spawn" if has_prompt(call) => {
@@ -653,9 +650,8 @@ pub fn confirmation_target(call: &ToolCall) -> Option<PaneId> {
     let args = Args::parse(&call.arguments).ok()?;
     let pane_id = args.pane_id?;
     match call.name.as_str() {
-        // The agent tools address a terminal and say so: `agent_host_call`
-        // rewrites them into pane-addressed primitives with `is_plugin: false`.
-        "agent_send" | "agent_control" => Some(PaneId::Terminal(
+        // Agent operations always address a terminal.
+        "agent_prompt" | "agent_send_keys" | "agent_recover" => Some(PaneId::Terminal(
             yinz_tile::prelude::TerminalId::new(pane_id),
         )),
         "send_input" | "rerun_pane" | "clear_pane" => match args.is_plugin? {
@@ -757,9 +753,7 @@ fn vm_target_properties() -> Value {
     })
 }
 
-/// What can be typed at a pane: literal text, named keys, or both. Shared by
-/// `send_input` and `agent_send`, which take the same input and differ only in
-/// what they will point it at.
+/// General pane input: literal text, named keys, or both.
 fn input_properties() -> Value {
     json!({
         "text": { "type": "string" },
@@ -1509,34 +1503,12 @@ pub fn specs() -> Value {
                 },
             }),
         ),
-        tool(
-            "agent_send",
-            "Send text or keys to a listed agent; prompts usually need enter.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pane_id": pane["pane_id"],
-                    "text": input["text"],
-                    "keys": input["keys"],
-                },
-                "required": ["pane_id"],
-            }),
-        ),
-        tool(
-            "agent_control",
-            "Interrupt, restart, or close a listed agent.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "pane_id": pane["pane_id"],
-                    "action": {
-                        "type": "string",
-                        "enum": ["interrupt", "restart", "close"],
-                    },
-                },
-                "required": ["pane_id", "action"],
-            }),
-        ),
+        tool("agent_status", "Inspect authoritative identity and readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}}, "required": ["pane_id"]})),
+        tool("agent_prompt", "Submit to an idle ready agent and await acknowledgement or this turn outcome.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "text": {"type": "string"}, "wait": {"type": "boolean"}, "timeout_ms": {"type": "integer"}}, "required": ["pane_id", "text"]})),
+        tool("agent_wait", "Wait for a lifecycle state; idle also requires safe readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "until": {"type": "string", "enum": ["busy", "waiting", "idle", "exited"]}, "timeout_ms": {"type": "integer"}}, "required": ["pane_id"]})),
+        tool("agent_read", "Read latest retained agent terminal output.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "line_count": {"type": "integer"}}, "required": ["pane_id"]})),
+        tool("agent_recover", "After inspecting and clearing a draft, explicitly restore readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "confirm_empty": {"type": "boolean"}}, "required": ["pane_id", "conversation", "confirm_empty"]})),
+        tool("agent_send_keys", "Deliberately send keys using Yinz key syntax, e.g. Ctrl c or Esc.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "keys": {"type": "array", "items": {"type": "string"}}}, "required": ["pane_id", "keys"]})),
         tool(
             "agent_runs",
             "List agent runs, newest first, from every session sharing this archive. The way in to \
@@ -1593,9 +1565,8 @@ pub fn specs() -> Value {
                         "enum": launch::OFFERED,
                         "description": "The agent to run. Either this or command.",
                     },
-                    "command": { "type": "string", "description": "A program to run instead." },
+                    "command": { "type": "string", "description": "Recognized agent executable. Use new_pane for arbitrary programs." },
                     "args": { "type": "array", "items": { "type": "string" } },
-                    "prompt": { "type": "string", "description": "What to start the agent on." },
                     "model": { "type": "string" },
                     "effort": {
                         "type": "string",
@@ -1606,10 +1577,11 @@ pub fn specs() -> Value {
                         "description": "Defaults to the focused pane's. A host path, so not \
                                         with firecracker outside a project.",
                     },
+                    "remote_host": {"type":"string", "description":"SSH destination; requires absolute cwd and explicit allow_outside_worktree."},
                     "project": { "type": "string", "description": "Defaults to the active project." },
                     "kind": {
                         "type": "string",
-                        "description": "For unrecognized agent commands.",
+                        "description": "Recognized agent kind.",
                     },
                     "branch": {
                         "type": "string",
@@ -1626,12 +1598,6 @@ pub fn specs() -> Value {
                     "worktree_dir": {
                         "type": "string",
                         "description": "Overrides saved default.",
-                    },
-                    "reuse_prompt": { "type": "string", "description": "Opening prompt when an existing worktree is reused; a newly created worktree uses prompt." },
-                    "reuse": {
-                        "type": "boolean",
-                        "description": "Join the existing branch or worktree of this name \
-                                        instead of cutting the next free one (<branch>-2).",
                     },
                     "allow_outside_worktree": {
                         "type": "boolean",
@@ -2141,6 +2107,9 @@ pub const READ_ONLY: &[&str] = &[
     "list_orphaned_panes",
     "read_pane",
     "agent_list",
+    "agent_status",
+    "agent_wait",
+    "agent_read",
     // What every agent sharing this archive has already been asked and has
     // already said. Read-only in the strongest sense available: these three never write,
     // and the rows they read are another process's record.
@@ -2338,8 +2307,12 @@ pub const FAMILIES: &[Family] = &[
         tools: &[
             "agent_register",
             "agent_list",
-            "agent_send",
-            "agent_control",
+            "agent_prompt",
+            "agent_send_keys",
+            "agent_status",
+            "agent_wait",
+            "agent_read",
+            "agent_recover",
             "agent_runs",
             "agent_run",
             "agent_history_search",
@@ -2692,6 +2665,10 @@ pub struct Args {
     pub kind: Option<String>,
     pub filter: Option<String>,
     pub timeout_ms: Option<u64>,
+    pub conversation: Option<String>,
+    pub until: Option<String>,
+    pub wait: bool,
+    pub confirm_empty: bool,
     // Starting an agent. `command`, `args`, `cwd`, `project`, `kind` and `prompt`
     // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
     // shadowed. `worktree_dir` is spelled out because `path` is the file tools'.
@@ -2802,7 +2779,22 @@ impl Args {
         if arguments.is_empty() {
             return Ok(Args::default());
         }
-        serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))
+        let mut value: Value =
+            serde_json::from_str(arguments).map_err(|error| format!("bad arguments: {error}"))?;
+        if let Some(id) = value
+            .get("pane_id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.strip_prefix("terminal_"))
+        {
+            if value["is_plugin"] == true {
+                return Err("a terminal target cannot be a plugin pane".into());
+            }
+            let id: u32 = id
+                .parse()
+                .map_err(|error| format!("invalid terminal ID: {error}"))?;
+            value["pane_id"] = json!(id);
+        }
+        serde_json::from_value(value).map_err(|error| format!("bad arguments: {error}"))
     }
 
     /// The replacements a `plugin_edit` carries, in one shape: the single form as a one-element
@@ -2952,7 +2944,7 @@ impl Args {
             None => (None, self.args.clone()),
         };
         launch::Spec {
-            kind: self.agent.clone(),
+            kind: self.agent.clone().or_else(|| self.kind.clone()),
             command,
             args,
             model: self.model.clone(),
@@ -4205,6 +4197,20 @@ pub fn session_listing(session: &SessionInfo) -> Value {
 // Dispatch — everything below here talks to the host
 // ---------------------------------------------------------------------------
 
+/// The host cwd of the focused pane, if it is available.
+pub(crate) fn focused_pane_cwd() -> Option<std::path::PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        yinz_tile::shim::get_focused_pane_info()
+            .ok()
+            .and_then(|(_, pane)| yinz_tile::shim::get_pane_cwd(pane).ok())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod host {
     use super::*;
@@ -4781,59 +4787,6 @@ mod host {
         })
     }
 
-    /// Start the agent: the host plans the argv, cuts the branch or worktree `spec` names,
-    /// opens the pane and records it as an agent's - `PluginCommand::SpawnAgent`, which is
-    /// also what the New agent modal's button and a TypeScript plugin's `yinz.agent.spawn` call, the
-    /// point being that there is one answer to "what does starting an agent do".
-    ///
-    /// `source` is the repository a checkout is made in; `cwd` is where the pane runs when
-    /// there is no checkout to make; `automatic_firecracker_vm` is whether the host names a
-    /// Firecracker spec's VM after that folder and mirrors it in, or leaves the named VM as it
-    /// is (see `PluginCommand::SpawnAgent`). All this adds is the reporting: the same JSON
-    /// `report_opened_pane` emits, so `present` and `register_spawned` read one shape, plus
-    /// the branch and the folder, which the caller has no other way to learn.
-    pub fn spawn_agent(
-        args: &Args,
-        spec: &launch::Spec,
-        source: Option<String>,
-        cwd: Option<String>,
-        automatic_firecracker_vm: bool,
-    ) -> String {
-        // The git work resolves the repository from this folder, so it cannot be left
-        // unset. The focused pane's cwd is the one the user would mean.
-        let source = source.map_or_else(focused_cwd, PathBuf::from);
-        // Planned here only to refuse a spec the host would refuse anyway, before a pane is
-        // opened for it. What the agent *got* is the host's to say - a name already taken is
-        // cut afresh with a suffix - so the report below reads the answer, not this.
-        if let Err(error) = launch::plan(spec) {
-            return error;
-        }
-        match yinz_tile::shim::spawn_agent(
-            spec.clone(),
-            Some(source),
-            cwd.map(PathBuf::from),
-            args.name.clone(),
-            BTreeMap::new(),
-            automatic_firecracker_vm,
-            false,
-        ) {
-            Ok(agent) => {
-                let (id, is_plugin) = split_pane_id(agent.pane_id);
-                let mut opened = json!({
-                    "opened": true, "pane_id": id, "is_plugin": is_plugin,
-                });
-                if let Some(branch) = agent.branch {
-                    opened["branch"] = json!(branch);
-                }
-                if let Some(cwd) = agent.cwd {
-                    opened["cwd"] = json!(cwd.display().to_string());
-                }
-                opened.to_string()
-            },
-            Err(error) => error,
-        }
-    }
-
     fn new_tab_tool(args: &Args) -> String {
         // Both parameters bind the same type parameter, so they must agree.
         let cwd = Some(
@@ -5073,10 +5026,7 @@ mod host {
     /// The cwd a command should default to. The plugin's own cwd is `/host`,
     /// which is almost never what the user means by "here".
     fn focused_cwd() -> PathBuf {
-        get_focused_pane_info()
-            .ok()
-            .and_then(|(_, pane)| get_pane_cwd(pane).ok())
-            .unwrap_or_else(|| PathBuf::from("."))
+        super::focused_pane_cwd().unwrap_or_else(|| PathBuf::from("."))
     }
 }
 
@@ -5084,7 +5034,7 @@ mod host {
 pub use host::{
     current_session_info, dispatch, grant_permissions, observe_plugin, plugin_fs_exists,
     plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write, plugin_log_tail,
-    reload_plugin, reload_plugin_headless, spawn_agent,
+    reload_plugin, reload_plugin_headless,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -5185,26 +5135,6 @@ pub fn dispatch(_call: &ToolCall) -> String {
     "tools are unavailable outside yinz".to_owned()
 }
 
-/// Off wasm the ask is recorded - the VM the spec names, and whether the host was told to
-/// rename it - for the tests to read.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn spawn_agent(
-    _args: &Args,
-    spec: &launch::Spec,
-    _source: Option<String>,
-    _cwd: Option<String>,
-    automatic_firecracker_vm: bool,
-) -> String {
-    test_seams::SPAWN_AGENT_CALLS.with_borrow_mut(|calls| {
-        calls.push(test_seams::SpawnAgentCall {
-            firecracker: spec.firecracker.clone(),
-            worktree_dir: spec.worktree_dir.clone(),
-            automatic_firecracker_vm,
-        })
-    });
-    "tools are unavailable outside yinz".to_owned()
-}
-
 /// Native tests supply the host snapshot explicitly.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn current_session_info() -> Result<SessionInfo, String> {
@@ -5225,14 +5155,6 @@ pub mod test_seams {
     use super::PermissionType;
     use std::cell::{Cell, RefCell};
 
-    /// Saved launch defaults and Firecracker placement passed to the host.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SpawnAgentCall {
-        pub firecracker: Option<String>,
-        pub worktree_dir: Option<String>,
-        pub automatic_firecracker_vm: bool,
-    }
-
     thread_local! {
         pub static CURRENT_SESSION: RefCell<Option<super::SessionInfo>> = const { RefCell::new(None) };
         pub static PLUGIN_FS_EXISTS: Cell<Option<bool>> = const { Cell::new(None) };
@@ -5244,8 +5166,6 @@ pub mod test_seams {
         pub static PLUGIN_READS: RefCell<super::BTreeMap<String, Result<String, String>>> = const { RefCell::new(super::BTreeMap::new()) };
         /// The `running` each `reload_plugin_headless` was given, in order.
         pub static HEADLESS_RELOADS: RefCell<Vec<Option<yinz_tile::prelude::PluginId>>> = const { RefCell::new(Vec::new()) };
-        /// What each `spawn_agent` asked the host for, in order.
-        pub static SPAWN_AGENT_CALLS: RefCell<Vec<SpawnAgentCall>> = const { RefCell::new(Vec::new()) };
         pub static PLUGIN_SOURCE: RefCell<Option<String>> = const { RefCell::new(None) };
         pub static GRANTED_PERMISSIONS: RefCell<Vec<PermissionType>> = const { RefCell::new(Vec::new()) };
         /// Every `toast_for_chat`, in order: the text, the pane the click focuses, and the chat
@@ -5270,7 +5190,6 @@ pub mod test_seams {
         PLUGIN_CHECK_CALLS.set(0);
         super::SOURCE_PERMISSIONS.with_borrow_mut(Vec::clear);
         HEADLESS_RELOADS.with_borrow_mut(Vec::clear);
-        SPAWN_AGENT_CALLS.with_borrow_mut(Vec::clear);
         PLUGIN_SOURCE.with_borrow_mut(|source| *source = None);
         GRANTED_PERMISSIONS.with_borrow_mut(Vec::clear);
         TOASTS.with_borrow_mut(Vec::clear);

@@ -320,23 +320,6 @@ pub enum Hocus {
     /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
     #[clap(subcommand)]
     Hooks(HocusHooks),
-    /// Install the bundled notes and todos skill for coding agents.
-    #[clap(subcommand)]
-    Skills(HocusSkills),
-}
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum HocusSkills {
-    /// Install into user skill directories. Identical content is a no-op.
-    Install {
-        #[clap(long, value_enum, default_value = "all")]
-        agent: HocusHookAgent,
-        #[clap(long)]
-        dry_run: bool,
-        /// Replace a differing SKILL.md. Other files are preserved.
-        #[clap(long)]
-        force: bool,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -547,8 +530,14 @@ fn parse_agent_state(value: &str) -> Result<yinz_types::agent::AgentState, Strin
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
+    #[clap(flatten)]
+    Archive(crate::agent_archive::AgentArchive),
+    /// Register a terminal pane through the persistent agent service.
+    Register { pane_id: u32, kind: String },
     /// List agents and their reported lifecycle state.
     List {
+        #[clap(long)]
+        project: Option<String>,
         #[clap(long)]
         json: bool,
     },
@@ -565,15 +554,27 @@ pub enum Agent {
     /// Launch an agent with the shared launch planner and return its actual pane and checkout.
     Spawn {
         #[clap(long)]
-        kind: String,
-        #[clap(long, default_value = ".")]
-        cwd: PathBuf,
+        kind: Option<String>,
+        #[clap(long)]
+        file: Option<PathBuf>,
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long, conflicts_with = "firecracker")]
+        remote_host: Option<String>,
+        #[clap(long)]
+        firecracker: Option<String>,
+        #[clap(long)]
+        firecracker_image: Option<String>,
+        #[clap(long)]
+        worktree: Option<bool>,
+        #[clap(long)]
+        cwd: Option<PathBuf>,
         /// Create a separate worktree for this branch; collisions get a fresh branch name.
         #[clap(long)]
         branch: Option<String>,
-        #[clap(long, requires = "branch")]
+        #[clap(long)]
         base: Option<String>,
-        #[clap(long, requires = "branch")]
+        #[clap(long)]
         worktree_dir: Option<String>,
         #[clap(long)]
         model: Option<String>,
@@ -692,11 +693,7 @@ pub enum Workflow {
         no_view: bool,
     },
     /// Attach a view to an existing run without restarting it.
-    Show {
-        run: String,
-        #[clap(long)]
-        json: bool,
-    },
+    Show { run: String },
     /// Submit one answer to a pending question resource.
     Answer {
         run: String,
@@ -1241,15 +1238,6 @@ pub enum Wait {
         exited: bool,
         #[clap(long)]
         closed: bool,
-        #[clap(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
-        timeout: u64,
-    },
-    /// Wait for observed agent state. Idle does not imply success.
-    AgentWait {
-        #[clap(value_parser = parse_wait_pane)]
-        pane_id: yinz_types::pane_id::PaneId,
-        #[clap(value_parser = ["busy", "waiting", "idle"])]
-        state: String,
         #[clap(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: u64,
     },
@@ -2343,6 +2331,19 @@ mod tests {
             .unwrap_err(),
             "--from-session also needs --tab-id",
         );
+    }
+
+    #[test]
+    fn removed_automation_spellings_have_no_aliases() {
+        for args in [
+            vec!["yinz", "action", "agent-list"],
+            vec!["yinz", "action", "agent-wait", "terminal_7", "idle"],
+            vec!["yinz", "action", "agent-runs"],
+            vec!["yinz", "hocus", "skills", "install"],
+            vec!["yinz", "workflow", "show", "run-id", "--json"],
+        ] {
+            assert!(try_parse_cli(args).is_err());
+        }
     }
 
     #[test]
