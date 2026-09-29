@@ -270,6 +270,8 @@ fn a_todo_launches_an_agent_with_its_project_and_task_context() {
     request(NotesTodos::ProjectRemember {
         name: "todo-agent".into(),
         root: repository.to_string_lossy().into_owned(),
+        worktree_dir: None,
+        firecracker_image: None,
     });
     let parent = request(NotesTodos::TodoAdd {
         project: "todo-agent".into(),
@@ -572,7 +574,7 @@ fn a_pane_launched_as_a_command_is_an_agent_without_a_title() {
 #[test]
 fn the_agent_list_and_conversation_are_one_panel() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(HOCUS_CONFIG)
+        .with_config(HOCUS_PROJECT_CONFIG)
         .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.to_owned()))
         .start();
     let agent = yinz.expect_pty_spawn();
@@ -1172,6 +1174,8 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     let action = NotesTodos::ProjectRemember {
         name: "panel-state".into(),
         root: root.to_string_lossy().into_owned(),
+        worktree_dir: None,
+        firecracker_image: None,
     }
     .action(&mut std::io::empty())
     .unwrap();

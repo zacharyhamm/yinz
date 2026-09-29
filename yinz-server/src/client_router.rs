@@ -293,6 +293,17 @@ pub(crate) fn route_thread_main(
                                 os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::StatusUnavailable))).context("reply to unavailable agent control")?;
                             }
                         },
+                        ClientToServerMsg::DataRequest { request_id, request } => {
+                            let result = if let Some(senders) = &senders {
+                                let (reply, receiver) = std::sync::mpsc::channel();
+                                senders.send_to_plugin(PluginInstruction::DataRequest { request, reply }).context("route CLI data request")?;
+                                receiver.recv_timeout(std::time::Duration::from_secs(30))
+                                    .unwrap_or_else(|_| Err("Data request outcome unknown; read before retrying a mutation".into()))
+                            } else {
+                                Err("Session is not ready for data requests".into())
+                            };
+                            os_input.send_to_client(client_id, ServerToClientMsg::DataResponse { request_id, result }).context("reply to CLI data request")?;
+                        },
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
                         ClientToServerMsg::Key {
                             key,

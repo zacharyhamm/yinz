@@ -4122,6 +4122,40 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
         event_types: vec!["PaneUpdate".to_owned(), "cwd_changed".to_owned()],
     });
+    test_client_roundtrip!(ClientToServerMsg::DataRequest {
+        request_id: "catalog".into(),
+        request: yinz_types::cli::DataRequest::Catalog { namespace: None }
+    });
+    test_client_roundtrip!(ClientToServerMsg::DataRequest {
+        request_id: "fetch".into(),
+        request: yinz_types::cli::DataRequest::Fetch(
+            yinz_types::plugin_data::FetchRequest::entity("item")
+                .in_namespace("plugin:file:/test.ts")
+        )
+    });
+    test_client_roundtrip!(ClientToServerMsg::DataRequest {
+        request_id: "count".into(),
+        request: yinz_types::cli::DataRequest::Count(
+            yinz_types::plugin_data::FetchRequest::entity("item").in_namespace("shared:fixture")
+        )
+    });
+    test_client_roundtrip!(ClientToServerMsg::DataRequest {
+        request_id: "apply".into(),
+        request: yinz_types::cli::DataRequest::Apply {
+            namespace: "shared:fixture".into(),
+            mutations: vec![yinz_types::plugin_data::Mutation::put("item")
+                .set("text", "hello\nworld")
+                .build()]
+        }
+    });
+    test_server_roundtrip!(ServerToClientMsg::DataResponse {
+        request_id: "reply".into(),
+        result: Ok("{\"rows\":[]}".into())
+    });
+    test_server_roundtrip!(ServerToClientMsg::DataResponse {
+        request_id: "reply".into(),
+        result: Err("conflict".into())
+    });
     test_client_roundtrip!(ClientToServerMsg::ClientExited);
     test_client_roundtrip!(ClientToServerMsg::KillSession);
     test_client_roundtrip!(ClientToServerMsg::KillSessionWithCompletion);

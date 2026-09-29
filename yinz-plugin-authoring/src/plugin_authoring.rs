@@ -166,6 +166,37 @@ pub fn write(
     Ok(Written { path, replaced })
 }
 
+/// Apply exact edits and strict checks before replacing the source.
+pub fn edit(
+    dir: &Path,
+    name: &str,
+    edits: &[yinz_plugin_api::authoring::edits::EditPair],
+) -> anyhow::Result<Written> {
+    let path =
+        yinz_plugin_api::authoring::resolve_plugin_file(dir, name).map_err(anyhow::Error::msg)?;
+    let original = crate::limits::read_source(&path)?;
+    let edited = yinz_plugin_api::authoring::edits::apply_edits(&original, edits)
+        .map_err(anyhow::Error::msg)?;
+    let report = check_source(
+        &path,
+        &edited.source,
+        yinz_types::authoring::PluginCheckMode::Prepare,
+    );
+    anyhow::ensure!(
+        report.diagnostics.is_empty(),
+        "{}",
+        report.diagnostics.join("\n")
+    );
+    let source = report
+        .formatted_source
+        .ok_or_else(|| anyhow::anyhow!("checker returned no formatted source"))?;
+    anyhow::ensure!(
+        crate::limits::read_source(&path)? == original,
+        "plugin changed during checks; read it again before editing"
+    );
+    write(dir, name, &source, true, false)
+}
+
 /// Format only the named file. Read-only verification never creates backups.
 pub fn format_file(path: &Path, check: bool) -> anyhow::Result<()> {
     if path.is_symlink() || path.parent().is_some_and(Path::is_symlink) {

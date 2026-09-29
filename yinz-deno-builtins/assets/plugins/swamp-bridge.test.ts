@@ -24,6 +24,35 @@ test("swamp-bridge rejects unauthenticated callers before dispatch", async () =>
 });
 import { assertEquals } from "yinz:testing";
 import { storeReplies } from "./testing-fixtures/store.ts";
+test("CLI workflow operations use the shared validator and correlated one-shot replies", async () => {
+  const f = await cleanupFixture();
+  f.p.stub("BlockCliPipeInput", null);
+  f.p.stub("CliPipeOutput", null);
+  f.p.stub("UnblockCliPipeInput", null);
+  const payload = JSON.stringify({
+    tool: "workflow_search",
+    directory: "/repo",
+    args: { query: "fixture" },
+  });
+  const before = f.p.commands.length;
+  await f.p.pipe({ name: "workflow_action", source: { Plugin: 99 }, payload });
+  assertEquals(f.p.commands.length, before, "plugins cannot impersonate CLI callers");
+  await f.p.pipe({ name: "workflow_action", source: { Cli: "query-1" }, payload });
+  await f.swampReply("workflow.search", { results: [{ name: "fixture" }] });
+  const replies = () =>
+    (f.p.commands as { CliPipeOutput?: [string, string] }[]).flatMap((c) =>
+      c.CliPipeOutput ? [c.CliPipeOutput] : [],
+    );
+  assertEquals(replies().length, 1);
+  assertEquals(replies()[0]![0], "query-1");
+  const reply = JSON.parse(replies()[0]![1]);
+  assertEquals(reply.ok, true);
+  assertEquals(reply.data, { results: [{ name: "fixture" }] });
+  await f.p.pipe({ name: "workflow_action", source: { Cli: "bad-json" }, payload: "{" });
+  assertEquals(JSON.parse(replies().at(-1)![1]).ok, false);
+  assert(JSON.stringify(f.p.commands).includes('"UnblockCliPipeInput":"bad-json"'));
+});
+
 test("swamp-bridge correlates persisted attachments and rejects conflicting duplicates", async () => {
   const store = storeReplies();
   const p = await loadPlugin("./swamp-bridge.ts", {

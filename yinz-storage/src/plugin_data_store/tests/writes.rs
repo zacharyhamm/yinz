@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn closed_tab_assignment_deletion_is_scoped_and_durable() {
+    let (store, guard) = store();
+    store
+        .define_entity(
+            NS,
+            OWNER,
+            &EntityDef::new("agent_assignment", 1)
+                .attr(AttrDef::text("host_id").required())
+                .attr(AttrDef::text("yinz_session_name").required())
+                .attr(AttrDef::int("tab_id").required()),
+            false,
+        )
+        .unwrap();
+    let owners = [
+        ("local", "session", 1_i64),
+        ("local", "session", 2),
+        ("other", "session", 1),
+        ("local", "other", 1),
+        ("", "session", 1),
+    ];
+    let mutations: Vec<_> = owners
+        .into_iter()
+        .map(|(host, session, tab)| {
+            Mutation::put("agent_assignment")
+                .set("host_id", host)
+                .set("yinz_session_name", session)
+                .set("tab_id", tab)
+                .build()
+        })
+        .collect();
+    store.apply(NS, &mutations).unwrap();
+    store
+        .apply(
+            NS,
+            &[Mutation::delete(
+                "agent_assignment",
+                Pred::eq("host_id", "local")
+                    .and(Pred::eq("yinz_session_name", "session"))
+                    .and(Pred::is_in("tab_id", [1_i64])),
+            )],
+        )
+        .unwrap();
+    drop(store);
+    let store = reopen(&guard);
+    let rows = store
+        .fetch(
+            NS,
+            &FetchRequest::entity("agent_assignment").select([
+                "host_id",
+                "yinz_session_name",
+                "tab_id",
+            ]),
+        )
+        .unwrap();
+    let expected: Vec<Vec<DataValue>> = owners[1..]
+        .iter()
+        .map(|(host, session, tab)| vec![(*host).into(), (*session).into(), (*tab).into()])
+        .collect();
+    assert_eq!(rows.rows, expected);
+}
+
+#[test]
 fn a_put_without_a_uid_always_inserts() {
     let (store, _dir) = defined();
     put(&store, "yinz", "one", 1);

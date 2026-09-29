@@ -1,0 +1,50 @@
+---
+name: yinz-sessions
+description: Discover Yinz context and manage sessions, tabs, panes, remote terminals, VMs, and bounded output waits through the Yinz CLI.
+---
+
+Use the installed `yinz` CLI. Start with `yinz list-sessions --short`, then
+`yinz --session NAME action context`. Context reports missing caller/project
+information and candidates. Select an explicit session, pane, or project when
+context is incomplete. Do not infer the caller from whichever pane is focused.
+Background operations require `hocus-agentd`; notes and project registry actions
+require `hocus-store`. These are background plugins; opening Hocus chat is not required.
+
+Inspect targets before changing them:
+
+```sh
+yinz --session main action list-panes --all --json
+yinz --session main action list-tabs --json
+yinz --session main action dump-screen --pane-id terminal_3
+```
+
+Use the existing `action new-pane`, `new-tab`, `write-chars`, `close-pane`,
+`close-tab-by-id`, `warp-pane`, `warp-tab`, `dump-layout`, `pty-host`,
+`firecracker`, and `recordings` commands. Read the relevant `--help` for flags.
+Use native file and shell tools to prepare layouts and inspect exported recordings.
+
+Additional explicit-target operations:
+
+```sh
+yinz --session main action pane-rerun 3
+yinz --session main action pane-swap terminal_3 terminal_4
+yinz --session main action pane-move-to-tab terminal_3 --tab-id 2
+yinz --session main action pane-pin terminal_3
+yinz --session main action pane-unpin terminal_3
+```
+
+Swap requires unambiguously adjacent tiled panes. Pinning requires a floating
+pane. A `dispatched` response acknowledges dispatch; inspect the pane listing to
+verify the result. Do not retry a timed-out mutation until you inspect current state.
+
+```sh
+yinz --session main action pane-wait terminal_3 --contains 'Ready' --timeout 30
+yinz --session main action pane-wait terminal_3 --exited --timeout 60
+yinz --session main action pane-wait terminal_3 --closed --timeout 30
+```
+
+Content waits match literal viewport text, including an already satisfied condition.
+Exit waits report process exit; inspect `exit_status` for success. Closing a pane
+is a separate condition. Timeout, disconnection, and unexpected disappearance
+fail. New structured commands produce one JSON value on stdout; check exit status
+before parsing. Diagnostics go to stderr.

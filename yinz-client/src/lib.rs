@@ -137,6 +137,7 @@ impl From<ServerToClientMsg> for ClientInstruction {
             ServerToClientMsg::PaneRenderUpdate { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::SubscribedPaneClosed { .. } => ClientInstruction::UnblockInputThread,
             ServerToClientMsg::AgentControl(_)
+            | ServerToClientMsg::DataResponse { .. }
             | ServerToClientMsg::AgentReportAccepted { .. }
             | ServerToClientMsg::KillSessionComplete { .. } => {
                 ClientInstruction::UnblockInputThread
@@ -752,3 +753,5 @@ mod test_support;
 mod unit;
 
 pub mod store_client;
+
+pub mod wait_client;

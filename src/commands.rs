@@ -739,7 +739,12 @@ pub(crate) fn send_action_to_session(
         eprintln!("{e}");
         std::process::exit(1);
     }
-    let named_store_action = matches!(cli_action, yinz_cli::args::CliAction::NotesTodos(_));
+    let named_store_action = matches!(
+        cli_action,
+        yinz_cli::args::CliAction::NotesTodos(_)
+            | yinz_cli::args::CliAction::Operations(_)
+            | yinz_cli::args::CliAction::Wait(_)
+    );
     let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
@@ -853,7 +858,7 @@ pub(crate) fn retarget_implicit_agent_report(
 /// The session a `yinz subscribe` / `yinz events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
 /// with `purpose` finishing the sentence ("subscribe to", "stream events from").
-fn resolve_session_for_stream(
+pub(crate) fn resolve_session_for_stream(
     requested_session_name: Option<String>,
     purpose: &str,
 ) -> SessionName {
@@ -936,9 +941,29 @@ fn attach_with_cli_client(
     session_name: &SessionName,
     config: Option<Config>,
 ) {
-    if let yinz_cli::args::CliAction::NotesTodos(command) = &cli_action {
-        let result = command
-            .action(&mut std::io::stdin())
+    if let yinz_cli::args::CliAction::Wait(request) = cli_action {
+        match yinz_client::wait_client::wait(session_name, request) {
+            Ok(result) => {
+                println!("{result}");
+                std::process::exit(0);
+            },
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::exit(1);
+            },
+        }
+    }
+    let service_action = match &cli_action {
+        yinz_cli::args::CliAction::NotesTodos(command) => {
+            Some(command.action(&mut std::io::stdin()))
+        },
+        yinz_cli::args::CliAction::Operations(command) => {
+            Some(command.action(&mut std::io::stdin()))
+        },
+        _ => None,
+    };
+    if let Some(action) = service_action {
+        let result = action
             .map_err(anyhow::Error::msg)
             .and_then(|action| yinz_client::store_client::request(session_name, action));
         match result {
@@ -1594,6 +1619,58 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
     }
     match command {
         PluginsCli::Test { .. } => unreachable!("tests return above"),
+        PluginsCli::Docs { section } => {
+            let content = match section.as_str() {
+                "index" => "guide: plugin authoring guide\nsdk: TypeScript API declarations\ntesting: plugin test API",
+                "guide" => concat!("Author plugins with yinz:plugin and confined relative imports. Use plugins write, check --json, test --json, reload, then log. Read sdk for the full API. Permissions must be requested explicitly. Complete executable example:\n\n", include_str!("../example-plugins/clock.ts"), "\n\nBroader host API example:\n\n", include_str!("../example-plugins/capabilities.ts")),
+                "sdk" => include_str!("../yinz-plugin-host/src/deno/sdk.d.ts"),
+                "testing" => include_str!("../yinz-plugin-host/src/deno/testing/testing.d.ts"),
+                _ => anyhow::bail!("unknown docs section; use index, guide, sdk or testing"),
+            };
+            println!(
+                "{}",
+                serde_json::json!({"section":section,"content":content})
+            );
+            Ok(())
+        },
+        PluginsCli::List => {
+            fn sources(root: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+                if !root.exists() {
+                    return Ok(());
+                }
+                for entry in std::fs::read_dir(root)? {
+                    let entry = entry?;
+                    let kind = entry.file_type()?;
+                    if kind.is_dir() {
+                        sources(&entry.path(), paths)?;
+                    } else if kind.is_file()
+                        && yinz_plugin_api::authoring::is_deno_plugin(&entry.path())
+                    {
+                        paths.push(entry.path());
+                    }
+                }
+                Ok(())
+            }
+            let directory = plugin_dir()?;
+            let mut files = Vec::new();
+            sources(&directory, &mut files)?;
+            files.sort();
+            println!(
+                "{}",
+                serde_json::json!({"directory":directory,"files":files})
+            );
+            Ok(())
+        },
+        PluginsCli::Edit { name, file } => {
+            let edits: Vec<yinz_plugin_api::authoring::edits::EditPair> =
+                serde_json::from_str(&read_source(Some(&file))?)?;
+            let written = yinz_server::plugin_authoring::edit(&plugin_dir()?, &name, &edits)?;
+            println!(
+                "{}",
+                serde_json::json!({"path":written.path,"backup":written.replaced})
+            );
+            Ok(())
+        },
         PluginsCli::Dir => {
             println!("{}", plugin_dir()?.display());
             Ok(())
@@ -1629,7 +1706,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             );
             Ok(())
         },
-        PluginsCli::Check { name, file } => {
+        PluginsCli::Check { name, file, json } => {
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
@@ -1638,6 +1715,19 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
+            if json {
+                let source = read_source(Some(&path))?;
+                let report = yinz_server::plugin_authoring::check_source(
+                    &path,
+                    &source,
+                    yinz_types::authoring::PluginCheckMode::Semantic,
+                );
+                println!("{}", serde_json::to_string(&report)?);
+                if !report.diagnostics.is_empty() {
+                    anyhow::bail!("plugin checks failed");
+                }
+                return Ok(());
+            }
             let report = yinz_server::plugin_authoring::check_plugin_report(&path)?;
             println!("{} checks successfully", path.display());
             print_plugin_findings(&report.warnings);
@@ -1656,11 +1746,21 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             println!("{} is formatted", path.display());
             Ok(())
         },
-        PluginsCli::Reload { name } => {
+        PluginsCli::Reload { name, headless } => {
             let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
                 .map_err(|e| anyhow::anyhow!(e))?;
             if !path.is_file() {
                 anyhow::bail!("{} is not there; write it first", path.display());
+            }
+            if headless {
+                let session =
+                    resolve_session_for_stream(opts.session.clone(), "reload a headless plugin in");
+                let action = yinz_cli::notes_todos::pipe_action(
+                    "agent_action",
+                    serde_json::json!({"op":"plugin_reload","args":{"url":format!("file:{}", path.display())},"structured_reply":true}),
+                );
+                println!("{}", yinz_client::store_client::request(&session, action)?);
+                return Ok(());
             }
             send_action_to_session(
                 yinz_cli::args::CliAction::StartOrReloadPlugin {
@@ -1693,11 +1793,11 @@ fn print_plugin_findings(findings: &[String]) {
     }
 }
 
-fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
+pub(crate) fn read_source(file: Option<&Path>) -> anyhow::Result<String> {
     match file {
-        Some(file) => std::fs::read_to_string(file)
+        Some(file) if file != Path::new("-") => std::fs::read_to_string(file)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", file.display())),
-        None => {
+        _ => {
             use std::io::Read;
             let mut source = String::new();
             std::io::stdin()
@@ -2756,4 +2856,47 @@ mod firecracker_command_tests {
             assert_eq!(run(command, &provider), (String::new(), String::new()));
         }
     }
+}
+
+pub(crate) fn data(command: yinz_cli::args::Data, opts: &CliArgs) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use yinz_cli::args::Data;
+    use yinz_types::cli::DataRequest;
+    let request = match command {
+        Data::Catalog { namespace } => DataRequest::Catalog { namespace },
+        Data::Apply { namespace, file } => DataRequest::Apply {
+            namespace,
+            mutations: serde_json::from_str(&read_source(Some(&file))?)
+                .context("expected a Mutation JSON array")?,
+        },
+        command @ (Data::Fetch { .. } | Data::Count { .. }) => {
+            let count = matches!(command, Data::Count { .. });
+            let (Data::Fetch { namespace, file } | Data::Count { namespace, file }) = command
+            else {
+                unreachable!()
+            };
+            let mut request: yinz_types::plugin_data::FetchRequest =
+                serde_json::from_str(&read_source(Some(&file))?)
+                    .context("expected FetchRequest JSON")?;
+            if request
+                .namespace
+                .as_ref()
+                .is_some_and(|value| value != &namespace)
+            {
+                anyhow::bail!("--namespace conflicts with the request namespace");
+            }
+            request.namespace = Some(namespace);
+            if count {
+                DataRequest::Count(request)
+            } else {
+                DataRequest::Fetch(request)
+            }
+        },
+    };
+    let session = resolve_session_for_stream(opts.session.clone(), "query data in");
+    println!(
+        "{}",
+        yinz_client::store_client::data_request(&session, request)?
+    );
+    Ok(())
 }

@@ -867,3 +867,66 @@ fn a_pane_renamed_from_outside_is_titled_again_on_the_next_render() {
 }
 
 mod workflow_tools;
+
+fn add_background_store(state: &mut State) {
+    state.plugin_instances.insert(
+        yinz_tile::prelude::PluginId::new(90),
+        PluginInstance {
+            has_pane: false,
+            location: "yinz:hocus-store".into(),
+            configuration: BTreeMap::new(),
+        },
+    );
+}
+
+/// The service owns the write; chat changes only on the watch and correlated reply.
+fn finish_background_project_change(state: &mut State) {
+    assert!(matches!(state.status, Status::AwaitingExtension));
+    let pending = state.workflow_call.clone().unwrap();
+    let call = state.pending.front().cloned().unwrap();
+    let args = tools::Args::parse(&call.arguments).unwrap();
+    let rows = state
+        .store()
+        .fetch(&FetchRequest::entity("project"))
+        .unwrap();
+    let mutations = match call.name.as_str() {
+        "project_rename" => {
+            projects::plan_rename(
+                &rows,
+                args.name.as_deref().unwrap(),
+                args.new_name.as_deref().unwrap(),
+            )
+            .unwrap()
+            .mutations
+        },
+        "project_merge" => {
+            projects::plan_merge(
+                &rows,
+                args.source.as_deref().unwrap(),
+                args.target.as_deref().unwrap(),
+            )
+            .unwrap()
+            .mutations
+        },
+        "project_forget" => vec![projects::delete_mutation(
+            args.name.as_deref().unwrap().trim(),
+        )],
+        _ => panic!("not a project change"),
+    };
+    state.store().apply(mutations).unwrap();
+    let rows = state
+        .store()
+        .fetch(&FetchRequest::entity("project"))
+        .unwrap();
+    state.take_projects(projects::from_rows(&rows), projects::row_ids(&rows));
+    let reply = serde_json::json!({"version":1,"call_id":pending.rpc_id,"result":{"ok":true,"data":call.name}}).to_string();
+    assert!(
+        !state.on_workflow_reply(yinz_tile::prelude::PluginId::new(91), &reply, false),
+        "another plugin cannot complete the request"
+    );
+    assert!(state.on_workflow_reply(pending.owner.unwrap(), &reply, false));
+    assert!(
+        !state.on_workflow_reply(pending.owner.unwrap(), &reply, false),
+        "a duplicate response cannot execute twice"
+    );
+}

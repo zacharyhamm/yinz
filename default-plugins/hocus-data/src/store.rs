@@ -467,6 +467,12 @@ pub fn shared_defs() -> Vec<EntityDef> {
         import_marker_def(),
         job_def(),
         agent_latch_def(),
+        EntityDef::new("agent_assignment", 1)
+            .attr(AttrDef::text("host_id").indexed().required())
+            .attr(AttrDef::text("yinz_session_name").indexed().required())
+            .attr(AttrDef::int("tab_id").required())
+            .attr(AttrDef::int("project_id").required())
+            .attr(AttrDef::text("project").required()),
         agent_summary_def(),
         agent_run_def(),
         agent_run_entry_def(),

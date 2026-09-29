@@ -3009,8 +3009,25 @@ impl WasmBridge {
             .unwrap()
             .all_plugin_ids_for_plugin_location(plugin_location, plugin_configuration)
     }
-    pub fn builtin_service_instance(&self, name: &str) -> Option<(PluginId, ClientId)> {
-        self.plugin_map
+    pub(crate) fn cli_data(&self, request: yinz_types::cli::DataRequest) -> anyhow::Result<String> {
+        crate::cli_data::run(
+            self.data_access.plugin_data(),
+            request,
+            |namespace, entities| {
+                crate::yinz_exports::notify_data_watchers(
+                    self.data_access.plugin_data(),
+                    &self.deno_watch_generations,
+                    &self.senders,
+                    namespace,
+                    entities,
+                );
+            },
+        )
+    }
+
+    pub fn builtin_service_instance(&self, name: &str) -> Result<(PluginId, ClientId), String> {
+        let instances: std::collections::BTreeMap<_, _> = self
+            .plugin_map
             .lock()
             .unwrap()
             .clone_plugin_assets()
@@ -3021,7 +3038,12 @@ impl WasmBridge {
             .flat_map(|configurations| configurations.values())
             .flatten()
             .copied()
-            .min()
+            .collect();
+        match instances.len() {
+            0 => Err(format!("No running {name} instance; load it as a background plugin before requesting this operation")),
+            1 => instances.into_iter().next().ok_or_else(|| "service disappeared".into()),
+            _ => Err(format!("Multiple {name} instances: {:?}; keep one background instance before requesting this operation", instances.keys().collect::<Vec<_>>())),
+        }
     }
 
     pub fn all_plugin_and_client_ids_for_plugin_location(

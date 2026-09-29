@@ -1,6 +1,95 @@
 use super::*;
 use yinz_tile::prelude::TabId;
 
+#[test]
+fn assignment_dispatch_completion_releases_the_old_rpc_and_continues_the_queue() {
+    use serde_json::json;
+    use yinz_tile::prelude::PluginId;
+
+    for tool in ["project_assign", "project_open"] {
+        for daemon_count in [0, 1, 2] {
+            let mut state = idle_state();
+            add_background_store(&mut state);
+            for id in 0..daemon_count {
+                state.plugin_instances.insert(
+                    PluginId::new(91 + id),
+                    PluginInstance {
+                        location: "yinz:hocus-agentd".into(),
+                        has_pane: false,
+                        configuration: BTreeMap::new(),
+                    },
+                );
+            }
+            assert!(!run_file_tool(
+                &mut state,
+                tool,
+                r#"{"name":"work","root":"/work","tab_id":9}"#
+            ));
+            let old = state.workflow_call.clone().unwrap();
+            state.pending.push_back(ToolCall {
+                id: "next".into(),
+                name: "agent_runs".into(),
+                arguments: "{}".into(),
+            });
+            let rows = state
+                .store()
+                .fetch(&FetchRequest::entity("project"))
+                .unwrap();
+            let (_, mutations) =
+                projects::plan_remember(&rows, "work", Some("/work"), None, None).unwrap();
+            state.store().apply(mutations).unwrap();
+            state.mono_ms = 29_000;
+            let persisted = json!({"version":1,"call_id":old.rpc_id,"result":{"ok":true,"data":"remembered work"}}).to_string();
+            assert!(state.on_workflow_reply(old.owner.unwrap(), &persisted, false));
+            if daemon_count == 1 {
+                assert!(tool_results(&state).is_empty());
+                let assigning = state.workflow_call.clone().unwrap();
+                assert_ne!(assigning.rpc_id, old.rpc_id);
+                assert_eq!(assigning.owner, Some(PluginId::new(91)));
+                assert_eq!(state.extension_call_started_ms, Some(29_000));
+                assert!(!state.on_workflow_reply(old.owner.unwrap(), &persisted, false));
+                let assigned = json!({"version":1,"call_id":assigning.rpc_id,"result":{"ok":true,"data":{"tab_id":9,"project":"work"}}}).to_string();
+                assert!(state.on_workflow_reply(assigning.owner.unwrap(), &assigned, false));
+                assert!(!state.on_workflow_reply(assigning.owner.unwrap(), &assigned, false));
+            } else {
+                assert!(tool_results(&state)[0]
+                    .content
+                    .contains(if daemon_count == 0 {
+                        "No running hocus-agentd"
+                    } else {
+                        "multiple hocus-agentd"
+                    }));
+            }
+            assert_eq!(
+                tool_results(&state).len(),
+                1,
+                "the assignment finishes exactly once"
+            );
+            assert_eq!(state.pending.front().unwrap().id, "next");
+            let next = state.workflow_call.clone().unwrap();
+            assert_ne!(next.rpc_id, old.rpc_id);
+            assert_eq!(state.extension_call_started_ms, Some(29_000));
+            assert!(!state.on_workflow_reply(old.owner.unwrap(), &persisted, false));
+            state.on_timer(2.0);
+            assert_eq!(
+                tool_results(&state).len(),
+                1,
+                "the old timeout cannot consume the next tool"
+            );
+            let reply = json!({"version":1,"call_id":next.rpc_id,"result":{"ok":true,"data":[]}})
+                .to_string();
+            assert!(state.on_workflow_reply(next.owner.unwrap(), &reply, false));
+            assert_eq!(tool_results(&state).len(), 2);
+            assert!(state.pending.is_empty());
+            assert!(state.workflow_call.is_none());
+            assert!(state.extension_call_started_ms.is_none());
+            assert!(matches!(state.status, Status::Idle));
+            state.on_timer(31.0);
+            assert_eq!(tool_results(&state).len(), 2);
+        }
+    }
+}
+
 // -- projects -----------------------------------------------------------
 
 #[test]
@@ -377,6 +466,7 @@ fn forgetting_a_discovered_project_says_a_poll_makes_it_again() {
 #[test]
 fn forgetting_a_project_waits_for_a_confirmation() {
     let mut state = ready_state();
+    add_background_store(&mut state);
     state.projects.insert(
         "hocus".to_owned(),
         projects::validate("hocus", "/work/hocus").unwrap(),
@@ -388,6 +478,11 @@ fn forgetting_a_project_waits_for_a_confirmation() {
     assert!(matches!(state.status, Status::ConfirmingTool));
     assert!(state.projects.contains_key("hocus"), "nothing yet");
     state.confirm_tool();
+    assert!(
+        state.projects.contains_key("hocus"),
+        "chat does not perform the write"
+    );
+    finish_background_project_change(&mut state);
     assert!(state.projects.is_empty());
 }
 

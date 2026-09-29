@@ -161,6 +161,9 @@ fn is_run_id(value: &str) -> bool {
 }
 
 pub fn uncertain_result(call: Option<&ToolCall>, rpc_id: &str, message: &str) -> String {
+    if call.is_some_and(|call| crate::operations::TOOLS.contains(&call.name.as_str())) {
+        return json!({"error":{"code":"transport_unknown","message":message},"request_id":rpc_id,"recovery":"Read the affected state before retrying. The mutation may already have occurred; it was not retried."}).to_string();
+    }
     let args: Value = call
         .and_then(|call| serde_json::from_str(&call.arguments).ok())
         .unwrap_or_default();
@@ -322,12 +325,44 @@ impl State {
         if value.get("result").is_none() && value.get("error").and_then(Value::as_str).is_none() {
             return false;
         }
+        if self.continue_project_assignment(owner, &value["result"]) {
+            return true;
+        }
         let result = if let Some(error) = value["error"].as_str() {
             uncertain_result(
                 self.pending.front(),
                 value["call_id"].as_str().unwrap_or(""),
                 error,
             )
+        } else if self
+            .pending
+            .front()
+            .is_some_and(|call| crate::operations::TOOLS.contains(&call.name.as_str()))
+        {
+            let reply = &value["result"];
+            match reply["ok"].as_bool() {
+                Some(true)
+                    if self
+                        .pending
+                        .front()
+                        .is_some_and(|call| call.name == "project_assign") =>
+                {
+                    format!(
+                        "assigned tab {} to project {}",
+                        reply["data"]["tab_id"],
+                        reply["data"]["project"].as_str().unwrap_or("")
+                    )
+                },
+                Some(true) => reply["data"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| reply["data"].to_string()),
+                Some(false) => reply["error"]
+                    .as_str()
+                    .unwrap_or("background operation failed")
+                    .to_owned(),
+                None => "invalid background operation response".to_owned(),
+            }
         } else {
             value["result"].to_string()
         };

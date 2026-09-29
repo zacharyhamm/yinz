@@ -36,3 +36,7 @@ pub mod sessions;
 pub mod setup;
 
 pub mod notes_todos;
+
+pub mod operations;
+
+pub mod workflow;

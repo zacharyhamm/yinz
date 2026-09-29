@@ -1,6 +1,29 @@
 use super::*;
-use yinz_tile::prelude::HostId;
 use yinz_tile::prelude::TabId;
+
+#[test]
+fn agent_runs_forwards_empty_arguments_and_rejects_malformed_json() {
+    for arguments in ["", " \t\r\n", "{}", "{"] {
+        let mut state = idle_state();
+        add_background_store(&mut state);
+        let call = agent_call("agent_runs", arguments);
+        state.pending.push_back(call.clone());
+
+        if arguments == "{" {
+            assert!(state.run_head(&call));
+            assert!(state.workflow_call.is_none());
+            assert!(tool_results(&state)[0].content.contains("bad arguments:"));
+        } else {
+            assert!(!state.run_head(&call), "{arguments:?}");
+            assert!(matches!(state.status, Status::AwaitingExtension));
+            assert_eq!(
+                state.workflow_call.as_ref().unwrap().owner,
+                Some(yinz_tile::prelude::PluginId::new(90))
+            );
+            assert!(tool_results(&state).is_empty());
+        }
+    }
+}
 
 /// A plugin pane is not an agent, a suppressed one is not on screen, and a held
 /// one still is - the three cases the snapshot has to tell apart.
@@ -638,52 +661,41 @@ fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
     assert_eq!(command.args[4], "--settings");
 }
 
-/// A kind set by hand outlives the hocus that set it, as long as the pane does.
+/// Chat reloads read daemon snapshots; opening chat must never write or claim latches.
 #[test]
-fn a_registered_kind_survives_open_store() {
+fn registration_metadata_is_owned_by_the_daemon() {
     let mut state = state_with_panes();
-    state.run_local(&agent_call(
-        "agent_register",
-        r#"{"pane_id":4,"kind":"reviewer"}"#,
-    ));
-    let rows = state
-        .store()
-        .fetch(&FetchRequest::entity(agents::rows::LATCH_ENTITY))
-        .expect("fetched");
-    assert_eq!(
-        agents::rows::latches_from_rows(&rows),
-        BTreeMap::from([(4, "reviewer".to_owned())])
-    );
-
-    // Named, because a latch belongs to a session as well as a pane - see
-    // `store::agent_latch_def`. A hocus that has not heard a snapshot yet reads none, and
-    // restores them when the first one names the session.
-    let mut restarted = State {
-        yinz_session_name: "test-session".to_owned().into(),
-        host_id: HostId::new("test-host"),
-        ..State::default()
-    };
-    restarted
+    state
         .store()
         .apply(vec![agents::rows::latch_mutation(
-            &restarted.owner(),
+            &state.owner(),
             4,
             "reviewer",
         )])
-        .expect("copied");
-    restarted.open_store();
+        .unwrap();
+    state.open_store();
+    assert!(state.manual_kinds.is_empty());
+    let mut message = worktree_snapshot(1, "main");
+    let mut reply: PollReply = serde_json::from_str(message.payload.as_deref().unwrap()).unwrap();
+    reply.panes = Some(state.panes.clone());
+    reply.manual_kinds.insert(4, "reviewer".into());
+    message.payload = Some(serde_json::to_string(&reply).unwrap());
+    state.pipe(message);
     assert_eq!(
-        restarted.manual_kinds.get(&4).map(String::as_str),
+        state.manual_kinds.get(&4).map(String::as_str),
         Some("reviewer")
     );
-
-    // And the pane closing forgets the row, as it forgets the kind.
-    state.set_panes(Vec::new());
+    state.set_panes(vec![]);
     let rows = state
         .store()
         .fetch(&FetchRequest::entity(agents::rows::LATCH_ENTITY))
-        .expect("fetched");
-    assert!(agents::rows::latches_from_rows(&rows).is_empty());
+        .unwrap();
+    assert_eq!(
+        agents::rows::latches_from_rows(&rows)
+            .get(&4)
+            .map(String::as_str),
+        Some("reviewer")
+    );
 }
 
 #[test]

@@ -3,6 +3,33 @@ Send actions to a specific session
 Usage: yinz action <COMMAND>
 
 Commands:
+  pane-wait                         Wait for literal viewport content, process exit, or pane
+                                    disappearance
+  agent-wait                        Wait for observed agent state. Idle does not imply success
+  context                           Discover host, session, caller, project and background services
+  agent-list                        List live agents and their observed state
+  agent-register                    Register a terminal pane as an agent
+  agent-spawn                       Launch through the shared planner. --file accepts all
+                                    AgentSpawnSpec fields
+  agent-send                        Send text to an explicit agent pane, optionally pressing Enter
+  agent-control                     Send an interrupt or Escape, or close an explicit agent pane
+  project-assign                    Assign an existing project to an explicit tab
+  project-config-read               Read a project's workflow configuration and its exact source
+  project-config-write              Supply {source, expected}; expected is the previously read
+                                    source or null
+  project-open                      Open an existing project in a new tab
+  pane-swap                         Swap two unambiguously adjacent tiled panes
+  pane-move-to-tab                  Move an explicit pane to an existing tab
+  pane-rerun                        Rerun a held command pane
+  pane-pin                          Pin an explicit floating pane
+  pane-unpin                        Unpin an explicit floating pane
+  project-rename                    Rename a project, preserving linked records
+  project-merge                     Merge duplicate project identities, preserving the target's
+                                    settings
+  agent-runs                        List agent run headers with pagination across the archive
+  agent-run                         Read an exact run and a bounded page of its timeline
+  agent-history-search              Search recorded agent messages and prompts
+  agent-predecessors                Follow recorded predecessor links from an exact run ID
   project-list                      List remembered projects
   project-remember                  Remember a project name and absolute root
   project-forget                    Forget a project name, preserving its notes and todos

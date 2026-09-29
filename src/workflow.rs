@@ -21,6 +21,15 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         .build()
         .context("cannot start workflow client runtime")?;
     match command {
+        Workflow::Tools(operation) => {
+            let request = operation
+                .request(&cwd, &mut std::io::stdin())
+                .map_err(anyhow::Error::msg)?;
+            let session =
+                crate::commands::resolve_session_for_stream(session, "operate workflows in");
+            let action = yinz_cli::notes_todos::pipe_action("workflow_action", request);
+            println!("{}", yinz_client::store_client::request(&session, action)?);
+        },
         Workflow::Server { command } => {
             use yinz_cli::args::WorkflowServer;
             let action = match command {
@@ -37,9 +46,16 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             name,
             launch,
             input,
+            input_file,
+            json,
             no_view,
         } => {
             let launch = launch.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let input = if let Some(path) = input_file {
+                crate::commands::read_source(Some(&path))?
+            } else {
+                input
+            };
             let inputs: serde_json::Value =
                 serde_json::from_str(&input).context("--input must be a JSON object")?;
             if !inputs.is_object() {
@@ -47,16 +63,25 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             }
             let request = serde_json::json!({"method":"workflow_run", "work":launch, "key":"launch", "workflow":name, "directory":cwd,"inputs":inputs});
             // Print before dispatch so an interrupted caller can recover by token.
-            println!("Launch: {launch}");
+            if !json {
+                println!("Launch: {launch}");
+            }
             let result = pipe(
                 &binary,
                 session.as_deref(),
                 "yinz:swamp-bridge",
                 "swamp",
                 &request,
-            )?;
-            println!("{result}");
-            if !no_view {
+            )
+            .with_context(|| {
+                format!("launch {launch}; inspect run history before repeating a mutation")
+            })?;
+            if json {
+                println!("{}", serde_json::json!({"launch":launch,"result":result}));
+            } else {
+                println!("{result}");
+            }
+            if !no_view && !json {
                 open_view(
                     &binary,
                     session.as_deref(),
@@ -68,14 +93,13 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         },
         Workflow::Show { run, json } => {
             if json {
-                println!(
-                    "{}",
-                    runtime.block_on(yinz_swamp::call(
-                        snapshot.root.clone(),
-                        "workflow.history.get",
-                        serde_json::json!({"workflowIdOrName":run})
-                    ))?
+                let session =
+                    crate::commands::resolve_session_for_stream(session, "inspect workflows in");
+                let action = yinz_cli::notes_todos::pipe_action(
+                    "workflow_action",
+                    serde_json::json!({"tool":"workflow_run_get","args":{"run":run},"directory":cwd}),
                 );
+                println!("{}", yinz_client::store_client::request(&session, action)?);
             } else {
                 open_view(
                     &binary,
@@ -130,6 +154,16 @@ fn pipe(
     name: &str,
     request: &serde_json::Value,
 ) -> Result<serde_json::Value> {
+    if plugin == "yinz:swamp-bridge" {
+        let session = crate::commands::resolve_session_for_stream(
+            session.map(str::to_owned),
+            "operate workflows in",
+        );
+        return yinz_client::store_client::raw_request(
+            &session,
+            yinz_cli::notes_todos::pipe_action(name, request.clone()),
+        );
+    }
     let mut command = Command::new(binary);
     if let Some(session) = session {
         command.args(["--session", session]);
