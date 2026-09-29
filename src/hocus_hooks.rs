@@ -143,7 +143,7 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
 /// them. Stopping at the first error would leave the rest untouched and unmentioned, which is
 /// the one thing a command that promises "every agent" must not do. Every failure is named
 /// where it happened, and the run still ends non-zero, so a setup script still notices.
-fn for_each_agent(
+pub(crate) fn for_each_agent(
     agents: Vec<HocusHookAgent>,
     mut run: impl FnMut(HocusHookAgent) -> Result<()>,
 ) -> Result<()> {
@@ -171,7 +171,10 @@ fn agent_name(agent: HocusHookAgent) -> &'static str {
     }
 }
 
-fn selected_agents(agent: Option<HocusHookAgent>, project: bool) -> Result<Vec<HocusHookAgent>> {
+pub(crate) fn selected_agents(
+    agent: Option<HocusHookAgent>,
+    project: bool,
+) -> Result<Vec<HocusHookAgent>> {
     let agent = agent.unwrap_or(if project {
         HocusHookAgent::Claude
     } else {
@@ -648,12 +651,12 @@ fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
-fn home() -> Result<PathBuf> {
+pub(crate) fn home() -> Result<PathBuf> {
     non_empty(std::env::var_os("HOME"))
         .ok_or_else(|| anyhow!("HOME is not set, so there is no agent config to install into"))
 }
 
-fn agent_root(
+pub(crate) fn agent_root(
     agent: HocusHookAgent,
     codex_home: Option<OsString>,
     xdg_config_home: Option<OsString>,

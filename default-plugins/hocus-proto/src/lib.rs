@@ -38,3 +38,5 @@ pub mod vms;
 pub mod panel_text;
 
 pub use hocus_data::{location, notes, paths, projects, store, todos};
+
+pub mod pane_operations;

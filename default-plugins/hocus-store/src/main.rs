@@ -28,6 +28,7 @@
 //! off the pane snapshots hocus-agentd sends — which stays here because it has
 //! to happen whether or not a hocus pane is open.
 
+mod archive;
 mod arrangement;
 mod notes_ops;
 mod ops;
@@ -50,6 +51,7 @@ const RETRY_SECONDS: f64 = 5.0;
 
 #[derive(Default)]
 struct State {
+    host_id: HostId,
     project_watch_id: Option<DataWatchId>,
     latest_snapshot: Option<PollReply>,
     retry_snapshot: bool,
@@ -66,6 +68,7 @@ register_plugin!(State);
 
 impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
+        self.host_id = get_plugin_ids().host_id;
         // Builtins already have data-store access; see hocus-agentd.
         let backend = Host::shared();
         // Declared here as well as in hocus, because either may start first and
@@ -125,6 +128,27 @@ impl YinzPlugin for State {
             return false;
         }
         let payload = pipe_message.payload.unwrap_or_default();
+        if matches!(
+            pipe_message.name.as_str(),
+            wire::STORE_MUTATE | wire::STORE_QUERY
+        ) {
+            if let PipeSource::Plugin(id) = pipe_message.source {
+                let allowed = get_session_list().is_ok_and(|snapshot| {
+                    snapshot
+                        .live_sessions
+                        .iter()
+                        .filter(|s| s.is_current_session)
+                        .any(|s| {
+                            s.plugins
+                                .get(&id)
+                                .is_some_and(|p| p.location == "yinz:hocus")
+                        })
+                });
+                if !allowed {
+                    return false;
+                }
+            }
+        }
         match pipe_message.name.as_str() {
             "arrange_panes_by_project" if !self.arrangement_pending => {
                 self.arrangement_pending = true;
@@ -269,19 +293,37 @@ impl State {
             ),
             Err(_) => (false, Err("could not parse mutation".to_owned())),
         };
-        answer(source, outcome.0, outcome.1);
+        let request_id = serde_json::from_str::<Mutation>(payload)
+            .map(|r| r.request_id)
+            .unwrap_or_default();
+        answer(source, &request_id, outcome.0, outcome.1);
     }
 
     fn handle_query(&mut self, source: PipeSource, payload: &str) {
         // Malformed requests retain the raw error reply used by existing pipe clients.
         let (structured_reply, outcome) = match serde_json::from_str::<Query>(payload) {
-            Ok(query) => (
+            Ok(query) if !query.args.is_null() && !query.args.is_object() => (
                 query.structured_reply,
-                ops::run_query(&Host::shared(), &query.op, &query.args),
+                Err("query args must be an object".to_owned()),
             ),
+            Ok(mut query) => {
+                query.args["local_host_id"] = serde_json::json!(self.host_id);
+                (
+                    query.structured_reply,
+                    ops::run_query(&Host::shared(), &query.op, &query.args).and_then(|reply| {
+                        if query.op != "project_list" { return Ok(reply); }
+                        let mut value: serde_json::Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
+                        value["live"] = self.latest_snapshot.as_ref().map(|snapshot| serde_json::json!({"session":snapshot.yinz_session_name,"tab_projects":snapshot.tab_projects,"panes":snapshot.panes,"suppressed_panes":snapshot.suppressed_panes,"repositories":snapshot.repositories})).unwrap_or(serde_json::Value::Null);
+                        Ok(value.to_string())
+                    }),
+                )
+            },
             Err(_) => (false, Err("could not parse query".to_owned())),
         };
-        answer(source, structured_reply, outcome);
+        let request_id = serde_json::from_str::<Query>(payload)
+            .map(|r| r.request_id)
+            .unwrap_or_default();
+        answer(source, &request_id, structured_reply, outcome);
     }
 }
 
@@ -492,12 +534,24 @@ fn reply_message(structured: bool, outcome: ops::OpResult) -> String {
     }
 }
 
-fn answer(source: PipeSource, structured: bool, outcome: ops::OpResult) {
+fn answer(source: PipeSource, request_id: &str, structured: bool, outcome: ops::OpResult) {
     let message = reply_message(structured, outcome);
     match source {
         PipeSource::Cli(pipe_id) => {
             cli_pipe_output(&pipe_id, &format!("{message}\n"));
             unblock_cli_pipe_input(&pipe_id);
+        },
+        PipeSource::Plugin(id) if !request_id.is_empty() => {
+            let result: serde_json::Value =
+                serde_json::from_str(&message).unwrap_or_else(|_| serde_json::json!(message));
+            pipe_message_to_plugin(
+                MessageToPlugin::new("yinz_rpc_reply")
+                    .with_destination_plugin_id(id)
+                    .with_payload(
+                        serde_json::json!({"version":1,"call_id":request_id,"result":result})
+                            .to_string(),
+                    ),
+            );
         },
         PipeSource::Plugin(_) | PipeSource::Keybind => {},
     }

@@ -47,6 +47,10 @@ pub const CLI_EVENTS_ONLY_TARGET: PluginId = PluginId::new(u32::MAX);
 
 #[derive(Clone, Debug, strum_macros::IntoStaticStr, strum_macros::VariantNames)]
 pub enum PluginInstruction {
+    DataRequest {
+        request: yinz_types::cli::DataRequest,
+        reply: std::sync::mpsc::Sender<Result<String, String>>,
+    },
     LoadPaneTab {
         id: yinz_types::pane_tabs::PaneTabsId,
         index: usize,
@@ -356,6 +360,7 @@ impl From<&PluginInstruction> for PluginContext {
         // The two enums are kept name-for-name; `instruction_context_tests` fails the test run if
         // a variant is added without either a matching `PluginContext` or an arm here.
         match plugin_instruction {
+            PluginInstruction::DataRequest { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
             PluginInstruction::DenoTick(..) => PluginContext::Update,
             PluginInstruction::DenoEvent(..) => PluginContext::Update,

@@ -12,6 +12,7 @@
 // test comment
 
 pub mod animation;
+pub mod cli;
 pub mod colors;
 pub mod diagnostics;
 pub mod envs;

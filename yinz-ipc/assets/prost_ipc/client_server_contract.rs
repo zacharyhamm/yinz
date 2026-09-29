@@ -3554,7 +3554,7 @@ impl ThemeHue {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ClientToServerMsg {
-    #[prost(oneof="client_to_server_msg::Message", tags="33, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
+    #[prost(oneof="client_to_server_msg::Message", tags="33, 34, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 32, 13, 16, 17, 18, 19, 20, 22, 23, 28, 24, 25, 27, 29, 30, 31")]
     pub message: ::core::option::Option<client_to_server_msg::Message>,
 }
 /// Nested message and enum types in `ClientToServerMsg`.
@@ -3564,6 +3564,8 @@ pub mod client_to_server_msg {
     pub enum Message {
         #[prost(string, tag="33")]
         AgentControlJson(::prost::alloc::string::String),
+        #[prost(message, tag="34")]
+        DataRequest(super::DataRequestMsg),
         #[prost(message, tag="1")]
         DetachSession(super::DetachSessionMsg),
         #[prost(message, tag="2")]
@@ -3818,6 +3820,14 @@ pub struct ModifiersHeldMsg {
     #[prost(enumeration="KeyModifier", repeated, tag="1")]
     pub modifiers: ::prost::alloc::vec::Vec<i32>,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataRequestMsg {
+    #[prost(string, tag="1")]
+    pub request_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub request_json: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum HostTerminalThemeIndication {
@@ -3847,7 +3857,7 @@ impl HostTerminalThemeIndication {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ServerToClientMsg {
-    #[prost(oneof="server_to_client_msg::Message", tags="23, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22")]
+    #[prost(oneof="server_to_client_msg::Message", tags="23, 24, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22")]
     pub message: ::core::option::Option<server_to_client_msg::Message>,
 }
 /// Nested message and enum types in `ServerToClientMsg`.
@@ -3857,6 +3867,8 @@ pub mod server_to_client_msg {
     pub enum Message {
         #[prost(string, tag="23")]
         AgentControlJson(::prost::alloc::string::String),
+        #[prost(message, tag="24")]
+        DataResponse(super::DataResponseMsg),
         #[prost(message, tag="1")]
         Render(super::RenderMsg),
         #[prost(message, tag="2")]
@@ -4027,5 +4039,15 @@ pub struct AgentReportAcceptedMsg {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KillSessionCompleteMsg {
     #[prost(string, optional, tag="1")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct DataResponseMsg {
+    #[prost(string, tag="1")]
+    pub request_id: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub data_json: ::prost::alloc::string::String,
+    #[prost(string, optional, tag="3")]
     pub error: ::core::option::Option<::prost::alloc::string::String>,
 }

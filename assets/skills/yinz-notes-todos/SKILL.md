@@ -1,6 +1,6 @@
 ---
 name: yinz-notes-todos
-description: Read and maintain durable project notes and todo trees in a running Yinz session. Use for task tracking, recorded findings, and linked project knowledge stored in Yinz.
+description: Manage Yinz projects, guarded project configuration, durable notes, and todo trees. Use for task tracking, recorded findings, and linked project knowledge stored in Yinz.
 ---
 
 Use `yinz action` to access the shared notes and todo store. A session must have
@@ -98,6 +98,24 @@ remain. `note-delete ID` deletes a note and its tags and links.
 `project-forget NAME` removes the project name while preserving its notes and todos.
 Use these commands only when deletion is part of the user's task.
 
+Project lifecycle operations also work without chat:
+
+```sh
+yinz action project-rename work product
+yinz action project-merge duplicate product
+yinz action project-assign product --tab-id 2
+yinz action project-open product
+yinz action project-config-read product
+yinz action project-config-write product --file config-change.json
+```
+
+Assignment/open/configuration require background `hocus-agentd`. The write file
+contains `source` and `expected`: use the exact source returned by the read, or
+null for an absent file. Stale writes fail. Merge preserves the target's settings
+and moves linked records atomically; inspect both projects before merging.
+Use `action context` and `list-tabs --json` to verify live associations.
+
 Use `yinz action COMMAND --help` for the full flags. The skill is installed by
-`yinz hocus skills install --agent claude|codex|all` (both agents by default).
+`yinz skills install yinz-notes-todos --agent claude|codex|opencode|all`.
+The legacy `yinz hocus skills install` still installs this skill only.
 `--dry-run` previews paths. `--force` explicitly replaces differing skill content.

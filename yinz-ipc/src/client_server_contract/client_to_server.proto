@@ -7,6 +7,7 @@ message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
     string agent_control_json = 33;
+    DataRequestMsg data_request = 34;
     DetachSessionMsg detach_session = 1;
     TerminalPixelDimensionsMsg terminal_pixel_dimensions = 2;
     BackgroundColorMsg background_color = 3;
@@ -173,4 +174,9 @@ message AgentReportMsg {
 // terminal was asked to report the modifier keys themselves; the set is complete each time.
 message ModifiersHeldMsg {
   repeated KeyModifier modifiers = 1;
+}
+
+message DataRequestMsg {
+  string request_id = 1;
+  string request_json = 2;
 }

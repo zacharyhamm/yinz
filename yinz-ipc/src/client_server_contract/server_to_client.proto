@@ -7,6 +7,7 @@ message ServerToClientMsg {
   reserved 11, 17, 19;
   oneof message {
     string agent_control_json = 23;
+    DataResponseMsg data_response = 24;
     RenderMsg render = 1;
     UnblockInputThreadMsg unblock_input_thread = 2;
     ExitMsg exit = 3;
@@ -110,3 +111,9 @@ message EmitNestedSessionFrameMsg {
 
 message AgentReportAcceptedMsg { string report_id = 1; }
 message KillSessionCompleteMsg { optional string error = 1; }
+
+message DataResponseMsg {
+  string request_id = 1;
+  string data_json = 2;
+  optional string error = 3;
+}

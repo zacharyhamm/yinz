@@ -590,24 +590,9 @@ impl State {
         self.send_overrides();
     }
 
-    /// Hand the daemon everything this plugin is authoritative about. Same pipe
-    /// as `subscribe_to_agentd`, same reply — but no claim that the numbering
-    /// restarted, because it did not.
-    ///
-    /// Two things travel together because they take the same road: the manual
-    /// agent kinds, which the daemon itself classifies with, and the tab-project
-    /// assignments, which it only relays on to hocus-store — the plugin that
-    /// names the tabs, and one this plugin cannot address directly without
-    /// launching a second copy of it.
+    /// Request a fresh daemon snapshot without resetting its sequence watermark.
     pub(crate) fn send_overrides(&mut self) {
-        let Ok(payload) = serde_json::to_string(&PollRequest {
-            manual_kinds: self.manual_kinds.clone(),
-            activity: self.activity.clone(),
-            tab_projects: self.tab_projects.clone(),
-        }) else {
-            return;
-        };
-        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE).with_payload(payload));
+        pipe_message_to_plugin(MessageToPlugin::new(wire::AGENT_SUBSCRIBE));
     }
 
     /// Declare the shared entities and start watching the project rows.
@@ -838,14 +823,6 @@ impl State {
         let fetch = |entity: &str| {
             agents::rows::owned_rows_request(entity, &owner).limit(store::LIST_FETCH_LIMIT)
         };
-        let fetched = self.store().fetch(&fetch(agents::rows::LATCH_ENTITY)).ok();
-        if let Some(rows) = fetched {
-            let latches = agents::rows::latches_from_rows(&rows);
-            if !latches.is_empty() {
-                self.manual_kinds.extend(latches);
-                self.send_overrides();
-            }
-        }
         let fetched = self
             .store()
             .fetch(&fetch(agents::rows::SUMMARY_ENTITY))
@@ -1069,32 +1046,6 @@ impl State {
         }
         let owner = self.owner();
         self.write_store_quietly("job", vec![jobs::delete_mutation(&owner, job_ids)]);
-    }
-
-    pub(crate) fn persist_latch(&mut self, pane_id: u32, kind: &str) {
-        // Nothing per-pane is written before the first snapshot names the session: the store is
-        // shared by every session that reaches it, so a row that cannot say whose pane 5 it
-        // means is a row that collides with somebody else's. The next snapshot arrives within a
-        // heartbeat, and `agent_register` re-persists from `manual_kinds`.
-        let owner = self.owner();
-        if !owner.is_known() {
-            return;
-        }
-        self.write_store_quietly(
-            "agent_latch",
-            vec![agents::rows::latch_mutation(&owner, pane_id, kind)],
-        );
-    }
-
-    pub(crate) fn forget_latches(&mut self, pane_ids: Vec<u32>) {
-        let owner = self.owner();
-        if pane_ids.is_empty() || !owner.is_known() {
-            return;
-        }
-        self.write_store_quietly(
-            "agent_latch",
-            vec![agents::rows::latch_delete_mutation(&owner, pane_ids)],
-        );
     }
 
     /// Mirror the daemon's summaries, writing only what changed.
@@ -1426,7 +1377,13 @@ impl State {
         let Some(started) = self.extension_call_started_ms else {
             return false;
         };
-        let timeout = if self.workflow_call.is_some() {
+        let timeout = if self
+            .pending
+            .front()
+            .is_some_and(|call| crate::operations::TOOLS.contains(&call.name.as_str()))
+        {
+            30_000
+        } else if self.workflow_call.is_some() {
             120_000
         } else {
             extensions::CALL_TIMEOUT_MS
@@ -1445,7 +1402,7 @@ impl State {
             self.finish_head(crate::workflows::uncertain_result(
                 self.pending.front(),
                 &pending.rpc_id,
-                "Workflow response was lost",
+                "Background service response was lost",
             ));
             self.pump_tools();
             return true;

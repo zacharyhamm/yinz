@@ -180,6 +180,19 @@ pub enum Recordings {
 /// Extensionless names select TypeScript; explicit .js, .mjs, .ts and .mts names select Deno.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
+    /// Read bundled plugin documentation without a source checkout.
+    Docs {
+        #[clap(default_value = "index")]
+        section: String,
+    },
+    /// List source files in the configured plugin directory.
+    List,
+    /// Apply an exact-text edit JSON array, then format and check before writing.
+    Edit {
+        name: String,
+        #[clap(long)]
+        file: PathBuf,
+    },
     /// Run adjacent TypeScript unit and integration tests using the installed runtime.
     Test {
         #[clap(required_unless_present = "file")]
@@ -213,6 +226,8 @@ pub enum Plugins {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
         file: Option<PathBuf>,
+        #[clap(long)]
+        json: bool,
     },
     /// Format a plugin with Oxfmt; --check only verifies formatting.
     Format {
@@ -224,7 +239,11 @@ pub enum Plugins {
     },
     /// Load or reload a plugin in the running session, opening it in a pane if it is not
     /// running.
-    Reload { name: String },
+    Reload {
+        name: String,
+        #[clap(long)]
+        headless: bool,
+    },
     /// The last lines the plugin logged with yinz.log or print.
     Log {
         name: String,
@@ -233,6 +252,55 @@ pub enum Plugins {
     },
     /// Where plugins are written and read from.
     Dir,
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Data {
+    /// Discover shared and private entities and their schema owners.
+    Catalog {
+        #[clap(long)]
+        namespace: Option<String>,
+    },
+    /// Fetch a page using existing FetchRequest JSON.
+    Fetch {
+        #[clap(long)]
+        namespace: String,
+        #[clap(long)]
+        file: PathBuf,
+    },
+    /// Count matching rows using existing FetchRequest JSON.
+    Count {
+        #[clap(long)]
+        namespace: String,
+        #[clap(long)]
+        file: PathBuf,
+    },
+    /// Apply a Mutation JSON array atomically. Replacements require revision guards.
+    Apply {
+        #[clap(long)]
+        namespace: String,
+        #[clap(long)]
+        file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Skills {
+    List,
+    Show {
+        name: String,
+    },
+    Install {
+        names: Vec<String>,
+        #[clap(long, value_enum, conflicts_with = "dest")]
+        agent: Option<HocusHookAgent>,
+        #[clap(long)]
+        dest: Option<PathBuf>,
+        #[clap(long)]
+        dry_run: bool,
+        #[clap(long)]
+        force: bool,
+    },
 }
 
 /// The hocus side of the CLI: things about the agent plugins that a person, or an
@@ -391,6 +459,12 @@ pub enum Command {
     #[clap(subcommand)]
     Agent(Agent),
 
+    /// Inspect and install portable coding-agent skills.
+    #[clap(subcommand)]
+    Skills(Skills),
+    /// Query and atomically update the selected session's plugin data.
+    #[clap(subcommand)]
+    Data(Data),
     /// Run and view project-owned Swamp workflows.
     #[clap(subcommand)]
     Workflow(Workflow),
@@ -592,6 +666,8 @@ mod agent_cli_tests;
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Workflow {
+    #[clap(flatten)]
+    Tools(crate::workflow::WorkflowOperation),
     /// Inspect or manage the persistent Swamp server for this control checkout.
     Server {
         #[clap(subcommand)]
@@ -604,8 +680,14 @@ pub enum Workflow {
         #[clap(long)]
         launch: Option<String>,
         /// Literal JSON workflow inputs.
-        #[clap(long, default_value = "{}")]
+        #[clap(long, default_value = "{}", conflicts_with = "input_file")]
         input: String,
+        /// Read JSON inputs from a file, or - for stdin.
+        #[clap(long)]
+        input_file: Option<PathBuf>,
+        /// Return one JSON value and leave the view closed.
+        #[clap(long)]
+        json: bool,
         #[clap(long)]
         no_view: bool,
     },
@@ -1143,8 +1225,42 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
     },
 }
 
+fn parse_wait_pane(value: &str) -> Result<yinz_types::pane_id::PaneId, String> {
+    value.parse().map_err(|error| format!("{error}"))
+}
+
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
+pub enum Wait {
+    /// Wait for literal viewport content, process exit, or pane disappearance.
+    PaneWait {
+        #[clap(value_parser = parse_wait_pane)]
+        pane_id: yinz_types::pane_id::PaneId,
+        #[clap(long, conflicts_with_all = ["exited", "closed"], required_unless_present_any = ["exited", "closed"])]
+        contains: Option<String>,
+        #[clap(long, conflicts_with = "closed")]
+        exited: bool,
+        #[clap(long)]
+        closed: bool,
+        #[clap(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
+    },
+    /// Wait for observed agent state. Idle does not imply success.
+    AgentWait {
+        #[clap(value_parser = parse_wait_pane)]
+        pane_id: yinz_types::pane_id::PaneId,
+        #[clap(value_parser = ["busy", "waiting", "idle"])]
+        state: String,
+        #[clap(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
+    },
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum CliAction {
+    #[clap(flatten)]
+    Wait(Wait),
+    #[clap(flatten)]
+    Operations(crate::operations::Operations),
     #[clap(flatten)]
     NotesTodos(crate::notes_todos::NotesTodos),
     /// Write bytes to the terminal.

@@ -165,6 +165,9 @@ impl State {
     /// Dispatch the head. Returns whether the queue advanced — `false` means the
     /// result is deferred and `pump_tools` must stop and wait.
     pub(crate) fn run_head(&mut self, call: &ToolCall) -> bool {
+        if crate::operations::TOOLS.contains(&call.name.as_str()) {
+            return self.start_background_tool(call, false);
+        }
         if crate::workflows::TOOLS.contains(&call.name.as_str()) {
             return self.start_workflow_tool(call);
         }
@@ -1577,100 +1580,23 @@ impl State {
         &mut self,
         args: &tools::Args,
     ) -> Result<projects::Project, String> {
-        let name = args
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| "name is required".to_owned())?;
-        // Three readings of `firecracker_image`, kept apart on purpose: a key the
-        // model omitted keeps whatever is stored, an empty one clears it, and
-        // anything else names the image to use from now on.
-        let image = match args.firecracker_image.as_deref().map(str::trim) {
-            None => None,
-            Some("") => Some(None),
-            Some(image) => {
-                validate_firecracker_vm_name(image)?;
-                Some(Some(image.to_owned()))
-            },
-        };
-        // Read before `adopt` replaces the entry: a project remembered again with
-        // its root and nothing else keeps the image it already had.
-        if args
-            .worktree_dir
-            .as_deref()
-            .is_some_and(|dir| dir.contains('\0'))
-        {
-            return Err("worktree_dir must not contain NUL bytes".to_owned());
-        }
         let rows = self
             .store()
             .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
-        let before = projects::from_rows(&rows);
-        let stored = before.get(name).cloned();
-        if let Some(root) = args.root.as_deref() {
-            let mut project = projects::validate(name, root)?;
-            project.worktree_dir = stored
-                .as_ref()
-                .and_then(|project| project.worktree_dir.clone());
-            let image_explicit = image.is_some();
-            project.firecracker_image = match image {
-                Some(image) => image,
-                None => stored.and_then(|project| project.firecracker_image),
-            };
-            let (mut adopted, mut mutations) =
-                projects::plan_adopt(&rows, project, image_explicit)?;
-            if let Some(dir) = &args.worktree_dir {
-                adopted.project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
-                // Apply the explicit override after the adoption's inherited defaults.
-                mutations.push(projects::to_mutation(&adopted.project));
-            }
-            let report = self.write_store(mutations).map_err(|error| {
-                if error.is_conflict() {
-                    "projects changed; call project_list and retry".to_owned()
-                } else {
-                    error.into()
-                }
-            })?;
-            let project = adopted.project;
-            let mut registry = before;
-            let mut ids = projects::row_ids(&rows);
-            if let Some(gone) = adopted.replaced {
-                registry.remove(&gone);
-                ids.remove(&gone);
-            }
-            if let Some(id) = report.ids.last() {
-                ids.insert(project.name.clone(), *id);
-            }
-            registry.insert(project.name.clone(), project.clone());
-            self.take_projects(registry, ids);
-            Ok(project)
-        } else {
-            let mut project = stored.ok_or_else(|| {
-                format!("unknown project {name}; root is required for a new project")
-            })?;
-            if image.is_none() && args.worktree_dir.is_none() {
-                return Ok(project);
-            }
-            // The image alone, on a project already known: an update in place,
-            // written the same way a new project is.
-            if let Some(image) = image {
-                project.firecracker_image = image;
-            }
-            if let Some(dir) = &args.worktree_dir {
-                project.worktree_dir = (!dir.is_empty()).then(|| dir.clone());
-            }
-            let mutations = vec![
-                projects::assert_projects(&rows, "name", &[&project.name])?,
-                projects::to_mutation(&project),
-            ];
-            self.write_store(mutations)
-                .map_err(|error| error.to_string())?;
-            let mut registry = before;
-            registry.insert(project.name.clone(), project.clone());
-            self.take_projects(registry, projects::row_ids(&rows));
-            Ok(project)
-        }
+        let (project, mutations) = projects::plan_remember(
+            &rows,
+            args.name.as_deref().ok_or("name is required")?,
+            args.root.as_deref(),
+            args.firecracker_image.as_deref(),
+            args.worktree_dir.as_deref(),
+        )?;
+        self.write_store(mutations)
+            .map_err(|error| error.to_string())?;
+        let rows = self
+            .store()
+            .fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
+        self.take_projects(projects::from_rows(&rows), projects::row_ids(&rows));
+        Ok(project)
     }
 
     fn project_change(&mut self, args: &tools::Args, merge: bool) -> Result<String, String> {
@@ -1784,6 +1710,7 @@ impl State {
             Ok(project) => project,
             Err(error) => return error,
         };
+        pipe_message_to_plugin(MessageToPlugin::new("agent_action").with_payload(serde_json::json!({"op":"project_assign","args":{"tab_id":tab_id,"project":project.name}}).to_string()));
         self.tab_projects.insert(tab_id, project.name.clone());
         // The two maps stay disjoint, so `project_list` cannot report a tab as
         // both assigned and found.
@@ -2364,7 +2291,7 @@ impl State {
     }
 
     /// The tab of the agent pane the user last had focused.
-    fn focused_tab(&self) -> Option<TabId> {
+    pub(crate) fn focused_tab(&self) -> Option<TabId> {
         let pane_id = self.last_focused_agent?;
         let pane = self.panes.iter().find(|pane| pane.pane_id == pane_id)?;
         pane.tab.as_ref().map(|(tab_id, _)| *tab_id)
@@ -2512,8 +2439,12 @@ impl State {
         if self.sent_tab_projects == self.tab_projects {
             return;
         }
+        for (tab_id, name) in &self.tab_projects {
+            if self.sent_tab_projects.get(tab_id) != Some(name) {
+                pipe_message_to_plugin(MessageToPlugin::new("agent_action").with_payload(serde_json::json!({"op":"project_assign","args":{"tab_id":tab_id,"project":name}}).to_string()));
+            }
+        }
         self.sent_tab_projects = self.tab_projects.clone();
-        self.send_overrides();
     }
 
     /// Work out what each tab should be called.
@@ -2556,7 +2487,8 @@ impl State {
             }
             keep
         });
-        self.forget_latches(gone);
+        // The daemon owns persistence and observes closed panes itself.
+        drop(gone);
         self.activity
             .retain(|id, _| self.panes.iter().any(|pane| pane.pane_id == *id));
         self.manual_kinds.len() != before
@@ -2579,18 +2511,13 @@ impl State {
             return format!("pane {pane_id} is not available");
         }
         self.manual_kinds.insert(pane_id, kind.to_owned());
-        self.persist_latch(pane_id, kind);
-        // The session's record too, so `list-panes`, `yinz events` and every other plugin
-        // see the registration, and so it outlives a hocus reload on its own.
-        let cwd = self
-            .panes
-            .iter()
-            .find(|pane| pane.pane_id == pane_id)
-            .and_then(|pane| pane.cwd.clone());
-        tools::report_pane_agent(pane_id, agents::registered_agent(kind, cwd));
-        // hocus stays authoritative for the overrides; the daemon holds a copy
-        // only to classify with, so it needs the new one before its next poll.
-        self.send_overrides();
+        pipe_message_to_plugin(
+            MessageToPlugin::new("agent_action").with_payload(
+                serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind}})
+                    .to_string(),
+            ),
+        );
+        // The daemon publishes the host record and durable registration.
         format!("registered pane {pane_id} as {kind}")
     }
 
@@ -2721,35 +2648,7 @@ impl State {
     /// One run's header, as a reply object. Shared by all three tools so a run
     /// describes itself the same way wherever it appears.
     fn run_reply(&self, header: &agents::AgentRunHeader, now_ms: i64) -> serde_json::Value {
-        serde_json::json!({
-            "run_id": header.id,
-            "kind": header.kind,
-            "title": header.title,
-            "pane_id": header.pane_id,
-            "cwd": header.cwd,
-            // A Firecracker run's `cwd` is a guest path, so its project is the one that
-            // owns the host worktree its VM mirrored — the rule `agents::checkout_location`
-            // states for a live pane, applied to a run that may have no pane left.
-            "project": agents::checkout_location(
-                    header.worktree.as_deref(),
-                    header.host.as_deref(),
-                    header.cwd.as_deref(),
-                )
-                .and_then(|location| projects::for_cwd(&self.projects, &location))
-                .map(|project| project.name.clone()),
-            "active": matches!(header.outcome, agents::RunOutcome::Active),
-            "outcome": match header.outcome {
-                agents::RunOutcome::Active => "active",
-                agents::RunOutcome::Completed => "completed",
-                agents::RunOutcome::Closed => "closed",
-                agents::RunOutcome::Replaced => "replaced",
-            },
-            "started_at_ms": header.started_at_ms,
-            "ended_at_ms": header.ended_at_ms,
-            "age": agents::short_age(now_ms, header.started_at_ms),
-            "entries": header.revision,
-            "summary": header.summary.as_ref().map(|summary| summary.text.clone()),
-        })
+        run_history::header_reply(header, &self.projects, now_ms)
     }
 
     pub(crate) fn agent_runs(&self, args: &tools::Args) -> String {
@@ -2854,7 +2753,7 @@ impl State {
     /// A pane is the second way in because the live case is the common one — "what
     /// has the agent in pane 4 been doing" is asked without a run id in hand, and
     /// `agent_list` gives pane ids rather than run ids.
-    fn named_run(&self, args: &tools::Args) -> Result<String, String> {
+    pub(crate) fn named_run(&self, args: &tools::Args) -> Result<String, String> {
         if let Some(run_id) = args
             .run_id
             .as_deref()
@@ -3084,7 +2983,7 @@ impl State {
                 let pane_id = pane_id as u32;
                 self.manual_kinds.insert(pane_id, kind.to_owned());
                 self.pending_agent_panes.insert(pane_id);
-                self.send_overrides();
+                pipe_message_to_plugin(MessageToPlugin::new("agent_action").with_payload(serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind}}).to_string()));
                 format!("{result} (registered as {kind})")
             },
             _ => result.to_owned(),

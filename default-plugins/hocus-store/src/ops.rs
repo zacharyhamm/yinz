@@ -130,18 +130,28 @@ pub fn plan_mutate(
 ) -> Result<(Vec<Mutation>, Reply), String> {
     match op {
         "project_remember" => {
-            let (Some(name), Some(root)) = (arg(args, "name"), arg(args, "root")) else {
-                return Err("name and root are required".to_owned());
-            };
-            let project = projects::validate(name, root)?;
-            let name = project.name.clone();
-            let (adopted, mutations) = projects::plan_adopt(&view.project_rows, project, false)?;
-            let stale = adopted.replaced;
-            let message = match &stale {
-                Some(stale) => format!("remembered {name}, replacing discovered {stale}"),
-                None => format!("remembered {name}"),
-            };
-            Ok((mutations, Reply::Fixed(message)))
+            let name = arg(args, "name").ok_or("name is required")?;
+            let (project, mutations) = projects::plan_remember(
+                &view.project_rows,
+                name,
+                arg(args, "root"),
+                args.get("firecracker_image").and_then(Value::as_str),
+                args.get("worktree_dir").and_then(Value::as_str),
+            )?;
+            Ok((
+                mutations,
+                Reply::Fixed(
+                    match view.projects.values().find(|old| {
+                        old.discovered && old.name != project.name && old.root == project.root
+                    }) {
+                        Some(old) => format!(
+                            "remembered {}, replacing discovered {}",
+                            project.name, old.name
+                        ),
+                        None => format!("remembered {}", project.name),
+                    },
+                ),
+            ))
         },
         "project_forget" => {
             let Some(name) = arg(args, "name") else {
@@ -152,7 +162,10 @@ pub fn plan_mutate(
             // project is not a reason to throw away the user's own notes.
             match view.projects.get(name) {
                 Some(project) => Ok((
-                    vec![projects::delete_mutation(name)],
+                    vec![
+                        projects::assert_projects(&view.project_rows, "name", &[name])?,
+                        projects::delete_mutation(name),
+                    ],
                     Reply::Fixed(projects::forgotten(project)),
                 )),
                 None => Err(format!("unknown project {name}; call project_list")),
@@ -336,6 +349,26 @@ fn load_view(backend: &impl Backend, op: &str, args: &Value) -> Result<StoreView
 
 /// Load, plan, apply.
 pub fn run_mutate(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
+    if matches!(op, "project_rename" | "project_merge") {
+        let rows =
+            backend.fetch(&FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT))?;
+        let text = |key| {
+            args.get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("{key} is required"))
+        };
+        let change = if op == "project_rename" {
+            projects::plan_rename(&rows, text("name")?, text("new_name")?)?
+        } else {
+            projects::plan_merge(&rows, text("source")?, text("target")?)?
+        };
+        backend
+            .apply(change.mutations)
+            .map_err(|error| error.to_string())?;
+        return Ok(
+            serde_json::json!({"project": change.project, "replaced": change.replaced}).to_string(),
+        );
+    }
     if crate::notes_ops::is_note_op(op) {
         return crate::notes_ops::run_mutate(backend, op, args);
     }
@@ -379,6 +412,9 @@ fn edit_conflict(backend: &impl Backend, view: &StoreView, args: &Value) -> Stri
 
 /// Load and answer, or search.
 pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
+    if op.starts_with("agent_") {
+        return crate::archive::query(backend, op, args);
+    }
     if crate::notes_ops::is_note_op(op) {
         return crate::notes_ops::run_query(backend, op, args);
     }
@@ -480,6 +516,34 @@ mod tests {
         load_view(backend, "project_list", &json!({}))
             .expect("loaded")
             .projects
+    }
+
+    #[test]
+    fn remembering_project_settings_distinguishes_omitted_and_empty_values() {
+        let backend = backend();
+        let remember = |args| run_mutate(&backend, "project_remember", &args).unwrap();
+        remember(
+            json!({"name":" work ","root":" /tmp/work ","worktree_dir":" trees ","firecracker_image":" rust "}),
+        );
+        remember(json!({"name":"work"}));
+        let saved = registry(&backend);
+        assert_eq!(saved["work"].root, "/tmp/work");
+        assert_eq!(saved["work"].worktree_dir.as_deref(), Some(" trees "));
+        assert_eq!(saved["work"].firecracker_image.as_deref(), Some("rust"));
+        remember(json!({"name":"work","worktree_dir":""}));
+        let saved = registry(&backend);
+        assert_eq!(saved["work"].worktree_dir, None);
+        assert_eq!(saved["work"].firecracker_image.as_deref(), Some("rust"));
+        remember(json!({"name":"work","worktree_dir":"../trees","firecracker_image":""}));
+        let saved = registry(&backend);
+        assert_eq!(saved["work"].worktree_dir.as_deref(), Some("../trees"));
+        assert_eq!(saved["work"].firecracker_image, None);
+        remember(
+            json!({"name":"work","root":"/tmp/work","worktree_dir":"","firecracker_image":""}),
+        );
+        let saved = registry(&backend);
+        assert_eq!(saved["work"].worktree_dir, None);
+        assert_eq!(saved["work"].firecracker_image, None);
     }
 
     fn field(out: &str, key: &str) -> Value {
@@ -1095,7 +1159,7 @@ mod tests {
     /// The planners are pure, so what a call would write can be asserted
     /// without applying it.
     #[test]
-    fn planning_a_forget_is_one_delete_and_says_so() {
+    fn planning_a_forget_guards_the_delete_and_says_so() {
         let view = StoreView {
             projects: projects::Registry::from([(
                 "work".to_owned(),
@@ -1106,7 +1170,13 @@ mod tests {
         };
         let (mutations, reply) =
             plan_mutate(&view, "project_forget", &json!({ "name": "work" })).expect("planned");
-        assert_eq!(mutations, vec![projects::delete_mutation("work")]);
+        assert_eq!(
+            mutations,
+            vec![
+                projects::assert_projects(&view.project_rows, "name", &["work"]).unwrap(),
+                projects::delete_mutation("work")
+            ]
+        );
         assert_eq!(reply, Reply::Fixed("forgot work".to_owned()));
     }
 

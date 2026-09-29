@@ -32,9 +32,11 @@ const HOCUS_CONFIG: &str = r#"plugins {
     shared true
   }
   hocus-store location="yinz:hocus-store"
+  hocus-agentd location="yinz:hocus-agentd"
 }
 load_plugins clear-defaults=true {
   "hocus-store"
+  "hocus-agentd"
 }
 "#;
 
@@ -99,7 +101,99 @@ fn store_pipe(name: &str, payload: Option<String>) -> CliAction {
 }
 
 #[test]
+fn closed_tab_assignments_stay_removed_after_daemon_reload_with_and_without_chat() {
+    use serde_json::json;
+    use yinz_types::{
+        cli::DataRequest,
+        internal_ids::SessionName,
+        plugin_data::{DataRows, DataValue, FetchRequest},
+    };
+
+    for chat in [false, true] {
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config(HOCUS_CONFIG)
+            .with_layout(LayoutInfo::Stringified(
+                if chat {
+                    r#"layout { pane { plugin location="hocus"; }; new_tab_template { pane; }; }"#
+                } else {
+                    "layout { pane; }"
+                }
+                .into(),
+            ))
+            .start();
+        if chat {
+            yinz.wait_until("hocus asks for permissions", |grid| {
+                grid.contains("Allow? (y/n)")
+            });
+            yinz.send_stdin(b"y");
+            yinz.wait_until("hocus is ready", |grid| !grid.contains("Allow? (y/n)"));
+        } else {
+            yinz.expect_pty_spawn().output(b"session ready");
+            yinz.wait_until("session is ready", |grid| grid.contains("session ready"));
+        }
+        pipe_to_store(
+            &mut yinz,
+            r#"{"op":"project_remember","args":{"name":"work","root":"/work"}}"#,
+        );
+        let session = SessionName::new(yinz.session_name());
+        let operation = |op, args| {
+            yinz_client::store_client::request(
+                &session,
+                yinz_cli::notes_todos::pipe_action(
+                    "agent_action",
+                    json!({"op":op,"args":args,"structured_reply":true}),
+                ),
+            )
+            .unwrap()
+        };
+        let assignments = || -> DataRows {
+            serde_json::from_value(
+                yinz_client::store_client::data_request(
+                    &session,
+                    DataRequest::Fetch(
+                        FetchRequest::entity("agent_assignment").in_namespace("shared:hocus"),
+                    ),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        operation("project_assign", json!({"project":"work","tab_id":0}));
+        let opened = operation("project_open", json!({"project":"work"}));
+        let tab = opened["tab_id"].as_u64().unwrap();
+        yinz.expect_pty_spawn().output(b"PROJECT OPEN");
+        yinz.wait_until("the new project tab is rendered", |grid| {
+            grid.contains("PROJECT OPEN")
+        });
+        // This requires the daemon to have observed the new tab before closing it.
+        operation("project_assign", json!({"project":"work","tab_id":tab}));
+        assert_eq!(assignments().rows.len(), 2);
+        assert_eq!(yinz.run_cli_action(CliAction::CloseTabById { id: tab }), 0);
+        operation("context", json!({}));
+        let rows = assignments();
+        assert_eq!(rows.rows.len(), 1, "chat loaded: {chat}; {rows:?}");
+        assert_eq!(rows.get(&rows.rows[0], "tab_id"), Some(&DataValue::Int(0)));
+        assert_eq!(
+            yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+                url: "yinz:hocus-agentd".into(),
+                configuration: None
+            }),
+            0
+        );
+        operation("context", json!({}));
+        assert_eq!(
+            assignments().rows.len(),
+            1,
+            "reload must not resurrect the closed tab"
+        );
+        yinz.quit();
+    }
+}
+
+#[test]
 fn store_pipes_ignore_eof_but_reject_invalid_payloads() {
+    use serde_json::json;
+
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
         .with_config(HOCUS_CONFIG)
         .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
@@ -143,6 +237,36 @@ fn store_pipes_ignore_eof_but_reject_invalid_payloads() {
             assert_eq!(output, format!("{parse_error}\n"));
         }
     }
+    for args in [json!([]), json!("bad"), json!(42), json!(true)] {
+        for structured in [false, true] {
+            let request = json!({
+                "op": "project_list", "args": args,
+                "structured_reply": structured, "request_id": "invalid-args",
+            });
+            let (_, output) =
+                yinz.run_cli_action_reporting(store_pipe("store_query", Some(request.to_string())));
+            if structured {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&output).unwrap(),
+                    json!({"ok": false, "error": "query args must be an object"}),
+                );
+            } else {
+                assert_eq!(output, "query args must be an object\n");
+            }
+        }
+    }
+    // Invalid requests must leave the plugin able to answer valid requests.
+    for args in [None, Some(json!(null)), Some(json!({}))] {
+        let mut request = json!({"op": "project_list", "structured_reply": true});
+        if let Some(args) = args {
+            request["args"] = args;
+        }
+        let (status, output) =
+            yinz.run_cli_action_reporting(store_pipe("store_query", Some(request.to_string())));
+        assert_eq!(status, 0, "{output}");
+        let reply: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
     yinz.quit();
 }
 
@@ -164,6 +288,9 @@ fn a_write_from_the_cli_is_visible_in_hocus() {
     // Every todo belongs to a project, so there has to be one first. Written
     // through hocus, so the project rows are the ones hocus itself wrote.
     submit(&yinz, r#"/project_assign {"name": "p", "root": "/work/p"}"#);
+    yinz.wait_until("the background project assignment completed", |grid| {
+        grid.contains("assigned tab 0 to project p")
+    });
     submit(&yinz, r#"/todo_add {"project": "p", "text": "before"}"#);
     yinz.wait_until("the first todo is written", |grid_snapshot| {
         grid_snapshot.contains("Added 1 in p.")
@@ -231,6 +358,9 @@ fn a_note_written_from_the_cli_is_listed_and_read_in_hocus() {
     });
 
     submit(&yinz, r#"/project_assign {"name": "p", "root": "/work/p"}"#);
+    yinz.wait_until("the background project assignment completed", |grid| {
+        grid.contains("assigned tab 0 to project p")
+    });
     // A todo for the note to reference, written by hocus so its id is the
     // first the store hands out.
     submit(&yinz, r#"/todo_add {"project": "p", "text": "the item"}"#);
@@ -301,6 +431,8 @@ fn named_notes_todos_share_hocus_data_and_survive_reload() {
     request(NotesTodos::ProjectRemember {
         name: "named".into(),
         root: "/work/named".into(),
+        worktree_dir: None,
+        firecracker_image: None,
     });
     let item = request(NotesTodos::TodoAdd {
         text: "named command task".into(),

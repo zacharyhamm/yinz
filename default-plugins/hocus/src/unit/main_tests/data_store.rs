@@ -21,6 +21,7 @@ fn state_with_duplicate_projects() -> State {
 fn project_slash_commands_persist_then_retarget_assignments() {
     let mut state = state_with_duplicate_projects();
     settle(&mut state);
+    add_background_store(&mut state);
     state.granted = true;
     state.sync_project_skills();
     load_skill(
@@ -33,6 +34,7 @@ fn project_slash_commands_persist_then_retarget_assignments() {
         .input
         .set_text("/project_rename name=hocus new_name=renamed".into());
     state.submit();
+    finish_background_project_change(&mut state);
     assert_eq!(state.active_project.as_deref(), Some("renamed"));
     assert_eq!(state.tab_projects[&TabId::new(9)], "renamed");
     assert!(state.skills.get("source-skill").is_some());
@@ -40,11 +42,12 @@ fn project_slash_commands_persist_then_retarget_assignments() {
         .last()
         .unwrap()
         .content
-        .contains("renamed hocus to renamed"));
+        .contains("project_rename"));
     state
         .input
         .set_text("/project_merge source=renamed target=kept".into());
     state.submit();
+    finish_background_project_change(&mut state);
     assert_eq!(state.active_project.as_deref(), Some("kept"));
     assert_eq!(state.tab_projects[&TabId::new(9)], "kept");
     assert_eq!(state.skills_project_root.as_deref(), Some("/kept"));
@@ -65,7 +68,7 @@ fn project_slash_commands_persist_then_retarget_assignments() {
         .last()
         .unwrap()
         .content
-        .contains("merged renamed into kept"));
+        .contains("project_merge"));
 }
 
 #[test]

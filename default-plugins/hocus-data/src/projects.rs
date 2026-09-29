@@ -544,6 +544,53 @@ pub fn plan_rename(rows: &DataRows, name: &str, new_name: &str) -> Result<Change
     })
 }
 
+/// Remember a project while preserving defaults that the caller did not change.
+pub fn plan_remember(
+    rows: &DataRows,
+    name: &str,
+    root: Option<&str>,
+    image: Option<&str>,
+    worktree_dir: Option<&str>,
+) -> Result<(Project, Vec<Mutation>), String> {
+    let name = name.trim();
+    let before = from_rows(rows);
+    let stored = before.get(name);
+    let image = image.map(str::trim);
+    if let Some(image) = image.filter(|image| !image.is_empty()) {
+        yinz_tile::prelude::validate_firecracker_vm_name(image)?;
+    }
+    if worktree_dir.is_some_and(|dir| dir.contains('\0')) {
+        return Err("worktree_dir must not contain NUL bytes".into());
+    }
+    let mut project = match root {
+        Some(root) => validate(name, root)?,
+        None => stored
+            .cloned()
+            .ok_or_else(|| format!("unknown project {name}; root is required for a new project"))?,
+    };
+    project.firecracker_image = image
+        .map(|image| (!image.is_empty()).then(|| image.to_owned()))
+        .unwrap_or_else(|| stored.and_then(|p| p.firecracker_image.clone()));
+    project.worktree_dir = stored.and_then(|p| p.worktree_dir.clone());
+    let (mut project, mut mutations) = if root.is_some() {
+        let (adopted, mutations) = plan_adopt(rows, project, image.is_some())?;
+        (adopted.project, mutations)
+    } else if image.is_some() || worktree_dir.is_some() {
+        let mutations = vec![
+            assert_projects(rows, "name", &[name])?,
+            to_mutation(&project),
+        ];
+        (project, mutations)
+    } else {
+        return Ok((project, vec![]));
+    };
+    if let Some(dir) = worktree_dir {
+        project.worktree_dir = (!dir.is_empty()).then(|| dir.to_owned());
+        mutations.push(to_mutation(&project));
+    }
+    Ok((project, mutations))
+}
+
 pub fn plan_merge(rows: &DataRows, source: &str, target: &str) -> Result<Change, String> {
     let projects = from_rows(rows);
     let (source, target) = (source.trim(), target.trim());

@@ -6,7 +6,12 @@
 //! events, and samples agent output on a small heartbeat for activity and Git changes.
 
 mod messages;
+mod operations;
 mod poll;
+
+#[cfg(test)]
+#[path = "unit/registrations.rs"]
+mod registration_tests;
 
 use hocus_proto::agents::now_ms;
 use hocus_proto::completion;
@@ -17,7 +22,7 @@ use hocus_proto::panes::{
     focused_pane, manifest_pane_ids, suppressed_terminal_panes, terminal_panes,
 };
 use hocus_proto::store::{self, Backend};
-use hocus_proto::wire::{self, PollReply, PollRequest};
+use hocus_proto::wire::{self, PollReply};
 use hocus_proto::{agents, projects};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -136,10 +141,10 @@ struct VmCheckout {
 
 #[derive(Default)]
 struct State {
-    /// Overrides from hocus's `agent_register`, refreshed by every subscribe.
-    /// hocus stays authoritative; this is only an input to `classify`.
+    /// Manual registrations owned by this daemon and restored from the store.
     manual_kinds: BTreeMap<u32, String>,
-    /// Manual project assignments from hocus, relayed as metadata to subscribers.
+    metadata_watches: BTreeSet<DataWatchId>,
+    /// Manual project assignments, persisted by this daemon.
     tab_projects: BTreeMap<TabId, String>,
     /// The event-fed terminal-pane snapshot. `None` means nothing has told us
     /// about a pane yet.
@@ -510,6 +515,17 @@ impl YinzPlugin for State {
         let _ = store::Host::shared().define_all(&store::shared_defs());
 
         self.bootstrap();
+        for entity in ["project", "agent_assignment", "agent_latch"] {
+            match store::Host::shared().watch(
+                &FetchRequest::entity(entity).limit(store::LIST_FETCH_LIMIT),
+                WatchMode::Rows,
+            ) {
+                Ok(handle) => {
+                    self.metadata_watches.insert(handle.watch_id);
+                },
+                Err(error) => eprintln!("hocus-agentd: could not watch metadata: {error}"),
+            }
+        }
         set_timeout(yinz_tile::prelude::FractionalSeconds::new(ACTIVITY_SECONDS));
         // A reload drops the in-memory subscriber list. Ask existing watchers
         // to subscribe again instead of silently stopping their snapshots.
@@ -518,12 +534,22 @@ impl YinzPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
+            Event::PluginDataChanged { watch_id, .. }
+                if self.metadata_watches.contains(&watch_id) =>
+            {
+                self.restore_assignments();
+                self.publish();
+            },
             Event::PaneUpdate(manifest) => {
                 self.manifest = manifest;
                 self.rebuild_panes();
                 self.publish();
             },
             Event::TabUpdate(tabs) => {
+                if let Err(error) = self.prune_closed_tab_assignments(&tabs, &store::Host::shared())
+                {
+                    eprintln!("hocus-agentd: could not remove closed tab assignments: {error}");
+                }
                 self.tabs = tabs;
                 self.rebuild_panes();
                 self.publish();
@@ -621,6 +647,56 @@ impl YinzPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == "agent_action" {
+            let Some(payload) = pipe_message.payload.as_deref() else {
+                return false;
+            };
+            let request = serde_json::from_str::<wire::Mutation>(payload);
+            let request_id = request
+                .as_ref()
+                .map(|request| request.request_id.as_str())
+                .unwrap_or_default();
+            let authorized = match pipe_message.source {
+                PipeSource::Cli(_) => true,
+                PipeSource::Plugin(id) => get_session_list().is_ok_and(|snapshot| {
+                    snapshot
+                        .live_sessions
+                        .iter()
+                        .filter(|s| s.is_current_session)
+                        .any(|s| {
+                            s.plugins
+                                .get(&id)
+                                .is_some_and(|p| p.location == "yinz:hocus")
+                        })
+                }),
+                PipeSource::Keybind => false,
+            };
+            let result = if authorized {
+                request
+                    .as_ref()
+                    .map_err(|error| error.to_string())
+                    .and_then(|request| {
+                        self.operation(&request.op, &request.args, pipe_message.pane_id)
+                    })
+            } else {
+                Err("agent operations require a CLI caller or the builtin Hocus client".into())
+            };
+            let reply = match result {
+                Ok(data) => serde_json::json!({"ok":true,"data":data}),
+                Err(error) => serde_json::json!({"ok":false,"error":error}),
+            };
+            match pipe_message.source {
+                PipeSource::Cli(id) => {
+                    cli_pipe_output(&id, &format!("{reply}\n"));
+                    unblock_cli_pipe_input(&id);
+                },
+                PipeSource::Plugin(id) if !request_id.is_empty() => {
+                    pipe_message_to_plugin(MessageToPlugin::new("yinz_rpc_reply").with_destination_plugin_id(id).with_payload(serde_json::json!({"version":1,"call_id":request_id,"result":reply}).to_string()));
+                },
+                _ => {},
+            }
+            return false;
+        }
         if pipe_message.name == wire::COMPLETE {
             self.on_complete(&pipe_message);
             return false;
@@ -691,18 +767,7 @@ impl YinzPlugin for State {
                     self.subscribers.push(id);
                 }
             }
-            // Only when the subscriber actually sent overrides. hocus-store
-            // subscribes with no payload, and treating that as "no manual
-            // kinds" would throw away hocus's registrations.
-            if let Some(request) = pipe_message
-                .payload
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<PollRequest>(json).ok())
-            {
-                self.manual_kinds = request.manual_kinds;
-                self.tab_projects = request.tab_projects;
-                self.resolve_repositories();
-            }
+            // agentd owns registrations and assignments. Subscription never replaces them.
             // Answer immediately: a hocus that just opened wants the snapshot now,
             // and it being the one we already sent everyone else is no reason to
             // withhold it from someone who never got it.
@@ -743,6 +808,7 @@ impl State {
             return;
         };
         self.set_yinz_session_name(session_name.clone());
+        self.restore_assignments();
         if let Ok(rows) = store::Host::shared()
             .fetch(&agents::rows::active_runs_request(&self.owner()).limit(MAX_FETCH_ROWS))
         {
@@ -1859,9 +1925,30 @@ impl State {
                 self.dirty_runs.insert(run.id.clone(), run.clone());
             }
         }
-        // A pane that closes stops being an agent because it stops being in the
-        // manifest — the same rule as the two maps above, which is what keeps
-        // the latch from being one more thing that can go stale.
+        // Registration can arrive before the pane's first manifest update.
+        // Only remove registrations for panes we actually observed closing.
+        let gone: Vec<_> = self
+            .panes
+            .iter()
+            .flatten()
+            .chain(&self.suppressed_panes)
+            .map(|pane| pane.pane_id)
+            .filter(|id| self.manual_kinds.contains_key(id) && !live.contains(id))
+            .collect();
+        if !gone.is_empty() {
+            #[cfg(target_family = "wasm")]
+            if let Err(error) =
+                store::Host::shared().apply(vec![agents::rows::latch_delete_mutation(
+                    &self.owner(),
+                    gone.iter().copied(),
+                )])
+            {
+                eprintln!("hocus-agentd: could not remove closed registrations: {error}");
+            }
+            for id in gone {
+                self.manual_kinds.remove(&id);
+            }
+        }
         self.latched.retain(|id, _| live.contains(id));
         self.pending_release.retain(|id| live.contains(id));
         // Pruned with the latch rather than on a clock of its own. Nothing about a

@@ -2793,8 +2793,12 @@ fn spawn_agent(
             context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
         }
         let host_workflow = context.contains_key("agent_workflow_role");
-        let host_paths =
-            host_workflow || (env.plugin.is_builtin() && context.contains_key("swamp_owner"));
+        let host_paths = host_workflow
+            || (env.plugin.is_builtin()
+                && (context.contains_key("swamp_owner")
+                    || context
+                        .get("hocus_agent_host_cwd")
+                        .is_some_and(|value| value == "true")));
         let source = source_directory
             .map(|path| {
                 if host_paths && path.is_absolute() {
@@ -5589,13 +5593,25 @@ fn data_unwatch(env: &mut PluginEnv, watch_id: DataWatchId) {
 /// back into the plugin directly would deadlock whenever a plugin watches something it also writes
 /// — which is the normal case, not an exotic one.
 fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet<String>) {
+    notify_data_watchers(
+        env.data_access.plugin_data(),
+        &env.deno_watch_generations,
+        &env.senders,
+        namespace,
+        touched_entities,
+    );
+}
+
+pub(crate) fn notify_data_watchers(
+    store: &yinz_storage::plugin_data_store::PluginDataStore,
+    watch_generations: &super::plugin_map::DenoWatchGenerations,
+    senders: &yinz_bus::thread_bus::ThreadSenders,
+    namespace: &str,
+    touched_entities: &BTreeSet<String>,
+) {
     // Refresh and recipient lookup must be atomic with registration/unwatch/disposal.
-    let generations = env.deno_watch_generations.lock().unwrap();
-    let changed = match env
-        .data_access
-        .plugin_data()
-        .refresh_watches(namespace, touched_entities)
-    {
+    let generations = watch_generations.lock().unwrap();
+    let changed = match store.refresh_watches(namespace, touched_entities) {
         Ok(changed) => changed,
         Err(e) => {
             log::error!("failed to refresh data store watches: {}", e);
@@ -5608,7 +5624,7 @@ fn notify_watchers(env: &PluginEnv, namespace: &str, touched_entities: &BTreeSet
             truncated: change.rows.truncated,
             rows: change.rows,
         };
-        env.senders
+        senders
             .send_to_plugin(PluginInstruction::for_plugin_event(
                 change.plugin_id,
                 change.client_id,

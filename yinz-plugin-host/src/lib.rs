@@ -67,6 +67,7 @@ use {
 };
 
 use wasm_bridge::WasmBridge;
+mod cli_data;
 
 use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ContextType;
@@ -954,6 +955,13 @@ pub fn plugin_thread_main(
                     )?;
                 }
             },
+            PluginInstruction::DataRequest { request, reply } => {
+                let _ = reply.send(
+                    wasm_bridge
+                        .cli_data(request)
+                        .map_err(|error| format!("{error:#}")),
+                );
+            },
             PluginInstruction::LogLayoutToHd(mut session_layout_metadata) => {
                 populate_session_layout_metadata(
                     &mut session_layout_metadata,
@@ -1042,13 +1050,21 @@ pub fn plugin_thread_main(
                         .err()
                         .map(|error| format!("{error:#}"));
                     },
-                    None if matches!(name.as_str(), "store_query" | "store_mutate") => {
-                        // Store operations use one existing instance, including when a
-                        // nonshared alias has an instance for each attached UI client.
-                        if let Some((plugin_id, client_id)) =
-                            wasm_bridge.builtin_service_instance("hocus-store")
-                        {
-                            pipe_messages.push((
+                    None if matches!(
+                        name.as_str(),
+                        "store_query"
+                            | "store_mutate"
+                            | "agent_action"
+                            | "workflow_action"
+                            | "swamp"
+                    ) =>
+                    {
+                        match wasm_bridge.builtin_service_instance(match name.as_str() {
+                            "agent_action" => "hocus-agentd",
+                            "workflow_action" | "swamp" => "swamp-bridge",
+                            _ => "hocus-store",
+                        }) {
+                            Ok((plugin_id, client_id)) => pipe_messages.push((
                                 Some(plugin_id),
                                 Some(client_id),
                                 PipeMessage::new(
@@ -1058,9 +1074,9 @@ pub fn plugin_thread_main(
                                     &args,
                                     true,
                                 ),
-                            ));
-                        } else if !is_eof {
-                            resolution_error = Some("No running hocus-store instance; load hocus-store before requesting notes or todos".to_owned());
+                            )),
+                            Err(error) if !is_eof => resolution_error = Some(error),
+                            Err(_) => {},
                         }
                     },
                     None => {
@@ -1080,7 +1096,14 @@ pub fn plugin_thread_main(
                         Err(error)
                     } else if is_eof
                         || (plugin.is_none()
-                            && !matches!(name.as_str(), "store_query" | "store_mutate"))
+                            && !matches!(
+                                name.as_str(),
+                                "store_query"
+                                    | "store_mutate"
+                                    | "agent_action"
+                                    | "workflow_action"
+                                    | "swamp"
+                            ))
                     {
                         Ok(())
                     } else {
@@ -1098,10 +1121,10 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::ArrangePanesByProject => {
                 let store = wasm_bridge.builtin_service_instance("hocus-store");
-                if store.is_none()
+                if store.is_err()
                     || wasm_bridge
                         .builtin_service_instance("hocus-agentd")
-                        .is_none()
+                        .is_err()
                 {
                     bus.senders.send_to_screen(ScreenInstruction::Notify(
                         "Arrange panes requires the hocus-store and hocus-agentd builtins"
@@ -1110,7 +1133,7 @@ pub fn plugin_thread_main(
                         None,
                         None,
                     ))?;
-                } else if let Some((id, client)) = store {
+                } else if let Ok((id, client)) = store {
                     wasm_bridge.pipe_messages(
                         vec![(
                             Some(id),

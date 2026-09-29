@@ -171,6 +171,21 @@ fn main() {
         std::process::exit(0);
     }
 
+    if let Some(Command::Skills(command)) = opts.command.clone() {
+        if let Err(error) = hocus_skills::run(command) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+    if let Some(Command::Data(command)) = opts.command.clone() {
+        if let Err(error) = commands::data(command, &opts) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     // Plugin authoring: local file work, plus one action sent to a session for `reload`.
     if let Some(Command::Plugins(plugins)) = opts.command.clone() {
         if let Err(e) = commands::plugins(plugins, &opts) {

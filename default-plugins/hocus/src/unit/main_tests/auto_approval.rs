@@ -951,6 +951,7 @@ fn unchanged_project_targets_are_reviewed_in_full_and_execute_once() {
     for tool in ["project_forget", "project_merge"] {
         for padded in [false, true] {
             let mut state = project_review_state(tool, padded);
+            add_background_store(&mut state);
             state.pump_tools();
             let context = review_context(&state);
             let Status::ReviewingTool { body, .. } = &state.status else {
@@ -969,15 +970,10 @@ fn unchanged_project_targets_are_reviewed_in_full_and_execute_once() {
                 assert!(targets[field]["rev"]["Int"].as_i64().unwrap() > 0);
             }
             assert!(respond(&mut state, context.clone(), pass()));
+            finish_background_project_change(&mut state);
             assert!(state.pending.is_empty());
             assert_eq!(tool_results(&state).len(), 1);
-            assert!(tool_results(&state)[0]
-                .content
-                .contains(if tool == "project_forget" {
-                    "forgot"
-                } else {
-                    "merged"
-                }));
+            assert_eq!(tool_results(&state)[0].content, tool);
             let rows = state
                 .store()
                 .fetch(&FetchRequest::entity("project"))

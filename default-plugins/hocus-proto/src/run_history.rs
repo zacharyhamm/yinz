@@ -23,8 +23,46 @@ use yinz_tile::prelude::HostId;
 use yinz_types::internal_ids::SessionName;
 
 use crate::agents::{self, rows, AgentRunHeader, RunEntry, RunEntryKind};
+use crate::projects;
 use crate::store::{self, Backend};
 use yinz_tile::prelude::{FetchRequest, Pred, SortDir};
+
+/// Stable archive header shape shared by chat and CLI readers.
+pub fn header_reply(
+    header: &AgentRunHeader,
+    projects: &BTreeMap<String, crate::projects::Project>,
+    now_ms: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": header.id,
+        "kind": header.kind,
+        "title": header.title,
+        "pane_id": header.pane_id,
+        "cwd": header.cwd,
+        // A Firecracker run's `cwd` is a guest path, so its project is the one that
+        // owns the host worktree its VM mirrored — the rule `agents::checkout_location`
+        // states for a live pane, applied to a run that may have no pane left.
+        "project": agents::checkout_location(
+                header.worktree.as_deref(),
+                header.host.as_deref(),
+                header.cwd.as_deref(),
+            )
+            .and_then(|location| projects::for_cwd(projects, &location))
+            .map(|project| project.name.clone()),
+        "active": matches!(header.outcome, agents::RunOutcome::Active),
+        "outcome": match header.outcome {
+            agents::RunOutcome::Active => "active",
+            agents::RunOutcome::Completed => "completed",
+            agents::RunOutcome::Closed => "closed",
+            agents::RunOutcome::Replaced => "replaced",
+        },
+        "started_at_ms": header.started_at_ms,
+        "ended_at_ms": header.ended_at_ms,
+        "age": agents::short_age(now_ms, header.started_at_ms),
+        "entries": header.revision,
+        "summary": header.summary.as_ref().map(|summary| summary.text.clone()),
+    })
+}
 
 /// Runs one listing may return. A page the model reads, not a page a UI scrolls.
 pub const MAX_RUNS: usize = 50;

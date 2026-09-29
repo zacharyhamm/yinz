@@ -17,6 +17,7 @@ mod history;
 mod lab;
 mod log;
 mod message;
+mod operations;
 mod overlay;
 mod plugin_docs;
 mod plugin_source;
@@ -45,7 +46,7 @@ use worker::post_log;
 
 use hocus_proto::location::Location;
 use hocus_proto::store::{self, Backend};
-use hocus_proto::wire::{self, PollReply, PollRequest};
+use hocus_proto::wire::{self, PollReply};
 use hocus_proto::{agents, launch, projects, todos};
 /// The pure half of hocus, shared with `hocus-agentd` and `hocus-store`.
 /// Re-exported under the names the code already used when these were modules.
@@ -1462,6 +1463,9 @@ impl YinzPlugin for State {
         // The first snapshot is the first thing that says which session's panes these are, and
         // so the first moment the per-pane rows can be read. See `restore_pane_rows`.
         self.restore_pane_rows();
+        self.manual_kinds = reply.manual_kinds;
+        self.tab_projects = reply.tab_projects;
+        self.sent_tab_projects = self.tab_projects.clone();
         self.repositories = reply.repositories;
         self.merge_run_headers(reply.runs);
 

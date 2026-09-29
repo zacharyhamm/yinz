@@ -359,9 +359,13 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
+        "DataRequest",
+        PluginInstruction::DataRequest { request: yinz_types::cli::DataRequest::Catalog { namespace: None }, reply: std::sync::mpsc::channel().0 },
+        "Update"
+    ), (
         "InputBarrier",
         PluginInstruction::InputBarrier(PluginId::new(1), crate::route::NotificationEnd::new(tokio::sync::oneshot::channel().0)),
         "Update"

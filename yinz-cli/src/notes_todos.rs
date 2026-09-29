@@ -8,6 +8,61 @@ use yinz_types::input::actions::Action;
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum NotesTodos {
+    /// Rename a project, preserving linked records.
+    ProjectRename { name: String, new_name: String },
+    /// Merge duplicate project identities, preserving the target's settings.
+    ProjectMerge { source: String, target: String },
+    /// List agent run headers with pagination across the archive.
+    AgentRuns {
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long)]
+        host_id: Option<String>,
+        #[clap(long)]
+        run_session: Option<String>,
+        #[clap(long)]
+        kind: Option<String>,
+        #[clap(long)]
+        since_ms: Option<i64>,
+        #[clap(long)]
+        active: Option<bool>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+        #[clap(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read an exact run and a bounded page of its timeline.
+    AgentRun {
+        run_id: String,
+        #[clap(long, conflicts_with = "from_revision")]
+        revision: Option<u64>,
+        #[clap(long)]
+        from_revision: Option<u64>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Search recorded agent messages and prompts.
+    AgentHistorySearch {
+        query: String,
+        #[clap(long)]
+        run_id: Option<String>,
+        #[clap(long)]
+        project: Option<String>,
+        #[clap(long)]
+        host_id: Option<String>,
+        #[clap(long)]
+        run_session: Option<String>,
+        #[clap(long)]
+        kind: Option<String>,
+        #[clap(long)]
+        since_ms: Option<i64>,
+        #[clap(long)]
+        active: Option<bool>,
+        #[clap(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Follow recorded predecessor links from an exact run ID.
+    AgentPredecessors { run_id: String },
     /// List remembered projects.
     ProjectList,
     /// Remember a project name and absolute root.
@@ -15,6 +70,10 @@ pub enum NotesTodos {
         name: String,
         #[clap(long)]
         root: String,
+        #[clap(long)]
+        worktree_dir: Option<String>,
+        #[clap(long)]
+        firecracker_image: Option<String>,
     },
     /// Forget a project name, preserving its notes and todos.
     ProjectForget { name: String },
@@ -197,27 +256,37 @@ impl NotesTodos {
         let query = matches!(
             self,
             Self::ProjectList
+                | Self::AgentRuns { .. }
+                | Self::AgentRun { .. }
+                | Self::AgentHistorySearch { .. }
+                | Self::AgentPredecessors { .. }
                 | Self::TodoList { .. }
                 | Self::TodoSearch { .. }
                 | Self::NoteList { .. }
                 | Self::NoteSearch { .. }
                 | Self::NoteGet { .. }
         );
-        Ok(Action::CliPipe {
-            pipe_id: uuid::Uuid::new_v4().to_string(),
-            name: Some(if query { "store_query" } else { "store_mutate" }.into()),
-            payload: Some(request.to_string()),
-            // The host resolves one existing store instance for these message names.
-            plugin: None,
-            args: None,
-            configuration: None,
-            launch_new: false,
-            skip_cache: false,
-            floating: None,
-            in_place: None,
-            cwd: None,
-            pane_title: None,
-        })
+        Ok(pipe_action(
+            if query { "store_query" } else { "store_mutate" },
+            request,
+        ))
+    }
+}
+
+pub fn pipe_action(name: &str, request: Value) -> Action {
+    Action::CliPipe {
+        pipe_id: uuid::Uuid::new_v4().to_string(),
+        name: Some(name.into()),
+        payload: Some(request.to_string()),
+        plugin: None,
+        args: None,
+        configuration: None,
+        launch_new: false,
+        skip_cache: false,
+        floating: None,
+        in_place: None,
+        cwd: None,
+        pane_title: None,
     }
 }
 

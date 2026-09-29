@@ -86,6 +86,15 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                     serde_json::to_string(&request).context("encode agent request")?,
                 )
             },
+            ClientToServerMsg::DataRequest {
+                request_id,
+                request,
+            } => client_to_server_msg::Message::DataRequest(
+                crate::client_server_contract::client_server_contract::DataRequestMsg {
+                    request_id,
+                    request_json: serde_json::to_string(&request).context("encode data request")?,
+                },
+            ),
             ClientToServerMsg::AgentReport(report) => {
                 use yinz_types::agent::report::AgentReportState;
                 let (state, agent) = match report.state {
@@ -269,6 +278,13 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 Ok(ClientToServerMsg::AgentControl(
                     serde_json::from_str(&json).context("decode agent request")?,
                 ))
+            },
+            Some(client_to_server_msg::Message::DataRequest(msg)) => {
+                Ok(ClientToServerMsg::DataRequest {
+                    request_id: msg.request_id,
+                    request: serde_json::from_str(&msg.request_json)
+                        .context("decode data request")?,
+                })
             },
             Some(client_to_server_msg::Message::AgentReport(msg)) => {
                 use {
@@ -470,6 +486,19 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 impl From<ServerToClientMsg> for ProtoServerToClientMsg {
     fn from(msg: ServerToClientMsg) -> Self {
         let message = match msg {
+            ServerToClientMsg::DataResponse { request_id, result } => {
+                let (data_json, error) = match result {
+                    Ok(data) => (data, None),
+                    Err(error) => (String::new(), Some(error)),
+                };
+                server_to_client_msg::Message::DataResponse(
+                    crate::client_server_contract::client_server_contract::DataResponseMsg {
+                        request_id,
+                        data_json,
+                        error,
+                    },
+                )
+            },
             ServerToClientMsg::KillSessionComplete { error } => {
                 server_to_client_msg::Message::KillSessionComplete(KillSessionCompleteMsg { error })
             },
@@ -599,6 +628,15 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
                 Ok(ServerToClientMsg::AgentControl(
                     serde_json::from_str(&json).context("decode agent response")?,
                 ))
+            },
+            Some(server_to_client_msg::Message::DataResponse(msg)) => {
+                Ok(ServerToClientMsg::DataResponse {
+                    request_id: msg.request_id,
+                    result: match msg.error {
+                        Some(error) => Err(error),
+                        None => Ok(msg.data_json),
+                    },
+                })
             },
             Some(server_to_client_msg::Message::AgentReportAccepted(msg)) => {
                 Ok(ServerToClientMsg::AgentReportAccepted {

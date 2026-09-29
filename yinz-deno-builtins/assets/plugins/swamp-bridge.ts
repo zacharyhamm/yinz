@@ -2450,13 +2450,23 @@ async function serverAddress(root: string | undefined): Promise<string | undefin
 }
 
 // A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
-// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep this existing protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together. This helper shares mutable plugin state and SDK wire types with its callers.
+// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Accept the SDK JSON and RPC wire types.
 async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
   const from = call.source?.Plugin;
   assert(
     from != null && z.command("GetPaneInfo", plugin(from))?.plugin_url === "yinz:hocus",
     "Workflow tools require the host-authenticated builtin Hocus",
   );
+  return validatedWorkflow(input, call);
+}
+
+// Shared by authenticated Hocus RPC and the host-authenticated CLI pipe.
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep the validated operation decision tree together.
+async function validatedWorkflow(
+  // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- The shared validator accepts the SDK JSON wire type.
+  input: Json,
+  call: Pick<RpcCall, "callId" | "progress">,
+): Promise<Json> {
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- This conversion restores the known host or stored wire type after JSON transport.
   const request = input as { tool: string; args: Record<string, Json>; directory: string };
   assert(
@@ -2963,6 +2973,39 @@ export default definePlugin({
   },
   // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
   async pipe(messageIn) {
+    if (messageIn.name === "workflow_action") {
+      if (
+        !messageIn.payload ||
+        typeof messageIn.source !== "object" ||
+        !("Cli" in messageIn.source)
+      )
+        return;
+      const pipe = messageIn.source.Cli;
+      z.command("BlockCliPipeInput", pipe);
+      try {
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- JSON is checked by the shared operation validator.
+        const input = JSON.parse(messageIn.payload) as Json;
+        const data = await validatedWorkflow(input, {
+          callId: pipe,
+          progress: () => {
+            // The CLI emits a single final reply.
+          },
+        });
+        const error =
+          data != null && typeof data === "object" && !Array.isArray(data)
+            ? data["error"]
+            : undefined;
+        z.command("CliPipeOutput", [
+          pipe,
+          encode(error == null ? { ok: true, data } : { ok: false, error: encode(data) }),
+        ]);
+      } catch (error) {
+        z.command("CliPipeOutput", [pipe, encode({ ok: false, error: String(error) })]);
+      } finally {
+        z.command("UnblockCliPipeInput", pipe);
+      }
+      return;
+    }
     if (messageIn.name === "workflow-refresh-failed") {
       const from =
         typeof messageIn.source === "object" && "Plugin" in messageIn.source

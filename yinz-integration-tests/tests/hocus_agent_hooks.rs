@@ -27,12 +27,14 @@ plugins {
   hocus location="yinz:hocus" {
     shared true
   }
+  hocus-store location="yinz:hocus-store"
   hocus-agentd location="yinz:hocus-agentd" {
     shared true
   }
 }
 load_plugins clear-defaults=true {
   "hocus-agentd"
+  "hocus-store"
 }
 "#;
 

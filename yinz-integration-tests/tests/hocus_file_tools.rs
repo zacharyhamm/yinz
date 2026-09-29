@@ -24,9 +24,11 @@ const HOCUS_CONFIG: &str = r#"plugins {
     shared true
   }
   hocus-store location="yinz:hocus-store"
+  hocus-agentd location="yinz:hocus-agentd"
 }
 load_plugins clear-defaults=true {
   "hocus-store"
+  "hocus-agentd"
 }
 "#;
 

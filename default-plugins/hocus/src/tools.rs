@@ -2628,151 +2628,8 @@ enum ScrollAction {
     Bottom,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-impl PaneDirection {
-    fn parse(name: Option<&str>) -> Result<Option<Self>, String> {
-        match name {
-            None => Ok(None),
-            Some("left") => Ok(Some(Self::Left)),
-            Some("right") => Ok(Some(Self::Right)),
-            Some("up") => Ok(Some(Self::Up)),
-            Some("down") => Ok(Some(Self::Down)),
-            Some(_) => Err("direction must be left, right, up or down".to_owned()),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PanePosition {
-    id: PaneId,
-    /// An option rather than a sentinel: panes with no tab would otherwise compare as
-    /// "the same tab" in `plan_swap`.
-    tab_position: Option<yinz_tile::prelude::TabPosition>,
-    x: usize,
-    y: usize,
-    columns: usize,
-    rows: usize,
-    visible: bool,
-    selectable: bool,
-    floating: bool,
-    fullscreen: bool,
-    floating_layer_visible: bool,
-}
-
-impl PanePosition {
-    fn can_move(&self) -> bool {
-        self.visible
-            && self.selectable
-            && !self.floating
-            && !self.fullscreen
-            && !self.floating_layer_visible
-    }
-}
-
-fn plan_swap(
-    panes: &[PanePosition],
-    first_id: PaneId,
-    second_id: PaneId,
-) -> Result<PaneDirection, String> {
-    if first_id == second_id {
-        return Err("swap_panes needs two different panes".to_owned());
-    }
-    let first = panes
-        .iter()
-        .find(|pane| pane.id == first_id)
-        .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    let second = panes
-        .iter()
-        .find(|pane| pane.id == second_id)
-        .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    if first.tab_position != second.tab_position {
-        return Err("swap_panes needs both panes in the same tab".to_owned());
-    }
-    if !first.can_move() || !second.can_move() {
-        return Err("swap_panes only supports visible selectable tiled panes".to_owned());
-    }
-    let direction = adjacent_direction(first, second)
-        .ok_or_else(|| "panes are not adjacent; do not retry with move_pane".to_owned())?;
-    let neighbors = panes
-        .iter()
-        .filter(|pane| {
-            pane.id != first.id && pane.tab_position == first.tab_position && pane.can_move()
-        })
-        .filter(|pane| adjacent_direction(first, pane) == Some(direction))
-        .count();
-    if neighbors != 1 {
-        return Err("the requested edge has multiple adjacent panes; swap is ambiguous".to_owned());
-    }
-    let opposite = adjacent_direction(second, first).expect("adjacency is symmetric");
-    let reverse_neighbors = panes
-        .iter()
-        .filter(|pane| {
-            pane.id != second.id && pane.tab_position == second.tab_position && pane.can_move()
-        })
-        .filter(|pane| adjacent_direction(second, pane) == Some(opposite))
-        .count();
-    if reverse_neighbors != 1 {
-        return Err("the requested edge has multiple adjacent panes; swap is ambiguous".to_owned());
-    }
-    Ok(direction)
-}
-
-fn plan_move(
-    panes: &[PanePosition],
-    source_id: PaneId,
-    direction: PaneDirection,
-) -> Result<PaneId, String> {
-    let source = panes
-        .iter()
-        .find(|pane| pane.id == source_id)
-        .ok_or_else(|| "pane is not in the current session; call list_session again".to_owned())?;
-    if !source.can_move() {
-        return Err(
-            "move_pane only supports visible selectable tiled panes; use set_floating_pane_geometry for floating panes"
-                .to_owned(),
-        );
-    }
-    let mut neighbors = panes
-        .iter()
-        .filter(|pane| {
-            pane.id != source.id && pane.tab_position == source.tab_position && pane.can_move()
-        })
-        .filter(|pane| adjacent_direction(source, pane) == Some(direction));
-    let neighbor = neighbors
-        .next()
-        .ok_or_else(|| "there is no adjacent pane in that direction".to_owned())?;
-    if neighbors.next().is_some() {
-        return Err(
-            "the requested direction has multiple adjacent panes; move is ambiguous".to_owned(),
-        );
-    }
-    Ok(neighbor.id)
-}
-
-fn adjacent_direction(first: &PanePosition, second: &PanePosition) -> Option<PaneDirection> {
-    let horizontal_overlap = first.y < second.y.saturating_add(second.rows)
-        && second.y < first.y.saturating_add(first.rows);
-    let vertical_overlap = first.x < second.x.saturating_add(second.columns)
-        && second.x < first.x.saturating_add(first.columns);
-    if second.x.saturating_add(second.columns) == first.x && horizontal_overlap {
-        Some(PaneDirection::Left)
-    } else if first.x.saturating_add(first.columns) == second.x && horizontal_overlap {
-        Some(PaneDirection::Right)
-    } else if second.y.saturating_add(second.rows) == first.y && vertical_overlap {
-        Some(PaneDirection::Up)
-    } else if first.y.saturating_add(first.rows) == second.y && vertical_overlap {
-        Some(PaneDirection::Down)
-    } else {
-        None
-    }
-}
+#[cfg(any(target_family = "wasm", test))]
+use hocus_proto::pane_operations::{plan_move, plan_swap, PaneDirection, PanePosition};
 
 /// Every field any tool takes. One struct rather than one per tool: serde ignores the
 /// ones a given tool doesn't use, and dispatch checks what it needs.
@@ -4355,13 +4212,6 @@ mod host {
     use yinz_tile::prelude::*;
 
     /// Write a pane's agent record to the session, for every reader of the manifest.
-    pub fn report_pane_agent(pane_id: u32, agent: AgentInfo) {
-        set_pane_agent(
-            PaneId::Terminal(yinz_tile::prelude::TerminalId::new(pane_id)),
-            Some(agent),
-        );
-    }
-
     /// Write a plugin's source at `path` under `/plugins`, making its folder first. `Ok(false)`
     /// means the file was already there and `overwrite` was not asked for: checked and then
     /// written as two calls, which is the one thing the shell's `set -C` did in one - the folder
@@ -5234,7 +5084,7 @@ mod host {
 pub use host::{
     current_session_info, dispatch, grant_permissions, observe_plugin, plugin_fs_exists,
     plugin_fs_list, plugin_fs_read, plugin_fs_read_capped, plugin_fs_write, plugin_log_tail,
-    reload_plugin, reload_plugin_headless, report_pane_agent, spawn_agent,
+    reload_plugin, reload_plugin_headless, spawn_agent,
 };
 
 /// What a `plugin_reload` found when it went to look: the plugin's pane, and its text.
@@ -5453,9 +5303,6 @@ pub fn reload_plugin(_path: &str) {
 }
 
 /// Off wasm there is no session to hold the record; the tests read `manual_kinds`.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn report_pane_agent(_pane_id: u32, _agent: yinz_tile::prelude::AgentInfo) {}
-
 /// What every plugin file tool answers off wasm, where there is no host and no plugin folder:
 /// the tests cover the pure halves, and this is the sentence the tool loop passes through.
 #[cfg(not(target_arch = "wasm32"))]

@@ -301,3 +301,7 @@ postgres-tests = ["yinz-storage/postgres-tests"]
 [[test]]
 name = "notes_todos"
 path = "src/tests/notes_todos.rs"
+
+[[test]]
+name = "portable_cli"
+path = "src/unit/portable_cli.rs"

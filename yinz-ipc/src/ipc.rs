@@ -122,6 +122,10 @@ impl PixelDimensions {
 )]
 pub enum ClientToServerMsg {
     AgentControl(yinz_types::agent::control::AgentRequest),
+    DataRequest {
+        request_id: String,
+        request: yinz_types::cli::DataRequest,
+    },
     AgentReport(yinz_types::agent::report::AgentReport),
     DetachSession {
         client_ids: Vec<ClientId>,
@@ -228,6 +232,10 @@ pub enum ClientToServerMsg {
 )]
 pub enum ServerToClientMsg {
     AgentControl(yinz_types::agent::control::AgentResponse),
+    DataResponse {
+        request_id: String,
+        result: Result<String, String>,
+    },
     KillSessionComplete {
         error: Option<String>,
     },
