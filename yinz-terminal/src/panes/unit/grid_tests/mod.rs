@@ -59,6 +59,64 @@ fn create_grid_with_content(content: &str) -> Grid {
 }
 
 #[test]
+fn full_dumps_include_output_below_the_viewport_without_moving_it() {
+    let lines: Vec<_> = (1..=60).map(|n| n.to_string()).collect();
+    let mut grid = create_grid_with_content(&format!("\x1b[31m{}", lines.join("\r\n")));
+    let full_ansi = grid.dump_screen_with_ansi(true);
+    let ansi_escape = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    assert!(full_ansi.contains("\x1b[31m"));
+    assert_eq!(ansi_escape.replace_all(&full_ansi, ""), lines.join("\n"));
+
+    for scroll in [0, 20] {
+        grid.move_viewport_up(scroll);
+        grid.selection
+            .set_start_and_end_positions(Position::new(1, 0), Position::new(2, 2));
+        let selection = grid.selection;
+        let viewport = grid.dump_screen(false);
+        let viewport_ansi = grid.dump_screen_with_ansi(false);
+        let position = grid.scrollback_position_and_length();
+        let expected_viewport = lines[(40 - scroll)..(60 - scroll)].join("\n");
+        assert_eq!(viewport, expected_viewport);
+        assert_eq!(
+            ansi_escape.replace_all(&viewport_ansi, ""),
+            expected_viewport
+        );
+        assert_eq!(grid.dump_screen(true), lines.join("\n"));
+        assert_eq!(grid.dump_screen_with_ansi(true), full_ansi);
+        assert_eq!(grid.dump_screen(false), viewport);
+        assert_eq!(grid.dump_screen_with_ansi(false), viewport_ansi);
+        assert_eq!(grid.selection, selection);
+        assert_eq!(grid.scrollback_position_and_length(), position);
+    }
+}
+
+#[test]
+fn full_dumps_join_wrapped_rows_across_both_viewport_boundaries() {
+    let mut grid = create_grid_with_size_and_raw(
+        3,
+        4,
+        b"\x1b[31maaaabbbbccccddddeeeeffff\x1b[0m\r\nZ\x1b[44m  \x1b[0m ",
+    );
+    let expected = "aaaabbbbccccddddeeeeffff\nZ";
+    let ansi_escape = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let full_ansi = grid.dump_screen_with_ansi(true);
+    assert_eq!(grid.dump_screen(true), expected);
+    assert_eq!(
+        ansi_escape.replace_all(&full_ansi, ""),
+        format!("{expected}  ")
+    );
+    assert!(full_ansi.contains("\x1b[31m"));
+    assert!(full_ansi.contains("\x1b[44m"));
+
+    grid.move_viewport_up(2);
+    assert!(!grid.viewport[0].is_canonical);
+    assert!(!grid.lines_below[0].is_canonical);
+    assert_eq!(grid.dump_screen(false), "ccccddddeeee");
+    assert_eq!(grid.dump_screen(true), expected);
+    assert_eq!(grid.dump_screen_with_ansi(true), full_ansi);
+}
+
+#[test]
 fn a_non_scrolling_newline_does_not_paint_or_materialize_padding() {
     let mut grid = create_grid_with_content("\u{1b}[1;31;44m\r\n");
     let row = &grid.viewport[1];

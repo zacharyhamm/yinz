@@ -1728,9 +1728,40 @@ pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
     let legacy = super::agent_from_run(Some(&run("true", "opencode")))
         .expect("the legacy marker still names the agent");
     assert_eq!(legacy.kind, "opencode");
-    // An ordinary command pane is not an agent, however its program is called.
+    // The CLI launch marker identifies an agent without inventing a plugin owner.
+    let direct = super::agent_from_run(Some(&super::Run::Command(RunCommand {
+        command: PathBuf::from("env"),
+        args: vec![
+            format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+            "opencode".into(),
+        ],
+        ..Default::default()
+    })))
+    .unwrap();
+    assert_eq!(direct.kind, "opencode");
+    assert_eq!(direct.source, AgentSource::Spawned);
+    // Existing layouts and ordinary command panes retain their previous unmarked behavior.
     assert!(super::agent_from_run(Some(&super::Run::Command(RunCommand {
         command: PathBuf::from("opencode"),
+        ..Default::default()
+    })))
+    .is_none());
+    assert!(super::agent_from_run(Some(&super::Run::Command(RunCommand {
+        command: PathBuf::from("env"),
+        args: vec![
+            "opencode".into(),
+            format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+        ],
+        ..Default::default()
+    })))
+    .is_none());
+    let mut unmarked_plugin = run("opencode", "opencode");
+    if let super::Run::Command(command) = &mut unmarked_plugin {
+        command.originating_plugin.as_mut().unwrap().context.clear();
+    }
+    assert!(super::agent_from_run(Some(&unmarked_plugin)).is_none());
+    assert!(super::agent_from_run(Some(&super::Run::Command(RunCommand {
+        command: PathBuf::from("zsh"),
         ..Default::default()
     })))
     .is_none());
@@ -1952,6 +1983,7 @@ fn agent_restart_is_fresh_and_keeps_command_metadata() {
 #[test]
 fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     let mut pane = agent_pane();
+    pane.record_agent_input();
     pane.set_agent_info(Some(AgentInfo {
         kind: "codex".into(),
         state: AgentState::Busy,
@@ -1976,6 +2008,7 @@ fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
     assert_eq!(pane.is_held, held);
     assert_eq!(pane.agent, agent);
     assert!(pane.rerun().is_none());
+    assert_eq!(pane.agent_input_revision(), 1);
     assert_eq!(pane.agent, agent);
     assert_eq!(pane.restart_error(), info.restart_error);
     assert_eq!(pane.is_held, held);
@@ -1985,10 +2018,37 @@ fn restart_refusal_keeps_held_state_and_explicit_replacements_work() {
         pane.respawn(Some(command.clone()), false),
         Some(command.clone())
     );
+    assert_eq!(pane.agent_input_revision(), 0);
     pane.was_an_agent = false;
     pane.agent = None;
     pane.hold(Some(0), false, command.clone());
     assert_eq!(pane.rerun(), Some(command), "ordinary reruns are unchanged");
+}
+
+#[test]
+fn respawn_resets_input_revision_only_when_the_restart_succeeds() {
+    for keep_scrollback in [false, true] {
+        for replace in [false, true] {
+            let mut pane = agent_pane();
+            let command = RunCommand {
+                command: "codex".into(),
+                ..Default::default()
+            };
+            let replacement = replace.then(|| command.clone());
+            pane.record_agent_input();
+            pane.record_agent_input();
+            assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
+            assert_eq!(pane.agent_input_revision(), 2);
+
+            pane.hold(Some(0), false, command.clone());
+            pane.set_warp_pending(true);
+            assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
+            assert_eq!(pane.agent_input_revision(), 2);
+            pane.set_warp_pending(false);
+            assert_eq!(pane.respawn(replacement, keep_scrollback), Some(command));
+            assert_eq!(pane.agent_input_revision(), 0);
+        }
+    }
 }
 
 #[test]

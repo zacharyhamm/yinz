@@ -28,6 +28,7 @@
 //! - `active_tab_ids: BTreeMap<ClientId, TabId>`: Maps clients to active tab ID
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
+mod agent_control;
 mod multipanes;
 mod pane_tabs;
 
@@ -558,6 +559,9 @@ type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
+    agent_controls: Vec<agent_control::Pending>,
+    agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
+    agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
     reported_pane_tabs: Vec<yinz_types::pane_tabs::PaneTabsInfo>,
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -1293,6 +1297,9 @@ impl Screen {
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
+            agent_controls: Vec::new(),
+            agent_launches: HashMap::new(),
+            agent_lifecycle: HashMap::new(),
             reported_pane_tabs: vec![],
             bus,
             max_panes,

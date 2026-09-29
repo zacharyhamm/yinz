@@ -1977,6 +1977,7 @@ fn notification_history_keeps_dismissed_toasts() {
     mock_screen.teardown(vec![screen_thread]);
 }
 
+mod agent_control;
 mod agent_placement;
 mod animation_clock;
 mod break_and_move_panes;

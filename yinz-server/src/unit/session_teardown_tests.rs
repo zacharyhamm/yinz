@@ -19,6 +19,9 @@ fn session_with(
     };
     SessionMetaData {
         senders,
+        data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+            std::path::Path::new("/unused"),
+        )),
         default_shell: None,
         current_input_modes: HashMap::new(),
         session_configuration: Default::default(),

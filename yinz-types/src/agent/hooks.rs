@@ -1136,6 +1136,9 @@ pub enum HookOutcome {
 /// Read one hook event from an agent of `kind`. Every reported record is complete — kind,
 /// state, hint, folder, session — so setting it needs no merge with what came before.
 pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
+    if event.agent_id.is_some() {
+        return HookOutcome::Nothing;
+    }
     if event.hook_event_name == HOOK_SESSION_END {
         return HookOutcome::Ended;
     }
@@ -1172,11 +1175,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subagent_lifecycle_only_broadcasts_without_a_parent_state_change() {
+    fn worker_hooks_only_broadcast_without_a_parent_state_change() {
         for kind in ["claude", "codex"] {
-            for name in ["SubagentStart", "SubagentStop"] {
-                let event = event(name);
-                assert_eq!(hook_state(&event), None);
+            for name in [
+                "SubagentStart",
+                "SubagentStop",
+                "Stop",
+                "SessionEnd",
+                "SessionStart",
+            ] {
+                let mut event = event(name);
+                if !matches!(name, "SubagentStart" | "SubagentStop") {
+                    event.agent_id = Some("worker".into());
+                    event.source = Some("startup".into());
+                }
                 assert!(matches!(hook_outcome(kind, &event), HookOutcome::Nothing));
                 let actions = crate::input::actions::hook_report_actions(
                     kind,
@@ -1186,7 +1198,7 @@ mod tests {
                 );
                 assert!(
                     matches!(actions.as_slice(), [crate::input::actions::Action::AgentEvent(event)]
-                    if event.hook == name && event.state.is_none())
+                    if event.hook == name)
                 );
             }
         }

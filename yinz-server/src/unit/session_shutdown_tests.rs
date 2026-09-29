@@ -85,6 +85,9 @@ fn shutdown_keeps_workers_available_until_the_screen_finishes() {
     drop(SessionMetaData {
         shutdown,
         senders,
+        data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+            std::path::Path::new("/unused"),
+        )),
         default_shell: None,
         current_input_modes: HashMap::new(),
         session_configuration: Default::default(),

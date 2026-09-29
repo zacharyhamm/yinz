@@ -66,12 +66,25 @@ pub(super) fn apply_queued_agent_report(
             }
         }
     }
+    screen.refresh_agent_controls();
     let mut trace = yinz_runtime::agent::report::report_diagnostics(report);
     trace.session = screen.session_name.to_string();
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
     trace.record("state", Duration::ZERO, "enter");
+    let worker = report
+        .event
+        .as_ref()
+        .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok())
+        .is_some_and(|hook| {
+            hook.agent_id.is_some()
+                || matches!(
+                    hook.hook_event_name.as_str(),
+                    "SubagentStart" | "SubagentStop"
+                )
+        });
     let result = match &report.state {
+        _ if worker => Ok(true),
         AgentReportState::Unchanged => Ok(true),
         AgentReportState::Clear => apply_pane_agent_report(screen, pane_id, None),
         AgentReportState::Set(agent) => {
@@ -84,6 +97,9 @@ pub(super) fn apply_queued_agent_report(
         if result.is_ok() { "ok" } else { "error" },
     );
     result?;
+    if let Some(event) = &report.event {
+        screen.agent_control_event(event);
+    }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
     let result = if let Some(event) = &report.event {
@@ -272,6 +288,7 @@ pub fn screen_thread_main(
     let mut escape_focus = HashMap::new();
     let mut pending_escape_count = 0;
     'instructions: loop {
+        screen.refresh_agent_controls();
         if screen.agent_double_escape {
             // Observe every screen transition, including programmatic focus changes. Keeping the
             // previous focus/mode catches leaving and returning before the next key arrives.
@@ -308,10 +325,18 @@ pub fn screen_thread_main(
             screen.render()?;
             screen.sync_animation_clock(Instant::now())?;
         }
-        let (event, mut err_ctx) = screen
-            .bus
-            .recv()
-            .context("failed to receive event on channel")?;
+        let (event, mut err_ctx) = if let Some(timeout) = screen.agent_control_deadline() {
+            match screen.bus.recv_timeout(timeout) {
+                Ok(event) => event,
+                Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
+                Err(error) => return Err(error).context("receive agent control event"),
+            }
+        } else {
+            screen
+                .bus
+                .recv()
+                .context("failed to receive event on channel")?
+        };
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::Screen((&event).into()));
         // here we start caching resizes, so that we'll send them in bulk at the end of each event
         // when this cache is Dropped, for more information, see the comments in PtyWriter
@@ -1969,6 +1994,7 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::RemoveClient(client_id) => {
+                    screen.detach_agent_controls(client_id);
                     attach_traces_waiting_for_first_render.remove(&client_id);
                     // A connection that never attached — a session probe, a one-shot
                     // CLI action client, a hook's `yinz action agent-report` — has
@@ -3048,6 +3074,12 @@ pub fn screen_thread_main(
                         },
                     }
                     screen.render()?;
+                },
+                ScreenInstruction::AgentSpawned(agent) => {
+                    screen.agent_launches.insert(agent.pane_id, agent);
+                },
+                ScreenInstruction::AgentControl(request, client) => {
+                    screen.agent_control(request, client);
                 },
                 ScreenInstruction::AgentReport(report, accepted_at) => {
                     if !apply_queued_agent_report(&mut screen, &report, accepted_at)? {

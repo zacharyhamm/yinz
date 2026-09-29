@@ -6,6 +6,7 @@ import "common_types.proto";
 message ClientToServerMsg {
   reserved 14, 15, 21, 26;
   oneof message {
+    string agent_control_json = 33;
     DetachSessionMsg detach_session = 1;
     TerminalPixelDimensionsMsg terminal_pixel_dimensions = 2;
     BackgroundColorMsg background_color = 3;

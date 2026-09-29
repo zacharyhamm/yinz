@@ -565,6 +565,7 @@ impl KeyCode {
                 }
             },
 
+            Function(0) => return Err("unhandled fkey number 0".into()),
             Function(n) => {
                 if mods.is_empty() && n < 5 {
                     // F1-F4 are encoded using SS3 if there are no modifiers

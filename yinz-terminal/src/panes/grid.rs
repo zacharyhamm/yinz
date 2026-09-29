@@ -486,9 +486,10 @@ pub fn parse_osc7_path(raw: &[u8]) -> Option<std::path::PathBuf> {
 macro_rules! dump_screen {
     ($lines:expr) => {{
         let mut is_first = true;
-        let mut buf = String::with_capacity($lines.iter().map(|l| l.len()).sum());
+        let lines = $lines;
+        let mut buf = String::with_capacity(lines.clone().map(|l| l.len()).sum());
 
-        for line in &$lines {
+        for line in lines {
             if line.is_canonical && !is_first {
                 buf.push_str("\n");
             }
@@ -509,7 +510,7 @@ macro_rules! dump_screen_with_ansi {
         let mut buf = String::new();
         let mut last_styles: Option<RcCharacterStyles> = None;
 
-        for line in &$lines {
+        for line in $lines {
             if line.is_canonical && !is_first {
                 buf.push_str("\n");
                 last_styles = None;
@@ -2305,31 +2306,27 @@ impl Grid {
         self.reset_terminal_state();
         self.mark_for_rerender();
     }
-    /// Dumps all lines above terminal viewport and the viewport itself to a string
+    /// Dumps the viewport, or all retained lines including those below a scrolled viewport.
     pub fn dump_screen(&self, full: bool) -> String {
-        let viewport: String = dump_screen!(self.viewport);
         if !full {
-            return viewport;
+            return dump_screen!(self.viewport.iter());
         }
-        let mut scrollback: String = dump_screen!(self.lines_above);
-        if !scrollback.is_empty() {
-            scrollback.push('\n');
-        }
-        scrollback.push_str(&viewport);
-        scrollback
+        dump_screen!(self
+            .lines_above
+            .iter()
+            .chain(&self.viewport)
+            .chain(&self.lines_below))
     }
-    /// Dumps all lines (with ansi) above terminal viewport and the viewport itself to a string
+    /// Dumps the viewport or all retained lines, with ANSI styling.
     pub fn dump_screen_with_ansi(&self, full: bool) -> String {
-        let viewport: String = dump_screen_with_ansi!(self.viewport);
         if !full {
-            return viewport;
+            return dump_screen_with_ansi!(self.viewport.iter());
         }
-        let mut scrollback: String = dump_screen_with_ansi!(self.lines_above);
-        if !scrollback.is_empty() {
-            scrollback.push('\n');
-        }
-        scrollback.push_str(&viewport);
-        scrollback
+        dump_screen_with_ansi!(self
+            .lines_above
+            .iter()
+            .chain(&self.viewport)
+            .chain(&self.lines_below))
     }
     pub fn move_viewport_up(&mut self, count: usize) {
         for _ in 0..count {

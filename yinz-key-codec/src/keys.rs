@@ -6,6 +6,10 @@ use crate::vendored::termwiz::input::{
 use std::{collections::BTreeSet, str};
 use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 
+#[cfg(test)]
+#[path = "unit/encoding_tests.rs"]
+mod encoding_tests;
+
 #[cfg(not(target_family = "wasm"))]
 impl From<&KeyModifier> for Modifiers {
     fn from(val: &KeyModifier) -> Self {

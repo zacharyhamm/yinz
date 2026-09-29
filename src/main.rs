@@ -1,3 +1,4 @@
+mod agent;
 mod agent_report;
 mod commands;
 mod hocus_hooks;
@@ -108,6 +109,16 @@ fn main() {
     }
     configure_logger();
     create_config_and_cache_folders();
+
+    if let Some(Command::Agent(command)) = opts.command.clone() {
+        match agent::run(command, &opts) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("Error: {error:#}");
+                std::process::exit(1);
+            },
+        }
+    }
 
     // Talks only to supervisor sockets, so like `recordings` it runs without any
     // client or server — the whole point is that it works when the session is

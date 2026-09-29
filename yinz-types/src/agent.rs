@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use strum_macros::{Display, EnumString};
 
+/// Launch marker for direct agent panes, whose command has no originating plugin.
+pub const AGENT_PANE_ENV: &str = "YINZ_AGENT_PANE";
+
 /// What the agent in a pane is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
 pub enum AgentState {
@@ -207,6 +210,7 @@ pub struct SpawnedAgent {
 
 mod hooks;
 pub use hooks::*;
+pub mod control;
 pub mod opencode;
 pub use opencode::*;
 pub mod report;

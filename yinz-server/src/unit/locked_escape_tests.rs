@@ -27,6 +27,9 @@ fn session() -> SessionMetaData {
             should_silently_fail: true,
             ..Default::default()
         },
+        data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+            std::path::Path::new("/unused"),
+        )),
         default_shell: None,
         current_input_modes: HashMap::from([
             (ClientId::new(1), InputMode::Locked),

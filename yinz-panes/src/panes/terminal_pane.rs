@@ -129,6 +129,7 @@ pub struct TerminalPane {
     /// The agent running here, if the session knows of one. Starts as what the spawn path
     /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
     agent: Option<AgentInfo>,
+    agent_input_revision: u64,
     /// Whether this pane has ever held an agent record, however it got there.
     ///
     /// Sticky, and deliberately not derived from `agent`: a `SessionEnd` hook clears the
@@ -1364,6 +1365,15 @@ impl Pane for TerminalPane {
     fn agent_info(&self) -> Option<&AgentInfo> {
         self.agent.as_ref()
     }
+    fn supports_bracketed_paste(&self) -> bool {
+        self.grid.bracketed_paste_mode
+    }
+    fn agent_input_revision(&self) -> u64 {
+        self.agent_input_revision
+    }
+    fn record_agent_input(&mut self) {
+        self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
+    }
     fn last_agent_cwd(&self) -> Option<&str> {
         self.last_agent_cwd.as_deref()
     }
@@ -1537,6 +1547,7 @@ impl Pane for TerminalPane {
             }
             self.is_held = None;
             self.suspended = false;
+            self.agent_input_revision = 0;
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
                 if fresh_agent {
@@ -1739,19 +1750,33 @@ impl Pane for TerminalPane {
     }
 }
 
-/// The agent record a pane starts with: one for a pane a plugin opened *as an agent pane* -
-/// its `originating_plugin` context carries `HOCUS_AGENT_PANE_CONTEXT`, whose value names the
-/// kind, or is the legacy `"true"`, in which case the program's name stands in - and nothing
-/// for any other pane. The agent itself has said nothing yet, so the source is `Spawned`.
+/// The agent record a pane starts with: an explicitly marked plugin or direct CLI launch.
+/// The agent itself has said nothing yet, so the source is `Spawned`.
 fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
     let Some(Run::Command(run_command)) = invoked_with else {
         return None;
     };
-    let context = &run_command.originating_plugin.as_ref()?.context;
-    let marker = context.get(HOCUS_AGENT_PANE_CONTEXT)?;
-    let kind = match marker.trim() {
-        "" | "true" => yinz_types::agent::agent_kind_of(&run_command.command, &run_command.args)?,
-        kind => kind.to_owned(),
+    let kind = match &run_command.originating_plugin {
+        Some(plugin) => match plugin.context.get(HOCUS_AGENT_PANE_CONTEXT)?.trim() {
+            "" | "true" => {
+                yinz_types::agent::agent_kind_of(&run_command.command, &run_command.args)?
+            },
+            kind => kind.to_owned(),
+        },
+        None if run_command
+            .command
+            .file_name()
+            .is_some_and(|name| name == "env")
+            && run_command
+                .args
+                .iter()
+                .take_while(|arg| arg.contains('='))
+                .any(|arg| arg.strip_prefix(yinz_types::agent::AGENT_PANE_ENV) == Some("=1")) =>
+        {
+            yinz_types::agent::kind_from_program_and_args(&run_command.command, &run_command.args)?
+                .to_owned()
+        },
+        None => return None,
     };
     Some(AgentInfo {
         kind,
@@ -1870,6 +1895,7 @@ impl TerminalPane {
             last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
             agent,
+            agent_input_revision: 0,
             // A pane the spawn path opened as an agent pane starts `Busy`, so there is
             // never a wait to draw before the first report arrives.
             agent_attention_since: None,
