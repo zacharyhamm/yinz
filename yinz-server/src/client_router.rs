@@ -268,6 +268,33 @@ pub(crate) fn route_thread_main(
                         return Ok(false);
                     };
                     match instruction {
+                        ClientToServerMsg::AgentControl(request) => {
+                            use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+                            if let AgentRequest::Spawn { spec, cwd } = request {
+                                let assets = session_data.read().to_anyhow()?.as_ref().map(|session| {
+                                    (session.senders.clone(), session.data_access.clone())
+                                });
+                                let mut response = AgentResponse::new(AgentOutcome::Failed);
+                                if let Some((senders, data_access)) = assets {
+                                    let active_client = session_state.read().to_anyhow()?.get_last_active_client().unwrap_or(client_id);
+                                    match yinz_plugin_host::spawn_agent_for_cli(spec, cwd, active_client, &senders, &data_access) {
+                                        Ok(spawned) => {
+                                            senders.send_to_screen(ScreenInstruction::AgentSpawned(spawned.clone()))?;
+                                            response.outcome = AgentOutcome::Ok;
+                                            response.spawned = Some(spawned);
+                                        },
+                                        Err(error) => response.message = Some(error),
+                                    }
+                                } else {
+                                    response.message = Some("session is not ready".into());
+                                }
+                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(response))?;
+                            } else if let Some(senders) = &senders {
+                                senders.send_to_screen(ScreenInstruction::AgentControl(request, client_id))?;
+                            } else {
+                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::StatusUnavailable)))?;
+                            }
+                        },
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
                         ClientToServerMsg::Key {
                             key,

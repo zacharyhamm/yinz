@@ -1,6 +1,10 @@
 #[path = "multipanes.rs"]
 mod multipanes;
 
+#[cfg(test)]
+#[path = "unit/agent_spawn_tests.rs"]
+mod agent_spawn_tests;
+
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
 use crate::wasm_bridge::handle_plugin_crash;
@@ -26,11 +30,13 @@ use yinz_bus::background_jobs::BackgroundJob;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
 use yinz_bus::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use yinz_bus::route::NotificationEnd;
+use yinz_bus::thread_bus::ThreadSenders;
 use yinz_bus::ServerInstruction;
 use yinz_config::permission::PermissionCache;
 use yinz_ipc::consts::ipc_connect;
 use yinz_routing::{route_action, wait_for_action_completion};
 use yinz_runtime::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
+use yinz_storage::data_access::DataAccess;
 use yinz_storage::plugin_data_store;
 use yinz_types::agent::SpawnedAgent;
 use yinz_types::data::EnqueueQueueJobResponse;
@@ -2786,11 +2792,6 @@ fn spawn_agent(
             }
             context.insert("agent_workflow_owner".into(), env.plugin_id.to_string());
         }
-        let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(&spec)?;
-        // The marker's value is the agent's kind - the program - which is what the pane's
-        // agent record starts from. See `agent_from_run` in `panes::terminal_pane`.
-        let kind = yinz_types::agent::agent_kind_of(&command.path, &command.args)
-            .unwrap_or_else(|| "true".to_owned());
         let host_workflow = context.contains_key("agent_workflow_role");
         let host_paths =
             host_workflow || (env.plugin.is_builtin() && context.contains_key("swamp_owner"));
@@ -2803,12 +2804,6 @@ fn spawn_agent(
                 }
             })
             .unwrap_or_else(|| env.plugin_cwd.clone());
-        apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
-            env.data_access.plugin_data().fetch(
-                hocus_data::store::SHARED,
-                &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
-            )
-        })?;
         let cwd = cwd.map(|path| {
             if host_paths && path.is_absolute() {
                 path
@@ -2816,57 +2811,24 @@ fn spawn_agent(
                 translate_plugin_path(env, path)
             }
         });
-        let checkout_made = !matches!(checkout, GitCheckout::Current);
-        // A Firecracker pane with nothing of this machine in it does not run in `folder` at
-        // all - `place_agent` leaves the guest's own workspace alone - so there is no host
-        // checkout for the guard to have an opinion about. Computed once, here, so the two
-        // cannot come to disagree about which case this is.
-        let guest_only =
-            command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made;
-        // An agent loose in the checkout the user is working in - or in a folder that is no
-        // repository at all - is a thing to ask for, not a thing to fall into by leaving
-        // `branch` out. The resolved folder is what is checked, not the spec: a branch held
-        // by another worktree sends the agent there, and that is a worktree.
-        //
-        // Workflow helpers are the exception, and were before this: they are *required* to
-        // run in the existing host checkout (see above), so refusing them for it would leave
-        // them nowhere to run.
-        let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow || guest_only {
-            WorktreeGuard::Waived
-        } else {
-            WorktreeGuard::Required
-        };
-        let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
-        command = prepared.agent_command(&spec)?;
-        let branch = prepared.branch.or_else(|| {
-            worktree_at(&prepared.path, &prepared.path)
-                .ok()
-                .flatten()
-                .and_then(|worktree| worktree.branch)
-        });
-        let folder = prepared.path;
-        let reported_cwd = Some(folder.clone());
-        let warm_folder = folder.clone();
-        place_agent(
-            &mut command,
-            folder,
+        let prepared = prepare_agent(
+            &spec,
+            source,
+            cwd,
             automatic_firecracker_vm,
-            checkout_made,
+            host_workflow,
+            &env.data_access,
         )?;
+        let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
+            .unwrap_or_else(|| "true".to_owned());
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
-        spawn_command_pane_near_plugin(env, command, context, name, true, start_suppressed)
+        spawn_command_pane_near_plugin(env, prepared.command, context, name, true, start_suppressed)
             .map(|pane_id| {
-                get_tokio_runtime().spawn_blocking(move || {
-                    if let Ok(config) = yinz_config::project_config::access(&warm_folder, None) {
-                        if config.error.is_none() && config.config.workflow.is_some() {
-                            yinz_swamp::prewarm(&config.root).non_fatal();
-                        }
-                    }
-                });
+                prewarm_agent_workflows(prepared.cwd.clone());
                 SpawnedAgent {
                     pane_id,
-                    branch,
-                    cwd: reported_cwd,
+                    branch: prepared.branch,
+                    cwd: Some(prepared.cwd),
                 }
             })
             .ok_or_else(|| "Yinz did not open the agent pane".to_owned())
@@ -2875,6 +2837,140 @@ fn spawn_agent(
     wasi_write_object(env, &response.encode_to_vec())
         .with_context(|| "failed to write spawn_agent response".to_string())
         .non_fatal();
+}
+
+struct PreparedAgent {
+    command: CommandToRun,
+    branch: Option<String>,
+    cwd: PathBuf,
+}
+
+/// Shared checkout preparation for plugin and direct CLI launches. Paths are already host paths.
+fn prepare_agent(
+    spec: &AgentSpawnSpec,
+    source: PathBuf,
+    cwd: Option<PathBuf>,
+    automatic_firecracker_vm: bool,
+    host_workflow: bool,
+    data_access: &DataAccess,
+) -> Result<PreparedAgent, String> {
+    let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
+    apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
+        data_access.plugin_data().fetch(
+            hocus_data::store::SHARED,
+            &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
+        )
+    })?;
+    let checkout_made = !matches!(checkout, GitCheckout::Current);
+    // A Firecracker pane with nothing of this machine in it does not run in `folder` at
+    // all - `place_agent` leaves the guest's own workspace alone - so there is no host
+    // checkout for the guard to have an opinion about. Computed once, here, so the two
+    // cannot come to disagree about which case this is.
+    let guest_only = command.target.is_firecracker() && !automatic_firecracker_vm && !checkout_made;
+    // An agent loose in the checkout the user is working in - or in a folder that is no
+    // repository at all - is a thing to ask for, not a thing to fall into by leaving
+    // `branch` out. The resolved folder is what is checked, not the spec: a branch held
+    // by another worktree sends the agent there, and that is a worktree.
+    //
+    // Workflow helpers are the exception, and were before this: they are *required* to
+    // run in the existing host checkout (see above), so refusing them for it would leave
+    // them nowhere to run.
+    let guard = if spec.allow_outside_worktree.unwrap_or(false) || host_workflow || guest_only {
+        WorktreeGuard::Waived
+    } else {
+        WorktreeGuard::Required
+    };
+    let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
+    command = prepared.agent_command(spec)?;
+    let branch = prepared.branch.or_else(|| {
+        worktree_at(&prepared.path, &prepared.path)
+            .ok()
+            .flatten()
+            .and_then(|worktree| worktree.branch)
+    });
+    let folder = prepared.path;
+    place_agent(
+        &mut command,
+        folder.clone(),
+        automatic_firecracker_vm,
+        checkout_made,
+    )?;
+    Ok(PreparedAgent {
+        command,
+        branch,
+        cwd: folder,
+    })
+}
+
+fn prewarm_agent_workflows(folder: PathBuf) {
+    get_tokio_runtime().spawn_blocking(move || {
+        if let Ok(config) = yinz_config::project_config::access(&folder, None) {
+            if config.error.is_none() && config.config.workflow.is_some() {
+                yinz_swamp::prewarm(&config.root).non_fatal();
+            }
+        }
+    });
+}
+
+/// Launch an agent for a direct CLI request, using the same planner and checkout policy as plugins.
+pub fn spawn_agent_for_cli(
+    mut spec: AgentSpawnSpec,
+    cwd: PathBuf,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    data_access: &DataAccess,
+) -> SpawnAgentResponse {
+    let (command, _) = yinz_runtime::agent::launch::plan(&spec)?;
+    if yinz_types::agent::kind_from_program_and_args(&command.path, &command.args).is_none() {
+        return Err("agent spawn requires a recognized agent command".into());
+    }
+    spec.env
+        .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
+    let cwd = cwd.canonicalize().map_err(|error| {
+        format!(
+            "failed to resolve agent directory {}: {error}",
+            cwd.display()
+        )
+    })?;
+    let prepared = prepare_agent(&spec, cwd, None, false, false, data_access)?;
+    let command = prepared.command;
+    let action = RunCommandAction {
+        command: command.path,
+        args: command.args,
+        cwd: command.cwd,
+        hold_on_close: true,
+        target: command.target,
+        remote_default_shell: command.remote_default_shell,
+        ..Default::default()
+    };
+    let (completion_tx, completion_rx) = oneshot::channel();
+    senders
+        .send_to_pty(PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(action.into())),
+            None,
+            NewPanePlacement::Tiled {
+                direction: None,
+                borderless: None,
+            },
+            false,
+            ClientTabIndexOrPaneId::ClientId(client_id),
+            Some(NotificationEnd::new(completion_tx)),
+            false,
+        ))
+        .map_err(|error| format!("failed to request agent pane: {error:#}"))?;
+    let result = wait_for_action_completion(completion_rx, "agent spawn", true);
+    if let Some(error) = result.error_message {
+        return Err(error);
+    }
+    let pane_id = result
+        .affected_pane_id
+        .ok_or("Yinz did not open the agent pane")?;
+    prewarm_agent_workflows(prepared.cwd.clone());
+    Ok(SpawnedAgent {
+        pane_id,
+        branch: prepared.branch,
+        cwd: Some(prepared.cwd),
+    })
 }
 
 /// Read saved defaults only for a new worktree with no launch override. Fetching all

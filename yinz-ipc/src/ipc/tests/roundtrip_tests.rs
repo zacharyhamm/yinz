@@ -205,7 +205,51 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 }
 
 fn test_client_messages() {
+    use yinz_types::agent::control::AgentRequest;
     use {yinz_types::agent::report::AgentReport, yinz_types::agent::report::AgentReportState};
+    let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
+    for expected_session_id in [None, Some("conversation-7".to_owned())] {
+        for request in [
+            AgentRequest::List,
+            AgentRequest::Status {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+            },
+            AgentRequest::Spawn {
+                spec: yinz_types::agent::AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some("review-auth".into()),
+                    ..Default::default()
+                },
+                cwd: "/repo".into(),
+            },
+            AgentRequest::Prompt {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+                prompt: "Review this diff:\n+added line".into(),
+                wait: true,
+                timeout_ms: 600_000,
+            },
+            AgentRequest::Wait {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+                until: AgentState::Idle,
+                timeout_ms: 30_000,
+            },
+            AgentRequest::Read {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+                lines: 80,
+            },
+            AgentRequest::SendKeys {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+                keys: vec![KeyWithModifier::new(BareKey::Esc)],
+            },
+        ] {
+            test_client_roundtrip!(ClientToServerMsg::AgentControl(request));
+        }
+    }
     for state in [
         AgentReportState::Unchanged,
         AgentReportState::Clear,
@@ -4443,6 +4487,56 @@ fn test_client_messages() {
 }
 
 fn test_server_messages() {
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse, AgentStatus};
+    let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
+    let status = AgentStatus {
+        pane_id,
+        session: "development".into(),
+        agent: AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Waiting,
+            source: AgentSource::Reported,
+            detail: Some("approval".into()),
+            waiting_on: Some("run command".into()),
+            wait_needs_a_person: true,
+            cwd: Some("/repo/review-auth".into()),
+            session_id: Some("conversation-7".into()),
+            run_id: Some("run-7".into()),
+        },
+        cwd: Some("/repo/review-auth".into()),
+        branch: Some("review-auth".into()),
+        ready: false,
+        status_available: true,
+        prompt_supported: true,
+    };
+    for outcome in [
+        AgentOutcome::Ok,
+        AgentOutcome::Submitted,
+        AgentOutcome::Completed,
+        AgentOutcome::NeedsInput,
+        AgentOutcome::Failed,
+        AgentOutcome::Interrupted,
+        AgentOutcome::TimedOut,
+        AgentOutcome::TargetChanged,
+        AgentOutcome::TargetClosed,
+        AgentOutcome::StatusUnavailable,
+        AgentOutcome::Rejected,
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse::new(outcome)));
+        test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+            outcome,
+            agents: vec![status.clone()],
+            spawned: Some(yinz_types::agent::SpawnedAgent {
+                pane_id,
+                branch: Some("review-auth-2".into()),
+                cwd: Some("/repo/review-auth-2".into()),
+            }),
+            output: Some("Ready\n>".into()),
+            message: Some("approval required".into()),
+            acknowledged: true,
+            turn_id: Some("turn-7".into()),
+        }));
+    }
     test_server_roundtrip!(ServerToClientMsg::KillSessionComplete { error: None });
     test_server_roundtrip!(ServerToClientMsg::KillSessionComplete {
         error: Some("cleanup failed".into())

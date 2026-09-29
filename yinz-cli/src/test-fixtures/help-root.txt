@@ -3,6 +3,7 @@ A terminal workspace with batteries included
 Usage: yinz [OPTIONS] [COMMAND]
 
 Commands:
+  agent                Find, launch and control agents in explicit terminal panes
   workflow             Run and view project-owned Swamp workflows
   options              Change the behaviour of yinz
   setup                Setup yinz and check its configuration

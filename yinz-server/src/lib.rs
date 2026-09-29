@@ -366,6 +366,7 @@ impl SessionConfiguration {
 pub(crate) struct SessionMetaData {
     shutdown: Shutdown,
     pub senders: ThreadSenders,
+    pub data_access: Arc<DataAccess>,
     pub default_shell: Option<TerminalAction>,
     pub current_input_modes: HashMap<ClientId, InputMode>,
     pub session_configuration: SessionConfiguration,
@@ -2521,6 +2522,7 @@ fn init_session(
 
     SessionMetaData {
         shutdown,
+        data_access,
         senders: ThreadSenders {
             to_screen: Some(to_screen),
             to_pty: Some(to_pty),

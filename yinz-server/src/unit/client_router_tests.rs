@@ -179,6 +179,9 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
             session_checkpoint: Default::default(),
             should_silently_fail: true,
         },
+        data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+            std::path::Path::new("/unused"),
+        )),
         default_shell: None,
         current_input_modes: HashMap::new(),
         session_configuration: Default::default(),
@@ -279,6 +282,114 @@ fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_clien
         removals, 1,
         "duplicate removal can close a later client with the same ID"
     );
+}
+
+#[test]
+fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_ipc::ipc::IpcSenderWithContext;
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+    use yinz_types::agent::AgentSpawnSpec;
+
+    for ready in [true, false] {
+        let (session, threads) = paused_session();
+        let session = Arc::new(RwLock::new(Some(session)));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-control.sock");
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let client =
+            LocalSocketStream::connect(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                .unwrap();
+        let server = listener.accept().unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
+        let prompt = AgentRequest::Prompt {
+            pane_id: PaneId::Terminal(TerminalId::new(2)),
+            expected_session_id: Some("conversation-7".into()),
+            prompt: "Review this diff.\nExplain the result.".into(),
+            wait: true,
+            timeout_ms: 60_000,
+        };
+        for request in [
+            prompt.clone(),
+            AgentRequest::Spawn {
+                spec: AgentSpawnSpec {
+                    kind: Some("zsh".into()),
+                    ..Default::default()
+                },
+                cwd: dir.path().to_path_buf(),
+            },
+        ] {
+            sender
+                .send_client_msg(ClientToServerMsg::AgentControl(request))
+                .unwrap();
+        }
+        sender
+            .send_client_msg(ClientToServerMsg::ClientExited)
+            .unwrap();
+        let router_session = if ready {
+            session.clone()
+        } else {
+            Arc::new(RwLock::new(None))
+        };
+        let os = CapturingOs::default();
+        let router_os = os.clone();
+        let to_server = threads.to_server.clone();
+        let (finished, done) = std::sync::mpsc::channel();
+        let router = std::thread::spawn(move || {
+            let result = route_thread_main(
+                router_session,
+                Arc::new(RwLock::new(SessionState::new())),
+                Box::new(router_os),
+                to_server,
+                IpcReceiverWithContext::new(server),
+                CLIENT_99,
+                Duration::from_secs(1),
+            );
+            finished.send(result).unwrap();
+        });
+        // A prompt is handed to Screen without waiting on it. The connection can close
+        // while consumers are paused, and the router must preserve its target and identity.
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        router.join().unwrap();
+        if ready {
+            assert!(matches!(threads.screen_receiver.try_recv().unwrap().0,
+                ScreenInstruction::AgentControl(queued, CLIENT_99) if queued == prompt));
+        }
+        assert!(threads.screen_receiver.is_empty());
+        let replies = os.server_to_client_messages.lock().unwrap();
+        let replies = replies.get(&CLIENT_99).unwrap();
+        let mut expected = Vec::new();
+        if !ready {
+            expected.push(ServerToClientMsg::AgentControl(AgentResponse::new(
+                AgentOutcome::StatusUnavailable,
+            )));
+        }
+        expected.push(ServerToClientMsg::UnblockInputThread);
+        let mut rejected = AgentResponse::new(AgentOutcome::Failed);
+        rejected.message = Some(if ready {
+            "agent spawn requires a recognized agent command".into()
+        } else {
+            "session is not ready".into()
+        });
+        expected.push(ServerToClientMsg::AgentControl(rejected));
+        expected.push(ServerToClientMsg::UnblockInputThread);
+        assert_eq!(replies, &expected);
+        assert!(threads.plugin_receiver.is_empty());
+        assert_eq!(
+            threads
+                .server_receiver
+                .try_iter()
+                .filter(|(message, _)| matches!(
+                    message,
+                    ServerInstruction::RemoveClient(CLIENT_99)
+                ))
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

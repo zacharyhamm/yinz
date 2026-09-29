@@ -264,6 +264,14 @@ pub trait Pane {
     fn agent_info(&self) -> Option<&AgentInfo> {
         None
     }
+    fn supports_bracketed_paste(&self) -> bool {
+        false
+    }
+    /// Counts user input delivered to this pane, independent of its current tab.
+    fn agent_input_revision(&self) -> u64 {
+        0
+    }
+    fn record_agent_input(&mut self) {}
     /// Replace the pane's agent record; answers whether it changed.
     fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {
         false

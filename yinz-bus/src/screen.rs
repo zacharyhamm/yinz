@@ -838,6 +838,8 @@ pub enum ScreenInstruction {
         pane_id: yinz_types::data::PaneId,
     },
     SetCliEventSubscribersPresent(bool),
+    AgentControl(yinz_types::agent::control::AgentRequest, ClientId),
+    AgentSpawned(yinz_types::agent::SpawnedAgent),
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the

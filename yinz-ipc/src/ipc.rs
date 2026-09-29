@@ -121,6 +121,7 @@ impl PixelDimensions {
     strum_macros::VariantNames,
 )]
 pub enum ClientToServerMsg {
+    AgentControl(yinz_types::agent::control::AgentRequest),
     AgentReport(yinz_types::agent::report::AgentReport),
     DetachSession {
         client_ids: Vec<ClientId>,
@@ -226,6 +227,7 @@ pub enum ClientToServerMsg {
     strum_macros::VariantNames,
 )]
 pub enum ServerToClientMsg {
+    AgentControl(yinz_types::agent::control::AgentResponse),
     KillSessionComplete {
         error: Option<String>,
     },

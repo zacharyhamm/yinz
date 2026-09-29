@@ -81,6 +81,11 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
 
     fn try_from(msg: ClientToServerMsg) -> Result<Self> {
         let message = match msg {
+            ClientToServerMsg::AgentControl(request) => {
+                client_to_server_msg::Message::AgentControlJson(
+                    serde_json::to_string(&request).context("encode agent request")?,
+                )
+            },
             ClientToServerMsg::AgentReport(report) => {
                 use yinz_types::agent::report::AgentReportState;
                 let (state, agent) = match report.state {
@@ -260,6 +265,11 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
 
     fn try_from(msg: ProtoClientToServerMsg) -> Result<Self> {
         match msg.message {
+            Some(client_to_server_msg::Message::AgentControlJson(json)) => {
+                Ok(ClientToServerMsg::AgentControl(
+                    serde_json::from_str(&json).context("decode agent request")?,
+                ))
+            },
             Some(client_to_server_msg::Message::AgentReport(msg)) => {
                 use {
                     yinz_types::agent::report::AgentReport,
@@ -463,6 +473,12 @@ impl From<ServerToClientMsg> for ProtoServerToClientMsg {
             ServerToClientMsg::KillSessionComplete { error } => {
                 server_to_client_msg::Message::KillSessionComplete(KillSessionCompleteMsg { error })
             },
+            ServerToClientMsg::AgentControl(response) => match serde_json::to_string(&response) {
+                Ok(json) => server_to_client_msg::Message::AgentControlJson(json),
+                Err(error) => server_to_client_msg::Message::LogError(LogErrorMsg {
+                    lines: vec![format!("encode agent response: {error}")],
+                }),
+            },
             ServerToClientMsg::AgentReportAccepted { report_id } => {
                 server_to_client_msg::Message::AgentReportAccepted(AgentReportAcceptedMsg {
                     report_id,
@@ -578,6 +594,11 @@ impl TryFrom<ProtoServerToClientMsg> for ServerToClientMsg {
         match msg.message {
             Some(server_to_client_msg::Message::KillSessionComplete(msg)) => {
                 Ok(ServerToClientMsg::KillSessionComplete { error: msg.error })
+            },
+            Some(server_to_client_msg::Message::AgentControlJson(json)) => {
+                Ok(ServerToClientMsg::AgentControl(
+                    serde_json::from_str(&json).context("decode agent response")?,
+                ))
             },
             Some(server_to_client_msg::Message::AgentReportAccepted(msg)) => {
                 Ok(ServerToClientMsg::AgentReportAccepted {

@@ -4464,6 +4464,21 @@ impl Tab {
         self.paste_to_pane_id(bytes, active_pane_id, completion)
     }
 
+    /// Changes only for input delivered to the terminal, not terminal query replies.
+    pub fn agent_input_revision(&self, pane_id: PaneId) -> u64 {
+        self.get_pane_with_id(pane_id)
+            .map(|pane| pane.agent_input_revision())
+            .unwrap_or(0)
+    }
+
+    pub fn write_key_to_pane_id(&mut self, pane_id: PaneId, key: KeyWithModifier) -> Result<()> {
+        let bytes = yinz_key_codec::keys::serialize_non_kitty(&key)
+            .context("key has no terminal encoding")?
+            .into_bytes();
+        self.write_to_pane_id(&Some(key), bytes, false, pane_id, None, None)?;
+        Ok(())
+    }
+
     pub fn write_to_pane_id(
         &mut self,
         key_with_modifier: &Option<KeyWithModifier>,
@@ -4548,6 +4563,9 @@ impl Tab {
                     client_id,
                 ) {
                     Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
+                        if !adjusted_input.is_empty() {
+                            active_pane.record_agent_input();
+                        }
                         self.senders
                             .send_to_pty_writer(PtyWriteInstruction::Write(
                                 adjusted_input,

@@ -387,6 +387,10 @@ pub enum PtyHosts {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
+    /// Find, launch and control agents in explicit terminal panes.
+    #[clap(subcommand)]
+    Agent(Agent),
+
     /// Run and view project-owned Swamp workflows.
     #[clap(subcommand)]
     Workflow(Workflow),
@@ -442,6 +446,138 @@ pub enum Command {
     #[clap(subcommand, name = "pty-host")]
     PtyHosts(PtyHosts),
 }
+
+fn parse_agent_target(value: &str) -> Result<yinz_types::pane_id::PaneId, String> {
+    if !value.starts_with("terminal_") {
+        return Err("expected an explicit terminal pane ID, such as terminal_7".to_owned());
+    }
+    value
+        .parse()
+        .map_err(|error| format!("invalid terminal pane ID: {error}"))
+}
+
+fn parse_agent_timeout(value: &str) -> Result<std::time::Duration, String> {
+    let timeout = humantime::parse_duration(value).map_err(|error| error.to_string())?;
+    if timeout < std::time::Duration::from_millis(1)
+        || timeout > std::time::Duration::from_secs(86_400)
+    {
+        return Err("timeout must be between 1ms and 24h".to_owned());
+    }
+    Ok(timeout)
+}
+
+fn parse_agent_state(value: &str) -> Result<yinz_types::agent::AgentState, String> {
+    yinz_types::agent::AgentState::parse_lenient(value)
+        .ok_or_else(|| "expected busy, waiting, idle or exited".to_owned())
+}
+
+#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
+pub enum Agent {
+    /// List agents and their reported lifecycle state.
+    List {
+        #[clap(long)]
+        json: bool,
+    },
+    /// Inspect an agent's identity, readiness and reporting source.
+    Status {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        /// Require this agent conversation to still occupy the pane.
+        #[clap(long)]
+        conversation: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Launch an agent with the shared launch planner and return its actual pane and checkout.
+    Spawn {
+        #[clap(long)]
+        kind: String,
+        #[clap(long, default_value = ".")]
+        cwd: PathBuf,
+        /// Create a separate worktree for this branch; collisions get a fresh branch name.
+        #[clap(long)]
+        branch: Option<String>,
+        #[clap(long, requires = "branch")]
+        base: Option<String>,
+        #[clap(long, requires = "branch")]
+        worktree_dir: Option<String>,
+        #[clap(long)]
+        model: Option<String>,
+        #[clap(long)]
+        effort: Option<String>,
+        #[clap(long)]
+        permission_mode: Option<String>,
+        #[clap(long)]
+        resume: Option<String>,
+        /// Reuse an existing branch or worktree when its name is taken.
+        #[clap(long)]
+        reuse: bool,
+        /// Permit launching outside a linked Git worktree.
+        #[clap(long)]
+        allow_outside_worktree: bool,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Submit to an idle, ready agent and wait for acknowledgement or the resulting turn.
+    Prompt {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(required_unless_present = "file", conflicts_with = "file")]
+        text: Option<String>,
+        /// Read the prompt from a UTF-8 file, or from standard input with '-'.
+        #[clap(long, conflicts_with = "text")]
+        file: Option<PathBuf>,
+        #[clap(long)]
+        conversation: Option<String>,
+        /// Wait for this turn's outcome after the agent acknowledges the prompt.
+        #[clap(long)]
+        wait: bool,
+        /// Total deadline, including acknowledgement (default: 30s, or 10m with --wait).
+        #[clap(long, value_parser = parse_agent_timeout)]
+        timeout: Option<std::time::Duration>,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Observe a reported state without sending input.
+    Wait {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: Option<String>,
+        #[clap(long, default_value = "idle", value_parser = parse_agent_state)]
+        until: yinz_types::agent::AgentState,
+        #[clap(long, default_value = "30s", value_parser = parse_agent_timeout)]
+        timeout: std::time::Duration,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Read the agent's terminal output.
+    Read {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: Option<String>,
+        #[clap(long, default_value_t = 80, value_parser = clap::value_parser!(u32).range(1..=100_000))]
+        lines: u32,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Deliberately send keys to an agent's terminal UI.
+    SendKeys {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(required = true, num_args = 1..=1024)]
+        keys: Vec<String>,
+        #[clap(long)]
+        conversation: Option<String>,
+        #[clap(long)]
+        json: bool,
+    },
+}
+
+#[cfg(test)]
+#[path = "unit/agent_cli_tests.rs"]
+mod agent_cli_tests;
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Workflow {

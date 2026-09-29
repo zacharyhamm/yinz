@@ -42,6 +42,9 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
                 to_pty: Some(SenderWithContext::new(to_pty)),
                 ..Default::default()
             },
+            data_access: std::sync::Arc::new(yinz_storage::data_access::DataAccess::sqlite(
+                std::path::Path::new("/unused"),
+            )),
             default_shell: None,
             current_input_modes: HashMap::new(),
             session_configuration: Default::default(),
