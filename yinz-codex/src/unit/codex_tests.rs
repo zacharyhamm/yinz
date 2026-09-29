@@ -508,6 +508,7 @@ fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
             "session_id":"real",
             "source":"startup",
             "cwd":"/work",
+            "_yinz_codex_hooks_ready":false,
         }))
     );
     // The TUI titles a conversation from a hidden thread it starts on the first prompt. Either
@@ -591,7 +592,14 @@ async fn bridge_registers_before_delivering_replies_and_preserves_the_protocol()
         ];
         let serve = async {
             let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
-            relay(ui, backend_stream, &registration).await.unwrap();
+            relay(
+                ui,
+                backend_stream,
+                &registration,
+                Path::new("/usr/bin/true"),
+            )
+            .await
+            .unwrap();
         };
         let backend = async {
             let mut ws = tokio_tungstenite::accept_async(server_stream)
@@ -676,7 +684,14 @@ async fn bridge_reports_a_rejected_backend_handshake() {
     let (backend_stream, mut server_stream) = tokio::io::duplex(4096);
     let serve = async {
         let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
-        let error = relay(ui, backend_stream, &registration).await.unwrap_err();
+        let error = relay(
+            ui,
+            backend_stream,
+            &registration,
+            Path::new("/usr/bin/true"),
+        )
+        .await
+        .unwrap_err();
         assert!(format!("{error:#}").contains("establish Codex daemon WebSocket connection"));
         assert!(format!("{error:#}").contains("403"));
     };
@@ -701,4 +716,314 @@ async fn bridge_reports_a_rejected_backend_handshake() {
     })
     .await
     .unwrap();
+}
+
+fn reporting_hooks(cwd: &str, script: &Path, trust: &str) -> Value {
+    let command = format!("'{}'", script.display().to_string().replace('\'', r"'\''"));
+    json!({"data": [{"cwd": cwd, "errors": [], "hooks":
+        yinz_types::agent::CODEX_HOOK_EVENTS.iter().map(|event| json!({
+            "eventName": format!("{}{}", event[..1].to_ascii_lowercase(), &event[1..]),
+            "handlerType": "command", "command": command, "enabled": true,
+            "trustStatus": trust, "async": false, "matcher": null
+        })).collect::<Vec<_>>()
+    }]})
+}
+
+#[test]
+fn capability_requires_all_the_installed_reporting_handlers() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("hocus-hook.sh");
+    yinz_test_support::write_warm_script(&script, "exit 0");
+    for trust in ["trusted", "managed"] {
+        verify_handlers(&reporting_hooks("/work", &script, trust), "/work", &script).unwrap();
+    }
+    let good = reporting_hooks("/work", &script, "trusted");
+    for (field, value) in [
+        ("enabled", json!(false)),
+        ("trustStatus", json!("untrusted")),
+        ("trustStatus", json!("modified")),
+        ("async", json!(true)),
+        ("async", json!("false")),
+        ("matcher", json!("*")),
+        ("command", json!("'/unrelated/hocus-hook.sh'")),
+        ("handlerType", json!("prompt")),
+    ] {
+        // Every required event is independently checked; unrelated hooks cannot substitute.
+        for index in 0..yinz_types::agent::CODEX_HOOK_EVENTS.len() {
+            let mut bad = good.clone();
+            bad["data"][0]["hooks"][index][field] = value.clone();
+            assert!(
+                verify_handlers(&bad, "/work", &script).is_err(),
+                "{field}, {index}"
+            );
+        }
+    }
+    for bad in [
+        json!({}),
+        json!({"data": []}),
+        json!({"data":[{"cwd":"/work","errors":[],"hooks":[]}]}),
+        json!({"data":[{"cwd":"/work","errors":[{"message":"bad config"}],"hooks":good["data"][0]["hooks"]}]}),
+    ] {
+        assert!(verify_handlers(&bad, "/work", &script).is_err());
+    }
+    assert!(verify_handlers(&good, "/other", &script).is_err());
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(verify_handlers(&good, "/work", &script).is_err());
+    std::fs::remove_file(&script).unwrap();
+    assert!(verify_handlers(&good, "/work", &script).is_err());
+    std::fs::create_dir(&script).unwrap();
+    assert!(verify_handlers(&good, "/work", &script).is_err());
+}
+
+#[tokio::test]
+async fn capability_connection_initializes_and_checks_the_selected_thread_and_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("hocus-hook.sh");
+    yinz_test_support::write_warm_script(&script, "exit 0");
+    for failure in [
+        "none",
+        "disabled",
+        "missing",
+        "malformed",
+        "unsupported",
+        "hooks_error",
+        "initialize_error",
+        "initialize_malformed",
+        "paginated",
+    ] {
+        let (client, server) = tokio::io::duplex(16384);
+        let check = async {
+            let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", client)
+                .await
+                .unwrap();
+            let result = check_capability(&mut ws, "selected-thread", "/work", &script).await;
+            assert_eq!(
+                result.is_ok(),
+                matches!(failure, "none" | "paginated"),
+                "{failure}: {result:?}"
+            );
+        };
+        let daemon = async {
+            let mut ws = tokio_tungstenite::accept_async(server).await.unwrap();
+            let request: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "initialize");
+            assert_eq!(request["params"]["capabilities"]["experimentalApi"], true);
+            if failure == "initialize_error" {
+                ws.send(Message::text(
+                    json!({"id":0,"error":{"message":"unsupported"}}).to_string(),
+                ))
+                .await
+                .unwrap();
+                return;
+            }
+            if failure == "initialize_malformed" {
+                ws.send(Message::text(r#"{"id":0,"result":false}"#))
+                    .await
+                    .unwrap();
+                return;
+            }
+            ws.send(Message::text(r#"{"id":0,"result":{}}"#))
+                .await
+                .unwrap();
+            assert_eq!(
+                ws.next().await.unwrap().unwrap(),
+                Message::text(r#"{"method":"initialized"}"#)
+            );
+            let request: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "experimentalFeature/list");
+            assert_eq!(request["params"]["threadId"], "selected-thread");
+            let mut response_id = 1;
+            if failure == "paginated" {
+                ws.send(Message::text(
+                    r#"{"id":1,"result":{"data":[],"nextCursor":"next"}}"#,
+                ))
+                .await
+                .unwrap();
+                let request: Value =
+                    serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(request["method"], "experimentalFeature/list");
+                assert_eq!(request["params"]["threadId"], "selected-thread");
+                assert_eq!(request["params"]["cursor"], "next");
+                response_id = 2;
+            }
+            let features = match failure {
+                "disabled" => json!({"data":[{"name":"hooks","enabled":false}]}),
+                "missing" => json!({"data":[]}),
+                "malformed" => json!({"data":{}}),
+                _ => json!({"data":[{"name":"hooks","enabled":true}]}),
+            };
+            let response = if failure == "unsupported" {
+                json!({"id":1,"error":{"message":"unknown method"}})
+            } else {
+                json!({"id":response_id,"result":features})
+            };
+            // Notifications and server request IDs must not be mistaken for replies.
+            ws.send(Message::text(
+                r#"{"id":1,"method":"server/request","params":{}}"#,
+            ))
+            .await
+            .unwrap();
+            ws.send(Message::text(response.to_string())).await.unwrap();
+            if !matches!(failure, "none" | "hooks_error" | "paginated") {
+                return;
+            }
+            let request: Value =
+                serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "hooks/list");
+            assert_eq!(request["params"]["cwds"], json!(["/work"]));
+            let response = if failure == "hooks_error" {
+                json!({"id":2,"error":{"message":"cannot list hooks"}})
+            } else {
+                json!({"id":response_id + 1,"result":reporting_hooks("/work", &script, "trusted")})
+            };
+            ws.send(Message::text(response.to_string())).await.unwrap();
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(check, daemon);
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn announcements_finish_before_later_selections_turns_and_the_selection_reply() {
+    let root = tempfile::tempdir().unwrap();
+    let entered = root.path().join("entered");
+    let release = root.path().join("release");
+    assert!(Command::new("mkfifo")
+        .args([&entered, &release])
+        .status()
+        .unwrap()
+        .success());
+    // Read/write mode lets the test release the reporter without blocking this runtime thread.
+    let mut unblock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&release)
+        .unwrap();
+    let reporter = root.path().join("reporter");
+    yinz_test_support::write_warm_script(
+        &reporter,
+        &format!(
+            "cat > '{}'\nprintf x > '{}'\nread released < '{}'\n",
+            root.path().join("report.json").display(),
+            entered.display(),
+            release.display()
+        ),
+    );
+    let mut registration = registration(root.path(), "aaaaaaaaaaaa");
+    registration.reporter = Some(reporter);
+    let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
+    let (backend, server) = tokio::io::duplex(16384);
+    let serve = async {
+        let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
+        relay(ui, backend, &registration, Path::new("/usr/bin/true"))
+            .await
+            .unwrap();
+    };
+    let scenario = async {
+        let (client, server) = tokio::join!(
+            tokio_tungstenite::client_async("ws://localhost", ui_stream),
+            tokio_tungstenite::accept_async(server)
+        );
+        let (mut ui, _) = client.unwrap();
+        let mut daemon = server.unwrap();
+        let selection = Message::text(r#"{"id":1,"method":"thread/start"}"#);
+        ui.send(selection.clone()).await.unwrap();
+        assert_eq!(daemon.next().await.unwrap().unwrap(), selection);
+        let reply = Message::text(r#"{"id":1,"result":{"thread":{"id":"first"}}}"#);
+        daemon.send(reply.clone()).await.unwrap();
+        assert_eq!(tokio::fs::read(&entered).await.unwrap(), b"x");
+        assert!(binding_for(root.path(), "first").unwrap().is_some());
+        for request in [
+            r#"{"id":2,"method":"thread/resume","params":{"threadId":"second"}}"#,
+            r#"{"id":3,"method":"turn/start","params":{"threadId":"second"}}"#,
+        ] {
+            ui.send(Message::text(request)).await.unwrap();
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), daemon.next())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), ui.next())
+                .await
+                .is_err()
+        );
+        assert!(binding_for(root.path(), "first").unwrap().is_some());
+        unblock.write_all(b"done\n").unwrap();
+        assert_eq!(ui.next().await.unwrap().unwrap(), reply);
+        for id in [2, 3] {
+            let request: Value =
+                serde_json::from_str(daemon.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(request["id"], id);
+        }
+        assert!(binding_for(root.path(), "second").unwrap().is_some());
+        let hook: Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("report.json")).unwrap())
+                .unwrap();
+        assert_eq!(hook["_yinz_codex_hooks_ready"], false);
+        ui.close(None).await.unwrap();
+        assert!(matches!(
+            daemon.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        tokio::join!(serve, scenario);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn capability_timeout_still_announces_an_unverified_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let program = root.path().join("codex");
+    yinz_test_support::write_warm_script(&program, "cat >/dev/null");
+    let reporter = root.path().join("reporter");
+    let output = root.path().join("report.json");
+    yinz_test_support::write_warm_script(&reporter, &format!("cat > '{}'\n", output.display()));
+    let mut registration = registration(root.path(), "aaaaaaaaaaaa");
+    registration.reporter = Some(reporter);
+    let started = std::time::Instant::now();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        registration.announce(
+            json!({
+                "session_id":"first", "cwd":"/work", "_yinz_codex_hooks_ready":true
+            }),
+            &program,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() >= std::time::Duration::from_secs(10));
+    let hook: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    assert_eq!(hook["_yinz_codex_hooks_ready"], false);
+}
+
+#[test]
+fn only_an_idle_selection_can_bootstrap_codex_readiness() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let mut conversations = Conversations::default();
+    for status in [
+        Value::Null,
+        json!({"type":"active"}),
+        json!({"type":"notLoaded"}),
+        json!({"type":"idle"}),
+    ] {
+        conversations
+            .request(&json!({"id":1,"method":"thread/start"}), &registration)
+            .unwrap();
+        let hook = conversations.response(&json!({"id":1,"result":{"thread":{"id":"selected","cwd":"/work","status":status}}}), &registration).unwrap().unwrap();
+        assert_eq!(hook["_yinz_codex_hooks_ready"], status["type"] == "idle");
+    }
 }

@@ -1858,3 +1858,114 @@ fn host_bridge_and_cli_share_readiness_identity_outcomes_and_recovery() {
         }
     }
 }
+
+#[test]
+fn verified_codex_bootstrap_readies_the_first_automatic_prompt() {
+    let (mut screen, messages, _writes) = setup("codex");
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    let mut bootstrap = hook("SessionStart");
+    bootstrap.codex_hooks_ready = Some(true);
+    report(&mut screen, bootstrap);
+    let ready = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(ready.outcome, AgentOutcome::Ok);
+    assert!(ready.agents[0].ready);
+    screen.agent_control(prompt(true), CLIENT);
+    // Keep the provider's deferred first-turn SessionStart handling.
+    report(&mut screen, hook("SessionStart"));
+    report(&mut screen, hook("UserPromptSubmit"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    report(&mut screen, hook("Stop"));
+    let completed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(completed.outcome, AgentOutcome::Completed);
+    assert!(completed.acknowledged);
+}
+
+#[test]
+fn duplicate_bootstrap_cannot_overwrite_provider_state_or_an_acknowledged_prompt() {
+    for waiting in [false, true] {
+        let (mut screen, messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        report(&mut screen, hook("UserPromptSubmit"));
+        if waiting {
+            let mut permission = hook("PermissionRequest");
+            permission.permission_mode = Some("default".into());
+            report(&mut screen, permission);
+            replies(&messages, CLIENT);
+        }
+        let parent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        assert_eq!(
+            parent.state,
+            if waiting {
+                AgentState::Waiting
+            } else {
+                AgentState::Busy
+            }
+        );
+        let (to_plugin, plugins) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+        let mut bootstrap = hook("SessionStart");
+        bootstrap.codex_hooks_ready = Some(true);
+        report(&mut screen, bootstrap);
+        assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), parent);
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert_eq!(screen.agent_controls.len(), 1);
+        assert!(plugins
+            .try_iter()
+            .all(|(instruction, _)| !matches!(instruction, PluginInstruction::Update(_))));
+        if !waiting {
+            report(&mut screen, hook("Stop"));
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().outcome,
+                AgentOutcome::Completed
+            );
+        }
+    }
+}
+
+#[test]
+fn unverified_selection_cannot_inherit_lifecycle_readiness() {
+    for replacement in [false, true] {
+        let (mut screen, messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let mut bootstrap = hook("SessionStart");
+        bootstrap.codex_hooks_ready = Some(false);
+        if replacement {
+            bootstrap.session_id = "other".into();
+        }
+        report(&mut screen, bootstrap.clone());
+        screen.agent_control(
+            AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: None,
+            },
+            CLIENT,
+        );
+        let status = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(status.outcome, AgentOutcome::StatusUnavailable);
+        assert!(!status.agents[0].ready);
+        assert!(!status.agents[0].prompt_supported);
+        assert_eq!(
+            status.agents[0].agent.session_id.as_deref(),
+            Some(bootstrap.session_id.as_str())
+        );
+        screen.agent_control(prompt(true), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::StatusUnavailable
+        );
+        // Ordinary provider hooks can establish evidence after manual input.
+        report(
+            &mut screen,
+            HookEvent {
+                codex_hooks_ready: None,
+                ..bootstrap
+            },
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::Ok
+        );
+    }
+}

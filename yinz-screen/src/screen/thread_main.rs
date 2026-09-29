@@ -63,6 +63,16 @@ pub(super) fn apply_queued_agent_report(
             }
         }
     }
+    // Bootstrap must not overwrite newer provider evidence or observe/broadcast stale startup.
+    if report.kind == "codex"
+        && hook.as_ref().is_some_and(|hook| {
+            hook.hook_event_name == "SessionStart"
+                && hook.codex_hooks_ready == Some(true)
+                && screen.has_agent_lifecycle(pane_id, &report.kind, &hook.session_id)
+        })
+    {
+        return Ok(true);
+    }
     screen.refresh_agent_controls();
     let mut trace = yinz_runtime::agent::report::report_diagnostics(report);
     trace.session = screen.session_name.to_string();
