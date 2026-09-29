@@ -47,6 +47,12 @@ pub(super) struct Pending {
 }
 
 impl Screen {
+    pub(super) fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
+        self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+            lifecycle.kind == kind && lifecycle.conversation == conversation
+        })
+    }
+
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
         self.agent_lifecycle.remove(&pane);
         self.agent_worker_waits.remove(&pane);
@@ -169,9 +175,8 @@ impl Screen {
         let info = self.get_pane_info(pane_id)?;
         let agent = info.agent?;
         let status_available = agent.source == AgentSource::Reported
-            && self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
-                lifecycle.kind == agent.kind
-                    && Some(&lifecycle.conversation) == agent.session_id.as_ref()
+            && agent.session_id.as_ref().is_some_and(|conversation| {
+                self.has_agent_lifecycle(pane_id, &agent.kind, conversation)
             });
         let live = !info.is_held
             && !info.exited
@@ -888,7 +893,9 @@ impl Screen {
         if !parent {
             return;
         }
-        if event.hook == "SessionEnd" {
+        if hook.is_some_and(|hook| hook.codex_hooks_ready == Some(false)) {
+            self.agent_lifecycle.remove(&pane);
+        } else if event.hook == "SessionEnd" {
             self.agent_lifecycle.remove(&pane);
             self.agent_worker_waits.remove(&pane);
         } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {

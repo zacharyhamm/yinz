@@ -509,6 +509,13 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub workflow_owner: Option<String>,
+    /// Bridge selection announcement; only verified idle Codex conversations may bootstrap readiness.
+    #[serde(
+        default,
+        rename = "_yinz_codex_hooks_ready",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub codex_hooks_ready: Option<bool>,
     /// Why a `SessionStart` fired: `startup`, `resume`, `clear`, `compact`, or `fork`.
     #[serde(default)]
     pub source: Option<String>,
@@ -660,6 +667,7 @@ impl HookEvent {
             turn_id: self.turn_id.clone(),
             prompt_sha256: self.prompt_sha256.clone(),
             workflow_owner: self.workflow_owner.clone(),
+            codex_hooks_ready: self.codex_hooks_ready,
             source: self.source.clone(),
             cwd: self.cwd.clone(),
             notification_type: self.notification_type.clone(),
@@ -1359,6 +1367,23 @@ mod tests {
                 "{program_path} {list:?}"
             );
         }
+    }
+
+    #[test]
+    fn codex_bootstrap_marker_survives_pruning_and_provider_hooks_omit_it() {
+        for ready in [true, false] {
+            let hook = HookEvent {
+                codex_hooks_ready: Some(ready),
+                ..event("SessionStart")
+            };
+            let pruned: HookEvent =
+                serde_json::from_value(serde_json::to_value(hook.pruned_to(0)).unwrap()).unwrap();
+            assert_eq!(pruned.codex_hooks_ready, Some(ready));
+        }
+        assert!(serde_json::to_value(event("SessionStart"))
+            .unwrap()
+            .get("_yinz_codex_hooks_ready")
+            .is_none());
     }
 
     fn event(name: &str) -> HookEvent {

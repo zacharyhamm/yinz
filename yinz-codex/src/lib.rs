@@ -75,17 +75,37 @@ impl Registration {
 
     /// Codex runs `SessionStart` hooks only when a conversation's first turn begins, so the
     /// pane would otherwise stay unverified until someone types into it.
-    fn announce(&self, hook: Value) {
+    async fn announce(&self, mut hook: Value, program: &Path) {
         let Some(yinz) = self.reporter.clone() else {
             return;
         };
+        let ready = match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            verify_capability(program, &hook),
+        )
+        .await
+        .context("timed out checking Codex reporting hooks")
+        .and_then(|result| result)
+        {
+            Ok(()) => true,
+            Err(error) => {
+                Err::<(), _>(error)
+                    .context("Codex conversation remains unverified")
+                    .non_fatal();
+                false
+            },
+        };
+        hook["_yinz_codex_hooks_ready"] = ready.into();
         let env = self.env.clone();
-        // The UI's reply must not wait for the pane to accept the report.
+        // Finish reporting before the UI sees the selection or any later request is forwarded.
         tokio::task::spawn_blocking(move || {
             forward(&yinz, env, hook.to_string().as_bytes())
                 .context("announce Codex conversation to its pane")
                 .non_fatal();
-        });
+        })
+        .await
+        .context("join Codex conversation announcement")
+        .non_fatal();
     }
 
     fn select(&self, thread_id: &str) -> Result<()> {
@@ -217,6 +237,8 @@ impl Conversations {
             "session_id": id,
             "source": source,
         });
+        // Missing or active status must never grant bootstrap readiness.
+        hook["_yinz_codex_hooks_ready"] = (thread["status"]["type"] == "idle").into();
         if let Some(cwd) = thread["cwd"].as_str() {
             hook["cwd"] = cwd.into();
         }
@@ -232,8 +254,16 @@ async fn proxy(
     let ui = tokio_tungstenite::accept_async(stream)
         .await
         .context("accept Codex UI connection")?;
-    // Codex owns daemon discovery and connection setup. The child forwards raw WebSocket bytes;
-    // dropping it closes this UI's connection without stopping the shared server.
+    let (backend, stream) = daemon_connection(program)?;
+    let result = relay(ui, stream, registration, program).await;
+    drop(backend);
+    result
+}
+
+// Keep the proxy child alive for the lifetime of its WebSocket; cancellation kills it.
+fn daemon_connection(
+    program: &Path,
+) -> Result<(tokio::process::Child, impl AsyncRead + AsyncWrite + Unpin)> {
     let mut backend = tokio::process::Command::new(program)
         .args(["app-server", "proxy"])
         .stdin(Stdio::piped())
@@ -244,13 +274,182 @@ async fn proxy(
         .context("connect to the Codex daemon")?;
     let input = backend.stdin.take().context("open Codex daemon input")?;
     let output = backend.stdout.take().context("open Codex daemon output")?;
-    relay(ui, tokio::io::join(output, input), registration).await
+    Ok((backend, tokio::io::join(output, input)))
+}
+
+async fn capability_request<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    ws.send(Message::text(
+        serde_json::json!({"id": id, "method": method, "params": params}).to_string(),
+    ))
+    .await
+    .context("send Codex capability request")?;
+    while let Some(message) = ws.next().await {
+        match message.context("read Codex capability response")? {
+            Message::Text(text) => {
+                let response: Value =
+                    serde_json::from_str(&text).context("parse Codex capability response")?;
+                if response.get("method").is_none() && response["id"] == id {
+                    if let Some(error) = response.get("error") {
+                        return Err(anyhow!("Codex {method}: {error}"));
+                    }
+                    return response
+                        .get("result")
+                        .cloned()
+                        .context("Codex capability response has no result");
+                }
+            },
+            Message::Ping(_) | Message::Pong(_) => ws
+                .flush()
+                .await
+                .context("flush Codex capability control frame")?,
+            _ => return Err(anyhow!("Codex capability connection closed")),
+        }
+    }
+    Err(anyhow!("Codex capability connection ended"))
+}
+
+async fn verify_capability(program: &Path, hook: &Value) -> Result<()> {
+    if hook["_yinz_codex_hooks_ready"] != true {
+        return Err(anyhow!("selected Codex conversation is not idle"));
+    }
+    let cwd = hook["cwd"]
+        .as_str()
+        .context("selected Codex conversation has no working directory")?;
+    let root = std::env::var_os("CODEX_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|path| !path.is_empty())
+                .map(|home| PathBuf::from(home).join(".codex"))
+        })
+        .context("cannot locate Codex reporting script")?;
+    let script = root.join("hocus/hocus-hook.sh");
+    let (_child, stream) = daemon_connection(program)?;
+    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
+        .await
+        .context("connect Codex capability WebSocket")?;
+    check_capability(
+        &mut ws,
+        hook["session_id"]
+            .as_str()
+            .context("missing selected Codex thread id")?,
+        cwd,
+        &script,
+    )
+    .await
+}
+
+async fn check_capability<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    thread: &str,
+    cwd: &str,
+    script: &Path,
+) -> Result<()> {
+    capability_request(
+        ws,
+        0,
+        "initialize",
+        serde_json::json!({
+            "clientInfo": {"name": "yinz-hooks-check", "version": env!("CARGO_PKG_VERSION")},
+            "capabilities": {"experimentalApi": true}
+        }),
+    )
+    .await?
+    .as_object()
+    .context("malformed Codex initialize response")?;
+    ws.send(Message::text(r#"{"method":"initialized"}"#))
+        .await
+        .context("initialize Codex capability connection")?;
+    let mut cursor = Value::Null;
+    let mut request_id = 1;
+    loop {
+        let features = capability_request(
+            ws,
+            request_id,
+            "experimentalFeature/list",
+            serde_json::json!({
+                "threadId": thread, "cursor": cursor
+            }),
+        )
+        .await?;
+        let data = features["data"]
+            .as_array()
+            .context("malformed Codex feature list")?;
+        if let Some(hooks) = data.iter().find(|feature| feature["name"] == "hooks") {
+            if hooks["enabled"] != true {
+                return Err(anyhow!("Codex hooks feature is disabled"));
+            }
+            break;
+        }
+        cursor = features["nextCursor"].clone();
+        if !cursor.is_string() {
+            return Err(anyhow!("Codex hooks feature is unavailable"));
+        }
+        request_id += 1;
+    }
+    let hooks = capability_request(
+        ws,
+        request_id + 1,
+        "hooks/list",
+        serde_json::json!({"cwds": [cwd]}),
+    )
+    .await?;
+    verify_handlers(&hooks, cwd, script)
+}
+
+fn verify_handlers(response: &Value, cwd: &str, script: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(script).context("inspect Codex reporting script")?;
+    if !metadata.is_file() {
+        return Err(anyhow!("Codex reporting script is not a regular file"));
+    }
+    nix::unistd::access(script, nix::unistd::AccessFlags::X_OK)
+        .context("Codex reporting script is not executable")?;
+    let command = format!("'{}'", script.display().to_string().replace('\'', r"'\''"));
+    let entries = response["data"]
+        .as_array()
+        .context("malformed Codex hook list")?;
+    let entry = entries
+        .iter()
+        .find(|entry| entry["cwd"] == cwd)
+        .context("Codex hook list omits selected directory")?;
+    if !entry["errors"]
+        .as_array()
+        .context("malformed Codex hook errors")?
+        .is_empty()
+    {
+        return Err(anyhow!("Codex hook configuration has errors"));
+    }
+    let hooks = entry["hooks"]
+        .as_array()
+        .context("malformed Codex hook handlers")?;
+    for event in yinz_types::agent::CODEX_HOOK_EVENTS {
+        let event = format!("{}{}", event[..1].to_ascii_lowercase(), &event[1..]);
+        if !hooks.iter().any(|hook| {
+            hook["eventName"] == event
+                && hook["handlerType"] == "command"
+                && hook["command"] == command
+                && hook["enabled"] == true
+                && matches!(hook["trustStatus"].as_str(), Some("trusted" | "managed"))
+                && hook.get("async").is_none_or(|value| value == false)
+                && hook.get("matcher").is_none_or(Value::is_null)
+        }) {
+            return Err(anyhow!("Codex {event} has no enabled, trusted, synchronous Yinz reporting handler without a matcher"));
+        }
+    }
+    Ok(())
 }
 
 async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
     mut ui: tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>,
     stream: S,
     registration: &Registration,
+    program: &Path,
 ) -> Result<()> {
     let (mut backend, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -294,7 +493,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
                         if let Some(hook) = conversations.response(&value, registration)? {
-                            registration.announce(hook);
+                            registration.announce(hook, program).await;
                         }
                         ui.send(Message::Text(text)).await.context("forward Codex daemon reply")?;
                     },
