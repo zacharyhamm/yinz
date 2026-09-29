@@ -120,3 +120,21 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
     assert_eq!(value["output"], "");
     assert_eq!(value["agents"][0]["pane_id"], "terminal_7");
 }
+
+#[test]
+fn recovery_request_preserves_the_explicit_assertion_and_pinned_conversation() {
+    let (request, json, _) = request(
+        Agent::Recover {
+            target: "terminal_7".parse().unwrap(),
+            conversation: "conversation".into(),
+            confirm_empty: true,
+            json: true,
+        },
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert!(json);
+    assert!(
+        matches!(request, AgentRequest::Recover { expected_session_id, confirm_empty: true, .. } if expected_session_id == "conversation")
+    );
+}

@@ -1,10 +1,11 @@
 use super::*;
 use crate::screen::thread_main::apply_queued_agent_report;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
 use yinz_types::agent::report::{AgentReport, AgentReportState};
 use yinz_types::agent::{hook_outcome, AgentEvent, AgentState, HookEvent, HookOutcome};
 use yinz_types::command::PaneTarget;
+use yinz_types::keys::{BareKey, KeyWithModifier};
 
 const PANE: PaneId = PaneId::Terminal(TerminalId::new(7));
 const CLIENT: ClientId = ClientId::new(1);
@@ -407,7 +408,7 @@ fn startup_wait_requires_lifecycle_evidence_and_binds_the_first_conversation() {
             })
             .flatten()
             .collect();
-        assert_eq!(input, b"\x1b[200~review\x1b[201~\r");
+        assert_eq!(input, b"\x1b[200~review\x1b[201~");
         report(&mut screen, hook("UserPromptSubmit"));
         assert_eq!(
             replies(&messages, CLIENT)[0].outcome,
@@ -646,7 +647,7 @@ fn prompt_claim_precedes_input_and_acknowledgement_does_not_release_it() {
         })
         .flatten()
         .collect();
-    assert_eq!(input, b"\x1b[200~review\x1b[201~\r");
+    assert_eq!(input, b"\x1b[200~review\x1b[201~");
     screen.agent_control(prompt(true), ClientId::new(2));
     assert_eq!(
         replies(&messages, ClientId::new(2))[0].outcome,
@@ -693,6 +694,7 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
         let (mut screen, messages, _writes) = setup("codex");
         report(&mut screen, hook("SessionStart"));
         screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&_writes);
         report(&mut screen, hook("Stop"));
         assert!(
             replies(&messages, CLIENT).is_empty(),
@@ -705,13 +707,16 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
         report(&mut screen, end);
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, outcome);
-        assert_eq!(result.message.as_deref(), Some("result"));
+        assert!(result.message.as_deref().unwrap().starts_with("result"));
         assert!(result.acknowledged);
         assert_eq!(result.agents[0].agent.state, AgentState::Idle);
         if outcome == AgentOutcome::Completed {
             assert!(result.agents[0].ready);
         }
-        assert!(screen.agent_controls.is_empty());
+        assert_eq!(
+            screen.agent_controls.is_empty(),
+            outcome != AgentOutcome::Interrupted
+        );
     }
 }
 
@@ -720,6 +725,7 @@ fn manual_terminal_input_interrupts_correlation_before_a_fast_completion() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&_writes);
     report(&mut screen, hook("UserPromptSubmit"));
     screen
         .tab_containing_pane_mut(PANE)
@@ -1015,6 +1021,7 @@ fn timeout_keeps_the_claim_until_the_original_submission_is_resolved() {
     let (mut screen, messages, _writes) = setup("codex");
     report(&mut screen, hook("SessionStart"));
     screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&_writes);
     screen.agent_controls[0].deadline = Some(Instant::now());
     screen.refresh_agent_controls();
     let timeout = replies(&messages, CLIENT).pop().unwrap();
@@ -1259,4 +1266,478 @@ fn tool_and_completion_reports_do_not_clear_a_draft_typed_while_busy() {
     assert!(writes
         .try_iter()
         .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+}
+
+fn finish_paste(writes: &Receiver<(PtyWriteInstruction, ErrorContext)>) -> Vec<u8> {
+    writes
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PtyWriteInstruction::Write(bytes, _, completion) => {
+                drop(completion);
+                Some(bytes)
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+fn recover() -> AgentRequest {
+    AgentRequest::Recover {
+        pane_id: PANE,
+        expected_session_id: "conversation".into(),
+        confirm_empty: true,
+    }
+}
+
+#[test]
+fn paste_completion_and_delay_gate_enter_without_sleeping() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    let now = Instant::now();
+    screen.refresh_agent_controls_at(now + Duration::from_millis(500));
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    screen.refresh_agent_controls_at(now + Duration::from_millis(500));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(599));
+    assert!(finish_paste(&writes).is_empty());
+    screen.refresh_agent_controls_at(now + Duration::from_millis(600));
+    assert_eq!(finish_paste(&writes), b"\r");
+    assert!(replies(&messages, CLIENT).is_empty());
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Stop"));
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
+    for reason in [
+        "input",
+        "failure",
+        "ack",
+        "replacement",
+        "closed",
+        "timeout",
+    ] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        let mut completion = writes
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::Write(_, _, Some(completion)) => Some(completion),
+                _ => None,
+            })
+            .unwrap();
+        match reason {
+            "input" => screen.agent_write_for_test(),
+            "failure" => completion.set_error_message("partial write failed".into()),
+            "ack" => report(&mut screen, hook("UserPromptSubmit")),
+            "replacement" => screen.run_command_in_pane_with_id(
+                TerminalId::new(7),
+                RunCommand {
+                    command: "codex".into(),
+                    ..Default::default()
+                },
+                false,
+            ),
+            "closed" => screen.close_pane_explicitly(PANE, None),
+            "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
+            _ => unreachable!(),
+        }
+        finish_paste(&writes);
+        drop(completion);
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+        assert!(finish_paste(&writes).is_empty(), "{reason}");
+        if reason == "ack" {
+            assert!(replies(&messages, CLIENT).is_empty());
+        } else {
+            assert_eq!(replies(&messages, CLIENT).len(), 1, "{reason}");
+        }
+    }
+}
+
+impl Screen {
+    fn agent_write_for_test(&mut self) {
+        self.tab_containing_pane_mut(PANE)
+            .unwrap()
+            .write_key_to_pane_id(PANE, KeyWithModifier::new(BareKey::Char('x')))
+            .unwrap();
+    }
+}
+
+#[test]
+fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("codex", target);
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        screen.agent_control(recover(), ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::Rejected
+        );
+        screen.agent_controls[0].deadline = Some(Instant::now());
+        screen.refresh_agent_controls();
+        let timed_out = replies(&messages, CLIENT);
+        assert_eq!(timed_out[0].outcome, AgentOutcome::TimedOut);
+        assert!(timed_out[0]
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("agent recover"));
+        screen.agent_control(recover(), ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::Rejected,
+            "paste still in flight"
+        );
+        finish_paste(&writes);
+        screen.refresh_agent_controls();
+        assert!(screen.agent_control_deadline().is_none());
+        report(&mut screen, hook("Stop"));
+        for _ in 0..3 {
+            screen.refresh_agent_controls();
+        }
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::Rejected
+        );
+        for request in [
+            AgentRequest::Recover {
+                pane_id: PANE,
+                expected_session_id: "wrong".into(),
+                confirm_empty: true,
+            },
+            AgentRequest::Recover {
+                pane_id: PANE,
+                expected_session_id: "conversation".into(),
+                confirm_empty: false,
+            },
+        ] {
+            screen.agent_control(request, ClientId::new(2));
+            assert_ne!(
+                replies(&messages, ClientId::new(2))[0].outcome,
+                AgentOutcome::Ok
+            );
+        }
+        screen.agent_control(recover(), ClientId::new(2));
+        let recovered = replies(&messages, ClientId::new(2));
+        assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
+        assert!(recovered[0].agents[0].ready);
+        assert!(!recovered[0].acknowledged);
+        assert!(finish_paste(&writes).is_empty());
+        screen.agent_control(prompt(true), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    }
+}
+
+#[test]
+fn concurrent_worker_waits_restore_latest_parent_and_keep_identity() {
+    for target in pane_targets() {
+        for name in ["PermissionRequest", "PreToolUse", "Elicitation"] {
+            let (mut screen, messages, writes) = setup_on_target("codex", target.clone());
+            let mut start = hook("SessionStart");
+            start.cwd = Some("/parent".into());
+            report(&mut screen, start.clone());
+            screen.agent_control(prompt(true), CLIENT);
+            finish_paste(&writes);
+            report(&mut screen, hook("UserPromptSubmit"));
+            for id in ["one", "two"] {
+                let mut worker = hook(name);
+                worker.agent_id = Some(id.into());
+                worker.tool_name = Some("AskUserQuestion".into());
+                worker.cwd = Some("/worker".into());
+                report(&mut screen, worker);
+                let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                assert_eq!(agent.state, AgentState::Waiting);
+                assert_eq!(agent.session_id.as_deref(), Some("conversation"));
+                assert_ne!(agent.cwd.as_deref(), Some("/worker"));
+                if id == "one" {
+                    let mut updated = agent;
+                    updated.run_id = Some("new-run".into());
+                    updated.cwd = Some("/new-checkout".into());
+                    screen
+                        .tab_containing_pane_mut(PANE)
+                        .unwrap()
+                        .set_pane_agent(PANE, Some(updated));
+                } else {
+                    assert_eq!(agent.run_id.as_deref(), Some("new-run"));
+                    assert_eq!(agent.cwd.as_deref(), Some("/new-checkout"));
+                }
+            }
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::NeedsInput
+            );
+            report(&mut screen, hook("Stop"));
+            for (id, end, expected) in [
+                ("one", "PostToolUse", AgentState::Waiting),
+                ("two", "SubagentStop", AgentState::Idle),
+            ] {
+                let mut worker = hook(end);
+                worker.agent_id = Some(id.into());
+                report(&mut screen, worker);
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                    expected
+                );
+            }
+            screen.agent_control(
+                AgentRequest::Status {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                },
+                CLIENT,
+            );
+            assert!(replies(&messages, CLIENT)[0].agents[0].ready);
+            assert!(screen.agent_worker_waits.is_empty());
+            let mut automatic = hook("PermissionRequest");
+            automatic.agent_id = Some("auto".into());
+            automatic.approvals_reviewer = Some("auto_review".into());
+            report(&mut screen, automatic);
+            assert_eq!(
+                screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                AgentState::Idle
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_spawn_placement_works_before_keyboard_input_and_without_clients() {
+    for detached in [false, true] {
+        let (mut screen, _, _) = setup("codex");
+        if detached {
+            screen.active_tab_ids.clear();
+        }
+        let pane = PaneId::Terminal(TerminalId::new(88));
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        screen
+            .place_new_pane(
+                pane,
+                None,
+                None,
+                Some(Run::Command(RunCommand {
+                    command: "env".into(),
+                    args: vec![
+                        format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+                        "codex".into(),
+                    ],
+                    ..Default::default()
+                })),
+                NewPanePlacement::default(),
+                false,
+                crate::pty::ClientTabIndexOrPaneId::ClientId(ClientId::new(99)),
+                Some(crate::route::NotificationEnd::new(tx)),
+                false,
+                &mut Default::default(),
+            )
+            .unwrap();
+        assert!(screen.tab_containing_pane(pane).is_some());
+        assert_eq!(rx.try_recv().unwrap().affected_pane_id, Some(pane));
+    }
+}
+
+#[test]
+fn programmatic_mouse_reports_do_not_interrupt_agent_but_typing_does() {
+    for mode in [
+        b"\x1b[?1000h\x1b[?1006h".as_slice(),
+        b"\x1b[?1049h\x1b[?1000h\x1b[?1006h",
+    ] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        report(&mut screen, hook("UserPromptSubmit"));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.handle_pty_bytes(TerminalId::new(7), mode.to_vec())
+            .unwrap();
+        let revision = tab.agent_input_revision(PANE);
+        tab.scroll_terminal_up(TerminalId::new(7)).unwrap();
+        tab.scroll_terminal_down(TerminalId::new(7)).unwrap();
+        assert_eq!(tab.agent_input_revision(PANE), revision);
+        assert!(!finish_paste(&writes).is_empty());
+        screen.refresh_agent_controls();
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_write_for_test();
+        screen.refresh_agent_controls();
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Interrupted
+        );
+    }
+}
+
+#[test]
+fn mouse_reports_preserve_agent_input_ownership() {
+    use yinz_types::mouse::MouseEvent;
+    use yinz_types::position::Position;
+    for mode in [
+        b"\x1b[?1000h\x1b[?1006h".as_slice(),
+        b"\x1b[?1049h\x1b[?1000h\x1b[?1006h",
+    ] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        report(&mut screen, hook("UserPromptSubmit"));
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        tab.handle_pty_bytes(TerminalId::new(7), mode.to_vec())
+            .unwrap();
+        let revision = tab.agent_input_revision(PANE);
+        let pane = tab.get_pane_with_id(PANE).unwrap();
+        let position = Position::new((pane.y() + 2) as i32, (pane.x() + 2) as u16);
+        screen.handle_mouse_event(MouseEvent::new_left_press_event(position), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_left_motion_event(position), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_left_release_event(position), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_scroll_up_event(position), CLIENT);
+        screen.handle_mouse_event(MouseEvent::new_scroll_down_event(position), CLIENT);
+        assert_eq!(
+            screen
+                .tab_containing_pane(PANE)
+                .unwrap()
+                .agent_input_revision(PANE),
+            revision
+        );
+        assert!(!finish_paste(&writes).is_empty());
+        screen.refresh_agent_controls();
+        assert!(replies(&messages, CLIENT).is_empty());
+    }
+}
+
+#[test]
+fn synthesized_scroll_arrows_interrupt_agent_before_delayed_enter() {
+    use yinz_types::mouse::MouseEvent;
+    use yinz_types::position::Position;
+
+    for mouse_wheel in [false, true] {
+        for up in [false, true] {
+            let (mut screen, messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            screen.agent_control(prompt(true), CLIENT);
+            assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+            tab.handle_pty_bytes(TerminalId::new(7), b"\x1b[?1049h".to_vec())
+                .unwrap();
+            let revision = tab.agent_input_revision(PANE);
+            if mouse_wheel {
+                let pane = tab.get_pane_with_id(PANE).unwrap();
+                let position = Position::new((pane.y() + 2) as i32, (pane.x() + 2) as u16);
+                let event = if up {
+                    MouseEvent::new_scroll_up_event(position)
+                } else {
+                    MouseEvent::new_scroll_down_event(position)
+                };
+                screen.handle_mouse_event(event, CLIENT);
+            } else if up {
+                tab.scroll_terminal_up(TerminalId::new(7)).unwrap();
+            } else {
+                tab.scroll_terminal_down(TerminalId::new(7)).unwrap();
+            }
+            let lines = if mouse_wheel { 3 } else { 1 };
+            let arrow = if up { b"\x1b[A" } else { b"\x1b[B" };
+            assert_eq!(finish_paste(&writes), arrow.repeat(lines));
+            assert_eq!(
+                screen
+                    .tab_containing_pane(PANE)
+                    .unwrap()
+                    .agent_input_revision(PANE),
+                revision + lines as u64
+            );
+            screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Interrupted
+            );
+            assert!(finish_paste(&writes).is_empty(), "Enter must be cancelled");
+        }
+    }
+}
+
+#[test]
+fn lifecycle_survives_moving_a_pane_and_is_cleared_on_closure() {
+    let (mut screen, messages, _) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_launches.insert(
+        PANE,
+        yinz_types::agent::SpawnedAgent {
+            pane_id: PANE,
+            cwd: Some("/checkout".into()),
+            branch: Some("branch".into()),
+        },
+    );
+    new_tab(&mut screen, 9, TabId::new(1));
+    assert!(screen
+        .break_multiple_panes_to_tab_with_id(vec![PANE], TabId::new(1), false, CLIENT)
+        .unwrap()
+        .succeeded());
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    assert!(replies(&messages, CLIENT)[0].agents[0].ready);
+    screen.close_pane_explicitly(PANE, None);
+    assert!(!screen.agent_lifecycle.contains_key(&PANE));
+    assert!(!screen.agent_launches.contains_key(&PANE));
+    assert!(!screen.agent_worker_waits.contains_key(&PANE));
+}
+
+#[test]
+fn recovery_rejects_busy_waiting_unreported_and_dead_targets() {
+    for condition in [
+        "busy",
+        "waiting",
+        "unreported",
+        "closed",
+        "unsupported",
+        "exited",
+    ] {
+        let kind = if condition == "unsupported" {
+            "opencode"
+        } else {
+            "codex"
+        };
+        let (mut screen, messages, writes) = setup(kind);
+        if condition != "unreported" {
+            report_kind(&mut screen, kind, hook("SessionStart"));
+        }
+        match condition {
+            "busy" => report(&mut screen, hook("UserPromptSubmit")),
+            "waiting" => report(&mut screen, hook("PermissionRequest")),
+            "closed" => screen.close_pane_explicitly(PANE, None),
+            "exited" => {
+                screen.tab_containing_pane_mut(PANE).unwrap().hold_pane(
+                    PANE,
+                    Some(0),
+                    false,
+                    RunCommand {
+                        command: "codex".into(),
+                        ..Default::default()
+                    },
+                );
+            },
+            _ => {},
+        }
+        screen.agent_control(recover(), CLIENT);
+        assert_ne!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Ok,
+            "{condition}"
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
 }

@@ -54,10 +54,25 @@ struct PendingWrite {
     _completion: Option<NotificationEnd>,
 }
 
+impl PendingWrite {
+    fn fail(&mut self, error: &str) {
+        if let Some(mut completion) = self._completion.take() {
+            completion.set_error_message(error.to_owned());
+        }
+    }
+}
+
+impl Drop for PendingWrite {
+    fn drop(&mut self) {
+        self.fail("PTY write did not finish");
+    }
+}
+
 pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
     let mut caching_resizes = false;
+    let mut failed: HashMap<TerminalId, String> = HashMap::new();
 
     loop {
         // If we have pending writes, use a short timeout so we can keep
@@ -83,7 +98,14 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
         if let Some((event, mut err_ctx)) = event {
             yinz_runtime::errors::add_call(&mut err_ctx, ContextType::PtyWrite((&event).into()));
             match event {
-                PtyWriteInstruction::Write(bytes, terminal_id, completion) => {
+                PtyWriteInstruction::Write(bytes, terminal_id, mut completion) => {
+                    // Preserve a failure across a multi-chunk paste until its final barrier.
+                    if let Some(error) = failed.get(&terminal_id) {
+                        if let Some(completion) = &mut completion {
+                            completion.set_error_message(error.clone());
+                            failed.remove(&terminal_id);
+                        }
+                    }
                     let queue = pending.entry(terminal_id).or_default();
                     let queued: usize = queue
                         .iter()
@@ -98,6 +120,17 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                             bytes.len(),
                             MAX_PENDING_BYTES,
                         );
+                        let error = "PTY write queue overflow".to_owned();
+                        let has_barrier = completion.is_some();
+                        for write in queue.iter_mut() {
+                            write.fail(&error);
+                        }
+                        if let Some(completion) = &mut completion {
+                            completion.set_error_message(error.clone());
+                        }
+                        if !has_barrier {
+                            failed.insert(terminal_id, error);
+                        }
                         queue.clear();
                     } else {
                         queue.push_back(PendingWrite {
@@ -169,6 +202,7 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
             while let Some(front) = queue.front_mut() {
                 let remaining = front.bytes.get(front.offset..).unwrap_or_default();
                 if remaining.is_empty() {
+                    front._completion.take();
                     queue.pop_front();
                     continue;
                 }
@@ -184,11 +218,22 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                         }
                         front.offset = front.offset.saturating_add(n);
                         if front.offset >= front.bytes.len() {
+                            front._completion.take();
                             queue.pop_front();
                         }
                     },
                     Err(e) => {
                         // Terminal error (EBADF, EIO, etc) — clear its queue
+                        let error = format!("PTY write failed: {e}");
+                        let has_barrier = queue
+                            .back()
+                            .is_some_and(|write| write._completion.is_some());
+                        for write in queue.iter_mut() {
+                            write.fail(&error);
+                        }
+                        if !has_barrier {
+                            failed.insert(tid, error);
+                        }
                         Err::<(), _>(e).with_context(err_context).non_fatal();
                         queue.clear();
                         break;

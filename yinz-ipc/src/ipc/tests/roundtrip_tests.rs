@@ -241,6 +241,11 @@ fn test_client_messages() {
                 expected_session_id: expected_session_id.clone(),
                 lines: 80,
             },
+            AgentRequest::Recover {
+                pane_id,
+                expected_session_id: "conversation-7".into(),
+                confirm_empty: true,
+            },
             AgentRequest::SendKeys {
                 pane_id,
                 expected_session_id: expected_session_id.clone(),

@@ -16,6 +16,7 @@ Use `yinz --session development agent ...` to select a session. Without
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
 | `agent wait TARGET --until idle` | Observation of the requested state |
 | `agent read TARGET --lines 80` | Last lines of terminal output |
+| `agent recover TARGET --conversation ID --confirm-empty` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
 All commands accept `--json`. Targeted commands also accept
@@ -95,7 +96,9 @@ inside a shell can appear in listings without satisfying that requirement.
 Yinz rejects prompts when the agent is busy, waiting or already has a pending
 submission. Unconsumed manual input also makes the pane unready. There is no
 prompt queue. The server registers observation before it writes the prompt.
-A terminal write alone is not acceptance.
+Yinz waits for paste delivery, then waits 100 ms before sending Enter. It checks
+input ownership and the target again before Enter. This delay does not prove
+acceptance. Only a matching hook acknowledges the prompt.
 Readiness requires a known consumed input revision that matches the pane's current
 revision. Startup reports establish that revision. A matching CLI prompt report
 uses the revision captured when Yinz sent the prompt. Manual acceptance alone
@@ -107,7 +110,10 @@ from establishing readiness.
 
 A matching prompt report acknowledges acceptance. Codex correlation also
 requires a provider turn ID. Claude Code can use conversation identity and the
-prompt fingerprint when its hooks omit turn IDs. Conflicting input invalidates
+prompt fingerprint when its hooks omit turn IDs. Fingerprints normalize CRLF to
+LF and trim outer whitespace before hashing. Internal whitespace remains
+significant. This canonicalization does not change the text sent to the terminal.
+Pruned hooks retain the same fingerprint. Conflicting input invalidates
 the pending operation. An unrelated conversation cannot complete the wait.
 
 ## Outcomes and deadlines
@@ -136,7 +142,9 @@ successfully.
 
 `completed` confirms the end of a turn. It does not verify the agent's claims,
 code changes or test results. Automatic policy waits do not produce
-`needs_input` unless a person must respond.
+`needs_input` unless a person must respond. Worker permission requests, questions and
+elicitation also produce `needs_input` for their parent conversation. The pane
+stays `waiting` until all worker waits clear, then shows the latest parent state.
 
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
 `--timeout` accepts durations from `1ms` to `24h` and includes acceptance time.
@@ -145,7 +153,21 @@ Yinz keeps an unresolved submission claim until lifecycle reports resolve it or
 the target changes. New prompts are rejected while that claim remains. Manual
 input ends the caller's wait as `interrupted`, but it cannot recall a submission
 already in transit. Its claim can remain until the original turn is resolved.
-A retry cannot take ownership of that turn's completion.
+A retry cannot take ownership of that turn's completion. An unacknowledged
+`Stop` cannot resolve the claim or restore readiness. Valid late acknowledgement
+and completion can still resolve the original submission.
+
+To clear an uncertain submission explicitly:
+
+1. Read the pane output and inspect its current draft.
+2. Clear the draft, using deliberate key input if necessary.
+3. Confirm that status reports the same conversation as idle.
+4. Run `yinz agent recover TARGET --conversation ID --confirm-empty`.
+
+Recovery requires a live supported agent, no active submission, and no paste
+write in flight. It clears abandoned claims and pending Enter delivery, and
+records the current input revision as consumed. It sends no terminal input and
+does not acknowledge the old prompt. A subsequent prompt can then be submitted.
 Inspect status and output before deciding what to do next. Requests are never
 retried automatically after an uncertain reply.
 

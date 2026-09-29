@@ -1,6 +1,13 @@
 use super::*;
 use crate::internal_ids::TerminalId;
 
+fn observe(observation: &mut PromptObservation, event: &AgentEvent) -> Option<AgentOutcome> {
+    observation.observe(
+        event,
+        serde_json::from_str::<HookEvent>(&event.raw).ok().as_ref(),
+    )
+}
+
 fn event(kind: &str, name: &str, turn: Option<&str>, prompt: Option<&str>) -> AgentEvent {
     let hook = HookEvent {
         hook_event_name: name.into(),
@@ -21,30 +28,34 @@ fn event(kind: &str, name: &str, turn: Option<&str>, prompt: Option<&str>) -> Ag
 fn a_prompt_requires_acceptance_and_the_matching_provider_turn() {
     let mut observation = PromptObservation::new("codex", "conversation", "review");
     assert_eq!(
-        observation.observe(&event("codex", "Stop", Some("old"), None)),
+        observe(&mut observation, &event("codex", "Stop", Some("old"), None)),
         None
     );
     assert!(!observation.acknowledged());
     let acceptance = event("codex", "UserPromptSubmit", Some("new"), Some("review"));
     assert_eq!(
-        observation.observe(&acceptance),
+        observe(&mut observation, &acceptance),
         Some(AgentOutcome::Submitted)
     );
-    assert_eq!(observation.observe(&acceptance), None, "duplicate hook");
+    assert_eq!(
+        observe(&mut observation, &acceptance),
+        None,
+        "duplicate hook"
+    );
     assert!(observation.acknowledged());
     assert_eq!(observation.turn_id(), Some("new"));
     for turn in [Some("old"), None] {
         assert_eq!(
-            observation.observe(&event("codex", "Stop", turn, None)),
+            observe(&mut observation, &event("codex", "Stop", turn, None)),
             None
         );
     }
     let completion = event("codex", "Stop", Some("new"), None);
     assert_eq!(
-        observation.observe(&completion),
+        observe(&mut observation, &completion),
         Some(AgentOutcome::Completed)
     );
-    assert_eq!(observation.observe(&completion), None);
+    assert_eq!(observe(&mut observation, &completion), None);
 }
 
 #[test]
@@ -59,11 +70,11 @@ fn fingerprints_survive_pruning_and_preserve_failure_and_interrupt_outcomes() {
         let acceptance = event("codex", "UserPromptSubmit", Some("new"), Some(&prompt));
         assert_ne!(acceptance.prompt.as_deref(), Some(prompt.as_str()));
         assert_eq!(
-            observation.observe(&acceptance),
+            observe(&mut observation, &acceptance),
             Some(AgentOutcome::Submitted)
         );
         assert_eq!(
-            observation.observe(&event("codex", name, Some("new"), None)),
+            observe(&mut observation, &event("codex", name, Some("new"), None)),
             Some(outcome)
         );
     }
@@ -74,35 +85,29 @@ fn conflicting_prompts_and_conversations_cannot_complete_the_observed_work() {
     for accept_first in [false, true] {
         let mut observation = PromptObservation::new("codex", "conversation", "review");
         if accept_first {
-            observation.observe(&event(
-                "codex",
-                "UserPromptSubmit",
-                Some("new"),
-                Some("review"),
-            ));
+            observe(
+                &mut observation,
+                &event("codex", "UserPromptSubmit", Some("new"), Some("review")),
+            );
         }
         assert_eq!(
-            observation.observe(&event(
-                "codex",
-                "UserPromptSubmit",
-                Some("other"),
-                Some("manual")
-            )),
+            observe(
+                &mut observation,
+                &event("codex", "UserPromptSubmit", Some("other"), Some("manual"))
+            ),
             Some(AgentOutcome::Interrupted)
         );
         assert_eq!(
-            observation.observe(&event("codex", "Stop", Some("new"), None)),
-            None
+            observe(&mut observation, &event("codex", "Stop", Some("new"), None)),
+            accept_first.then_some(AgentOutcome::Completed)
         );
     }
     let mut observation = PromptObservation::new("codex", "different conversation", "review");
     assert_eq!(
-        observation.observe(&event(
-            "codex",
-            "UserPromptSubmit",
-            Some("new"),
-            Some("review")
-        )),
+        observe(
+            &mut observation,
+            &event("codex", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
         Some(AgentOutcome::TargetChanged)
     );
 }
@@ -110,12 +115,10 @@ fn conflicting_prompts_and_conversations_cannot_complete_the_observed_work() {
 #[test]
 fn only_person_waits_end_the_operation_and_worker_hooks_do_not() {
     let mut observation = PromptObservation::new("codex", "conversation", "review");
-    observation.observe(&event(
-        "codex",
-        "UserPromptSubmit",
-        Some("new"),
-        Some("review"),
-    ));
+    observe(
+        &mut observation,
+        &event("codex", "UserPromptSubmit", Some("new"), Some("review")),
+    );
     let mut hook = HookEvent {
         hook_event_name: "PermissionRequest".into(),
         session_id: "conversation".into(),
@@ -131,18 +134,18 @@ fn only_person_waits_end_the_operation_and_worker_hooks_do_not() {
             serde_json::to_string(hook).unwrap(),
         )
     };
-    assert_eq!(observation.observe(&broadcast(&hook)), None);
+    assert_eq!(observe(&mut observation, &broadcast(&hook)), None);
     hook.hook_event_name = "SessionStart".into();
     hook.source = Some("compact".into());
-    assert_eq!(observation.observe(&broadcast(&hook)), None);
+    assert_eq!(observe(&mut observation, &broadcast(&hook)), None);
     hook.hook_event_name = "Stop".into();
     hook.agent_id = Some("worker".into());
-    assert_eq!(observation.observe(&broadcast(&hook)), None);
+    assert_eq!(observe(&mut observation, &broadcast(&hook)), None);
     hook.agent_id = None;
     hook.hook_event_name = "PermissionRequest".into();
     hook.approvals_reviewer = None;
     assert_eq!(
-        observation.observe(&broadcast(&hook)),
+        observe(&mut observation, &broadcast(&hook)),
         Some(AgentOutcome::NeedsInput)
     );
 }
@@ -155,12 +158,15 @@ fn codex_requires_turn_identity_while_claude_uses_serialized_conversation_hooks(
     ] {
         let mut observation = PromptObservation::new(kind, "conversation", "review");
         assert_eq!(
-            observation.observe(&event(kind, "UserPromptSubmit", None, Some("review"))),
+            observe(
+                &mut observation,
+                &event(kind, "UserPromptSubmit", None, Some("review"))
+            ),
             Some(expected)
         );
         if expected == AgentOutcome::Submitted {
             assert_eq!(
-                observation.observe(&event(kind, "Stop", None, None)),
+                observe(&mut observation, &event(kind, "Stop", None, None)),
                 Some(AgentOutcome::Completed)
             );
         }
@@ -188,8 +194,86 @@ fn a_missing_conversation_is_unavailable_evidence_not_a_known_replacement() {
     acceptance.raw = serde_json::to_string(&raw).unwrap();
     acceptance.session_id = None;
     assert_eq!(
-        observation.observe(&acceptance),
+        observe(&mut observation, &acceptance),
         Some(AgentOutcome::StatusUnavailable)
     );
     assert!(!observation.acknowledged());
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("codex", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+    assert_eq!(
+        observe(&mut observation, &event("codex", "Stop", Some("new"), None)),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
+fn canonical_fingerprints_survive_pruning_without_losing_internal_whitespace() {
+    for size in [1, super::super::HOOK_BROADCAST_MAX_BYTES] {
+        let prompt = format!("  {}\r\nsecond\tline\n ", "a".repeat(size));
+        let canonical = prompt.replace("\r\n", "\n").trim().to_owned();
+        let mut observation = PromptObservation::new("codex", "conversation", &canonical);
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("codex", "UserPromptSubmit", Some("new"), Some(&prompt))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+        assert_ne!(
+            prompt_sha256(&prompt),
+            prompt_sha256(&prompt.replace('\t', " "))
+        );
+        assert_eq!(prompt_sha256(&prompt), prompt_sha256(&canonical));
+    }
+}
+
+#[test]
+fn worker_human_waits_match_the_parent_without_acknowledging_it() {
+    for kind in ["claude", "codex"] {
+        for name in ["PermissionRequest", "PreToolUse", "Elicitation"] {
+            let mut observation = PromptObservation::new(kind, "conversation", "review");
+            let mut hook = HookEvent {
+                hook_event_name: name.into(),
+                session_id: "other".into(),
+                agent_id: Some("worker".into()),
+                tool_name: Some("AskUserQuestion".into()),
+                ..Default::default()
+            };
+            let broadcast = |hook: &HookEvent| {
+                AgentEvent::from_hook(
+                    kind,
+                    TerminalId::new(7),
+                    hook,
+                    serde_json::to_string(hook).unwrap(),
+                )
+            };
+            assert_eq!(observation.observe(&broadcast(&hook), Some(&hook)), None);
+            hook.session_id = "conversation".into();
+            assert_eq!(
+                observation.observe(&broadcast(&hook), Some(&hook)),
+                Some(AgentOutcome::NeedsInput)
+            );
+            assert!(!observation.acknowledged());
+            assert_eq!(
+                observe(&mut observation, &event(kind, "Stop", Some("new"), None)),
+                None
+            );
+            assert_eq!(
+                observe(
+                    &mut observation,
+                    &event(kind, "UserPromptSubmit", Some("new"), Some("review"))
+                ),
+                Some(AgentOutcome::Submitted)
+            );
+            assert_eq!(
+                observe(&mut observation, &event(kind, "Stop", Some("new"), None)),
+                Some(AgentOutcome::Completed)
+            );
+        }
+    }
 }
