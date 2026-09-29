@@ -1090,12 +1090,8 @@ impl State {
         // it, and a turn with no prompt behind it — a resumed session, a hook-driven
         // continuation — is summarised without one rather than against a stale question.
         if event.hook_event_name == "UserPromptSubmit" {
-            match event
-                .prompt
-                .as_deref()
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-            {
+            let prompt = event.prompt.as_deref().map(agents::unwrap_pasted_content);
+            match prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                 Some(prompt) => {
                     // What is kept is the *question*, not the prompt: an envelope's first six
                     // hundred characters are opening tags and a temp path, and a model asked

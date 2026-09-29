@@ -84,7 +84,25 @@ fn recovery_requires_conversation_and_explicit_empty_draft_confirmation() {
         .command,
         Agent::Recover {
             confirm_empty: true,
+            interrupted: false,
             json: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        AgentCli::try_parse_from([
+            "agent",
+            "recover",
+            "terminal_7",
+            "--conversation",
+            "id",
+            "--confirm-empty",
+            "--interrupted"
+        ])
+        .unwrap()
+        .command,
+        Agent::Recover {
+            interrupted: true,
             ..
         }
     ));

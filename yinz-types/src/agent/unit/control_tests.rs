@@ -318,3 +318,38 @@ fn older_spawn_requests_preserve_explicit_vm_names() {
         request
     );
 }
+
+#[test]
+fn collapsed_pastes_unwrap_to_what_was_pasted() {
+    let body = "line 1\nline 2\n\nline 4";
+    let wrapped =
+        format!("\n\n<pasted_content id=\"8c9e\">\n{body}\n</pasted_content id=\"8c9e\">\n");
+    assert_eq!(unwrap_pasted_content(&wrapped), format!("\n\n{body}\n"));
+    assert_eq!(
+        unwrap_pasted_content(&format!("fix this: {}", wrapped.trim())),
+        format!("fix this: {body}")
+    );
+    for untouched in [
+        "no paste here",
+        "<pasted_content id=\"a\">\nbody\n</pasted_content id=\"b\">",
+        "<pasted_content id=\"a\">\nnever closed",
+        "<pasted_content id=\"\">\nempty\n</pasted_content id=\"\">",
+    ] {
+        assert_eq!(unwrap_pasted_content(untouched), untouched);
+    }
+    for size in [1, super::super::HOOK_BROADCAST_MAX_BYTES] {
+        let prompt = format!("{}\n{body}", "a".repeat(size));
+        let hooked = format!(
+            "\n\n<pasted_content id=\"8c9e\">\n{prompt}\r\n</pasted_content id=\"8c9e\">\n"
+        );
+        assert_eq!(prompt_sha256(&hooked), prompt_sha256(&prompt));
+        let mut observation = PromptObservation::new("claude", "conversation", &prompt);
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("claude", "UserPromptSubmit", None, Some(&hooked))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+    }
+}

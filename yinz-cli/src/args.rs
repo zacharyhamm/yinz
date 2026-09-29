@@ -651,6 +651,10 @@ pub enum Agent {
         conversation: String,
         #[clap(long, required = true)]
         confirm_empty: bool,
+        /// Also reset a busy or waiting agent to idle. Use only after `agent read` shows the agent
+        /// stopped its turn without reporting it, such as after an Esc interrupt.
+        #[clap(long)]
+        interrupted: bool,
         #[clap(long)]
         json: bool,
     },

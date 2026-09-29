@@ -27,7 +27,13 @@ pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
     input_revision: Option<u64>,
+    /// When the last parent hook for this conversation arrived.
+    pub(super) last_report: Instant,
 }
+
+/// How long an agent must go without reporting before an interrupted recovery may reset it to
+/// idle, so recovery cannot overtake a hook that is still on its way.
+pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
 
 pub(super) struct Pending {
     client: Option<Reply>,
@@ -356,20 +362,56 @@ impl Screen {
             Recover {
                 expected_session_id,
                 confirm_empty,
+                interrupted,
                 ..
             } => {
+                let state = status.agent.state;
                 if !confirm_empty
                     || expected_session_id.is_empty()
                     || !status.prompt_supported
-                    || status.agent.state != AgentState::Idle
+                    || !(state == AgentState::Idle
+                        || interrupted && matches!(state, AgentState::Busy | AgentState::Waiting))
                     || self.agent_controls.iter().any(|pending| {
                         pending.pane == pane
                             && pending.prompt.is_some()
                             && (!pending.abandoned || pending.delivery.is_some())
                     })
                 {
-                    reject(self, AgentOutcome::Rejected, "recovery requires a pinned live idle agent, --confirm-empty, no active submission and no paste write in flight");
+                    let message = if matches!(state, AgentState::Busy | AgentState::Waiting)
+                        && !interrupted
+                    {
+                        "recovery requires an idle agent. If agent read shows the agent stopped without reporting it, such as after an Esc interrupt, add --interrupted"
+                    } else {
+                        "recovery requires a pinned live idle agent, --confirm-empty, no active submission and no paste write in flight"
+                    };
+                    reject(self, AgentOutcome::Rejected, message);
                     return;
+                }
+                if state != AgentState::Idle {
+                    // Claude reports nothing when a turn is interrupted, so the record would stay
+                    // busy forever. The caller has inspected the pane; a hook still in flight
+                    // would contradict it, so the agent must have been quiet for a moment.
+                    if self
+                        .agent_lifecycle
+                        .get(&pane)
+                        .is_none_or(|lifecycle| lifecycle.last_report.elapsed() < RECOVER_QUIET)
+                    {
+                        reject(
+                            self,
+                            AgentOutcome::Rejected,
+                            "the agent reported within the last 3 seconds; inspect it again and retry",
+                        );
+                        return;
+                    }
+                    let mut idle = status.agent.clone();
+                    idle.state = AgentState::Idle;
+                    idle.detail = None;
+                    idle.waiting_on = None;
+                    idle.wait_needs_a_person = false;
+                    self.agent_worker_waits.remove(&pane);
+                    super::thread_main::apply_pane_agent_report(self, pane, Some(idle))
+                        .context("reset an interrupted agent to idle")
+                        .non_fatal();
                 }
                 self.agent_controls
                     .retain(|pending| pending.pane != pane || pending.prompt.is_none());
@@ -925,6 +967,7 @@ impl Screen {
                     kind: event.kind.clone(),
                     conversation: conversation.clone(),
                     input_revision,
+                    last_report: Instant::now(),
                 },
             );
         }

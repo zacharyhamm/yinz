@@ -262,6 +262,7 @@ fn test_client_messages() {
                 pane_id,
                 expected_session_id: "conversation-7".into(),
                 confirm_empty: true,
+                interrupted: true,
             },
             AgentRequest::SendKeys {
                 pane_id,
