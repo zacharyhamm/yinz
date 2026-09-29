@@ -91,6 +91,146 @@ fn reverse_index_scrolls_only_at_top_margin_and_preserves_background() {
 }
 
 #[test]
+fn csi_t_scrolls_independently_of_cursor_position() {
+    for screen in ["", "\x1b[?1049h"] {
+        for row in [2, 4, 6] {
+            for (parameter, count) in [("", 1), ("2", 2)] {
+                let mut grid = create_grid_with_size_and_raw(7, 5, screen.as_bytes());
+                feed_bytes(
+                    &mut grid,
+                    b"\x1b[48;5;4mAAAAA\r\nBBBBB\r\nCCCCC\r\nDDDDD\r\nEEEEE\r\nFFFFF\r\nGGGGG",
+                );
+                feed_bytes(
+                    &mut grid,
+                    format!("\x1b[3;5r\x1b[{row};2H\x1b[48;5;2m").as_bytes(),
+                );
+                let viewport_before = grid.viewport.clone();
+                grid.read_changes(0, 0);
+
+                feed_bytes(&mut grid, format!("\x1b[{parameter}T").as_bytes());
+
+                let mut expected = if count == 1 {
+                    ["AAAAA", "BBBBB", "", "CCCCC", "DDDDD", "FFFFF", "GGGGG"]
+                } else {
+                    ["AAAAA", "BBBBB", "", "", "CCCCC", "FFFFF", "GGGGG"]
+                };
+                assert_eq!(
+                    viewport_texts(&grid),
+                    expected,
+                    "screen={screen:?}, row={row}, parameter={parameter:?}"
+                );
+                assert_eq!((grid.cursor.x, grid.cursor.y), (1, row - 1));
+                assert!(grid.lines_above.is_empty());
+                for y in [0, 1, 5, 6] {
+                    assert_eq!(grid.viewport[y].columns, viewport_before[y].columns);
+                }
+
+                let (chunks, _, _) = grid.read_changes(0, 0);
+                assert_eq!(
+                    chunks.iter().map(|chunk| chunk.y).collect::<Vec<_>>(),
+                    [2, 3, 4]
+                );
+                for chunk in &chunks {
+                    assert_eq!(chunk.x, 0);
+                    assert_eq!(chunk.terminal_characters.len(), 5);
+                    assert_eq!(
+                        chunk
+                            .terminal_characters
+                            .iter()
+                            .map(|character| character.character)
+                            .collect::<String>(),
+                        format!("{:<5}", expected[chunk.y])
+                    );
+                    let background = if chunk.y < 2 + count { 2 } else { 4 };
+                    assert!(chunk.terminal_characters.iter().all(|character| {
+                        character.styles.background == Some(AnsiCode::ColorIndex(background))
+                    }));
+                }
+
+                // A partial redraw must land on the scrolled content, preserving its neighbors.
+                feed_bytes(&mut grid, format!("\x1b[{};2HX", 3 + count).as_bytes());
+                expected[2 + count] = "CXCCC";
+                assert_eq!(viewport_texts(&grid), expected);
+                let (chunks, _, _) = grid.read_changes(0, 0);
+                assert_eq!(chunks.len(), 1);
+                assert_eq!((chunks[0].x, chunks[0].y), (0, 2 + count));
+                assert_eq!(
+                    chunks[0]
+                        .terminal_characters
+                        .iter()
+                        .map(|character| character.character)
+                        .collect::<String>(),
+                    "CXCCC"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_scroll_margins_do_not_crash_csi_t() {
+    let mut grid =
+        create_grid_with_size_and_raw(7, 5, b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\r\nFFF\r\nGGG");
+
+    feed_bytes(&mut grid, b"\x1b[99;5r\x1b[T");
+
+    assert_eq!(grid.scroll_region, (0, 6));
+    assert_eq!((grid.cursor.x, grid.cursor.y), (3, 6));
+    assert_eq!(
+        viewport_texts(&grid),
+        ["", "AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+    );
+    assert!(grid.lines_above.is_empty());
+}
+
+#[test]
+fn invalid_scroll_margins_preserve_region_and_cursor() {
+    for (origin_mode, home_y) in [("", 0), ("\x1b[?6h", 2)] {
+        for margins in ["99;5", "5;3", "3;3", "99;0"] {
+            let mut grid = create_grid_with_size_and_raw(
+                7,
+                5,
+                b"AAA\r\nBBB\r\nCCC\r\nDDD\r\nEEE\r\nFFF\r\nGGG",
+            );
+            feed_bytes(&mut grid, origin_mode.as_bytes());
+            feed_bytes(&mut grid, b"\x1b[3;5r");
+            assert_eq!((grid.cursor.x, grid.cursor.y), (0, home_y));
+            feed_bytes(&mut grid, b"\x1b[2;2H");
+            let cursor_before = (grid.cursor.x, grid.cursor.y);
+            let viewport_before = viewport_texts(&grid);
+
+            feed_bytes(&mut grid, format!("\x1b[{margins}r").as_bytes());
+
+            assert_eq!(grid.scroll_region, (2, 4), "margins={margins}");
+            assert_eq!((grid.cursor.x, grid.cursor.y), cursor_before);
+            assert_eq!(viewport_texts(&grid), viewport_before);
+
+            feed_bytes(&mut grid, b"\x1b[T");
+
+            assert_eq!((grid.cursor.x, grid.cursor.y), cursor_before);
+            assert_eq!(
+                viewport_texts(&grid),
+                ["AAA", "BBB", "", "CCC", "DDD", "FFF", "GGG"]
+            );
+            assert!(grid.lines_above.is_empty());
+        }
+    }
+}
+
+#[test]
+fn invalid_scroll_margins_reject_out_of_bounds_bottom() {
+    let mut grid = create_grid_with_size_and_raw(7, 5, b"\x1b[3;5r\x1b[4;2Htext");
+    let cursor_before = (grid.cursor.x, grid.cursor.y);
+    let viewport_before = viewport_texts(&grid);
+
+    grid.set_scroll_region(0, Some(7));
+
+    assert_eq!(grid.scroll_region, (2, 4));
+    assert_eq!((grid.cursor.x, grid.cursor.y), cursor_before);
+    assert_eq!(viewport_texts(&grid), viewport_before);
+}
+
+#[test]
 fn partial_erase_redraws_only_changed_lines() {
     for (sequence, expected_lines, expected_text) in [
         (b"\x1b[0J", vec![2, 3, 4], ["AAA", "BBB", "C", "", ""]),
