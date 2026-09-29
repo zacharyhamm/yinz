@@ -9,9 +9,9 @@ description = "The yinz server's tab: pane composition, focus, swap layouts, mou
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
-yinz-panes = { path = "../yinz-panes", version = "0.45.0" }
-yinz-terminal = { path = "../yinz-terminal", version = "0.45.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
+yinz-panes = { path = "../yinz-panes", version = "0.1.0" }
+yinz-terminal = { path = "../yinz-terminal", version = "0.1.0" }
 yinz-key-codec = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }

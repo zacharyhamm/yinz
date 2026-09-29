@@ -9,7 +9,7 @@ description = "Binds a Codex UI's conversation to its Yinz pane over a shared ap
 workspace = true
 
 [dependencies]
-yinz-process = { path = "../yinz-process", version = "0.45.0" }
+yinz-process = { path = "../yinz-process", version = "0.1.0" }
 yinz-runtime = { workspace = true }
 yinz-session = { workspace = true }
 yinz-types = { workspace = true }

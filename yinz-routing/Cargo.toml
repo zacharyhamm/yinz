@@ -9,7 +9,7 @@ description = "Synchronous action dispatch over the yinz thread bus"
 workspace = true
 
 [dependencies]
-yinz-bus = { path = "../yinz-bus", version = "0.45.0" }
+yinz-bus = { path = "../yinz-bus", version = "0.1.0" }
 yinz-types = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-ipc = { workspace = true }
