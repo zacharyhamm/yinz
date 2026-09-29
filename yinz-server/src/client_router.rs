@@ -271,28 +271,26 @@ pub(crate) fn route_thread_main(
                         ClientToServerMsg::AgentControl(request) => {
                             use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
                             if let AgentRequest::Spawn { spec, cwd } = request {
-                                let assets = session_data.read().to_anyhow()?.as_ref().map(|session| {
+                                let assets = session_data.read().to_anyhow().context("read session for agent spawn")?.as_ref().map(|session| {
                                     (session.senders.clone(), session.data_access.clone())
                                 });
                                 let mut response = AgentResponse::new(AgentOutcome::Failed);
                                 if let Some((senders, data_access)) = assets {
-                                    let active_client = session_state.read().to_anyhow()?.get_last_active_client().unwrap_or(client_id);
+                                    let active_client = session_state.read().to_anyhow().context("read active client for agent spawn")?.get_last_active_client().unwrap_or(client_id);
                                     match yinz_plugin_host::spawn_agent_for_cli(spec, cwd, active_client, &senders, &data_access) {
                                         Ok(spawned) => {
-                                            senders.send_to_screen(ScreenInstruction::AgentSpawned(spawned.clone()))?;
-                                            response.outcome = AgentOutcome::Ok;
-                                            response.spawned = Some(spawned);
+                                            response = register_spawned_agent(&senders, spawned);
                                         },
                                         Err(error) => response.message = Some(error),
                                     }
                                 } else {
                                     response.message = Some("session is not ready".into());
                                 }
-                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(response))?;
+                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(response)).context("reply to agent spawn")?;
                             } else if let Some(senders) = &senders {
-                                senders.send_to_screen(ScreenInstruction::AgentControl(request, client_id))?;
+                                senders.send_to_screen(ScreenInstruction::AgentControl(request, client_id)).context("route agent control to screen")?;
                             } else {
-                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::StatusUnavailable)))?;
+                                os_input.send_to_client(client_id, ServerToClientMsg::AgentControl(AgentResponse::new(AgentOutcome::StatusUnavailable))).context("reply to unavailable agent control")?;
                             }
                         },
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
@@ -987,6 +985,22 @@ pub(crate) fn route_thread_main(
     }
     let _ = to_server.send(ServerInstruction::RemoveClient(client_id));
     Ok(())
+}
+
+fn register_spawned_agent(
+    senders: &yinz_bus::thread_bus::ThreadSenders,
+    spawned: yinz_types::agent::SpawnedAgent,
+) -> yinz_types::agent::control::AgentResponse {
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse};
+    let mut response = AgentResponse::new(AgentOutcome::Ok);
+    if let Err(error) = senders.send_to_screen(ScreenInstruction::AgentSpawned(spawned.clone())) {
+        response.outcome = AgentOutcome::Failed;
+        response.message = Some(format!(
+            "agent pane was created but launch registration failed: {error:#}"
+        ));
+    }
+    response.spawned = Some(spawned);
+    response
 }
 
 #[cfg(test)]

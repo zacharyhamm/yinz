@@ -459,7 +459,7 @@ fn parse_agent_target(value: &str) -> Result<yinz_types::pane_id::PaneId, String
 fn parse_agent_timeout(value: &str) -> Result<std::time::Duration, String> {
     let timeout = humantime::parse_duration(value).map_err(|error| error.to_string())?;
     if timeout < std::time::Duration::from_millis(1)
-        || timeout > std::time::Duration::from_secs(86_400)
+        || timeout > std::time::Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS)
     {
         return Err("timeout must be between 1ms and 24h".to_owned());
     }
@@ -559,6 +559,17 @@ pub enum Agent {
         conversation: Option<String>,
         #[clap(long, default_value_t = 80, value_parser = clap::value_parser!(u32).range(1..=100_000))]
         lines: u32,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Restore readiness after inspecting the pane and clearing any draft.
+    Recover {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: String,
+        #[clap(long, required = true)]
+        confirm_empty: bool,
         #[clap(long)]
         json: bool,
     },

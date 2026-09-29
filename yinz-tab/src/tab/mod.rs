@@ -4488,6 +4488,36 @@ impl Tab {
         client_id: Option<ClientId>,
         completion_tx: Option<NotificationEnd>,
     ) -> Result<bool> {
+        self.write_pane_input(
+            key_with_modifier,
+            raw_input_bytes,
+            raw_input_bytes_are_kitty,
+            pane_id,
+            client_id,
+            completion_tx,
+            true,
+        )
+    }
+
+    pub(super) fn write_mouse_to_pane_id(
+        &mut self,
+        bytes: Vec<u8>,
+        pane_id: PaneId,
+        client_id: Option<ClientId>,
+    ) -> Result<bool> {
+        self.write_pane_input(&None, bytes, false, pane_id, client_id, None, false)
+    }
+
+    fn write_pane_input(
+        &mut self,
+        key_with_modifier: &Option<KeyWithModifier>,
+        raw_input_bytes: Vec<u8>,
+        raw_input_bytes_are_kitty: bool,
+        pane_id: PaneId,
+        client_id: Option<ClientId>,
+        completion_tx: Option<NotificationEnd>,
+        count_input: bool,
+    ) -> Result<bool> {
         // returns true if we need to update the UI (eg. when a command pane is closed with ctrl-c)
         if self.pane_tabs_input(pane_id, key_with_modifier, client_id)? {
             return Ok(true);
@@ -4563,7 +4593,7 @@ impl Tab {
                     client_id,
                 ) {
                     Some(AdjustedInput::WriteBytesToTerminal(adjusted_input)) => {
-                        if !adjusted_input.is_empty() {
+                        if count_input && !adjusted_input.is_empty() {
                             active_pane.record_agent_input();
                         }
                         self.senders
@@ -7657,7 +7687,7 @@ impl Tab {
             None => return Ok(()),
         };
         if let Some(sgr) = mouse_sgr {
-            self.write_to_pane_id(&None, sgr.into_bytes(), false, pane_id, None, None)
+            self.write_mouse_to_pane_id(sgr.into_bytes(), pane_id, None)
                 .with_context(err_context)?;
         } else if is_alt {
             self.write_to_pane_id(&None, b"\x1b[A".to_vec(), false, pane_id, None, None)
@@ -7696,7 +7726,7 @@ impl Tab {
             None => return Ok(()),
         };
         if let Some(sgr) = mouse_sgr {
-            self.write_to_pane_id(&None, sgr.into_bytes(), false, pane_id, None, None)
+            self.write_mouse_to_pane_id(sgr.into_bytes(), pane_id, None)
                 .with_context(err_context)?;
         } else if is_alt {
             self.write_to_pane_id(&None, b"\x1b[B".to_vec(), false, pane_id, None, None)

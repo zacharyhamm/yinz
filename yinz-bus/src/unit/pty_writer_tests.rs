@@ -25,6 +25,7 @@ enum WriteBehavior {
     AcceptAll,
     /// Accept at most `n` bytes per write call (simulates short writes).
     AcceptAtMost(usize),
+    AcceptThenError(usize),
     /// Accept zero bytes (simulates EAGAIN / full buffer).
     AcceptNone,
     /// Return an error (simulates EBADF, EIO, etc).
@@ -129,6 +130,15 @@ impl ServerOsApi for MockServerOsApi {
                         .unwrap()
                         .push((terminal_id, buf[..n].to_vec()));
                 }
+                Ok(n)
+            },
+            WriteBehavior::AcceptThenError(max) => {
+                self.set_behavior(terminal_id, WriteBehavior::Error);
+                let n = buf.len().min(max);
+                self.write_log
+                    .lock()
+                    .unwrap()
+                    .push((terminal_id, buf[..n].to_vec()));
                 Ok(n)
             },
             WriteBehavior::AcceptNone => Ok(0),
@@ -675,4 +685,69 @@ fn pty_writer_records_successful_resize() {
         0,
         "failed resize should produce no event"
     );
+}
+
+#[test]
+fn paste_barrier_reports_partial_write_failure_overflow_and_shutdown() {
+    for (behavior, size, succeeds) in [
+        (WriteBehavior::AcceptAtMost(2), 8, true),
+        (WriteBehavior::Error, 8, false),
+        (WriteBehavior::AcceptThenError(2), 8, false),
+        (WriteBehavior::AcceptNone, MAX_PENDING_BYTES + 1, false),
+        (WriteBehavior::AcceptNone, 8, false),
+    ] {
+        let mock = MockServerOsApi::new();
+        let terminal = TerminalId::new(1);
+        mock.set_behavior(terminal, behavior);
+        let (bus, sender) = make_test_bus(mock);
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        run_pty_writer(
+            bus,
+            sender,
+            vec![
+                PtyWriteInstruction::Write(vec![b'a'; size], terminal, None),
+                PtyWriteInstruction::Write(
+                    b"end".to_vec(),
+                    terminal,
+                    Some(NotificationEnd::new(tx)),
+                ),
+            ],
+        );
+        assert_eq!(rx.try_recv().unwrap().error_message.is_none(), succeeds);
+    }
+}
+
+#[test]
+fn overflowing_a_new_paste_after_an_older_barrier_fails_both_barriers() {
+    let terminal = TerminalId::new(1);
+    let mock = MockServerOsApi::new();
+    mock.set_behavior(terminal, WriteBehavior::AcceptNone);
+    let (bus, sender) = make_test_bus(mock);
+    let (first, mut first_result) = tokio::sync::oneshot::channel();
+    let (last, mut last_result) = tokio::sync::oneshot::channel();
+    run_pty_writer(
+        bus,
+        sender,
+        vec![
+            PtyWriteInstruction::Write(
+                b"old".to_vec(),
+                terminal,
+                Some(NotificationEnd::new(first)),
+            ),
+            PtyWriteInstruction::Write(vec![b'x'; MAX_PENDING_BYTES], terminal, None),
+            PtyWriteInstruction::Write(Vec::new(), terminal, Some(NotificationEnd::new(last))),
+        ],
+    );
+    assert!(first_result
+        .try_recv()
+        .unwrap()
+        .error_message
+        .unwrap()
+        .contains("overflow"));
+    assert!(last_result
+        .try_recv()
+        .unwrap()
+        .error_message
+        .unwrap()
+        .contains("overflow"));
 }

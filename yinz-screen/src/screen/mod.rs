@@ -562,6 +562,7 @@ pub(crate) struct Screen {
     agent_controls: Vec<agent_control::Pending>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
+    agent_worker_waits: HashMap<PaneId, agent_control::WorkerWaits>,
     reported_pane_tabs: Vec<yinz_types::pane_tabs::PaneTabsInfo>,
     /// A Bus for sending and receiving messages with the other threads.
     pub bus: Bus<ScreenInstruction>,
@@ -1300,6 +1301,7 @@ impl Screen {
             agent_controls: Vec::new(),
             agent_launches: HashMap::new(),
             agent_lifecycle: HashMap::new(),
+            agent_worker_waits: HashMap::new(),
             reported_pane_tabs: vec![],
             bus,
             max_panes,
@@ -3040,6 +3042,8 @@ impl Screen {
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
         self.destroyed_panes.insert(id);
+        self.invalidate_agent_lifecycle(id);
+        self.agent_launches.remove(&id);
         self.close_context_menus_for_pane(id);
         if let PaneId::Plugin(plugin_id) = id {
             self.drop_quit_notice(plugin_id);
@@ -3434,6 +3438,7 @@ impl Screen {
         completion_tx: Option<NotificationEnd>,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
+        self.invalidate_agent_lifecycle(pane_id);
         // Read around the re-run rather than inside it: the pane resets its own record to
         // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
         let previous = self
@@ -3462,6 +3467,7 @@ impl Screen {
         keep_scrollback: bool,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
+        self.invalidate_agent_lifecycle(pane_id);
         // Read around the re-run rather than inside it: the pane resets its own record to
         // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
         let previous = self
@@ -5290,6 +5296,7 @@ fn replay_pending_plugin_events(
                 screen.log_and_report_session_state().non_fatal();
             },
             ScreenInstruction::HoldPane(pane_id, exit_status, run_command) => {
+                screen.invalidate_agent_lifecycle(pane_id);
                 let is_first_run = false;
                 let mut found = false;
                 let mut pane_is_agent = false;

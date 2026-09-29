@@ -5,11 +5,17 @@ use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
-    AgentOutcome, AgentRequest, AgentResponse, AgentStatus, PromptObservation,
+    AgentOutcome, AgentRequest, AgentResponse, AgentStatus, PromptObservation, MAX_PROMPT_BYTES,
+    MAX_TIMEOUT_MS,
 };
-use yinz_types::agent::{AgentEvent, AgentSource, AgentState, HookEvent};
+use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
 use yinz_types::pane_id::PaneId;
+
+pub(super) struct WorkerWaits {
+    parent: AgentInfo,
+    waits: std::collections::BTreeMap<String, Option<String>>,
+}
 
 pub(super) struct Lifecycle {
     kind: String,
@@ -28,9 +34,125 @@ pub(super) struct Pending {
     wait: bool,
     until: AgentState,
     session_ended: bool,
+    abandoned: bool,
+    resolved: bool,
+    delivery: Option<tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>>,
+    enter_at: Option<Instant>,
 }
 
 impl Screen {
+    pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
+        self.agent_lifecycle.remove(&pane);
+        self.agent_worker_waits.remove(&pane);
+        let mut keep = Vec::new();
+        for pending in std::mem::take(&mut self.agent_controls) {
+            if pending.pane == pane && pending.prompt.is_some() {
+                self.finish_agent_control(
+                    &pending,
+                    if self.destroyed_panes.contains(&pane) {
+                        AgentOutcome::TargetClosed
+                    } else {
+                        AgentOutcome::TargetChanged
+                    },
+                    None,
+                );
+            } else {
+                keep.push(pending);
+            }
+        }
+        self.agent_controls = keep;
+    }
+
+    pub(super) fn apply_agent_report_state(
+        &mut self,
+        report: &yinz_types::agent::report::AgentReport,
+        hook: Option<&HookEvent>,
+    ) -> Result<bool> {
+        use yinz_types::agent::report::AgentReportState;
+        use yinz_types::agent::{hook_state, waiting_detail, waiting_needs_a_person};
+        let pane = report.pane_id;
+        let mut workers = self.agent_worker_waits.remove(&pane);
+        let agent = if let Some(hook) = hook.filter(|hook| hook.is_worker()) {
+            let Some(mut parent) = self
+                .tab_containing_pane(pane)
+                .and_then(|tab| tab.pane_agent_info(pane))
+            else {
+                return Ok(true);
+            };
+            if let Some(workers) = &workers {
+                // Only the presentation is overlaid. Keep current run and checkout metadata.
+                parent.state = workers.parent.state;
+                parent.detail = workers.parent.detail.clone();
+                parent.waiting_on = workers.parent.waiting_on.clone();
+                parent.wait_needs_a_person = workers.parent.wait_needs_a_person;
+            }
+            if parent.kind != report.kind
+                || parent.session_id.as_deref() != Some(hook.session_id.as_str())
+            {
+                if let Some(workers) = workers {
+                    self.agent_worker_waits.insert(pane, workers);
+                }
+                return Ok(true);
+            }
+            if let Some(id) = &hook.agent_id {
+                if hook_state(hook) == Some(AgentState::Waiting) && waiting_needs_a_person(hook) {
+                    workers
+                        .get_or_insert_with(|| WorkerWaits {
+                            parent: parent.clone(),
+                            waits: Default::default(),
+                        })
+                        .waits
+                        .insert(id.clone(), waiting_detail(hook));
+                } else if hook_state(hook).is_some()
+                    || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")
+                {
+                    if let Some(workers) = &mut workers {
+                        workers.waits.remove(id);
+                    }
+                }
+            }
+            Some(parent)
+        } else {
+            match &report.state {
+                AgentReportState::Unchanged => {
+                    if let Some(workers) = workers {
+                        self.agent_worker_waits.insert(pane, workers);
+                    }
+                    return Ok(true);
+                },
+                AgentReportState::Clear => None,
+                AgentReportState::Set(agent) => Some(agent.clone()),
+            }
+        };
+        if agent.is_none() {
+            workers = None;
+        }
+        let mut visible = agent.clone();
+        if let (Some(workers), Some(parent)) = (&mut workers, agent) {
+            if workers.parent.kind == parent.kind
+                && workers.parent.session_id == parent.session_id
+                && parent.state != AgentState::Exited
+                && !workers.waits.is_empty()
+            {
+                workers.parent = parent.clone();
+                let mut waiting = parent;
+                waiting.state = AgentState::Waiting;
+                waiting.wait_needs_a_person = true;
+                waiting.waiting_on = workers.waits.values().next().cloned().flatten();
+                waiting.detail = None;
+                visible = Some(waiting);
+            } else {
+                workers.waits.clear();
+            }
+        }
+        let result = super::thread_main::apply_pane_agent_report(self, pane, visible)
+            .context("apply parent state and worker waits")?;
+        if let Some(workers) = workers.filter(|workers| !workers.waits.is_empty()) {
+            self.agent_worker_waits.insert(pane, workers);
+        }
+        Ok(result)
+    }
+
     fn agent_input_revision(&self, pane: PaneId) -> u64 {
         self.tab_containing_pane(pane)
             .map(|tab| tab.agent_input_revision(pane))
@@ -144,6 +266,11 @@ impl Screen {
                 self.agent_reply(client, AgentResponse::new(AgentOutcome::Rejected));
                 return;
             },
+            Recover {
+                pane_id,
+                expected_session_id,
+                ..
+            } => (*pane_id, Some(expected_session_id.as_str())),
             Status {
                 pane_id,
                 expected_session_id,
@@ -201,6 +328,32 @@ impl Screen {
             return;
         }
         match request {
+            Recover {
+                expected_session_id,
+                confirm_empty,
+                ..
+            } => {
+                if !confirm_empty
+                    || expected_session_id.is_empty()
+                    || !status.prompt_supported
+                    || status.agent.state != AgentState::Idle
+                    || self.agent_controls.iter().any(|pending| {
+                        pending.pane == pane
+                            && pending.prompt.is_some()
+                            && (!pending.abandoned || pending.delivery.is_some())
+                    })
+                {
+                    reject(self, AgentOutcome::Rejected, "recovery requires a pinned live idle agent, --confirm-empty, no active submission and no paste write in flight");
+                    return;
+                }
+                self.agent_controls
+                    .retain(|pending| pending.pane != pane || pending.prompt.is_none());
+                let revision = self.agent_input_revision(pane);
+                if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                    lifecycle.input_revision = Some(revision);
+                }
+                self.agent_reply(client, self.agent_result(pane, AgentOutcome::Ok, None));
+            },
             Status { .. } => {
                 let outcome = if status.status_available {
                     AgentOutcome::Ok
@@ -295,7 +448,7 @@ impl Screen {
                     return;
                 }
                 if prompt.trim().is_empty()
-                    || prompt.len() > 1024 * 1024
+                    || prompt.len() > MAX_PROMPT_BYTES
                     || prompt
                         .chars()
                         .any(|c| c.is_control() && c != '\n' && c != '\t')
@@ -316,6 +469,7 @@ impl Screen {
                     status.agent.session_id.as_deref().unwrap_or_default(),
                     &prompt,
                 );
+                let (tx, rx) = tokio::sync::oneshot::channel();
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 self.agent_controls.push(Pending {
                     client: Some(client),
@@ -328,19 +482,34 @@ impl Screen {
                     wait,
                     until: AgentState::Idle,
                     session_ended: false,
+                    abandoned: false,
+                    resolved: false,
+                    delivery: Some(rx),
+                    enter_at: None,
                 });
-                let result = self
-                    .paste_to_pane_id(prompt.into_bytes(), pane, None, None)
-                    .and_then(|()| {
-                        self.agent_write_key(pane, KeyWithModifier::new(BareKey::Enter))
-                    });
+                let result = self.paste_to_pane_id(
+                    prompt.into_bytes(),
+                    pane,
+                    None,
+                    Some(yinz_bus::route::NotificationEnd::new(tx)),
+                );
                 let revision = self.agent_input_revision(pane);
                 if let Some(pending) = self.agent_controls.last_mut() {
                     pending.input_revision = revision;
                 }
                 if let Err(error) = result {
-                    self.agent_controls.pop();
-                    reject(self, AgentOutcome::Failed, &error.to_string());
+                    let Some(mut pending) = self.agent_controls.pop() else {
+                        return;
+                    };
+                    self.finish_agent_control(
+                        &pending,
+                        AgentOutcome::Failed,
+                        Some(error.to_string()),
+                    );
+                    pending.abandoned = true;
+                    pending.client = None;
+                    pending.deadline = None;
+                    self.agent_controls.push(pending);
                 }
             },
             Wait {
@@ -365,6 +534,10 @@ impl Screen {
                     wait: true,
                     until,
                     session_ended: false,
+                    abandoned: false,
+                    resolved: false,
+                    delivery: None,
+                    enter_at: None,
                 });
                 self.refresh_agent_controls();
             },
@@ -387,14 +560,28 @@ impl Screen {
         if let Some(client) = pending.client {
             let mut response = self.agent_result(pending.pane, outcome, message);
             if let Some(prompt) = &pending.prompt {
-                response.acknowledged = prompt.acknowledged();
-                response.turn_id = prompt.turn_id().map(str::to_owned);
                 if matches!(
                     outcome,
                     AgentOutcome::TimedOut
-                        | AgentOutcome::StatusUnavailable
                         | AgentOutcome::Interrupted
+                        | AgentOutcome::StatusUnavailable
+                        | AgentOutcome::Failed
                 ) {
+                    response.message = Some(format!("{} Inspect the pane and clear any draft, then use agent recover {} --conversation {} --confirm-empty.",
+                        response.message.as_deref().unwrap_or("Submission is uncertain."), pending.pane,
+                        pending.conversation.as_deref().unwrap_or("ID")));
+                }
+                response.acknowledged = prompt.acknowledged();
+                response.turn_id = prompt.turn_id().map(str::to_owned);
+                if pending.delivery.is_some()
+                    || pending.enter_at.is_some()
+                    || matches!(
+                        outcome,
+                        AgentOutcome::TimedOut
+                            | AgentOutcome::StatusUnavailable
+                            | AgentOutcome::Interrupted
+                    )
+                {
                     for status in &mut response.agents {
                         status.ready = false;
                     }
@@ -405,6 +592,17 @@ impl Screen {
     }
 
     pub(super) fn refresh_agent_controls(&mut self) {
+        self.refresh_agent_controls_at(Instant::now());
+    }
+
+    pub(crate) fn refresh_agent_controls_at(&mut self, now: Instant) {
+        if !self
+            .agent_controls
+            .iter()
+            .any(|pending| !pending.abandoned || pending.delivery.is_some())
+        {
+            return;
+        }
         let mut keep = Vec::new();
         let claimed: std::collections::HashSet<_> = self
             .agent_controls
@@ -413,11 +611,46 @@ impl Screen {
             .map(|pending| pending.pane)
             .collect();
         for mut pending in std::mem::take(&mut self.agent_controls) {
+            if pending.abandoned && pending.delivery.is_none() {
+                keep.push(pending);
+                continue;
+            }
+            let mut delivery_error = None;
+            if let Some(delivery) = &mut pending.delivery {
+                match delivery.try_recv() {
+                    Ok(result) => {
+                        pending.delivery = None;
+                        delivery_error = result.error_message;
+                        if delivery_error.is_none()
+                            && !pending.abandoned
+                            && pending
+                                .prompt
+                                .as_ref()
+                                .is_some_and(|prompt| !prompt.acknowledged())
+                        {
+                            pending.enter_at = Some(now + Duration::from_millis(100));
+                        }
+                    },
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {},
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        pending.delivery = None;
+                        delivery_error = Some("paste writer disconnected".into());
+                    },
+                }
+            }
+            if pending.resolved && pending.delivery.is_none() {
+                continue;
+            }
+            if pending.abandoned {
+                keep.push(pending);
+                continue;
+            }
             let mut status = self.agent_status(pending.pane);
             if let Some(status) = &mut status {
                 status.ready &= !claimed.contains(&pending.pane);
             }
-            let outcome = match &status {
+            let mut outcome = match &status {
+                _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
                     Some(AgentOutcome::TargetClosed)
                 },
@@ -440,6 +673,13 @@ impl Screen {
                         && self.agent_input_revision(pending.pane) != pending.input_revision =>
                 {
                     Some(AgentOutcome::Interrupted)
+                },
+                Some(status)
+                    if pending.prompt.is_some()
+                        && (!status.prompt_supported
+                            || !self.agent_process_matches(pending.pane, &pending.kind)) =>
+                {
+                    Some(AgentOutcome::StatusUnavailable)
                 },
                 Some(status) if status.agent.state == AgentState::Exited => Some(
                     if pending.prompt.is_none() && pending.until == AgentState::Exited {
@@ -465,11 +705,8 @@ impl Screen {
                 {
                     Some(AgentOutcome::NeedsInput)
                 },
-                _ if pending
-                    .deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline) =>
-                {
-                    Some(if status.is_some_and(|s| !s.status_available) {
+                _ if pending.deadline.is_some_and(|deadline| now >= deadline) => {
+                    Some(if status.as_ref().is_some_and(|s| !s.status_available) {
                         AgentOutcome::StatusUnavailable
                     } else {
                         AgentOutcome::TimedOut
@@ -477,14 +714,37 @@ impl Screen {
                 },
                 _ => None,
             };
+            if outcome.is_none() && pending.enter_at.is_some_and(|enter| now >= enter) {
+                pending.enter_at = None;
+                if pending
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|prompt| !prompt.acknowledged())
+                {
+                    if status
+                        .as_ref()
+                        .is_none_or(|status| status.agent.state != AgentState::Idle)
+                    {
+                        outcome = Some(AgentOutcome::Interrupted);
+                    } else if let Err(error) =
+                        self.agent_write_key(pending.pane, KeyWithModifier::new(BareKey::Enter))
+                    {
+                        delivery_error = Some(error.to_string());
+                        outcome = Some(AgentOutcome::Failed);
+                    } else {
+                        pending.input_revision = self.agent_input_revision(pending.pane);
+                    }
+                }
+            }
             if let Some(outcome) = outcome {
-                self.finish_agent_control(&pending, outcome, None);
+                self.finish_agent_control(&pending, outcome, delivery_error);
                 if pending.prompt.is_some()
                     && matches!(
                         outcome,
                         AgentOutcome::TimedOut
                             | AgentOutcome::StatusUnavailable
                             | AgentOutcome::Interrupted
+                            | AgentOutcome::Failed
                     )
                 {
                     // Ending the wait cannot recall input already sent to the agent, including
@@ -492,6 +752,8 @@ impl Screen {
                     // otherwise an identical retry could accept the first prompt's late hook.
                     pending.client = None;
                     pending.deadline = None;
+                    pending.abandoned = true;
+                    pending.enter_at = None;
                     keep.push(pending);
                 }
             } else {
@@ -504,32 +766,11 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
-        self.agent_launches
-            .retain(|pane, _| !self.destroyed_panes.contains(pane));
-        let stale: Vec<_> = self
-            .agent_lifecycle
-            .keys()
-            .copied()
-            .filter(|pane| {
-                self.agent_status(*pane)
-                    .is_none_or(|s| !s.status_available || s.agent.state == AgentState::Exited)
-            })
-            .collect();
-        for pane in stale {
-            self.agent_lifecycle.remove(&pane);
-        }
     }
 
-    pub(super) fn agent_control_event(&mut self, event: &AgentEvent) {
+    pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
-        let hook = serde_json::from_str::<HookEvent>(&event.raw).ok();
-        let parent = hook.as_ref().is_some_and(|hook| {
-            hook.agent_id.is_none()
-                && !matches!(
-                    hook.hook_event_name.as_str(),
-                    "SubagentStart" | "SubagentStop"
-                )
-        });
+        let parent = hook.is_some_and(|hook| !hook.is_worker());
         let mut keep = Vec::new();
         let mut accepted_input_revision = None;
         for mut pending in std::mem::take(&mut self.agent_controls) {
@@ -564,7 +805,7 @@ impl Screen {
                 pending
                     .prompt
                     .as_mut()
-                    .and_then(|prompt| prompt.observe(event))
+                    .and_then(|prompt| prompt.observe(event, hook))
             };
             if parent
                 && event.hook == "UserPromptSubmit"
@@ -580,6 +821,7 @@ impl Screen {
             }
             match outcome {
                 Some(AgentOutcome::Submitted) => {
+                    pending.enter_at = None;
                     if !pending.wait {
                         self.finish_agent_control(&pending, AgentOutcome::Submitted, None);
                         pending.client = None;
@@ -587,7 +829,28 @@ impl Screen {
                     keep.push(pending);
                 },
                 Some(outcome) => {
-                    self.finish_agent_control(&pending, outcome, event.last_message.clone())
+                    self.finish_agent_control(&pending, outcome, event.last_message.clone());
+                    if matches!(
+                        outcome,
+                        AgentOutcome::Interrupted
+                            | AgentOutcome::StatusUnavailable
+                            | AgentOutcome::NeedsInput
+                    ) {
+                        pending.client = None;
+                        pending.deadline = None;
+                        pending.abandoned = true;
+                        pending.enter_at = None;
+                        keep.push(pending);
+                    } else if pending.delivery.is_some()
+                        && matches!(outcome, AgentOutcome::Completed | AgentOutcome::Failed)
+                    {
+                        pending.resolved = true;
+                        pending.abandoned = true;
+                        pending.client = None;
+                        pending.deadline = None;
+                        pending.enter_at = None;
+                        keep.push(pending);
+                    }
                 },
                 None => keep.push(pending),
             }
@@ -598,11 +861,12 @@ impl Screen {
         }
         if event.hook == "SessionEnd" {
             self.agent_lifecycle.remove(&pane);
+            self.agent_worker_waits.remove(&pane);
         } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
             !id.is_empty()
                 && hook
                     .as_ref()
-                    .and_then(yinz_types::agent::hook_state)
+                    .and_then(|hook| yinz_types::agent::hook_state(hook))
                     .is_some()
         }) {
             let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
@@ -631,13 +895,21 @@ impl Screen {
     }
 
     pub(super) fn agent_control_deadline(&self) -> Option<Duration> {
+        let now = Instant::now();
         self.agent_controls
             .iter()
-            .filter_map(|pending| {
-                pending
-                    .deadline
-                    .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .flat_map(|pending| {
+                [
+                    pending
+                        .deadline
+                        .map(|deadline| deadline.saturating_duration_since(now)),
+                    pending
+                        .enter_at
+                        .map(|enter| enter.saturating_duration_since(now)),
+                    pending.delivery.as_ref().map(|_| Duration::from_millis(10)),
+                ]
             })
+            .flatten()
             .min()
     }
 
@@ -653,7 +925,7 @@ impl Screen {
 }
 
 fn deadline(timeout_ms: u64) -> Option<Instant> {
-    (1..=86_400_000)
+    (1..=MAX_TIMEOUT_MS)
         .contains(&timeout_ms)
         .then(|| Instant::now() + Duration::from_millis(timeout_ms))
 }

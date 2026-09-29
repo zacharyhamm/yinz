@@ -1335,14 +1335,10 @@ impl MouseHandler {
             event_for_pane.position = relative_position;
             if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
                 if !pane.position_is_on_frame(&click_event.position) {
-                    tab.write_to_active_terminal(
-                        &None,
-                        mouse_event.into_bytes(),
-                        false,
-                        client_id,
-                        None,
-                    )
-                    .with_context(err_context)?;
+                    tab.clear_search(client_id);
+                    tab.mouse_help_text_visible.clear();
+                    Self::write_to_pane(tab, mouse_event.into_bytes(), active_pane_id, client_id)
+                        .with_context(err_context)?;
                 }
             }
         } else {
@@ -1387,14 +1383,11 @@ impl MouseHandler {
             if let Some(mouse_event) =
                 pane_with_selection.mouse_left_click_release(&relative_position)
             {
-                tab.write_to_active_terminal(
-                    &None,
-                    mouse_event.into_bytes(),
-                    false,
-                    client_id,
-                    None,
-                )
-                .with_context(err_context)?;
+                let pane_id = pane_with_selection.pid();
+                tab.clear_search(client_id);
+                tab.mouse_help_text_visible.clear();
+                Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
+                    .with_context(err_context)?;
             } else {
                 let relative_position = pane_with_selection.relative_position(&position);
                 pane_with_selection.end_selection(&relative_position, client_id);
@@ -1662,14 +1655,10 @@ impl MouseHandler {
             if !off_plugin_content || event.event_type == MouseEventType::Motion {
                 if let Some(mouse_event) = pane.mouse_event(&event_for_pane, client_id) {
                     if !on_frame {
-                        tab.write_to_active_terminal(
-                            &None,
-                            mouse_event.into_bytes(),
-                            false,
-                            client_id,
-                            None,
-                        )
-                        .with_context(err_context)?;
+                        tab.clear_search(client_id);
+                        tab.mouse_help_text_visible.clear();
+                        Self::write_to_pane(tab, mouse_event.into_bytes(), pane_id, client_id)
+                            .with_context(err_context)?;
                     }
                 }
             }
@@ -2276,8 +2265,15 @@ impl MouseHandler {
             } else if pane.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
-                    Self::write_to_pane(tab, "\u{1b}[A".as_bytes().to_owned(), pane_id, client_id)
-                        .with_context(err_context)?;
+                    tab.write_to_pane_id(
+                        &None,
+                        "\u{1b}[A".as_bytes().to_owned(),
+                        false,
+                        pane_id,
+                        Some(client_id),
+                        None,
+                    )
+                    .with_context(err_context)?;
                 }
             } else {
                 pane.scroll_up(lines, client_id);
@@ -2315,8 +2311,15 @@ impl MouseHandler {
             } else if pane.is_alternate_mode_active() {
                 // separate writes so each sequence gets adjusted for cursor keys mode
                 for _ in 0..lines {
-                    Self::write_to_pane(tab, "\u{1b}[B".as_bytes().to_owned(), pane_id, client_id)
-                        .with_context(err_context)?;
+                    tab.write_to_pane_id(
+                        &None,
+                        "\u{1b}[B".as_bytes().to_owned(),
+                        false,
+                        pane_id,
+                        Some(client_id),
+                        None,
+                    )
+                    .with_context(err_context)?;
                 }
             } else {
                 pane.scroll_down(lines, client_id);
@@ -2456,7 +2459,7 @@ impl MouseHandler {
         client_id: ClientId,
     ) -> Result<()> {
         // the bool is "the UI needs updating", which a scroll sequence never triggers
-        tab.write_to_pane_id(&None, bytes, false, pane_id, Some(client_id), None)
+        tab.write_mouse_to_pane_id(bytes, pane_id, Some(client_id))
             .map(|_| ())
     }
 

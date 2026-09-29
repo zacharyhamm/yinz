@@ -41,27 +41,24 @@ pub(super) fn apply_queued_agent_report(
     report: &yinz_types::agent::report::AgentReport,
     accepted_at: std::time::Instant,
 ) -> Result<bool> {
-    use yinz_types::agent::report::AgentReportState;
     let pane_id = report.pane_id;
     if screen.tab_containing_pane(pane_id).is_none() {
         return Ok(false);
     }
+    let hook = report
+        .event
+        .as_ref()
+        .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok());
     // A late hook from an earlier process must not finish a new operation in a reused pane.
     if let Some(command) = screen
         .tab_containing_pane(pane_id)
         .and_then(|tab| tab.pane_run_command(pane_id))
     {
         if let Some(owner) = command.workflow_owner() {
-            let reported = report
-                .event
+            let reported = hook
                 .as_ref()
-                .and_then(|event| serde_json::from_str::<serde_json::Value>(&event.raw).ok())
-                .and_then(|raw| {
-                    raw.get("_yinz_workflow_owner")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned)
-                });
-            if reported.as_deref() != Some(owner) {
+                .and_then(|hook| hook.workflow_owner.as_deref());
+            if reported != Some(owner) {
                 return Ok(true); // consumed, but deliberately not applied or broadcast
             }
         }
@@ -72,25 +69,7 @@ pub(super) fn apply_queued_agent_report(
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
     trace.record("state", Duration::ZERO, "enter");
-    let worker = report
-        .event
-        .as_ref()
-        .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok())
-        .is_some_and(|hook| {
-            hook.agent_id.is_some()
-                || matches!(
-                    hook.hook_event_name.as_str(),
-                    "SubagentStart" | "SubagentStop"
-                )
-        });
-    let result = match &report.state {
-        _ if worker => Ok(true),
-        AgentReportState::Unchanged => Ok(true),
-        AgentReportState::Clear => apply_pane_agent_report(screen, pane_id, None),
-        AgentReportState::Set(agent) => {
-            apply_pane_agent_report(screen, pane_id, Some(agent.clone()))
-        },
-    };
+    let result = screen.apply_agent_report_state(report, hook.as_ref());
     trace.record(
         "state",
         started.elapsed(),
@@ -98,7 +77,7 @@ pub(super) fn apply_queued_agent_report(
     );
     result?;
     if let Some(event) = &report.event {
-        screen.agent_control_event(event);
+        screen.agent_control_event(event, hook.as_ref());
     }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
@@ -194,6 +173,16 @@ pub(crate) fn apply_pane_agent_report(
         .tab_containing_pane_mut(pane_id)
         .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
         .unwrap_or(false);
+    if previous
+        .as_ref()
+        .map(|agent| (&agent.kind, &agent.session_id))
+        != agent.as_ref().map(|agent| (&agent.kind, &agent.session_id))
+        || agent
+            .as_ref()
+            .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited)
+    {
+        screen.invalidate_agent_lifecycle(pane_id);
+    }
     // A report that repeats itself costs nothing; a changed one is news to every reader of the
     // manifest.
     if changed {
@@ -1406,6 +1395,7 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                 },
                 ScreenInstruction::HoldPane(id, exit_status, run_command) => {
+                    screen.invalidate_agent_lifecycle(id);
                     let is_first_run = false;
                     let mut found = false;
                     let mut pane_is_agent = false;

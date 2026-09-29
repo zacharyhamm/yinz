@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use yinz_cli::args::{Agent, CliArgs};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
-use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+use yinz_types::agent::control::{
+    AgentOutcome, AgentRequest, AgentResponse, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS,
+};
 use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
@@ -146,6 +148,19 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
             },
             json,
         ),
+        Agent::Recover {
+            target,
+            conversation,
+            confirm_empty,
+            json,
+        } => (
+            AgentRequest::Recover {
+                pane_id: target,
+                expected_session_id: conversation,
+                confirm_empty,
+            },
+            json,
+        ),
         Agent::SendKeys {
             target,
             keys,
@@ -174,7 +189,7 @@ fn timeout_millis(timeout: Duration) -> Result<u64> {
         .as_millis()
         .try_into()
         .context("agent timeout is too large")?;
-    if !(1..=86_400_000).contains(&millis) {
+    if !(1..=MAX_TIMEOUT_MS).contains(&millis) {
         bail!("agent timeout must be between 1ms and 24h");
     }
     Ok(millis)
@@ -201,7 +216,7 @@ fn read_prompt(text: Option<String>, file: Option<&Path>, stdin: &mut impl Read)
     if prompt.trim().is_empty() {
         bail!("prompt must not be empty");
     }
-    if prompt.len() > 1024 * 1024 {
+    if prompt.len() > MAX_PROMPT_BYTES {
         bail!("prompt must be at most 1 MiB");
     }
     if prompt

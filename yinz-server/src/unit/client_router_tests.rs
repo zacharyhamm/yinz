@@ -470,3 +470,28 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
         );
     }
 }
+
+#[test]
+fn agent_spawn_registration_failure_retains_created_pane_and_checkout() {
+    let (tx, rx) = channels::unbounded();
+    drop(rx);
+    let senders = ThreadSenders {
+        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let spawned = yinz_types::agent::SpawnedAgent {
+        pane_id: yinz_types::pane_id::PaneId::Terminal(TerminalId::new(17)),
+        cwd: Some("/actual/checkout".into()),
+        branch: Some("actual-branch".into()),
+    };
+    let response = register_spawned_agent(&senders, spawned.clone());
+    assert_eq!(
+        response.outcome,
+        yinz_types::agent::control::AgentOutcome::Failed
+    );
+    assert_eq!(response.spawned, Some(spawned));
+    assert!(response
+        .message
+        .unwrap()
+        .contains("launch registration failed"));
+}

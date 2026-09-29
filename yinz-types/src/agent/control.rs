@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
+pub const MAX_TIMEOUT_MS: u64 = 86_400_000;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     List,
@@ -34,6 +37,11 @@ pub enum AgentRequest {
         pane_id: PaneId,
         expected_session_id: Option<String>,
         lines: usize,
+    },
+    Recover {
+        pane_id: PaneId,
+        expected_session_id: String,
+        confirm_empty: bool,
     },
     SendKeys {
         pane_id: PaneId,
@@ -146,30 +154,43 @@ impl PromptObservation {
     }
 
     /// `Submitted` means a matching prompt hook arrived, never merely a successful PTY write.
-    /// A terminal result is emitted at most once; an old completion cannot accept a prompt.
-    pub fn observe(&mut self, event: &AgentEvent) -> Option<AgentOutcome> {
+    /// Completion is emitted at most once. Uncertainty keeps observing valid late hooks.
+    /// An old completion cannot accept a prompt.
+    pub fn observe(
+        &mut self,
+        event: &AgentEvent,
+        hook: Option<&HookEvent>,
+    ) -> Option<AgentOutcome> {
         if self.finished {
             return None;
         }
-        let outcome = self.observe_event(event);
-        if outcome.is_some_and(|outcome| outcome != AgentOutcome::Submitted) {
+        let outcome = self.observe_event(event, hook);
+        if outcome.is_some_and(|outcome| {
+            matches!(
+                outcome,
+                AgentOutcome::Completed | AgentOutcome::Failed | AgentOutcome::TargetChanged
+            )
+        }) {
             self.finished = true;
         }
         outcome
     }
 
-    fn observe_event(&mut self, event: &AgentEvent) -> Option<AgentOutcome> {
-        let Ok(hook) = serde_json::from_str::<HookEvent>(&event.raw) else {
+    fn observe_event(
+        &mut self,
+        event: &AgentEvent,
+        hook: Option<&HookEvent>,
+    ) -> Option<AgentOutcome> {
+        let Some(hook) = hook else {
             return Some(AgentOutcome::StatusUnavailable);
         };
-        // A worker ending does not end its parent's turn, even if it reports a Stop hook.
-        if hook.agent_id.is_some()
-            || matches!(
-                hook.hook_event_name.as_str(),
-                "SubagentStart" | "SubagentStop"
-            )
-        {
-            return None;
+        if hook.is_worker() {
+            return (event.kind == self.kind
+                && hook.session_id == self.conversation_id
+                && event.session_id.as_deref() == Some(self.conversation_id.as_str())
+                && super::hook_state(hook) == Some(AgentState::Waiting)
+                && super::waiting_needs_a_person(hook))
+            .then_some(AgentOutcome::NeedsInput);
         }
         if hook.session_id.is_empty() || event.session_id.as_deref().is_none_or(str::is_empty) {
             return Some(AgentOutcome::StatusUnavailable);
@@ -192,7 +213,7 @@ impl PromptObservation {
             if fingerprint.as_deref() != Some(self.prompt_sha256.as_str()) {
                 return Some(AgentOutcome::Interrupted);
             }
-            let turn_id = hook.turn_id.filter(|id| !id.is_empty());
+            let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
             if self.kind == "codex" && turn_id.is_none() {
                 return Some(AgentOutcome::StatusUnavailable);
             }
@@ -215,8 +236,8 @@ impl PromptObservation {
             "Stop" => Some(AgentOutcome::Completed),
             "StopFailure" => Some(AgentOutcome::Failed),
             "Interrupt" => Some(AgentOutcome::Interrupted),
-            _ if super::hook_state(&hook) == Some(AgentState::Waiting)
-                && super::waiting_needs_a_person(&hook) =>
+            _ if super::hook_state(hook) == Some(AgentState::Waiting)
+                && super::waiting_needs_a_person(hook) =>
             {
                 Some(AgentOutcome::NeedsInput)
             },
@@ -225,8 +246,8 @@ impl PromptObservation {
     }
 }
 
-fn prompt_sha256(prompt: &str) -> String {
-    Sha256::digest(prompt.as_bytes())
+pub fn prompt_sha256(prompt: &str) -> String {
+    Sha256::digest(prompt.replace("\r\n", "\n").trim().as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()

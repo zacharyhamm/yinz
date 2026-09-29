@@ -59,3 +59,33 @@ fn agent_commands_require_explicit_targets_and_one_prompt_source() {
         Agent::Spawn { kind, branch: Some(branch), json: true, .. } if kind == "codex" && branch == "review-auth"
     ));
 }
+
+#[test]
+fn recovery_requires_conversation_and_explicit_empty_draft_confirmation() {
+    use clap::Parser;
+    for args in [
+        vec!["agent", "recover", "terminal_7"],
+        vec!["agent", "recover", "terminal_7", "--conversation", "id"],
+        vec!["agent", "recover", "terminal_7", "--confirm-empty"],
+    ] {
+        assert!(AgentCli::try_parse_from(args).is_err());
+    }
+    assert!(matches!(
+        AgentCli::try_parse_from([
+            "agent",
+            "recover",
+            "terminal_7",
+            "--conversation",
+            "id",
+            "--confirm-empty",
+            "--json"
+        ])
+        .unwrap()
+        .command,
+        Agent::Recover {
+            confirm_empty: true,
+            json: true,
+            ..
+        }
+    ));
+}

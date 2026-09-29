@@ -9,7 +9,6 @@
 use super::{AgentInfo, AgentSource, AgentState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -500,7 +499,7 @@ pub struct HookEvent {
     /// Provider turn identity, preserved even when prose is pruned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    /// SHA-256 of the complete received prompt's UTF-8 bytes, computed before pruning.
+    /// SHA-256 after CRLF normalization and trimming outer whitespace, before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
     /// Host-injected ownership needed to route remote workflow hooks.
@@ -600,6 +599,14 @@ pub struct CapturedMessage {
 }
 
 impl HookEvent {
+    pub fn is_worker(&self) -> bool {
+        self.agent_id.is_some()
+            || matches!(
+                self.hook_event_name.as_str(),
+                "SubagentStart" | "SubagentStop"
+            )
+    }
+
     /// This event, cut to a size worth broadcasting. See [`HOOK_BROADCAST_MAX_BYTES`].
     ///
     /// Every field survives — what is cut is how much of each one does. Strings first and a
@@ -706,12 +713,7 @@ impl HookEvent {
             .as_ref()
             .filter(|_| self.prompt_sha256.is_none())
         {
-            source.prompt_sha256 = Some(
-                Sha256::digest(prompt.as_bytes())
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-            );
+            source.prompt_sha256 = Some(crate::agent::control::prompt_sha256(prompt));
         }
         let mut low = 0;
         let mut high = PRUNED_INPUT_BUDGET;
@@ -1136,7 +1138,7 @@ pub enum HookOutcome {
 /// Read one hook event from an agent of `kind`. Every reported record is complete — kind,
 /// state, hint, folder, session — so setting it needs no merge with what came before.
 pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
-    if event.agent_id.is_some() {
+    if event.is_worker() {
         return HookOutcome::Nothing;
     }
     if event.hook_event_name == HOOK_SESSION_END {
@@ -1988,12 +1990,7 @@ mod tests {
             assert_eq!(bounded.workflow_owner, hook.workflow_owner);
             assert_eq!(
                 bounded.prompt_sha256,
-                Some(
-                    Sha256::digest(prompt.as_bytes())
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect()
-                )
+                Some(crate::agent::control::prompt_sha256(&prompt))
             );
             let arrived: HookEvent = serde_json::from_str(&raw).unwrap();
             assert_eq!(&arrived, bounded.as_ref());
