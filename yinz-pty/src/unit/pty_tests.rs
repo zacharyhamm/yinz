@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use yinz_runtime::channels::{self, SenderWithContext, Shutdown};
+use yinz_types::agent::report::AgentReportState;
+use yinz_types::agent::{AgentSource, AgentState, HOOK_BROADCAST_MAX_BYTES};
 use yinz_types::command::PaneTarget;
 use yinz_types::data::Event;
 use yinz_types::diagnostics::ErrorContext;
@@ -2205,7 +2207,70 @@ fn remote_pane(
 }
 
 #[test]
-fn remote_subagent_hooks_broadcast_without_writing_parent_state() {
+fn remote_agent_hooks_queue_state_and_event_together() {
+    let (pty, _, plugin_rx, screen_rx) = remote_pane(TerminalId::new(7), RemoteStatus::default());
+    for kind in ["claude", "codex"] {
+        for (hook, expected_state) in [
+            ("SessionStart", Some(AgentState::Idle)),
+            ("UserPromptSubmit", Some(AgentState::Busy)),
+            ("Stop", Some(AgentState::Idle)),
+            ("SessionEnd", None),
+            ("UnknownHook", None),
+        ] {
+            let json = serde_json::to_string_pretty(&serde_json::json!({
+                "hook_event_name": hook, "session_id": "parent", "source": "startup",
+                "cwd": "/remote/work", "prompt": "review", "extra": {"preserved": true},
+            }))
+            .unwrap();
+            let received_at = Instant::now();
+            handle_remote_agent_report(&pty.bus.senders, TerminalId::new(7), kind, json.clone())
+                .unwrap();
+            let (ScreenInstruction::AgentReport(report, accepted_at), _) =
+                screen_rx.try_recv().unwrap()
+            else {
+                panic!("expected a queued agent report");
+            };
+            assert!(received_at <= accepted_at && accepted_at <= Instant::now());
+            yinz_runtime::agent::report::validate_report(&report).unwrap();
+            assert_eq!(report.pane_id, PaneId::Terminal(TerminalId::new(7)));
+            assert_eq!(report.kind, kind);
+            assert_eq!(report.process_id, ProcessId::new(std::process::id()));
+            if let Some(state) = expected_state {
+                let AgentReportState::Set(agent) = report.state else {
+                    panic!("expected state from {hook}");
+                };
+                assert_eq!(agent.state, state);
+                assert_eq!(agent.kind, kind);
+                assert_eq!(agent.source, AgentSource::Reported);
+                assert_eq!(agent.session_id.as_deref(), Some("parent"));
+                assert_eq!(agent.cwd.as_deref(), Some("/remote/work"));
+            } else {
+                assert_eq!(
+                    report.state,
+                    if hook == "SessionEnd" {
+                        AgentReportState::Clear
+                    } else {
+                        AgentReportState::Unchanged
+                    }
+                );
+            }
+            let event = report.event.unwrap();
+            assert_eq!(event.pane_id, TerminalId::new(7));
+            assert_eq!(event.state, expected_state);
+            assert_eq!(event.hook, hook);
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.raw, json);
+            assert!(screen_rx.try_recv().is_err(), "only one report is queued");
+            assert!(
+                plugin_rx.try_recv().is_err(),
+                "screen must broadcast the event"
+            );
+        }
+    }
+}
+
+#[test]
+fn remote_subagent_hooks_queue_events_without_writing_parent_state() {
     let (pty, _, plugin_rx, screen_rx) = remote_pane(TerminalId::new(7), RemoteStatus::default());
     for kind in ["claude", "codex"] {
         for hook in ["SubagentStart", "SubagentStop"] {
@@ -2216,18 +2281,43 @@ fn remote_subagent_hooks_broadcast_without_writing_parent_state() {
             .to_string();
             handle_remote_agent_report(&pty.bus.senders, TerminalId::new(7), kind, json.clone())
                 .unwrap();
-            assert!(screen_rx.try_recv().is_err());
-            let (PluginInstruction::Update(events), _) = plugin_rx.try_recv().unwrap() else {
-                panic!("expected a plugin update");
+            let (ScreenInstruction::AgentReport(report, _), _) = screen_rx.try_recv().unwrap()
+            else {
+                panic!("expected a queued agent report");
             };
-            let [(None, None, Event::AgentEvent(event))] = events.as_slice() else {
-                panic!("expected one broadcast");
-            };
+            assert_eq!(report.pane_id, PaneId::Terminal(TerminalId::new(7)));
+            assert_eq!(report.state, AgentReportState::Unchanged);
+            let event = report.event.unwrap();
             assert_eq!(event.state, None);
             assert_eq!(event.hook, hook);
             assert_eq!(event.kind, kind);
             assert_eq!(event.raw, json);
+            assert!(screen_rx.try_recv().is_err(), "only one report is queued");
+            assert!(
+                plugin_rx.try_recv().is_err(),
+                "screen must broadcast the event"
+            );
         }
+    }
+}
+
+#[test]
+fn invalid_remote_agent_reports_are_rejected_without_queueing() {
+    let (pty, _, plugin_rx, screen_rx) = remote_pane(TerminalId::new(7), RemoteStatus::default());
+    let oversized = serde_json::json!({
+        "hook_event_name": "SessionStart", "session_id": "parent", "source": "startup",
+        "prompt": "x".repeat(HOOK_BROADCAST_MAX_BYTES),
+    })
+    .to_string();
+    for (json, message) in [
+        ("{".to_owned(), "invalid remote agent report"),
+        (oversized, "agent hook event exceeds the 64 KiB limit"),
+    ] {
+        let error = handle_remote_agent_report(&pty.bus.senders, TerminalId::new(7), "codex", json)
+            .unwrap_err();
+        assert_eq!(error.to_string(), message);
+        assert!(screen_rx.try_recv().is_err());
+        assert!(plugin_rx.try_recv().is_err());
     }
 }
 

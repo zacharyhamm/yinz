@@ -4,12 +4,24 @@ use std::time::Instant;
 use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
 use yinz_types::agent::report::{AgentReport, AgentReportState};
 use yinz_types::agent::{hook_outcome, AgentEvent, AgentState, HookEvent, HookOutcome};
+use yinz_types::command::PaneTarget;
 
 const PANE: PaneId = PaneId::Terminal(TerminalId::new(7));
 const CLIENT: ClientId = ClientId::new(1);
 
 fn setup(
     command: &str,
+) -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
+    setup_on_target(command, PaneTarget::Local)
+}
+
+fn setup_on_target(
+    command: &str,
+    target: PaneTarget,
 ) -> (
     Screen,
     CapturedClientMessages,
@@ -33,6 +45,7 @@ fn setup(
                 command.into(),
             ],
             cwd: Some(PathBuf::from("/work")),
+            target,
             ..Default::default()
         })),
         false,
@@ -45,6 +58,14 @@ fn setup(
     tab.handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
         .unwrap();
     (screen, messages, writes)
+}
+
+fn pane_targets() -> [PaneTarget; 3] {
+    [
+        PaneTarget::Local,
+        PaneTarget::ssh("test-host").unwrap(),
+        PaneTarget::firecracker("test-vm", None, None).unwrap(),
+    ]
 }
 
 fn replies(messages: &CapturedClientMessages, client: ClientId) -> Vec<AgentResponse> {
@@ -342,41 +363,63 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
 
 #[test]
 fn startup_wait_requires_lifecycle_evidence_and_binds_the_first_conversation() {
-    let (mut screen, messages, _writes) = setup("codex");
-    screen.agent_control(
-        AgentRequest::Status {
-            pane_id: PANE,
-            expected_session_id: None,
-        },
-        CLIENT,
-    );
-    let status = replies(&messages, CLIENT).pop().unwrap();
-    assert_eq!(status.outcome, AgentOutcome::StatusUnavailable);
-    assert!(!status.agents[0].ready);
-    screen.agent_control(
-        AgentRequest::Wait {
-            pane_id: PANE,
-            expected_session_id: None,
-            until: AgentState::Idle,
-            timeout_ms: 30_000,
-        },
-        CLIENT,
-    );
-    assert!(replies(&messages, CLIENT).is_empty());
-    screen.agent_control(prompt(true), ClientId::new(2));
-    assert_eq!(
-        replies(&messages, ClientId::new(2))[0].outcome,
-        AgentOutcome::StatusUnavailable
-    );
-    report(&mut screen, hook("SessionStart"));
-    let result = replies(&messages, CLIENT).pop().unwrap();
-    assert_eq!(result.outcome, AgentOutcome::Ok);
-    assert!(result.agents[0].ready);
-    assert!(result.agents[0].prompt_supported);
-    assert_eq!(
-        result.agents[0].agent.session_id.as_deref(),
-        Some("conversation")
-    );
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("codex", target);
+        screen.agent_control(
+            AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: None,
+            },
+            CLIENT,
+        );
+        let status = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(status.outcome, AgentOutcome::StatusUnavailable);
+        assert!(!status.agents[0].ready);
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::StatusUnavailable
+        );
+        report(&mut screen, hook("SessionStart"));
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Ok);
+        assert!(result.agents[0].status_available);
+        assert!(result.agents[0].ready);
+        assert!(result.agents[0].prompt_supported);
+        assert_eq!(
+            result.agents[0].agent.session_id.as_deref(),
+            Some("conversation")
+        );
+
+        screen.agent_control(prompt(false), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        let input: Vec<_> = writes
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::Write(bytes, terminal, _)
+                    if terminal == TerminalId::new(7) =>
+                {
+                    Some(bytes)
+                },
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(input, b"\x1b[200~review\x1b[201~\r");
+        report(&mut screen, hook("UserPromptSubmit"));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Submitted
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        report(&mut screen, hook("Stop"));
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Ok);
+        assert!(result.agents[0].ready);
+    }
 }
 
 #[test]
@@ -554,17 +597,34 @@ fn worker_reports_preserve_parent_identity_claims_and_plugin_broadcasts() {
 
 #[test]
 fn state_only_reports_and_worker_events_cannot_certify_readiness() {
-    let (mut screen, messages, _writes) = setup("codex");
-    let HookOutcome::Reported(agent) = hook_outcome("codex", &hook("SessionStart")) else {
-        panic!("startup reports an idle agent");
-    };
-    crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
-    report(&mut screen, hook("SubagentStart"));
-    screen.agent_control(prompt(true), CLIENT);
-    assert_eq!(
-        replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::StatusUnavailable
-    );
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("codex", target);
+        let HookOutcome::Reported(agent) = hook_outcome("codex", &hook("SessionStart")) else {
+            panic!("startup reports an idle agent");
+        };
+        crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
+        for name in [
+            "SessionStart",
+            "Stop",
+            "SessionEnd",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
+            let mut worker = hook(name);
+            if !matches!(name, "SubagentStart" | "SubagentStop") {
+                worker.agent_id = Some("worker".into());
+            }
+            report(&mut screen, worker);
+            screen.agent_control(prompt(true), CLIENT);
+            let result = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(result.outcome, AgentOutcome::StatusUnavailable);
+            assert!(!result.agents[0].status_available);
+            assert!(!result.agents[0].ready);
+        }
+        assert!(writes
+            .try_iter()
+            .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+    }
 }
 
 #[test]
