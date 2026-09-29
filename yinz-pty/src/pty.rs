@@ -306,43 +306,47 @@ struct RerunState {
 }
 
 /// A coding agent's hook event from a remote pane, arrived on the pane's
-/// broker channel. Sets the pane's agent record the way `agent-report` does
-/// for a local pane, and hands the event to the plugins on the hook pipe.
+/// broker channel. Queue state, lifecycle observation, and plugin delivery
+/// together, the way `agent-report` does for a local pane.
 fn handle_remote_agent_report(
     senders: &ThreadSenders,
     terminal_id: TerminalId,
     kind: &str,
     json: String,
 ) -> Result<()> {
+    use yinz_runtime::agent::report::ReportTrace;
+    use yinz_types::agent::report::{AgentReport, AgentReportState};
     use {yinz_types::agent, yinz_types::agent::HookEvent, yinz_types::agent::HookOutcome};
+    let accepted_at = Instant::now();
     if json.len() > agent::HOOK_BROADCAST_MAX_BYTES {
         return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
     }
     let event: HookEvent = serde_json::from_str(&json).context("invalid remote agent report")?;
-    match agent::hook_outcome(kind, &event) {
-        HookOutcome::Ended => senders.send_to_screen(ScreenInstruction::SetPaneAgent(
-            PaneId::Terminal(terminal_id),
-            None,
-            None,
-        ))?,
-        HookOutcome::Reported(agent) => senders.send_to_screen(ScreenInstruction::SetPaneAgent(
-            PaneId::Terminal(terminal_id),
-            Some(agent),
-            None,
-        ))?,
-        HookOutcome::Nothing => {},
-    }
-    // The same event a local `agent-report --hook-json` sends, read the same way.
-    senders.send_to_plugin(PluginInstruction::Update(vec![(
-        None,
-        None,
-        Event::AgentEvent(agent::AgentEvent::from_hook(
-            kind,
-            terminal_id,
-            &event,
-            json,
-        )),
-    )]))
+    let state = match agent::hook_outcome(kind, &event) {
+        HookOutcome::Ended => AgentReportState::Clear,
+        HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+        HookOutcome::Nothing => AgentReportState::Unchanged,
+    };
+    let trace = ReportTrace::new(accepted_at);
+    senders
+        .send_to_screen(ScreenInstruction::AgentReport(
+            AgentReport {
+                report_id: trace.report_id,
+                pane_id: PaneId::Terminal(terminal_id),
+                state,
+                event: Some(agent::AgentEvent::from_hook(
+                    kind,
+                    terminal_id,
+                    &event,
+                    json,
+                )),
+                trace: trace.enabled,
+                process_id: trace.process_id,
+                kind: kind.to_owned(),
+            },
+            accepted_at,
+        ))
+        .context("failed to queue remote agent report")
 }
 
 /// A spawn worker could not hand its result back to the pty thread, so the pane it
