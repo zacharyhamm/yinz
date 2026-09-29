@@ -840,11 +840,12 @@ fn ensure_locked(root: &Path) -> Result<Endpoint> {
             "managed Swamp server exited; inspect runs, then use yinz workflow server restart"
         ));
     }
-    let binary = std::env::current_exe().context("cannot locate Yinz supervisor binary")?;
+    let binary = yinz_runtime::own_binary::server_binary()
+        .context("cannot locate Yinz supervisor binary")?;
     #[cfg(test)]
     let binary = std::env::var_os("YINZ_TEST_BINARY")
         .map(PathBuf::from)
-        .unwrap_or(binary);
+        .unwrap_or_else(|| binary.clone());
     let mut command = Command::new(binary);
     command
         .args([std::ffi::OsStr::new(SUPERVISOR_FLAG), root.as_os_str()])
@@ -1505,6 +1506,10 @@ pub async fn lifecycle(root: PathBuf, action: &str) -> Result<Value> {
 #[cfg(test)]
 #[path = "unit/swamp_refresh_tests.rs"]
 mod refresh_tests;
+
+#[cfg(test)]
+#[path = "unit/supervisor_tests.rs"]
+mod supervisor_tests;
 
 #[cfg(test)]
 mod tests {

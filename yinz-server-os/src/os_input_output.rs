@@ -613,7 +613,8 @@ impl ServerOsInputOutput {
         let (name, image, worktree) = match &cmd.target {
             PaneTarget::Local => {
                 yinz_process::command::resolve_codex_wrapper(
-                    &env::current_exe().context("find this Yinz binary for the Codex launcher")?,
+                    yinz_runtime::own_binary::server_binary()
+                        .context("find this Yinz binary for the Codex launcher")?,
                     &mut cmd.command,
                     &mut cmd.args,
                 )?;

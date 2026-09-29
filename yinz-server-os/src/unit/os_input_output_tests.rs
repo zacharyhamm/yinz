@@ -33,19 +33,31 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
     if env::var_os(CHILD_ENV).is_none() {
         let bin = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink("/usr/bin/env", bin.path().join("env")).unwrap();
-        for incompatible in [false, true] {
+        for (incompatible, replace) in [(false, false), (true, false), (true, true)] {
             if incompatible {
                 yinz_test_support::write_warm_script(&bin.path().join("yinz"), "exit 42\n");
             }
-            let output = Command::new(env::current_exe().unwrap())
+            let mut binary = env::current_exe().unwrap();
+            if replace {
+                let copy = bin.path().join("server");
+                std::fs::copy(&binary, &copy).unwrap();
+                yinz_test_support::write_warm_script(
+                    &copy.with_extension("new"),
+                    "[ \"$*\" = 'hocus codex --command codex --' ] || exit 1\nprintf '%s\\n' \"${SETTING-}\" >> \"$0.runs\"\n",
+                );
+                binary = copy;
+            }
+            let output = Command::new(binary)
                 .args(["--exact", "os_input_output::os_input_output_tests::local_codex_wrappers_use_current_binary_and_keep_portable_reruns"])
-                .env(CHILD_ENV, "1")
+                .env(CHILD_ENV, if replace { "replace" } else { "1" })
                 .env("PATH", bin.path())
+                .env_remove("SETTING")
+                .env("YINZ_DISABLE_PTY_HOST", "1")
                 .output()
                 .unwrap();
             assert!(
                 output.status.success(),
-                "incompatible={incompatible}: {}\n{}",
+                "incompatible={incompatible}, replace={replace}: {}\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -56,6 +68,11 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
     let server = make_server();
     server.set_pty_host_enabled(false);
     let current_exe = env::current_exe().unwrap();
+    let replaced = env::var(CHILD_ENV).unwrap() == "replace";
+    if replaced {
+        // Match installation: replace the inode after server initialization cached its path.
+        std::fs::rename(current_exe.with_extension("new"), &current_exe).unwrap();
+    }
     for with_env in [false, true] {
         let requested = codex_command(with_env);
         let (resolved, rerun, endpoint) = server.resolve_target(requested.clone(), None).unwrap();
@@ -71,28 +88,41 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
         assert!(endpoint.is_none());
         assert_eq!(server.resolve_target(rerun, None).unwrap().0, resolved);
 
-        // The test executable rejects the wrapper's arguments, but its exit still
-        // exercises command validation and the portable command returned to a held pane.
+        // Before replacement the test executable rejects the wrapper's arguments;
+        // after replacement the stub must succeed, including on a held pane's rerun.
         let (tx, rx) = std::sync::mpsc::channel();
         let (terminal_id, _reader, _) = server
             .spawn_terminal(
                 TerminalAction::RunCommand(requested.clone()),
-                Box::new(move |_, _, command| tx.send(command).unwrap()),
+                Box::new(move |_, status, command| tx.send((status, command)).unwrap()),
                 None,
             )
             .unwrap();
-        let held = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        let (status, held) = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        if replaced {
+            assert_eq!(status, Some(0));
+        }
         assert_eq!(held, requested);
         let (tx, rx) = std::sync::mpsc::channel();
         let (_reader, _) = server
             .re_run_command_in_terminal(
                 terminal_id,
                 held,
-                Box::new(move |_, _, command| tx.send(command).unwrap()),
+                Box::new(move |_, status, command| tx.send((status, command)).unwrap()),
             )
             .unwrap();
-        assert_eq!(rx.recv_timeout(AMPLE_TIMEOUT).unwrap(), requested);
+        let (status, held) = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        if replaced {
+            assert_eq!(status, Some(0));
+        }
+        assert_eq!(held, requested);
         server.clear_terminal_id(terminal_id).unwrap();
+    }
+    if replaced {
+        assert_eq!(
+            std::fs::read_to_string(current_exe.with_extension("runs")).unwrap(),
+            "\n\nvalue\nvalue\n"
+        );
     }
     for (program, args) in [
         ("codex", vec![]),
