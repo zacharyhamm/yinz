@@ -824,11 +824,11 @@ impl Screen {
                     .as_ref()
                     .is_none_or(|hook| hook.source.as_deref() != Some("compact"))
                 && pending.conversation.is_some()
-                // Codex announces a conversation when the UI selects it and again when its
-                // first turn starts. Before a turn is accepted, only another conversation
-                // retargets a Codex pane.
-                && (event.kind != "codex"
-                    || pending.conversation != event.session_id
+                // The same conversation can start more than once: Codex announces it when the UI
+                // selects it and again when its first turn starts, and Claude repeats every hook
+                // once per hook registration. Before a turn is accepted, only another
+                // conversation retargets.
+                && (pending.conversation != event.session_id
                     || pending
                         .prompt
                         .as_ref()

@@ -424,39 +424,85 @@ fn startup_wait_requires_lifecycle_evidence_and_binds_the_first_conversation() {
 }
 
 #[test]
-fn codex_first_turn_startup_keeps_a_prompt_on_the_announced_conversation() {
-    for replacement in [false, true] {
-        let (mut screen, messages, _writes) = setup("codex");
-        // The bridge announces the conversation when the UI selects it.
-        report(&mut screen, hook("SessionStart"));
-        screen.agent_control(prompt(true), CLIENT);
-        screen.agent_control(wait(AgentState::Exited), ClientId::new(2));
-        // Codex runs its own SessionStart hooks when that conversation's first turn begins.
-        let mut first_turn = hook("SessionStart");
-        if replacement {
-            first_turn.session_id = "other".into();
-        }
-        report(&mut screen, first_turn);
-        if replacement {
+fn repeated_startup_keeps_a_prompt_on_the_announced_conversation() {
+    for kind in ["claude", "codex"] {
+        for replacement in [false, true] {
+            let (mut screen, messages, _writes) = setup(kind);
+            // Codex's bridge announces the conversation when the UI selects it; Claude reports
+            // its startup once per hook registration.
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            screen.agent_control(prompt(true), CLIENT);
+            screen.agent_control(wait(AgentState::Exited), ClientId::new(2));
+            let mut repeated = hook("SessionStart");
+            if replacement {
+                repeated.session_id = "other".into();
+            }
+            report_kind(&mut screen, kind, repeated);
+            if replacement {
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::TargetChanged,
+                    "{kind}"
+                );
+                assert_eq!(
+                    replies(&messages, ClientId::new(2))[0].outcome,
+                    AgentOutcome::TargetChanged,
+                    "{kind}"
+                );
+                continue;
+            }
+            assert!(replies(&messages, CLIENT).is_empty(), "{kind}");
+            assert!(replies(&messages, ClientId::new(2)).is_empty(), "{kind}");
+            report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+            report_kind(&mut screen, kind, hook("Stop"));
             assert_eq!(
-                replies(&messages, CLIENT)[0].outcome,
-                AgentOutcome::TargetChanged
+                replies(&messages, CLIENT).pop().unwrap().outcome,
+                AgentOutcome::Completed,
+                "{kind}"
             );
-            assert_eq!(
-                replies(&messages, ClientId::new(2))[0].outcome,
-                AgentOutcome::TargetChanged
-            );
-            continue;
+            assert!(replies(&messages, ClientId::new(2)).is_empty(), "{kind}");
         }
-        assert!(replies(&messages, CLIENT).is_empty());
-        assert!(replies(&messages, ClientId::new(2)).is_empty());
-        report(&mut screen, hook("UserPromptSubmit"));
-        report(&mut screen, hook("Stop"));
-        assert_eq!(
-            replies(&messages, CLIENT).pop().unwrap().outcome,
-            AgentOutcome::Completed
-        );
-        assert!(replies(&messages, ClientId::new(2)).is_empty());
+    }
+}
+
+#[test]
+fn startup_wait_survives_a_repeated_start_before_the_composer_is_ready() {
+    for kind in ["claude", "codex"] {
+        for replacement in [false, true] {
+            let (mut screen, messages, _writes) = setup(kind);
+            // The agent reports its startup before its composer enables bracketed paste.
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
+                .unwrap();
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            assert!(replies(&messages, CLIENT).is_empty(), "{kind}");
+            let mut repeated = hook("SessionStart");
+            if replacement {
+                repeated.session_id = "other".into();
+            }
+            report_kind(&mut screen, kind, repeated);
+            if replacement {
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().outcome,
+                    AgentOutcome::TargetChanged,
+                    "{kind}"
+                );
+                continue;
+            }
+            assert!(replies(&messages, CLIENT).is_empty(), "{kind}");
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004h".to_vec())
+                .unwrap();
+            screen.refresh_agent_controls();
+            let result = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(result.outcome, AgentOutcome::Ok, "{kind}");
+            assert!(result.agents[0].ready, "{kind}");
+        }
     }
 }
 

@@ -212,10 +212,10 @@ impl PromptObservation {
             return Some(AgentOutcome::TargetChanged);
         }
         if hook.hook_event_name == "SessionStart" && hook.source.as_deref() != Some("compact") {
-            // Codex defers its own SessionStart until a conversation's first turn begins, after
-            // Yinz already announced that conversation when the UI selected it.
-            return (self.kind != "codex" || self.acknowledged)
-                .then_some(AgentOutcome::TargetChanged);
+            // A repeat start of this conversation is not a replacement until a turn is accepted:
+            // Codex defers its own SessionStart until the first turn begins, after Yinz announced
+            // the conversation, and Claude repeats hooks once per hook registration.
+            return self.acknowledged.then_some(AgentOutcome::TargetChanged);
         }
         if hook.hook_event_name == "UserPromptSubmit" {
             let fingerprint = hook
