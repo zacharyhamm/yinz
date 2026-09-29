@@ -131,6 +131,7 @@ fn recovery_request_preserves_the_explicit_assertion_and_pinned_conversation() {
             target: "terminal_7".parse().unwrap(),
             conversation: "conversation".into(),
             confirm_empty: true,
+            interrupted: true,
             json: true,
         },
         &mut &b""[..],
@@ -138,7 +139,7 @@ fn recovery_request_preserves_the_explicit_assertion_and_pinned_conversation() {
     .unwrap();
     assert!(json);
     assert!(
-        matches!(request, AgentRequest::Recover { expected_session_id, confirm_empty: true, .. } if expected_session_id == "conversation")
+        matches!(request, AgentRequest::Recover { expected_session_id, confirm_empty: true, interrupted: true, .. } if expected_session_id == "conversation")
     );
 }
 

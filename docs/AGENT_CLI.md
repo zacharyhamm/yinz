@@ -16,7 +16,7 @@ Use `yinz --session development agent ...` to select a session. Without
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
 | `agent wait TARGET --until idle` | Observation of the requested state |
 | `agent read TARGET --lines 80` | Last lines of terminal output |
-| `agent recover TARGET --conversation ID --confirm-empty` | Restore readiness after inspecting and clearing the draft |
+| `agent recover TARGET --conversation ID --confirm-empty [--interrupted]` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
 All commands accept `--json`. Targeted commands also accept
@@ -168,6 +168,12 @@ Recovery requires a live supported agent, no active submission, and no paste
 write in flight. It clears abandoned claims and pending Enter delivery, and
 records the current input revision as consumed. It sends no terminal input and
 does not acknowledge the old prompt. A subsequent prompt can then be submitted.
+
+Claude reports nothing when Esc interrupts a turn, so its record stays busy.
+After the pane output shows that the agent stopped, add `--interrupted`. It also
+accepts a busy or waiting agent, and resets its record to idle. The agent must
+not have reported for 3 seconds, so a hook that is still on its way is not
+overtaken.
 Inspect status and output before deciding what to do next. Requests are never
 retried automatically after an uncertain reply.
 

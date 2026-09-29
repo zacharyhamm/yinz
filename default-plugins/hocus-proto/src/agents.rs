@@ -22,6 +22,8 @@ use yinz_tile::prelude::HostId;
 use yinz_tile::prelude::TabId;
 use yinz_types::internal_ids::SessionName;
 
+pub use yinz_types::agent::control::unwrap_pasted_content;
+
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
 
@@ -1191,7 +1193,10 @@ pub fn stored_run_id(agent: &AgentInfo) -> Option<String> {
 /// stored as one blob that grew with every event.
 pub fn run_entry(event: &yinz_tile::agent::HookEvent) -> Option<(RunEntryKind, String)> {
     let (kind, text) = match event.hook_event_name.as_str() {
-        "UserPromptSubmit" => (RunEntryKind::Prompt, event.prompt.clone()?),
+        "UserPromptSubmit" => (
+            RunEntryKind::Prompt,
+            unwrap_pasted_content(event.prompt.as_deref()?).into_owned(),
+        ),
         "PreToolUse"
             if matches!(
                 event.tool_name.as_deref(),
@@ -4881,6 +4886,17 @@ mod tests {
         assert_eq!(
             run_entry(&prompt),
             Some((RunEntryKind::Prompt, "build the history".to_owned()))
+        );
+        let pasted = crate::wire::HookEvent {
+            prompt: Some(
+                "\n\n<pasted_content id=\"8c9e\">\nbuild\nthe history\n</pasted_content id=\"8c9e\">\n"
+                    .to_owned(),
+            ),
+            ..event("UserPromptSubmit")
+        };
+        assert_eq!(
+            run_entry(&pasted),
+            Some((RunEntryKind::Prompt, "build\nthe history".to_owned()))
         );
         let plan = crate::wire::HookEvent {
             tool_name: Some("ExitPlanMode".to_owned()),

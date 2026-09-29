@@ -1507,7 +1507,7 @@ pub fn specs() -> Value {
         tool("agent_prompt", "Submit to an idle ready agent and await acknowledgement or this turn outcome.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "text": {"type": "string"}, "wait": {"type": "boolean"}, "timeout_ms": {"type": "integer"}}, "required": ["pane_id", "text"]})),
         tool("agent_wait", "Wait for a lifecycle state; idle also requires safe readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "until": {"type": "string", "enum": ["busy", "waiting", "idle", "exited"]}, "timeout_ms": {"type": "integer"}}, "required": ["pane_id"]})),
         tool("agent_read", "Read latest retained agent terminal output.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "line_count": {"type": "integer"}}, "required": ["pane_id"]})),
-        tool("agent_recover", "After inspecting and clearing a draft, explicitly restore readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "confirm_empty": {"type": "boolean"}}, "required": ["pane_id", "conversation", "confirm_empty"]})),
+        tool("agent_recover", "After inspecting and clearing a draft, explicitly restore readiness.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "confirm_empty": {"type": "boolean"}, "interrupted": {"type": "boolean"}}, "required": ["pane_id", "conversation", "confirm_empty"]})),
         tool("agent_send_keys", "Deliberately send keys using Yinz key syntax, e.g. Ctrl c or Esc.", json!({"type": "object", "properties": {"pane_id": {"type": "string", "description": "Listed terminal_N ID."}, "conversation": {"type": "string"}, "keys": {"type": "array", "items": {"type": "string"}}}, "required": ["pane_id", "keys"]})),
         tool(
             "agent_runs",
@@ -2669,6 +2669,7 @@ pub struct Args {
     pub until: Option<String>,
     pub wait: bool,
     pub confirm_empty: bool,
+    pub interrupted: bool,
     // Starting an agent. `command`, `args`, `cwd`, `project`, `kind` and `prompt`
     // above are `agent_spawn`'s too — `prompt` is `schedule`'s, reused rather than
     // shadowed. `worktree_dir` is spelled out because `path` is the file tools'.

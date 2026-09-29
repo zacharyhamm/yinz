@@ -499,7 +499,7 @@ pub struct HookEvent {
     /// Provider turn identity, preserved even when prose is pruned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    /// SHA-256 after CRLF normalization and trimming outer whitespace, before pruning.
+    /// [`crate::agent::control::prompt_sha256`] of the prompt, taken before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
     /// Host-injected ownership needed to route remote workflow hooks.

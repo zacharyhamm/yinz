@@ -4,7 +4,7 @@ use super::{AgentEvent, AgentInfo, AgentSpawnSpec, AgentState, HookEvent, Spawne
 use crate::{keys::KeyWithModifier, pane_id::PaneId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::{borrow::Cow, path::PathBuf};
 
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -48,6 +48,10 @@ pub enum AgentRequest {
         pane_id: PaneId,
         expected_session_id: String,
         confirm_empty: bool,
+        /// The caller saw the agent stop a turn without reporting it (an Esc interrupt), so a
+        /// busy or waiting record may be reset to idle.
+        #[serde(default)]
+        interrupted: bool,
     },
     SendKeys {
         pane_id: PaneId,
@@ -258,11 +262,54 @@ impl PromptObservation {
     }
 }
 
+/// Fingerprint of a prompt as the agent received it: CRLF normalized, pasted content
+/// unwrapped, outer whitespace trimmed.
 pub fn prompt_sha256(prompt: &str) -> String {
-    Sha256::digest(prompt.replace("\r\n", "\n").trim().as_bytes())
+    let prompt = prompt.replace("\r\n", "\n");
+    Sha256::digest(unwrap_pasted_content(&prompt).trim().as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+const PASTED_CONTENT_OPEN: &str = "<pasted_content id=\"";
+
+/// Claude collapses a long paste into a chip and reports it in `UserPromptSubmit.prompt` as
+/// `<pasted_content id="X">\nBODY\n</pasted_content id="X">`. This replaces each such element
+/// with its body so the prompt reads as what was pasted. A tag without a matching closer, with
+/// the same id, is left as written.
+pub fn unwrap_pasted_content(text: &str) -> Cow<'_, str> {
+    if !text.contains(PASTED_CONTENT_OPEN) {
+        return Cow::Borrowed(text);
+    }
+    let mut unwrapped = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(PASTED_CONTENT_OPEN) {
+        let after = &rest[start + PASTED_CONTENT_OPEN.len()..];
+        let element = after.split_once('"').and_then(|(id, body)| {
+            let body = body.strip_prefix('>')?;
+            if id.is_empty() || id.contains(['<', '>', '\n']) {
+                return None;
+            }
+            let close = format!("</pasted_content id=\"{id}\">");
+            let end = body.find(&close)?;
+            Some((&body[..end], &body[end + close.len()..]))
+        });
+        match element {
+            Some((body, tail)) => {
+                unwrapped.push_str(&rest[..start]);
+                let body = body.strip_prefix('\n').unwrap_or(body);
+                unwrapped.push_str(body.strip_suffix('\n').unwrap_or(body));
+                rest = tail;
+            },
+            None => {
+                unwrapped.push_str(&rest[..start + PASTED_CONTENT_OPEN.len()]);
+                rest = after;
+            },
+        }
+    }
+    unwrapped.push_str(rest);
+    Cow::Owned(unwrapped)
 }
 
 #[cfg(test)]

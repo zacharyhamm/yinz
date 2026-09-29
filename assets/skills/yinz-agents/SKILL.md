@@ -44,6 +44,8 @@ yinz --session main agent recover terminal_3 --conversation CONVERSATION_ID --co
 ```
 
 Recovery requires a live idle agent and no active submission or paste write.
+Claude reports nothing when Esc interrupts a turn, so it stays `Busy`. If `agent read` shows the
+agent stopped and its composer is empty, add `--interrupted` to reset it to idle.
 Use ordinary pane commands to close or restart a pane.
 
 `agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.

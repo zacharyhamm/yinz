@@ -315,7 +315,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ("agent_status", "Inspect provider identity and authoritative readiness. An inferred idle observation does not authorize a prompt."),
     ("agent_wait", "Wait for lifecycle state. An idle wait also checks readiness. Timeout leaves the outcome uncertain."),
     ("agent_read", "Read the latest retained terminal output, guarded by conversation when supplied."),
-    ("agent_recover", "After inspecting the pane and clearing its draft, pin conversation and confirm_empty to restore readiness. Active submissions cannot be recovered."),
+    ("agent_recover", "After inspecting the pane and clearing its draft, pin conversation and confirm_empty to restore readiness. Active submissions cannot be recovered. If agent_read shows the agent stopped but it still reports busy (an Esc interrupt), also pass interrupted."),
     (
         "agent_runs",
         "Show what the agents in this archive did, the most recent first. Every session sharing it is included, and a session that stopped is included too. Take a run_id from here to agent_run. With this_session, the tool answers with an error until the daemon knows the name of this session.",

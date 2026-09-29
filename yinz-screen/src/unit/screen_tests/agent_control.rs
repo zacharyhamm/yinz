@@ -1370,6 +1370,7 @@ fn recover() -> AgentRequest {
         pane_id: PANE,
         expected_session_id: "conversation".into(),
         confirm_empty: true,
+        interrupted: false,
     }
 }
 
@@ -1498,11 +1499,13 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
                 pane_id: PANE,
                 expected_session_id: "wrong".into(),
                 confirm_empty: true,
+                interrupted: false,
             },
             AgentRequest::Recover {
                 pane_id: PANE,
                 expected_session_id: "conversation".into(),
                 confirm_empty: false,
+                interrupted: false,
             },
         ] {
             screen.agent_control(request, ClientId::new(2));
@@ -1823,6 +1826,101 @@ fn recovery_rejects_busy_waiting_unreported_and_dead_targets() {
         );
         assert!(finish_paste(&writes).is_empty());
     }
+}
+
+#[test]
+fn interrupted_recovery_resets_a_silent_busy_claude_after_a_quiet_period() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    // Claude reports nothing when Esc interrupts the turn.
+    screen.agent_control(
+        AgentRequest::SendKeys {
+            pane_id: PANE,
+            expected_session_id: None,
+            keys: vec![KeyWithModifier::new(BareKey::Esc)],
+        },
+        ClientId::new(2),
+    );
+    replies(&messages, ClientId::new(2));
+    screen.refresh_agent_controls();
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Interrupted
+    );
+    finish_paste(&writes);
+    let interrupted = AgentRequest::Recover {
+        pane_id: PANE,
+        expected_session_id: "conversation".into(),
+        confirm_empty: true,
+        interrupted: true,
+    };
+    screen.agent_control(recover(), CLIENT);
+    let plain = replies(&messages, CLIENT);
+    assert_eq!(plain[0].outcome, AgentOutcome::Rejected);
+    assert!(plain[0]
+        .message
+        .as_deref()
+        .unwrap()
+        .contains("--interrupted"));
+    screen.agent_control(interrupted.clone(), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected,
+        "a hook may still be on its way"
+    );
+    let lifecycle = screen.agent_lifecycle.get_mut(&PANE).unwrap();
+    lifecycle.last_report = Instant::now()
+        .checked_sub(crate::screen::agent_control::RECOVER_QUIET)
+        .unwrap();
+    screen.agent_control(interrupted, CLIENT);
+    let recovered = replies(&messages, CLIENT);
+    assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
+    assert_eq!(recovered[0].agents[0].agent.state, AgentState::Idle);
+    assert!(recovered[0].agents[0].ready);
+    screen.agent_control(prompt(true), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+}
+
+#[test]
+fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    let text = (1..=10)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    screen.agent_control(
+        AgentRequest::Prompt {
+            pane_id: PANE,
+            expected_session_id: None,
+            prompt: text.clone(),
+            wait: true,
+            timeout_ms: 30_000,
+        },
+        CLIENT,
+    );
+    finish_paste(&writes);
+    let mut submit = hook("UserPromptSubmit");
+    submit.prompt = Some(format!(
+        "\n\n<pasted_content id=\"8c9e\">\n{text}\n</pasted_content id=\"8c9e\">\n"
+    ));
+    report_kind(&mut screen, "claude", submit);
+    report_kind(&mut screen, "claude", hook("Stop"));
+    let replies = replies(&messages, CLIENT);
+    assert_eq!(
+        replies
+            .iter()
+            .map(|reply| reply.outcome)
+            .collect::<Vec<_>>(),
+        [AgentOutcome::Completed]
+    );
+    assert!(replies[0].acknowledged);
+    assert!(replies[0].agents[0].ready);
 }
 
 #[test]

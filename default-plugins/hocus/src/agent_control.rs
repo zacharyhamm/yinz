@@ -95,6 +95,7 @@ impl State {
                 pane_id,
                 expected_session_id: expected_session_id.ok_or("conversation is required")?,
                 confirm_empty: args.confirm_empty,
+                interrupted: args.interrupted,
             },
             "agent_send_keys" => AgentRequest::SendKeys {
                 pane_id,
