@@ -151,6 +151,41 @@ fn only_person_waits_end_the_operation_and_worker_hooks_do_not() {
 }
 
 #[test]
+fn codex_first_turn_startup_does_not_retarget_a_prompt_to_the_same_conversation() {
+    for (kind, expected) in [
+        ("codex", None),
+        ("claude", Some(AgentOutcome::TargetChanged)),
+    ] {
+        let mut observation = PromptObservation::new(kind, "conversation", "review");
+        assert_eq!(
+            observe(&mut observation, &event(kind, "SessionStart", None, None)),
+            expected,
+            "{kind}"
+        );
+    }
+    let mut observation = PromptObservation::new("codex", "conversation", "review");
+    observe(
+        &mut observation,
+        &event("codex", "SessionStart", None, None),
+    );
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("codex", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("codex", "SessionStart", None, None)
+        ),
+        Some(AgentOutcome::TargetChanged),
+        "an accepted turn cannot restart its conversation"
+    );
+}
+
+#[test]
 fn codex_requires_turn_identity_while_claude_uses_serialized_conversation_hooks() {
     for (kind, expected) in [
         ("codex", AgentOutcome::StatusUnavailable),

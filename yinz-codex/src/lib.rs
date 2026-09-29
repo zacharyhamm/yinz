@@ -39,6 +39,8 @@ struct Registration {
     dir: tempfile::TempDir,
     _lease: File,
     env: HashMap<String, String>,
+    /// The yinz binary that announces selected conversations to the pane, if any.
+    reporter: Option<PathBuf>,
 }
 
 impl Registration {
@@ -67,7 +69,23 @@ impl Registration {
             dir,
             _lease: lease,
             env,
+            reporter: None,
         })
+    }
+
+    /// Codex runs `SessionStart` hooks only when a conversation's first turn begins, so the
+    /// pane would otherwise stay unverified until someone types into it.
+    fn announce(&self, hook: Value) {
+        let Some(yinz) = self.reporter.clone() else {
+            return;
+        };
+        let env = self.env.clone();
+        // The UI's reply must not wait for the pane to accept the report.
+        tokio::task::spawn_blocking(move || {
+            forward(&yinz, env, hook.to_string().as_bytes())
+                .context("announce Codex conversation to its pane")
+                .non_fatal();
+        });
     }
 
     fn select(&self, thread_id: &str) -> Result<()> {
@@ -137,7 +155,11 @@ fn binding_for(root: &Path, thread_id: &str) -> Result<Option<Binding>> {
 
 #[derive(Default)]
 struct Conversations {
-    pending: HashSet<String>,
+    /// Request ids of conversation selections awaiting their reply, and whether each asked
+    /// for an ephemeral thread.
+    pending: HashMap<String, (String, bool)>,
+    /// Hidden helper threads, such as the TUI's title generator, which never own the pane.
+    ephemeral: HashSet<String>,
 }
 
 impl Conversations {
@@ -147,32 +169,58 @@ impl Conversations {
         };
         if matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
             if let Some(id) = value.get("id") {
-                self.pending.insert(id.to_string());
+                let ephemeral = value["params"]["ephemeral"].as_bool() == Some(true);
+                self.pending
+                    .insert(id.to_string(), (method.to_owned(), ephemeral));
             }
         }
         // Also handles a UI returning to an already loaded conversation without resuming it.
         if matches!(method, "turn/start" | "turn/steer") {
             if let Some(thread) = value["params"]["threadId"].as_str() {
-                registration.select(thread)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn response(&mut self, value: &Value, registration: &Registration) -> Result<()> {
-        // Server requests have their own id namespace (eg approval requests).
-        if value.get("method").is_some() {
-            return Ok(());
-        }
-        if let Some(id) = value.get("id") {
-            if self.pending.remove(&id.to_string()) {
-                if let Some(thread) = value["result"]["thread"]["id"].as_str() {
-                    // Publish before the UI sees the reply and can submit its first turn.
+                if !self.ephemeral.contains(thread) {
                     registration.select(thread)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Returns a `SessionStart` hook announcing a newly selected conversation.
+    fn response(&mut self, value: &Value, registration: &Registration) -> Result<Option<Value>> {
+        // Server requests have their own id namespace (eg approval requests).
+        if value.get("method").is_some() {
+            return Ok(None);
+        }
+        let Some((method, ephemeral)) = value
+            .get("id")
+            .and_then(|id| self.pending.remove(&id.to_string()))
+        else {
+            return Ok(None);
+        };
+        let thread = &value["result"]["thread"];
+        let Some(id) = thread["id"].as_str() else {
+            return Ok(None);
+        };
+        if ephemeral || thread["ephemeral"].as_bool() == Some(true) {
+            self.ephemeral.insert(id.to_owned());
+            return Ok(None);
+        }
+        // Publish before the UI sees the reply and can submit its first turn.
+        registration.select(id)?;
+        let source = match method.as_str() {
+            "thread/resume" => "resume",
+            "thread/fork" => "fork",
+            _ => "startup",
+        };
+        let mut hook = serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": id,
+            "source": source,
+        });
+        if let Some(cwd) = thread["cwd"].as_str() {
+            hook["cwd"] = cwd.into();
+        }
+        Ok(Some(hook))
     }
 }
 
@@ -245,7 +293,9 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                 match message.context("read Codex daemon reply")? {
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
-                        conversations.response(&value, registration)?;
+                        if let Some(hook) = conversations.response(&value, registration)? {
+                            registration.announce(hook);
+                        }
                         ui.send(Message::Text(text)).await.context("forward Codex daemon reply")?;
                     },
                     Message::Close(frame) => {
@@ -392,7 +442,8 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
     }
     .context("resolve Codex launcher working directory")?;
     let trust = worktree_trust(&cwd);
-    let registration = Registration::new(&directory(), env)?;
+    let mut registration = Registration::new(&directory(), env)?;
+    registration.reporter = Some(std::env::current_exe().context("find this yinz binary")?);
     let status = Command::new(program)
         .args(["app-server", "daemon", "start"])
         .stdout(Stdio::null())
@@ -518,6 +569,11 @@ pub fn report(yinz: &Path) -> Result<()> {
             env
         },
     };
+    forward(yinz, env, raw.as_bytes())
+}
+
+/// Deliver one raw Codex hook to the pane that `env` identifies.
+fn forward(yinz: &Path, env: HashMap<String, String>, raw: &[u8]) -> Result<()> {
     let mut command = Command::new(yinz);
     for key in ROUTE_ENV {
         command.env_remove(key);
@@ -540,7 +596,7 @@ pub fn report(yinz: &Path) -> Result<()> {
         .stdin
         .take()
         .context("open Codex report input")?
-        .write_all(raw.as_bytes())
+        .write_all(raw)
         .context("write Codex hook to its pane")?;
     if !child
         .wait()

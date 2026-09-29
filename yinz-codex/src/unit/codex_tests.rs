@@ -484,6 +484,92 @@ fn daemon_conversations_follow_their_uis_not_the_daemons_pane() {
     assert!(binding_for(root.path(), "thread-b").unwrap().is_none());
 }
 
+#[test]
+fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
+    let root = tempfile::tempdir().unwrap();
+    let ui = registration(root.path(), "aaaaaaaaaaaa");
+    let mut connection = Conversations::default();
+    connection
+        .request(
+            &json!({"id":"startup","method":"thread/start","params":{"cwd":"/work"}}),
+            &ui,
+        )
+        .unwrap();
+    let announced = connection
+        .response(
+            &json!({"id":"startup","result":{"thread":{"id":"real","cwd":"/work","ephemeral":false}}}),
+            &ui,
+        )
+        .unwrap();
+    assert_eq!(
+        announced,
+        Some(json!({
+            "hook_event_name":"SessionStart",
+            "session_id":"real",
+            "source":"startup",
+            "cwd":"/work",
+        }))
+    );
+    // The TUI titles a conversation from a hidden thread it starts on the first prompt. Either
+    // the request or the reply may be what marks it ephemeral.
+    for (id, params, thread) in [
+        (
+            "temporary-structured-a",
+            json!({"ephemeral":true}),
+            json!({"id":"title-a"}),
+        ),
+        (
+            "temporary-structured-b",
+            json!({}),
+            json!({"id":"title-b","ephemeral":true}),
+        ),
+    ] {
+        connection
+            .request(
+                &json!({"id":"turn","method":"turn/start","params":{"threadId":"real"}}),
+                &ui,
+            )
+            .unwrap();
+        connection
+            .request(
+                &json!({"id":id,"method":"thread/start","params":params}),
+                &ui,
+            )
+            .unwrap();
+        let title = thread["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            connection
+                .response(&json!({"id":id,"result":{"thread":thread}}), &ui)
+                .unwrap(),
+            None
+        );
+        connection
+            .request(
+                &json!({"id":"title","method":"turn/start","params":{"threadId":title}}),
+                &ui,
+            )
+            .unwrap();
+        assert!(binding_for(root.path(), &title).unwrap().is_none());
+        assert!(binding_for(root.path(), "real").unwrap().is_some());
+    }
+
+    for (method, source) in [("thread/resume", "resume"), ("thread/fork", "fork")] {
+        connection
+            .request(&json!({"id":"next","method":method}), &ui)
+            .unwrap();
+        let announced = connection
+            .response(
+                &json!({"id":"next","result":{"thread":{"id":"other"}}}),
+                &ui,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(announced["source"], source);
+        assert!(announced.get("cwd").is_none());
+        assert!(binding_for(root.path(), "other").unwrap().is_some());
+    }
+}
+
 #[tokio::test]
 async fn bridge_registers_before_delivering_replies_and_preserves_the_protocol() {
     for (close_from_ui, wait_for_ack) in

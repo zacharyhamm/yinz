@@ -424,6 +424,43 @@ fn startup_wait_requires_lifecycle_evidence_and_binds_the_first_conversation() {
 }
 
 #[test]
+fn codex_first_turn_startup_keeps_a_prompt_on_the_announced_conversation() {
+    for replacement in [false, true] {
+        let (mut screen, messages, _writes) = setup("codex");
+        // The bridge announces the conversation when the UI selects it.
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        screen.agent_control(wait(AgentState::Exited), ClientId::new(2));
+        // Codex runs its own SessionStart hooks when that conversation's first turn begins.
+        let mut first_turn = hook("SessionStart");
+        if replacement {
+            first_turn.session_id = "other".into();
+        }
+        report(&mut screen, first_turn);
+        if replacement {
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::TargetChanged
+            );
+            assert_eq!(
+                replies(&messages, ClientId::new(2))[0].outcome,
+                AgentOutcome::TargetChanged
+            );
+            continue;
+        }
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert!(replies(&messages, ClientId::new(2)).is_empty());
+        report(&mut screen, hook("UserPromptSubmit"));
+        report(&mut screen, hook("Stop"));
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::Completed
+        );
+        assert!(replies(&messages, ClientId::new(2)).is_empty());
+    }
+}
+
+#[test]
 fn invalid_function_keys_fail_without_writing_or_disrupting_screen_requests() {
     use yinz_types::keys::{BareKey, KeyWithModifier};
 
