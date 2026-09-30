@@ -2263,6 +2263,9 @@ mod sdk_tests {
     mod tab_bar {
         include!("unit/tab_bar.rs");
     }
+    mod compact_bar {
+        include!("unit/compact_bar.rs");
+    }
     mod status_bar {
         include!("unit/status_bar.rs");
     }
