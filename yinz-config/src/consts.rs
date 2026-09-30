@@ -4,7 +4,6 @@ pub static YINZ_DEFAULT_THEMES: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets/t
 pub const FEATURES: &[&str] = &[];
 
 pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
-    "compact-bar",
     "strider",
     "session-manager",
     "configuration",

@@ -163,9 +163,9 @@ impl PluginConfig {
         PluginConfig {
             repository_root: None,
             installed_commit: None,
-            path: PathBuf::from("compact-bar"),
+            path: PathBuf::from("strider"),
             _allow_exec_host_cmd: false,
-            location: RunPluginLocation::Yinz(PluginTag::new("compact-bar")),
+            location: RunPluginLocation::Yinz(PluginTag::new("strider")),
             initial_userspace_configuration: Default::default(),
             initial_cwd: None,
             relative_path: None,
@@ -705,10 +705,10 @@ mod tests {
     fn configured_builtin_plugin_directory_takes_precedence() {
         let data_dir = tempdir().unwrap();
         let builtin_plugins_dir = tempdir().unwrap();
-        let plugin_path = builtin_plugins_dir.path().join("compact-bar.wasm");
+        let plugin_path = builtin_plugins_dir.path().join("strider.wasm");
         fs::write(&plugin_path, b"override").unwrap();
 
-        let plugin = builtin_plugin("compact-bar");
+        let plugin = builtin_plugin("strider");
         assert_eq!(
             plugin
                 .resolve_wasm_bytes(data_dir.path(), Some(builtin_plugins_dir.path()))
@@ -721,7 +721,7 @@ mod tests {
     fn missing_configured_builtin_plugin_falls_back_to_the_checkout() {
         let data_dir = tempdir().unwrap();
         let builtin_plugins_dir = tempdir().unwrap();
-        let plugin = builtin_plugin("compact-bar");
+        let plugin = builtin_plugin("strider");
 
         assert!(!plugin
             .resolve_wasm_bytes(data_dir.path(), Some(builtin_plugins_dir.path()))
@@ -737,9 +737,9 @@ mod tests {
         let data_dir = tempdir().unwrap();
         let plugin_dir = data_dir.path().join("plugins");
         fs::create_dir_all(&plugin_dir).unwrap();
-        fs::write(plugin_dir.join("compact-bar.wasm"), b"from-data-dir").unwrap();
+        fs::write(plugin_dir.join("strider.wasm"), b"from-data-dir").unwrap();
 
-        let plugin = builtin_plugin("compact-bar");
+        let plugin = builtin_plugin("strider");
         assert_eq!(
             plugin.resolve_wasm_bytes(data_dir.path(), None).unwrap(),
             b"from-data-dir"
@@ -753,17 +753,16 @@ mod tests {
         let data_dir = tempdir().unwrap();
         let installed = yinz_runtime::home::builtin_plugin_dir(data_dir.path());
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("compact-bar.wasm"), b"installed").unwrap();
+        fs::write(installed.join("strider.wasm"), b"installed").unwrap();
 
         // A release build has no debug dir to shadow the install; a debug build (this test)
         // does, which is the point of the debug dir - so tell them apart by whether the
         // checkout's debug wasm exists.
         #[cfg(debug_assertions)]
-        let debug_copy =
-            std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("compact-bar.wasm");
+        let debug_copy = std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("strider.wasm");
         #[cfg(not(debug_assertions))]
-        let debug_copy = PathBuf::from("/nonexistent/compact-bar.wasm");
-        let bytes = builtin_plugin("compact-bar")
+        let debug_copy = PathBuf::from("/nonexistent/strider.wasm");
+        let bytes = builtin_plugin("strider")
             .resolve_wasm_bytes(data_dir.path(), None)
             .unwrap();
         if debug_copy.is_file() {
@@ -778,13 +777,13 @@ mod tests {
         let data_dir = tempdir().unwrap();
         let plugin_dir = data_dir.path().join("plugins");
         fs::create_dir_all(&plugin_dir).unwrap();
-        fs::write(plugin_dir.join("compact-bar.wasm"), b"from-data-dir").unwrap();
+        fs::write(plugin_dir.join("strider.wasm"), b"from-data-dir").unwrap();
         let installed = yinz_runtime::home::builtin_plugin_dir(data_dir.path());
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("compact-bar.wasm"), b"installed").unwrap();
+        fs::write(installed.join("strider.wasm"), b"installed").unwrap();
 
         assert_eq!(
-            builtin_plugin("compact-bar")
+            builtin_plugin("strider")
                 .resolve_wasm_bytes(data_dir.path(), None)
                 .unwrap(),
             b"from-data-dir"
@@ -799,9 +798,9 @@ mod tests {
         let data_dir = tempdir().unwrap();
         let other_version = data_dir.path().join("builtins").join("0.0.0");
         fs::create_dir_all(&other_version).unwrap();
-        fs::write(other_version.join("compact-bar.wasm"), b"stale").unwrap();
+        fs::write(other_version.join("strider.wasm"), b"stale").unwrap();
 
-        let bytes = builtin_plugin("compact-bar")
+        let bytes = builtin_plugin("strider")
             .resolve_wasm_bytes(data_dir.path(), None)
             .ok();
         assert_ne!(bytes.as_deref(), Some(&b"stale"[..]));
@@ -812,26 +811,24 @@ mod tests {
     fn the_lookup_order_is_stable() {
         let data_dir = std::path::Path::new("/data");
         let configured = std::path::Path::new("/configured");
-        let paths = builtin_plugin("compact-bar").wasm_lookup_paths(data_dir, Some(configured));
+        let paths = builtin_plugin("strider").wasm_lookup_paths(data_dir, Some(configured));
 
         let mut expected = vec![
-            PathBuf::from("/configured/compact-bar.wasm"),
-            PathBuf::from("compact-bar"),
-            PathBuf::from("compact-bar.wasm"),
-            PathBuf::from("/data/plugins/compact-bar.wasm"),
+            PathBuf::from("/configured/strider.wasm"),
+            PathBuf::from("strider"),
+            PathBuf::from("strider.wasm"),
+            PathBuf::from("/data/plugins/strider.wasm"),
         ];
         #[cfg(debug_assertions)]
-        expected
-            .push(std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("compact-bar.wasm"));
-        expected.push(yinz_runtime::home::builtin_plugin_dir(data_dir).join("compact-bar.wasm"));
-        expected.push(yinz_runtime::home::system_builtin_plugin_dir().join("compact-bar.wasm"));
+        expected.push(std::path::Path::new(super::BUILTIN_PLUGIN_DEBUG_DIR).join("strider.wasm"));
+        expected.push(yinz_runtime::home::builtin_plugin_dir(data_dir).join("strider.wasm"));
+        expected.push(yinz_runtime::home::system_builtin_plugin_dir().join("strider.wasm"));
         expected.push(
             yinz_runtime::home::system_data_dir()
                 .join("plugins")
-                .join("compact-bar.wasm"),
+                .join("strider.wasm"),
         );
-        expected
-            .push(std::path::Path::new(super::BUILTIN_PLUGIN_RELEASE_DIR).join("compact-bar.wasm"));
+        expected.push(std::path::Path::new(super::BUILTIN_PLUGIN_RELEASE_DIR).join("strider.wasm"));
         assert_eq!(paths, expected);
     }
 
@@ -858,7 +855,7 @@ mod tests {
     #[test]
     fn builtin_plugin_resolves_from_checkout_with_no_configuration() {
         let data_dir = tempdir().unwrap();
-        let plugin = builtin_plugin("compact-bar");
+        let plugin = builtin_plugin("strider");
 
         assert!(!plugin
             .resolve_wasm_bytes(data_dir.path(), None)

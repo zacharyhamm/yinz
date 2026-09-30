@@ -126,6 +126,7 @@ pub const PLUGINS: &[&str] = &[
 pub const TEST_ONLY_PLUGINS: &[&str] = &[
     "fixture-plugin-for-tests",
     "shared-test",
+    "compact-bar",
     "status-bar",
     "tab-bar",
 ];

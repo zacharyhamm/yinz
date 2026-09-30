@@ -13,7 +13,8 @@ use wasmi_wasi::{
     Dir,
 };
 use yinz_plugin_api::plugin_command::{
-    ProtobufGetLocalUtcOffsetResponse, ProtobufNewTabResponse, ProtobufPluginCommand,
+    ProtobufBreakPanesToTabWithIndexResponse, ProtobufGetLocalUtcOffsetResponse,
+    ProtobufNewTabResponse, ProtobufPluginCommand,
 };
 use yinz_plugin_api::plugin_ids::{ProtobufPluginIds, ProtobufYinzVersion};
 use yinz_terminal::panes::{grid::Grid, terminal_character::TerminalCharacter};
@@ -188,6 +189,11 @@ impl Pair {
                             &ProtobufNewTabResponse::default().encode_to_vec(),
                         )
                         .unwrap(),
+                        PluginCommand::BreakPanesToTabWithIndex(..) => wasi_write_object(
+                            env,
+                            &ProtobufBreakPanesToTabWithIndexResponse::default().encode_to_vec(),
+                        )
+                        .unwrap(),
                         _ => (),
                     }
                 },
@@ -216,8 +222,12 @@ impl Pair {
             .unwrap();
         deno.op_state().borrow_mut().put(TestHost {
             replies: BTreeMap::from([
-                ("GetPluginIds".into(), json!({"hostname": hostname})),
+                (
+                    "GetPluginIds".into(),
+                    json!({"hostname": hostname, "plugin_id": 0, "client_id": 0}),
+                ),
                 ("NewTab".into(), Value::Null),
+                ("BreakPanesToTabWithIndex".into(), Value::Null),
                 ("GetLocalUtcOffset".into(), json!(19_800)),
                 ("GetYinzVersion".into(), json!("test")),
             ]),
@@ -336,6 +346,16 @@ impl Pair {
         self.event(Event::Timer(FractionalSeconds::new(0.0)));
     }
 
+    pub(super) fn pipe(&mut self, message: yinz_types::data::PipeMessage) {
+        let expected = self.wasm.pipe(&message).unwrap().unwrap();
+        let actual = eval(
+            &mut self.deno,
+            format!("bridge('pipe', {}, 1); bridge('status')", json!(message)),
+        );
+        assert_eq!(actual, json!(expected), "pipe decision for {message:?}");
+        self.compare_commands();
+    }
+
     pub(super) fn render(&mut self, rows: usize, cols: usize) -> String {
         self.render_cells(rows, cols)
             .iter()
@@ -417,6 +437,7 @@ pub(super) fn rgb_theme(info: &mut ModeInfo) {
         &mut info.style.colors.text_unselected,
         &mut info.style.colors.ribbon_unselected,
         &mut info.style.colors.ribbon_selected,
+        &mut info.style.colors.text_selected,
     ]
     .into_iter()
     .enumerate()

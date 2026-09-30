@@ -34,6 +34,7 @@ pub const MAX_IPC_FRAME_LEN: usize = 64 * 1024 * 1024;
 /// tests in `yinz-deno-builtins` fail until they agree. Configuration resolves `yinz:<tag>`
 /// through this list, and plugin authoring, which links no configuration, reads it too.
 pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
+    "compact-bar",
     "tab-bar",
     "status-bar",
     "context-menu",
