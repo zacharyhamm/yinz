@@ -6,6 +6,7 @@
 //! paints output, and the only place that decides the client is done.
 
 use crate::os_input_output::ClientOsApi;
+use crate::router::SlowWarnings;
 use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser, SyncOutput};
 use crate::terminal_escapes::{write_synchronised, ClientTeardown};
 use crate::{
@@ -62,6 +63,7 @@ impl ClientLoop<'_> {
         };
         let started_at = Instant::now();
         let mut waiting_for_first_render = true;
+        let mut slow_warnings = SlowWarnings::default();
 
         self.announce_synchronised_output();
 
@@ -90,7 +92,7 @@ impl ClientLoop<'_> {
                     started_at.elapsed()
                 );
             }
-            let should_exit = self.handle(client_instruction, &mut outcome);
+            let should_exit = self.handle(client_instruction, &mut outcome, &mut slow_warnings);
             if first_render_bytes.is_some() {
                 log::info!(
                     "attach trace: client pid={} first Render terminal write complete after {:?}",
@@ -102,6 +104,10 @@ impl ClientLoop<'_> {
             if should_exit {
                 break;
             }
+        }
+
+        if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
+            log::warn!("output pressure: client pid={} stage=terminal_write_flush final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
         }
 
         self.nested_reannounce.stop();
@@ -123,7 +129,12 @@ impl ClientLoop<'_> {
     }
 
     /// Act on one instruction. Returns whether the loop should stop.
-    fn handle(&mut self, instruction: ClientInstruction, outcome: &mut LoopOutcome) -> bool {
+    fn handle(
+        &mut self,
+        instruction: ClientInstruction,
+        outcome: &mut LoopOutcome,
+        slow_warnings: &mut SlowWarnings,
+    ) -> bool {
         match instruction {
             ClientInstruction::Exit(reason) => {
                 self.os_input
@@ -142,8 +153,16 @@ impl ClientLoop<'_> {
             },
             ClientInstruction::Error(backtrace) => self.fail(backtrace),
             ClientInstruction::Render(output) => {
+                let render_bytes = output.len();
+                let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
                 write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
+                let elapsed = started.elapsed();
+                if let Some((suppressed, max_suppressed)) =
+                    slow_warnings.record(Instant::now(), elapsed)
+                {
+                    log::warn!("output pressure: client pid={} stage=terminal_write_flush render_bytes={render_bytes} elapsed_ms={} suppressed={suppressed} max_suppressed_ms={}", std::process::id(), elapsed.as_millis(), max_suppressed.as_millis());
+                }
             },
             ClientInstruction::UnblockInputThread => {
                 self.command_is_executing.unblock_input_thread();
