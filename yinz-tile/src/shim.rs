@@ -144,8 +144,8 @@ extern "C" {
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn host_run_plugin_command() {}
 
-/// The wire form of `command`. Fallible in name only: the only `Err` arms are u32 range
-/// checks on tab ids and positions.
+/// The wire form of `command`. Rejects values the protocol cannot represent, such as
+/// out-of-range tab ids and non-UTF-8 paths.
 fn encode(command: PluginCommand) -> Result<Vec<u8>, String> {
     let kind = CommandType::from(&command);
     let protobuf: ProtobufPluginCommand = command
@@ -3399,7 +3399,6 @@ pub fn post_message_to_plugin(plugin_message: PluginMessage) {
 }
 
 pub fn run_action(action: Action, context: BTreeMap<String, String>) {
-    // TODO: also accept reference
     send(PluginCommand::RunAction(action, context));
 }
 

@@ -1826,6 +1826,27 @@ fn frame_params(is_main_client: bool) -> FrameParams {
 }
 
 #[test]
+fn frames_are_cached_per_client_and_borderless_frames_are_not_cached() {
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let mut pane = agent_pane();
+    let render = |pane: &mut TerminalPane, client| {
+        pane.render_frame(client, frame_params(true), InputMode::Normal)
+            .unwrap()
+            .is_some()
+    };
+    assert!(render(&mut pane, client));
+    assert!(!render(&mut pane, client));
+    assert!(render(&mut pane, other));
+    pane.set_borderless(true);
+    pane.update_name("renamed");
+    assert!(!render(&mut pane, client));
+    pane.set_borderless(false);
+    assert!(render(&mut pane, client));
+    assert!(!render(&mut pane, client));
+}
+
+#[test]
 fn terminal_pane_grid_shows_ab_around_captured_apc() {
     let mut fake_win_size = PaneGeom::default();
     fake_win_size.cols.set_inner(121);

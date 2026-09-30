@@ -21,8 +21,9 @@ pub use {
     yinz_types::input::command::OpenFilePayload, yinz_types::input::command::RunCommandAction,
 };
 use {
-    yinz_types::input::layout::PluginAlias, yinz_types::input::layout::RunPlugin,
-    yinz_types::input::layout::RunPluginOrAlias, yinz_types::input::layout::TabLayoutInfo,
+    yinz_types::input::layout::PluginAlias, yinz_types::input::layout::PluginUserConfiguration,
+    yinz_types::input::layout::RunPlugin, yinz_types::input::layout::RunPluginOrAlias,
+    yinz_types::input::layout::TabLayoutInfo,
 };
 
 use std::path::PathBuf;
@@ -599,7 +600,7 @@ pub fn actions_from_cli(
                         Err(_) => {
                             let mut plugin_alias = PluginAlias::new(
                                 &plugin,
-                                &configuration.map(|c| c.inner().clone()),
+                                &configuration.map(PluginUserConfiguration::into_inner),
                                 alias_cwd,
                             );
                             plugin_alias.set_caller_cwd_if_not_set(Some(current_dir));
@@ -1244,7 +1245,7 @@ pub fn actions_from_cli(
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 &url,
-                &configuration.map(|c| c.inner().clone()),
+                &configuration.map(PluginUserConfiguration::into_inner),
                 None,
                 Some(current_dir),
             )?;
@@ -1265,7 +1266,7 @@ pub fn actions_from_cli(
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 url.as_str(),
-                &configuration.map(|c| c.inner().clone()),
+                &configuration.map(PluginUserConfiguration::into_inner),
                 None,
                 Some(current_dir),
             )?;
@@ -1292,7 +1293,7 @@ pub fn actions_from_cli(
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 url.as_str(),
-                &configuration.map(|c| c.inner().clone()),
+                &configuration.map(PluginUserConfiguration::into_inner),
                 None,
                 Some(current_dir.clone()),
             )?;
@@ -1360,10 +1361,9 @@ pub fn actions_from_cli(
                 pipe_id,
                 name,
                 payload,
-                args: args.map(|a| a.inner().clone()), // TODO: no clone somehow
+                args: args.map(PluginUserConfiguration::into_inner),
                 plugin,
-                configuration: plugin_configuration.map(|a| a.inner().clone()), // TODO: no clone
-                // somehow
+                configuration: plugin_configuration.map(PluginUserConfiguration::into_inner),
                 launch_new: force_launch_plugin,
                 floating: floating_plugin,
                 in_place: in_place_plugin,

@@ -7,10 +7,8 @@ use yinz_types::internal_ids::HostId;
 use yinz_types::style::ThemeHue;
 
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize, Args)]
-/// Options that can be set either through the config file,
-/// or cli flags - cli flags should take precedence over the config file
-/// TODO: In order to correctly parse boolean flags, this is currently split
-/// into Options and CliOptions, this could be a good canditate for a macro
+/// Command-line option parsing, converted into the shared `Options` model.
+/// CLI fields use strings and numbers where the shared model uses typed IDs and units.
 pub struct CliOptions {
     /// Allow plugins to use a more simplified layout
     /// that is compatible with more fonts (true or false)

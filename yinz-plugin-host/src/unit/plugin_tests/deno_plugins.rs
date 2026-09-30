@@ -3829,8 +3829,10 @@ export default {
             Some(to_proxy.clone()),
         );
         let messages = Watched::new(Vec::<(String, String, ClientId)>::new());
+        let load_forwarded = Watched::new(false);
         let proxy = std::thread::spawn({
             let messages = messages.clone();
+            let load_forwarded = load_forwarded.clone();
             let sender = harness.sender.clone();
             move || loop {
                 let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
@@ -3848,11 +3850,22 @@ export default {
                         .lock()
                         .push((name.clone(), payload.clone(), *client));
                 }
-                let _ = sender.send(instruction);
+                let finishes_loading = matches!(
+                    &instruction,
+                    PluginInstruction::ApplyCachedEvents { plugin_ids, .. }
+                        if plugin_ids.contains(&PLUGIN)
+                );
+                if sender.send(instruction).is_ok() && finishes_loading {
+                    *load_forwarded.lock() = true;
+                }
             }
         });
         harness.load_shared();
         harness.rendered("ready");
+        // A ready render can precede startup replay; enqueue replay before client 2's input.
+        load_forwarded.wait_until("startup replay forwarded", default_timeout(), |forwarded| {
+            forwarded.then_some(())
+        });
         let other = ClientId::new(2);
         harness
             .sender

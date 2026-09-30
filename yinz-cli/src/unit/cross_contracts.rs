@@ -3,6 +3,49 @@ use yinz_types::{
     data::InputMode,
     keys::{BareKey, KeyWithModifier},
 };
+
+#[test]
+fn cli_pipe_moves_arguments_and_configuration_without_cloning() {
+    use yinz_types::input::{actions::Action, layout::PluginUserConfiguration};
+
+    let args: PluginUserConfiguration = "cwd=/tmp,title=a=b,empty=".parse().unwrap();
+    let configuration: PluginUserConfiguration = "theme=dark".parse().unwrap();
+    let args_pointer = args.inner()["cwd"].as_ptr();
+    let configuration_pointer = configuration.inner()["theme"].as_ptr();
+    let actions = crate::actions::actions_from_cli(
+        crate::args::CliAction::Pipe {
+            name: None,
+            payload: None,
+            args: Some(args),
+            plugin: None,
+            plugin_configuration: Some(configuration),
+            force_launch_plugin: false,
+            skip_plugin_cache: false,
+            floating_plugin: None,
+            in_place_plugin: None,
+            plugin_cwd: None,
+            plugin_title: None,
+        },
+        Box::new(std::path::PathBuf::new),
+        None,
+    )
+    .unwrap();
+    let Action::CliPipe {
+        args: Some(args),
+        configuration: Some(configuration),
+        ..
+    } = &actions[0]
+    else {
+        panic!("expected a pipe with arguments and configuration");
+    };
+    assert_eq!(args["cwd"], "/tmp");
+    assert_eq!(args["title"], "a=b");
+    assert_eq!(args["empty"], "");
+    assert_eq!(configuration["theme"], "dark");
+    assert_eq!(args["cwd"].as_ptr(), args_pointer);
+    assert_eq!(configuration["theme"].as_ptr(), configuration_pointer);
+}
+
 fn new_tab_config(metadata: &str, layout_dir: &std::path::Path) -> Config {
     Config::from_kdl(
         &format!(

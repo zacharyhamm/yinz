@@ -263,6 +263,7 @@ message Action {
     string notify_payload = 64;
     resize.ResizeDirection move_text_selection_payload = 65;
     resize.ResizeDirection move_notification_selection_payload = 66;
+    KeybindPipePayload keybind_pipe_payload = 67;
   }
   reserved 63;
 }
@@ -276,6 +277,21 @@ message CliPipePayload {
   string payload = 2;
   repeated NameAndValue args = 3;
   optional string plugin = 4;
+}
+
+message KeybindPipePayload {
+  optional string name = 1;
+  optional string payload = 2;
+  optional PluginUserConfiguration args = 3;
+  optional string plugin = 4;
+  optional uint32 plugin_id = 5;
+  optional PluginUserConfiguration configuration = 6;
+  bool launch_new = 7;
+  bool skip_cache = 8;
+  optional bool floating = 9;
+  optional bool in_place = 10;
+  optional string cwd = 11;
+  optional string pane_title = 12;
 }
 
 message IdAndName {

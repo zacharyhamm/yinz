@@ -1222,9 +1222,8 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
         payload: Option<String>,
 
         #[clap(short, long, value_parser, display_order(2))]
-        /// The args of the pipe
-        args: Option<PluginUserConfiguration>, // TODO: we might want to not re-use
-        // PluginUserConfiguration
+        /// Comma-separated key=value arguments for the pipe
+        args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
         /// will be sent to all plugins, if specified and is not running, the plugin will be launched
         #[clap(short, long, value_parser, display_order(3))]
@@ -2049,9 +2048,8 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         payload: Option<String>,
 
         #[clap(short, long, value_parser, display_order(2))]
-        /// The args of the pipe
-        args: Option<PluginUserConfiguration>, // TODO: we might want to not re-use
-        // PluginUserConfiguration
+        /// Comma-separated key=value arguments for the pipe
+        args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
         /// will be sent to all plugins, if specified and is not running, the plugin will be launched
         #[clap(short, long, value_parser, display_order(3))]

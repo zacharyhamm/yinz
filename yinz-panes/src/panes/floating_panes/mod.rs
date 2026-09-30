@@ -945,6 +945,10 @@ impl FloatingPanes {
         let _err_context = || {
             format!("failed to move focus of floating pane {direction:?} for client {client_id}")
         };
+        // An unfocused client has no starting pane; leave other clients and the stack alone.
+        let Some(active_pane_id) = self.active_panes.get(&client_id).copied() else {
+            return Ok(false);
+        };
         if self.fullscreen_pane_id.is_some() {
             let covers_ui = self.floating_fullscreen_covers_ui;
             self.unset_fullscreen();
@@ -955,8 +959,7 @@ impl FloatingPanes {
 
         let display_area = *self.display_area.borrow();
         let viewport = *self.viewport.borrow();
-        let active_pane_id = self.active_panes.get(&client_id).copied();
-        let updated_active_pane = if let Some(active_pane_id) = active_pane_id {
+        let updated_active_pane = {
             let rendered_pane_ids = self.rendered_pane_ids();
             let floating_pane_grid = FloatingPaneGrid::new(
                 self.panes
@@ -1012,26 +1015,15 @@ impl FloatingPanes {
                     self.set_force_render();
                     return Ok(true);
                 },
-                None => Some(active_pane_id),
+                None => active_pane_id,
             }
-        } else {
-            active_pane_id
         };
-        match updated_active_pane {
-            Some(updated_active_pane) => {
-                let connected_clients: Vec<ClientId> = connected_clients.iter().copied().collect();
-                for client_id in connected_clients {
-                    self.focus_pane(updated_active_pane, client_id);
-                }
-                self.set_pane_active_at(updated_active_pane);
-                self.set_force_render();
-            },
-            None => {
-                // TODO: can this happen?
-                self.active_panes.clear(&self.panes);
-                self.z_indices.clear();
-            },
+        let connected_clients: Vec<ClientId> = connected_clients.iter().copied().collect();
+        for client_id in connected_clients {
+            self.focus_pane(updated_active_pane, client_id);
         }
+        self.set_pane_active_at(updated_active_pane);
+        self.set_force_render();
         Ok(false)
     }
     pub fn focus_pane_on_edge(&mut self, direction: Direction, client_id: ClientId) {
