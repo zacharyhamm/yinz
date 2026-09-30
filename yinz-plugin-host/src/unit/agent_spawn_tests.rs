@@ -226,7 +226,7 @@ fn plugin_agent_control_resolves_only_local_relative_directories() {
     let child = root.join("child");
     std::fs::create_dir(&child).unwrap();
     let mut env = crate::test_env::test_env();
-    env.plugin.location = yinz_types::input::layout::RunPluginLocation::Yinz(
+    env.plugin_config.location = yinz_types::input::layout::RunPluginLocation::Yinz(
         yinz_types::data::PluginTag::new("hocus"),
     );
     env.plugin_cwd = root.clone();

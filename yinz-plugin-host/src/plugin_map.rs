@@ -71,7 +71,7 @@ impl PluginMetadata {
     fn from_running(plugin: &RunningPlugin) -> Self {
         let env = plugin.env();
         Self {
-            config: env.plugin.clone(),
+            config: env.plugin_config.clone(),
             resolved_source_path: env.resolved_source_path.clone(),
             cwd: env.plugin_cwd.clone(),
             tab_index: env.tab_index,
@@ -651,7 +651,7 @@ pub struct PluginEnv {
     pub deno_generation: Option<u64>,
     /// Named Deno workers share the owning instance's permissions and lifetime.
     pub(crate) deno_workers: Option<Arc<crate::deno::background_worker::Workers>>,
-    pub plugin: PluginConfig,
+    pub plugin_config: PluginConfig,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     /// Whether this plugin has asked for permissions at all, set by `request_permission`.
     ///
@@ -693,7 +693,7 @@ pub struct PluginEnv {
     /// loader as the folder to search when a plugin is named rather than pathed.
     pub user_plugin_dir: Option<PathBuf>,
     /// The file a script plugin's source was actually read from, which is not always
-    /// `plugin.location`: a plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its
+    /// `plugin_config.location`: a plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its
     /// identity but is found in `user_plugin_dir`. A reload names the file in full, so this
     /// is what `all_plugin_ids_for_plugin_location` matches it against. `None` for wasm
     /// plugins, which are not reloadable by authoring and have their own lookup.
@@ -827,7 +827,11 @@ impl PluginEnv {
 
     // Get the name (path) of the containing plugin
     pub fn name(&self) -> String {
-        format!("{} (ID {})", self.plugin.path.display(), self.plugin_id)
+        format!(
+            "{} (ID {})",
+            self.plugin_config.path.display(),
+            self.plugin_id
+        )
     }
 
     pub fn set_permissions(&mut self, permissions: HashSet<PermissionType>) {

@@ -11,7 +11,7 @@ use yinz_types::{
 };
 
 fn load_builtin(name: &str, source: &str, mut env: PluginEnv) -> Result<DenoPlugin> {
-    env.plugin.location = RunPluginLocation::Yinz(PluginTag::new(name));
+    env.plugin_config.location = RunPluginLocation::Yinz(PluginTag::new(name));
     DenoPlugin::new(
         source,
         Path::new("/nonexistent/builtin.ts"),
@@ -383,15 +383,15 @@ export default {render() {return JSON.stringify(yinz.workflowRemotePanes());}};
         RunPluginLocation::File("swamp-bridge.ts".into()),
         RunPluginLocation::Yinz(PluginTag::new("context-menu")),
     ] {
-        plugin.env_mut().plugin.location = location;
+        plugin.env_mut().plugin_config.location = location;
         let error = format!("{:#}", plugin.render(3, 1000).unwrap_err());
         assert!(error.contains("restricted to yinz:swamp-bridge"), "{error}");
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("swamp-bridge.ts");
     let mut env = test_env();
-    env.plugin.location = RunPluginLocation::File(path.clone());
-    env.plugin
+    env.plugin_config.location = RunPluginLocation::File(path.clone());
+    env.plugin_config
         .initial_userspace_configuration
         .insert("workflowBridge", "true");
     let mut ordinary = DenoPlugin::new(
@@ -445,7 +445,7 @@ export default {render() {
     });
     assert_eq!(plugin.render(1, 1000).unwrap(), b"sent");
     responder.join().unwrap();
-    plugin.env_mut().plugin.location = RunPluginLocation::File("swamp-bridge.ts".into());
+    plugin.env_mut().plugin_config.location = RunPluginLocation::File("swamp-bridge.ts".into());
     assert!(format!("{:#}", plugin.render(2, 1000).unwrap_err())
         .contains("restricted to yinz:swamp-bridge"));
 }
@@ -678,7 +678,7 @@ fn shipped_bridge_reads_legacy_delivery_rows_after_reload_without_dispatching_ag
     let (pty_tx, pty_rx) = yinz_runtime::channels::unbounded();
     let env = || {
         let mut env = test_env();
-        env.plugin.location = RunPluginLocation::Yinz(PluginTag::new("swamp-bridge"));
+        env.plugin_config.location = RunPluginLocation::Yinz(PluginTag::new("swamp-bridge"));
         // Every load must see the same session: the delivery rows are keyed by it.
         env.server_session = crate::ServerSession::Fixed("bridge-migration".into());
         env.data_access = data.clone();

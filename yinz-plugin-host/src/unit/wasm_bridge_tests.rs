@@ -2741,7 +2741,7 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
             std::fs::read_to_string(cache.join("saved")).unwrap(),
             "persistent state"
         );
-        assert_eq!(running.env().plugin, config);
+        assert_eq!(running.env().plugin_config, config);
         assert_eq!((running.rows, running.columns), (13, 37));
         assert_eq!(running.env().plugin_cwd, cwd);
         assert_eq!(running.env().tab_index, Some(TabId::new(4)));

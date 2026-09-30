@@ -695,7 +695,7 @@ fn start_run(
         }
         runs.insert(key.clone(), cancel.clone());
     }
-    let allowed = (!env.plugin.is_builtin()).then(|| {
+    let allowed = (!env.plugin_config.is_builtin()).then(|| {
         env.permissions
             .lock()
             .unwrap()
