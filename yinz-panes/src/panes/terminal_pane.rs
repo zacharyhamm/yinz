@@ -2095,3 +2095,7 @@ mod grid_tests;
 #[cfg(test)]
 #[path = "./unit/search_in_pane_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+#[path = "./unit/render_pipeline_tests.rs"]
+mod render_pipeline_tests;
