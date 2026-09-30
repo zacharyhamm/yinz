@@ -993,7 +993,7 @@ pub fn plugin_thread_main(
                 let should_float = floating.unwrap_or(true);
                 let mut pipe_messages = vec![];
                 let mut resolution_error = None;
-                let floating_pane_coordinates = None; // TODO: do we want to allow this?
+                let floating_pane_coordinates = None;
                 match plugin.as_deref() {
                     Some(destination) if destination.starts_with("plugin_") => {
                         match destination.parse::<PaneId>() {
@@ -1169,7 +1169,7 @@ pub fn plugin_thread_main(
             } => {
                 let should_float = floating.unwrap_or(true);
                 let mut pipe_messages = vec![];
-                let floating_pane_coordinates = None; // TODO: do we want to allow this?
+                let floating_pane_coordinates = None;
                 if let Some((plugin_id, client_id)) = plugin_and_client_id {
                     let is_private = true;
                     pipe_messages.push((
@@ -1364,8 +1364,7 @@ pub fn plugin_thread_main(
                         builtin_plugins_dir,
                     )
                     .non_fatal();
-                // TODO: notify plugins that this happened so that they can eg. rebind temporary keys that
-                // were lost
+                // reconfigure resends InitialKeybinds; the screen also sends ModeUpdate.
                 if was_written_to_disk {
                     let updates = vec![(None, None, Event::ConfigWasWrittenToDisk)];
                     wasm_bridge

@@ -7,6 +7,9 @@ mod multipanes;
 #[cfg(test)]
 #[path = "unit/agent_spawn_tests.rs"]
 mod agent_spawn_tests;
+#[cfg(test)]
+#[path = "unit/layout_cwd_tests.rs"]
+mod layout_cwd_tests;
 
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
@@ -295,7 +298,7 @@ fn run_command_action(
     default_to_plugin_cwd: bool,
     context: BTreeMap<String, String>,
 ) -> RunCommandAction {
-    let cwd = if env.plugin.is_builtin()
+    let cwd = if env.plugin_config.is_builtin()
         && (context.contains_key("swamp_owner")
             || context
                 .get("hocus_agent_host_cwd")
@@ -443,7 +446,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 operation,
                 payload,
             } => {
-                if !env.plugin.is_builtin() {
+                if !env.plugin_config.is_builtin() {
                     return Err(anyhow!("managed Swamp requests require a builtin plugin"));
                 }
                 swamp_request(env, directory, id, operation, payload);
@@ -1282,7 +1285,7 @@ fn cli_pipe_output(env: &PluginEnv, pipe_name: String, output: String) -> Result
 
 fn message_to_plugin(env: &PluginEnv, mut message_to_plugin: MessageToPlugin) -> Result<()> {
     if message_to_plugin.plugin_url.as_deref() == Some("yinz:OWN_URL") {
-        message_to_plugin.plugin_url = Some(env.plugin.location.display());
+        message_to_plugin.plugin_url = Some(env.plugin_config.location.display());
     }
     if !message_to_plugin.has_cwd() {
         message_to_plugin =
@@ -1355,7 +1358,7 @@ fn grant_plugin_permissions(
     plugin_url: String,
     permissions: Vec<PermissionType>,
 ) -> Result<()> {
-    if !env.plugin.is_builtin() {
+    if !env.plugin_config.is_builtin() {
         return Err(anyhow!(
             "only a builtin plugin may grant permissions to another plugin; {} is not one",
             env.name()
@@ -1376,7 +1379,7 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
     env.permissions_requested
         .store(true, atomic::Ordering::SeqCst);
     if PermissionCache::from_path_or_default(None)
-        .check_permissions(env.plugin.location.to_string(), &permissions)
+        .check_permissions(env.plugin_config.location.to_string(), &permissions)
     {
         // In force from this call on, not from the event's arrival: a grant the user gave long
         // ago - or one hocus made when it approved the plugin's source - has nothing left to
@@ -1408,7 +1411,7 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
     env.senders
         .send_to_screen(ScreenInstruction::RequestPluginPermissions(
             env.plugin_id,
-            PluginPermission::new(env.plugin.location.to_string(), permissions),
+            PluginPermission::new(env.plugin_config.location.to_string(), permissions),
         ))
 }
 
@@ -2845,7 +2848,7 @@ fn spawn_agent(
         }
         let host_workflow = context.contains_key("agent_workflow_role");
         let host_paths = host_workflow
-            || (env.plugin.is_builtin()
+            || (env.plugin_config.is_builtin()
                 && (context.contains_key("swamp_owner")
                     || context
                         .get("hocus_agent_host_cwd")
@@ -3885,7 +3888,7 @@ fn exec_cmd(env: &PluginEnv, mut command_line: Vec<String>) {
     let command = command_line.remove(0);
 
     // Bail out if we're forbidden to run command
-    if !env.plugin._allow_exec_host_cmd {
+    if !env.plugin_config._allow_exec_host_cmd {
         warn!("This plugin isn't allow to run command in host side, skip running this command: '{cmd} {args}'.",
         	cmd = command, args = command_line.join(" "));
         return;
@@ -3969,7 +3972,7 @@ fn run_command(
         log::error!("Command cannot be empty");
     } else {
         let command = command_line.remove(0);
-        let cwd = if env.plugin.is_builtin() && context.contains_key("swamp_owner") {
+        let cwd = if env.plugin_config.is_builtin() && context.contains_key("swamp_owner") {
             cwd
         } else {
             translate_plugin_path(env, cwd)
@@ -4152,7 +4155,7 @@ fn enqueue_queue_job(
     use yinz_plugin_api::plugin_command::ProtobufEnqueueQueueJobResponse;
 
     let plugin_url = if plugin_url == "yinz:OWN_URL" {
-        env.plugin.location.display()
+        env.plugin_config.location.display()
     } else {
         plugin_url
     };
@@ -4457,7 +4460,6 @@ fn layout_from_plugin_info(env: &PluginEnv, layout_info: LayoutInfo) -> Result<L
 }
 
 fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
-    // TODO: cwd
     let layout = yinz_config::layout::from_str(
         raw_layout,
         format!("Layout from plugin: {}", env.name()),
@@ -4471,7 +4473,6 @@ fn new_tabs_with_layout(env: &mut PluginEnv, raw_layout: &str) -> Result<()> {
 }
 
 fn new_tabs_with_layout_info(env: &mut PluginEnv, layout_info: LayoutInfo) -> Result<()> {
-    // TODO: cwd
     let layout = layout_from_plugin_info(env, layout_info)?;
     apply_layout(env, layout);
     Ok(())
@@ -4480,7 +4481,9 @@ fn new_tabs_with_layout_info(env: &mut PluginEnv, layout_info: LayoutInfo) -> Re
 fn apply_layout(env: &mut PluginEnv, layout: Layout) {
     let mut tabs_to_open = vec![];
     let tabs = layout.tabs();
-    let cwd = None; // TODO: add this to the plugin API
+    // KDL already embeds layout/tab/pane cwds in the runs. Leave the tab override
+    // unset so panes without a cwd inherit normally, as with new_tab(None, None).
+    let cwd = None;
     if tabs.is_empty() {
         let swap_tiled_layouts = Some(layout.swap_tiled_layouts.clone());
         let swap_floating_layouts = Some(layout.swap_floating_layouts.clone());
@@ -5429,7 +5432,7 @@ fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResp
 /// The shared check lives here rather than in `check_command_permission` because that sees only the
 /// command, not its arguments — the same reason event permissions are checked separately.
 fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<String, DataError> {
-    let plugin_url = Url::from(&env.plugin.location).to_string();
+    let plugin_url = Url::from(&env.plugin_config.location).to_string();
     let Some(namespace) = namespace else {
         return Ok(plugin_data_store::private_namespace(&plugin_url));
     };
@@ -5448,7 +5451,7 @@ fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<
 /// Split out of [`resolve_data_namespace`] because the catalog asks the same question without
 /// having a namespace to resolve: it is deciding what to *list*, not what to open.
 fn may_reach_shared_namespaces(env: &PluginEnv) -> bool {
-    env.plugin.is_builtin()
+    env.plugin_config.is_builtin()
         || env
             .permissions
             .lock()
@@ -5469,7 +5472,7 @@ fn data_define_entity(
     def: EntityDef,
     allow_destructive: bool,
 ) {
-    let plugin_url = Url::from(&env.plugin.location).to_string();
+    let plugin_url = Url::from(&env.plugin_config.location).to_string();
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
         env.data_access.plugin_data().define_entity(
             &namespace,
@@ -5575,7 +5578,7 @@ fn catalog_entities(
         let namespace = resolve_data_namespace(env, namespace)?;
         return env.data_access.plugin_data().catalog(Some(&namespace));
     }
-    let own = plugin_data_store::private_namespace(Url::from(&env.plugin.location).as_ref());
+    let own = plugin_data_store::private_namespace(Url::from(&env.plugin_config.location).as_ref());
     let shared_visible = may_reach_shared_namespaces(env);
     Ok(env
         .data_access
@@ -6583,7 +6586,7 @@ fn resolve_fs_path_with_permission(
 /// Whether the plugin holds `permission`. Built-in plugins hold everything, as they do in
 /// [`check_command_permission`].
 fn has_permission(env: &PluginEnv, permission: PermissionType) -> bool {
-    if env.plugin.is_builtin() {
+    if env.plugin_config.is_builtin() {
         return true;
     }
     env.permissions
@@ -7985,7 +7988,7 @@ fn load_new_plugin(
     skip_plugin_cache: bool,
 ) {
     let url = if &url == "yinz:OWN_URL" {
-        env.plugin.location.display()
+        env.plugin_config.location.display()
     } else {
         url
     };
@@ -8316,14 +8319,13 @@ pub fn wasi_read_bytes(plugin_env: &PluginEnv) -> Result<Vec<u8>> {
 /// Only the Deno runtime can pass the difference on: a wasm guest is mid-call
 /// and cannot be handed a refusal at all.
 pub(crate) fn permission_answer_pending(plugin_env: &PluginEnv) -> bool {
-    !plugin_env.plugin.is_builtin()
+    !plugin_env.plugin_config.is_builtin()
         && plugin_env
             .permissions_requested
             .load(atomic::Ordering::SeqCst)
         && plugin_env.permissions.lock().unwrap().is_none()
 }
 
-// TODO: move to permissions?
 /// Whether `plugin_env` may run `command`, and which permission it is short of if not.
 ///
 /// `pub(crate)` for the TypeScript runtime, which asks before dispatching. A wasm plugin cannot be told
@@ -8337,11 +8339,11 @@ pub(crate) fn check_command_permission(
     if matches!(
         command,
         PluginCommand::SwampRequest { .. } | PluginCommand::AgentControl { .. }
-    ) && !plugin_env.plugin.is_builtin()
+    ) && !plugin_env.plugin_config.is_builtin()
     {
         return (PermissionStatus::Denied, Some(PermissionType::RunCommands));
     }
-    if plugin_env.plugin.is_builtin() {
+    if plugin_env.plugin_config.is_builtin() {
         // built-in plugins can do all the things because they're part of the application and
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);

@@ -640,7 +640,7 @@ fn create_plugin_thread_with_hooks_and_event_sender(
     let user_plugin_dir =
         user_plugin_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let default_shell = PathBuf::from(".");
-    let default_shell_action = None; // TODO: change me
+    let default_shell_action = None;
     let mut plugin_aliases = PluginAliases::default();
     plugin_aliases.aliases.insert(
         "fixture_plugin_for_tests".to_owned(),
@@ -741,7 +741,7 @@ fn create_plugin_thread_with_server_receiver(
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
-    let default_shell_action = None; // TODO: change me
+    let default_shell_action = None;
     let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
@@ -853,7 +853,7 @@ fn create_plugin_thread_with_pty_receiver_and_layout(
     let layout_dir = layout_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let user_plugin_dir = PathBuf::from(tempdir().unwrap().path());
     let default_shell = PathBuf::from(".");
-    let default_shell_action = None; // TODO: change me
+    let default_shell_action = None;
     let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())
@@ -943,7 +943,7 @@ fn create_plugin_thread_with_background_jobs_receiver(
     let data_dir = PathBuf::from(tempdir().unwrap().path());
     let data_access = Arc::new(DataAccess::sqlite(&data_dir));
     let default_shell = PathBuf::from(".");
-    let default_shell_action = None; // TODO: change me
+    let default_shell_action = None;
     let initiating_client_id = ClientId::new(1);
     let plugin_thread = std::thread::Builder::new()
         .name("plugin_thread".to_string())

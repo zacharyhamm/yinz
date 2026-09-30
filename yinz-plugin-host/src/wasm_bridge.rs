@@ -633,8 +633,8 @@ impl WasmBridge {
 
         match run {
             Some(run) => {
-                let plugin = match PluginConfig::from_run_plugin(run) {
-                    Some(plugin) => plugin,
+                let plugin_config = match PluginConfig::from_run_plugin(run) {
+                    Some(plugin_config) => plugin_config,
                     None => {
                         self.next_plugin_id += 1;
                         let mut loading_indication =
@@ -652,7 +652,7 @@ impl WasmBridge {
                 };
                 let plugin_name = run.location.to_string();
 
-                if plugin.is_shared() {
+                if plugin_config.is_shared() {
                     self.shared_plugin_ids.insert(plugin_id);
                 }
 
@@ -671,7 +671,7 @@ impl WasmBridge {
                 let loading_context = LoadingContext::new(
                     self,
                     Some(yinz_cwd.clone()),
-                    plugin.clone(), // TODO: rename to plugin_config
+                    plugin_config,
                     plugin_id,
                     client_id,
                     tab_index,
@@ -1349,7 +1349,9 @@ impl WasmBridge {
                         .contains(&EventType::BeforeClose);
                     let old_instance = running_plugin.clone();
                     let mut running_plugin = running_plugin.lock().unwrap();
-                    if client_id == first_client_id || running_plugin.env().plugin.is_shared() {
+                    if client_id == first_client_id
+                        || running_plugin.env().plugin_config.is_shared()
+                    {
                         if let Some(directory) = &running_plugin.env().temporary_data_dir {
                             // Retain the reload owner's data, independent of instance iteration order.
                             loading_context.plugin_own_data_dir = directory.path().to_path_buf();
@@ -1942,7 +1944,7 @@ impl WasmBridge {
                         }
                         let subs = subscriptions.lock().unwrap().clone();
                         let mut plugin = instance.lock().unwrap();
-                        let shared = plugin.env().plugin.is_shared();
+                        let shared = plugin.env().plugin_config.is_shared();
                         let events: Vec<_> = messages
                             .iter()
                             .filter_map(|message| {
@@ -2247,7 +2249,7 @@ impl WasmBridge {
                             &env.plugin_own_cache_dir,
                             &YINZ_TMP_DIR,
                             env.user_plugin_dir.as_ref(),
-                            &env.plugin.location.to_string(),
+                            &env.plugin_config.location.to_string(),
                             env.plugin_id,
                             env.stdin_pipe.clone(),
                             env.stdout_pipe.clone(),
@@ -2553,7 +2555,7 @@ impl WasmBridge {
                     if plugin.is_unavailable() || plugin.deno_generation() != Some(generation) {
                         continue;
                     }
-                    let clients = if plugin.env().plugin.is_shared() {
+                    let clients = if plugin.env().plugin_config.is_shared() {
                         connected_clients.clone()
                     } else {
                         vec![client_id]
@@ -3339,7 +3341,7 @@ impl WasmBridge {
             .filter_map(|(plugin_id, _client_id, running_plugin)| {
                 let mut running_plugin = running_plugin.lock().unwrap();
                 let env = running_plugin.env();
-                let is_it = env.plugin.location == location
+                let is_it = env.plugin_config.location == location
                     || env
                         .resolved_source_path
                         .as_ref()
@@ -3413,7 +3415,8 @@ impl WasmBridge {
             if let Some(workers) = &running_plugin.env().deno_workers {
                 workers.permission_answer(running_plugin.env(), &requested, status);
             }
-            plugin_location.get_or_insert_with(|| running_plugin.env().plugin.location.to_string());
+            plugin_location
+                .get_or_insert_with(|| running_plugin.env().plugin_config.location.to_string());
         }
 
         let mut permission_cache = PermissionCache::from_path_or_default(cache_path);
@@ -3643,7 +3646,7 @@ impl WasmBridge {
         for (plugin_id, client_id, running_plugin) in running_plugins {
             let mut running_plugin = running_plugin.lock().unwrap();
             let plugin_env = &running_plugin.env();
-            let plugin_location = &plugin_env.plugin.location;
+            let plugin_location = &plugin_env.plugin_config.location;
 
             // Look up this plugin in the new config by location
             // Note: PluginAliases is HashMap<String, RunPlugin>, so we need to iterate
@@ -3758,12 +3761,11 @@ fn handle_plugin_loading_failure(
     ));
 }
 
-// TODO: move to permissions?
 pub(crate) fn check_event_permission(
     plugin_env: &PluginEnv,
     event: &Event,
 ) -> (PermissionStatus, Option<PermissionType>) {
-    if plugin_env.plugin.is_builtin() {
+    if plugin_env.plugin_config.is_builtin() {
         // built-in plugins can do all the things because they're part of the application and
         // there's no use to deny them anything
         return (PermissionStatus::Granted, None);

@@ -153,7 +153,8 @@ fn op_yinz_workflow_remote_panes(
         if env.cancel.load(Ordering::Acquire) {
             bail!(CANCELLED_BY_HOST);
         }
-        let rows = super::host_bridge::workflow_remote_panes(&env.plugin.location, &env.senders)?;
+        let rows =
+            super::host_bridge::workflow_remote_panes(&env.plugin_config.location, &env.senders)?;
         Ok(json!(rows))
     };
     query().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
@@ -174,7 +175,7 @@ fn op_yinz_workflow_signal(
         if env.cancel.load(Ordering::Acquire) {
             bail!(CANCELLED_BY_HOST);
         }
-        super::host_bridge::workflow_signal(&env.plugin.location, &env.senders, request)
+        super::host_bridge::workflow_signal(&env.plugin_config.location, &env.senders, request)
     };
     signal().map_err(|error| JsErrorBox::generic(format!("{error:#}")))
 }
@@ -284,7 +285,7 @@ fn log_tag(env: &PluginEnv) -> String {
         .as_ref()
         .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| env.plugin.path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| env.plugin_config.path.to_string_lossy().into_owned())
 }
 
 deno_core::extension!(
@@ -751,17 +752,17 @@ impl RuntimeInstance {
             bail!(CANCELLED_BY_HOST);
         };
         let _entered = get_tokio_runtime().enter();
-        let loader = Rc::new(match &env.plugin.location {
+        let loader = Rc::new(match &env.plugin_config.location {
             yinz_types::input::layout::RunPluginLocation::Yinz(tag) => {
                 loader::PluginModuleLoader::embedded(&tag.to_string(), source)?
             },
-            _ if env.plugin.repository_root.is_none() => {
+            _ if env.plugin_config.repository_root.is_none() => {
                 loader::PluginModuleLoader::new(path, source)?
             },
             _ => loader::PluginModuleLoader::new_with_root(
                 path,
                 source,
-                env.plugin.repository_root.as_deref(),
+                env.plugin_config.repository_root.as_deref(),
             )?,
         });
         let limits = limits::Limits::new(path.display().to_string());
@@ -824,7 +825,7 @@ impl RuntimeInstance {
             json!({
                 "instanceId": uuid::Uuid::new_v4().to_string(),
                 "identity": super::host_bridge::server_identity(&env.server_session)?,
-                "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin.location),
+                "workflowBridge": super::host_bridge::is_workflow_bridge(&env.plugin_config.location),
                 "swampTiming": std::env::var("YINZ_SWAMP_TIMING").as_deref() == Ok("1"),
             }),
             None,

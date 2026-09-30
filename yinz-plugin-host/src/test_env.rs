@@ -18,7 +18,7 @@ pub(crate) fn test_env() -> PluginEnv {
         cancel: Default::default(),
         client_id: crate::ClientId::new(1),
         owner_client_id: crate::ClientId::new(1),
-        plugin: PluginConfig {
+        plugin_config: PluginConfig {
             repository_root: None,
             installed_commit: None,
             path: PathBuf::from("test.ts"),

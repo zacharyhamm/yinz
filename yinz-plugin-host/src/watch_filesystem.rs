@@ -67,9 +67,7 @@ fn plugin_events_from_filesystem_events(
         }));
     }
 
-    // TODO: at some point we might want to add FileMetadata to these, but right now
-    // the API is a bit unstable, so let's not rock the boat too much by adding another
-    // expensive syscall
+    // Watch events are path-only; fs_metadata supplies current metadata on demand.
     let mut plugin_events = vec![];
     if !read_paths.is_empty() {
         plugin_events.push(Event::FileSystemRead(
