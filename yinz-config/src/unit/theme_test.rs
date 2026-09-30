@@ -1,6 +1,88 @@
 use super::super::theme::*;
 use insta::assert_snapshot;
 use std::path::{Path, PathBuf};
+use yinz_types::colors::PaletteColor::Rgb;
+use yinz_types::style::MultiplayerColors;
+
+#[test]
+fn swamp_builtin_themes() {
+    // The builtin loader returns no themes under cfg(test), so parse the asset directly.
+    let themes = Themes::from_string(include_str!("../../assets/themes/swamp.kdl"), false).unwrap();
+    assert_eq!(themes.inner().len(), 2);
+    for (name, green, cyan, magenta) in [
+        (
+            "swamp",
+            Rgb((57, 255, 20)),
+            Rgb((0, 255, 255)),
+            Rgb((255, 0, 255)),
+        ),
+        (
+            "swamp-hud",
+            Rgb((74, 222, 128)),
+            Rgb((34, 211, 238)),
+            Rgb((232, 121, 249)),
+        ),
+    ] {
+        let palette = themes.get_theme(name).unwrap().palette;
+        for (unselected, selected) in [
+            (palette.text_unselected, palette.text_selected),
+            (palette.list_unselected, palette.list_selected),
+            (palette.table_cell_unselected, palette.table_cell_selected),
+        ] {
+            assert_eq!(unselected.base, Rgb((209, 213, 219)));
+            assert_eq!(unselected.background, Rgb((10, 10, 10)));
+            assert_eq!(selected.base, Rgb((255, 255, 255)));
+            assert_eq!(selected.background, Rgb((26, 26, 26)));
+            assert_ne!(selected.background, unselected.background);
+            for style in [unselected, selected] {
+                assert_eq!(style.emphasis_0, Rgb((251, 146, 60)));
+                assert_eq!(style.emphasis_1, cyan);
+                assert_eq!(style.emphasis_2, green);
+                assert_eq!(style.emphasis_3, magenta);
+            }
+        }
+        assert_eq!(palette.frame_unselected.unwrap().base, Rgb((156, 163, 175)));
+        assert_eq!(palette.frame_selected.base, green);
+        assert_eq!(palette.frame_highlight.base, cyan);
+        assert_eq!(palette.table_title.base, green);
+        assert_eq!(palette.exit_code_success.base, green);
+        assert_eq!(palette.exit_code_error.base, Rgb((248, 113, 113)));
+        assert_eq!(palette.exit_code_error.emphasis_0, Rgb((251, 191, 36)));
+        assert_eq!(palette.ribbon_selected.background, green);
+        assert_eq!(palette.ribbon_unselected.background, Rgb((209, 213, 219)));
+        assert_eq!(
+            palette.ribbon_selected.emphasis_1,
+            palette.ribbon_selected.base
+        );
+        // Hovered tabs and buttons use emphasis_1 as their background.
+        assert_eq!(palette.ribbon_unselected.emphasis_1, cyan);
+        assert_ne!(
+            palette.ribbon_unselected.emphasis_1,
+            palette.ribbon_unselected.base
+        );
+        for ribbon in [palette.ribbon_selected, palette.ribbon_unselected] {
+            assert_eq!(ribbon.base, Rgb((10, 10, 10)));
+            assert_eq!(ribbon.emphasis_0, ribbon.base);
+            assert_eq!(ribbon.emphasis_2, ribbon.base);
+            assert_eq!(ribbon.emphasis_3, ribbon.base);
+        }
+        assert_eq!(
+            palette.multiplayer_user_colors,
+            MultiplayerColors {
+                player_1: magenta,
+                player_2: Rgb((96, 165, 250)),
+                player_3: Rgb((167, 139, 250)),
+                player_4: Rgb((251, 191, 36)),
+                player_5: cyan,
+                player_6: Rgb((251, 146, 60)),
+                player_7: Rgb((248, 113, 113)),
+                player_8: Rgb((209, 213, 219)),
+                player_9: Rgb((244, 114, 182)),
+                player_10: green,
+            }
+        );
+    }
+}
 
 fn theme_test_dir(theme: String) -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
