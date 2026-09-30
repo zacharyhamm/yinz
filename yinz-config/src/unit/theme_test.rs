@@ -49,7 +49,14 @@ fn swamp_builtin_themes() {
         assert_eq!(palette.exit_code_error.base, Rgb((248, 113, 113)));
         assert_eq!(palette.exit_code_error.emphasis_0, Rgb((251, 191, 36)));
         assert_eq!(palette.ribbon_selected.background, green);
-        assert_eq!(palette.ribbon_unselected.background, Rgb((209, 213, 219)));
+        assert_eq!(
+            palette.ribbon_unselected.background,
+            if name == "swamp-hud" {
+                cyan
+            } else {
+                Rgb((209, 213, 219))
+            }
+        );
         assert_eq!(
             palette.ribbon_selected.emphasis_1,
             palette.ribbon_selected.base
