@@ -1,0 +1,6 @@
+error: the following required arguments were not provided:
+  <TEXT>
+
+Usage: yinz agent prompt --json <TARGET> <TEXT>
+
+For more information, try '--help'.

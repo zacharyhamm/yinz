@@ -1,0 +1,7 @@
+error: unexpected argument '--json' found
+
+  tip: to pass '--json' as a value, use '-- --json'
+
+Usage: yinz agent register <PANE_ID> <KIND>
+
+For more information, try '--help'.

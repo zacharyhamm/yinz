@@ -562,6 +562,8 @@ pub(crate) struct Screen {
     agent_controls: Vec<agent_control::Pending>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
+    agent_dialog_inputs: HashMap<PaneId, agent_control::DialogInput>,
+    agent_clear_inputs: HashMap<PaneId, agent_control::ClearInput>,
     agent_worker_waits: HashMap<PaneId, agent_control::WorkerWaits>,
     reported_pane_tabs: Vec<yinz_types::pane_tabs::PaneTabsInfo>,
     /// A Bus for sending and receiving messages with the other threads.
@@ -1301,6 +1303,8 @@ impl Screen {
             agent_controls: Vec::new(),
             agent_launches: HashMap::new(),
             agent_lifecycle: HashMap::new(),
+            agent_dialog_inputs: HashMap::new(),
+            agent_clear_inputs: HashMap::new(),
             agent_worker_waits: HashMap::new(),
             reported_pane_tabs: vec![],
             bus,

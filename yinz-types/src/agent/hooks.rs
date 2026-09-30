@@ -852,7 +852,10 @@ fn prune_value(
 pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
     match event.hook_event_name.as_str() {
         "SessionStart"
-            if matches!(event.source.as_deref(), Some("startup" | "resume" | "fork")) =>
+            if matches!(
+                event.source.as_deref(),
+                Some("startup" | "resume" | "fork" | "clear")
+            ) =>
         {
             Some(AgentState::Idle)
         },
@@ -1416,7 +1419,15 @@ mod tests {
         };
         assert_eq!(hook_state(&start("startup")), Some(AgentState::Idle));
         assert_eq!(hook_state(&start("resume")), Some(AgentState::Idle));
-        assert_eq!(hook_state(&start("clear")), None, "a clear is mid-turn");
+        let clear = start("clear");
+        assert_eq!(hook_state(&clear), Some(AgentState::Idle));
+        let HookOutcome::Reported(agent) = hook_outcome("claude", &clear) else {
+            panic!("clear must restore the agent record");
+        };
+        assert_eq!(agent.state, AgentState::Idle);
+        assert_eq!(agent.source, AgentSource::Reported);
+        assert_eq!(hook_state(&start("compact")), None);
+        assert_eq!(hook_state(&start("unknown")), None);
         assert_eq!(hook_state(&event("SessionStart")), None);
         assert_eq!(hook_state(&event("Stop")), Some(AgentState::Idle));
         assert_eq!(hook_state(&event("Interrupt")), Some(AgentState::Idle));
