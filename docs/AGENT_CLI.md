@@ -33,6 +33,8 @@ yinz hocus hooks install --agent codex
 ```
 
 Claude Code launches receive the hooks through the existing launch planner.
+Codex launches reject Claude model aliases such as `haiku`, `sonnet`, and `opus`.
+Use `--kind claude` for these aliases. Other model IDs are validated by the configured provider.
 
 ### Run `yinz` from inside a Codex agent
 
@@ -173,8 +175,14 @@ successfully.
 | `timed_out` | The observation deadline expired |
 | `target_changed` | The original agent or conversation no longer occupies the target |
 | `target_closed` | The target pane closed |
+| `target_not_found` | The initial lookup found no pane at the requested ID |
+| `not_agent` | The initial lookup found a pane without an agent record |
+| `target_exited` | The requested agent's process already exited |
 | `status_unavailable` | Lifecycle or process evidence is insufficient |
 | `rejected` | Preconditions or request validation failed |
+
+An initial lookup without `--conversation` does not imply a target transition.
+Conversation pins and pending operations can report `target_changed` or `target_closed` when their target disappears.
 
 `completed` confirms the end of a turn. It does not verify the agent's claims,
 code changes or test results. Automatic policy waits do not produce

@@ -134,6 +134,17 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
     let mut leading = Vec::new();
     let mut flags = Vec::new();
     let mut model = trimmed(&spec.model).map(str::to_owned);
+    if let (Some("codex"), Some(model)) = (kind, model.as_deref()) {
+        // ponytail: catch Claude shorthand; broader validation needs the configured
+        // provider's catalog, not an allowlist that rejects custom model IDs.
+        let alias = model.to_ascii_lowercase();
+        let alias = alias.strip_suffix("[1m]").unwrap_or(&alias);
+        if matches!(alias, "haiku" | "sonnet" | "opus" | "opusplan") {
+            return Err(format!(
+                "Codex does not support Claude model alias {model:?}; use --kind claude or a Codex model ID"
+            ));
+        }
+    }
     if let Some(effort) = trimmed(&spec.effort) {
         let accepted = effort_levels(kind);
         if !accepted.contains(&effort) {
@@ -511,6 +522,10 @@ fn trimmed(value: &Option<String>) -> Option<&str> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
 }
+
+#[cfg(test)]
+#[path = "unit/launch_tests.rs"]
+mod launch_tests;
 
 #[cfg(test)]
 mod tests {

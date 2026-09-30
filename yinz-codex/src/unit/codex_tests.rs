@@ -453,13 +453,13 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                         let socket = Path::new(endpoint.strip_prefix("unix://").unwrap());
                         let binding = socket.parent().unwrap().join("binding.json");
                         let mut selected = None;
-                        for attempt in 0..3 {
+                        for attempt in 0..4 {
                             let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
                             let (mut ws, _) =
                                 tokio_tungstenite::client_async("ws://localhost", stream)
                                     .await
                                     .unwrap();
-                            if attempt != 1 {
+                            if matches!(attempt, 1 | 3) {
                                 ws.send(Message::text(REQUEST)).await.unwrap();
                                 assert_eq!(
                                     ws.next().await.unwrap().unwrap(),
@@ -472,7 +472,7 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                                     bytes
                                 });
                             }
-                            if attempt == 2 {
+                            if attempt == 3 {
                                 ws.close(None).await.unwrap();
                                 assert!(matches!(
                                     ws.next().await.unwrap().unwrap(),
@@ -481,7 +481,13 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                             } else {
                                 assert!(ws.next().await.unwrap().is_err());
                             }
-                            assert_eq!(std::fs::read(&binding).unwrap(), *selected.as_ref().unwrap());
+                            if let Some(selected) = &selected {
+                                assert_eq!(&std::fs::read(&binding).unwrap(), selected);
+                            } else {
+                                // Startup can fail before a conversation is selected. The
+                                // launcher must still keep this unbound, Spawned UI alive.
+                                assert!(!binding.exists());
+                            }
                         }
                     },
                     "backend" => {
@@ -494,7 +500,7 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                         std::fs::write(&counter, (attempt + 1).to_string()).unwrap();
                         // The script routes stderr to the proxy pipe, keeping libtest output out.
                         let mut stream = tokio::io::join(tokio::io::stdin(), tokio::io::stderr());
-                        if attempt == 1 {
+                        if matches!(attempt, 0 | 2) {
                             let mut request = Vec::new();
                             while !request.ends_with(b"\r\n\r\n") {
                                 request.push(stream.read_u8().await.unwrap());
@@ -505,21 +511,21 @@ fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
                                 .unwrap();
                             stream.flush().await.unwrap();
                         } else {
-                            assert!(matches!(attempt, 0 | 2));
+                            assert!(matches!(attempt, 1 | 3));
                             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                             assert_eq!(
                                 ws.next().await.unwrap().unwrap(),
                                 Message::text(REQUEST)
                             );
                             ws.send(Message::text(REPLY)).await.unwrap();
-                            if attempt == 2 {
+                            if attempt == 3 {
                                 assert!(matches!(
                                     ws.next().await.unwrap().unwrap(),
                                     Message::Close(_)
                                 ));
                                 ws.flush().await.unwrap();
                             }
-                            // The first backend exits without a WebSocket closing handshake.
+                            // The first connected backend exits without a WebSocket close.
                         }
                     },
                     "" => {
@@ -562,7 +568,7 @@ exec "$YINZ_TEST_CODEX_RECONNECT_EXE" --exact "$YINZ_TEST_CODEX_RECONNECT_TEST" 
                         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
                         assert_eq!(
                             std::fs::read_to_string(root.path().join("connections")).unwrap(),
-                            "3"
+                            "4"
                         );
                     },
                     _ => panic!("unexpected mock Codex role: {role}"),
