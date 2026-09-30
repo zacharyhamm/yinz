@@ -1,4 +1,4 @@
-import z, { type InputMode } from "yinz:plugin";
+import type { InputMode } from "yinz:plugin";
 import type { ModeInfo, TabInfo, ReadonlyWire } from "./keys.ts";
 import {
   actionGroup,
@@ -408,7 +408,7 @@ function secondaryHints(
   return undefined;
 }
 
-// oxlint-disable-next-line eslint/max-lines-per-function -- Try the reference status variants in order, shedding date, idle agents and all agents.
+// oxlint-disable-next-line eslint/max-lines-per-function -- Try the reference status variants in order, shedding the date and then the clock.
 function statusBlock(
   mi: ModeInfo,
   counts: Readonly<Counts>,
@@ -418,6 +418,14 @@ function statusBlock(
 ): Line {
   const frame = ((Math.floor(now / 125) % 8) + 8) % 8;
   const simple = mi.capabilities.arrow_fonts;
+  const colors = mi.style.colors;
+  const palette = colors.text_unselected;
+  const foregrounds = {
+    dim: palette.base,
+    busy: palette.emphasis_2,
+    clock: palette.emphasis_1,
+    alert: colors.exit_code_error.base,
+  };
   const mark = (glyph: string, count: number): string =>
     simple ? `${count}${glyph}` : `${glyph}${count}`;
   for (const [withClock, date] of [
@@ -425,8 +433,8 @@ function statusBlock(
     [true, false],
     [false, false],
   ]) {
-    const segments: [string, "dim" | "emphasis" | "alert"][] = [];
-    const add = (text: string, style: "dim" | "emphasis" | "alert"): void => {
+    const segments: [string, keyof typeof foregrounds][] = [];
+    const add = (text: string, style: keyof typeof foregrounds): void => {
       if (segments.length > 0) segments.push([" ", "dim"]);
       segments.push([text, style]);
     };
@@ -443,27 +451,28 @@ function statusBlock(
             : (["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"][frame] ?? "⣾"),
           counts.busy,
         ),
-        "emphasis",
+        "busy",
       );
     if (counts.idle) add(mark(simple ? "i" : "·", counts.idle), "dim");
     if (withClock) {
       if (segments.length > 0) segments.push(["   ", "dim"]);
-      segments.push([clock.time, "emphasis"]);
+      segments.push([clock.time, "clock"]);
       if (date) segments.push(["  ", "dim"], [clock.date, "dim"]);
     }
     const len = segments.reduce((n, [text]) => n + width(text), 0);
     if (len <= max)
       return line(
-        segments
-          .map(([text, style]) => {
-            const t = z.ui.text(text).opaque();
-            if (mi.session_dimmed) t.disabled();
-            else if (style === "dim") t.dim();
-            else if (style === "alert") t.error();
-            else t.emphasis(1);
-            return t.render();
-          })
-          .join(""),
+        "\u001B[0m" +
+          segments
+            .map(([text, style]) =>
+              paint(
+                text,
+                mi.session_dimmed ? palette.base : foregrounds[style],
+                palette.background,
+                mi.session_dimmed ? "3" : style === "dim" ? "2" : "1",
+              ),
+            )
+            .join(""),
         len,
       );
   }
