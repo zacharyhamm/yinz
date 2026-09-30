@@ -1,7 +1,7 @@
 use super::*;
 use crate::screen::thread_main::apply_queued_agent_report;
 use std::time::{Duration, Instant};
-use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse, NotReadyReason};
 use yinz_types::agent::report::{AgentReport, AgentReportState};
 use yinz_types::agent::{hook_outcome, AgentEvent, AgentState, HookEvent, HookOutcome};
 use yinz_types::command::PaneTarget;
@@ -1217,6 +1217,17 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, outcome);
         assert!(result.message.as_deref().unwrap().starts_with("result"));
+        if outcome == AgentOutcome::Interrupted {
+            assert!(result
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("The turn was interrupted."));
+            assert_eq!(
+                result.agents[0].not_ready_reason,
+                Some(NotReadyReason::PendingSubmission)
+            );
+        }
         assert!(result.acknowledged);
         assert_eq!(result.agents[0].agent.state, AgentState::Idle);
         if outcome == AgentOutcome::Completed {
@@ -3252,4 +3263,230 @@ fn claude_confirmation_failure_retains_the_uncertain_submission_claim() {
         CLIENT,
     );
     assert!(replies(&messages, CLIENT)[0].agents[0].ready);
+}
+
+#[test]
+fn readiness_reasons_follow_priority_in_status_list_and_prompt_rejections() {
+    for (reason, rejection) in [
+        (Some(NotReadyReason::PromptUnsupported), "lifecycle hooks"),
+        (Some(NotReadyReason::NotIdle), "not idle"),
+        (
+            Some(NotReadyReason::PendingSubmission),
+            "pending submission",
+        ),
+        (
+            Some(NotReadyReason::UnconsumedInput),
+            "unconsumed terminal input",
+        ),
+        (None, ""),
+    ] {
+        let (mut screen, messages, _writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        if matches!(
+            reason,
+            Some(
+                NotReadyReason::PromptUnsupported
+                    | NotReadyReason::NotIdle
+                    | NotReadyReason::PendingSubmission
+            )
+        ) {
+            screen.agent_control(prompt(true), ClientId::new(2));
+        }
+        if matches!(
+            reason,
+            Some(NotReadyReason::PromptUnsupported | NotReadyReason::NotIdle)
+        ) {
+            report(&mut screen, hook("UserPromptSubmit"));
+        }
+        if reason.is_some() {
+            screen.agent_write_for_test();
+        }
+        if reason == Some(NotReadyReason::PromptUnsupported) {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
+                .unwrap();
+        }
+        for request in [
+            AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: None,
+            },
+            AgentRequest::List { project: None },
+        ] {
+            screen.agent_control(request, CLIENT);
+            let status = replies(&messages, CLIENT).pop().unwrap().agents.remove(0);
+            assert_eq!(status.not_ready_reason, reason);
+            assert_eq!(status.ready, reason.is_none());
+        }
+        if reason.is_some() {
+            screen.agent_control(prompt(true), CLIENT);
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.agents[0].not_ready_reason, reason);
+            assert!(response.message.unwrap().contains(rejection));
+        }
+    }
+}
+
+#[test]
+fn timeout_and_input_interruption_explain_acceptance_and_conditional_recovery() {
+    for acknowledged in [false, true] {
+        for interrupted in [false, true] {
+            let (mut screen, messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            screen.agent_control(prompt(true), CLIENT);
+            finish_paste(&writes);
+            screen.refresh_agent_controls();
+            if acknowledged {
+                report(&mut screen, hook("UserPromptSubmit"));
+            }
+            if interrupted {
+                screen.agent_write_for_test();
+            } else {
+                screen.agent_controls[0].deadline = Some(Instant::now());
+            }
+            screen.refresh_agent_controls();
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(
+                response.outcome,
+                if interrupted {
+                    AgentOutcome::Interrupted
+                } else {
+                    AgentOutcome::TimedOut
+                }
+            );
+            assert_eq!(response.acknowledged, acknowledged);
+            assert_eq!(
+                response.agents[0].not_ready_reason,
+                Some(if acknowledged {
+                    NotReadyReason::NotIdle
+                } else {
+                    NotReadyReason::PendingSubmission
+                })
+            );
+            let message = response.message.unwrap();
+            assert_eq!(
+                message.contains("acceptance is uncertain"),
+                !acknowledged,
+                "{message}"
+            );
+            if acknowledged && !interrupted {
+                assert!(message.contains("completion was not observed"));
+                assert!(message.contains("may still be running"));
+            }
+            assert!(message.contains(
+                "Only if the same live conversation has stopped and unresolved input remains"
+            ));
+            assert!(message
+                .contains("agent recover terminal_7 --conversation conversation --confirm-empty"));
+        }
+    }
+}
+
+#[test]
+fn failed_turn_replies_once_releases_its_claim_and_preserves_newer_input() {
+    for target in pane_targets() {
+        for manual in [false, true] {
+            let (mut screen, messages, writes) = setup_on_target("codex", target.clone());
+            report(&mut screen, hook("SessionStart"));
+            screen.agent_control(prompt(true), CLIENT);
+            finish_paste(&writes);
+            screen.refresh_agent_controls();
+            report(&mut screen, hook("UserPromptSubmit"));
+            if manual {
+                screen.agent_write_for_test();
+            }
+            let mut failure = hook("StopFailure");
+            failure.last_assistant_message = Some("HTTP 400: unsupported model".into());
+            report(&mut screen, failure.clone());
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert!(response.acknowledged);
+            assert_eq!(response.turn_id.as_deref(), Some("turn"));
+            assert_eq!(
+                response.outcome,
+                if manual {
+                    AgentOutcome::Interrupted
+                } else {
+                    AgentOutcome::Failed
+                }
+            );
+            if !manual {
+                let message = response.message.unwrap();
+                assert!(message.contains("HTTP 400: unsupported model"));
+                assert!(message.contains("accepted turn failed"));
+                assert!(!message.contains("recover"));
+                assert!(response.agents[0].ready);
+                assert_eq!(response.agents[0].not_ready_reason, None);
+            }
+            assert!(screen.agent_controls.is_empty());
+            report(&mut screen, failure);
+            assert!(replies(&messages, CLIENT).is_empty());
+            screen.agent_control(
+                AgentRequest::Status {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                },
+                CLIENT,
+            );
+            let status = replies(&messages, CLIENT).pop().unwrap().agents.remove(0);
+            assert_eq!(status.ready, !manual);
+            assert_eq!(
+                status.not_ready_reason,
+                manual.then_some(NotReadyReason::UnconsumedInput)
+            );
+            screen.agent_control(prompt(true), CLIENT);
+            if manual {
+                assert_eq!(
+                    replies(&messages, CLIENT)[0].outcome,
+                    AgentOutcome::Rejected
+                );
+            } else {
+                assert!(replies(&messages, CLIENT).is_empty());
+                assert_eq!(screen.agent_controls.len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn lost_or_exited_targets_never_recommend_recovery() {
+    for change in ["closed", "replaced", "exited", "session-ended"] {
+        for acknowledged in [false, true] {
+            let (mut screen, messages, writes) = setup("codex");
+            report(&mut screen, hook("SessionStart"));
+            screen.agent_control(prompt(true), CLIENT);
+            finish_paste(&writes);
+            screen.refresh_agent_controls();
+            if acknowledged {
+                report(&mut screen, hook("UserPromptSubmit"));
+            }
+            match change {
+                "closed" => {
+                    screen.close_pane_explicitly(PANE, None);
+                },
+                "replaced" => {
+                    let mut start = hook("SessionStart");
+                    start.session_id = "other".into();
+                    report(&mut screen, start);
+                },
+                "exited" => {
+                    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                    tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                },
+                _ => report(&mut screen, hook("SessionEnd")),
+            }
+            screen.refresh_agent_controls();
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert!(matches!(
+                response.outcome,
+                AgentOutcome::TargetClosed
+                    | AgentOutcome::TargetChanged
+                    | AgentOutcome::StatusUnavailable
+            ));
+            let message = response.message.unwrap_or_default();
+            assert!(!message.contains("recover"), "{change}: {message}");
+            assert!(!message.contains("clear"), "{change}: {message}");
+        }
+    }
 }

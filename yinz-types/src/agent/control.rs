@@ -108,6 +108,16 @@ impl AgentResponse {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum NotReadyReason {
+    PromptUnsupported,
+    NotIdle,
+    PendingSubmission,
+    UnconsumedInput,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentStatus {
     #[serde(with = "pane_string")]
@@ -120,6 +130,8 @@ pub struct AgentStatus {
     pub cwd: Option<String>,
     pub branch: Option<String>,
     pub ready: bool,
+    #[serde(default)]
+    pub not_ready_reason: Option<NotReadyReason>,
     pub status_available: bool,
     pub prompt_supported: bool,
 }

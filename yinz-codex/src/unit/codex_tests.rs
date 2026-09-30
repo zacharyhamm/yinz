@@ -1619,3 +1619,184 @@ async fn worktree_trust_uses_only_base_user_decisions_and_guards_concurrent_writ
         .unwrap();
     }
 }
+
+#[test]
+fn failures_belong_only_to_the_selected_current_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let mut conversations = Conversations::default();
+    conversations
+        .request(&json!({"id":1,"method":"thread/resume"}), &registration)
+        .unwrap();
+    conversations.response(&json!({"id":1,"result":{"thread":{
+        "id":"selected", "turns":[{"id":"old","status":"completed"},{"id":"active","status":"inProgress"}]
+    }}}), &registration).unwrap();
+    conversations
+        .request(
+            &json!({"id":2,"method":"thread/start","params":{"ephemeral":true}}),
+            &registration,
+        )
+        .unwrap();
+    assert!(conversations
+        .response(
+            &json!({"id":2,"result":{"thread":{"id":"hidden"}}}),
+            &registration
+        )
+        .unwrap()
+        .is_none());
+    conversations
+        .request(
+            &json!({"id":3,"method":"turn/start","params":{"threadId":"hidden"}}),
+            &registration,
+        )
+        .unwrap();
+    for (thread, turn) in [
+        ("hidden", "active"),
+        ("unrelated", "active"),
+        ("selected", "old"),
+    ] {
+        assert!(conversations.response(&json!({"method":"turn/completed","params":{
+            "threadId":thread,"turn":{"id":turn,"status":"failed","error":{"message":"ignore"}}
+        }}), &registration).unwrap().is_none());
+    }
+    let failure = json!({"method":"turn/completed","params":{
+        "threadId":"selected","turn":{"id":"active","status":"failed","error":{"message":"API refused"}}
+    }});
+    let hook = conversations
+        .response(&failure, &registration)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hook,
+        json!({"hook_event_name":"StopFailure", "session_id":"selected", "turn_id":"active", "last_assistant_message":"API refused"})
+    );
+    assert!(conversations
+        .response(&failure, &registration)
+        .unwrap()
+        .is_none());
+    conversations
+        .response(
+            &json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"new"}}}),
+            &registration,
+        )
+        .unwrap();
+    conversations
+        .request(
+            &json!({"id":4,"method":"turn/start","params":{"threadId":"other"}}),
+            &registration,
+        )
+        .unwrap();
+    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_none());
+    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn bridge_reports_final_failures_through_local_and_remote_reporters_without_changing_traffic()
+{
+    for remote in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let reports = root.path().join("reports");
+        let reporter = root.path().join("reporter");
+        yinz_test_support::write_warm_script(
+            &reporter,
+            &format!(
+                "printf '%s\\n' \"$*\" >> '{}'\ncat >> '{}'\nprintf '\\n' >> '{}'\n",
+                reports.display(),
+                reports.display(),
+                reports.display()
+            ),
+        );
+        let mut registration = registration(root.path(), "aaaaaaaaaaaa");
+        if remote {
+            registration
+                .env
+                .insert("YINZ_REMOTE_PANE_TOKEN".into(), "remote-token".into());
+        }
+        registration.reporter = Some(reporter);
+        let (ui_stream, relay_stream) = tokio::net::UnixStream::pair().unwrap();
+        let (backend_stream, server_stream) = tokio::io::duplex(16384);
+        let serve = async {
+            let ui = tokio_tungstenite::accept_async(relay_stream).await.unwrap();
+            let result = relay(
+                ui,
+                backend_stream,
+                &registration,
+                Path::new("/usr/bin/true"),
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "the mock backend disconnects without a Close frame"
+            );
+        };
+        let scenario = async {
+            let (client, server) = tokio::join!(
+                tokio_tungstenite::client_async("ws://localhost", ui_stream),
+                tokio_tungstenite::accept_async(server_stream)
+            );
+            let (mut ui, _) = client.unwrap();
+            let mut backend = server.unwrap();
+            let request = Message::text(
+                r#"{ "id":1,"method":"turn/start","params":{"threadId":"selected"} }"#,
+            );
+            ui.send(request.clone()).await.unwrap();
+            assert_eq!(backend.next().await.unwrap().unwrap(), request);
+            let events = [
+                json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"old"}}}),
+                json!({"method":"error","params":{"threadId":"selected","turnId":"old","willRetry":true,"error":{"message":"retrying"}}}),
+                json!({"method":"error","params":{"threadId":"selected","turnId":"old","willRetry":false,"error":{"message":"still not final"}}}),
+                json!({"method":"turn/started","params":{"threadId":"worker","turn":{"id":"worker-turn"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"worker","turn":{"id":"worker-turn","status":"failed"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"old","status":"completed"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"old","status":"failed"}}}),
+                json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"current"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"old","status":"failed"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"current","status":"failed","error":{"message":"HTTP 400: unsupported model"}}}}),
+            ];
+            for (index, event) in events.iter().enumerate() {
+                let message = Message::text(format!(" {event} "));
+                backend.send(message.clone()).await.unwrap();
+                assert_eq!(ui.next().await.unwrap().unwrap(), message);
+                if index + 1 < events.len() {
+                    assert!(
+                        !reports.exists(),
+                        "transient, unrelated or stale event reported: {event}"
+                    );
+                }
+            }
+            let failure = Message::text(events.last().unwrap().to_string());
+            backend.send(failure.clone()).await.unwrap();
+            assert_eq!(ui.next().await.unwrap().unwrap(), failure);
+            // A new turn followed by a transport disconnect is not a final failure.
+            let start = Message::text(json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"next"}}}).to_string());
+            backend.send(start.clone()).await.unwrap();
+            assert_eq!(ui.next().await.unwrap().unwrap(), start);
+            drop(backend);
+            assert!(ui.next().await.unwrap().is_err());
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(serve, scenario);
+        })
+        .await
+        .unwrap();
+        let reports = std::fs::read_to_string(&reports).unwrap();
+        let lines: Vec<_> = reports.lines().collect();
+        assert_eq!(lines.len(), 2, "exactly one reporter subprocess: {reports}");
+        assert_eq!(
+            lines[0],
+            if remote {
+                "--pty-broker report codex"
+            } else {
+                "action agent-report --hook-json --kind codex"
+            }
+        );
+        let hook: yinz_types::agent::HookEvent = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(hook.hook_event_name, "StopFailure");
+        assert_eq!(hook.session_id, "selected");
+        assert_eq!(hook.turn_id.as_deref(), Some("current"));
+        assert_eq!(
+            hook.last_assistant_message.as_deref(),
+            Some("HTTP 400: unsupported model")
+        );
+    }
+}

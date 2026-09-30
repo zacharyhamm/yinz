@@ -35,6 +35,7 @@ fn agent_status(cwd: &std::path::Path) -> AgentStatus {
         cwd: Some(cwd.to_string_lossy().into_owned()),
         branch: None,
         ready: false,
+        not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::PromptUnsupported),
         status_available: false,
         prompt_supported: false,
     }
@@ -549,4 +550,58 @@ fn project_filter_limits_assignments_per_host_and_session() {
         filter_project(&mut response, "work", &data, |_, _| panic!("truncated")),
         Err("project assignments are incomplete".into())
     );
+}
+
+#[test]
+fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    for (kind, command) in [(None, None), (Some("bogus"), None), (None, Some("zsh"))] {
+        let mut spec = AgentSpawnSpec {
+            kind: kind.map(str::to_owned),
+            command: command.map(str::to_owned),
+            branch: Some("must-not-exist".into()),
+            ..Default::default()
+        };
+        let error = prepare_automation_agent(
+            &mut spec,
+            Some(directory.path().into()),
+            None,
+            None,
+            false,
+            &data,
+        )
+        .err()
+        .unwrap();
+        for kind in yinz_types::agent::KINDS {
+            assert!(error.contains(kind), "{error}");
+        }
+        assert!(error.contains("--file PATH"), "{error}");
+        assert!(error.contains("command"), "{error}");
+        assert!(!directory.path().join(".worktrees").exists());
+    }
+    for (kind, command, args) in [
+        (Some("CoDeX"), None, vec![]),
+        (Some("gemini"), None, vec![]),
+        (Some("cursor-agent"), None, vec![]),
+        (None, Some("/opt/bin/claude.js"), vec![]),
+        (None, Some("node"), vec!["/opt/bin/gemini.js".into()]),
+    ] {
+        let mut spec = AgentSpawnSpec {
+            kind: kind.map(str::to_owned),
+            command: command.map(str::to_owned),
+            args,
+            allow_outside_worktree: Some(true),
+            ..Default::default()
+        };
+        assert!(prepare_automation_agent(
+            &mut spec,
+            Some(directory.path().into()),
+            None,
+            None,
+            false,
+            &data
+        )
+        .is_ok());
+    }
 }

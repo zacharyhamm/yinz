@@ -559,35 +559,47 @@ pub enum Agent {
     },
     /// Launch an agent with the shared launch planner and return its actual pane and checkout.
     Spawn {
-        #[clap(long)]
+        #[clap(long, help = format!("Agent kind (recognized: {}). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
+        /// Read a JSON launch object from a file, or '-' for stdin. Flags override JSON fields.
+        /// JSON also accepts command, args, env and hooks; opening prompts are not allowed.
         #[clap(long)]
         file: Option<PathBuf>,
+        /// Select a registered project's checkout; --cwd overrides its directory.
         #[clap(long)]
         project: Option<String>,
+        /// Run over SSH in an existing absolute --cwd; requires --allow-outside-worktree.
         #[clap(long, conflicts_with = "firecracker")]
         remote_host: Option<String>,
+        /// Run in a named session Firecracker VM; a branch supplies a host worktree.
         #[clap(long)]
         firecracker: Option<String>,
+        /// Select the immutable image for --firecracker.
         #[clap(long)]
         firecracker_image: Option<String>,
+        /// Put --branch in a separate worktree (default: true); false switches the checkout.
         #[clap(long)]
         worktree: Option<bool>,
+        /// Working directory; defaults to the project checkout or current local directory.
         #[clap(long)]
         cwd: Option<PathBuf>,
-        /// Create a separate worktree for this branch; collisions get a fresh branch name.
+        /// Create this branch, in a worktree by default; collisions get a fresh branch name.
         #[clap(long)]
         branch: Option<String>,
-        #[clap(long)]
+        #[clap(long, help = format!("Cut --branch from this ref (default: {})", yinz_runtime::agent::launch::DEFAULT_BASE))]
         base: Option<String>,
-        #[clap(long)]
+        #[clap(long, help = format!("Parent directory for worktrees, relative to the primary checkout (default: {})", yinz_runtime::agent::launch::WORKTREE_PREFIX))]
         worktree_dir: Option<String>,
+        /// Provider model ID or an alias supported by the selected agent.
         #[clap(long)]
         model: Option<String>,
+        /// Reasoning effort supported by the selected agent and model.
         #[clap(long)]
         effort: Option<String>,
+        /// Agent-specific permission mode; 'skip' requests its supported bypass mode.
         #[clap(long)]
         permission_mode: Option<String>,
+        /// Resume a conversation by ID, or 'last' for the most recent.
         #[clap(long)]
         resume: Option<String>,
         /// Reuse an existing branch or worktree when its name is taken.
@@ -600,6 +612,7 @@ pub enum Agent {
         /// connections unless it has network access, so this also allows the internet.
         #[clap(long)]
         allow_yinz: bool,
+        /// Print the launch outcome, actual pane, directory and branch as JSON.
         #[clap(long)]
         json: bool,
     },

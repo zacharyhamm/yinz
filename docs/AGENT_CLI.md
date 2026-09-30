@@ -36,6 +36,38 @@ Claude Code launches receive the hooks through the existing launch planner.
 Codex launches reject Claude model aliases such as `haiku`, `sonnet`, and `opus`.
 Use `--kind claude` for these aliases. Other model IDs are validated by the configured provider.
 
+`agent spawn --help` describes every launch option. Recognized kinds are
+`muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
+`opencode` and `pi`. Recognition does not imply prompt support.
+Kind names ignore case. Recognized executable aliases, such as `cursor-agent`,
+remain valid.
+
+Use `--file PATH` for a JSON launch object, or `--file -` for standard input.
+Flags override the corresponding JSON fields. JSON can also specify `command`,
+`args`, `env` and `hooks`. The command must identify a recognized agent.
+Spawn rejects opening `prompt` and `reuse_prompt` fields. Submit work after readiness.
+
+```sh
+printf '%s\n' '{"command":"/opt/bin/claude","args":[],"branch":"review"}' \
+  | yinz agent spawn --file - --cwd . --json
+```
+
+`--project` selects a registered project. `--cwd` selects a directory within that
+project, or a local directory when no project is specified.
+Without either option, local launches use the current directory.
+`--branch` creates a separate worktree by default, based on `main` under `.worktrees/`.
+Use `--base` and `--worktree-dir` to override those defaults.
+`--worktree false` switches the selected checkout instead.
+`--model`, `--effort` and `--permission-mode` use the selected agent's supported values.
+`--resume` accepts a conversation ID or `last`.
+
+SSH launches use `--remote-host`, an absolute remote `--cwd`, and
+`--allow-outside-worktree`. They require an existing remote checkout and reject
+local project, branch, worktree and VM options.
+`--firecracker` selects a named session VM. `--firecracker-image` selects its image.
+A branch provides a host worktree for the VM. Without a branch or project,
+the VM uses its guest workspace.
+
 ### Run `yinz` from inside a Codex agent
 
 Codex runs shell commands in its shared daemon rather than in the pane. Yinz's
@@ -100,6 +132,9 @@ Prompts must contain UTF-8 text and fit within 1 MiB. Yinz converts CRLF line
 endings to LF and removes trailing newlines before submission. It preserves
 other spaces and internal newlines. Terminal control characters are rejected,
 except tabs and newlines.
+`prompt` accepts task text and exact Claude `/clear`. It rejects other `/`
+commands, including `/exit`, and Claude `!` shell input. Use `agent send-keys`
+for command input that does not produce prompt acknowledgement.
 
 ## Readiness and identity
 
@@ -107,8 +142,22 @@ The state vocabulary is `busy`, `waiting`, `idle` and `exited`. Reporting source
 distinguish launch metadata (`Spawned`), manual registration (`Registered`) and
 agent reports (`Reported`). JSON retains these existing state and source names.
 
-Status includes `status_available`, `ready` and `prompt_supported`. A launch
-marker or a manual registration cannot establish lifecycle readiness. Missing
+Status includes `status_available`, `ready`, `prompt_supported` and
+`not_ready_reason`. List and status expose the reason in JSON and text output.
+When several conditions block readiness, the first matching reason applies:
+
+| Reason | Meaning |
+| --- | --- |
+| `prompt_unsupported` | Lifecycle, process or terminal evidence does not permit prompt submission |
+| `not_idle` | The agent is busy, waiting or exited |
+| `pending_submission` | An earlier submission still owns the input, including an unresolved claim after a timeout |
+| `unconsumed_input` | Terminal input is newer than the last confirmed consumed input revision |
+
+A ready agent has no reason (`null` in JSON). Older responses without the field
+decode with no reason. An exited agent normally reports `prompt_unsupported`
+because a live process is required.
+
+A launch marker or a manual registration cannot establish lifecycle readiness. Missing
 reports produce `status_unavailable`, rather than an inferred idle state.
 
 Prompt submission initially supports Claude Code and Codex integrations with
@@ -126,14 +175,12 @@ Claude can collapse a long or multi-line paste into `<pasted_content>`.
 For ordinary instructions, Yinz first types `Follow the instructions in the pasted text: `
 so Claude treats the pasted text as instructions.
 Inputs that start with `/`, `!` or `#` receive no instruction lead-in.
-For `/` commands, Yinz types the command name before it pastes the arguments.
-Spaces, tabs and newlines after the command name stay in the paste.
 Acknowledgement, run history and pane titles ignore the lead-in and the wrapper.
 
 Command execution and prompt acknowledgement are separate results.
-In Claude Code 2.1.285, native `!` shell input executes without a `UserPromptSubmit` hook.
-Yinz therefore times out without acknowledgement, even if the command prints its expected output.
-Inspect the output and empty composer before you use `agent recover` to restore readiness.
+In the Claude Code 2.1.285 live checks, native `!` shell input executed without a `UserPromptSubmit` hook.
+The prompt wait timed out even when the command printed its expected output.
+`prompt` now rejects this input before writing to the terminal.
 This Claude version treats `#` as ordinary input and does not open a memory editor.
 See the [live prefix checks](agent-cli-findings/prefix-probes.md) for the observed behavior.
 
@@ -193,6 +240,9 @@ stays `waiting` until all worker waits clear, then shows the latest parent state
 The default deadline is 30 seconds. `prompt --wait` defaults to 10 minutes.
 `--timeout` accepts durations from `1ms` to `24h` and includes acceptance time.
 Timeout does not cancel work already submitted or prove that the work failed.
+An unacknowledged timeout means acceptance is uncertain. An acknowledged timeout
+means the turn was accepted, but Yinz did not observe completion before the deadline.
+Failure and interruption messages retain the provider's message when available.
 Yinz keeps an unresolved submission claim until lifecycle reports resolve it or
 the target changes. New prompts are rejected while that claim remains. Manual
 input ends the caller's wait as `interrupted`, but it cannot recall a submission
@@ -201,7 +251,19 @@ A retry cannot take ownership of that turn's completion. An unacknowledged
 `Stop` cannot resolve the claim or restore readiness. Valid late acknowledgement
 and completion can still resolve the original submission.
 
-To clear an uncertain submission explicitly:
+Codex's bridge observes the final `turn/completed` notification with status `failed`
+and reports it through the existing `StopFailure` lifecycle path.
+An acknowledged `prompt --wait` returns `failed` with the turn ID and provider message.
+The resolved claim is released after any outstanding paste write finishes.
+Readiness returns when no newer input blocks it.
+Only the selected conversation's current turn can report this failure.
+Hidden helper threads, stale or duplicate failures, transient errors and transport
+disconnects do not fail the turn.
+See the [Codex turn protocol](https://learn.chatgpt.com/docs/app-server#turn-events).
+
+Recovery advice applies only to the same live conversation with unresolved input.
+Do not recover a closed, exited or replaced target.
+After inspection confirms that the agent stopped and unresolved input remains:
 
 1. Read the pane output and inspect its current draft.
 2. Clear the draft, using deliberate key input if necessary.

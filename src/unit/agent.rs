@@ -103,6 +103,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         cwd: None,
         branch: None,
         ready: true,
+        not_ready_reason: None,
         status_available: true,
         prompt_supported: true,
     });
@@ -122,6 +123,29 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
     assert_eq!(value["outcome"], "ok");
     assert_eq!(value["output"], "");
     assert_eq!(value["agents"][0]["pane_id"], "terminal_7");
+    response.output = None;
+    for reason in [
+        None,
+        Some(yinz_types::agent::control::NotReadyReason::PromptUnsupported),
+        Some(yinz_types::agent::control::NotReadyReason::NotIdle),
+        Some(yinz_types::agent::control::NotReadyReason::PendingSubmission),
+        Some(yinz_types::agent::control::NotReadyReason::UnconsumedInput),
+    ] {
+        response.agents[0].ready = reason.is_none();
+        response.agents[0].not_ready_reason = reason;
+        let mut text = Vec::new();
+        print_response(&response, false, &mut text).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        if let Some(reason) = reason {
+            assert!(text.contains(&format!("not_ready_reason: {reason}")));
+        } else {
+            assert!(!text.contains("not_ready_reason"));
+        }
+        let mut json = Vec::new();
+        print_response(&response, true, &mut json).unwrap();
+        let decoded: AgentResponse = serde_json::from_slice(&json).unwrap();
+        assert_eq!(decoded, response);
+    }
 }
 
 #[test]
@@ -294,4 +318,20 @@ fn allowing_yinz_opens_only_a_codex_sandbox() {
         );
         assert!(spec.args.is_empty());
     }
+}
+
+#[test]
+fn spawn_json_keeps_command_arguments_environment_and_flag_overrides() {
+    let launch = spawn_args(
+        &["--model", "from-flag"],
+        serde_json::json!({
+            "command":"/opt/bin/claude.js", "args":["--verbose"], "env":{"TEST":"value"},
+            "hooks":false, "model":"from-json"
+        }),
+    );
+    assert_eq!(launch["spec"]["command"], "/opt/bin/claude.js");
+    assert_eq!(launch["spec"]["args"], serde_json::json!(["--verbose"]));
+    assert_eq!(launch["spec"]["env"]["TEST"], "value");
+    assert_eq!(launch["spec"]["hooks"], false);
+    assert_eq!(launch["spec"]["model"], "from-flag");
 }

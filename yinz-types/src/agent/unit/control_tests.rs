@@ -517,3 +517,33 @@ fn claude_stop_needs_prompt_identity_and_internal_confirmation() {
     );
     assert_eq!(observe(&mut observation, &broadcast(&stop)), None);
 }
+
+#[test]
+fn readiness_reason_is_additive_and_uses_snake_case() {
+    let old = serde_json::json!({
+        "pane_id":"terminal_7", "session":"dev", "host_id":"host", "tab_id":null,
+        "target":"Local", "agent":{
+            "kind":"codex", "state":"Idle", "source":"Reported", "session_id":"conversation"
+        }, "cwd":null, "branch":null, "ready":false, "status_available":true, "prompt_supported":true
+    });
+    let status: AgentStatus = serde_json::from_value(old).unwrap();
+    assert_eq!(status.not_ready_reason, None);
+    for (reason, name) in [
+        (NotReadyReason::PromptUnsupported, "prompt_unsupported"),
+        (NotReadyReason::NotIdle, "not_idle"),
+        (NotReadyReason::PendingSubmission, "pending_submission"),
+        (NotReadyReason::UnconsumedInput, "unconsumed_input"),
+    ] {
+        let status = AgentStatus {
+            not_ready_reason: Some(reason),
+            ..status.clone()
+        };
+        let encoded = serde_json::to_value(&status).unwrap();
+        assert_eq!(encoded["not_ready_reason"], name);
+        assert_eq!(reason.to_string(), name);
+        assert_eq!(
+            serde_json::from_value::<AgentStatus>(encoded).unwrap(),
+            status
+        );
+    }
+}

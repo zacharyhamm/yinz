@@ -6,7 +6,7 @@ use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     is_command_prompt, needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus,
-    PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -149,6 +149,7 @@ impl Screen {
                         AgentOutcome::TargetChanged
                     },
                     None,
+                    false,
                 );
             } else {
                 keep.push(pending);
@@ -342,7 +343,7 @@ impl Screen {
             )]))
     }
 
-    fn agent_status(&self, pane_id: PaneId) -> Option<AgentStatus> {
+    fn agent_status(&self, pane_id: PaneId, pending_submission: bool) -> Option<AgentStatus> {
         let info = self.get_pane_info(pane_id)?;
         let agent = info.agent?;
         let status_available = agent.source == AgentSource::Reported
@@ -369,6 +370,24 @@ impl Screen {
                 .map(|p| p.to_string_lossy().into_owned()),
             _ => None,
         });
+        let not_ready_reason = if !prompt_supported {
+            Some(NotReadyReason::PromptUnsupported)
+        } else if agent.state != AgentState::Idle {
+            Some(NotReadyReason::NotIdle)
+        } else if pending_submission
+            || self
+                .agent_controls
+                .iter()
+                .any(|pending| pending.pane == pane_id && pending.prompt.is_some())
+        {
+            Some(NotReadyReason::PendingSubmission)
+        } else if !self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
+            lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
+        }) {
+            Some(NotReadyReason::UnconsumedInput)
+        } else {
+            None
+        };
         Some(AgentStatus {
             pane_id,
             session: self.session_name.to_string(),
@@ -380,15 +399,8 @@ impl Screen {
                 .agent_launches
                 .get(&pane_id)
                 .and_then(|launch| launch.branch.clone()),
-            ready: prompt_supported
-                && agent.state == AgentState::Idle
-                && self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
-                    lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
-                })
-                && !self
-                    .agent_controls
-                    .iter()
-                    .any(|pending| pending.pane == pane_id && pending.prompt.is_some()),
+            ready: not_ready_reason.is_none(),
+            not_ready_reason,
             status_available,
             prompt_supported,
             agent,
@@ -434,7 +446,7 @@ impl Screen {
         message: Option<String>,
     ) -> AgentResponse {
         let mut response = AgentResponse::new(outcome);
-        response.agents.extend(self.agent_status(pane));
+        response.agents.extend(self.agent_status(pane, false));
         response.message = message;
         response
     }
@@ -456,7 +468,7 @@ impl Screen {
                     .tabs
                     .values()
                     .flat_map(|tab| tab.get_all_pane_ids())
-                    .filter_map(|id| self.agent_status(id))
+                    .filter_map(|id| self.agent_status(id, false))
                     .filter(|status| status.agent.state != AgentState::Exited)
                     .collect();
                 self.agent_reply(&client, response);
@@ -510,7 +522,7 @@ impl Screen {
             );
             return;
         }
-        let Some(status) = self.agent_status(pane) else {
+        let Some(status) = self.agent_status(pane, false) else {
             let info = self.get_pane_info(pane);
             let exited = info.as_ref().is_some_and(|info| info.exited)
                 && self
@@ -751,20 +763,15 @@ impl Screen {
                 timeout_ms,
                 ..
             } => {
-                if !status.prompt_supported {
-                    reject(
-                        self,
-                        AgentOutcome::StatusUnavailable,
-                        "prompt requires lifecycle hooks and a live supported agent command pane with bracketed paste enabled",
-                    );
-                    return;
-                }
-                if !status.ready {
-                    reject(
-                        self,
-                        AgentOutcome::Rejected,
-                        "agent is not idle or already has a pending submission",
-                    );
+                if let Some(reason) = status.not_ready_reason {
+                    let (outcome, message) = match reason {
+                        NotReadyReason::PromptUnsupported => (AgentOutcome::StatusUnavailable,
+                            "prompt requires lifecycle hooks and a live supported agent command pane with bracketed paste enabled"),
+                        NotReadyReason::NotIdle => (AgentOutcome::Rejected, "agent is not idle"),
+                        NotReadyReason::PendingSubmission => (AgentOutcome::Rejected, "agent has an unresolved pending submission"),
+                        NotReadyReason::UnconsumedInput => (AgentOutcome::Rejected, "agent has unconsumed terminal input; inspect the pane before submitting"),
+                    };
+                    reject(self, outcome, message);
                     return;
                 }
                 if prompt.trim().is_empty()
@@ -851,6 +858,7 @@ impl Screen {
                         &pending,
                         AgentOutcome::Failed,
                         Some(error.to_string()),
+                        true,
                     );
                     pending.abandoned = true;
                     pending.client = None;
@@ -903,35 +911,52 @@ impl Screen {
         pending: &Pending,
         outcome: AgentOutcome,
         message: Option<String>,
+        pending_submission: bool,
     ) {
         if let Some(client) = &pending.client {
-            let mut response = self.agent_result(pending.pane, outcome, message);
+            let mut response = AgentResponse::new(outcome);
+            response
+                .agents
+                .extend(self.agent_status(pending.pane, pending_submission));
+            response.message = message;
             if let Some(prompt) = &pending.prompt {
-                if matches!(
-                    outcome,
-                    AgentOutcome::TimedOut
-                        | AgentOutcome::Interrupted
-                        | AgentOutcome::StatusUnavailable
-                        | AgentOutcome::Failed
-                ) {
-                    response.message = Some(format!("{} Inspect the pane and clear any draft, then use agent recover {} --conversation {} --confirm-empty.",
-                        response.message.as_deref().unwrap_or("Submission is uncertain."), pending.pane,
-                        pending.conversation.as_deref().unwrap_or("ID")));
-                }
                 response.acknowledged = prompt.acknowledged();
                 response.turn_id = prompt.turn_id().map(str::to_owned);
-                if pending.delivery.is_some()
-                    || pending.enter_at.is_some()
-                    || matches!(
-                        outcome,
-                        AgentOutcome::TimedOut
-                            | AgentOutcome::StatusUnavailable
-                            | AgentOutcome::Interrupted
-                    )
-                {
-                    for status in &mut response.agents {
-                        status.ready = false;
+                let explanation = match outcome {
+                    AgentOutcome::TimedOut if prompt.acknowledged() =>
+                        "The agent accepted this turn, but completion was not observed before the timeout. The turn may still be running.",
+                    AgentOutcome::TimedOut =>
+                        "Prompt acceptance was not acknowledged; acceptance is uncertain.",
+                    AgentOutcome::Interrupted if prompt.acknowledged() =>
+                        "Observation of the accepted turn was interrupted.",
+                    AgentOutcome::Interrupted =>
+                        "Submission was interrupted before acknowledgement; acceptance is uncertain.",
+                    AgentOutcome::Failed if pending.resolved => "The accepted turn failed.",
+                    AgentOutcome::Failed => "Prompt delivery failed; inspect the pane to check acceptance.",
+                    AgentOutcome::StatusUnavailable if prompt.acknowledged() =>
+                        "The turn was accepted, but its outcome could not be verified.",
+                    AgentOutcome::StatusUnavailable =>
+                        "Prompt acceptance could not be verified.",
+                    _ => "",
+                };
+                if !explanation.is_empty() {
+                    let mut message = response.message.take().unwrap_or_default();
+                    if !message.is_empty() {
+                        message.push(' ');
                     }
+                    message.push_str(explanation);
+                    let unresolved = response.agents.first().is_some_and(|status| {
+                        status.prompt_supported
+                            && status.agent.kind == pending.kind
+                            && status.agent.session_id == pending.conversation
+                            && (pending_submission
+                                || status.not_ready_reason == Some(NotReadyReason::UnconsumedInput))
+                    });
+                    if unresolved {
+                        message.push_str(&format!(" Inspect with agent read {}. Only if the same live conversation has stopped and unresolved input remains, clear its draft and use agent recover {} --conversation {} --confirm-empty. Add --interrupted if it stopped without reporting idle.",
+                            pending.pane, pending.pane, pending.conversation.as_deref().unwrap_or_default()));
+                    }
+                    response.message = Some(message);
                 }
             }
             self.agent_reply(client, response);
@@ -1000,10 +1025,7 @@ impl Screen {
                 keep.push(pending);
                 continue;
             }
-            let mut status = self.agent_status(pending.pane);
-            if let Some(status) = &mut status {
-                status.ready &= !claimed.contains(&pending.pane);
-            }
+            let status = self.agent_status(pending.pane, claimed.contains(&pending.pane));
             let mut outcome = match &status {
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
@@ -1134,16 +1156,21 @@ impl Screen {
                 {
                     self.agent_clear_inputs.remove(&pending.pane);
                 }
-                self.finish_agent_control(&pending, outcome, delivery_error);
-                if pending.prompt.is_some()
+                let retain_claim = pending.prompt.is_some()
                     && matches!(
                         outcome,
                         AgentOutcome::TimedOut
                             | AgentOutcome::StatusUnavailable
                             | AgentOutcome::Interrupted
                             | AgentOutcome::Failed
-                    )
-                {
+                    );
+                self.finish_agent_control(
+                    &pending,
+                    outcome,
+                    delivery_error,
+                    retain_claim || (pending.prompt.is_none() && claimed.contains(&pending.pane)),
+                );
+                if retain_claim {
                     // Ending the wait cannot recall input already sent to the agent, including
                     // input followed by a manual key. Keep the claim until its lifecycle ends:
                     // otherwise an identical retry could accept the first prompt's late hook.
@@ -1156,7 +1183,7 @@ impl Screen {
             } else {
                 if pending.conversation.is_none() {
                     pending.conversation = self
-                        .agent_status(pending.pane)
+                        .agent_status(pending.pane, false)
                         .and_then(|s| s.agent.session_id);
                 }
                 keep.push(pending);
@@ -1313,13 +1340,35 @@ impl Screen {
                 Some(AgentOutcome::Submitted) => {
                     pending.enter_at = None;
                     if !pending.wait {
-                        self.finish_agent_control(&pending, AgentOutcome::Submitted, None);
+                        self.finish_agent_control(&pending, AgentOutcome::Submitted, None, true);
                         pending.client = None;
                     }
                     keep.push(pending);
                 },
                 Some(outcome) => {
-                    self.finish_agent_control(&pending, outcome, event.last_message.clone());
+                    pending.resolved =
+                        matches!(outcome, AgentOutcome::Completed | AgentOutcome::Failed);
+                    let retain_claim = (pending.resolved && pending.delivery.is_some())
+                        || matches!(
+                            outcome,
+                            AgentOutcome::Interrupted
+                                | AgentOutcome::StatusUnavailable
+                                | AgentOutcome::NeedsInput
+                        );
+                    let message =
+                        if event.hook == "Interrupt" && outcome == AgentOutcome::Interrupted {
+                            Some(
+                                format!(
+                                    "{} The turn was interrupted.",
+                                    event.last_message.as_deref().unwrap_or_default()
+                                )
+                                .trim()
+                                .to_owned(),
+                            )
+                        } else {
+                            event.last_message.clone()
+                        };
+                    self.finish_agent_control(&pending, outcome, message, retain_claim);
                     if matches!(
                         outcome,
                         AgentOutcome::Interrupted

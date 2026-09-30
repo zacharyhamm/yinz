@@ -79,7 +79,12 @@ fn write_event(child: &mut Child, json: &str) {
 #[test]
 fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
     warm_binary();
-    for daemon_runtime in [false, true] {
+    for (daemon_runtime, hook) in [
+        (false, "UserPromptSubmit"),
+        (true, "UserPromptSubmit"),
+        (false, "StopFailure"),
+        (true, "StopFailure"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let launcher_sockets = dir.path().join("launcher");
         let listener = listener(&launcher_sockets);
@@ -124,8 +129,8 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         write_event(
             &mut child,
             &serde_json::json!({
-                "hook_event_name":"UserPromptSubmit", "session_id": thread,
-                "prompt":"PRIVATE PROMPT"
+                "hook_event_name":hook, "session_id": thread, "turn_id":"turn",
+                "prompt":"PRIVATE PROMPT", "last_assistant_message":"HTTP 400: unsupported model"
             })
             .to_string(),
         );
@@ -139,9 +144,20 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
             report.pane_id,
             yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(15))
         );
+        if hook == "StopFailure" {
+            assert!(matches!(report.state, AgentReportState::Set(ref agent)
+                if agent.state == yinz_types::agent::AgentState::Idle));
+        }
         let event = report.event.unwrap();
         assert_eq!(event.session_id.as_deref(), Some(thread.as_str()));
         assert_eq!(event.kind, "codex");
+        assert_eq!(event.hook, hook);
+        let raw: yinz_types::agent::HookEvent = serde_json::from_str(&event.raw).unwrap();
+        assert_eq!(raw.turn_id.as_deref(), Some("turn"));
+        assert_eq!(
+            event.last_message.as_deref(),
+            Some("HTTP 400: unsupported model")
+        );
         assert!(
             serde_json::from_str::<serde_json::Value>(&event.raw).unwrap()["_yinz_workflow_owner"]
                 .is_null()
