@@ -2651,6 +2651,17 @@ fn update_new_saved_config(
     client_id: ClientId,
 ) {
     if let Some(new_config) = new_config {
+        let propagate_saved = |session: &mut SessionMetaData, config: Config| {
+            let mut changes = session
+                .session_configuration
+                .change_saved_config(config.clone());
+            // The caller already changed this client's runtime config. Saving therefore omits
+            // it from the diff, although its screen and plugins have not been notified yet.
+            if runtime_config_changed && !changes.iter().any(|(id, _)| *id == client_id) {
+                changes.push((client_id, config));
+            }
+            session.propagate_configuration_changes(changes, true);
+        };
         if let ConfigPersistence::Fragment(fragment) = persistence {
             let overlay_dir = {
                 let config_dir =
@@ -2677,12 +2688,7 @@ fn update_new_saved_config(
                 Ok(_) => {
                     // The session's saved config is the running one now, and every client
                     // hears that it was written.
-                    with_session_mut(session_data, |session| {
-                        let changes = session
-                            .session_configuration
-                            .change_saved_config(new_config);
-                        session.propagate_configuration_changes(changes, true);
-                    });
+                    with_session_mut(session_data, |session| propagate_saved(session, new_config));
                 },
                 Err((file_path, reason)) => {
                     with_session(session_data, |session| {
@@ -2726,12 +2732,7 @@ fn update_new_saved_config(
             match written {
                 Ok(written_config) => {
                     with_session_mut(session_data, |session| {
-                        let changes = session
-                            .session_configuration
-                            .change_saved_config(written_config);
-                        let config_was_written_to_disk = true;
-                        session
-                            .propagate_configuration_changes(changes, config_was_written_to_disk);
+                        propagate_saved(session, written_config)
                     });
                 },
                 Err(ConfigWriteError { path, reason }) => {

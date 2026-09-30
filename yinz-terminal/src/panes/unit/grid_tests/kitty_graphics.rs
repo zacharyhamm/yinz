@@ -1813,3 +1813,159 @@ fn kitty_placement_rejoins_its_text_after_editing_while_scrolled_back() {
         "the image must rejoin its marker line once the viewport is restored"
     );
 }
+
+#[test]
+fn locked_kitty_repaints_clip_to_viewport_without_changing_completed_placements() {
+    for (options, cropped, tiny) in [
+        ("", (30, 40), (10, 20)),
+        (",X=3,Y=7,x=9,y=11,w=70,h=80", (27, 33), (7, 13)),
+        (",X=3,Y=7,x=9,y=11,w=70,h=80,c=10,r=5", (27, 33), (7, 13)),
+    ] {
+        let (mut grid, _) = new_kitty_grid(10, 20);
+        let mut parser = vte::Parser::new();
+        let mut interceptor = KittyApcInterceptor::new();
+        feed_kitty_bytes(
+            &mut grid,
+            &mut parser,
+            &mut interceptor,
+            &kitty_apc(
+                &format!("a=T,f=24,s=100,v=100,i=1,p=1,C=1{options}"),
+                &rgb_raster(100, 100),
+            ),
+        );
+        for (cursor, placement) in [(b"\x1b[1;4H", 2), (b"\x1b[3;1H", 3)] {
+            feed_bytes(&mut grid, cursor);
+            feed_kitty_bytes(
+                &mut grid,
+                &mut parser,
+                &mut interceptor,
+                &kitty_apc(&format!("a=p,i=1,p={placement},C=1"), &[]),
+            );
+        }
+        let original = grid.render(0, 0, &Style::default()).unwrap().unwrap().3;
+        assert_eq!(original.len(), 3);
+        if options.is_empty() {
+            assert_eq!(
+                (original[0].source_px_width, original[0].source_px_height),
+                (100, 100)
+            );
+        }
+        // Empty chunks must not reach the host even if they appeared in a completed frame.
+        for (width, height) in [(0, 10), (10, 0)] {
+            let mut empty = original[0];
+            empty.source_px_width = width;
+            empty.source_px_height = height;
+            grid.completed_kitty.push(empty);
+        }
+        feed_bytes(&mut grid, b"\x1b[?2026h");
+        for (rows, cols, size) in [(2, 3, Some(cropped)), (1, 1, Some(tiny)), (10, 20, None)] {
+            grid.change_size(rows, cols);
+            for (x, y) in [(2, 3), (5, 7)] {
+                grid.render_full_viewport();
+                let chunks = grid.render(x, y, &Style::default()).unwrap().unwrap().3;
+                let mut expected = if let Some((width, height)) = size {
+                    let mut chunk = original[0];
+                    chunk.source_px_width = width;
+                    chunk.source_px_height = height;
+                    vec![chunk]
+                } else {
+                    original.clone()
+                };
+                for chunk in &mut expected {
+                    chunk.cell_x += x;
+                    chunk.cell_y += y;
+                }
+                // Equality also checks source origin, cell offsets, placement identity and scaling.
+                assert_eq!(
+                    chunks, expected,
+                    "options {options}, viewport {cols}x{rows}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn locked_repaints_keep_completed_kitty_placements_with_current_overlay_clipping() {
+    use crate::output::FloatingPanesStack;
+    use yinz_types::pane_size::{Dimension, PaneGeom};
+    let (mut grid, _) = new_kitty_grid(10, 20);
+    let mut parser = vte::Parser::new();
+    let mut interceptor = KittyApcInterceptor::new();
+    feed_kitty_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &kitty_apc("a=T,f=24,s=40,v=40,i=1,C=1", &rgb_raster(40, 40)),
+    );
+    feed_kitty_bytes(&mut grid, &mut parser, &mut interceptor, b"\x1b[1;9H");
+    feed_kitty_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &kitty_apc("a=p,i=1,p=2,C=1", &[]),
+    );
+    let original = grid.render(0, 0, &Style::default()).unwrap().unwrap().3;
+    assert_eq!(original.len(), 2);
+    feed_kitty_bytes(&mut grid, &mut parser, &mut interceptor, b"\x1b[?2026h");
+    feed_kitty_bytes(
+        &mut grid,
+        &mut parser,
+        &mut interceptor,
+        &kitty_apc("a=d,d=a", &[]),
+    );
+    assert!(grid.lock_renders);
+    for overlay_x in [3, 20, 3, 20] {
+        grid.render_full_viewport();
+        let chunks = grid.render(2, 3, &Style::default()).unwrap().unwrap().3;
+        let expected: Vec<_> = original
+            .iter()
+            .map(|c| {
+                let mut c = *c;
+                c.cell_x += 2;
+                c.cell_y += 3;
+                c
+            })
+            .collect();
+        assert_eq!(chunks, expected);
+        let stack = FloatingPanesStack {
+            layers: vec![PaneGeom {
+                x: overlay_x,
+                y: 3,
+                cols: Dimension::fixed(2),
+                rows: Dimension::fixed(2),
+                ..Default::default()
+            }],
+        };
+        let visible = stack.visible_kitty_image_chunks(
+            chunks,
+            None,
+            &SizeInPixels {
+                width: 10,
+                height: 20,
+            },
+        );
+        assert!(visible.iter().any(|c| c == &expected[1]));
+        if overlay_x == 20 {
+            assert_eq!(visible, expected);
+        } else {
+            assert!(visible
+                .iter()
+                .all(|c| c.cell_x * 10 + c.source_px_width <= 30 || c.cell_x >= 5));
+        }
+    }
+    feed_kitty_bytes(&mut grid, &mut parser, &mut interceptor, b"\x1b[?2026l");
+    assert!(grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3
+        .is_empty());
+    grid.render_full_viewport();
+    assert!(grid
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .3
+        .is_empty());
+}

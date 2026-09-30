@@ -3641,9 +3641,8 @@ impl WasmBridge {
         let running_plugins = self.plugin_map.lock().unwrap().running_plugins();
 
         for (plugin_id, client_id, running_plugin) in running_plugins {
-            let running_plugin = running_plugin.lock().unwrap();
+            let mut running_plugin = running_plugin.lock().unwrap();
             let plugin_env = &running_plugin.env();
-            let current_config = &plugin_env.plugin.initial_userspace_configuration;
             let plugin_location = &plugin_env.plugin.location;
 
             // Look up this plugin in the new config by location
@@ -3656,7 +3655,8 @@ impl WasmBridge {
 
             if let Some(new_config) = new_config_for_location {
                 // Compare configurations - only fire event if changed
-                if current_config != new_config {
+                if &running_plugin.current_configuration != new_config {
+                    running_plugin.current_configuration = new_config.clone();
                     drop(running_plugin); // Release lock before sending
 
                     let event = Event::PluginConfigurationChanged(new_config.inner().clone());

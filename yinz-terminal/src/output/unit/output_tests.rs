@@ -2707,3 +2707,68 @@ fn viewport_clipping_counts_cells_and_blanks_partial_wide_characters() {
         );
     }
 }
+
+#[test]
+fn translucency_preserves_rectangular_kitty_and_sixel_clipping() {
+    use crate::ui::damage::CellRect;
+    use yinz_types::colors::PaletteColor;
+    let client = ClientId::new(1);
+    let mut opaque = create_test_output();
+    opaque.add_clients(
+        &HashSet::from([client]),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Some(FloatingPanesStack {
+            layers: vec![create_pane_geom(1, 0, 2, 1)],
+        }),
+    );
+    let internal = store_test_kitty_image(&opaque.kitty_image_store, 30, 40);
+    let mut translucent = opaque.clone();
+    translucent.begin_translucent_composition(
+        &HashSet::from([client]),
+        vec![(
+            1,
+            CellRect {
+                x: 1,
+                y: 0,
+                cols: 2,
+                rows: 1,
+            },
+            0,
+        )],
+        PaletteColor::EightBit(7),
+        PaletteColor::EightBit(0),
+        PaletteColor::EightBit(0),
+        &HashMap::new(),
+    );
+    for output in [&mut opaque, &mut translucent] {
+        output.add_kitty_image_chunks_to_client(
+            client,
+            PaneId::Terminal(TerminalId::new(1)),
+            vec![kitty_chunk(internal, 1, 0, 0)],
+            None,
+        );
+        output.add_sixel_image_chunks_to_client(
+            client,
+            vec![SixelImageChunk {
+                cell_x: 0,
+                cell_y: 0,
+                sixel_image_pixel_x: 0,
+                sixel_image_pixel_y: 0,
+                sixel_image_pixel_width: 30,
+                sixel_image_pixel_height: 40,
+                sixel_image_id: 1,
+            }],
+            None,
+        );
+    }
+    assert!(!translucent.cursor_is_visible(1, 0, None, client));
+    assert!(!opaque.sixel_chunks[&client].is_empty());
+    assert_eq!(
+        format!("{:?}", opaque.sixel_chunks),
+        format!("{:?}", translucent.sixel_chunks)
+    );
+    assert_eq!(
+        format!("{:?}", opaque.client_kitty_chunks),
+        format!("{:?}", translucent.client_kitty_chunks)
+    );
+}

@@ -408,6 +408,8 @@ pub(crate) fn overlay_placements(tc: &hegel::TestCase) -> OverlayPlacement {
             OverlayKind::Modal,
         ])),
         coordinates: optional_floating_pane_coordinates(tc),
+        background_opacity: booleans(tc)
+            .then(|| tc.draw(generators::integers::<u8>().max_value(100))),
     }
 }
 
@@ -2030,6 +2032,8 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 coordinates: booleans(tc).then(|| floating_pane_coordinates(tc)),
                 split: booleans(tc).then(|| multipane_split(tc)),
                 override_user_placement: booleans(tc),
+                background_opacity: booleans(tc)
+                    .then(|| tc.draw(generators::integers::<u8>().max_value(100))),
             })
         },
         CommandType::ReplaceMultipaneChild => {

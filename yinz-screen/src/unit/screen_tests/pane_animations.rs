@@ -2,7 +2,6 @@ use super::*;
 use crate::panes::OverlayCarry;
 use std::time::{Duration, Instant};
 use yinz_types::animation::FRAME_PERIOD;
-use yinz_types::data::OverlayKind;
 use yinz_types::internal_ids::{PluginId, TabId};
 
 fn panel_half(
@@ -40,14 +39,13 @@ fn panel_half(
     tab.add_overlay_pane(
         pane,
         pane_id,
-        OverlayKind::Dismissible,
-        FloatingPaneCoordinates {
+        yinz_types::data::OverlayPlacement::dismissible(Some(FloatingPaneCoordinates {
             x: Some(PercentOrFixed::Fixed(x)),
             y: Some(PercentOrFixed::Fixed(2)),
             width: Some(PercentOrFixed::Fixed(35)),
             height: Some(PercentOrFixed::Fixed(10)),
             ..Default::default()
-        },
+        })),
         OverlayCarry {
             awaiting_placement: awaiting,
             ..Default::default()

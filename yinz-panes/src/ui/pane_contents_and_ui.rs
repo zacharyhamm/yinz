@@ -457,6 +457,12 @@ impl<'a> PaneContentsAndUi<'a> {
             if self.frame_is_dimmed_for_client(client_id) {
                 dim_character_chunks(&mut frame_terminal_characters);
             }
+            if self.output.is_translucent_layer(client_id, self.z_index) {
+                for chunk in &mut frame_terminal_characters {
+                    chunk.pane_default_bg =
+                        Some(self.style.colors.text_unselected.background.into());
+                }
+            }
             self.output
                 .add_character_chunks_to_client(client_id, frame_terminal_characters, self.z_index)
                 .with_context(err_context)?;

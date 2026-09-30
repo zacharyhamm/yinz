@@ -1,3 +1,5 @@
+mod translucency;
+
 use crate::panes::Row;
 use crate::ui::damage::CellRect;
 
@@ -657,6 +659,7 @@ pub struct Output {
     pre_vte_instructions: HashMap<ClientId, Vec<String>>,
     post_vte_instructions: HashMap<ClientId, Vec<String>>,
     client_character_chunks: HashMap<ClientId, Vec<CharacterChunk>>,
+    compositions: HashMap<ClientId, translucency::Composition>,
     sixel_chunks: HashMap<ClientId, Vec<SixelImageChunk>>,
     client_kitty_chunks: HashMap<ClientId, HashMap<PaneId, Vec<KittyImageChunk>>>,
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,
@@ -819,12 +822,56 @@ impl Output {
     ) -> Option<FloatingPanesStack> {
         std::mem::replace(&mut self.floating_panes_stack, floating_panes_stack)
     }
+    /// Start a frame's rectangle-limited text compositor for these clients. The ordinary
+    /// occlusion stack remains responsible for cursor and graphics clipping.
+    pub fn begin_translucent_composition(
+        &mut self,
+        clients: &HashSet<ClientId>,
+        overlays: Vec<(usize, CellRect, u8)>,
+        foreground: yinz_types::colors::PaletteColor,
+        background: yinz_types::colors::PaletteColor,
+        tint: yinz_types::colors::PaletteColor,
+        terminal_emulator_color_codes: &HashMap<usize, String>,
+    ) {
+        if overlays.is_empty() {
+            return;
+        }
+        let mut host_colors = [None; 256];
+        for (&index, value) in terminal_emulator_color_codes {
+            if let Some(color) = host_colors.get_mut(index) {
+                *color = crate::panes::alacritty_functions::xparse_color(value.as_bytes());
+            }
+        }
+        let composition =
+            translucency::Composition::new(overlays, foreground, background, tint, host_colors);
+        for client in clients {
+            self.compositions.insert(*client, composition.clone());
+        }
+    }
+    pub fn is_translucent_layer(&self, client: ClientId, z_index: Option<usize>) -> bool {
+        self.compositions
+            .get(&client)
+            .is_some_and(|composition| composition.contains_layer(z_index.unwrap_or(0)))
+    }
+    /// Flush before screen menus and notifications contribute their opaque cells.
+    pub fn finish_translucent_composition(&mut self) {
+        for (client, composition) in self.compositions.drain() {
+            if let Some(chunks) = self.client_character_chunks.get_mut(&client) {
+                chunks.extend(composition.finish());
+            }
+        }
+    }
     pub fn add_character_chunks_to_client(
         &mut self,
         client_id: ClientId,
         mut character_chunks: Vec<CharacterChunk>,
         z_index: Option<usize>,
     ) -> Result<()> {
+        if let Some(composition) = self.compositions.get_mut(&client_id) {
+            composition.add(&character_chunks, z_index.unwrap_or(0));
+            character_chunks =
+                composition.outside_chunks(character_chunks, z_index.unwrap_or(0))?;
+        }
         if let Some(client_character_chunks) = self.client_character_chunks.get_mut(&client_id) {
             if let Some(floating_panes_stack) = &self.floating_panes_stack {
                 let mut visible_character_chunks = floating_panes_stack
@@ -1205,6 +1252,7 @@ impl Output {
     pub fn is_dirty(&self) -> bool {
         !self.pre_vte_instructions.is_empty()
             || !self.post_vte_instructions.is_empty()
+            || !self.compositions.is_empty()
             || self.client_character_chunks.values().any(|c| !c.is_empty())
             || self.sixel_chunks.values().any(|c| !c.is_empty())
             || self
@@ -1224,7 +1272,8 @@ impl Output {
     }
     pub fn has_rendered_assets(&self) -> bool {
         // pre_vte and post_vte are not considered rendered assets as they should not be visible
-        self.client_character_chunks.values().any(|c| !c.is_empty())
+        !self.compositions.is_empty()
+            || self.client_character_chunks.values().any(|c| !c.is_empty())
             || self.sixel_chunks.values().any(|c| !c.is_empty())
             || self
                 .client_kitty_chunks
@@ -1838,6 +1887,13 @@ impl CharacterChunk {
             ..Default::default()
         }
     }
+    pub(crate) fn offset(&mut self, x: usize, y: usize) {
+        self.x += x;
+        self.y += y;
+        for highlight in &mut self.selection_and_colors {
+            highlight.selection = highlight.selection.offset(x, y);
+        }
+    }
     pub fn add_selection_and_colors(
         &mut self,
         highlight: HighlightSelection,
@@ -2170,3 +2226,7 @@ impl OutputBuffer {
 
 #[cfg(test)]
 mod unit;
+
+#[cfg(test)]
+#[path = "unit/translucency_tests.rs"]
+mod translucency_tests;

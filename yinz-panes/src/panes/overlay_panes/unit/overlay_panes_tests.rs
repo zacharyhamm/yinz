@@ -2998,6 +2998,7 @@ fn composed(direction: MultipaneDirection) -> (OverlayPanes, [PaneId; 2], Multip
             },
             0,
             OverlayPlacement {
+                background_opacity: None,
                 kind: OverlayKind::Dismissible,
                 coordinates: Some(placed_coordinates("10", "5", "80", "24")),
             },
@@ -3467,6 +3468,7 @@ fn multipane_modal_focus_is_trapped_at_the_container_boundary() {
             },
             0,
             OverlayPlacement {
+                background_opacity: None,
                 kind: OverlayKind::Modal,
                 coordinates: None,
             },
@@ -3760,4 +3762,38 @@ fn a_click_on_a_squeezed_divider_keeps_the_ratio() {
         panes.multipane_info(&children[0]).unwrap().split.ratio,
         1500
     );
+}
+
+#[test]
+fn translucent_container_keeps_opacity_through_transfer_replacement_and_visibility() {
+    let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+    panes.set_background_opacity(children[0], 75).unwrap();
+    assert!(panes.set_background_opacity(children[0], 101).is_err());
+    assert_eq!(
+        panes.placement_of(&children[1]).unwrap().background_opacity,
+        Some(75)
+    );
+    let container = panes.take_container(children[0]).unwrap();
+    let mut destination = overlay_panes(120, 40);
+    destination.insert_container(container);
+    assert_eq!(destination.translucent_layers(3)[0].0, 4);
+    destination.hide_pane(children[0]);
+    assert!(destination.translucent_layers(3).is_empty());
+    destination.show_pane(children[0]);
+    assert_eq!(destination.translucent_layers(3)[0].2, 75);
+    let replacement = PaneId::Terminal(TerminalId::new(9));
+    destination
+        .replace_pane(children[1], mock_pane(replacement))
+        .unwrap();
+    assert_eq!(
+        destination
+            .placement_of(&replacement)
+            .unwrap()
+            .background_opacity,
+        Some(75)
+    );
+    destination
+        .set_background_opacity(replacement, 100)
+        .unwrap();
+    assert!(destination.translucent_layers(3).is_empty());
 }

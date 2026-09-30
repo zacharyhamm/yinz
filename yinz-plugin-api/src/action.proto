@@ -633,6 +633,7 @@ enum OverlayKind {
 message OverlayPlacement {
   OverlayKind kind = 1;
   optional FloatingPaneCoordinates coordinates = 2;
+  optional uint32 background_opacity = 3;
 }
 
 message NoPreferenceOptions {

@@ -645,8 +645,7 @@ fn open_overlay_plugin(
     tab.add_overlay_pane(
         popup,
         popup_id,
-        OverlayKind::Dismissible,
-        coordinates,
+        yinz_types::data::OverlayPlacement::dismissible(Some(coordinates)),
         OverlayCarry::default(),
         true,
         Some(crate::ClientId::new(1)),
@@ -5331,8 +5330,7 @@ fn overlay_permission_prompts_restore_visibility_and_preserve_placement() {
                 tab.add_overlay_pane(
                     pane,
                     pane_id,
-                    kind,
-                    coordinates,
+                    yinz_types::data::OverlayPlacement::new(kind, Some(coordinates)),
                     OverlayCarry {
                         hidden,
                         awaiting_placement,
@@ -5505,8 +5503,9 @@ fn an_overlay_in_a_background_tab_is_still_a_broadcast_target() {
         .add_overlay_pane(
             overlay,
             PaneId::Plugin(crate::PluginId::new(9)),
-            OverlayKind::Dismissible,
-            FloatingPaneCoordinates::default(),
+            yinz_types::data::OverlayPlacement::dismissible(Some(
+                FloatingPaneCoordinates::default(),
+            )),
             OverlayCarry::default(),
             true,
             Some(crate::ClientId::new(1)),

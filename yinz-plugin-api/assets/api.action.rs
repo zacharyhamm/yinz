@@ -802,6 +802,8 @@ pub struct OverlayPlacement {
     pub kind: i32,
     #[prost(message, optional, tag="2")]
     pub coordinates: ::core::option::Option<FloatingPaneCoordinates>,
+    #[prost(uint32, optional, tag="3")]
+    pub background_opacity: ::core::option::Option<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

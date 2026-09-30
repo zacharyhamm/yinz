@@ -268,14 +268,9 @@ impl SixelGrid {
         }
     }
     fn new_sixel_image(&mut self, sixel_image: SixelImage) -> usize {
-        let mut store = self.sixel_image_store.borrow_mut();
-        // The store is shared by panes; removing an image must never recycle another live ID.
-        let image_id = store.next_image_id;
-        store.next_image_id += 1;
-        store
-            .sixel_images
-            .insert(image_id, (sixel_image, HashMap::new()));
-        image_id
+        self.sixel_image_store
+            .borrow_mut()
+            .insert_image(Rc::new(sixel_image))
     }
     pub fn remove_pixels_from_image(&mut self, image_id: usize, pixel_rect: PixelRect) {
         if let Some((sixel_image, sixel_image_cache)) = self
@@ -284,7 +279,7 @@ impl SixelGrid {
             .sixel_images
             .get_mut(&image_id)
         {
-            sixel_image.cut_out(
+            Rc::make_mut(sixel_image).cut_out(
                 pixel_rect.x,
                 pixel_rect.y as usize,
                 pixel_rect.width,
@@ -382,11 +377,23 @@ impl Drop for SixelGrid {
 type SixelImageCache = HashMap<PixelRect, String>;
 #[derive(Debug, Clone, Default)]
 pub struct SixelImageStore {
-    sixel_images: HashMap<usize, (SixelImage, SixelImageCache)>,
+    sixel_images: HashMap<usize, (Rc<SixelImage>, SixelImageCache)>,
     next_image_id: usize,
 }
 
 impl SixelImageStore {
+    fn insert_image(&mut self, image: Rc<SixelImage>) -> usize {
+        // The store is shared by panes; removing an image must never recycle another live ID.
+        let image_id = self.next_image_id;
+        self.next_image_id += 1;
+        self.sixel_images.insert(image_id, (image, HashMap::new()));
+        image_id
+    }
+    /// Retain the current pixels under a separate ID until the completed frame is released.
+    pub fn retain_image(&mut self, image_id: usize) -> Option<usize> {
+        let image = self.sixel_images.get(&image_id)?.0.clone();
+        Some(self.insert_image(image))
+    }
     pub fn serialize_image(
         &mut self,
         image_id: usize,

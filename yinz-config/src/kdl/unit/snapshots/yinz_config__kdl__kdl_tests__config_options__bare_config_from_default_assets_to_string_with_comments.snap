@@ -360,6 +360,7 @@ plugins {
         cwd "/"
     }
     hocus location="yinz:hocus" {
+        background_opacity "75%"
         shared true
     }
     hocus-agentd location="yinz:hocus-agentd" {

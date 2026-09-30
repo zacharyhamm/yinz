@@ -1,5 +1,177 @@
 use super::*;
 
+fn serialize_sixel_chunk(
+    store: &mut SixelImageStore,
+    chunk: &crate::output::SixelImageChunk,
+) -> String {
+    store
+        .serialize_image(
+            chunk.sixel_image_id,
+            chunk.sixel_image_pixel_x,
+            chunk.sixel_image_pixel_y,
+            chunk.sixel_image_pixel_width,
+            chunk.sixel_image_pixel_height,
+        )
+        .unwrap()
+}
+
+#[test]
+fn locked_repaints_preserve_completed_sixel_pixels_after_incremental_render_and_erasure() {
+    let mut grid = create_grid_with_size_and_raw(8, 10, b"");
+    *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 8,
+        height: 6,
+    });
+    let store = grid.sixel_grid.sixel_image_store.clone();
+    feed_bytes(
+        &mut grid,
+        b"\x1b[8;1H\x1b[2;2H\x1bPq\"1;1;16;12#1;2;100;0;0#1!16~-!16~\x1b\\",
+    );
+    let original = grid.render(10, 20, &Style::default()).unwrap().unwrap().2;
+    assert_eq!(original.len(), 1);
+    let original = original[0];
+    let full_pixels = serialize_sixel_chunk(&mut store.borrow_mut(), &original);
+    let cropped_pixels = store
+        .borrow_mut()
+        .serialize_image(original.sixel_image_id, 0, 0, 8, 6)
+        .unwrap();
+
+    // Only a row below the image is damaged. The completed cache must still include the image.
+    feed_bytes(&mut grid, b"\x1b[7;1Hfinished");
+    let incremental = grid.render(10, 20, &Style::default()).unwrap().unwrap();
+    assert_eq!(incremental.0.len(), 1);
+    assert!(incremental.2.is_empty());
+    assert_eq!(store.borrow().image_count(), 2);
+    feed_bytes(&mut grid, b"\x1b[?2026h\x1b[2;2HX");
+    assert!(grid.render(0, 0, &Style::default()).unwrap().is_none());
+    let pending_pixels = serialize_sixel_chunk(&mut store.borrow_mut(), &original);
+    assert_ne!(
+        pending_pixels, full_pixels,
+        "the live image has lost pixels under X"
+    );
+
+    for (rows, cols, visible_size) in [
+        (8, 10, Some((16, 12))),
+        (2, 2, Some((8, 6))),
+        (8, 1, None),
+        (1, 10, None),
+        (8, 10, Some((16, 12))),
+    ] {
+        grid.change_size(rows, cols);
+        for (x, y) in [(2, 3), (5, 7)] {
+            grid.render_full_viewport();
+            let (_, raw, chunks, _) = grid.render(x, y, &Style::default()).unwrap().unwrap();
+            assert!(raw.is_none());
+            if let Some((width, height)) = visible_size {
+                assert_eq!(chunks.len(), 1);
+                let chunk = chunks[0];
+                assert_eq!((chunk.cell_x, chunk.cell_y), (x + 1, y + 1));
+                assert_eq!(
+                    (chunk.sixel_image_pixel_x, chunk.sixel_image_pixel_y),
+                    (0, 0)
+                );
+                assert_eq!(
+                    (
+                        chunk.sixel_image_pixel_width,
+                        chunk.sixel_image_pixel_height
+                    ),
+                    (width, height)
+                );
+                assert_ne!(chunk.sixel_image_id, original.sixel_image_id);
+                assert_eq!(
+                    serialize_sixel_chunk(&mut store.borrow_mut(), &chunk),
+                    if width == 8 {
+                        &cropped_pixels
+                    } else {
+                        &full_pixels
+                    }
+                    .as_str(),
+                );
+            } else {
+                assert!(chunks.is_empty());
+            }
+            assert!(grid.render(x, y, &Style::default()).unwrap().is_none());
+        }
+    }
+    feed_bytes(&mut grid, b"\x1b[?2026l");
+    let unlocked = grid.render(0, 0, &Style::default()).unwrap().unwrap().2;
+    assert_eq!(unlocked.len(), 1);
+    assert_eq!(
+        serialize_sixel_chunk(&mut store.borrow_mut(), &unlocked[0]),
+        pending_pixels
+    );
+    feed_bytes(&mut grid, b"\x1b[?2026h");
+    grid.render_full_viewport();
+    let replay = grid.render(0, 0, &Style::default()).unwrap().unwrap().2;
+    assert_eq!(
+        serialize_sixel_chunk(&mut store.borrow_mut(), &replay[0]),
+        pending_pixels
+    );
+}
+
+#[test]
+fn completed_sixel_survives_deletion_and_releases_only_its_own_images() {
+    let image = b"\x1bPq\"1;1;16;12#1;2;100;0;0#1!16~-!16~\x1b\\";
+    let mut first = create_grid_with_content("");
+    let mut second = create_grid_with_content("");
+    let store = first.sixel_grid.sixel_image_store.clone();
+    second.sixel_grid.sixel_image_store = store.clone();
+    for grid in [&mut first, &mut second] {
+        *grid.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 8,
+            height: 6,
+        });
+        feed_bytes(grid, image);
+        grid.render(0, 0, &Style::default()).unwrap().unwrap();
+    }
+    assert_eq!(store.borrow().image_count(), 4);
+    let original = first.completed_sixel[0];
+    let pixels = serialize_sixel_chunk(&mut store.borrow_mut(), &original);
+    let second_original = second.completed_sixel[0];
+    feed_bytes(&mut first, b"\x1b[?2026h\x1b[2J\x1b[3J");
+    assert!(first.sixel_grid.image_coordinates().next().is_none());
+    for _ in 0..2 {
+        first.render_full_viewport();
+        let replay = first.render(0, 0, &Style::default()).unwrap().unwrap().2;
+        assert_eq!(replay.len(), 1);
+        assert_eq!(
+            serialize_sixel_chunk(&mut store.borrow_mut(), &replay[0]),
+            pixels
+        );
+    }
+    feed_bytes(&mut first, b"\x1b[?2026l");
+    assert!(first
+        .render(0, 0, &Style::default())
+        .unwrap()
+        .unwrap()
+        .2
+        .is_empty());
+    assert_eq!(store.borrow().image_count(), 2);
+    assert!(store
+        .borrow_mut()
+        .serialize_image(original.sixel_image_id, 0, 0, 16, 12)
+        .is_none());
+
+    feed_bytes(&mut first, image);
+    first.render(0, 0, &Style::default()).unwrap().unwrap();
+    assert_eq!(store.borrow().image_count(), 4);
+    drop(first);
+    assert_eq!(store.borrow().image_count(), 2);
+    assert_eq!(
+        serialize_sixel_chunk(&mut store.borrow_mut(), &second_original),
+        pixels
+    );
+    second.render_full_viewport();
+    let remaining = second.render(0, 0, &Style::default()).unwrap().unwrap().2;
+    assert_eq!(
+        serialize_sixel_chunk(&mut store.borrow_mut(), &remaining[0]),
+        pixels
+    );
+    assert_eq!(store.borrow().image_count(), 2);
+    drop(second);
+    assert_eq!(store.borrow().image_count(), 0);
+}
+
 #[test]
 fn deeply_indented_list_items_are_clipped_without_scrolling_the_pane() {
     for indentation in [3, 4, 65_536] {

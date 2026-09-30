@@ -73,6 +73,7 @@ pub struct OverlayPane {
     id: OverlayId,
     children: Children,
     kind: OverlayKind,
+    background_opacity: Option<u8>,
     coordinates: FloatingPaneCoordinates,
     geom: PaneGeom,
     fullscreen: Option<bool>,
@@ -264,6 +265,7 @@ impl OverlayPanes {
             id: OverlayId(NEXT_OVERLAY_ID.fetch_add(1, Ordering::Relaxed)),
             children: Children::Single((pane_id, pane)),
             kind,
+            background_opacity: None,
             coordinates,
             geom,
             fullscreen: None,
@@ -297,6 +299,7 @@ impl OverlayPanes {
         min_cells: u16,
         placement: OverlayPlacement,
     ) -> Result<MultipaneId> {
+        placement.validate().map_err(|error| anyhow!(error))?;
         split.validate().map_err(|error| anyhow!(error))?;
         if children[0] == children[1] {
             return Err(anyhow!("multipane children must be distinct"));
@@ -339,6 +342,7 @@ impl OverlayPanes {
             min_cells,
         };
         first.coordinates = placement.coordinates.unwrap_or_default();
+        first.background_opacity = placement.background_opacity;
         first.carry.hidden |= second.carry.hidden;
         first.carry.awaiting_placement = false;
         first.carry.opening_awaits_placement = false;
@@ -532,8 +536,41 @@ impl OverlayPanes {
     pub fn placement_of(&self, pane_id: &PaneId) -> Option<OverlayPlacement> {
         self.overlay(pane_id).map(|overlay| OverlayPlacement {
             kind: overlay.kind,
+            background_opacity: overlay.background_opacity,
             coordinates: Some(overlay.coordinates.clone()),
         })
+    }
+    pub fn set_background_opacity(&mut self, pane: PaneId, opacity: u8) -> Result<()> {
+        yinz_types::data::validate_background_opacity(Some(opacity))
+            .map_err(|error| anyhow!(error))?;
+        self.overlay_mut(&pane)
+            .context("missing overlay")?
+            .background_opacity = Some(opacity);
+        self.set_force_render();
+        Ok(())
+    }
+    pub fn translucent_layers(&self, offset: usize) -> Vec<(usize, CellRect, u8)> {
+        self.visible_containers()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| {
+                let overlay = &self.panes[id];
+                let opacity = overlay
+                    .background_opacity
+                    .filter(|opacity| *opacity < 100)?;
+                let geom = self.current_geom(overlay);
+                Some((
+                    offset + index + 1,
+                    CellRect {
+                        x: geom.x,
+                        y: geom.y,
+                        cols: geom.cols.as_usize(),
+                        rows: geom.rows.as_usize(),
+                    },
+                    opacity,
+                ))
+            })
+            .collect()
     }
     pub fn kind_of(&self, pane_id: &PaneId) -> Option<OverlayKind> {
         self.overlay(pane_id).map(|overlay| overlay.kind)

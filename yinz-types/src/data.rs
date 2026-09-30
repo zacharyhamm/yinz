@@ -2490,11 +2490,21 @@ pub struct OverlayPlacement {
     /// Where on the surface. `None` centres it at a default size.
     #[serde(default)]
     pub coordinates: Option<FloatingPaneCoordinates>,
+    /// Background opacity in percent (0..=100). Unspecified overlays are opaque.
+    #[serde(default)]
+    pub background_opacity: Option<u8>,
 }
 
 impl OverlayPlacement {
     pub fn new(kind: OverlayKind, coordinates: Option<FloatingPaneCoordinates>) -> Self {
-        OverlayPlacement { kind, coordinates }
+        OverlayPlacement {
+            kind,
+            coordinates,
+            background_opacity: None,
+        }
+    }
+    pub fn validate(&self) -> Result<(), &'static str> {
+        validate_background_opacity(self.background_opacity)
     }
     pub fn modal(coordinates: Option<FloatingPaneCoordinates>) -> Self {
         OverlayPlacement::new(OverlayKind::Modal, coordinates)
@@ -2511,6 +2521,14 @@ impl OverlayPlacement {
     /// overlay is `kind`. Coordinates cannot express either.
     pub fn as_floating_pane_coordinates(&self) -> FloatingPaneCoordinates {
         self.coordinates.clone().unwrap_or_default()
+    }
+}
+
+pub fn validate_background_opacity(opacity: Option<u8>) -> Result<(), &'static str> {
+    if opacity.is_some_and(|opacity| opacity > 100) {
+        Err("background opacity must be between 0 and 100")
+    } else {
+        Ok(())
     }
 }
 
@@ -2571,6 +2589,7 @@ impl NewPanePlacement {
                     OverlayKind::Dismissible
                 },
                 coordinates,
+                background_opacity: None,
             })
         } else {
             NewPanePlacement::Floating(coordinates)

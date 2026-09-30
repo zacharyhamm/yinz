@@ -73,6 +73,8 @@ impl Screen {
                 children[0]
             },
             MultipaneOperation::Update(request) => {
+                yinz_types::data::validate_background_opacity(request.background_opacity)
+                    .map_err(|error| anyhow!(error))?;
                 if let Some(split) = request.split {
                     split.validate().map_err(|error| anyhow!(error))?;
                 }
@@ -80,6 +82,9 @@ impl Screen {
                 let tab = self
                     .tab_containing_pane_mut(member)
                     .context("multipane tab disappeared")?;
+                if let Some(opacity) = request.background_opacity {
+                    tab.set_overlay_background_opacity(member, opacity)?;
+                }
                 if let Some(coordinates) = request.coordinates {
                     tab.change_overlay_coordinates_batch(
                         vec![(member, coordinates)],

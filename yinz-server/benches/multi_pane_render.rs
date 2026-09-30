@@ -29,9 +29,10 @@ use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-use yinz_server::output::{HostKittyState, Output};
+use yinz_server::output::{CharacterChunk, FloatingPanesStack, HostKittyState, Output};
 use yinz_server::pane::Pane;
 use yinz_server::panes::{KittyImageStore, LinkHandler, SixelImageStore, TerminalPane};
+use yinz_terminal::{panes::TerminalCharacter, ui::damage::CellRect};
 
 use yinz_types::pane_size::{Dimension, PaneGeom, Size, SizeInPixels};
 use yinz_types::style::{Palette, Style};
@@ -389,6 +390,10 @@ impl PaneFleet {
     /// One frame: collect every dirty pane's chunks into a single `Output` and serialize it, the
     /// way `Screen::render_to_clients` does.
     fn frame(&mut self) -> HashMap<yinz_server::ClientId, String> {
+        self.frame_with_panel(None)
+    }
+
+    fn frame_with_panel(&mut self, opacity: Option<u8>) -> HashMap<yinz_server::ClientId, String> {
         let mut output = Output::new(
             self.sixel_image_store.clone(),
             self.character_cell_size.clone(),
@@ -400,7 +405,40 @@ impl PaneFleet {
             self.sixel_host_capabilities.clone(),
             Rc::new(RefCell::new(HashMap::new())),
         );
-        output.add_clients(&self.clients, self.link_handler.clone(), None);
+        let rect = CellRect {
+            x: 3,
+            y: 14,
+            cols: 120,
+            rows: 33,
+        };
+        let stack = opacity.map(|_| FloatingPanesStack {
+            layers: vec![PaneGeom {
+                x: rect.x,
+                y: rect.y,
+                cols: Dimension::fixed(rect.cols),
+                rows: Dimension::fixed(rect.rows),
+                ..Default::default()
+            }],
+        });
+        output.add_clients(&self.clients, self.link_handler.clone(), stack);
+        if let Some(opacity) = opacity.filter(|opacity| *opacity < 100) {
+            let palette = yinz_types::style::default_palette();
+            output.begin_translucent_composition(
+                &self.clients,
+                vec![(1, rect, opacity)],
+                palette.fg,
+                palette.bg,
+                Style::default().colors.text_unselected.background,
+                &HashMap::new(),
+            );
+            // Same deliberate repaint as Tab::force_render_panes_intersecting, including clean rows.
+            for pane in &mut self.panes {
+                if rect.intersects_geom(&pane.current_geom()) {
+                    pane.set_should_render(true);
+                    pane.render_full_viewport();
+                }
+            }
+        }
 
         for pane in self.panes.iter_mut() {
             // mirrors PaneContentsAndUi::render_pane_contents_for_client
@@ -437,6 +475,30 @@ impl PaneFleet {
             }
         }
 
+        // An opaque idle panel is already on the host and contributes no dirty rows.
+        if opacity.is_some_and(|opacity| opacity < 100) {
+            // A visible idle panel: mostly blank cells, with a title and a solid input row.
+            for y in rect.y..rect.y + rect.rows {
+                let mut row =
+                    CharacterChunk::new(vec![TerminalCharacter::new(' '); rect.cols], rect.x, y);
+                if y == rect.y {
+                    row.terminal_characters[..5].clone_from_slice(
+                        &"Hocus"
+                            .chars()
+                            .map(TerminalCharacter::new)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                if y == rect.y + rect.rows - 2 {
+                    row.pane_default_bg =
+                        Some(Style::default().colors.text_unselected.background.into());
+                }
+                output
+                    .add_character_chunks_to_client(CLIENT_ID, vec![row], Some(1))
+                    .unwrap();
+            }
+            output.finish_translucent_composition();
+        }
         output.serialize().unwrap()
     }
 
@@ -667,11 +729,28 @@ fn bench_kitty_graphics(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_panel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("panel");
+    for &panes in &[1, 4, 16] {
+        for opacity in [100, 75, 0] {
+            let (mut fleet, chunks) = setup(Workload::CursorMoves, panes);
+            group.bench_function(BenchmarkId::new(format!("opacity_{opacity}"), panes), |b| {
+                b.iter(|| {
+                    fleet.ingest(black_box(&chunks));
+                    black_box(fleet.frame_with_panel(Some(opacity)))
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ingest,
     bench_frame,
     bench_render_only,
-    bench_kitty_graphics
+    bench_kitty_graphics,
+    bench_panel
 );
 criterion_main!(benches);

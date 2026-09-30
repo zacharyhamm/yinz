@@ -4777,6 +4777,7 @@ impl From<yinz_types::data::NewPanePlacement>
             ),
             yinz_types::data::NewPanePlacement::Overlay(overlay) => PlacementType::Overlay(
                 crate::client_server_contract::client_server_contract::OverlayPlacement {
+                    background_opacity: overlay.background_opacity.map(u32::from),
                     kind: overlay_kind_to_proto_i32(overlay.kind),
                     coordinates: overlay.coordinates.map(|c| c.into()),
                 },
@@ -4867,12 +4868,20 @@ impl TryFrom<crate::client_server_contract::client_server_contract::NewPanePlace
                 })
             },
             PlacementType::Overlay(overlay) => {
+                let background_opacity = overlay
+                    .background_opacity
+                    .map(u8::try_from)
+                    .transpose()
+                    .context("invalid background opacity")?;
+                yinz_types::data::validate_background_opacity(background_opacity)
+                    .map_err(|error| anyhow!(error))?;
                 let coordinates = match overlay.coordinates {
                     Some(coordinates) => Some(coordinates.try_into()?),
                     None => None,
                 };
                 Ok(yinz_types::data::NewPanePlacement::Overlay(
                     yinz_types::data::OverlayPlacement {
+                        background_opacity,
                         kind: overlay_kind_from_proto_i32(overlay.kind),
                         coordinates,
                     },

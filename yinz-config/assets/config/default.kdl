@@ -552,6 +552,8 @@ plugins {
         // height "66%"
         // split "50%"
         // pad "3"
+        // Tint blank panel cells while keeping text and controls opaque. 0 is clear; 100 is solid.
+        background_opacity "75%"
     }
     // The agent list: the left half of the panel, or the whole of it when there
     // is no conversation beside it. Shared for the same reason hocus is: the strip it

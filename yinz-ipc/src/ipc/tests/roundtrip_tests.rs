@@ -5308,3 +5308,41 @@ fn warp_held_capability_defaults_to_false_for_older_destinations() {
     assert!(connected.warp_companions);
     assert!(!connected.warp_held_terminals);
 }
+
+#[test]
+fn overlay_opacity_is_optional_and_validated_at_the_ipc_boundary() {
+    use crate::client_server_contract::client_server_contract::{
+        new_pane_placement::PlacementType, NewPanePlacement as WirePlacement,
+        OverlayPlacement as WireOverlay,
+    };
+    for opacity in [
+        None,
+        Some(0),
+        Some(75),
+        Some(100),
+        Some(101),
+        Some(256),
+        Some(u32::MAX),
+    ] {
+        let wire = WirePlacement {
+            placement_type: Some(PlacementType::Overlay(WireOverlay {
+                background_opacity: opacity,
+                ..Default::default()
+            })),
+        };
+        let result = NewPanePlacement::try_from(wire);
+        if opacity.is_some_and(|opacity| opacity > 100) {
+            assert!(result.is_err());
+        } else {
+            let NewPanePlacement::Overlay(placement) = result.unwrap() else {
+                panic!("overlay")
+            };
+            assert_eq!(placement.background_opacity.map(u32::from), opacity);
+            let wire: WirePlacement = NewPanePlacement::Overlay(placement).into();
+            let Some(PlacementType::Overlay(overlay)) = wire.placement_type else {
+                panic!("overlay")
+            };
+            assert_eq!(overlay.background_opacity, opacity);
+        }
+    }
+}

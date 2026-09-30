@@ -738,6 +738,11 @@ pub struct Grid {
     pub changed_colors: Option<[Option<AnsiCode>; 256]>,
     pub should_render: bool,
     pub lock_renders: bool,
+    // Completed content: synchronized output may mutate the viewport before a forced repaint.
+    completed_text: Vec<CharacterChunk>,
+    completed_sixel: Vec<SixelImageChunk>,
+    completed_kitty: Vec<KittyImageChunk>,
+    repaint_completed_text: bool,
     pub cursor_key_mode: bool, // DECCKM - when set, cursor keys should send ANSI direction codes (eg. "OD") instead of the arrow keys (eg. "[D")
     pub bracketed_paste_mode: bool, // when set, paste instructions to the terminal should be escaped with a special sequence
     pub erasure_mode: bool,         // ERM
@@ -1181,6 +1186,10 @@ impl Grid {
             styled_underlines,
             osc8_hyperlinks,
             lock_renders: false,
+            completed_text: vec![],
+            completed_sixel: vec![],
+            completed_kitty: vec![],
+            repaint_completed_text: false,
             supports_kitty_keyboard_protocol: false,
             explicitly_disable_kitty_keyboard_protocol,
             click: Click::default(),
@@ -1210,6 +1219,7 @@ impl Grid {
         self.osc7_payload.as_deref()
     }
     pub fn render_full_viewport(&mut self) {
+        self.repaint_completed_text = true;
         self.output_buffer.update_all_lines();
     }
     pub fn update_line_for_rendering(&mut self, line_index: usize) {
@@ -2110,14 +2120,73 @@ impl Grid {
             },
         }
     }
+    fn clear_completed_sixel(&mut self) {
+        self.sixel_grid.reap_images(
+            self.completed_sixel
+                .drain(..)
+                .map(|chunk| chunk.sixel_image_id)
+                .collect(),
+        );
+    }
     pub fn render(
         &mut self,
         content_x: usize,
         content_y: usize,
         style: &Style,
     ) -> Result<Option<RenderedGridFrame>> {
+        let forced_repaint = std::mem::take(&mut self.repaint_completed_text);
         if self.lock_renders {
-            return Ok(None);
+            if !forced_repaint {
+                return Ok(None);
+            }
+            let chunks = (0..self.height)
+                .map(|y| {
+                    let mut chunk = self.completed_text.get(y).cloned().unwrap_or_default();
+                    chunk.y = y;
+                    chunk.retain_by_width(self.width);
+                    let padding = self.width.saturating_sub(chunk.width());
+                    chunk
+                        .terminal_characters
+                        .extend(std::iter::repeat_n(EMPTY_TERMINAL_CHARACTER, padding));
+                    chunk.offset(content_x, content_y);
+                    chunk
+                })
+                .collect();
+            let mut sixel = vec![];
+            let mut kitty = vec![];
+            if let Some(cell_size) = *self.character_cell_size.borrow() {
+                for mut chunk in self.completed_sixel.iter().copied() {
+                    chunk.sixel_image_pixel_width = chunk
+                        .sixel_image_pixel_width
+                        .min(self.width.saturating_sub(chunk.cell_x) * cell_size.width);
+                    chunk.sixel_image_pixel_height = chunk
+                        .sixel_image_pixel_height
+                        .min(self.height.saturating_sub(chunk.cell_y) * cell_size.height);
+                    if chunk.sixel_image_pixel_width == 0 || chunk.sixel_image_pixel_height == 0 {
+                        continue;
+                    }
+                    chunk.cell_x += content_x;
+                    chunk.cell_y += content_y;
+                    sixel.push(chunk);
+                }
+                for mut chunk in self.completed_kitty.iter().copied() {
+                    chunk.source_px_width = chunk.source_px_width.min(
+                        (self.width.saturating_sub(chunk.cell_x) * cell_size.width)
+                            .saturating_sub(chunk.cell_offset_x as usize),
+                    );
+                    chunk.source_px_height = chunk.source_px_height.min(
+                        (self.height.saturating_sub(chunk.cell_y) * cell_size.height)
+                            .saturating_sub(chunk.cell_offset_y as usize),
+                    );
+                    if chunk.source_px_width == 0 || chunk.source_px_height == 0 {
+                        continue;
+                    }
+                    chunk.cell_x += content_x;
+                    chunk.cell_y += content_y;
+                    kitty.push(chunk);
+                }
+            }
+            return Ok(Some((chunks, None, sixel, kitty)));
         }
         let raw_vte_output = String::new();
 
@@ -2127,6 +2196,9 @@ impl Grid {
         let plugin_highlight_selections = self.compute_plugin_highlight_selections();
 
         for character_chunk in character_chunks.iter_mut() {
+            // Store text and highlights relative to the pane.
+            character_chunk.x -= content_x;
+            character_chunk.y -= content_y;
             character_chunk.add_changed_colors(self.changed_colors);
             // CharacterChunk still carries `Option<AnsiCode>` because
             // `adjust_styles_for_custom_bg_fg` assigns the value into
@@ -2137,10 +2209,7 @@ impl Grid {
                 self.pane_default_fg.map(AnsiCode::RgbCode),
                 self.pane_default_bg.map(AnsiCode::RgbCode),
             );
-            if self
-                .selection
-                .contains_row(character_chunk.y.saturating_sub(content_y))
-            {
+            if self.selection.contains_row(character_chunk.y) {
                 let background_color = match style.colors.text_selected.background {
                     PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
                     PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
@@ -2160,12 +2229,12 @@ impl Grid {
                         underline: false,
                         layer: HighlightLayer::ActionFeedback,
                     },
-                    content_x,
-                    content_y,
+                    0,
+                    0,
                 );
             } else if !self.search_results.selections.is_empty() {
                 for res in self.search_results.selections.iter() {
-                    if res.contains_row(character_chunk.y.saturating_sub(content_y)) {
+                    if res.contains_row(character_chunk.y) {
                         let (select_background_palette, select_foreground_palette) =
                             if Some(res) == self.search_results.active.as_ref() {
                                 (
@@ -2196,14 +2265,14 @@ impl Grid {
                                 underline: false,
                                 layer: HighlightLayer::ActionFeedback,
                             },
-                            content_x,
-                            content_y,
+                            0,
+                            0,
                         );
                     }
                 }
             }
             if let Some(command_output_flash) = self.command_output_flash {
-                if command_output_flash.contains_row(character_chunk.y.saturating_sub(content_y)) {
+                if command_output_flash.contains_row(character_chunk.y) {
                     let foreground_color = match style.colors.text_unselected.emphasis_0 {
                         PaletteColor::Rgb(rgb) => AnsiCode::RgbCode(rgb),
                         PaletteColor::EightBit(col) => AnsiCode::ColorIndex(col),
@@ -2218,20 +2287,54 @@ impl Grid {
                             underline: false,
                             layer: HighlightLayer::ActionFeedback,
                         },
-                        content_x,
-                        content_y,
+                        0,
+                        0,
                     );
                 }
             }
             // Apply pre-computed plugin highlight selections to this chunk.
             for hs in &plugin_highlight_selections {
-                if hs
-                    .selection
-                    .contains_row(character_chunk.y.saturating_sub(content_y))
-                {
-                    character_chunk.add_selection_and_colors(*hs, content_x, content_y);
+                if hs.selection.contains_row(character_chunk.y) {
+                    character_chunk.add_selection_and_colors(*hs, 0, 0);
                 }
             }
+        }
+        self.clear_completed_sixel();
+        // Sixel damage is incremental, but a forced repaint needs every visible image.
+        self.completed_sixel = self
+            .sixel_grid
+            .changed_sixel_chunks_in_viewport(
+                HashMap::from([(0, self.height)]),
+                self.lines_above.len(),
+                self.width,
+                0,
+                0,
+            )
+            .into_iter()
+            .filter_map(|mut chunk| {
+                chunk.sixel_image_id = self
+                    .sixel_grid
+                    .sixel_image_store
+                    .borrow_mut()
+                    .retain_image(chunk.sixel_image_id)?;
+                Some(chunk)
+            })
+            .collect();
+        self.completed_kitty = kitty_image_chunks
+            .iter()
+            .map(|chunk| {
+                let mut chunk = *chunk;
+                chunk.cell_x -= content_x;
+                chunk.cell_y -= content_y;
+                chunk
+            })
+            .collect();
+        // OutputBuffer emits complete rows, including for incremental updates.
+        self.completed_text
+            .resize_with(self.height, CharacterChunk::default);
+        for chunk in &mut character_chunks {
+            self.completed_text[chunk.y] = chunk.clone();
+            chunk.offset(content_x, content_y);
         }
         Ok(Some((
             character_chunks,
@@ -4734,6 +4837,7 @@ impl Grid {
 
 impl Drop for Grid {
     fn drop(&mut self) {
+        self.clear_completed_sixel();
         self.kitty_grid.clear_all_placements();
         if let Some(alt) = self.alternate_screen_state.as_mut() {
             alt.kitty_grid.clear_all_placements();
