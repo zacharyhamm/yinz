@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
-    AgentOutcome, AgentRequest, AgentResponse, AgentStatus, PromptObservation, MAX_PROMPT_BYTES,
-    MAX_TIMEOUT_MS,
+    needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus, PromptObservation,
+    MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -27,12 +27,17 @@ pub(super) struct Lifecycle {
     kind: String,
     conversation: String,
     input_revision: Option<u64>,
-    /// When the last parent hook for this conversation arrived.
+    /// When the last hook from this pane arrived, worker and stateless hooks included.
     pub(super) last_report: Instant,
+    /// The provider turn last reported as interrupted or failed, until the next prompt. Codex
+    /// finishes a cancelled turn's tool call after its `Interrupt`, and that hook must not make
+    /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
+    /// the same turn.
+    ended_turn: Option<String>,
 }
 
-/// How long an agent must go without reporting before an interrupted recovery may reset it to
-/// idle, so recovery cannot overtake a hook that is still on its way.
+/// How long an agent must go without reporting after input before an interrupted recovery may
+/// reset it to idle, so recovery cannot overtake a hook that is still on its way.
 pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
 
 pub(super) struct Pending {
@@ -56,6 +61,23 @@ impl Screen {
     pub(super) fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == kind && lifecycle.conversation == conversation
+        })
+    }
+
+    /// Whether this hook is work from a turn that already ended by interruption or failure,
+    /// such as the tool call Codex finishes after an Esc. Hooks without a turn id never are.
+    pub(super) fn is_after_ended_turn(&self, pane: PaneId, kind: &str, hook: &HookEvent) -> bool {
+        !matches!(
+            hook.hook_event_name.as_str(),
+            "UserPromptSubmit" | "SessionStart" | "SessionEnd"
+        ) && matches!(
+            yinz_types::agent::hook_state(hook),
+            Some(AgentState::Busy | AgentState::Waiting)
+        ) && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+            lifecycle.kind == kind
+                && lifecycle.conversation == hook.session_id
+                && lifecycle.ended_turn.is_some()
+                && lifecycle.ended_turn == hook.turn_id
         })
     }
 
@@ -177,6 +199,34 @@ impl Screen {
             .unwrap_or(0)
     }
 
+    fn agent_input_at(&self, pane: PaneId) -> Option<Instant> {
+        self.tab_containing_pane(pane)
+            .and_then(|tab| tab.agent_input_at(pane))
+    }
+
+    /// Tell plugins that an interrupted turn ended. Claude has no hook for it, so this is the
+    /// `Interrupt` Codex reports for a cancelled turn.
+    fn broadcast_interrupt(&self, pane: PaneId, agent: &AgentInfo) -> Result<()> {
+        let PaneId::Terminal(terminal) = pane else {
+            return Ok(());
+        };
+        let hook = HookEvent {
+            hook_event_name: "Interrupt".into(),
+            session_id: agent.session_id.clone().unwrap_or_default(),
+            cwd: agent.cwd.clone(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&hook).context("serialize an interrupt event")?;
+        let event = AgentEvent::from_hook(&agent.kind, terminal, &hook, json);
+        self.bus
+            .senders
+            .send_to_plugin(crate::plugins::PluginInstruction::Update(vec![(
+                None,
+                None,
+                yinz_types::data::Event::AgentEvent(event),
+            )]))
+    }
+
     fn agent_status(&self, pane_id: PaneId) -> Option<AgentStatus> {
         let info = self.get_pane_info(pane_id)?;
         let agent = info.agent?;
@@ -279,6 +329,10 @@ impl Screen {
     }
 
     pub(super) fn agent_control_with_reply(&mut self, request: AgentRequest, client: Reply) {
+        self.agent_control_at(request, client, Instant::now());
+    }
+
+    pub(super) fn agent_control_at(&mut self, request: AgentRequest, client: Reply, now: Instant) {
         use AgentRequest::*;
         let (pane, expected) = match &request {
             List { .. } => {
@@ -366,43 +420,47 @@ impl Screen {
                 ..
             } => {
                 let state = status.agent.state;
-                if !confirm_empty
-                    || expected_session_id.is_empty()
-                    || !status.prompt_supported
-                    || !(state == AgentState::Idle
-                        || interrupted && matches!(state, AgentState::Busy | AgentState::Waiting))
-                    || self.agent_controls.iter().any(|pending| {
-                        pending.pane == pane
-                            && pending.prompt.is_some()
-                            && (!pending.abandoned || pending.delivery.is_some())
+                let in_flight = self.agent_controls.iter().any(|pending| {
+                    pending.pane == pane
+                        && pending.prompt.is_some()
+                        && (!pending.abandoned || pending.delivery.is_some())
+                });
+                let refusal = if !confirm_empty || expected_session_id.is_empty() {
+                    Some("recovery requires --conversation and --confirm-empty".to_owned())
+                } else if !status.prompt_supported {
+                    Some("recovery requires an agent that accepts prompts".to_owned())
+                } else if in_flight {
+                    Some("a submission or paste write is still in flight".to_owned())
+                } else if state == AgentState::Idle {
+                    None
+                } else if !matches!(state, AgentState::Busy | AgentState::Waiting) {
+                    Some("recovery requires a live agent".to_owned())
+                } else if !interrupted {
+                    Some("recovery requires an idle agent. If agent read shows the agent stopped without reporting it, such as after an Esc interrupt, add --interrupted".to_owned())
+                } else {
+                    // Claude reports nothing when a turn is interrupted, so the record would
+                    // stay busy forever. Quiet alone proves nothing: an agent waiting on a
+                    // person is always quiet. Someone must have acted on the pane after its
+                    // last report, and no hook, worker hooks included, may have followed.
+                    let input_at = self.agent_input_at(pane);
+                    let settled = self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                        input_at.is_some_and(|input_at| {
+                            input_at > lifecycle.last_report
+                                && now.saturating_duration_since(input_at) >= RECOVER_QUIET
+                        })
+                    });
+                    (!settled).then(|| {
+                        format!(
+                            "the agent needs input, such as Esc, after its last report and {} seconds without a report since; inspect it again and retry",
+                            RECOVER_QUIET.as_secs()
+                        )
                     })
-                {
-                    let message = if matches!(state, AgentState::Busy | AgentState::Waiting)
-                        && !interrupted
-                    {
-                        "recovery requires an idle agent. If agent read shows the agent stopped without reporting it, such as after an Esc interrupt, add --interrupted"
-                    } else {
-                        "recovery requires a pinned live idle agent, --confirm-empty, no active submission and no paste write in flight"
-                    };
-                    reject(self, AgentOutcome::Rejected, message);
+                };
+                if let Some(message) = refusal {
+                    reject(self, AgentOutcome::Rejected, &message);
                     return;
                 }
                 if state != AgentState::Idle {
-                    // Claude reports nothing when a turn is interrupted, so the record would stay
-                    // busy forever. The caller has inspected the pane; a hook still in flight
-                    // would contradict it, so the agent must have been quiet for a moment.
-                    if self
-                        .agent_lifecycle
-                        .get(&pane)
-                        .is_none_or(|lifecycle| lifecycle.last_report.elapsed() < RECOVER_QUIET)
-                    {
-                        reject(
-                            self,
-                            AgentOutcome::Rejected,
-                            "the agent reported within the last 3 seconds; inspect it again and retry",
-                        );
-                        return;
-                    }
                     let mut idle = status.agent.clone();
                     idle.state = AgentState::Idle;
                     idle.detail = None;
@@ -411,6 +469,9 @@ impl Screen {
                     self.agent_worker_waits.remove(&pane);
                     super::thread_main::apply_pane_agent_report(self, pane, Some(idle))
                         .context("reset an interrupted agent to idle")
+                        .non_fatal();
+                    self.broadcast_interrupt(pane, &status.agent)
+                        .context("announce an interrupted turn to plugins")
                         .non_fatal();
                 }
                 self.agent_controls
@@ -554,12 +615,33 @@ impl Screen {
                     delivery: Some(rx),
                     enter_at: None,
                 });
-                let result = self.paste_to_pane_id(
-                    prompt.into_bytes(),
-                    pane,
-                    None,
-                    Some(yinz_bus::route::NotificationEnd::new(tx)),
-                );
+                // Expose Claude's slash command before its arguments can collapse into a chip.
+                // Keep whitespace in the paste: typing a newline or tab would send a key.
+                let (prefix, paste) = if needs_paste_lead_in(&status.agent.kind, &prompt) {
+                    (
+                        format!("{PASTE_LEAD_IN} ").into_bytes(),
+                        prompt.into_bytes(),
+                    )
+                } else if status.agent.kind == "claude" && prompt.starts_with('/') {
+                    let end = prompt.find(char::is_whitespace).unwrap_or(prompt.len());
+                    (
+                        prompt.as_bytes()[..end].to_vec(),
+                        prompt.as_bytes()[end..].to_vec(),
+                    )
+                } else {
+                    (Vec::new(), prompt.into_bytes())
+                };
+                let typed = (!prefix.is_empty())
+                    .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
+                let result = match typed {
+                    Some(Err(error)) => Err(error),
+                    _ => self.paste_to_pane_id(
+                        paste,
+                        pane,
+                        None,
+                        Some(yinz_bus::route::NotificationEnd::new(tx)),
+                    ),
+                };
                 let revision = self.agent_input_revision(pane);
                 if let Some(pending) = self.agent_controls.last_mut() {
                     pending.input_revision = revision;
@@ -838,6 +920,9 @@ impl Screen {
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            lifecycle.last_report = Instant::now();
+        }
         let mut keep = Vec::new();
         let mut accepted_input_revision = None;
         for mut pending in std::mem::take(&mut self.agent_controls) {
@@ -961,6 +1046,13 @@ impl Screen {
                 // and completion preserve consumption, including when it is unknown.
                 _ => previous.and_then(|previous| previous.input_revision),
             };
+            let ended_turn = match event.hook.as_str() {
+                "Interrupt" | "StopFailure" => hook
+                    .and_then(|hook| hook.turn_id.clone())
+                    .filter(|turn| !turn.is_empty()),
+                "UserPromptSubmit" => None,
+                _ => previous.and_then(|previous| previous.ended_turn.clone()),
+            };
             self.agent_lifecycle.insert(
                 pane,
                 Lifecycle {
@@ -968,6 +1060,7 @@ impl Screen {
                     conversation: conversation.clone(),
                     input_revision,
                     last_report: Instant::now(),
+                    ended_turn,
                 },
             );
         }

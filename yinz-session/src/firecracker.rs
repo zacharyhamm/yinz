@@ -21,6 +21,11 @@ pub fn close_panes(session: &str, name: &str, timeout: Duration) -> Result<()> {
             SessionProbe::Unresponsive => {
                 bail!("owning session is unresponsive; VM lease was not released")
             },
+            SessionProbe::Denied => {
+                bail!(
+                    "connecting to the owning session is not permitted; VM lease was not released"
+                )
+            },
             SessionProbe::Alive => {},
         }
         let panes = live_vm_panes(session, name, deadline)?;

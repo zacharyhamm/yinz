@@ -2035,8 +2035,12 @@ fn respawn_resets_input_revision_only_when_the_restart_succeeds() {
                 ..Default::default()
             };
             let replacement = replace.then(|| command.clone());
+            assert!(pane.agent_input_at().is_none());
+            let before = std::time::Instant::now();
             pane.record_agent_input();
             pane.record_agent_input();
+            let input_at = pane.agent_input_at().unwrap();
+            assert!(input_at >= before);
             assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
             assert_eq!(pane.agent_input_revision(), 2);
 
@@ -2045,8 +2049,10 @@ fn respawn_resets_input_revision_only_when_the_restart_succeeds() {
             assert!(pane.respawn(replacement.clone(), keep_scrollback).is_none());
             assert_eq!(pane.agent_input_revision(), 2);
             pane.set_warp_pending(false);
+            assert_eq!(pane.agent_input_at(), Some(input_at));
             assert_eq!(pane.respawn(replacement, keep_scrollback), Some(command));
             assert_eq!(pane.agent_input_revision(), 0);
+            assert!(pane.agent_input_at().is_none());
         }
     }
 }

@@ -73,6 +73,14 @@ pub(super) fn apply_queued_agent_report(
     {
         return Ok(true);
     }
+    // Work finishing after its turn was interrupted must not make the idle agent busy again.
+    if hook
+        .as_ref()
+        .is_some_and(|hook| screen.is_after_ended_turn(pane_id, &report.kind, hook))
+    {
+        log::debug!("ignored a late {} hook from an ended turn", report.kind);
+        return Ok(true);
+    }
     screen.refresh_agent_controls();
     let mut trace = yinz_runtime::agent::report::report_diagnostics(report);
     trace.session = screen.session_name.to_string();

@@ -722,6 +722,56 @@ fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
     }
 }
 
+#[test]
+fn selected_conversations_carry_the_panes_environment_to_tool_commands() {
+    let env = HashMap::from([
+        ("YINZ_PANE_ID".to_owned(), "4".to_owned()),
+        ("YINZ_SESSION_NAME".to_owned(), "calm-otter".to_owned()),
+    ]);
+    for method in ["thread/start", "thread/resume", "thread/fork"] {
+        for params in [json!({"cwd":"/work"}), json!({"cwd":"/work","config":null})] {
+            let mut request = json!({"id":1,"method":method,"params":params});
+            assert!(inject_pane_env(&mut request, &env));
+            assert_eq!(
+                request["params"],
+                json!({"cwd":"/work","config":{
+                    "shell_environment_policy.set.YINZ_PANE_ID":"4",
+                    "shell_environment_policy.set.YINZ_SESSION_NAME":"calm-otter",
+                }})
+            );
+        }
+    }
+
+    // A nested table from the UI keeps its own entries; the pane's identity wins its keys.
+    let mut request = json!({"id":1,"method":"thread/start","params":{"config":{
+        "model":"m",
+        "shell_environment_policy":{"inherit":"core","set":{"KEEP":"1","YINZ_PANE_ID":"9"}},
+    }}});
+    assert!(inject_pane_env(&mut request, &env));
+    assert_eq!(
+        request["params"]["config"],
+        json!({
+            "model":"m",
+            "shell_environment_policy":{"inherit":"core","set":{
+                "KEEP":"1","YINZ_PANE_ID":"4","YINZ_SESSION_NAME":"calm-otter",
+            }},
+        })
+    );
+
+    for untouched in [
+        json!({"id":1,"method":"thread/start","params":{"ephemeral":true}}),
+        json!({"id":1,"method":"turn/start","params":{"threadId":"t"}}),
+        json!({"id":1,"method":"thread/start"}),
+        json!({"id":1,"method":"thread/start","params":{"config":"odd"}}),
+    ] {
+        let mut request = untouched.clone();
+        assert!(!inject_pane_env(&mut request, &env));
+        assert_eq!(request, untouched);
+    }
+    let mut request = json!({"id":1,"method":"thread/start","params":{}});
+    assert!(!inject_pane_env(&mut request, &HashMap::new()));
+}
+
 #[tokio::test]
 async fn bridge_registers_before_delivering_replies_and_preserves_the_protocol() {
     for (close_from_ui, wait_for_ack) in
@@ -767,6 +817,19 @@ async fn bridge_registers_before_delivering_replies_and_preserves_the_protocol()
                     if let Message::Pong(payload) = message {
                         assert_eq!(&payload[..], b"backend");
                         pong_received = true;
+                    } else if request.contains("thread/start") {
+                        // The selection gains the pane's environment and keeps the rest.
+                        let forwarded: Value =
+                            serde_json::from_str(message.to_text().unwrap()).unwrap();
+                        let config = &forwarded["params"]["config"];
+                        assert_eq!(
+                            config["shell_environment_policy.set.YINZ_PANE_REF"],
+                            "aaaaaaaaaaaa"
+                        );
+                        assert!(config["shell_environment_policy.set.YINZ_SOCKET_DIR"].is_string());
+                        assert_eq!(forwarded["params"]["cwd"], "/same-directory");
+                        assert_eq!(forwarded["extra"], "preserved");
+                        break;
                     } else {
                         assert_eq!(message, Message::text(*request));
                         break;

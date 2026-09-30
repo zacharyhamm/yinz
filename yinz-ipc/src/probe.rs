@@ -16,6 +16,9 @@ pub enum SessionProbe {
     Unresponsive,
     /// Nothing is listening on the socket.
     Absent,
+    /// This process may not connect at all, as inside a sandbox that blocks Unix sockets.
+    /// Whether a server is behind the socket is unknown, so it is kept like an unresponsive one.
+    Denied,
 }
 /// The connect itself failed; this is what that means about the session.
 ///
@@ -33,6 +36,8 @@ pub fn classify_probe_connect_error(kind: io::ErrorKind) -> Result<SessionProbe,
         // wait-mode docs name `TimedOut` in prose but link `WouldBlock`, and the
         // unix path returns `TimedOut`, so accept both rather than depend on it.
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Ok(SessionProbe::Unresponsive),
+        // Usually a sandbox that blocks socket connections; otherwise a socket another user owns.
+        io::ErrorKind::PermissionDenied => Ok(SessionProbe::Denied),
         kind => Err(kind),
     }
 }

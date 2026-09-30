@@ -4,6 +4,8 @@ description: Launch, inspect, and coordinate Yinz agents with guarded prompts an
 ---
 
 Use `yinz --session NAME agent ...`. Start with `agent list --json`.
+Inside a Yinz pane, including Codex shell commands, `YINZ_SESSION_NAME` selects the session, so `--session` is optional.
+A sandboxed Codex cannot reach Yinz ("connection was not permitted"). Spawn Codex orchestrators with `--allow-yinz`, which also allows internet access, or `--permission-mode skip`.
 Use `--project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
 Basic live operations do not require Hocus chat, `hocus-agentd`, or `hocus-store`.
 Registration requires `hocus-agentd`. Archive queries require `hocus-store`.
@@ -45,7 +47,10 @@ yinz --session main agent recover terminal_3 --conversation CONVERSATION_ID --co
 
 Recovery requires a live idle agent and no active submission or paste write.
 Claude reports nothing when Esc interrupts a turn, so it stays `Busy`. If `agent read` shows the
-agent stopped and its composer is empty, add `--interrupted` to reset it to idle.
+agent stopped, clear any draft (Esc can restore the interrupted prompt), then add
+`--interrupted` to reset it to idle. This also applies to a `Waiting` agent whose dialog you
+dismissed. It needs input, such as Esc, after the agent's last hook and 3 seconds without a
+hook since.
 Use ordinary pane commands to close or restart a pane.
 
 `agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.

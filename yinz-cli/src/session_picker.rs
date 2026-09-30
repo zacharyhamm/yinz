@@ -18,7 +18,11 @@ pub struct PickerRow {
 
 impl PickerRow {
     fn selectable(&self) -> bool {
-        !self.current && self.listing != SessionListing::Unresponsive
+        !self.current
+            && !matches!(
+                self.listing,
+                SessionListing::Unresponsive | SessionListing::Denied
+            )
     }
 }
 
@@ -139,6 +143,9 @@ impl PickerState {
             self.message = Some(format!(
                 "{name} is not responding; stop it with `yinz kill-session {name}`"
             ));
+            Outcome::Continue
+        } else if row.listing == SessionListing::Denied {
+            self.message = Some(format!("{name} cannot be reached from here"));
             Outcome::Continue
         } else {
             Outcome::Picked(row.name.clone())

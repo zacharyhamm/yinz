@@ -4471,6 +4471,12 @@ impl Tab {
             .unwrap_or(0)
     }
 
+    /// When the input counted by [`Tab::agent_input_revision`] last arrived.
+    pub fn agent_input_at(&self, pane_id: PaneId) -> Option<Instant> {
+        self.get_pane_with_id(pane_id)
+            .and_then(|pane| pane.agent_input_at())
+    }
+
     pub fn write_key_to_pane_id(&mut self, pane_id: PaneId, key: KeyWithModifier) -> Result<()> {
         let bytes = yinz_key_codec::keys::serialize_non_kitty(&key)
             .context("key has no terminal encoding")?

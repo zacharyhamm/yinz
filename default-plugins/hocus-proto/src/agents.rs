@@ -22,7 +22,7 @@ use yinz_tile::prelude::HostId;
 use yinz_tile::prelude::TabId;
 use yinz_types::internal_ids::SessionName;
 
-pub use yinz_types::agent::control::unwrap_pasted_content;
+pub use yinz_types::agent::control::submitted_prompt;
 
 use crate::location::Location;
 use crate::markdown::{MdLine, MdStyle};
@@ -1195,7 +1195,7 @@ pub fn run_entry(event: &yinz_tile::agent::HookEvent) -> Option<(RunEntryKind, S
     let (kind, text) = match event.hook_event_name.as_str() {
         "UserPromptSubmit" => (
             RunEntryKind::Prompt,
-            unwrap_pasted_content(event.prompt.as_deref()?).into_owned(),
+            submitted_prompt(event.prompt.as_deref()?).into_owned(),
         ),
         "PreToolUse"
             if matches!(
@@ -4889,7 +4889,7 @@ mod tests {
         );
         let pasted = crate::wire::HookEvent {
             prompt: Some(
-                "\n\n<pasted_content id=\"8c9e\">\nbuild\nthe history\n</pasted_content id=\"8c9e\">\n"
+                "Follow the instructions in the pasted text: \n\n<pasted_content id=\"8c9e\">\nbuild\nthe history\n</pasted_content id=\"8c9e\">\n"
                     .to_owned(),
             ),
             ..event("UserPromptSubmit")
@@ -9053,6 +9053,21 @@ mod tests {
             let (_, text) = run_entry(event).expect("an entry");
             assert_eq!(run_event_id(event, &text), None);
         }
+    }
+
+    /// A collapsed paste over the broadcast cap reaches the history as what was pasted, not as
+    /// an opener whose closer the cap cut off.
+    #[test]
+    fn an_oversize_collapsed_paste_is_recorded_without_its_wrapper() {
+        let body = "build\n".repeat(yinz_tile::agent::HOOK_BROADCAST_MAX_BYTES / 4);
+        let event = prompt_event(&format!(
+            "\n\n<pasted_content id=\"8c9e\">\n{body}\n</pasted_content id=\"8c9e\">\n"
+        ));
+        let (pruned, _) = event.broadcast(serde_json::to_string(&event).unwrap());
+        let (kind, text) = run_entry(&pruned).expect("an entry");
+        assert_eq!(kind, RunEntryKind::Prompt);
+        assert!(text.starts_with("build\nbuild"), "{}", &text[..40]);
+        assert!(!text.contains("pasted_content"));
     }
 
     /// Finding 2, in the form that bites: the id has to be taken from the text the entry keeps,

@@ -266,3 +266,32 @@ fn cli_named_branch_vm_disables_automatic_naming() {
     assert_eq!(request["spec"]["firecracker"], "review");
     assert_eq!(request["spec"]["branch"], "topic");
 }
+
+#[test]
+fn allowing_yinz_opens_only_a_codex_sandbox() {
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        args: vec!["--search".into()],
+        ..Default::default()
+    };
+    allow_sandboxed_yinz(&mut spec).unwrap();
+    assert_eq!(
+        spec.args,
+        [
+            "--search",
+            "-c",
+            "sandbox_workspace_write.network_access=true"
+        ]
+    );
+    for kind in [Some("claude"), None] {
+        let mut spec = AgentSpawnSpec {
+            kind: kind.map(Into::into),
+            ..Default::default()
+        };
+        assert_eq!(
+            allow_sandboxed_yinz(&mut spec).unwrap_err().to_string(),
+            "--allow-yinz applies only to --kind codex"
+        );
+        assert!(spec.args.is_empty());
+    }
+}

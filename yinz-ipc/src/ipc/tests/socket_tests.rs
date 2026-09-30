@@ -791,7 +791,8 @@ fn only_a_missing_listener_is_an_absent_session() {
     );
     assert_eq!(
         classify_probe_connect_error(ErrorKind::PermissionDenied),
-        Err(ErrorKind::PermissionDenied)
+        Ok(SessionProbe::Denied),
+        "a sandbox that refuses the connect says nothing about the server behind it"
     );
     // `Absent` is the answer that lets a new server unlink this socket and bind
     // its own. A connect that timed out came from a server that is *running*

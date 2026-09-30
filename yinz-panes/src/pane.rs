@@ -271,6 +271,10 @@ pub trait Pane {
     fn agent_input_revision(&self) -> u64 {
         0
     }
+    /// When input last reached this pane, as counted by [`Pane::agent_input_revision`].
+    fn agent_input_at(&self) -> Option<Instant> {
+        None
+    }
     fn record_agent_input(&mut self) {}
     /// Replace the pane's agent record; answers whether it changed.
     fn set_agent_info(&mut self, _agent: Option<AgentInfo>) -> bool {

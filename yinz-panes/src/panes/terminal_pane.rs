@@ -130,6 +130,7 @@ pub struct TerminalPane {
     /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
     agent: Option<AgentInfo>,
     agent_input_revision: u64,
+    agent_input_at: Option<Instant>,
     /// Whether this pane has ever held an agent record, however it got there.
     ///
     /// Sticky, and deliberately not derived from `agent`: a `SessionEnd` hook clears the
@@ -1371,8 +1372,12 @@ impl Pane for TerminalPane {
     fn agent_input_revision(&self) -> u64 {
         self.agent_input_revision
     }
+    fn agent_input_at(&self) -> Option<Instant> {
+        self.agent_input_at
+    }
     fn record_agent_input(&mut self) {
         self.agent_input_revision = self.agent_input_revision.wrapping_add(1);
+        self.agent_input_at = Some(Instant::now());
     }
     fn last_agent_cwd(&self) -> Option<&str> {
         self.last_agent_cwd.as_deref()
@@ -1548,6 +1553,7 @@ impl Pane for TerminalPane {
             self.is_held = None;
             self.suspended = false;
             self.agent_input_revision = 0;
+            self.agent_input_at = None;
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
                 if fresh_agent {
@@ -1896,6 +1902,7 @@ impl TerminalPane {
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
             agent,
             agent_input_revision: 0,
+            agent_input_at: None,
             // A pane the spawn path opened as an agent pane starts `Busy`, so there is
             // never a wait to draw before the first report arrives.
             agent_attention_since: None,

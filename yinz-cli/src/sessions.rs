@@ -14,6 +14,38 @@ pub fn unresponsive_session_message(name: &str) -> String {
          before reusing the name."
     )
 }
+/// What to tell a user whose process may not connect to a session's socket at all.
+pub fn denied_session_message(name: &str) -> String {
+    format!(
+        "Session {name:?} exists, but this process is not permitted to connect to it. {}",
+        SANDBOX_REMEDY
+    )
+}
+/// Why a sandboxed caller cannot connect, and what lets it.
+const SANDBOX_REMEDY: &str = "A sandbox, such as Codex's workspace-write, is probably blocking \
+     Unix socket connections, or the socket belongs to another user. Spawn Codex with `yinz agent spawn --kind codex --allow-yinz`, or \
+     give it full access.";
+/// Whether this process was refused a connection to any session socket.
+pub fn sessions_denied() -> bool {
+    get_sessions_with_status().is_ok_and(|sessions| {
+        sessions
+            .iter()
+            .any(|(_, _, status)| *status == SessionProbe::Denied)
+    })
+}
+/// What to tell a user when no session answered: that there is none, or that a sandbox
+/// kept this process from reaching the ones there are.
+pub fn no_active_session_message() -> String {
+    if sessions_denied() {
+        format!(
+            "Cannot connect to the Yinz sessions in {}: the connection was not permitted. {}",
+            YINZ_SOCK_DIR.display(),
+            SANDBOX_REMEDY
+        )
+    } else {
+        "There is no active session!".to_owned()
+    }
+}
 /// Orders a listing by age: oldest first, or newest first with `reverse`.
 pub fn sort_sessions(sessions: &mut [(SessionName, Duration, SessionListing)], reverse: bool) {
     sessions.sort_by(|a, b| {
@@ -43,6 +75,7 @@ pub fn format_session_line(
                 SessionListing::Unresponsive => {
                     format!("(UNRESPONSIVE - run `yinz kill-session {}`)", session_name)
                 },
+                SessionListing::Denied => DENIED_LISTING.to_string(),
                 SessionListing::Running => String::new(),
             }
         };
@@ -61,6 +94,9 @@ pub fn format_session_line(
                     "(\u{1b}[31;1mUNRESPONSIVE\u{1b}[m - run `yinz kill-session {}`)",
                     session_name
                 ),
+                SessionListing::Denied => {
+                    DENIED_LISTING.replace("UNREACHABLE", "\u{1b}[31;1mUNREACHABLE\u{1b}[m")
+                },
                 SessionListing::Running => String::new(),
             }
         };
@@ -169,6 +205,7 @@ pub fn merge_listings(
         let listing = match status {
             SessionProbe::Alive => SessionListing::Running,
             SessionProbe::Unresponsive => SessionListing::Unresponsive,
+            SessionProbe::Denied => SessionListing::Denied,
             // Nothing behind the socket by the time it was probed —
             // `assert_socket` has already unlinked it, so there is no
             // session here to list.
@@ -205,6 +242,7 @@ pub fn assert_session(name: &str) {
         // Attaching would connect and then wait forever for a reply that is
         // not coming; say so instead.
         Ok(SessionProbe::Unresponsive) => eprintln!("{}", unresponsive_session_message(name)),
+        Ok(SessionProbe::Denied) => eprintln!("{}", denied_session_message(name)),
         Ok(SessionProbe::Absent) => {
             println!("No session named {:?} found.", name);
             if let Some(sugg) = get_sessions()
@@ -264,6 +302,7 @@ pub fn assert_session_ne(name: &str) {
         // Creating here would spawn a second server on the same socket path,
         // which unlinks the live server's socket out from under it.
         Ok(SessionProbe::Unresponsive) => eprintln!("{}", unresponsive_session_message(name)),
+        Ok(SessionProbe::Denied) => eprintln!("{}", denied_session_message(name)),
         Ok(SessionProbe::Alive) => println!("Session with name {:?} already exists. Use attach command to connect to it or specify a different name.", name),
         Err(e) => eprintln!("Error occurred: {:?}", e),
     };
@@ -297,7 +336,11 @@ pub enum SessionListing {
     Exited,
     /// A server that holds the socket but does not answer.
     Unresponsive,
+    /// A socket this process is not permitted to connect to, as inside a sandbox.
+    Denied,
 }
+const DENIED_LISTING: &str =
+    "(UNREACHABLE - connecting is not permitted; a sandbox may block Unix sockets)";
 pub fn delete_session(name: &str, force: bool) {
     if let Err(e) = yinz_session::sessions::delete_session(&SessionName::new(name), force) {
         if e.kind() == std::io::ErrorKind::NotFound {
