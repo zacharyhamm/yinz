@@ -678,7 +678,8 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             let connections = async {
                 loop {
                     let (stream, _) = listener.accept().await.context("accept Codex UI")?;
-                    proxy(stream, program, &registration).await?;
+                    // Connection failures must not end the UI's lifetime; Codex reconnects.
+                    proxy(stream, program, &registration).await.non_fatal();
                 }
                 #[expect(unreachable_code, reason = "the connection loop exits through errors")]
                 Ok::<(), anyhow::Error>(())
