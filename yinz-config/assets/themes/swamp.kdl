@@ -146,7 +146,7 @@ themes {
         }
         ribbon_unselected {
             base "#0a0a0a"
-            background "#d1d5db"
+            background "#22d3ee"
             emphasis_0 "#0a0a0a"
             emphasis_1 "#22d3ee"
             emphasis_2 "#0a0a0a"
