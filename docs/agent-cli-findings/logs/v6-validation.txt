@@ -1,0 +1,39 @@
+Verified 2026-09-29 (America/Chicago), agent-cli-verify-more worktree.
+Claude Code 2.1.285, Haiku; isolated scratch sessions, no existing user drafts.
+
+cargo x ci check
+  Final source: PASS, 196 seconds.
+  Format and lint: PASS.
+  Workspace nextest: 9,347 passed, 54 skipped.
+  Doctests: PASS.
+  Integration nextest: 473 passed, 0 skipped, 16 workers.
+  Native binary and Wasm plugins built in this worktree's own real target/.
+  Full runner log: /tmp/yinz-ci-final-source-12-14.log
+
+cargo x remote-test --build --native
+  PASS; Linux native binary, Docker SSH and proxy fixtures.
+  Runner log: /tmp/yinz-remote-build-12-14.log
+cargo x remote-test --test
+  PASS: 43 passed, 0 failed, 0 ignored; 108 seconds.
+  Includes a_claude_turn_observer_confirms_only_complete_remote_transcript_records.
+  Runner log: /tmp/yinz-remote-final-12-14.log
+
+Live #12: FAIL. Combined U+200B/U+202E, U+200B alone, and a long Unicode
+paste remained drafts after the requested settling guard and one Enter.
+A separate raw paste with a two-second delay before one Enter did the same.
+No stripping of submitted text or second Enter was added without a changed
+user constraint. See v6-12-*.json and v6-12-slow-paste.{py,log}.
+
+Live #13: PASS. /probe, /cost, and !printf BANG_OK rejected immediately,
+ready:true. Exact /clear replaced the conversation; once SessionStart
+arrived, idle wait succeeded and the next prompt completed "5".
+See v6-13-*.json.
+
+Live #14: PASS. Stop hook slept six seconds and blocked once. While blocked,
+state Busy, ready:false; concurrent prompt rejected. Original caller stayed
+pending and received completed "FINAL_1214" only after turn_duration.
+See v6-14-*; transcript retains record identity and text, omitting thinking
+and unrelated payloads. Both saved prompt chains were replayed to their
+matching duration records and confirmed only "5" and "FINAL_1214".
+
+git diff --check: PASS.

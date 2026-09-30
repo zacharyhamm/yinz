@@ -413,7 +413,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..3 {
+        for _ in 0..4 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -432,6 +432,36 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         Ok(BrokerToServerMsg::AgentReport { kind, json })
             if kind == "claude" && json == r#"{"hook_event_name":"Stop"}"#
     ));
+
+    let confirmation = yinz_types::agent::HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "remote-session".into(),
+        prompt_id: Some("remote-prompt".into()),
+        claude_turn_complete: Some(true),
+        last_assistant_message: Some("final remote answer".into()),
+        ..Default::default()
+    };
+    crate::claude_turn::send(
+        &crate::claude_turn::Route::Remote {
+            socket: socket.clone(),
+            pane_token: "token".into(),
+        },
+        &confirmation,
+    )
+    .unwrap();
+    let BrokerToServerMsg::AgentReport { kind, json } = protocol::read_frame(&mut server_side)
+        .unwrap()
+        .unwrap()
+        .decode_control()
+        .unwrap()
+    else {
+        panic!("expected confirmation");
+    };
+    assert_eq!(kind, "claude");
+    assert_eq!(
+        serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
+        confirmation
+    );
 
     let transcript = dir.path().join("codex.jsonl");
     std::fs::write(&transcript, concat!(

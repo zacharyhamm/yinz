@@ -88,6 +88,8 @@ fn hook(name: &str) -> HookEvent {
         hook_event_name: name.into(),
         session_id: "conversation".into(),
         turn_id: Some("turn".into()),
+        prompt_id: Some("prompt".into()),
+        claude_turn_complete: (name == "Stop").then_some(true),
         source: (name == "SessionStart").then(|| "startup".into()),
         prompt: (name == "UserPromptSubmit").then(|| "review".into()),
         ..Default::default()
@@ -252,8 +254,16 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                 assert!(screen.agent_controls.is_empty());
                 screen.agent_control(prompt(true), CLIENT);
                 assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
-                report_kind(&mut screen, kind, hook("UserPromptSubmit"));
-                report_kind(&mut screen, kind, hook("Stop"));
+                for name in ["UserPromptSubmit", "Stop"] {
+                    report_kind(
+                        &mut screen,
+                        kind,
+                        HookEvent {
+                            prompt_id: Some("next-prompt".into()),
+                            ..hook(name)
+                        },
+                    );
+                }
                 let completed = replies(&messages, CLIENT).pop().unwrap();
                 assert_eq!(completed.outcome, AgentOutcome::Completed);
                 assert!(completed.acknowledged);
@@ -268,6 +278,10 @@ fn a_fresh_waiting_hook_requires_another_dialog_answer() {
     for kind in ["claude", "codex"] {
         let (mut screen, messages, writes) = setup(kind);
         report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(prompt(false), CLIENT);
+        finish_paste(&writes);
+        report_kind(&mut screen, kind, hook("UserPromptSubmit"));
+        replies(&messages, CLIENT);
         report_kind(&mut screen, kind, hook("PermissionRequest"));
         screen.agent_control(send_keys(vec![BareKey::Down]), CLIENT);
         assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
@@ -1728,7 +1742,7 @@ fn deliver_clear(screen: &mut Screen, writes: &Receiver<(PtyWriteInstruction, Er
     assert_eq!(finish_paste(writes), b"/clear\x1b[200~\x1b[201~");
     let now = Instant::now();
     screen.refresh_agent_controls_at(now);
-    screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(501));
     assert_eq!(finish_paste(writes), b"\r");
     assert!(screen.agent_clear_inputs.contains_key(&PANE));
 }
@@ -1883,7 +1897,7 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
             if reason == "timeout" {
                 screen.agent_controls[0].deadline = Some(now);
             }
-            screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         }
         assert!(screen.agent_clear_inputs.is_empty(), "{reason}");
         report_kind(&mut screen, kind, hook("SessionEnd"));
@@ -1898,7 +1912,11 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
         );
         let status = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(status.outcome, AgentOutcome::Ok);
-        assert!(!status.agents[0].ready, "{reason}");
+        assert_eq!(
+            status.agents[0].ready,
+            matches!(reason, "not_exact" | "codex"),
+            "{reason}"
+        );
         // Manual/raw clear still restores the record, so explicit recovery is available.
         screen.agent_control(
             AgentRequest::Recover {
@@ -1954,7 +1972,7 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
         match reason {
             "timeout" => screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31)),
             "recover" => {
-                report_kind(&mut screen, "claude", hook("Stop"));
+                report_kind(&mut screen, "claude", hook("SessionStart"));
                 screen.agent_control(recover(), CLIENT);
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
                 screen.agent_write_for_test();
@@ -2078,7 +2096,7 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
         drop(completion);
         let now = Instant::now();
         screen.refresh_agent_controls_at(now);
-        screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(501));
         assert!(finish_paste(&writes).is_empty(), "{reason}");
         if reason == "ack" {
             assert!(replies(&messages, CLIENT).is_empty());
@@ -2383,7 +2401,7 @@ fn synthesized_scroll_arrows_interrupt_agent_before_delayed_enter() {
                     .agent_input_revision(PANE),
                 revision + lines as u64
             );
-            screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(501));
             assert_eq!(
                 replies(&messages, CLIENT)[0].outcome,
                 AgentOutcome::Interrupted
@@ -2694,59 +2712,42 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
 }
 
 #[test]
-fn command_prefixes_preserve_delivery_and_require_prompt_acknowledgement() {
-    let long = "a".repeat(500);
-    for (text, header) in [
-        (format!("/prefix-probe {long}"), "/prefix-probe"),
-        ("/prefix-probe first\nsecond".into(), "/prefix-probe"),
-        ("/prefix-probe\nfirst\nsecond".into(), "/prefix-probe"),
-        ("/prefix-probe\t first\nsecond".into(), "/prefix-probe"),
-        ("/préfixe first\nsecond".into(), "/préfixe"),
-        ("/help".into(), "/help"),
-        (format!("!printf '{long}'"), ""),
-        ("!printf 'first\\n'\nprintf 'second\\n'".into(), ""),
-        (format!("# remember {long}"), ""),
-        ("# remember first\nsecond".into(), ""),
-    ] {
-        for kind in ["claude", "codex"] {
+fn commands_are_rejected_before_claiming_or_writing_input() {
+    for kind in ["claude", "codex"] {
+        for command in [
+            "/probe",
+            "/cost",
+            " /probe\narguments",
+            "/clear ",
+            "\t/clear",
+            " /préfixe ",
+        ]
+        .into_iter()
+        .chain((kind == "claude").then_some("!printf BANG_OK"))
+        .chain((kind == "claude").then_some("\u{200b} \u{202e}/probe"))
+        {
             let (mut screen, messages, writes) = setup(kind);
             report_kind(&mut screen, kind, hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
                     pane_id: PANE,
                     expected_session_id: None,
-                    prompt: text.clone(),
+                    prompt: command.into(),
                     wait: true,
                     timeout_ms: 30_000,
                 },
                 CLIENT,
             );
-            let header = if kind == "claude" { header } else { "" };
-            let body = text.strip_prefix(header).unwrap();
+            let response = replies(&messages, CLIENT).pop().unwrap();
             assert_eq!(
-                finish_paste(&writes),
-                format!("{header}\x1b[200~{body}\x1b[201~").into_bytes(),
-                "{kind}: {text}"
+                response.outcome,
+                AgentOutcome::Rejected,
+                "{kind}: {command}"
             );
-            // Native Claude shell input emits Stop without UserPromptSubmit. Execution alone
-            // must not acknowledge the command or consume its input revision.
-            if kind == "claude" && text.starts_with('!') {
-                report_kind(&mut screen, kind, hook("Stop"));
-                screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
-                let responses = replies(&messages, CLIENT);
-                assert_eq!(responses[0].outcome, AgentOutcome::TimedOut);
-                assert!(!responses[0].acknowledged);
-                assert!(!responses[0].agents[0].ready);
-            } else {
-                let mut submit = hook("UserPromptSubmit");
-                submit.prompt = Some(text.clone());
-                report_kind(&mut screen, kind, submit);
-                report_kind(&mut screen, kind, hook("Stop"));
-                let responses = replies(&messages, CLIENT);
-                assert_eq!(responses[0].outcome, AgentOutcome::Completed);
-                assert!(responses[0].acknowledged);
-                assert!(responses[0].agents[0].ready);
-            }
+            assert!(response.message.unwrap().contains("send-keys"));
+            assert!(response.agents[0].ready);
+            assert!(screen.agent_controls.is_empty());
+            assert!(finish_paste(&writes).is_empty());
         }
     }
 }
@@ -3020,4 +3021,153 @@ fn work_after_a_stop_or_without_a_turn_id_still_reports_busy() {
             "{kind} after Interrupt"
         );
     }
+}
+
+#[test]
+fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
+    for text in [
+        "review \u{200b}\u{202e}👩\u{200d}💻".into(),
+        "review ".repeat(10000),
+    ] {
+        for manual in [false, true] {
+            let (mut screen, messages, writes) = setup("claude");
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            screen.agent_control(
+                AgentRequest::Prompt {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                    prompt: text.clone(),
+                    wait: true,
+                    timeout_ms: 30_000,
+                },
+                CLIENT,
+            );
+            let written = finish_paste(&writes);
+            assert!(written
+                .windows(text.len())
+                .any(|part| part == text.as_bytes()));
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            screen.refresh_agent_controls_at(now + Duration::from_millis(499));
+            assert!(finish_paste(&writes).is_empty());
+            screen
+                .pane_output_activity
+                .insert(PANE, now + Duration::from_millis(480));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(500));
+            assert!(finish_paste(&writes).is_empty());
+            if manual {
+                screen.agent_control(send_keys(vec![BareKey::Char('x')]), CLIENT);
+                assert_eq!(finish_paste(&writes), b"x");
+                replies(&messages, CLIENT);
+            }
+            screen.refresh_agent_controls_at(now + Duration::from_millis(579));
+            assert!(finish_paste(&writes).is_empty());
+            screen.refresh_agent_controls_at(now + Duration::from_millis(580));
+            if manual {
+                assert!(finish_paste(&writes).is_empty());
+                assert_eq!(screen.agent_controls.len(), 1);
+            } else {
+                assert_eq!(finish_paste(&writes), b"\r");
+                screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+                assert!(finish_paste(&writes).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_blocking_stop_and_stale_confirmations_cannot_finish_a_prompt() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("claude", target);
+        report_kind(&mut screen, "claude", hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        let mut stop = hook("Stop");
+        stop.claude_turn_complete = None;
+        stop.prompt_id = None;
+        stop.last_assistant_message = Some("FIRST. BLOCKME".into());
+        // Replay an old installed reporter's Idle state.
+        let mut old_idle = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        old_idle.state = AgentState::Idle;
+        report_state(
+            &mut screen,
+            "claude",
+            stop.clone(),
+            AgentReportState::Set(old_idle),
+        );
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), ClientId::new(2));
+        let rejected = replies(&messages, ClientId::new(2)).pop().unwrap();
+        assert_eq!(rejected.outcome, AgentOutcome::Rejected);
+        assert!(!rejected.agents[0].ready);
+        assert_eq!(rejected.agents[0].agent.state, AgentState::Busy);
+        assert!(finish_paste(&writes).is_empty());
+        report_kind(&mut screen, "claude", hook("PostToolUse"));
+        let mut confirmation = hook("Stop");
+        confirmation.prompt_id = Some("old".into());
+        confirmation.last_assistant_message = Some("OLD".into());
+        report_kind(&mut screen, "claude", confirmation.clone());
+        assert!(replies(&messages, CLIENT).is_empty());
+        confirmation.prompt_id = Some("prompt".into());
+        confirmation.last_assistant_message = Some("SECOND".into());
+        report_kind(&mut screen, "claude", confirmation.clone());
+        let completed = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(completed.outcome, AgentOutcome::Completed);
+        assert_eq!(completed.message.as_deref(), Some("SECOND"));
+        assert!(completed.agents[0].ready);
+        report_kind(&mut screen, "claude", confirmation);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "claude", stop);
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        let mut next = hook("UserPromptSubmit");
+        next.prompt_id = Some("next".into());
+        report_kind(&mut screen, "claude", next);
+        report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "claude", hook("Stop"));
+        assert!(
+            replies(&messages, CLIENT).is_empty(),
+            "old turn cannot finish next prompt"
+        );
+    }
+}
+
+#[test]
+fn claude_confirmation_failure_retains_the_uncertain_submission_claim() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    let mut unavailable = hook("Stop");
+    unavailable.claude_turn_complete = Some(false);
+    report_kind(&mut screen, "claude", unavailable);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::StatusUnavailable);
+    assert!(response.acknowledged);
+    assert!(!response.agents[0].ready);
+    assert_eq!(screen.agent_controls.len(), 1);
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(finish_paste(&writes).is_empty());
+    // A second observer can supply valid late evidence after the first was unavailable.
+    report_kind(&mut screen, "claude", hook("Stop"));
+    assert!(screen.agent_controls.is_empty());
+    assert!(
+        replies(&messages, CLIENT).is_empty(),
+        "the caller already received unavailable"
+    );
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    assert!(replies(&messages, CLIENT)[0].agents[0].ready);
 }

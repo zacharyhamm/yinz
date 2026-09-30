@@ -16,6 +16,7 @@
 //! Terminal process supervision, local and remote transport, and the VM provider client.
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 
+pub mod claude_turn;
 pub mod command;
 pub mod firecracker;
 pub mod pty_host;

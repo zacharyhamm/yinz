@@ -20,6 +20,12 @@ use {
 };
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some(yinz_process::claude_turn::OBSERVER_FLAG) {
+        if yinz_process::claude_turn::run().is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some(yinz_swamp::SUPERVISOR_FLAG) {
         let result = std::env::args_os()
             .nth(2)

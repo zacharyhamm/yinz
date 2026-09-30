@@ -49,6 +49,35 @@ pub(super) fn apply_queued_agent_report(
         .event
         .as_ref()
         .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok());
+    // Older installed reporters can still send Idle for an ordinary Claude Stop.
+    // Correlate internal confirmations before applying or broadcasting any state.
+    if report.kind == "claude"
+        && hook
+            .as_ref()
+            .is_some_and(|hook| screen.ignore_claude_confirmation(pane_id, hook))
+    {
+        return Ok(true);
+    }
+    let mut normalized;
+    let report = if report.kind == "claude"
+        && hook
+            .as_ref()
+            .is_some_and(|hook| hook.hook_event_name == "Stop")
+    {
+        let hook = hook.as_ref().expect("checked Stop hook");
+        normalized = report.clone();
+        if hook.claude_turn_complete != Some(true) {
+            if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
+                agent.state = yinz_types::agent::AgentState::Busy;
+            }
+            if let Some(event) = &mut normalized.event {
+                event.state = Some(yinz_types::agent::AgentState::Busy);
+            }
+        }
+        &normalized
+    } else {
+        report
+    };
     // A late hook from an earlier process must not finish a new operation in a reused pane.
     if let Some(command) = screen
         .tab_containing_pane(pane_id)

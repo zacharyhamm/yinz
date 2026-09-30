@@ -2433,3 +2433,75 @@ fn a_remote_pane_is_told_its_real_pane_id() {
 
     pane.close();
 }
+
+#[test]
+#[ignore]
+fn a_claude_turn_observer_confirms_only_complete_remote_transcript_records() {
+    let hosts = start();
+    let path = format!("/tmp/yinz-claude-observer-{}.jsonl", uuid::Uuid::new_v4());
+    let submit =
+        serde_json::json!({"hook_event_name":"UserPromptSubmit", "session_id":"remote-claude",
+        "prompt_id":"remote-prompt", "prompt":"review", "transcript_path":path})
+        .to_string();
+    let user =
+        r#"{"type":"user","sessionId":"remote-claude","promptId":"remote-prompt","uuid":"user"}"#;
+    let first = r#"{"type":"assistant","parentUuid":"user","uuid":"first","message":{"content":[{"type":"text","text":"FIRST"}]}}"#;
+    let final_text = r#"{"type":"assistant","parentUuid":"first","uuid":"final","message":{"content":[{"type":"text","text":"FINAL"}]}}"#;
+    let duration = r#"{"type":"system","subtype":"turn_duration","parentUuid":"final"}"#;
+    let script = format!(
+        "printf '%s\\n' {} {} > {}; printf '%s' {} | yinz --pty-broker report claude; \
+         printf '%s' '{{\"hook_event_name\":\"Stop\",\"session_id\":\"remote-claude\"}}' | yinz --pty-broker report claude; \
+         echo hook-returned; read -r go; printf '%s\\n' {} >> {}; printf '%s' {} >> {}; \
+         echo partial-record; read -r go; printf '\\n' >> {}; echo turn-recorded; read -r go; rm {}",
+        shell_quote(user), shell_quote(first), shell_quote(&path), shell_quote(&submit),
+        shell_quote(final_text), shell_quote(&path), shell_quote(duration), shell_quote(&path),
+        shell_quote(&path), shell_quote(&path),
+    );
+    // argv[0] identifies this shell as the test agent; it remains alive while hooks exit.
+    let cmd = RunCommand {
+        command: "/bin/bash".into(),
+        args: vec![
+            "-c".into(),
+            format!("exec -a claude bash -c {}", shell_quote(&script)),
+        ],
+        target: PaneTarget::Ssh { host: HOST.into() },
+        ..Default::default()
+    };
+    let terminal = yinz_types::internal_ids::TerminalId::new(11);
+    let (conn, socket) = hosts
+        .open_pane_with_env(HOST, &cmd, None, terminal, vec![])
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = RemoteReader::new(conn.clone(), socket)
+        .unwrap()
+        .on_exit(terminal, cmd, Box::new(|_, _, _| {}))
+        .on_agent_report(Arc::new(move |pane, kind, raw| {
+            tx.send((
+                pane,
+                kind,
+                serde_json::from_str::<yinz_types::agent::HookEvent>(&raw).unwrap(),
+            ))
+            .unwrap();
+        }));
+    let pane = pump(conn, reader);
+    pane.wait_for_output("hook-returned");
+    let (reported, kind, submitted) = rx.recv_timeout(SETTLE).unwrap();
+    assert_eq!(reported, terminal);
+    assert_eq!(kind, "claude");
+    assert_eq!(submitted.hook_event_name, "UserPromptSubmit");
+    let (_, _, stop) = rx.recv_timeout(SETTLE).unwrap();
+    assert_eq!(stop.claude_turn_complete, None);
+    // This timeout verifies the observer cannot finish before a complete record exists.
+    assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
+    pane.send_line("continue");
+    pane.wait_for_output("partial-record");
+    assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
+    pane.send_line("finish");
+    let (_, _, completed) = rx.recv_timeout(SETTLE).unwrap();
+    assert_eq!(completed.prompt_id.as_deref(), Some("remote-prompt"));
+    assert_eq!(completed.claude_turn_complete, Some(true));
+    assert_eq!(completed.last_assistant_message.as_deref(), Some("FINAL"));
+    pane.send_line("exit");
+    pane.wait_until_ended(SETTLE).unwrap();
+    pane.close();
+}

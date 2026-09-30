@@ -481,7 +481,7 @@ fn an_agent_report_is_carried_on_the_pane() {
     assert_eq!(event["pane_id"], terminal.terminal_id().get(), "{event}");
     assert_eq!(event["kind"], "claude", "{event}");
     assert_eq!(event["hook"], "Stop", "{event}");
-    assert_eq!(event["state"], "Idle", "{event}");
+    assert_eq!(event["state"], "Busy", "{event}");
     assert_eq!(event["last_message"], "all green", "{event}");
     assert_eq!(event["raw"], json, "{event}");
 

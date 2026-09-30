@@ -691,3 +691,53 @@ fn manual_reports_preserve_explicit_targets_and_do_not_read_stdin() {
         drop(stdin);
     }
 }
+
+#[test]
+fn claude_observer_outlives_the_hook_and_reports_missing_evidence() {
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let mut child = command(dir.path()).arg("--hook-json").spawn().unwrap();
+    write_event(
+        &mut child,
+        &serde_json::json!({
+            "hook_event_name":"UserPromptSubmit", "session_id":"conversation", "prompt_id":"prompt",
+            "prompt":"review", "transcript_path":dir.path().join("missing.jsonl")
+        })
+        .to_string(),
+    );
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg() else {
+        panic!("expected submit");
+    };
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+            report_id: report.report_id,
+        })
+        .unwrap();
+    // EOF on both hook output pipes proves the observer did not retain them.
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) = receiver.recv_client_msg() else {
+        panic!("expected confirmation");
+    };
+    let hook: yinz_types::agent::HookEvent =
+        serde_json::from_str(&report.event.unwrap().raw).unwrap();
+    assert_eq!(hook.claude_turn_complete, Some(false));
+    assert_eq!(hook.prompt_id.as_deref(), Some("prompt"));
+    assert_eq!(hook.last_assistant_message, None);
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+            report_id: report.report_id,
+        })
+        .unwrap();
+}

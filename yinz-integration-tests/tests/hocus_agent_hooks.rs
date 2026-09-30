@@ -412,6 +412,7 @@ fn delayed_daemon_events_do_not_overwrite_newer_pane_state() {
             pane_id,
             &serde_json::json!({
                 "hook_event_name": hook, "session_id": "current", "tool_name": "Bash",
+                "_yinz_claude_turn_complete": (hook == "Stop").then_some(true),
             })
             .to_string(),
         );
@@ -531,6 +532,7 @@ keybinds {{
             pane_id,
             &serde_json::json!({
                 "hook_event_name": parent, "session_id": "recap-parent", "cwd": "/work",
+                "_yinz_claude_turn_complete": (parent == "Stop").then_some(true),
                 "tool_name": "Bash", "tool_input": {"command": "git status"},
             })
             .to_string(),

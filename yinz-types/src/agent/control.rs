@@ -138,13 +138,14 @@ mod pane_string {
 }
 
 /// The caller registers this before writing and verifies pane identity and input ownership.
-/// Codex requires provider turn IDs. Claude's hooks can omit them, so its fallback depends on
-/// serialized hooks for the same conversation and cancellation on any competing input.
+/// Codex requires provider turn IDs; Claude requires prompt IDs and transcript confirmation.
 #[derive(Clone, Debug)]
 pub struct PromptObservation {
     kind: String,
     conversation_id: String,
     prompt_sha256: String,
+    claude_prompt_sha256: Option<String>,
+    prompt_id: Option<String>,
     acknowledged: bool,
     turn_id: Option<String>,
     finished: bool,
@@ -156,6 +157,9 @@ impl PromptObservation {
             kind: kind.to_owned(),
             conversation_id: conversation_id.to_owned(),
             prompt_sha256: prompt_sha256(prompt),
+            claude_prompt_sha256: (kind == "claude")
+                .then(|| prompt_sha256(&claude_prompt_text(prompt))),
+            prompt_id: None,
             acknowledged: false,
             turn_id: None,
             finished: false,
@@ -230,29 +234,49 @@ impl PromptObservation {
                 .prompt_sha256
                 .clone()
                 .or_else(|| hook.prompt.as_deref().map(prompt_sha256));
-            if fingerprint.as_deref() != Some(self.prompt_sha256.as_str()) {
+            if fingerprint.as_deref() != Some(self.prompt_sha256.as_str())
+                && !(self.kind == "claude" && fingerprint == self.claude_prompt_sha256)
+            {
                 return Some(AgentOutcome::Interrupted);
             }
             let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
-            if self.kind == "codex" && turn_id.is_none() {
+            let prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
+            if (self.kind == "codex" && turn_id.is_none())
+                || (self.kind == "claude" && prompt_id.is_none())
+            {
                 return Some(AgentOutcome::StatusUnavailable);
             }
             if self.acknowledged {
-                return (turn_id != self.turn_id).then_some(AgentOutcome::Interrupted);
+                return (turn_id != self.turn_id || prompt_id != self.prompt_id)
+                    .then_some(AgentOutcome::Interrupted);
             }
             self.acknowledged = true;
             self.turn_id = turn_id;
+            self.prompt_id = prompt_id;
             return Some(AgentOutcome::Submitted);
         }
         if !self.acknowledged
-            || self
-                .turn_id
-                .as_deref()
-                .is_some_and(|turn| hook.turn_id.as_deref() != Some(turn))
+            || (self.kind != "claude"
+                && self
+                    .turn_id
+                    .as_deref()
+                    .is_some_and(|turn| hook.turn_id.as_deref() != Some(turn)))
         {
             return None;
         }
         match hook.hook_event_name.as_str() {
+            "Stop" if self.kind == "claude" => {
+                if hook.prompt_id != self.prompt_id {
+                    return None;
+                }
+                hook.claude_turn_complete.map(|complete| {
+                    if complete {
+                        AgentOutcome::Completed
+                    } else {
+                        AgentOutcome::StatusUnavailable
+                    }
+                })
+            },
             "Stop" => Some(AgentOutcome::Completed),
             "StopFailure" => Some(AgentOutcome::Failed),
             "Interrupt" => Some(AgentOutcome::Interrupted),
@@ -274,6 +298,29 @@ pub fn prompt_sha256(prompt: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Claude 2.1.285 strips these format controls; emoji joiners remain significant.
+pub fn claude_prompt_text(text: &str) -> Cow<'_, str> {
+    if text.contains(['\u{200b}', '\u{202e}']) {
+        Cow::Owned(text.replace(['\u{200b}', '\u{202e}'], ""))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Commands do not produce the lifecycle acknowledgement required by prompt submission.
+pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
+    if kind == "claude" && prompt == "/clear" {
+        return false;
+    }
+    let text = if kind == "claude" {
+        claude_prompt_text(prompt)
+    } else {
+        Cow::Borrowed(prompt)
+    };
+    let text = text.trim_start();
+    text.starts_with('/') || (kind == "claude" && text.starts_with('!'))
 }
 
 /// Typed ahead of an ordinary paste Claude may collapse, to identify its body as instructions.

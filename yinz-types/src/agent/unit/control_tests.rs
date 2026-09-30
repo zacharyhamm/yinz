@@ -13,6 +13,8 @@ fn event(kind: &str, name: &str, turn: Option<&str>, prompt: Option<&str>) -> Ag
         hook_event_name: name.into(),
         session_id: "conversation".into(),
         turn_id: turn.map(str::to_owned),
+        prompt_id: (kind == "claude").then(|| turn.unwrap_or("prompt").to_owned()),
+        claude_turn_complete: (kind == "claude" && name == "Stop").then_some(true),
         prompt: prompt.map(str::to_owned),
         ..Default::default()
     };
@@ -176,7 +178,7 @@ fn repeated_startup_does_not_retarget_a_prompt_to_the_same_conversation() {
 }
 
 #[test]
-fn codex_requires_turn_identity_while_claude_uses_serialized_conversation_hooks() {
+fn codex_requires_turn_identity_while_claude_requires_prompt_identity() {
     for (kind, expected) in [
         ("codex", AgentOutcome::StatusUnavailable),
         ("claude", AgentOutcome::Submitted),
@@ -440,4 +442,78 @@ fn command_prefixes_do_not_get_an_instruction_lead_in() {
             assert!(!needs_paste_lead_in("codex", &prompt));
         }
     }
+}
+
+#[test]
+fn claude_unicode_acknowledgement_accepts_preserved_or_stripped_controls_only() {
+    let prompt = "review \u{200b}\u{202e}👩\u{200d}💻";
+    for kind in ["claude", "codex"] {
+        for hooked in [
+            prompt.to_owned(),
+            claude_prompt_text(prompt).into_owned(),
+            prompt.replace('\u{200d}', ""),
+        ] {
+            let mut observation = PromptObservation::new(kind, "conversation", prompt);
+            let expected =
+                if hooked == prompt || (kind == "claude" && hooked == claude_prompt_text(prompt)) {
+                    AgentOutcome::Submitted
+                } else {
+                    AgentOutcome::Interrupted
+                };
+            assert_eq!(
+                observe(
+                    &mut observation,
+                    &event(kind, "UserPromptSubmit", Some("new"), Some(&hooked))
+                ),
+                Some(expected)
+            );
+        }
+    }
+}
+
+#[test]
+fn claude_stop_needs_prompt_identity_and_internal_confirmation() {
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    let mut submit: HookEvent =
+        serde_json::from_str(&event("claude", "UserPromptSubmit", None, Some("review")).raw)
+            .unwrap();
+    submit.prompt_id = None;
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "claude",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&submit)),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    submit.prompt_id = Some("prompt".into());
+    assert_eq!(
+        observe(&mut observation, &broadcast(&submit)),
+        Some(AgentOutcome::Submitted)
+    );
+    let mut stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conversation".into(),
+        ..Default::default()
+    };
+    assert_eq!(observe(&mut observation, &broadcast(&stop)), None);
+    stop.claude_turn_complete = Some(true);
+    stop.prompt_id = Some("old".into());
+    assert_eq!(observe(&mut observation, &broadcast(&stop)), None);
+    stop.prompt_id = Some("prompt".into());
+    stop.claude_turn_complete = Some(false);
+    assert_eq!(
+        observe(&mut observation, &broadcast(&stop)),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    stop.claude_turn_complete = Some(true);
+    assert_eq!(
+        observe(&mut observation, &broadcast(&stop)),
+        Some(AgentOutcome::Completed)
+    );
+    assert_eq!(observe(&mut observation, &broadcast(&stop)), None);
 }
