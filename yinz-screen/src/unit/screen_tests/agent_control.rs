@@ -252,10 +252,15 @@ fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
                 .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
                 .unwrap();
             screen.agent_control(wait(AgentState::Idle), CLIENT);
-            let batches = if split {
-                vec![vec![BareKey::Down], vec![BareKey::Enter]]
+            let key = if kind == "codex" {
+                BareKey::Char('y')
             } else {
-                vec![vec![BareKey::Down, BareKey::Enter]]
+                BareKey::Down
+            };
+            let batches = if split {
+                vec![vec![key], vec![BareKey::Enter]]
+            } else {
+                vec![vec![key, BareKey::Enter]]
             };
             for keys in batches {
                 screen.agent_control(send_keys(keys), ClientId::new(2));
@@ -264,7 +269,14 @@ fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
                 assert!(!result.agents[0].status_available);
                 assert!(!result.agents[0].ready);
             }
-            assert_eq!(finish_paste(&writes), b"\x1b[B\r");
+            assert_eq!(
+                finish_paste(&writes),
+                if kind == "codex" {
+                    &b"y\r"[..]
+                } else {
+                    &b"\x1b[B\r"[..]
+                }
+            );
             assert!(replies(&messages, CLIENT).is_empty());
             report_kind(&mut screen, kind, hook("SessionStart"));
             assert!(screen.agent_dialog_inputs.is_empty());
