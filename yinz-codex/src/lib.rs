@@ -353,6 +353,9 @@ async fn capability_request<S: AsyncRead + AsyncWrite + Unpin>(
                     serde_json::from_str(&text).context("parse Codex capability response")?;
                 if response.get("method").is_none() && response["id"] == id {
                     if let Some(error) = response.get("error") {
+                        if error["data"]["config_write_error_code"] == "configVersionConflict" {
+                            return Err(anyhow!(ConfigVersionConflict));
+                        }
                         return Err(anyhow!("Codex {method}: {error}"));
                     }
                     return response
@@ -703,7 +706,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         None => std::env::current_dir(),
     }
     .context("resolve Codex launcher working directory")?;
-    let trust = worktree_trust(&cwd);
+    let worktree = worktree_roots(&cwd);
     let mut registration = Registration::new(&directory(), env)?;
     registration.reporter = Some(std::env::current_exe().context("find this yinz binary")?);
     let status = Command::new(program)
@@ -719,6 +722,33 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         .build()
         .context("start Codex pane bridge")?
         .block_on(async {
+            if let Some((root, primary)) = &worktree {
+                // Persist inherited trust before the shared-daemon UI checks its workspace.
+                let trusted = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    register_worktree_trust(program, root, primary),
+                )
+                .await
+                .context("timed out registering Codex worktree trust")
+                .and_then(|result| result);
+                if !matches!(trusted, Ok(true)) {
+                    trusted
+                        .context(
+                            "register Codex worktree trust; using normal trust prompt on failure",
+                        )
+                        .non_fatal();
+                    // --remote skips Codex's folder-access prompt, including for untrusted folders.
+                    // --no-daemon keeps hooks and tools under this pane's process and environment.
+                    return tokio::process::Command::new(program)
+                        .arg("--no-daemon")
+                        .args(args)
+                        .kill_on_drop(true)
+                        .status()
+                        .await
+                        .map(exit_code)
+                        .context("run Codex with its normal trust prompt");
+                }
+            }
             let path = registration.dir.path().join("ui.sock");
             yinz_process::pty_host::protocol::check_socket_path_length(&path, 0)?;
             let listener = tokio::net::UnixListener::bind(&path).context("listen for Codex UI")?;
@@ -729,9 +759,6 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
             // A shared daemon may have started in a different pane's working directory.
             if options.cd.is_none() {
                 command.arg("--cd").arg(&cwd);
-            }
-            if let Some(trust) = &trust {
-                command.args(["--config", trust]);
             }
             let mut ui = command
                 .args(args)
@@ -757,16 +784,21 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         })
 }
 
-/// Trust only the linked worktree selected for this launch, without persisting a setting.
-fn worktree_trust(cwd: &Path) -> Option<String> {
+/// Resolve the selected linked worktree and primary checkout through Git metadata.
+fn worktree_roots(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
     let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--show-toplevel",
-            "--git-dir",
-            "--git-common-dir",
-        ])
+        .args(["rev-parse", "--path-format=absolute", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = Path::new(String::from_utf8(output.stdout).ok()?.strip_suffix('\n')?)
+        .canonicalize()
+        .ok()?;
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain", "-z"])
         .current_dir(cwd)
         .output()
         .ok()?;
@@ -774,16 +806,134 @@ fn worktree_trust(cwd: &Path) -> Option<String> {
         return None;
     }
     let metadata = String::from_utf8(output.stdout).ok()?;
-    let mut lines = metadata.lines();
-    let root = lines.next()?;
-    let git_dir = lines.next()?;
-    let common_dir = lines.next()?;
-    if git_dir == common_dir {
-        return None;
+    let mut worktrees = metadata
+        .split('\0')
+        .filter_map(|field| field.strip_prefix("worktree "));
+    let primary = Path::new(worktrees.next()?).canonicalize().ok()?;
+    (root != primary
+        && worktrees.any(|path| {
+            Path::new(path)
+                .canonicalize()
+                .is_ok_and(|path| path == root)
+        }))
+    .then_some((root, primary))
+}
+
+#[derive(Debug)]
+struct ConfigVersionConflict;
+
+impl std::fmt::Display for ConfigVersionConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex configuration changed since it was read")
     }
-    // An inline table keeps dots and quotes in paths out of the CLI's dotted-key parser.
-    let root = serde_json::Value::String(root.to_owned());
-    Some(format!("projects={{{root}={{trust_level=\"trusted\"}}}}"))
+}
+
+impl std::error::Error for ConfigVersionConflict {}
+
+async fn register_worktree_trust(program: &Path, root: &Path, primary: &Path) -> Result<bool> {
+    let (_child, stream) = daemon_connection(program)?;
+    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
+        .await
+        .context("connect Codex trust WebSocket")?;
+    inherit_worktree_trust(&mut ws, root, primary).await
+}
+
+async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    root: &Path,
+    primary: &Path,
+) -> Result<bool> {
+    let root = root.to_str().context("encode Codex worktree path")?;
+    let primary = primary
+        .to_str()
+        .context("encode Codex primary checkout path")?;
+    capability_request(
+        ws,
+        0,
+        "initialize",
+        serde_json::json!({
+            "clientInfo": {"name": "yinz-worktree-trust", "version": env!("CARGO_PKG_VERSION")}
+        }),
+    )
+    .await?
+    .as_object()
+    .context("malformed Codex initialize response")?;
+    ws.send(Message::text(r#"{"method":"initialized"}"#))
+        .await
+        .context("initialize Codex trust connection")?;
+    for attempt in 0..2 {
+        let response = capability_request(
+            ws,
+            1 + attempt * 2,
+            "config/read",
+            serde_json::json!({
+                "includeLayers": true
+            }),
+        )
+        .await?;
+        let layers = response["layers"]
+            .as_array()
+            .context("missing Codex config layers")?;
+        let mut users = layers
+            .iter()
+            .filter(|layer| layer["name"]["type"] == "user" && layer["name"]["profile"].is_null());
+        let user = users.next().context("missing Codex base user config")?;
+        if users.next().is_some() || !user["disabledReason"].is_null() {
+            return Err(anyhow!("ambiguous or disabled Codex base user config"));
+        }
+        let config = user["config"]
+            .as_object()
+            .context("malformed Codex user config")?;
+        let Some(projects) = config.get("projects") else {
+            return Ok(false);
+        };
+        let projects = projects
+            .as_object()
+            .context("malformed Codex projects config")?;
+        if let Some(entry) = projects.get(root) {
+            let entry = entry
+                .as_object()
+                .context("malformed Codex worktree config")?;
+            if let Some(trust) = entry.get("trust_level") {
+                return Ok(trust == "trusted");
+            }
+        }
+        if projects
+            .get(primary)
+            .and_then(|entry| entry.get("trust_level"))
+            != Some(&Value::from("trusted"))
+        {
+            return Ok(false);
+        }
+        let version = user["version"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .context("missing Codex user config version")?;
+        let file = user["name"]["file"]
+            .as_str()
+            .context("missing Codex user config path")?;
+        let result = capability_request(
+            ws,
+            2 + attempt * 2,
+            "config/value/write",
+            serde_json::json!({
+                "keyPath": "projects", "value": {root: {"trust_level": "trusted"}},
+                "mergeStrategy": "upsert", "filePath": file, "expectedVersion": version
+            }),
+        )
+        .await;
+        match result {
+            Err(error) if attempt == 0 && error.is::<ConfigVersionConflict>() => continue,
+            Err(error) => return Err(error),
+            Ok(response) => {
+                if !matches!(response["status"].as_str(), Some("ok" | "okOverridden")) {
+                    return Err(anyhow!("malformed Codex config write response"));
+                }
+                return Ok(true);
+            },
+        }
+    }
+    unreachable!("the second write attempt returns")
 }
 
 fn exit_code(status: std::process::ExitStatus) -> i32 {

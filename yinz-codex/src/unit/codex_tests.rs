@@ -138,6 +138,74 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
     const TEST: &str = "tests::launcher_forwards_its_directory_unless_overridden_or_bypassed";
     const ARGS_ENV: &str = "YINZ_TEST_CODEX_ARGS";
     const OUTPUT_ENV: &str = "YINZ_TEST_CODEX_OUTPUT";
+    if std::env::var_os("YINZ_TEST_TRUST_BACKEND").is_some() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stderr());
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let marker = PathBuf::from(std::env::var_os(OUTPUT_ENV).unwrap())
+                    .with_extension("registered");
+                let mode = std::env::var("YINZ_TEST_TRUST_MODE").unwrap_or_default();
+                if mode == "timeout" {
+                    std::fs::write(&marker, "started").unwrap();
+                    std::future::pending::<()>().await;
+                }
+                let primary = std::env::var("YINZ_TEST_TRUST_PRIMARY").unwrap();
+                let worktree = std::env::var("YINZ_TEST_TRUST_WORKTREE").unwrap();
+                while let Some(Ok(message)) = ws.next().await {
+                    let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    let result = match request["method"].as_str().unwrap() {
+                        "initialize" => json!({}),
+                        "initialized" => continue,
+                        "config/read" => {
+                            if mode == "malformed" {
+                                std::fs::write(&marker, "failed").unwrap();
+                                json!({})
+                            } else {
+                                let mut projects =
+                                    json!({primary.as_str():{"trust_level":"trusted"}});
+                                if mode == "untrusted" {
+                                    projects[&worktree] = json!({"trust_level":"untrusted"});
+                                    std::fs::write(&marker, "untrusted").unwrap();
+                                } else if mode == "unknown" {
+                                    projects = json!({});
+                                    std::fs::write(&marker, "unknown").unwrap();
+                                }
+                                json!({"layers":[{"name":{"type":"user","file":"/tmp/config.toml"},
+                                "version":"version-1", "config":{"projects":projects}}]})
+                            }
+                        },
+                        "config/value/write" => {
+                            assert_eq!(
+                                request["params"]["value"],
+                                json!({worktree.as_str():{"trust_level":"trusted"}})
+                            );
+                            assert_eq!(request["params"]["expectedVersion"], "version-1");
+                            assert!(
+                                !Path::new(&std::env::var(OUTPUT_ENV).unwrap()).exists(),
+                                "UI started before registration"
+                            );
+                            std::fs::write(&marker, "registered").unwrap();
+                            json!({"status":"ok"})
+                        },
+                        method => panic!("unexpected trust method: {method}"),
+                    };
+                    if ws
+                        .send(Message::text(
+                            json!({"id":request["id"],"result":result}).to_string(),
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        return;
+    }
     if let Ok(args) = std::env::var(ARGS_ENV) {
         let args: Vec<String> = serde_json::from_str(&args).unwrap();
         assert_eq!(launch(Path::new("../codex"), &args).unwrap(), 23);
@@ -182,23 +250,42 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         );
     }
     let worktree = root.path().join(worktree_name).canonicalize().unwrap();
-    let trust = format!(
-        "projects={{{}={{trust_level=\"trusted\"}}}}",
-        json!(worktree)
-    );
-    assert!(
-        worktree_trust(&cwd).is_none(),
-        "the primary checkout is not implicitly trusted"
-    );
+    assert!(worktree_roots(&cwd).is_none());
+    let unregistered = root.path().join("unregistered");
+    std::fs::create_dir(&unregistered).unwrap();
+    let unregistered = unregistered.canonicalize().unwrap();
+    std::fs::write(
+        unregistered.join(".git"),
+        format!("gitdir: {}\n", cwd.join(".git").display()),
+    )
+    .unwrap();
+    assert!(worktree_roots(&unregistered).is_none());
     std::fs::create_dir(worktree.join("nested")).unwrap();
     assert_eq!(
-        worktree_trust(&worktree.join("nested")),
-        Some(trust.clone())
+        worktree_roots(&worktree.join("nested")),
+        Some((worktree.clone(), cwd.clone()))
+    );
+    let alias = root.path().join("worktree-alias");
+    std::os::unix::fs::symlink(&worktree, &alias).unwrap();
+    assert_eq!(
+        worktree_roots(&alias.join("nested")),
+        Some((worktree.clone(), cwd.clone()))
     );
     let output = root.path().join("arguments");
     yinz_test_support::write_warm_script(
         &root.path().join("codex"),
-        "[ \"$1\" = app-server ] && exit 0\nprintf '%s\\0' \"$@\" > \"$YINZ_TEST_CODEX_OUTPUT\"\nexit 23\n",
+        r#"
+if [ "$1" = app-server ]; then
+    [ "$2" = daemon ] && exit 0
+    export YINZ_TEST_TRUST_BACKEND=1
+    exec "$YINZ_TEST_TRUST_EXE" --exact "$YINZ_TEST_TRUST_TEST" --nocapture 2>&1 >/dev/null
+fi
+if [ "$YINZ_TEST_TRUST_EXPECTED" = 1 ]; then
+    [ -f "$YINZ_TEST_CODEX_OUTPUT.registered" ] || exit 99
+fi
+printf '%s\0' "$@" > "$YINZ_TEST_CODEX_OUTPUT"
+exit 23
+"#,
     );
     // expected_cd: None bypasses the bridge, Some(true) preserves an explicit override.
     let cases: &[(&[&str], bool, Option<bool>)] = &[
@@ -206,6 +293,11 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         (&["prompt with spaces"], true, Some(false)),
         (&["resume", "--last"], true, Some(false)),
         (&["fork", "thread-id"], true, Some(false)),
+        (
+            &["--sandbox", "read-only", "--ask-for-approval", "on-request"],
+            true,
+            Some(false),
+        ),
         (&["--cd", "../explicit with spaces"], true, Some(true)),
         (&["--cd=../explicit with spaces"], true, Some(true)),
         (&["-C", "../explicit with spaces"], true, Some(true)),
@@ -214,6 +306,7 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         (&["resume", "--last", "--cd", "../other"], true, Some(true)),
         (&["fork", "thread-id", "-C../other"], true, Some(true)),
         (&["--cd=../other", "resume", "--last"], true, Some(true)),
+        (&["--cd", "../unregistered"], true, Some(true)),
         (&["--cd", worktree.to_str().unwrap()], true, Some(true)),
         (&["--cd", "../work.tree \"quoted\""], true, Some(true)),
         (&["--cd=../work.tree \"quoted\""], true, Some(true)),
@@ -241,13 +334,27 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
         (&["-C="], true, None),
         (&["--cd", "--", "prompt"], true, None),
     ];
-    for launch_cwd in [&cwd, &worktree] {
+    for launch_cwd in [&cwd, &worktree, &unregistered] {
         for (args, pane, expected_cd) in cases {
+            let expected_trust = expected_cd.is_some_and(|has_cd| {
+                (!has_cd && launch_cwd == &worktree)
+                    || args.iter().any(|arg| arg.ends_with(worktree_name))
+            });
+            let _ = std::fs::remove_file(&output);
+            let _ = std::fs::remove_file(output.with_extension("registered"));
             let result = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST])
                 .current_dir(launch_cwd)
                 .env(ARGS_ENV, serde_json::to_string(args).unwrap())
                 .env(OUTPUT_ENV, &output)
+                .env(
+                    "YINZ_TEST_TRUST_EXPECTED",
+                    if expected_trust { "1" } else { "0" },
+                )
+                .env("YINZ_TEST_TRUST_PRIMARY", &cwd)
+                .env("YINZ_TEST_TRUST_WORKTREE", &worktree)
+                .env("YINZ_TEST_TRUST_EXE", std::env::current_exe().unwrap())
+                .env("YINZ_TEST_TRUST_TEST", TEST)
                 .env("YINZ_PANE_ID", if *pane { "15" } else { "" })
                 .env_remove("YINZ_PANE_REF")
                 .env_remove("YINZ_REMOTE_PANE_TOKEN")
@@ -271,15 +378,49 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
                     assert_eq!(Path::new(actual[1]), launch_cwd, "{args:?}");
                     actual.drain(..2);
                 }
-                if (!has_cd && launch_cwd == &worktree)
-                    || args.iter().any(|arg| arg.ends_with(worktree_name))
-                {
-                    assert_eq!(&actual[..2], &["--config", &trust], "{args:?}");
-                    actual.drain(..2);
-                }
             }
             assert_eq!(&actual, args, "{args:?}");
+            assert_eq!(
+                output.with_extension("registered").exists(),
+                expected_trust,
+                "{args:?}"
+            );
         }
+    }
+    for mode in ["malformed", "timeout", "untrusted", "unknown"] {
+        std::fs::remove_file(&output).unwrap();
+        let _ = std::fs::remove_file(output.with_extension("registered"));
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .current_dir(&cwd)
+            .env(
+                ARGS_ENV,
+                serde_json::to_string(&["--cd", worktree.to_str().unwrap()]).unwrap(),
+            )
+            .env(OUTPUT_ENV, &output)
+            .env("YINZ_TEST_TRUST_EXPECTED", "1")
+            .env("YINZ_TEST_TRUST_MODE", mode)
+            .env("YINZ_TEST_TRUST_PRIMARY", &cwd)
+            .env("YINZ_TEST_TRUST_WORKTREE", &worktree)
+            .env("YINZ_TEST_TRUST_EXE", std::env::current_exe().unwrap())
+            .env("YINZ_TEST_TRUST_TEST", TEST)
+            .env("YINZ_PANE_ID", "15")
+            .env_remove("YINZ_PANE_REF")
+            .env_remove("YINZ_REMOTE_PANE_TOKEN")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{mode}: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let actual = std::fs::read_to_string(&output).unwrap();
+        assert_eq!(
+            actual.split_terminator('\0').collect::<Vec<_>>(),
+            ["--no-daemon", "--cd", worktree.to_str().unwrap()],
+            "{mode} must use the standalone UI so Codex can prompt and keep pane routing"
+        );
     }
 }
 
@@ -400,6 +541,7 @@ exec "$YINZ_TEST_CODEX_RECONNECT_EXE" --exact "$YINZ_TEST_CODEX_RECONNECT_TEST" 
                         let executable = std::env::current_exe().unwrap();
                         let output = tokio::process::Command::new(&executable)
                             .args(["--exact", TEST, "--nocapture"])
+                            .current_dir(root.path())
                             .env(ROLE_ENV, "launcher")
                             .env(ROOT_ENV, root.path())
                             .env("YINZ_TEST_CODEX_RECONNECT_EXE", &executable)
@@ -1239,5 +1381,235 @@ fn only_an_idle_selection_can_bootstrap_codex_readiness() {
             .unwrap();
         let hook = conversations.response(&json!({"id":1,"result":{"thread":{"id":"selected","cwd":"/work","status":status}}}), &registration).unwrap().unwrap();
         assert_eq!(hook["_yinz_codex_hooks_ready"], status["type"] == "idle");
+    }
+}
+
+#[tokio::test]
+async fn worktree_trust_uses_only_base_user_decisions_and_guards_concurrent_writes() {
+    let root = Path::new("/work/tree.with \"quotes\"");
+    let primary = Path::new("/work/primary");
+    for scenario in [
+        "trusted",
+        "untrusted",
+        "unknown",
+        "missing_parent",
+        "existing_trusted",
+        "existing_untrusted",
+        "conflict",
+        "conflict_untrusted",
+        "conflict_parent_untrusted",
+        "conflict_twice",
+        "write_error",
+        "bad_write",
+        "bad_layers",
+        "bad_config",
+        "bad_projects",
+        "bad_entry",
+        "missing_version",
+        "missing_file",
+        "profile_only",
+        "duplicate_user",
+        "disabled",
+        "bad_initialize",
+        "existing_null",
+    ] {
+        let (client, server) = tokio::io::duplex(16384);
+        let check = async {
+            let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", client)
+                .await
+                .unwrap();
+            let result = inherit_worktree_trust(&mut ws, root, primary).await;
+            assert_eq!(
+                result.is_ok(),
+                matches!(
+                    scenario,
+                    "trusted"
+                        | "untrusted"
+                        | "unknown"
+                        | "missing_parent"
+                        | "existing_trusted"
+                        | "existing_untrusted"
+                        | "conflict"
+                        | "conflict_untrusted"
+                        | "conflict_parent_untrusted"
+                        | "existing_null"
+                ),
+                "{scenario}: {result:?}"
+            );
+            if let Ok(trusted) = result {
+                assert_eq!(
+                    trusted,
+                    matches!(scenario, "trusted" | "existing_trusted" | "conflict")
+                );
+            }
+        };
+        let daemon = async {
+            let mut ws = tokio_tungstenite::accept_async(server).await.unwrap();
+            let mut config = json!({"projects": {
+                primary.to_str().unwrap(): {"trust_level": "trusted"},
+                root.to_str().unwrap(): {"label": "preserve"},
+                "/unrelated": {"trust_level": "untrusted"}
+            }, "sandbox_mode": "read-only", "approval_policy": "untrusted"});
+            match scenario {
+                "untrusted" => {
+                    config["projects"][primary.to_str().unwrap()]["trust_level"] =
+                        json!("untrusted")
+                },
+                "unknown" => {
+                    config.as_object_mut().unwrap().remove("projects");
+                },
+                "missing_parent" => {
+                    config["projects"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(primary.to_str().unwrap());
+                },
+                "existing_trusted" => {
+                    config["projects"][root.to_str().unwrap()]["trust_level"] = json!("trusted")
+                },
+                "existing_untrusted" => {
+                    config["projects"][root.to_str().unwrap()]["trust_level"] = json!("untrusted")
+                },
+                "existing_null" => {
+                    config["projects"][root.to_str().unwrap()]["trust_level"] = Value::Null
+                },
+                "bad_projects" => config["projects"] = json!([]),
+                "bad_entry" => config["projects"][root.to_str().unwrap()] = json!(false),
+                "bad_config" => config = Value::Null,
+                _ => {},
+            }
+            let original = config.clone();
+            let mut reads = 0;
+            let mut writes = 0;
+            while let Some(Ok(message)) = ws.next().await {
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "initialize" => {
+                        if scenario == "bad_initialize" {
+                            json!(false)
+                        } else {
+                            json!({})
+                        }
+                    },
+                    "initialized" => continue,
+                    "config/read" => {
+                        assert_eq!(request["params"], json!({"includeLayers": true}));
+                        reads += 1;
+                        let mut user = json!({"name":{"type":"user","file":"/home/test/.codex/config.toml"},
+                            "version": format!("version-{reads}"), "config":config});
+                        match scenario {
+                            "missing_version" => user["version"] = Value::Null,
+                            "missing_file" => user["name"]["file"] = Value::Null,
+                            "profile_only" => user["name"]["profile"] = json!("dev"),
+                            "disabled" => user["disabledReason"] = json!("disabled"),
+                            _ => {},
+                        }
+                        let mut layers = vec![
+                            json!({"name":{"type":"sessionFlags"},"config":{"projects":{primary.to_str().unwrap():{"trust_level":"trusted"}}}}),
+                            json!({"name":{"type":"user","profile":"dev"},"config":{"projects":{primary.to_str().unwrap():{"trust_level":"trusted"}}}}),
+                            user.clone(),
+                        ];
+                        if scenario == "duplicate_user" {
+                            layers.push(user);
+                        }
+                        if scenario == "bad_layers" {
+                            json!({})
+                        } else {
+                            json!({"layers":layers})
+                        }
+                    },
+                    "config/value/write" => {
+                        writes += 1;
+                        assert_eq!(
+                            request["params"],
+                            json!({
+                                "keyPath":"projects", "value":{root.to_str().unwrap():{"trust_level":"trusted"}},
+                                "mergeStrategy":"upsert", "filePath":"/home/test/.codex/config.toml",
+                                "expectedVersion":format!("version-{reads}")
+                            }),
+                            "{scenario}"
+                        );
+                        if scenario.starts_with("conflict")
+                            && (writes == 1 || scenario == "conflict_twice")
+                        {
+                            config["projects"]["/concurrent"] = json!({"trust_level":"untrusted"});
+                            if scenario == "conflict_untrusted" {
+                                config["projects"][root.to_str().unwrap()]["trust_level"] =
+                                    json!("untrusted");
+                            }
+                            if scenario == "conflict_parent_untrusted" {
+                                config["projects"][primary.to_str().unwrap()]["trust_level"] =
+                                    json!("untrusted");
+                            }
+                            ws.send(Message::text(json!({"id":request["id"],"error":{
+                                "code":-32600,"data":{"config_write_error_code":"configVersionConflict"}
+                            }}).to_string())).await.unwrap();
+                            continue;
+                        }
+                        if scenario == "write_error" {
+                            ws.send(Message::text(json!({"id":request["id"],"error":{"code":-32600,"message":"denied"}}).to_string())).await.unwrap();
+                            continue;
+                        }
+                        if scenario == "bad_write" {
+                            json!({})
+                        } else {
+                            config["projects"][root.to_str().unwrap()]["trust_level"] =
+                                json!("trusted");
+                            json!({"status":"ok", "version":"new", "filePath":"/home/test/.codex/config.toml"})
+                        }
+                    },
+                    method => panic!("unexpected method: {method}"),
+                };
+                ws.send(Message::text(
+                    json!({"id":request["id"],"result":result}).to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            let expected_writes = match scenario {
+                "conflict" | "conflict_twice" => 2,
+                "trusted"
+                | "conflict_untrusted"
+                | "conflict_parent_untrusted"
+                | "write_error"
+                | "bad_write" => 1,
+                _ => 0,
+            };
+            assert_eq!(writes, expected_writes, "{scenario}");
+            assert_eq!(
+                reads,
+                if scenario == "bad_initialize" {
+                    0
+                } else if scenario.starts_with("conflict") {
+                    2
+                } else {
+                    1
+                },
+                "{scenario}"
+            );
+            if scenario.starts_with("conflict") {
+                assert_eq!(
+                    config["projects"]["/concurrent"],
+                    json!({"trust_level":"untrusted"})
+                );
+            }
+            if matches!(scenario, "trusted" | "conflict") {
+                assert_eq!(
+                    config["projects"][root.to_str().unwrap()]["label"],
+                    "preserve"
+                );
+                assert_eq!(
+                    config["projects"]["/unrelated"],
+                    original["projects"]["/unrelated"]
+                );
+                assert_eq!(config["approval_policy"], original["approval_policy"]);
+                assert_eq!(config["sandbox_mode"], original["sandbox_mode"]);
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(check, daemon);
+        })
+        .await
+        .unwrap();
     }
 }
