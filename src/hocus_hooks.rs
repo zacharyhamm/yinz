@@ -37,10 +37,12 @@ const OPENCODE_EVENTS: &[&str] = yinz_types::agent::OPENCODE_HOOK_EVENTS;
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
 /// that names the agent it was written for; v6 is the one with a remote route, picking it by
 /// the pane token rather than reporting to a session that need not exist on this machine.
+/// v10 skips installed Claude reports when the launcher supplies inline hooks.
+/// v11 keeps installed reports when the inline command cannot find yinz on PATH.
 ///
 /// A missed bump is silent and total: `status` calls the old script current, and every event
 /// on a machine installed before the change goes nowhere.
-const SCRIPT_VERSION: u32 = 9;
+const SCRIPT_VERSION: u32 = 11;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
@@ -237,6 +239,9 @@ exit 0
 #   - {output_rule}.
 #   - it always exits 0. A hook that fails must not interfere with the agent it is
 #     only reporting on.
+
+# Inline hooks need yinz on PATH; otherwise use this script's absolute binary path.
+[ "$YINZ_CLAUDE_INLINE_HOOKS" = 1 ] && command -v yinz >/dev/null 2>&1 && exit 0
 
 # The remote token is tested first, and that order is the whole point: a remote pane
 # carries a ${token_env} *and* a $YINZ_PANE_ID, and the pane id it carries is the
@@ -1152,6 +1157,10 @@ fn pane_line() {
 }
 
 #[cfg(all(test, unix))]
+#[path = "unit/claude_reporting.rs"]
+mod claude_reporting_tests;
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -1212,6 +1221,7 @@ mod tests {
 
         let payload = vec![b'x'; 200 * 1024];
         let mut child = Command::new(&hook)
+            .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env("YINZ_PANE_ID", "7")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
@@ -1289,6 +1299,7 @@ mod tests {
 
         let mut command = Command::new(&hook);
         command
+            .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env_remove("YINZ_PANE_ID")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)

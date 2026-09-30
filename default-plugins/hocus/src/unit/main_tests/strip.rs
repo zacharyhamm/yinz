@@ -255,11 +255,14 @@ fn an_archived_run_resumes_as_its_own_agent_in_its_own_folder() {
     seed_run(&state, "session-1", None, true);
 
     let command = state.resume_plan("claude:session-1").expect("planned");
-    assert_eq!(command.path, std::path::PathBuf::from("claude"));
+    assert_eq!(command.path, std::path::PathBuf::from("env"));
     assert!(
-        command
-            .args
-            .starts_with(&["--resume".to_owned(), "session-1".to_owned()]),
+        command.args.starts_with(&[
+            "YINZ_CLAUDE_INLINE_HOOKS=1".to_owned(),
+            "claude".to_owned(),
+            "--resume".to_owned(),
+            "session-1".to_owned()
+        ]),
         "{:?}",
         command.args
     );

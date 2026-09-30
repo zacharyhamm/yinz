@@ -730,6 +730,40 @@ fn spawn_and_read_output() {
     std::env::remove_var(token);
 }
 
+#[test]
+fn fallback_panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
+    let marker = "YINZ_CLAUDE_INLINE_HOOKS";
+    std::env::set_var(marker, "1");
+    let server = make_server();
+    for inline in [false, true] {
+        let expected = if inline { "1" } else { "unset" };
+        let mut cmd = RunCommand {
+            command: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("[ \"${{{marker}-unset}}\" = {expected} ]"),
+            ],
+            ..Default::default()
+        };
+        if inline {
+            cmd.args
+                .splice(0..0, [format!("{marker}=1"), "/bin/sh".into()]);
+            cmd.command = "/usr/bin/env".into();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (terminal_id, _reader, _) = server
+            .spawn_terminal(
+                TerminalAction::RunCommand(cmd),
+                Box::new(move |_, status, _| tx.send(status).unwrap()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(AMPLE_TIMEOUT).unwrap(), Some(0));
+        server.clear_terminal_id(terminal_id).unwrap();
+    }
+    std::env::remove_var(marker);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_local_rerun_terminates_the_previous_remote_transport() {

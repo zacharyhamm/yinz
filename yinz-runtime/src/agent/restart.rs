@@ -400,7 +400,7 @@ mod tests {
                 let mut spec = Spec {
                     kind: Some(kind.into()),
                     model: Some("chosen-model".into()),
-                    permission_mode: Some(mode.into()),
+                    permission_mode: (kind != "codex" || resume.is_none()).then(|| mode.into()),
                     prompt: Some("original work".into()),
                     resume: resume.map(str::to_owned),
                     env: [("SETTING".into(), "a b=c".into())].into(),

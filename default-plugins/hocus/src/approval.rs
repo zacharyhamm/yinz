@@ -940,7 +940,7 @@ mod tests {
             );
             let (_, request) = body(&state, &call);
             let launch = &request["state"]["pending_call"]["launch"];
-            assert_eq!(launch["program"], "claude");
+            assert_eq!(launch["program"], "env");
             assert_eq!(launch["directory"], "/work/yinz");
             assert_eq!(
                 launch["project"],
@@ -1025,7 +1025,13 @@ mod tests {
         assert_eq!(launch["permission_mode"], "plan");
         assert_eq!(
             launch["args"],
-            json!(["--permission-mode", "plan", "Fix the parser"])
+            json!([
+                "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "claude",
+                "--permission-mode",
+                "plan",
+                "Fix the parser"
+            ])
         );
         // The hook wiring `--settings` carries is not part of the judgment.
         assert!(!text.contains("agent-report"));

@@ -78,6 +78,21 @@ They now use the shared launch planner, which supplies Claude's state hooks on l
 Firecracker launches continue to use the hooks installed in the guest.
 See [Firecracker VMs](FIRECRACKER.md) for installation, images, launch, sync, and recovery.
 
+`yinz agent spawn` preserves the attached client's active pane and tab.
+Workers use tiled placement. When space is insufficient, the worker uses another tab or creates a tab in the background.
+
+For managed Codex launches, do not combine `--resume ID` or `--resume last` with `--permission-mode`.
+Omit `--permission-mode` to resume through Yinz's bridge, or start a new conversation with the requested mode.
+Yinz rejects this combination before it creates a pane, branch, worktree, or VM.
+JSON launches with `hooks:false` bypass the bridge and retain native Codex argument handling.
+
+On each host with installed Claude hooks, rerun `yinz hocus hooks install --agent claude` after this update.
+Refresh project installations with `--project` or `--project-dir PATH` too.
+Version 10 scripts skip reporting when a structured launch supplies inline hooks.
+Older scripts still produce duplicate reports until refreshed. Third-party hooks remain unchanged.
+Inline hooks report through the broker on SSH panes and through the local session on local panes.
+Ordinary shell launches and Firecracker launches continue to use installed hooks.
+
 Pane replacement now replays terminal output that arrives before the replacement is placed.
 Buffered output is applied before newer output, so a fast startup cannot leave a blank replacement or reverse its first output chunks.
 

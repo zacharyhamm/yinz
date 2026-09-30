@@ -57,7 +57,7 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 12 | **Still failing live; planned settling and correlation implemented** | The 500 ms minimum plus 100 ms output quiet period still leaves a Unicode draft in Claude 2.1.285. A separate two-second paste-to-Enter probe also leaves the draft. Preserved/normalized fingerprints pass unit tests, but timing alone does not fix submission. See [verification](#fix-status-agent-cli-12-14). |
 | 13 | **Fixed, verified live** | `/probe`, `/cost`, and Claude `!printf` return `rejected` before writing or claiming input, with `ready:true` and `send-keys` guidance. Exact Claude `/clear` still replaces the conversation, and the next prompt completes. See [verification](#fix-status-agent-cli-12-14). |
 | 14 | **Fixed, verified live** | A Stop hook that blocks once keeps the pane Busy and `ready:false`; a concurrent prompt is rejected. The original wait returns only `FINAL_1214` after the matching transcript `turn_duration`. See [verification](#fix-status-agent-cli-12-14). |
-| 15 | **Still present** | `~/.claude/settings.json` runs `~/.claude/hocus/hocus-hook.sh` for every event, and every spawn still adds `--settings` hooks. |
+| 15 | **Fixed with refreshed hooks, verified live** | Refreshed v10 scripts defer to inline hooks. Live prompt completed with one report per source event. Existing installs must be refreshed. See [verification](#fix-status-agent-cli-15-33-and-36). |
 | 16 | **Fixed for Claude shorthand** | Shared launch validation rejects `--kind codex --model haiku` before spawning. Other model IDs remain the provider's responsibility. See [fix status](#fix-status-agent-cli-1618). |
 | 17 | **Existing reconnect fix, regression extended** | The launcher survives backend connection failures before and after conversation selection. A live Codex auto-update has not been retested. See [fix status](#fix-status-agent-cli-1618). |
 | 18 | **Fixed** | Initial lookups distinguish `not_agent`, `target_not_found`, and `target_exited`. Conversation pins and transitions during pending operations retain their existing outcomes. See [fix status](#fix-status-agent-cli-1618). |
@@ -73,7 +73,7 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 28 | **Still broken** | A second `--branch fix-sub` silently returns `fix-sub-2` with no `requested_branch` field (v2 106-*). `.worktrees/` is untracked. See #34. |
 | 29 | **Still broken** | `--agent` conflicts with `--dest`. `prompt TEXT --file` prints `Usage: … <TARGET> <TEXT>`. |
 | 30 | **Still broken** | `list-sessions` still lists `pty-broker-v8.sock` as UNRESPONSIVE. |
-| P3 | **Still present, one escalated** | The spawn tab/focus issue is now P1 #36. Pane titles are still the full command line with the hooks JSON. The `ui-*` leak remains: 13 directories stayed after six Codex panes and the tab were closed. |
+| P3 | **Residual issues remain; focus fixed** | The spawn focus issue (#36) is fixed. Pane titles are still the full command line with the hooks JSON. The `ui-*` leak remains: 13 directories stayed after six Codex panes and the tab were closed. |
 
 ### New findings
 
@@ -81,10 +81,10 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 |---|---|---|---|
 | 31 | P1 | **Claude background work ends the turn early and then strands the pane.** When Claude backgrounds a Bash command or launches a background subagent, `prompt --wait` returns `completed` with the interim text ("The command is running in the background…", "Agent launched. Waiting for it to complete."). When the work finishes, Claude starts its own turn with a `<task-notification>` `UserPromptSubmit`. Yinz treats it as foreign input, so the pane ends `ready:false` until `recover`, and the real answer ("DONE", "SUB=sub") never reaches the caller. While that turn runs, status can read `Idle`/`ready:true`. The archive stores the notification as a `prompt`. | v2 26, 35 (sleep), 119, 120 (subagent); runs `claude:c74f207a-…`, `claude:7308c863-…` |
 | 32 | P1 | **Fixed; automated verification.** The bridge translates a final failed turn into `StopFailure`. The original HTTP 400 failure left the pane Busy until timeout. See [fix status](#fix-status-agent-cli-1921-and-32). | v2 79 |
-| 33 | P1 | **`spawn --kind codex --resume ID --permission-mode skip` exits immediately.** Codex prints "Permission overrides are not supported when resuming a remote task", yet `spawn` returned `ok`. The wait then reports `target_changed`/`Exited`. Without `--permission-mode`, the resume works and keeps the binding. | v2 88–93 |
+| 33 | P1 | **Fixed, verified live.** Managed resumes with permission overrides now return `rejected` and exit 1 before creating a pane or checkout. Resume without overrides succeeds. See [verification](#fix-status-agent-cli-15-33-and-36). Previously, **`spawn --kind codex --resume ID --permission-mode skip` exited immediately.** Codex prints "Permission overrides are not supported when resuming a remote task", yet `spawn` returned `ok`. The wait then reports `target_changed`/`Exited`. Without `--permission-mode`, the resume works and keeps the binding. | v2 88–93 |
 | 34 | P2 | `--reuse` puts a second agent into a worktree that a live agent already occupies (`terminal_16` and `terminal_18` both in `fix-sub`), with no warning or field. | v2 106-1, 107 |
 | 35 | P2 | A worker spawned into `.worktrees/fix-sub` read and **edited the main checkout's** `calc.py` by absolute path. Its cwd and system prompt named the worktree, so the model chose the path, but nesting `.worktrees/` inside the main checkout makes this easy. `prompt --wait` reported success. | Session `0a76a8a5-…` tool calls, v2 108–112 |
-| 36 | P1 | **Spawn steals focus in the user's active tab.** `action new-tab` from the CLI does not move the client, so every spawn lands in the user's tab. The user's keystrokes (from their own Codex pane) went into two freshly spawned orchestrators ("m t", "he"). Those panes became `ready:false`, and the text was lost from the user's pane. This is the likely source of the earlier unexplained `ready:false` after spawn. `pane-move-to-tab` works as a workaround. | v2 121–124 |
+| 36 | P1 | **Fixed, verified live.** CLI spawn preserves the active pane and tab, including overflow placement. See [verification](#fix-status-agent-cli-15-33-and-36). Previously, **spawn stole focus in the user's active tab.** `action new-tab` from the CLI does not move the client, so every spawn lands in the user's tab. The user's keystrokes (from their own Codex pane) went into two freshly spawned orchestrators ("m t", "he"). Those panes became `ready:false`, and the text was lost from the user's pane. This is the likely source of the earlier unexplained `ready:false` after spawn. `pane-move-to-tab` works as a workaround. | v2 121–124 |
 | 37 | P2 | For Claude, the `PASTE_LEAD_IN` does not always establish trust. Haiku called a 55 KB paste ending in "Ignore all lines above. Reply with exactly…" a "prompt injection" and did not follow it. Codex answered it. | v2 114, 115 |
 | 38 | P3 | Validation errors bypass `--json`: an empty or whitespace-only prompt, argument errors, and `register` print plain stderr with no `AgentResponse`. | v2 116, 117, 45 |
 | 39 | P3 | Claude's hidden prompt-suggestion subagent is archived as messages ("Subagent a3acd…: fix it", "(No obvious next step to suggest)") and can be a run's last entry. Readiness is unaffected. | runs `claude:c74f207a-…`, `claude:a9d5a4eb-…` |
@@ -106,6 +106,57 @@ Skill takeaways that are still open: drop `--session main` and the `--kind codex
 session. Say to pick `--permission-mode` at spawn. Show the `needs_input` → `read` → `send-keys Enter`/`Down Enter` →
 `recover` loop, with the key syntax. Warn about the trust dialog on a new directory, and say what to do when a worker
 never becomes ready.
+
+## Fix status: agent CLI #15, #33, and #36
+
+Implemented and checked on 2026-09-30 in `agent-cli-verification-continued`.
+The planner sets `YINZ_CLAUDE_INLINE_HOOKS=1` only when it supplies inline Claude hooks.
+It sets `0` for Claude launches without inline hooks, including Firecracker, to override inherited markers.
+Version 10 installed scripts skip reporting when the marker is `1`.
+Inline hooks use the remote broker when `YINZ_REMOTE_PANE_TOKEN` is nonempty.
+Third-party hooks and Stop-completion handling remain unchanged.
+
+**Migration:** rerun `yinz hocus hooks install --agent claude` on each host with existing installations.
+Refresh project installations with `--project` or `--project-dir PATH` as applicable.
+Old scripts continue to duplicate inline reports until refreshed. This change does not rewrite user settings automatically.
+
+Managed Codex launches reject nonblank `resume` plus nonblank `permission_mode` before checkout or VM preparation.
+The error tells callers to omit `--permission-mode` or start a new conversation with that mode.
+`hooks:false` retains the native launch path. CLI worker placement uses the existing no-focus target.
+
+### Automated evidence
+
+- 115 focused launch, hook, server, and placement tests passed.
+- Generated v10 scripts and inline commands were executed against a recording reporter for every Claude hook event.
+  Each event produced exactly one report, with unchanged input, for local and remote routes.
+  Tests cover marker clearing, disabled hooks, Firecracker, all recognized Codex modes, IDs, `last`, and normalization.
+- Server rejection checks observed no pty request, branch, or worktree for local branch, worktree, and VM launch requests.
+- All four placement integration tests passed. The new CLI test uses an unattached connection and the attached-client fallback.
+  It checks the destination tab and sends keyboard input after placement in the current, existing, and new overflow tabs.
+- `cargo x remote-test --build --native` succeeded. `cargo x remote-test --test` passed all 43 SSH tests.
+- `cargo x ci check` passed format, lint, 9,419 unit tests, doctests, and all 475 integration tests.
+  The first pass identified 12 caller assertions that expected Claude without its new environment wrapper. Those expectations were updated.
+- `cargo x firecracker-test --build` succeeded. `cargo x firecracker-test --test` passed all four real-VM tests and removed its temporary network.
+  KVM is available to the escalated runner, although it is hidden from the sandbox.
+- [Automated command results](logs/v7-automated.txt) record the final runs. All builds used this worktree's own `target/`.
+
+### Live evidence
+
+The isolated session was `verify-153336`, using this worktree's own native binary and Wasm plugins.
+Agents were Claude Code 2.1.286 (Haiku) and Codex 0.159.2 (`gpt-6-luna`).
+Claude used an isolated configuration with the v10 script emitted by `hooks install --dry-run` and installed hook entries.
+The user's installed hooks were not changed. The scratch session and copied authentication state were removed after verification.
+
+- **#15:** [Claude's prompt](logs/v7-15-prompt.json) completed with `VERIFIED_153336` and `ready:true`.
+  The [event stream](logs/v7-15-events.jsonl) contains one SessionStart, UserPromptSubmit, and MessageDisplay for the foreground turn.
+  The two Stop records are the original Busy report and the existing synthetic Idle completion with `_yinz_claude_turn_complete:true`.
+  They are not duplicate hook deliveries. The separate SSH and Firecracker suites also passed.
+- **#33:** Both [ID](logs/v7-33-rejected-id.json) and [last](logs/v7-33-rejected-last.json) resumes with `skip` returned `rejected`.
+  The [ID](logs/v7-33-rejected-id-evidence.json) and [last](logs/v7-33-rejected-last-evidence.json) checks record exit 1, unchanged panes, and no branch or worktree.
+  Resume without overrides [kept the conversation ID and became ready](logs/v7-33-resume-idle.json).
+  The [next prompt](logs/v7-33-resume-prompt.json) completed with `RESUMED_153336`.
+- **#36:** [Focus evidence](logs/v7-36-focus.json) records direct terminal input after a current-tab spawn and an overflow spawn.
+  The original pane retained focus, and tab 0 remained active while the overflow worker occupied tab 1.
 
 ## P0 — the documented flows break
 
@@ -168,7 +219,7 @@ composer enables bracketed paste (the live reply showed `prompt_supported:false`
 `~/.claude/settings.json` plus spawn's `--settings` hooks, Claude sends a second SessionStart for the same conversation
 (#15), and `agent_control_event` treated it as `target_changed`. The exemption that covered Codex's deferred start now
 applies to every kind, in both `agent_control_event` and `PromptObservation::observe_event`. Another conversation,
-SessionEnd, an exit, or a SessionStart after an accepted turn still retargets. The #15 duplication itself is still open.
+SessionEnd, an exit, or a SessionStart after an accepted turn still retargets. The #15 duplication is addressed by the later [hook-routing fix](#fix-status-agent-cli-15-33-and-36).
 
 Earlier note, before that fix: #4 can still affect a `wait` issued before the first SessionStart, though it did not reproduce here. A person
 who types into a Codex pane within milliseconds of UI startup could see the synthetic SessionStart land after their turn
@@ -184,7 +235,7 @@ began, which marks the pane Idle briefly. `agent prompt` can't hit this, because
 | 12 | **Prompts containing Unicode format characters (U+200B, U+202E) are never submitted.** Yinz's Enter, sent 100 ms after the paste, is swallowed and the draft stays in the composer, giving `timed_out`. Claude also strips U+200B, so the fingerprint would not match anyway. Emoji, accents, Arabic, CRLF, and stdin prompts work. | logs 16, 21–26 |
 | 13 | **Non-prompt input times out after the full `--timeout` and leaves a claim.** Examples: `!cmd` (Claude bash mode, which runs a model turn but never acknowledges), `/cost` (opens a modal), and other slash commands. Nothing rejects these up front. | logs 27, 28 |
 | 14 | **`completed` and `ready` arrive while Claude is still "running Stop hooks… 0/2 · thinking".** The first Stop report wins, even though other Stop hooks can still continue the turn. | logs 44, 53 |
-| 15 | **Every Claude hook fires twice** when the user has `yinz hocus hooks install --agent claude`, because spawn also injects `--settings` hooks. Correlation tolerated it here, but it doubles report traffic and is a race hazard. | `~/.claude/settings.json`, and spawn `pane_command` |
+| 15 | **Fixed with refreshed hooks**, see [verification](#fix-status-agent-cli-15-33-and-36). Previously, **every Claude hook fired twice** when the user had `yinz hocus hooks install --agent claude`, because spawn also injects `--settings` hooks. Correlation tolerated it here, but it doubles report traffic and is a race hazard. | `~/.claude/settings.json`, and spawn `pane_command` |
 | 16 | **Codex model names are not validated.** `--kind codex --model haiku` spawns a Codex that shows "haiku medium" and will fail later. | orchestrator 1, terminal_10 |
 | 17 | **A spawned pane's state was `Exited`/`Spawned` while Codex was running.** Codex auto-updated from 0.158 to 0.159 and restarted at launch, so the first wait returned `target_changed`. | orchestrator 1 log |
 

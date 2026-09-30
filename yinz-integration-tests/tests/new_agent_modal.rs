@@ -109,7 +109,11 @@ load_plugins clear-defaults=true { "hocus-agentd"; }
         yinz.send_stdin(&keys::ctrl('d'));
         if is_agent {
             let agent = yinz.expect_pty_spawn();
-            assert_eq!(agent.run_command().command.to_str(), Some("claude"));
+            assert_eq!(agent.run_command().command.to_str(), Some("env"));
+            assert_eq!(
+                &agent.run_command().args[..2],
+                ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude"]
+            );
             let marker = format!("DUPLICATE {attempt} READY");
             agent.output(format!("{marker}\r\n").as_bytes());
             yinz.wait_until("the duplicate is visible", |snapshot| {
@@ -466,6 +470,9 @@ load_plugins clear-defaults=true {{ "yinz:hocus-agentd"; }}
     if kind == "codex" {
         assert_eq!(command.command, std::path::PathBuf::from("yinz"));
         assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
+    } else if kind == "claude" {
+        assert_eq!(command.command, std::path::PathBuf::from("env"));
+        assert_eq!(&command.args[..2], ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude"]);
     } else {
         assert_eq!(command.command, std::path::PathBuf::from(kind));
     }

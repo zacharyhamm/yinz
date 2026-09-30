@@ -1268,6 +1268,8 @@ fn start_session(
     // pane id is the asking session's - so an inherited one would report the outer pane. Only
     // a spawn that names a token gets one, and the broker names it in `vars`, just below.
     command.env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV);
+    // A new pane has no inline hooks unless its own launch explicitly supplies them.
+    command.env_remove("YINZ_CLAUDE_INLINE_HOOKS");
     for (name, value) in child_env.vars {
         command.env(name, value);
     }

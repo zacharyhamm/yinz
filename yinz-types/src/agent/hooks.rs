@@ -98,9 +98,9 @@ pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 pub const CODEX_HOOK_TIMEOUT_SECONDS: u64 = 3;
 
 /// The command a spawned Claude Code pane's hooks run, with no script in between: the pane
-/// inherits `YINZ_PANE_ID`, which the action reads itself, and `yinz` is on the path the
-/// pane's shell found it on.
-pub const CLAUDE_HOOK_REPORT_COMMAND: &str = "yinz action agent-report --hook-json";
+/// reports through the broker when remote, otherwise through the local session.
+/// Without yinz on PATH, installed hooks can still report through their absolute binary path.
+pub const CLAUDE_HOOK_REPORT_COMMAND: &str = r#"command -v yinz >/dev/null 2>&1 || exit 0; if [ -n "$YINZ_REMOTE_PANE_TOKEN" ]; then yinz --pty-broker report claude; else yinz action agent-report --hook-json; fi"#;
 
 /// The pipe the raw event is broadcast on beside the record, and the `--args` keys naming the
 /// pane it fired in and the agent it came from.

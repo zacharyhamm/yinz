@@ -315,8 +315,17 @@ fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
         tools::Args::parse(r#"{"agent":"claude","model":"opus","prompt":"fix it","hooks":false}"#)
             .unwrap();
     let (command, _) = launch::plan(&args.launch_spec()).unwrap();
-    assert_eq!(command.path, std::path::PathBuf::from("claude"));
-    assert_eq!(command.args, ["--model", "opus", "fix it"]);
+    assert_eq!(command.path, std::path::PathBuf::from("env"));
+    assert_eq!(
+        command.args,
+        [
+            "YINZ_CLAUDE_INLINE_HOOKS=0",
+            "claude",
+            "--model",
+            "opus",
+            "fix it"
+        ]
+    );
 
     // Left to its default, a claude pane is also handed its hook wiring, which the model
     // may pass through untouched as `env`, `permission_mode` and `resume` too.
@@ -327,15 +336,16 @@ fn a_prompt_and_a_model_reach_the_agent_as_its_own_arguments() {
     let (command, _) = launch::plan(&args.launch_spec()).unwrap();
     assert_eq!(command.path, std::path::PathBuf::from("env"));
     assert_eq!(
-        &command.args[..4],
+        &command.args[..5],
         [
             "A=1",
+            "YINZ_CLAUDE_INLINE_HOOKS=1",
             "claude",
             "--dangerously-skip-permissions",
             "--continue"
         ]
     );
-    assert_eq!(command.args[4], "--settings");
+    assert_eq!(command.args[5], "--settings");
 }
 
 /// Chat reloads read daemon snapshots; opening chat must never write or claim latches.

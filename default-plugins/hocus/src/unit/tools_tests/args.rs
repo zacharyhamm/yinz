@@ -498,7 +498,14 @@ fn an_agents_own_arguments_survive_having_no_command_to_hang_off() {
     .launch_spec();
     assert_eq!(spec.args, ["--dangerously-skip-permissions"]);
     let (command, _) = launch::plan(&spec).unwrap();
-    assert_eq!(command.args, ["--dangerously-skip-permissions"]);
+    assert_eq!(
+        command.args,
+        [
+            "YINZ_CLAUDE_INLINE_HOOKS=0",
+            "claude",
+            "--dangerously-skip-permissions"
+        ]
+    );
 }
 
 /// `new_pane` reads its VM the way `launch::plan` reads `agent_spawn`'s, so a bad

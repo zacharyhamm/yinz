@@ -32,6 +32,45 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
         to_pty: Some(SenderWithContext::new(to_pty)),
         ..Default::default()
     };
+    // All three launch preparations must reject before touching Git, a VM, or the pty.
+    for (worktree, firecracker) in [(false, None), (true, None), (true, Some("unprepared-vm"))] {
+        let response = agent_control::control_agent(
+            yinz_types::agent::control::AgentRequest::Spawn {
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some("rejected".into()),
+                    worktree: Some(worktree),
+                    firecracker: firecracker.map(str::to_owned),
+                    resume: Some("last".into()),
+                    permission_mode: Some("skip".into()),
+                    ..Default::default()
+                },
+                cwd: Some(root.clone()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: true,
+            },
+            crate::ClientId::new(99),
+            &senders,
+            &data_access,
+        );
+        assert_eq!(
+            response.outcome,
+            yinz_types::agent::control::AgentOutcome::Rejected
+        );
+        assert!(response.message.unwrap().contains("omit --permission-mode"));
+        assert!(response.spawned.is_none());
+        assert!(pty_rx.try_recv().is_err());
+        assert!(!root.join(".worktrees").exists());
+        let refs = process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["branch", "--format=%(refname:short)"])
+            .output()
+            .unwrap();
+        assert!(refs.status.success());
+        assert_eq!(String::from_utf8(refs.stdout).unwrap(), "main\n");
+    }
     let worker_root = root.clone();
     let worker = thread::spawn(move || {
         for (pane, branch) in [(7, "review"), (8, "review-2")] {
@@ -50,7 +89,7 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
             };
             assert_eq!(
                 placement,
-                ClientTabIndexOrPaneId::ClientId(crate::ClientId::new(1))
+                ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1))
             );
             assert_eq!(
                 command.cwd,
