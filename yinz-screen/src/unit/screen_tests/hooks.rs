@@ -369,7 +369,11 @@ fn agent_reports_wait_for_adopted_panes_and_tabs() {
                 vec![],
                 vec![(crate::TerminalId::new(42), None)],
                 vec![],
-                vec![(crate::TerminalId::new(42), serialized)],
+                vec![(
+                    crate::TerminalId::new(42),
+                    RunCommand::default(),
+                    Some(serialized),
+                )],
                 HashMap::new(),
                 TabId::new(1),
                 true,

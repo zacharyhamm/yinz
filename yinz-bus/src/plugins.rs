@@ -143,6 +143,7 @@ pub enum PluginInstruction {
     OverrideLayout(
         Option<PathBuf>,             // cwd
         Option<TerminalAction>,      // default_shell
+        Vec<TabId>,                  // surplus tabs to close after successful application
         Vec<(TabId, TabLayoutInfo)>, // resolved ID and layout for each tab
         bool,                        // retain_existing_terminal_panes
         bool,                        // retain_existing_plugin_panes

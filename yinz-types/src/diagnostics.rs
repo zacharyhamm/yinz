@@ -138,6 +138,7 @@ pub enum ScreenContext {
     UndoRenamePane,
     NewTab,
     ApplyLayout,
+    LayoutSpawnFailed,
     SwitchTabNext,
     SwitchTabPrev,
     CloseTab,

@@ -300,6 +300,51 @@ impl TiledPanes {
         let should_relayout = true;
         self.add_pane(pane_id, pane, should_relayout, client_id)
     }
+    /// Run insertion against empty pane contents and private geometry/focus state. The supplied
+    /// panes have no terminal output or focus reports, and all thread sends stay disconnected.
+    pub(crate) fn prepare_insertions(
+        &self,
+        panes: BTreeMap<PaneId, Box<dyn Pane>>,
+        remaining: Vec<Box<dyn Pane>>,
+        client_id: Option<ClientId>,
+        os_api: Box<dyn ServerOsApi>,
+    ) -> Result<BTreeMap<PaneId, PaneGeom>> {
+        let mut scratch = Self::new(
+            Rc::new(RefCell::new(*self.display_area.borrow())),
+            Rc::new(RefCell::new(*self.viewport.borrow())),
+            Rc::new(RefCell::new(self.connected_clients.borrow().clone())),
+            Rc::new(RefCell::new(self.connected_clients_in_app.borrow().clone())),
+            Rc::new(RefCell::new(self.mode_info.borrow().clone())),
+            self.character_cell_size.clone(),
+            self.stacked_resize.clone(),
+            Rc::new(RefCell::new(self.reserved_top_rows.borrow().clone())),
+            Rc::new(RefCell::new(*self.fullscreen_covers_ui.borrow())),
+            self.session_is_mirrored,
+            self.pane_frame_style,
+            self.default_mode_info.clone(),
+            self.style,
+            os_api,
+            ThreadSenders::default().silently_fail_on_send(),
+        );
+        scratch.panes = panes;
+        scratch.active_panes = self.active_panes.clone();
+        for pane in remaining {
+            let id = pane.pid();
+            let logical_position = pane.position_and_size().logical_position;
+            if scratch.insert_pane(id, pane, client_id).is_some() {
+                return Err(anyhow!("not enough room for retained pane {id:?}"));
+            }
+            if let Some(position) = logical_position {
+                scratch.set_pane_logical_position(id, position);
+            }
+        }
+        Ok(scratch
+            .panes
+            .into_iter()
+            .map(|(id, pane)| (id, pane.position_and_size()))
+            .collect())
+    }
+
     pub fn set_pane_logical_position(&mut self, pane_id: PaneId, logical_position: usize) {
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             let mut position_and_size = pane.position_and_size();

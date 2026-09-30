@@ -228,6 +228,7 @@ struct PendingLayoutSpawn {
 struct PendingLayoutOverride {
     cwd: Option<PathBuf>,
     default_shell: Option<TerminalAction>,
+    tabs_to_close: Vec<TabId>,
     tabs: Vec<(
         TabId,
         TabLayoutInfo,
@@ -788,11 +789,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     client_id,
                     completion_tx,
                 )
-                .with_context(err_context)?;
+                .with_context(err_context)
+                .non_fatal();
             },
             PtyInstruction::OverrideLayout(
                 cwd,
                 default_shell,
+                tabs_to_close,
                 tab_layouts_with_plugin_ids,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
@@ -802,6 +805,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 let pending = PendingLayoutOverride {
                     cwd,
                     default_shell,
+                    tabs_to_close,
                     tabs: tab_layouts_with_plugin_ids,
                     retain_existing_terminal_panes,
                     retain_existing_plugin_panes,
@@ -1794,6 +1798,17 @@ impl Pty {
         }
     }
 
+    /// These ids belong to new instances loaded for this request, including on an override.
+    fn discard_layout_plugins(&self, plugin_ids: impl IntoIterator<Item = PluginId>) {
+        for plugin_id in plugin_ids {
+            self.bus
+                .senders
+                .send_to_plugin(PluginInstruction::Unload(plugin_id))
+                .with_context(|| format!("failed to unload plugin {plugin_id} of a failed layout"))
+                .non_fatal();
+        }
+    }
+
     /// Give up on a layout: close every pane it spawned, deferred or already
     /// running, so a failure part-way through leaves nothing behind.
     fn abandon_layout(&mut self, panes: &SpawnedLayoutPanes) {
@@ -2006,10 +2021,35 @@ impl Pty {
             block_on_first_terminal,
             should_change_focus_to_new_tab,
             client_id,
-            completion_tx,
+            mut completion_tx,
         } = pending;
-        let panes =
-            self.spawn_layout_panes(run_instructions, floating_run_instructions, &default_shell)?;
+        let panes = match self.spawn_layout_panes(
+            run_instructions,
+            floating_run_instructions,
+            &default_shell,
+            &plugin_ids,
+        ) {
+            Ok(panes) => panes,
+            Err(error) => {
+                let message = format!("Failed to spawn layout for tab {tab_index}: {error:#}");
+                if let Some(completion) = completion_tx.as_mut() {
+                    completion.set_exit_status(1);
+                    completion.set_error_message(message.clone());
+                }
+                self.bus
+                    .senders
+                    .send_to_server(ServerInstruction::LogError(vec![message], client_id, None))
+                    .context("failed to report layout spawn failure")
+                    .non_fatal();
+                // Screen may already own panes moved into this pending tab.
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::LayoutSpawnFailed(tab_index))
+                    .context("failed to recover a tab whose layout could not spawn")
+                    .non_fatal();
+                return Err(error);
+            },
+        };
 
         let adopted_ids = |terminals: &[AdoptedTabTerminal]| {
             terminals
@@ -2021,15 +2061,16 @@ impl Pty {
             Some((tiled, floating)) => (adopted_ids(tiled), adopted_ids(floating)),
             None => panes.placement_ids(),
         };
-        let adopted_agents = match &adopted_panes {
+        let adopted_terminals = match &adopted_panes {
             Some((tiled, floating)) => tiled
                 .iter()
                 .chain(floating)
-                .filter_map(|terminal| {
-                    terminal
-                        .agent
-                        .clone()
-                        .map(|agent| (terminal.terminal_id, agent))
+                .map(|terminal| {
+                    (
+                        terminal.terminal_id,
+                        terminal.cmd.clone(),
+                        terminal.agent.clone(),
+                    )
                 })
                 .collect(),
             None => vec![],
@@ -2055,6 +2096,7 @@ impl Pty {
             new_tab_pane_ids.len(),
             new_tab_floating_pane_ids.len()
         );
+        let plugin_ids_to_close: Vec<_> = plugin_ids.values().flatten().copied().collect();
         if let Err(error) = self
             .bus
             .senders
@@ -2063,7 +2105,7 @@ impl Pty {
                 floating_panes_layout,
                 new_tab_pane_ids.clone(),
                 new_tab_floating_pane_ids.clone(),
-                adopted_agents,
+                adopted_terminals,
                 plugin_ids,
                 tab_index,
                 should_change_focus_to_new_tab,
@@ -2073,6 +2115,7 @@ impl Pty {
             ))
         {
             self.abandon_layout(&panes);
+            self.discard_layout_plugins(plugin_ids_to_close);
             return Err(error).with_context(err_context);
         }
 
@@ -2146,6 +2189,7 @@ impl Pty {
         tiled: Vec<Option<Run>>,
         floating: Vec<Option<Run>>,
         default_shell: &TerminalAction,
+        plugin_ids: &HashMap<RunPluginOrAlias, Vec<PluginId>>,
     ) -> Result<SpawnedLayoutPanes> {
         let mut panes = SpawnedLayoutPanes::default();
         for (instructions, is_floating) in [(tiled, false), (floating, true)] {
@@ -2153,6 +2197,7 @@ impl Pty {
                 self.spawn_layout_slots(instructions, default_shell, &mut panes, is_floating)
             {
                 self.abandon_layout(&panes);
+                self.discard_layout_plugins(plugin_ids.values().flatten().copied());
                 return Err(error);
             }
         }
@@ -2311,12 +2356,17 @@ impl Pty {
             })
             .map(|(terminal_id, _)| *terminal_id)
             .collect();
+        let plugin_ids_to_close: Vec<_> = all_tab_results
+            .iter()
+            .flat_map(|tab_result| tab_result.plugin_ids.values().flatten().copied())
+            .collect();
         if let Err(error) =
             self.bus
                 .senders
                 .send_to_screen(ScreenInstruction::OverrideLayoutComplete(
                     all_tab_results,
                     failed_tabs,
+                    pending.tabs_to_close,
                     pending.retain_existing_terminal_panes,
                     pending.retain_existing_plugin_panes,
                     pending.client_id,
@@ -2324,6 +2374,7 @@ impl Pty {
                 ))
         {
             self.close_unplaced_layout_panes(spawned_ids, &deferred_spawns);
+            self.discard_layout_plugins(plugin_ids_to_close);
             return Err(error).with_context(err_context);
         }
         for deferred in deferred_spawns {
@@ -2355,8 +2406,12 @@ impl Pty {
             .filter(|f| !f.already_running)
             .map(|f| f.run.clone())
             .collect();
-        let panes =
-            self.spawn_layout_panes(run_instructions, floating_run_instructions, &default_shell)?;
+        let panes = self.spawn_layout_panes(
+            run_instructions,
+            floating_run_instructions,
+            &default_shell,
+            &plugin_ids,
+        )?;
         let (new_terminal_pids, new_floating_pane_pids) = panes.placement_ids();
         let tab_result = TabOverrideResult {
             tab_index,
@@ -2369,7 +2424,15 @@ impl Pty {
             new_floating_pane_pids,
             plugin_ids,
         };
-        let deferred = self.start_layout_panes(panes)?;
+        let spawned_ids: Vec<_> = panes.terminal_ids().collect();
+        let deferred = match self.start_layout_panes(panes) {
+            Ok(deferred) => deferred,
+            Err(error) => {
+                self.discard_layout_panes(spawned_ids);
+                self.discard_layout_plugins(tab_result.plugin_ids.values().flatten().copied());
+                return Err(error);
+            },
+        };
         Ok((tab_result, deferred))
     }
     /// Register a command pane as its plugin's, so a later rerun keeps the

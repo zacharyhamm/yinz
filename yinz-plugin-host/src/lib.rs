@@ -630,6 +630,7 @@ pub fn plugin_thread_main(
             PluginInstruction::OverrideLayout(
                 cwd,
                 default_shell,
+                tabs_to_close,
                 tab_layouts,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
@@ -712,6 +713,7 @@ pub fn plugin_thread_main(
                 drop(bus.senders.send_to_pty(PtyInstruction::OverrideLayout(
                     cwd,
                     default_shell,
+                    tabs_to_close,
                     tab_layouts_with_plugin_ids,
                     retain_existing_terminal_panes,
                     retain_existing_plugin_panes,

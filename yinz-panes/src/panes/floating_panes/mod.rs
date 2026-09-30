@@ -460,18 +460,32 @@ impl FloatingPanes {
         &mut self,
         floating_pane_layout: &FloatingPaneLayout,
     ) -> Result<PaneGeom> {
-        let err_context = || "failed to find position for floating pane".to_string();
-        let display_area = *self.display_area.borrow();
-        let viewport = *self.viewport.borrow();
-        let floating_pane_grid = FloatingPaneGrid::new(
-            &mut self.panes,
-            &mut self.desired_pane_positions,
-            display_area,
-            viewport,
-        );
-        let mut position = floating_pane_grid
-            .find_room_for_new_pane()
-            .with_context(err_context)?;
+        let pane_geoms: Vec<_> = self
+            .panes
+            .values()
+            .map(|pane| pane.position_and_size())
+            .collect();
+        Self::position_layout_in_viewport(
+            *self.viewport.borrow(),
+            floating_pane_layout,
+            &pane_geoms,
+        )
+    }
+
+    pub(crate) fn find_room_in_viewport(
+        viewport: Viewport,
+        pane_geoms: &[PaneGeom],
+    ) -> Option<PaneGeom> {
+        FloatingPaneGrid::find_room_in_viewport(viewport, pane_geoms)
+    }
+
+    pub(crate) fn position_layout_in_viewport(
+        viewport: Viewport,
+        floating_pane_layout: &FloatingPaneLayout,
+        pane_geoms: &[PaneGeom],
+    ) -> Result<PaneGeom> {
+        let mut position = FloatingPaneGrid::find_room_in_viewport(viewport, pane_geoms)
+            .context("failed to find position for floating pane")?;
         position.apply_floating_pane_position(
             floating_pane_layout.x,
             floating_pane_layout.y,

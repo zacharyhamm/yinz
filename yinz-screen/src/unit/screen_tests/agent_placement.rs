@@ -734,7 +734,7 @@ fn a_tab_made_for_an_agent_pane_is_pending_until_its_layout_lands() {
 }
 
 #[test]
-fn a_failed_layout_override_clears_the_pending_tab() {
+fn a_failed_layout_override_preserves_pending_state_for_caller_cleanup() {
     use yinz_types::geometry::SplitSize;
 
     let mut screen = screen_with_floor();
@@ -774,14 +774,11 @@ fn a_failed_layout_override_clears_the_pending_tab() {
         CLIENT,
         None,
     )
-    .expect("layout errors are handled internally");
+    .expect_err("the screen must receive the failure to report it and clean up spawned panes");
+    assert!(tab.is_pending(), "rejected layouts leave the tab unchanged");
     assert!(
-        !tab.is_pending(),
-        "a failed override finishes loading the tab"
-    );
-    assert!(
-        !screen.has_pending_tabs(),
-        "navigation must no longer defer"
+        screen.has_pending_tabs(),
+        "the screen still owns settlement"
     );
 }
 
