@@ -745,12 +745,86 @@ fn bench_panel(c: &mut Criterion) {
     group.finish();
 }
 
+// Isolate composition and serialization with a full text background, including large terminals.
+fn bench_panel_text(c: &mut Criterion) {
+    use yinz_terminal::panes::terminal_character::{AnsiCode, DEFAULT_STYLES};
+
+    let mut group = c.benchmark_group("panel_text");
+    for (cols, rows) in [(200, 50), (400, 120)] {
+        for background in ["blank", "plain", "colored"] {
+            let clients = HashSet::from([CLIENT_ID]);
+            let links = Rc::new(RefCell::new(LinkHandler::new()));
+            let rect = CellRect {
+                x: 0,
+                y: 0,
+                cols,
+                rows,
+            };
+            let under: Vec<_> = (0..rows)
+                .map(|y| {
+                    CharacterChunk::new(
+                        (0..cols)
+                            .map(|x| {
+                                let mut character =
+                                    TerminalCharacter::new(if background == "blank" {
+                                        ' '
+                                    } else {
+                                        char::from(b'a' + (x % 26) as u8)
+                                    });
+                                if background == "colored" {
+                                    character.styles = DEFAULT_STYLES
+                                        .foreground(Some(AnsiCode::ColorIndex((x / 8 % 16) as u8)))
+                                        .into();
+                                }
+                                character
+                            })
+                            .collect(),
+                        0,
+                        y,
+                    )
+                })
+                .collect();
+            let over: Vec<_> = (0..rows)
+                .map(|y| CharacterChunk::new(vec![TerminalCharacter::new(' '); cols], 0, y))
+                .collect();
+            group.bench_function(
+                BenchmarkId::new(background, format!("{cols}x{rows}")),
+                |b| {
+                    b.iter(|| {
+                        let mut output = Output::default();
+                        output.add_clients(&clients, links.clone(), None);
+                        let palette = yinz_types::style::default_palette();
+                        output.begin_translucent_composition(
+                            &clients,
+                            vec![(1, rect, 75)],
+                            palette.fg,
+                            palette.bg,
+                            Style::default().colors.text_unselected.background,
+                            &HashMap::new(),
+                        );
+                        output
+                            .add_character_chunks_to_client(CLIENT_ID, under.clone(), None)
+                            .unwrap();
+                        output
+                            .add_character_chunks_to_client(CLIENT_ID, over.clone(), Some(1))
+                            .unwrap();
+                        output.finish_translucent_composition();
+                        black_box(output.serialize().unwrap());
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_ingest,
     bench_frame,
     bench_render_only,
     bench_kitty_graphics,
-    bench_panel
+    bench_panel,
+    bench_panel_text
 );
 criterion_main!(benches);

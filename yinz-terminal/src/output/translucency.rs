@@ -14,12 +14,14 @@ struct Cell {
     transparent: bool,
 }
 
-type Cells = BTreeMap<(usize, usize), Cell>; // (row, column)
+// Rows stay ordered; columns use direct indexing instead of a tree lookup for every cell.
+type Cells = BTreeMap<usize, Vec<Option<Cell>>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct Composition {
     overlays: Vec<(usize, CellRect, u8)>,
     layers: BTreeMap<usize, Cells>,
+    left: usize,
     fg: PaletteColor,
     bg: PaletteColor,
     tint: PaletteColor,
@@ -61,6 +63,11 @@ impl Composition {
         host_colors: [Option<AnsiCode>; 256],
     ) -> Self {
         Self {
+            left: overlays
+                .iter()
+                .map(|(_, rect, _)| rect.x)
+                .min()
+                .unwrap_or(0),
             overlays,
             layers: BTreeMap::new(),
             fg: color(Some(fg.into()), fg, None, &host_colors),
@@ -104,6 +111,7 @@ impl Composition {
             }) {
                 continue;
             }
+            let row = cells.entry(chunk.y).or_default();
             let mut x = chunk.x;
             let mut characters = chunk.terminal_characters.iter().peekable();
             while let Some(character) = characters.next() {
@@ -178,16 +186,17 @@ impl Composition {
                     let mut resolved = character.clone();
                     resolved.styles = styles.into();
                     for column in covered {
-                        cells.insert(
-                            (chunk.y, column),
-                            Cell {
-                                character: resolved.clone(),
-                                combining: combining.clone(),
-                                start: x,
-                                layer,
-                                transparent,
-                            },
-                        );
+                        let index = column - self.left;
+                        if row.len() <= index {
+                            row.resize_with(index + 1, || None);
+                        }
+                        row[index] = Some(Cell {
+                            character: resolved.clone(),
+                            combining: combining.clone(),
+                            start: x,
+                            layer,
+                            transparent,
+                        });
                     }
                 }
                 x += width;
@@ -203,104 +212,116 @@ impl Composition {
                 .iter()
                 .find(|(z, _, _)| *z == layer)
                 .map(|(_, _, opacity)| *opacity);
-            for (position, mut cell) in cells {
-                if let Some(opacity) = opacity.filter(|_| cell.transparent) {
-                    cell = composed.remove(&position).unwrap_or_else(|| Cell {
-                        character: TerminalCharacter::new_styled(
-                            ' ',
-                            DEFAULT_STYLES
-                                .foreground(Some(self.fg.into()))
-                                .background(Some(self.bg.into()))
-                                .into(),
-                        ),
-                        combining: vec![],
-                        start: position.1,
-                        layer: 0,
-                        transparent: false,
-                    });
-                    // Kitty images remain rectangularly clipped, including their placeholder text.
-                    if cell.character.character == PLACEHOLDER {
-                        cell.character = EMPTY_TERMINAL_CHARACTER;
-                        cell.combining.clear();
-                    }
-                    let mut styles = *cell.character.styles;
-                    styles.foreground = Some(
-                        blend(
-                            color(styles.foreground, self.fg, None, &self.host_colors),
-                            self.tint,
-                            f32::from(opacity) / 100.0,
-                        )
-                        .into(),
-                    );
-                    styles.background = Some(
-                        blend(
-                            color(styles.background, self.bg, None, &self.host_colors),
-                            self.tint,
-                            f32::from(opacity) / 100.0,
-                        )
-                        .into(),
-                    );
-                    if let Some(underline) =
-                        styles.underline_color.filter(|c| *c != AnsiCode::Reset)
-                    {
-                        styles.underline_color = Some(
+            for (y, cells) in cells {
+                let row = composed.entry(y).or_default();
+                row.resize_with(row.len().max(cells.len()), || None);
+                for (index, cell) in cells.into_iter().enumerate() {
+                    let Some(mut cell) = cell else { continue };
+                    if let Some(opacity) = opacity.filter(|_| cell.transparent) {
+                        cell = row[index].take().unwrap_or_else(|| Cell {
+                            character: TerminalCharacter::new_styled(
+                                ' ',
+                                DEFAULT_STYLES
+                                    .foreground(Some(self.fg.into()))
+                                    .background(Some(self.bg.into()))
+                                    .into(),
+                            ),
+                            combining: vec![],
+                            start: index + self.left,
+                            layer: 0,
+                            transparent: false,
+                        });
+                        // Kitty images remain rectangularly clipped, including their placeholder text.
+                        if cell.character.character == PLACEHOLDER {
+                            cell.character = EMPTY_TERMINAL_CHARACTER;
+                            cell.combining.clear();
+                        }
+                        let mut styles = *cell.character.styles;
+                        styles.foreground = Some(
                             blend(
-                                color(Some(underline), self.fg, None, &self.host_colors),
+                                color(styles.foreground, self.fg, None, &self.host_colors),
                                 self.tint,
                                 f32::from(opacity) / 100.0,
                             )
                             .into(),
                         );
+                        styles.background = Some(
+                            blend(
+                                color(styles.background, self.bg, None, &self.host_colors),
+                                self.tint,
+                                f32::from(opacity) / 100.0,
+                            )
+                            .into(),
+                        );
+                        if let Some(underline) =
+                            styles.underline_color.filter(|c| *c != AnsiCode::Reset)
+                        {
+                            styles.underline_color = Some(
+                                blend(
+                                    color(Some(underline), self.fg, None, &self.host_colors),
+                                    self.tint,
+                                    f32::from(opacity) / 100.0,
+                                )
+                                .into(),
+                            );
+                        }
+                        cell.character.styles = styles.into();
                     }
-                    cell.character.styles = styles.into();
+                    row[index] = Some(cell);
                 }
-                composed.insert(position, cell);
             }
         }
         let mut chunks: Vec<CharacterChunk> = vec![];
         let mut end = None;
-        for (&(y, x), cell) in &composed {
-            if end.is_some_and(|(row, column)| row == y && x < column) {
-                continue;
-            }
-            // Upper opaque cells mask lower composition, but are already emitted whole.
-            if !self
-                .overlays
-                .iter()
-                .any(|(z, rect, _)| *z >= cell.layer && rect.contains(x, y))
-            {
-                continue;
-            }
-            let width = cell.character.width();
-            // A wide glyph needs its whole span and identical tint in every cell. Otherwise each
-            // surviving cell becomes a space; a covered lead must never leave an orphan tail.
-            let intact = x == cell.start
-                && (x..x + width).all(|column| {
-                    composed.get(&(y, column)).is_some_and(|other| {
-                        other.start == x
-                            && other.layer == cell.layer
-                            && other.character == cell.character
-                    })
-                });
-            let character = if intact {
-                cell.character.clone()
-            } else {
-                TerminalCharacter::new_styled(' ', cell.character.styles.clone())
-            };
-            if end != Some((y, x)) {
-                chunks.push(CharacterChunk::new(vec![], x, y));
-            }
-            end = Some((y, x + character.width()));
-            let Some(chunk) = chunks.last_mut() else {
-                continue;
-            };
-            chunk.terminal_characters.push(character.clone());
-            if intact {
-                chunk.terminal_characters.extend(
-                    cell.combining.iter().map(|c| {
-                        TerminalCharacter::new_styled(c.character, character.styles.clone())
-                    }),
-                );
+        for (&y, row) in &composed {
+            for (index, cell) in row.iter().enumerate() {
+                let Some(cell) = cell else { continue };
+                let x = index + self.left;
+                if end.is_some_and(|(row, column)| row == y && x < column) {
+                    continue;
+                }
+                // Upper opaque cells mask lower composition, but are already emitted whole.
+                if !self
+                    .overlays
+                    .iter()
+                    .any(|(z, rect, _)| *z >= cell.layer && rect.contains(x, y))
+                {
+                    continue;
+                }
+                let width = cell.character.width();
+                // A wide glyph needs its whole span and identical tint in every cell. Otherwise each
+                // surviving cell becomes a space; a covered lead must never leave an orphan tail.
+                let intact = x == cell.start
+                    && (width == 1
+                        || (index..index + width).all(|column| {
+                            row.get(column)
+                                .and_then(Option::as_ref)
+                                .is_some_and(|other| {
+                                    other.start == x
+                                        && other.layer == cell.layer
+                                        && other.character == cell.character
+                                })
+                        }));
+                let character = if intact {
+                    cell.character.clone()
+                } else {
+                    TerminalCharacter::new_styled(' ', cell.character.styles.clone())
+                };
+                if end != Some((y, x)) {
+                    chunks.push(CharacterChunk::new(vec![], x, y));
+                }
+                end = Some((y, x + character.width()));
+                let Some(chunk) = chunks.last_mut() else {
+                    continue;
+                };
+                chunk.terminal_characters.push(character.clone());
+                if intact {
+                    chunk
+                        .terminal_characters
+                        .extend(cell.combining.iter().map(|c| {
+                            TerminalCharacter::new_styled(c.character, character.styles.clone())
+                        }));
+                }
             }
         }
         chunks

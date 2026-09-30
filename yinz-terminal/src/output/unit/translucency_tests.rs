@@ -142,6 +142,70 @@ fn overlapping_layers_compose_in_order_even_when_chunks_arrive_out_of_order() {
 }
 
 #[test]
+fn disjoint_rectangles_keep_row_order_and_gaps_with_out_of_order_chunks() {
+    let mut composition = translucency::Composition::new(
+        vec![
+            (
+                1,
+                CellRect {
+                    x: 2,
+                    y: 1,
+                    cols: 3,
+                    rows: 2,
+                },
+                50,
+            ),
+            (
+                2,
+                CellRect {
+                    x: 7,
+                    y: 2,
+                    cols: 2,
+                    rows: 1,
+                },
+                0,
+            ),
+        ],
+        FG,
+        BG,
+        TINT,
+        [None; 256],
+    );
+    for (layer, x, y, content) in [
+        (2, 7, 2, "  "),
+        (0, 7, 2, "hi"),
+        (0, 0, 2, "abcde"),
+        (1, 2, 2, "   "),
+        (1, 2, 1, "   "),
+        (0, 0, 1, "01234"),
+    ] {
+        let mut row = chunk(content, x);
+        row.y = y;
+        composition.add(&[row], layer);
+    }
+    let result = composition.finish();
+    assert_eq!(
+        result
+            .iter()
+            .map(|c| (c.x, c.y, text(std::slice::from_ref(c))))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, 1, "234".into()),
+            (2, 2, "cde".into()),
+            (7, 2, "hi".into())
+        ]
+    );
+    assert_eq!(
+        result[0].terminal_characters[0].styles.foreground,
+        Some(AnsiCode::RgbCode((150, 130, 110)))
+    );
+    assert_eq!(
+        result[2].terminal_characters[0].styles.foreground,
+        Some(FG.into())
+    );
+}
+
+#[test]
 fn wide_and_combining_glyphs_need_their_complete_visible_span() {
     assert_eq!(
         text(&compose(50, chunk("界e\u{301}xy", 0), chunk("     ", 0))),
