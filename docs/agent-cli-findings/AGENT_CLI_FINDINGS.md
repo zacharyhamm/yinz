@@ -58,9 +58,9 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 13 | **Fixed, verified live** | `/probe`, `/cost`, and Claude `!printf` return `rejected` before writing or claiming input, with `ready:true` and `send-keys` guidance. Exact Claude `/clear` still replaces the conversation, and the next prompt completes. See [verification](#fix-status-agent-cli-12-14). |
 | 14 | **Fixed, verified live** | A Stop hook that blocks once keeps the pane Busy and `ready:false`; a concurrent prompt is rejected. The original wait returns only `FINAL_1214` after the matching transcript `turn_duration`. See [verification](#fix-status-agent-cli-12-14). |
 | 15 | **Still present** | `~/.claude/settings.json` runs `~/.claude/hocus/hocus-hook.sh` for every event, and every spawn still adds `--settings` hooks. |
-| 16 | **Still broken** (see #32) | `--kind codex --model haiku` spawns and becomes ready (v2 77, 78). The first prompt fails at the API. |
-| 17 | Not retested | It needs a Codex auto-update. |
-| 18 | **Still broken** | A shell pane gives `target_changed`, `terminal_999` gives `target_closed` (v2 99, 100), and a held pane after `/exit` gives `target_changed`. |
+| 16 | **Fixed for Claude shorthand** | Shared launch validation rejects `--kind codex --model haiku` before spawning. Other model IDs remain the provider's responsibility. See [fix status](#fix-status-agent-cli-1618). |
+| 17 | **Existing reconnect fix, regression extended** | The launcher survives backend connection failures before and after conversation selection. A live Codex auto-update has not been retested. See [fix status](#fix-status-agent-cli-1618). |
+| 18 | **Fixed** | Initial lookups distinguish `not_agent`, `target_not_found`, and `target_exited`. Conversation pins and transitions during pending operations retain their existing outcomes. See [fix status](#fix-status-agent-cli-1618). |
 | 19 | **Still broken** | The message stays "agent is not idle or already has a pending submission" when the cause is an unconsumed input revision (v2 04, 14). |
 | 20 | **Still broken** | "Submission is uncertain… clear any draft" appears with `acknowledged:true` (v2 79) and for `/exit` (v2 94). |
 | 21 | **Still broken** | `spawn --help` has no text for `--kind`, `--model`, and the other listed flags. `--kind bogus` and a missing `--kind` list no kinds (v2 102, 103). |
@@ -335,6 +335,32 @@ conversation replacement. `cargo x remote-test --build --native` built this work
 and SSH fixtures; `cargo x remote-test --test` passed all 43 tests, including a real remote reporter
 that stays Busy through an ordinary Stop and a partial duration record, then confirms only the final
 answer. See the [validation record](logs/v6-validation.txt).
+
+## Fix status: agent CLI #16–18
+
+**#16:** The shared launch planner rejects Claude aliases (`haiku`, `sonnet`, `opus`, and `opusplan`)
+for Codex, including case variants and the `[1m]` suffix. The error directs callers to use
+`--kind claude` or a Codex model ID. Validation runs before pane creation and worktree setup.
+These aliases are reserved even with a custom provider. Other model IDs and raw arguments remain the configured provider's responsibility.
+This change does not address API failure reporting in #32.
+
+**#17:** Commit `18684fcf6` already keeps the Codex UI alive when its backend connection fails.
+The launcher regression now also rejects the first connection, before any conversation binding exists.
+It then checks abrupt backend exit, another failed connection, successful reconnection, and preserved binding.
+The test uses a real launcher subprocess with a mock Codex backend. It does not install or test a live Codex update.
+
+**#18:** An initial lookup without `--conversation` returns `target_not_found` for an absent pane
+and `not_agent` for a pane without an agent. A held pane whose agent exited returns `target_exited`,
+even after `SessionEnd` cleared its agent record. A retained exited record also returns `target_exited`
+from `status`, with its record included. These outcomes have specific messages and nonzero CLI exit codes.
+Conversation pins still return `target_changed` or `target_closed` when their target disappears.
+Pending operations retain their transition outcomes. No agent record is synthesized.
+
+**Validation, 2026-09-30:** All 106 focused regressions passed. The final `cargo x ci check`
+passed format, lint, all 9,379 workspace tests, doctests, and all 473 integration tests with 16 workers.
+The gate includes the additional held-before-first-launch check and IPC round trips for the new outcomes.
+Builds and tests used this worktree's own native and Wasm artifacts.
+The status regressions cover local, SSH, and VM pane targets through the screen's fake OS backend.
 
 ## P2 — misleading output, docs and skill gaps
 

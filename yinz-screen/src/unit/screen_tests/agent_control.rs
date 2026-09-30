@@ -160,6 +160,88 @@ fn send_keys(keys: Vec<BareKey>) -> AgentRequest {
 }
 
 #[test]
+fn initial_status_distinguishes_missing_non_agent_and_exited_targets() {
+    for target in pane_targets() {
+        for case in ["missing", "shell", "cleared-exit", "retained-exit"] {
+            let (mut screen, messages, writes) = setup_on_target(
+                if case == "shell" { "bash" } else { "codex" },
+                target.clone(),
+            );
+            let (expected, message) = match case {
+                "missing" => {
+                    screen.close_pane_explicitly(PANE, None);
+                    (AgentOutcome::TargetNotFound, "target pane does not exist")
+                },
+                "shell" => (AgentOutcome::NotAgent, "target does not contain an agent"),
+                _ => {
+                    report(&mut screen, hook("SessionStart"));
+                    if case == "cleared-exit" {
+                        report(&mut screen, hook("SessionEnd"));
+                    }
+                    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                    tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                    (AgentOutcome::TargetExited, "agent process has exited")
+                },
+            };
+            for conversation in [None, Some("conversation"), Some("other")] {
+                screen.agent_control(
+                    AgentRequest::Status {
+                        pane_id: PANE,
+                        expected_session_id: conversation.map(str::to_owned),
+                    },
+                    CLIENT,
+                );
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                let matching_pin = case == "retained-exit" && conversation == Some("conversation");
+                assert_eq!(
+                    response.outcome,
+                    if conversation.is_none() || matching_pin {
+                        expected
+                    } else if case == "missing" {
+                        AgentOutcome::TargetClosed
+                    } else {
+                        AgentOutcome::TargetChanged
+                    },
+                    "{target:?}, {case}, {conversation:?}"
+                );
+                if conversation.is_none() {
+                    assert_eq!(response.message.as_deref(), Some(message));
+                }
+                if case == "retained-exit" {
+                    assert_eq!(response.agents[0].agent.state, AgentState::Exited);
+                    assert!(!response.agents[0].ready);
+                    assert!(!response.agents[0].prompt_supported);
+                } else {
+                    assert!(response.agents.is_empty());
+                }
+            }
+            assert!(screen.agent_controls.is_empty());
+            assert!(writes
+                .try_iter()
+                .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+        }
+    }
+}
+
+#[test]
+fn an_agent_held_before_its_first_run_has_not_exited() {
+    let (mut screen, messages, _writes) = setup("codex");
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.hold_pane(PANE, None, true, tab.pane_run_command(PANE).unwrap());
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::StatusUnavailable);
+    assert!(response.message.is_none());
+    assert!(!response.agents[0].ready);
+}
+
+#[test]
 fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
     for kind in ["claude", "codex"] {
         for split in [false, true] {
@@ -1405,7 +1487,7 @@ fn conversation_pin_and_session_end_prevent_keys_reaching_a_replaced_agent() {
     screen.agent_control(keys(None), CLIENT);
     assert_eq!(
         replies(&messages, CLIENT)[0].outcome,
-        AgentOutcome::TargetChanged
+        AgentOutcome::NotAgent
     );
     assert!(writes
         .try_iter()

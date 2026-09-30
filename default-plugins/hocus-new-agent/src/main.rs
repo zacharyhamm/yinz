@@ -1767,12 +1767,12 @@ mod tests {
         let mut state = State::default();
         state.set_text(BRANCH, "topic");
         state.changed(BRANCH);
-        state.set_text(MODEL, "opus");
+        state.set_text(MODEL, "gpt-6-luna");
         state.set_text(PROMPT, "fix the parser");
         let (from_form, checkout) = request(state.dialog.form()).unwrap();
         let (from_spec, spec_checkout) = launch::plan(&launch::Spec {
             kind: Some("codex".to_owned()),
-            model: Some("opus".to_owned()),
+            model: Some("gpt-6-luna".to_owned()),
             prompt: Some("fix the parser".to_owned()),
             branch: Some("topic".to_owned()),
             ..Default::default()

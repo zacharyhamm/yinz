@@ -4580,6 +4580,9 @@ fn test_server_messages() {
         AgentOutcome::TargetClosed,
         AgentOutcome::StatusUnavailable,
         AgentOutcome::Rejected,
+        AgentOutcome::TargetNotFound,
+        AgentOutcome::NotAgent,
+        AgentOutcome::TargetExited,
     ] {
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse::new(outcome)));
         test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {

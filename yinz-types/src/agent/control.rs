@@ -80,6 +80,12 @@ pub enum AgentOutcome {
     TargetClosed,
     StatusUnavailable,
     Rejected,
+    /// The requested pane was absent before this operation began.
+    TargetNotFound,
+    /// The requested pane has no agent record.
+    NotAgent,
+    /// The requested agent's process has already exited.
+    TargetExited,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

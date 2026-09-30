@@ -511,12 +511,29 @@ impl Screen {
             return;
         }
         let Some(status) = self.agent_status(pane) else {
-            let outcome = if self.tab_containing_pane(pane).is_some() {
-                AgentOutcome::TargetChanged
+            let info = self.get_pane_info(pane);
+            let exited = info.as_ref().is_some_and(|info| info.exited)
+                && self
+                    .tab_containing_pane(pane)
+                    .is_some_and(|tab| tab.pane_is_agent(pane));
+            let (outcome, message) = if info.is_none() {
+                (AgentOutcome::TargetNotFound, "target pane does not exist")
+            } else if exited {
+                (AgentOutcome::TargetExited, "agent process has exited")
             } else {
-                AgentOutcome::TargetClosed
+                (AgentOutcome::NotAgent, "target does not contain an agent")
             };
-            reject(self, outcome, "target does not contain an agent");
+            // A conversation pin supplies a prior identity; an unpinned lookup does not.
+            let outcome = if expected.is_some() {
+                if info.is_none() {
+                    AgentOutcome::TargetClosed
+                } else {
+                    AgentOutcome::TargetChanged
+                }
+            } else {
+                outcome
+            };
+            reject(self, outcome, message);
             return;
         };
         if expected.is_some() && expected != status.agent.session_id.as_deref() {
@@ -603,12 +620,18 @@ impl Screen {
                 self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
             },
             Status { .. } => {
-                let outcome = if status.status_available {
+                let outcome = if status.agent.state == AgentState::Exited
+                    && self.get_pane_info(pane).is_some_and(|info| info.exited)
+                {
+                    AgentOutcome::TargetExited
+                } else if status.status_available {
                     AgentOutcome::Ok
                 } else {
                     AgentOutcome::StatusUnavailable
                 };
-                self.agent_reply(&client, self.agent_result(pane, outcome, None));
+                let message = (outcome == AgentOutcome::TargetExited)
+                    .then(|| "agent process has exited".into());
+                self.agent_reply(&client, self.agent_result(pane, outcome, message));
             },
             Read { lines, .. } => {
                 if lines == 0 || lines > 100_000 {
