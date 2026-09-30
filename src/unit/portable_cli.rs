@@ -62,10 +62,59 @@ fn failure(out: Output, expected: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
-struct Session(tempfile::TempDir, String);
+struct Session(tempfile::TempDir, String, Option<AttachedClient>);
+struct AttachedClient(std::process::Child, Option<std::thread::JoinHandle<()>>);
+impl AttachedClient {
+    fn new(dir: &Path) -> Self {
+        let pty = nix::pty::openpty(
+            Some(&nix::pty::Winsize {
+                ws_row: 60,
+                ws_col: 160,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            }),
+            None,
+        )
+        .unwrap();
+        let slave = std::fs::File::from(pty.slave);
+        let child = command(dir)
+            .args([
+                "--config-dir",
+                dir.to_str().unwrap(),
+                "attach",
+                "portable-test",
+            ])
+            .env("TERM", "xterm-256color")
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave)
+            .spawn()
+            .unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut master = std::fs::File::from(pty.master);
+            let _ = std::io::copy(&mut master, &mut std::io::sink());
+        });
+        Self(child, Some(reader))
+    }
+}
+impl Drop for AttachedClient {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+        if let Some(reader) = self.1.take() {
+            reader.join().unwrap();
+        }
+    }
+}
 impl Session {
     fn new() -> Self {
-        let mut session = Self(tempfile::tempdir().unwrap(), String::new());
+        Self::start(|_| {}, false)
+    }
+    fn with_setup(setup: impl FnOnce(&Path)) -> Self {
+        Self::start(setup, true)
+    }
+    fn start(setup: impl FnOnce(&Path), attach: bool) -> Self {
+        let mut session = Self(tempfile::tempdir().unwrap(), String::new(), None);
         let dir = session.0.path();
         assert!(Command::new("git")
             .arg("init")
@@ -76,8 +125,11 @@ impl Session {
             .success());
         std::fs::write(dir.join("config.kdl"), "plugins { hocus-store location=\"yinz:hocus-store\"; hocus-agentd location=\"yinz:hocus-agentd\"; swamp-bridge location=\"yinz:swamp-bridge\"; }\nload_plugins clear-defaults=true { \"hocus-store\"; \"hocus-agentd\"; \"swamp-bridge\"; }\ndetachable_panes false\n").unwrap();
         std::fs::write(dir.join("layout.kdl"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf 'PORTABLE READY\\n'; exec /bin/sh\"; }; }\n").unwrap();
+        setup(dir);
         let out = command(dir)
             .args([
+                "--config-dir",
+                dir.to_str().unwrap(),
                 "--config",
                 "config.kdl",
                 "--layout",
@@ -93,6 +145,24 @@ impl Session {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        if attach {
+            session.2 = Some(AttachedClient::new(dir));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while output_text(session.run(&["action", "list-clients"], None))
+                .lines()
+                .count()
+                < 2
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "terminal client did not attach"
+                );
+                assert!(
+                    session.2.as_mut().unwrap().0.try_wait().unwrap().is_none(),
+                    "terminal client exited"
+                );
+            }
+        }
         let pane = session.run(
             &[
                 "action",
@@ -124,7 +194,13 @@ impl Session {
     }
     fn cmd(&self, args: &[&str]) -> Command {
         let mut cmd = command(self.0.path());
-        cmd.args(["--session", "portable-test"]).args(args);
+        cmd.args([
+            "--config-dir",
+            self.0.path().to_str().unwrap(),
+            "--session",
+            "portable-test",
+        ])
+        .args(args);
         cmd
     }
     fn run(&self, args: &[&str], input: Option<&str>) -> Output {
@@ -163,6 +239,7 @@ impl Drop for Session {
         let _ = command(self.0.path())
             .args(["kill-session", "portable-test"])
             .output();
+        self.2.take();
     }
 }
 
@@ -476,6 +553,342 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
             .unwrap(),
     );
     assert_eq!(report["tests"][0]["status"], "passed");
+}
+
+fn output_text(out: Output) -> String {
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+struct GitPlugins {
+    directory: tempfile::TempDir,
+    server: Option<std::process::Child>,
+}
+impl GitPlugins {
+    fn new() -> Self {
+        let fixture = Self {
+            directory: tempfile::tempdir().unwrap(),
+            server: None,
+        };
+        fixture.git(&["init", "--quiet", "-b", "main"]);
+        std::fs::create_dir(fixture.directory.path().join("nested")).unwrap();
+        fixture.write("v1");
+        fixture.commit();
+        fixture.git(&["tag", "v1"]);
+        fixture.git(&["branch", "feature"]);
+        fixture
+    }
+    fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(self.directory.path())
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Plugin test",
+                "-c",
+                "user.email=plugin@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+    fn write(&self, version: &str) {
+        std::fs::write(self.directory.path().join("main.ts"), format!("import {{ definePlugin }} from 'yinz:plugin';\nlet greeting = '';\nexport default definePlugin({{ load(config) {{ greeting = config['greeting'] ?? ''; }}, render() {{ return 'hello {version} ' + greeting; }} }});\n")).unwrap();
+        std::fs::write(
+            self.directory.path().join("shared.ts"),
+            format!("export const version = '{version}';\n"),
+        )
+        .unwrap();
+        std::fs::write(self.directory.path().join("nested/main.ts"), "import { definePlugin } from 'yinz:plugin';\nimport { version } from '../shared.ts';\nlet greeting = '';\nexport default definePlugin({ load(config) { greeting = config['greeting'] ?? ''; }, render() { return 'nested ' + version + ' ' + greeting; } });\n").unwrap();
+    }
+    fn commit(&self) -> String {
+        self.git(&["add", "."]);
+        self.git(&["commit", "--quiet", "-m", "fixture version"]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+    fn serve(&mut self) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        self.server = Some(
+            Command::new("git")
+                .args([
+                    "daemon",
+                    "--listen=127.0.0.1",
+                    &format!("--port={port}"),
+                    "--export-all",
+                    "--reuseaddr",
+                    &format!("--base-path={}", self.directory.path().display()),
+                    self.directory.path().to_str().unwrap(),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Git daemon did not start"
+            );
+            std::thread::yield_now();
+        }
+        format!("git://127.0.0.1:{port}/")
+    }
+    fn stop(&mut self) {
+        if let Some(mut server) = self.server.take() {
+            let _ = server.kill();
+            let _ = server.wait();
+        }
+    }
+}
+impl Drop for GitPlugins {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn plugin_config(dir: &Path, repo: &str, pins: Option<&str>, layout: bool) {
+    std::fs::write(dir.join("config.kdl"), format!("load_plugins clear-defaults=true {{}}\ndetachable_panes false\nshow_release_notes false\nplugins {{ hello repo=\"{repo}\" {{ greeting \"CONFIGURED\"; }}; }}\n")).unwrap();
+    std::fs::create_dir(dir.join("config.d")).unwrap();
+    let mut aliases = format!("plugins {{ nested repo=\"{repo}\" entrypoint=\"nested/main.ts\" {{ greeting \"NESTED_CONFIG\"; }}; ");
+    if let Some(commit) = pins {
+        aliases.push_str(&format!("branch repo=\"{repo}\" branch=\"feature\" {{ greeting \"BRANCH_CONFIG\"; }}; tagged repo=\"{repo}\" tag=\"v1\" {{ greeting \"TAG_CONFIG\"; }}; pinned repo=\"{repo}\" commit=\"{commit}\" {{ greeting \"COMMIT_CONFIG\"; }}; "));
+    }
+    aliases.push_str("}\n");
+    std::fs::write(dir.join("config.d/plugins.kdl"), aliases).unwrap();
+    if layout {
+        std::fs::write(
+            dir.join("layout.kdl"),
+            "layout { pane { plugin location=\"hello\"; }; pane command=\"/bin/sh\"; }\n",
+        )
+        .unwrap();
+    }
+}
+
+impl Session {
+    fn plugin_cli(&self, args: &[&str]) -> String {
+        output_text(self.run(args, None))
+    }
+    fn plugin_pane(&self, alias: &str) -> String {
+        let panes = success(self.run(&["action", "list-panes", "--json"], None));
+        let matches = panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|pane| pane["plugin_url"] == alias)
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "{panes}");
+        format!("plugin_{}", matches[0]["id"].as_u64().unwrap())
+    }
+    fn rendered(&self, pane: &str, content: &str) {
+        success(self.run(&["action", "pane-wait", pane, "--contains", content], None));
+    }
+    fn load_plugin(&self, alias: &str) -> String {
+        self.plugin_cli(&["action", "launch-or-focus-plugin", alias])
+    }
+    fn reload_plugin(&self, alias: &str, pane: &str, content: &str) {
+        self.plugin_cli(&["plugins", "reload", alias]);
+        self.rendered(pane, content);
+        assert_eq!(self.plugin_pane(alias), pane);
+    }
+}
+
+#[test]
+fn local_git_plugin_cli_reload_preserves_dirty_sources_and_configuration() {
+    let fixture = GitPlugins::new();
+    let session = Session::with_setup(|dir| {
+        plugin_config(dir, fixture.directory.path().to_str().unwrap(), None, true)
+    });
+    let hello = session.plugin_pane("hello");
+    session.rendered(&hello, "hello v1 CONFIGURED");
+    let nested = session.load_plugin("nested");
+    session.rendered(&nested, "nested v1 NESTED_CONFIG");
+    for alias in ["hello", "nested"] {
+        assert!(session
+            .plugin_cli(&["plugins", "install", alias])
+            .contains("user-managed"));
+        assert!(session
+            .plugin_cli(&["plugins", "status", alias])
+            .contains("user-managed"));
+        assert!(
+            success(session.run(&["plugins", "check", alias, "--json"], None))["diagnostics"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    failure(
+        session.run(&["plugins", "install", "unknown"], None),
+        "not a configured repository plugin",
+    );
+    fixture.write("v2");
+    let head = fixture.git(&["rev-parse", "HEAD"]);
+    let status = fixture.git(&["status", "--porcelain=v1"]);
+    let diff = fixture.git(&["diff", "HEAD"]);
+    let index = std::fs::read(fixture.directory.path().join(".git/index")).unwrap();
+    session.plugin_cli(&["plugins", "update"]);
+    session.rendered(&hello, "hello v1 CONFIGURED");
+    session.rendered(&nested, "nested v1 NESTED_CONFIG");
+    session.reload_plugin("hello", &hello, "hello v2 CONFIGURED");
+    session.reload_plugin("nested", &nested, "nested v2 NESTED_CONFIG");
+    assert_eq!(fixture.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(fixture.git(&["status", "--porcelain=v1"]), status);
+    assert_eq!(fixture.git(&["diff", "HEAD"]), diff);
+    assert_eq!(
+        std::fs::read(fixture.directory.path().join(".git/index")).unwrap(),
+        index
+    );
+    assert!(!session.0.path().join("yinz/plugin-repositories").exists());
+
+    std::fs::write(session.0.path().join("config.d/plugins.kdl"), format!("plugins {{ nested repo=\"{}\" entrypoint=\"main.ts\" {{ greeting \"REFRESHED\"; }}; }}\n", fixture.directory.path().display())).unwrap();
+    assert!(session
+        .plugin_cli(&["plugins", "status", "nested"])
+        .contains("entrypoint=main.ts"));
+    // The config watcher is asynchronous; retry future launches until its new
+    // declaration renders, waiting on content rather than a fixed delay.
+    session.plugin_cli(&["action", "close-pane", "--pane-id", &nested]);
+    success(session.run(&["action", "pane-wait", &nested, "--closed"], None));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let refreshed = session.load_plugin("nested");
+        let out = session.run(
+            &[
+                "action",
+                "pane-wait",
+                &refreshed,
+                "--contains",
+                "hello v2 REFRESHED",
+                "--timeout",
+                "1",
+            ],
+            None,
+        );
+        if out.status.success() {
+            success(out);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "config drop-in did not reach future launches"
+        );
+        session.plugin_cli(&["action", "close-pane", "--pane-id", &refreshed]);
+        success(session.run(&["action", "pane-wait", &refreshed, "--closed"], None));
+    }
+}
+
+#[test]
+fn remote_git_plugin_cli_install_update_reload_pins_and_offline() {
+    let mut fixture = GitPlugins::new();
+    let v1 = fixture.git(&["rev-parse", "HEAD"]);
+    let remote = fixture.serve();
+    let session = Session::with_setup(|dir| plugin_config(dir, &remote, Some(&v1), false));
+    assert!(session
+        .plugin_cli(&["plugins", "status", "hello"])
+        .contains("not installed"));
+    failure(
+        session.run(&["plugins", "install", "unknown"], None),
+        "not a configured repository plugin",
+    );
+    assert!(session.plugin_cli(&["plugins", "install"]).contains(&v1));
+    for alias in ["hello", "nested", "branch", "tagged", "pinned"] {
+        assert!(session
+            .plugin_cli(&["plugins", "status", alias])
+            .contains(&v1));
+        success(session.run(&["plugins", "check", alias, "--json"], None));
+    }
+    let hello = session.load_plugin("hello");
+    let nested = session.load_plugin("nested");
+    let branch = session.load_plugin("branch");
+    session.rendered(&hello, "hello v1 CONFIGURED");
+    session.rendered(&nested, "nested v1 NESTED_CONFIG");
+    session.rendered(&branch, "hello v1 BRANCH_CONFIG");
+    // A separate server and data directory exercise installation triggered by a layout.
+    let first_load = Session::with_setup(|dir| plugin_config(dir, &remote, None, true));
+    let first_pane = first_load.plugin_pane("hello");
+    first_load.rendered(&first_pane, "hello v1 CONFIGURED");
+    assert!(first_load
+        .plugin_cli(&["plugins", "status", "hello"])
+        .contains(&v1));
+    drop(first_load);
+
+    fixture.write("v2");
+    let v2 = fixture.commit();
+    fixture.git(&["branch", "-f", "feature", &v2]);
+    session.plugin_cli(&["plugins", "install"]);
+    for alias in ["hello", "nested", "branch", "tagged", "pinned"] {
+        assert!(session
+            .plugin_cli(&["plugins", "status", alias])
+            .contains(&v1));
+    }
+    session.plugin_cli(&["plugins", "update"]);
+    for alias in ["hello", "nested", "branch"] {
+        assert!(session
+            .plugin_cli(&["plugins", "status", alias])
+            .contains(&v2));
+    }
+    session.rendered(&hello, "hello v1 CONFIGURED");
+    session.rendered(&nested, "nested v1 NESTED_CONFIG");
+    session.rendered(&branch, "hello v1 BRANCH_CONFIG");
+    session.reload_plugin("hello", &hello, "hello v2 CONFIGURED");
+    session.reload_plugin("nested", &nested, "nested v2 NESTED_CONFIG");
+    session.reload_plugin("branch", &branch, "hello v2 BRANCH_CONFIG");
+    for (alias, greeting) in [("tagged", "TAG_CONFIG"), ("pinned", "COMMIT_CONFIG")] {
+        assert!(session
+            .plugin_cli(&["plugins", "status", alias])
+            .contains(&v1));
+        let pane = session.load_plugin(alias);
+        session.reload_plugin(alias, &pane, &format!("hello v1 {greeting}"));
+    }
+
+    std::fs::remove_file(fixture.directory.path().join("nested/main.ts")).unwrap();
+    fixture.commit();
+    failure(
+        session.run(&["plugins", "update", "hello"], None),
+        "resolve repository entrypoint",
+    );
+    assert!(session
+        .plugin_cli(&["plugins", "status", "hello"])
+        .contains(&v2));
+    session.reload_plugin("nested", &nested, "nested v2 NESTED_CONFIG");
+    fixture.write("v3");
+    let v3 = fixture.commit();
+    session.plugin_cli(&["plugins", "update", "hello"]);
+    assert!(session
+        .plugin_cli(&["plugins", "status", "hello"])
+        .contains(&v3));
+    session.reload_plugin("hello", &hello, "hello v3 CONFIGURED");
+    session.reload_plugin("nested", &nested, "nested v3 NESTED_CONFIG");
+    fixture.stop();
+    assert!(session
+        .plugin_cli(&["plugins", "status", "hello"])
+        .contains(&v3));
+    session.plugin_cli(&["plugins", "install", "hello"]);
+    session.reload_plugin("hello", &hello, "hello v3 CONFIGURED");
+    session.plugin_cli(&["action", "close-pane", "--pane-id", &nested]);
+    success(session.run(&["action", "pane-wait", &nested, "--closed"], None));
+    let offline = session.load_plugin("nested");
+    session.rendered(&offline, "nested v3 NESTED_CONFIG");
 }
 
 #[test]
