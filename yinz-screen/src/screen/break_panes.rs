@@ -91,8 +91,7 @@ impl Screen {
                     tab.add_overlay_pane(
                         active_pane,
                         active_pane_id,
-                        overlay_placement.kind,
-                        overlay_placement.coordinates.unwrap_or_default(),
+                        overlay_placement,
                         // this breaks out the *active* pane, and `hide_pane` moves clients off
                         // what it hides - so the pane reaching here cannot be a hidden one
                         OverlayCarry {
@@ -205,15 +204,7 @@ impl Screen {
                 // no geom: an overlay's geometry is resolved from its coordinates against the
                 // new tab's surface, which is exactly what carrying the placement is for. Not
                 // focused, for the same reason the tiled arm below is not.
-                tab.add_overlay_pane(
-                    pane,
-                    pane_id,
-                    overlay_placement.kind,
-                    overlay_placement.coordinates.unwrap_or_default(),
-                    carry,
-                    false,
-                    None,
-                )?;
+                tab.add_overlay_pane(pane, pane_id, overlay_placement, carry, false, None)?;
             } else {
                 let new_geom = PaneGeom::from(&tab_size);
                 pane.set_geom(new_geom);
@@ -321,8 +312,7 @@ impl Screen {
                 new_active_tab.add_overlay_pane(
                     active_pane,
                     active_pane_id,
-                    placement.kind,
-                    placement.coordinates.unwrap_or_default(),
+                    placement,
                     // this breaks out the *active* pane, and `hide_pane` moves clients off what
                     // it hides - so the pane reaching here cannot be a hidden one. Where the user
                     // dragged it still travels: it is the same pane on the far side.

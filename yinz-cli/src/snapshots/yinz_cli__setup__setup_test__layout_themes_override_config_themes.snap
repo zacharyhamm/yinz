@@ -9841,6 +9841,7 @@ Config {
                 ),
                 configuration: PluginUserConfiguration(
                     {
+                        "background_opacity": "75%",
                         "shared": "true",
                     },
                 ),

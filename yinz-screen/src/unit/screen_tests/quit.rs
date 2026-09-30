@@ -212,6 +212,7 @@ fn confirming_a_plain_quit_launches_the_modal_with_no_configuration() {
     assert_eq!(
         placement,
         Some(OverlayPlacement {
+            background_opacity: None,
             kind: OverlayKind::Modal,
             coordinates: None,
         })
@@ -458,6 +459,7 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
     assert_eq!(
         placement,
         Some(OverlayPlacement {
+            background_opacity: None,
             kind: OverlayKind::Modal,
             coordinates: None,
         })

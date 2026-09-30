@@ -1105,8 +1105,7 @@ fn geometry_warnings_name_each_unparsable_value() {
     }
 }
 
-/// The host repeats the event for every save once the config has changed, so the same
-/// mistake is told once; a new one is told again.
+/// Edits to other settings must not repeat a notice for the same mistake.
 #[test]
 fn a_bad_panel_size_is_reported_once_per_mistake() {
     let mut state = placed_state();
@@ -1117,7 +1116,7 @@ fn a_bad_panel_size_is_reported_once_per_mistake() {
         state
             .messages
             .iter()
-            .filter(|message| message.content.contains("cannot read a panel size"))
+            .filter(|message| message.content.contains("cannot read a panel setting"))
             .count()
     };
 
@@ -1222,4 +1221,65 @@ fn a_malformed_split_is_refused_and_sends_nothing() {
         .unwrap()
         .content
         .contains("not the panel"));
+}
+
+#[test]
+fn background_opacity_accepts_whole_percentages_and_warns_on_invalid_values() {
+    for (value, expected) in [("0", 0), (" 75 % ", 75), ("100%", 100), ("50", 50)] {
+        assert_eq!(parse_background_opacity(value), Some(expected));
+        assert!(geometry_warnings(&config(&[("background_opacity", value)])).is_empty());
+    }
+    for value in [
+        "",
+        "-1",
+        "101%",
+        "1.5%",
+        "clear",
+        "999999999999999999999999999",
+    ] {
+        let mut state = placed_state();
+        state.handle(Event::PluginConfigurationChanged(config(&[(
+            "background_opacity",
+            value,
+        )])));
+        assert_eq!(state.background_opacity(), 75);
+        assert!(state
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("background_opacity"));
+    }
+}
+
+#[test]
+fn opacity_is_carried_on_create_and_reload_without_reclaiming_user_geometry() {
+    let mut state = placed_state();
+    for opacity in [0, 75, 100] {
+        let outer = state.reported_panel().unwrap();
+        state.handle(Event::PluginConfigurationChanged(config(&[(
+            "background_opacity",
+            &format!("{opacity}%"),
+        )])));
+        let PluginCommand::UpdateMultipane(update) = state.placement_command(outer, false).unwrap()
+        else {
+            panic!("update")
+        };
+        assert_eq!(update.background_opacity, Some(opacity));
+        assert!(!update.override_user_placement);
+        assert_eq!(update.split, None);
+        assert_eq!(state.reported_panel(), Some(outer));
+    }
+    state.multipane = None;
+    let PluginCommand::CreateMultipane(create) = state
+        .placement_command(state.panel_rect().unwrap(), false)
+        .unwrap()
+    else {
+        panic!("create")
+    };
+    assert_eq!(create.placement.background_opacity, Some(100));
+    state.own_is_floating = Some(false);
+    assert!(state
+        .placement_command(state.panel_rect().unwrap(), false)
+        .is_none());
 }

@@ -265,6 +265,7 @@ fn focus_repair_preserves_a_modal_until_it_closes() {
         false,
         true,
         NewPanePlacement::Overlay(yinz_types::data::OverlayPlacement {
+            background_opacity: None,
             kind: yinz_types::data::OverlayKind::Modal,
             ..Default::default()
         }),

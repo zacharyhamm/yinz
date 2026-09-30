@@ -231,6 +231,9 @@ pub struct UpdateMultipane {
     pub coordinates: Option<crate::geometry::FloatingPaneCoordinates>,
     pub split: Option<MultipaneSplit>,
     pub override_user_placement: bool,
+    /// None preserves the current opacity; 100 makes the container opaque.
+    #[serde(default)]
+    pub background_opacity: Option<u8>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplaceMultipaneChild {

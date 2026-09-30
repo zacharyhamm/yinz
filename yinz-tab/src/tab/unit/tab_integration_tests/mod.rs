@@ -1779,4 +1779,5 @@ mod pane_tabs;
 mod rendering;
 mod stacked_panes;
 mod swap_layouts;
+mod translucency;
 mod visibility;

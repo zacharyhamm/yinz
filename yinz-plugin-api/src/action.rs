@@ -2972,7 +2972,13 @@ impl TryFrom<ProtobufOverlayPlacement> for OverlayPlacement {
                 ProtobufOverlayKind::Dismissible => OverlayKind::Dismissible,
             })
             .unwrap_or_default();
+        let background_opacity = placement
+            .background_opacity
+            .map(|opacity| u8::try_from(opacity).map_err(|_| "invalid background opacity"))
+            .transpose()?;
+        yinz_types::data::validate_background_opacity(background_opacity)?;
         Ok(OverlayPlacement {
+            background_opacity,
             kind,
             coordinates: placement.coordinates.and_then(|c| c.try_into().ok()),
         })
@@ -2982,7 +2988,9 @@ impl TryFrom<ProtobufOverlayPlacement> for OverlayPlacement {
 impl TryFrom<OverlayPlacement> for ProtobufOverlayPlacement {
     type Error = &'static str;
     fn try_from(placement: OverlayPlacement) -> Result<Self, &'static str> {
+        placement.validate()?;
         Ok(ProtobufOverlayPlacement {
+            background_opacity: placement.background_opacity.map(u32::from),
             kind: match placement.kind {
                 OverlayKind::Modal => ProtobufOverlayKind::Modal,
                 OverlayKind::Dismissible => ProtobufOverlayKind::Dismissible,
@@ -3723,6 +3731,25 @@ pub fn unblock_condition_from_i32(value: i32) -> Result<UnblockCondition, &'stat
 pub(crate) mod tests {
     use super::*;
     use yinz_types::input::options::PaneFrameStyle;
+
+    #[test]
+    fn overlay_opacity_is_optional_and_validated_at_the_plugin_boundary() {
+        for opacity in [None, Some(0), Some(75), Some(100)] {
+            let wire = ProtobufOverlayPlacement {
+                background_opacity: opacity,
+                ..Default::default()
+            };
+            let placement = OverlayPlacement::try_from(wire).unwrap();
+            assert_eq!(placement.background_opacity.map(u32::from), opacity);
+        }
+        for opacity in [101, 255, 256, u32::MAX] {
+            assert!(OverlayPlacement::try_from(ProtobufOverlayPlacement {
+                background_opacity: Some(opacity),
+                ..Default::default()
+            })
+            .is_err());
+        }
+    }
 
     #[test]
     fn pane_tabs_layout_decoding_validates_nested_and_floating_children() {

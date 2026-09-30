@@ -111,6 +111,10 @@ fn launch(env: &PluginEnv, slot: PaneId, child: MultipaneChild, reserved: bool) 
     Ok(())
 }
 fn create(env: &PluginEnv, request: CreateMultipane) -> Result<Option<MultipaneInfo>> {
+    request
+        .placement
+        .validate()
+        .map_err(|error| anyhow!(error))?;
     request.split.validate().map_err(|error| anyhow!(error))?;
     if request.focus.is_some_and(|slot| slot >= 2) {
         return Err(anyhow!("invalid multipane focus slot"));

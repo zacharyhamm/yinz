@@ -197,5 +197,36 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
         assert!(plugin_rx.try_recv().is_err());
         assert!(pty_rx.try_recv().is_err());
         assert!(session.default_shell.is_some());
+
+        if was_written_to_disk {
+            // A command applies its initiating client's runtime config before persisting it.
+            // With only that client, the saved-config diff is empty; it still needs notifying.
+            let directory = tempfile::tempdir().unwrap();
+            session.config_dir = Some(directory.path().to_path_buf());
+            let fragment = "mouse_mode false".to_owned();
+            let (config, changed) = session.session_configuration.reconfigure_runtime_config(
+                &CLIENT,
+                fragment.clone(),
+                None,
+                Some(directory.path()),
+            );
+            assert!(changed);
+            let session = Arc::new(RwLock::new(Some(session)));
+            update_new_saved_config(
+                config,
+                ConfigPersistence::Fragment(fragment),
+                changed,
+                &session,
+                CLIENT,
+            );
+            assert!(screen_rx.try_iter().any(|(message, _)| matches!(
+                message,
+                ScreenInstruction::Reconfigure { client_id, .. } if client_id == CLIENT
+            )));
+            assert!(plugin_rx.try_iter().any(|(message, _)| matches!(
+                message,
+                PluginInstruction::DetectPluginConfigChanges(_)
+            )));
+        }
     }
 }

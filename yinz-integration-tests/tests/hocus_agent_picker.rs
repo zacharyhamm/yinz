@@ -55,6 +55,16 @@ load_plugins clear-defaults=true {
 }
 "#;
 
+// These agent-membership tests assert whitespace between columns. Keep the underlying pane's
+// divider out of those cells; translucency itself is exercised below.
+fn opaque_hocus_config(config: &str) -> String {
+    config.replacen(
+        "shared true",
+        "shared true\n    background_opacity \"100%\"",
+        1,
+    )
+}
+
 /// No sidebar at all to begin with: the binding has to build the whole strip.
 ///
 /// The pane is an agent by *command*, not by title. A plain `pane name="claude"`
@@ -400,7 +410,7 @@ fn an_agent_in_a_nested_worktree_shows_its_own_branch() {
         worktree.display(),
     );
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_config(&opaque_hocus_config(HOCUS_PROJECT_CONFIG))
         .with_layout(LayoutInfo::Stringified(layout))
         .start();
     let primary_agent = yinz.expect_pty_spawn();
@@ -494,7 +504,7 @@ const UNNAMED_PANES_LAYOUT: &str = r#"layout {
 #[test]
 fn an_agent_that_shells_out_stays_in_the_list_until_it_is_really_gone() {
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(HOCUS_CONFIG)
+        .with_config(&opaque_hocus_config(HOCUS_CONFIG))
         .with_layout(LayoutInfo::Stringified(UNNAMED_PANES_LAYOUT.to_owned()))
         .start();
     let first = yinz.expect_pty_spawn();
@@ -1394,5 +1404,126 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
         "host tab mouse coordinates activate the VM plugin",
         |grid| grid.contains(" VMs │") && tabs().active == 2,
     );
+    yinz.quit();
+}
+
+#[test]
+fn hocus_translucency_reveals_live_text_across_panel_tabs_and_configuration_reload() {
+    use yinz_cli::args::CliAction;
+    use yinz_types::multipane::MultipaneInfo;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&HOCUS_CONFIG.replacen(
+            "shared true",
+            "shared true\n    background_opacity \"75%\"",
+            1,
+        ))
+        .with_config_dir(
+            yinz_integration_tests::test_env::init()
+                .join("config")
+                .join("opacity-reload"),
+        )
+        .with_layout(LayoutInfo::Stringified(NO_SIDEBAR_LAYOUT.into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(b"BASE AGENT");
+    open_sidebar(&yinz);
+    let panel = || -> MultipaneInfo {
+        serde_json::from_value(panel_members(&yinz)[0]["multipane"].clone()).unwrap()
+    };
+    let region_has = |grid: &GridSnapshot, outer: &MultipaneInfo, needle: &str| {
+        grid.text
+            .lines()
+            .skip(outer.y + 1)
+            .take(outer.rows.saturating_sub(2))
+            .any(|line| {
+                line.chars()
+                    .skip(outer.x + 1)
+                    .take(outer.columns.saturating_sub(2))
+                    .collect::<String>()
+                    .contains(needle)
+            })
+    };
+    let fill = |letter: char| {
+        let bytes: String = (1..TERMINAL_SIZE.rows)
+            .map(|row| {
+                format!(
+                    "\x1b[{row};1H{}",
+                    letter.to_string().repeat(TERMINAL_SIZE.cols - 2)
+                )
+            })
+            .collect();
+        shell.output(format!("\x1b[?7l\x1b[38;2;200;100;0m{bytes}\x1b[?25l").as_bytes());
+    };
+    let original = panel();
+    fill('v');
+    yinz.wait_until("live pane text is visible through the idle panel", |grid| {
+        region_has(grid, &original, "vvvvvvvv")
+    });
+    fill('w');
+    yinz.wait_until("underlying output alone refreshes the panel", |grid| {
+        region_has(grid, &original, "wwwwwwww") && !region_has(grid, &original, "vvvvvvvv")
+    });
+    // Each host tab replaces the left child while retaining the same translucent container.
+    for active in [1, 2, 3] {
+        yinz.run_cli_action(CliAction::NextPaneTab);
+        yinz.wait_until(
+            "the replacement panel child reveals the underlying text",
+            |grid| {
+                panel_members(&yinz)
+                    .iter()
+                    .any(|pane| pane["pane_tabs"]["active"] == active)
+                    && region_has(grid, &original, "wwwwwwww")
+            },
+        );
+        assert_eq!(panel().id, original.id);
+    }
+    let sample = (original.x + 2, original.y + original.rows - 4);
+    let clear = Some(yinz_integration_tests::client_screen::AnsiCode::RgbCode((
+        200, 100, 0,
+    )));
+    // The active slot changes before its plugin finishes loading. Sample actual underlying text,
+    // not a loading message or the previous child's control at this coordinate.
+    let tinted = yinz.wait_until("the sample cell reveals tinted underlying text", |grid| {
+        grid.text
+            .lines()
+            .nth(sample.1)
+            .and_then(|line| line.chars().nth(sample.0))
+            == Some('w')
+            && grid.cell_foreground(sample.0, sample.1).is_some()
+            && grid.cell_foreground(sample.0, sample.1) != clear
+    });
+    let tint = tinted.cell_foreground(sample.0, sample.1);
+    for (opacity, visible) in [(100, false), (0, true), (75, true)] {
+        assert_eq!(yinz.run_cli_action(CliAction::Reconfigure {
+            kdl: Some(format!("plugins {{\n hocus location=\"yinz:hocus\" {{\n shared true\n background_opacity \"{opacity}%\"\n }}\n}}")),
+            file: None, write: true,
+        }), 0);
+        yinz.wait_until(
+            &format!("opacity reload to {opacity}% changes blank cells (tint {tint:?})"),
+            |grid| {
+                region_has(grid, &original, "wwwwwwww") == visible
+                    && (!visible
+                        || grid.cell_foreground(sample.0, sample.1)
+                            == if opacity == 0 { clear } else { tint })
+            },
+        );
+        let current = panel();
+        assert_eq!(
+            (
+                current.x,
+                current.y,
+                current.rows,
+                current.columns,
+                current.split
+            ),
+            (
+                original.x,
+                original.y,
+                original.rows,
+                original.columns,
+                original.split
+            )
+        );
+    }
     yinz.quit();
 }

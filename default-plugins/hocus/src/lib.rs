@@ -1579,9 +1579,8 @@ impl State {
                 self.apply_overlay_geometry();
                 // `split` too, but only when it is the value that changed. A placement never
                 // carries a split, so that a divider the user dragged stays put; an edit to the
-                // key is the user choosing a new one. Compared against the block we had rather
-                // than taken from the event, because the host repeats the event for a save to
-                // anything in the file once the config has changed at all.
+                // key is the user choosing a new one. Compare against the block we had so edits
+                // to other settings do not reset the divider.
                 if self.kdl.get("split") != split_was.as_ref() {
                     self.apply_split_edit();
                 }

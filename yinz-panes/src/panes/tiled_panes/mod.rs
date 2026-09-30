@@ -1229,7 +1229,7 @@ impl TiledPanes {
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         let mut hit = false;
         for pane in self.panes.values_mut() {
-            let geom = pane.position_and_size();
+            let geom = pane.current_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }

@@ -1488,3 +1488,72 @@ fn wheel_reports_share_encoding_and_preserve_modifiers() {
         );
     }
 }
+
+#[test]
+fn translucency_repaints_completed_rows_during_synchronized_output() {
+    use crate::panes::AnsiCode;
+    let mut grid = create_grid_with_size_and_raw(3, 8, b"\x1b[31mfirst\r\nsecond\r\nthird");
+    grid.selection
+        .set_start_and_end_positions(Position::new(0, 1), Position::new(0, 3));
+    grid.set_pane_default_colors(Some("#123456".into()), Some("#654321".into()));
+    let mut colors = [None; 256];
+    colors[1] = Some(AnsiCode::RgbCode((10, 20, 30)));
+    grid.changed_colors = Some(colors);
+    let original = grid.render(10, 20, &Style::default()).unwrap().unwrap().0;
+    feed_bytes(&mut grid, b"\x1b[2;1HSECOND");
+    let incremental = grid.render(10, 20, &Style::default()).unwrap().unwrap().0;
+    assert_eq!(incremental.len(), 1);
+    feed_bytes(&mut grid, b"\x1b[?2026h\x1b[HWRITING");
+    assert!(grid.render(10, 20, &Style::default()).unwrap().is_none());
+    // Live metadata may change too; the completed rows must keep their original metadata.
+    grid.changed_colors = None;
+    grid.selection.reset();
+    for (rows, cols) in [(3, 8), (2, 4), (4, 10)] {
+        grid.change_size(rows, cols);
+        for _ in 0..2 {
+            grid.render_full_viewport();
+            let (chunks, raw, sixel, kitty) =
+                grid.render(2, 3, &Style::default()).unwrap().unwrap();
+            assert!(raw.is_none() && sixel.is_empty() && kitty.is_empty());
+            assert_eq!(chunks.len(), rows);
+            for (y, chunk) in chunks.iter().enumerate() {
+                assert_eq!((chunk.x, chunk.y, chunk.width()), (2, 3 + y, cols));
+                let expected = ["first", "SECOND", "third", ""][y];
+                let expected = format!("{expected:<cols$}")
+                    .chars()
+                    .take(cols)
+                    .collect::<String>();
+                assert_eq!(
+                    chunk
+                        .terminal_characters
+                        .iter()
+                        .map(|c| c.character)
+                        .collect::<String>(),
+                    expected
+                );
+            }
+            assert_eq!(chunks[0].changed_colors, original[0].changed_colors);
+            assert_eq!(chunks[0].pane_default_fg, original[0].pane_default_fg);
+            assert_eq!(chunks[0].pane_default_bg, original[0].pane_default_bg);
+            assert_eq!(
+                chunks[0].terminal_characters[0].styles,
+                original[0].terminal_characters[0].styles
+            );
+            assert_eq!(
+                chunks[0].selection_and_colors()[0].selection.start,
+                Position::new(3, 3)
+            );
+            assert!(grid.output_buffer.should_update_all_lines);
+            assert!(grid.render(2, 3, &Style::default()).unwrap().is_none());
+        }
+    }
+    feed_bytes(&mut grid, b"\x1b[HFINISHED\x1b[?2026l");
+    let unlocked = grid.render(2, 3, &Style::default()).unwrap().unwrap().0;
+    assert!(unlocked[0]
+        .terminal_characters
+        .iter()
+        .map(|c| c.character)
+        .collect::<String>()
+        .starts_with("FINISHED"));
+    assert!(!grid.output_buffer.should_update_all_lines);
+}

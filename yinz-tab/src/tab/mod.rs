@@ -37,10 +37,9 @@ use yinz_types::position::Position;
 use yinz_types::style::Style;
 use yinz_types::text::clean_string_from_control_and_linebreak;
 use {
-    yinz_types::data::NewPanePlacement, yinz_types::data::OverlayKind,
-    yinz_types::data::OverlayPlacement, yinz_types::data::PaneInfo,
-    yinz_types::data::PluginPermission, yinz_types::data::RegexHighlight,
-    yinz_types::data::StyledText,
+    yinz_types::data::NewPanePlacement, yinz_types::data::OverlayPlacement,
+    yinz_types::data::PaneInfo, yinz_types::data::PluginPermission,
+    yinz_types::data::RegexHighlight, yinz_types::data::StyledText,
 };
 
 use crate::background_jobs::BackgroundJob;
@@ -408,8 +407,8 @@ fn overlay_placement_for(
     invoked_with: &Option<Run>,
 ) -> Option<OverlayPlacement> {
     run_overlay_placement(invoked_with).map(|placement| OverlayPlacement {
-        kind: placement.kind,
-        coordinates: coordinates.clone().or(placement.coordinates),
+        coordinates: coordinates.clone().or(placement.coordinates.clone()),
+        ..placement
     })
 }
 
@@ -3032,6 +3031,7 @@ impl Tab {
         placement: OverlayPlacement,
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
+        placement.validate().map_err(|error| anyhow!(error))?;
         self.close_down_to_max_terminals()?;
         let new_pane =
             self.build_pane(pid, initial_pane_title, invoked_with, blocking_notification)?;
@@ -3039,8 +3039,7 @@ impl Tab {
         self.add_overlay_pane(
             new_pane,
             pid,
-            placement.kind,
-            placement.coordinates.unwrap_or_default(),
+            placement,
             // Hidden overlays still accept geometry before reveal.
             OverlayCarry {
                 hidden: start_suppressed,
@@ -5188,6 +5187,7 @@ impl Tab {
         min_cells: u16,
         placement: OverlayPlacement,
     ) -> Result<yinz_types::multipane::MultipaneId> {
+        placement.validate().map_err(|error| anyhow!(error))?;
         split.validate().map_err(|error| anyhow!(error))?;
         if children[0] == children[1] {
             return Err(anyhow!("multipane children must be distinct"));
@@ -5349,6 +5349,11 @@ impl Tab {
             .map(|stack| stack.layers.len())
             .unwrap_or(0)
     }
+    pub fn set_overlay_background_opacity(&mut self, pane: PaneId, opacity: u8) -> Result<()> {
+        self.overlay_panes.set_background_opacity(pane, opacity)?;
+        self.set_force_render();
+        Ok(())
+    }
     /// How this pane is placed on the surface, if it is an overlay. Moving a pane between tabs has
     /// to carry this along: the tab it leaves forgets it, and without it the pane lands in the new
     /// tab sized against that tab's viewport rather than against the session surface.
@@ -5501,6 +5506,7 @@ impl Tab {
         self.sync_pane_tabs()?;
         self.render_tiled_panes_and_chrome(output, client_id_override)?;
         self.render_floating_panes_and_overlays(output, client_id_override)?;
+        output.finish_translucent_composition();
         Ok(())
     }
 
@@ -5521,6 +5527,28 @@ impl Tab {
 
         if connected_clients.is_empty() {
             return Ok(());
+        }
+        let translucent = self
+            .overlay_panes
+            .translucent_layers(self.floating_layer_count());
+        if !translucent.is_empty() {
+            // ponytail: repaint intersecting panes on each requested frame; add persistent cell
+            // caches only if measured panel repaint cost warrants their invalidation machinery.
+            self.force_render_panes_intersecting(
+                &translucent
+                    .iter()
+                    .map(|(_, rect, _)| *rect)
+                    .collect::<Vec<_>>(),
+            );
+            let palette = *self.terminal_emulator_colors.borrow();
+            output.begin_translucent_composition(
+                &connected_clients,
+                translucent,
+                palette.fg,
+                palette.bg,
+                self.style.colors.text_unselected.background,
+                &self.terminal_emulator_color_codes.borrow(),
+            );
         }
         let floating_panes_stack = self.occlusion_stack();
         output.add_clients(
@@ -8989,14 +9017,15 @@ impl Tab {
         &mut self,
         mut pane: Box<dyn Pane>,
         pane_id: PaneId,
-        kind: OverlayKind,
-        coordinates: FloatingPaneCoordinates,
+        placement: OverlayPlacement,
         carry: OverlayCarry,
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
         self.retain_pane_tabs_transfer(&mut pane);
         let err_context = || "failed to add overlay pane".to_string();
+        placement.validate().map_err(|error| anyhow!(error))?;
+        let coordinates = placement.coordinates.unwrap_or_default();
         if let Some(pinned) = coordinates.pinned {
             // an overlay is above every floating pane already, so pinning it means nothing - but
             // honour the flag rather than silently dropping what the caller asked for
@@ -9004,7 +9033,11 @@ impl Tab {
         }
         pane.set_active_at(Instant::now());
         self.overlay_panes
-            .add_pane(pane_id, pane, kind, coordinates, carry);
+            .add_pane(pane_id, pane, placement.kind, coordinates, carry);
+        if let Some(opacity) = placement.background_opacity {
+            self.overlay_panes
+                .set_background_opacity(pane_id, opacity)?;
+        }
         resize_pty!(
             self.overlay_panes
                 .get_mut(&pane_id)
@@ -9046,8 +9079,7 @@ impl Tab {
             return self.add_overlay_pane(
                 pane,
                 pane_id,
-                placement.kind,
-                placement.coordinates.unwrap_or_default(),
+                placement,
                 // this arm re-derives overlay-ness for a pane arriving through the floating door;
                 // nothing on that path carries a hidden or a dragged overlay, and a pane being
                 // born there is waiting to be placed on the same terms as one born the other way
@@ -9216,16 +9248,8 @@ impl Tab {
                 // No geom either: `OverlayPanes::add_pane` resolves the geometry from the
                 // coordinates and the destination tab's surface, which is the point of carrying the
                 // placement rather than the pane's absolute position across.
-                self.add_overlay_pane(
-                    pane,
-                    pane_id,
-                    overlay_placement.kind,
-                    overlay_placement.coordinates.unwrap_or_default(),
-                    carry,
-                    false,
-                    None,
-                )
-                .non_fatal();
+                self.add_overlay_pane(pane, pane_id, overlay_placement, carry, false, None)
+                    .non_fatal();
             },
             ExtractedPanePlacement::Floating | ExtractedPanePlacement::FloatingDefault { .. } => {
                 let Some(geometry) = self.floating_panes.find_room_for_new_pane() else {

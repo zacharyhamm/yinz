@@ -541,7 +541,7 @@ impl FloatingPanes {
     /// unnarrowed version did - re-serializes grids that never had a toast anywhere near them.
     pub fn force_render_panes_intersecting(&mut self, damage: &[CellRect]) {
         for pane in self.panes.values_mut() {
-            let geom = pane.position_and_size();
+            let geom = pane.current_geom();
             if !damage.iter().any(|rect| rect.intersects_geom(&geom)) {
                 continue;
             }
