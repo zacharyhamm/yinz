@@ -138,7 +138,6 @@ fn write_changed_styles(
 
 fn serialize_chunks_with_newlines(
     character_chunks: Vec<CharacterChunk>,
-    _sixel_chunks: Option<&Vec<SixelImageChunk>>, // TODO: fix this sometime
     link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
@@ -200,6 +199,7 @@ fn serialize_chunks_with_newlines(
 }
 #[allow(clippy::too_many_arguments)]
 fn serialize_chunks(
+    vte_output: &mut String,
     character_chunks: Vec<CharacterChunk>,
     sixel_chunks: Option<&Vec<SixelImageChunk>>,
     link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
@@ -208,10 +208,9 @@ fn serialize_chunks(
     osc8_hyperlinks: bool,
     max_size: Option<Size>,
     kitty_input: Option<KittyFrameInput>,
-) -> Result<String> {
+) -> Result<()> {
     let err_context = || "failed to serialize input chunks".to_string();
 
-    let mut vte_output = String::new();
     let mut sixel_vte: Option<String> = None;
     // A unicode placeholder is grid text that only means anything beside the image bytes that
     // accompany it. `kitty_input` is `None` in exactly the cases where those bytes are being
@@ -235,7 +234,7 @@ fn serialize_chunks(
         let pane_default_fg = character_chunk.pane_default_fg;
         let pane_default_bg = character_chunk.pane_default_bg;
         let mut character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
-        vte_goto_instruction(character_chunk.x, character_chunk.y, &mut vte_output)
+        vte_goto_instruction(character_chunk.x, character_chunk.y, vte_output)
             .with_context(err_context)?;
         let mut chunk_width = character_chunk.x;
         for t_character in character_chunk.terminal_characters.iter() {
@@ -262,7 +261,7 @@ fn serialize_chunks(
                 chunk_changed_colors,
                 link_handler.as_ref(),
                 osc8_hyperlinks,
-                &mut vte_output,
+                vte_output,
             )
             .with_context(err_context)?;
             chunk_width += t_character.width();
@@ -320,7 +319,7 @@ fn serialize_chunks(
             vte_output.push_str("\u{1b}[u");
         }
     }
-    Ok(vte_output)
+    Ok(())
 }
 
 type AbsoluteMiddleStart = usize;
@@ -1080,19 +1079,18 @@ impl Output {
             } else {
                 None
             };
-            client_serialized_render_instructions.push_str(
-                &serialize_chunks(
-                    client_character_chunks,
-                    sixel_chunks_for_client,
-                    self.link_handler.as_mut(),
-                    Some(&mut self.sixel_image_store.borrow_mut()),
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    None, // No size constraints for regular rendering
-                    kitty_input,
-                )
-                .with_context(err_context)?,
-            ); // TODO: less allocations?
+            serialize_chunks(
+                &mut client_serialized_render_instructions,
+                client_character_chunks,
+                sixel_chunks_for_client,
+                self.link_handler.as_mut(),
+                Some(&mut self.sixel_image_store.borrow_mut()),
+                self.styled_underlines,
+                self.osc8_hyperlinks,
+                None, // No size constraints for regular rendering
+                kitty_input,
+            )
+            .with_context(err_context)?;
 
             // append post-vte instructions for this client
             if let Some(post_vte_instructions_for_client) =
@@ -1160,19 +1158,18 @@ impl Output {
             } else {
                 None
             };
-            client_serialized_render_instructions.push_str(
-                &serialize_chunks(
-                    client_character_chunks,
-                    sixel_chunks_for_client,
-                    self.link_handler.as_mut(),
-                    Some(&mut self.sixel_image_store.borrow_mut()),
-                    self.styled_underlines,
-                    self.osc8_hyperlinks,
-                    max_size,
-                    None,
-                )
-                .with_context(err_context)?,
-            );
+            serialize_chunks(
+                &mut client_serialized_render_instructions,
+                client_character_chunks,
+                sixel_chunks_for_client,
+                self.link_handler.as_mut(),
+                Some(&mut self.sixel_image_store.borrow_mut()),
+                self.styled_underlines,
+                self.osc8_hyperlinks,
+                max_size,
+                None,
+            )
+            .with_context(err_context)?;
 
             // append post-vte instructions for this client
             if let Some(post_vte_instructions_for_client) =
@@ -2054,7 +2051,6 @@ impl OutputBuffer {
         serialize_chunks_with_newlines(
             chunks,
             None,
-            None,
             self.styled_underlines,
             osc8_hyperlinks,
             max_size,
@@ -2125,7 +2121,6 @@ impl OutputBuffer {
         viewport_width: usize,
     ) -> Vec<TerminalCharacter> {
         match viewport.get(line_index) {
-            // TODO: iterator?
             Some(row) => self.extract_characters_from_row(row, viewport_width),
             None => {
                 vec![EMPTY_TERMINAL_CHARACTER; viewport_width]

@@ -213,10 +213,8 @@ pub const DEFAULT_AGENT_PANE_MIN_COLUMNS: usize = 80;
 pub const DEFAULT_AGENT_PANE_MIN_ROWS: usize = 24;
 
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, Serialize)]
-/// Options that can be set either through the config file,
-/// or cli flags - cli flags should take precedence over the config file
-/// TODO: In order to correctly parse boolean flags, this is currently split
-/// into Options and CliOptions, this could be a good canditate for a macro
+/// Shared configuration options. Command-line parsing and conversion live in
+/// `yinz-cli`, keeping this model independent of clap.
 pub struct Options {
     /// Allow plugins to use a more simplified layout
     /// that is compatible with more fonts (true or false)

@@ -48,3 +48,7 @@ pub mod generated_api {
 
 pub mod authoring;
 pub use prost;
+
+#[cfg(test)]
+#[path = "unit/wire_tests.rs"]
+mod wire_tests;

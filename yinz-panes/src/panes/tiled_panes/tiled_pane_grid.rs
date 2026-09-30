@@ -167,7 +167,7 @@ impl<'a> TiledPaneGrid<'a> {
                 return Err(YinzError::CantResizeFixedPanes { pane_ids }).with_context(err_context);
             }
             if pane_ids.is_empty() {
-                // TODO: proper error
+                // A pane at the viewport boundary has no neighbor to resize against.
                 return Ok(false);
             }
 

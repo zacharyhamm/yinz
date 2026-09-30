@@ -4953,7 +4953,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::ChangeHostFolder(new_host_folder) => Ok(ProtobufPluginCommand {
                 name: CommandName::ChangeHostFolder as i32,
                 payload: Some(Payload::ChangeHostFolderPayload(ChangeHostFolderPayload {
-                    new_host_folder: new_host_folder.display().to_string(), // TODO: not accurate?
+                    new_host_folder: new_host_folder
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_| "ChangeHostFolder path is not valid UTF-8")?,
                 })),
             }),
             PluginCommand::SetFloatingPanePinned(pane_id, should_be_pinned) => {
