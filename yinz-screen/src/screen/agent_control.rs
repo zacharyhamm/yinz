@@ -36,6 +36,22 @@ pub(super) struct Lifecycle {
     ended_turn: Option<String>,
 }
 
+pub(super) struct DialogInput {
+    kind: String,
+    conversation: Option<String>,
+    input_revision: u64,
+    startup: bool,
+    fresh_waiting: bool,
+}
+
+pub(super) struct ClearInput {
+    kind: String,
+    conversation: String,
+    input_revision: u64,
+    deadline: Instant,
+    session_ended: bool,
+}
+
 /// How long an agent must go without reporting after input before an interrupted recovery may
 /// reset it to idle, so recovery cannot overtake a hook that is still on its way.
 pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
@@ -48,6 +64,7 @@ pub(super) struct Pending {
     pub(super) deadline: Option<Instant>,
     input_revision: u64,
     prompt: Option<PromptObservation>,
+    clear: bool,
     wait: bool,
     until: AgentState,
     session_ended: bool,
@@ -83,6 +100,8 @@ impl Screen {
 
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
         self.agent_lifecycle.remove(&pane);
+        self.agent_dialog_inputs.remove(&pane);
+        self.agent_clear_inputs.remove(&pane);
         self.agent_worker_waits.remove(&pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
@@ -111,6 +130,40 @@ impl Screen {
         use yinz_types::agent::report::AgentReportState;
         use yinz_types::agent::{hook_state, waiting_detail, waiting_needs_a_person};
         let pane = report.pane_id;
+        // Only the matching clear lifecycle may carry its submitted input across the
+        // record removal and conversation replacement. All other invalidations discard it.
+        let clear_transition = hook.is_some_and(|hook| {
+            !hook.is_worker()
+                && report.event.as_ref().is_some_and(|event| {
+                    event.kind == report.kind
+                        && PaneId::Terminal(event.pane_id) == pane
+                        && event.hook == hook.hook_event_name
+                        && event.session_id.as_deref() == Some(hook.session_id.as_str())
+                })
+                && self.agent_process_matches(pane, &report.kind)
+                && self
+                    .get_pane_info(pane)
+                    .is_some_and(|info| !info.is_held && !info.exited)
+                && self.agent_clear_inputs.get(&pane).is_some_and(|input| {
+                    input.kind == report.kind
+                        && Instant::now() < input.deadline
+                        && ((hook.hook_event_name == "SessionEnd"
+                            && hook.session_id == input.conversation)
+                            || (input.session_ended
+                                && hook.hook_event_name == "SessionStart"
+                                && hook.source.as_deref() == Some("clear")
+                                && !hook.session_id.is_empty()
+                                && hook.session_id != input.conversation))
+                })
+        });
+        if !clear_transition
+            && hook.is_some_and(|hook| {
+                !hook.is_worker()
+                    && matches!(hook.hook_event_name.as_str(), "SessionStart" | "SessionEnd")
+            })
+        {
+            self.agent_clear_inputs.remove(&pane);
+        }
         let mut workers = self.agent_worker_waits.remove(&pane);
         let agent = if let Some(hook) = hook.filter(|hook| hook.is_worker()) {
             let Some(mut parent) = self
@@ -185,8 +238,35 @@ impl Screen {
                 workers.waits.clear();
             }
         }
+        // The first verified startup changes the record's conversation and invalidates its
+        // lifecycle. Carry only its CLI dialog input through that initial transition.
+        let startup_input = hook
+            .filter(|hook| {
+                !hook.is_worker()
+                    && hook_state(hook) == Some(AgentState::Idle)
+                    && hook.hook_event_name == "SessionStart"
+                    && hook.codex_hooks_ready != Some(false)
+                    && self.agent_dialog_inputs.get(&pane).is_some_and(|input| {
+                        input.startup
+                            && input.kind == report.kind
+                            && input
+                                .conversation
+                                .as_deref()
+                                .is_none_or(|conversation| conversation == hook.session_id)
+                    })
+            })
+            .and_then(|_| self.agent_dialog_inputs.remove(&pane));
+        let clear_input = clear_transition
+            .then(|| self.agent_clear_inputs.remove(&pane))
+            .flatten();
         let result = super::thread_main::apply_pane_agent_report(self, pane, visible)
             .context("apply parent state and worker waits")?;
+        if let Some(input) = startup_input {
+            self.agent_dialog_inputs.insert(pane, input);
+        }
+        if let Some(input) = clear_input {
+            self.agent_clear_inputs.insert(pane, input);
+        }
         if let Some(workers) = workers.filter(|workers| !workers.waits.is_empty()) {
             self.agent_worker_waits.insert(pane, workers);
         }
@@ -476,6 +556,8 @@ impl Screen {
                 }
                 self.agent_controls
                     .retain(|pending| pending.pane != pane || pending.prompt.is_none());
+                self.agent_dialog_inputs.remove(&pane);
+                self.agent_clear_inputs.remove(&pane);
                 let revision = self.agent_input_revision(pane);
                 if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
                     lifecycle.input_revision = Some(revision);
@@ -510,7 +592,10 @@ impl Screen {
                 self.agent_reply(&client, response);
             },
             SendKeys { keys, .. } => {
-                if !status.status_available || !self.agent_process_matches(pane, &status.agent.kind)
+                let startup = status.agent.source == AgentSource::Spawned
+                    && matches!(status.agent.kind.as_str(), "claude" | "codex");
+                if !(status.status_available || startup)
+                    || !self.agent_process_matches(pane, &status.agent.kind)
                 {
                     reject(
                         self,
@@ -543,14 +628,60 @@ impl Screen {
                     reject(self, AgentOutcome::Rejected, "send between 1 and 1024 keys");
                     return;
                 }
+                let revision = self.agent_input_revision(pane);
+                let dialog = (startup || status.agent.state == AgentState::Waiting)
+                    && (self
+                        .agent_lifecycle
+                        .get(&pane)
+                        .is_some_and(|lifecycle| lifecycle.input_revision == Some(revision))
+                        || (startup && revision == 0)
+                        || self.agent_dialog_inputs.get(&pane).is_some_and(|input| {
+                            input.kind == status.agent.kind
+                                && input.conversation == status.agent.session_id
+                                && input.input_revision == revision
+                        }))
+                    && !self.agent_controls.iter().any(|pending| {
+                        pending.pane == pane
+                            && pending.prompt.as_ref().is_some_and(|prompt| {
+                                !prompt.acknowledged()
+                                    || pending.delivery.is_some()
+                                    || pending.enter_at.is_some()
+                                    || pending.input_revision != revision
+                                    || pending.kind != status.agent.kind
+                                    || pending.conversation != status.agent.session_id
+                            })
+                    });
                 let result = keys
                     .into_iter()
                     .try_for_each(|key| self.agent_write_key(pane, key));
                 match result {
                     Ok(()) => {
+                        let input_revision = self.agent_input_revision(pane);
+                        if dialog && input_revision > revision {
+                            self.agent_dialog_inputs.insert(
+                                pane,
+                                DialogInput {
+                                    kind: status.agent.kind.clone(),
+                                    conversation: status.agent.session_id.clone(),
+                                    input_revision,
+                                    startup,
+                                    fresh_waiting: false,
+                                },
+                            );
+                            // Permission keys belong to the accepted turn, rather than a new
+                            // prompt. Never advance an unaccepted or still-delivering paste.
+                            for pending in &mut self.agent_controls {
+                                if pending.pane == pane && pending.prompt.is_some() {
+                                    pending.input_revision = input_revision;
+                                }
+                            }
+                        }
                         self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None))
                     },
-                    Err(error) => reject(self, AgentOutcome::Failed, &error.to_string()),
+                    Err(error) => {
+                        self.agent_dialog_inputs.remove(&pane);
+                        reject(self, AgentOutcome::Failed, &error.to_string());
+                    },
                 }
             },
             Prompt {
@@ -607,6 +738,7 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: Some(observation),
+                    clear: status.agent.kind == "claude" && prompt == "/clear",
                     wait,
                     until: AgentState::Idle,
                     session_ended: false,
@@ -680,6 +812,7 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: None,
+                    clear: false,
                     wait: true,
                     until,
                     session_ended: false,
@@ -745,6 +878,8 @@ impl Screen {
     }
 
     pub(crate) fn refresh_agent_controls_at(&mut self, now: Instant) {
+        self.agent_clear_inputs
+            .retain(|_, input| now < input.deadline);
         if !self
             .agent_controls
             .iter()
@@ -850,7 +985,15 @@ impl Screen {
                 Some(status)
                     if pending.prompt.is_none()
                         && status.status_available
-                        && status.agent.is_waiting_on_a_person() =>
+                        && status.agent.is_waiting_on_a_person()
+                        && !self
+                            .agent_dialog_inputs
+                            .get(&pending.pane)
+                            .is_some_and(|input| {
+                                !input.fresh_waiting
+                                    && input.kind == status.agent.kind
+                                    && input.conversation == status.agent.session_id
+                            }) =>
                 {
                     Some(AgentOutcome::NeedsInput)
                 },
@@ -882,10 +1025,36 @@ impl Screen {
                         outcome = Some(AgentOutcome::Failed);
                     } else {
                         pending.input_revision = self.agent_input_revision(pending.pane);
+                        if pending.clear {
+                            if let (Some(conversation), Some(deadline)) =
+                                (&pending.conversation, pending.deadline)
+                            {
+                                self.agent_clear_inputs.insert(
+                                    pending.pane,
+                                    ClearInput {
+                                        kind: pending.kind.clone(),
+                                        conversation: conversation.clone(),
+                                        input_revision: pending.input_revision,
+                                        deadline,
+                                        session_ended: false,
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
             if let Some(outcome) = outcome {
+                if pending.clear
+                    && matches!(
+                        outcome,
+                        AgentOutcome::Failed
+                            | AgentOutcome::TimedOut
+                            | AgentOutcome::StatusUnavailable
+                    )
+                {
+                    self.agent_clear_inputs.remove(&pending.pane);
+                }
                 self.finish_agent_control(&pending, outcome, delivery_error);
                 if pending.prompt.is_some()
                     && matches!(
@@ -920,8 +1089,81 @@ impl Screen {
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
+        let mut clear_revision = None;
+        let clear_started = self.get_pane_info(pane).is_some_and(|info| {
+            info.agent.is_some_and(|agent| {
+                agent.source == AgentSource::Reported
+                    && agent.kind == event.kind
+                    && agent.session_id == event.session_id
+            })
+        });
+        if parent {
+            if let Some(input) = self.agent_clear_inputs.get_mut(&pane) {
+                if event.kind == input.kind
+                    && hook.is_some_and(|hook| {
+                        event.session_id.as_deref() == Some(hook.session_id.as_str())
+                    })
+                {
+                    if event.hook == "SessionEnd" {
+                        input.session_ended = true;
+                    } else if event.hook == "SessionStart" && clear_started {
+                        clear_revision = Some(input.input_revision);
+                    }
+                }
+            }
+        }
+        if clear_revision.is_some() {
+            self.agent_clear_inputs.remove(&pane);
+        }
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.last_report = Instant::now();
+        }
+        if parent
+            && event.hook == "SessionStart"
+            && hook.is_some_and(|hook| hook.source.as_deref() != Some("compact"))
+            && self
+                .agent_dialog_inputs
+                .get(&pane)
+                .is_some_and(|input| !input.startup)
+        {
+            self.agent_dialog_inputs.remove(&pane);
+        }
+        // Reconcile before replying to completion, so both prompt and wait replies see the
+        // consumed dialog revision. A newer manual draft is never consumed with it.
+        let mut dialog_revision = None;
+        if let Some(input) = self.agent_dialog_inputs.get_mut(&pane) {
+            if event.kind == input.kind
+                && hook.is_some_and(|hook| {
+                    event.session_id.as_deref() == Some(hook.session_id.as_str())
+                        && !hook.session_id.is_empty()
+                        && hook.codex_hooks_ready != Some(false)
+                        && input
+                            .conversation
+                            .as_deref()
+                            .is_none_or(|conversation| conversation == hook.session_id)
+                })
+            {
+                let state = hook.and_then(yinz_types::agent::hook_state);
+                if state == Some(AgentState::Waiting) {
+                    input.fresh_waiting = true;
+                } else if (input.startup
+                    && parent
+                    && event.hook == "SessionStart"
+                    && state == Some(AgentState::Idle))
+                    || (!input.startup
+                        && parent
+                        && event.hook != "SessionStart"
+                        && matches!(state, Some(AgentState::Busy | AgentState::Idle)))
+                {
+                    dialog_revision = Some(input.input_revision);
+                }
+            }
+        }
+        if let Some(revision) = dialog_revision {
+            self.agent_dialog_inputs.remove(&pane);
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                lifecycle.input_revision = Some(revision);
+            }
         }
         let mut keep = Vec::new();
         let mut accepted_input_revision = None;
@@ -1022,8 +1264,10 @@ impl Screen {
         }
         if hook.is_some_and(|hook| hook.codex_hooks_ready == Some(false)) {
             self.agent_lifecycle.remove(&pane);
+            self.agent_dialog_inputs.remove(&pane);
         } else if event.hook == "SessionEnd" {
             self.agent_lifecycle.remove(&pane);
+            self.agent_dialog_inputs.remove(&pane);
             self.agent_worker_waits.remove(&pane);
         } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
             !id.is_empty()
@@ -1035,17 +1279,19 @@ impl Screen {
             let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
                 previous.kind == event.kind && previous.conversation == *conversation
             });
-            // Startup cannot consume a draft. Only a pane with no input can establish an
-            // initial consumed revision; matching lifecycle evidence is preserved as-is.
-            let input_revision = match event.hook.as_str() {
-                "SessionStart" => previous
-                    .map(|previous| previous.input_revision)
-                    .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),
-                "UserPromptSubmit" => accepted_input_revision,
-                // An uncorrelated acceptance may arrive after a newer draft. Tool progress
-                // and completion preserve consumption, including when it is unknown.
-                _ => previous.and_then(|previous| previous.input_revision),
-            };
+            // Without tracked CLI dialog input, startup cannot consume a draft. Only a pane
+            // with no input can establish consumption; matching evidence is preserved as-is.
+            let input_revision = clear_revision
+                .or(dialog_revision)
+                .or(match event.hook.as_str() {
+                    "SessionStart" => previous
+                        .map(|previous| previous.input_revision)
+                        .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),
+                    "UserPromptSubmit" => accepted_input_revision,
+                    // An uncorrelated acceptance may arrive after a newer draft. Tool progress
+                    // and completion preserve consumption, including when it is unknown.
+                    _ => previous.and_then(|previous| previous.input_revision),
+                });
             let ended_turn = match event.hook.as_str() {
                 "Interrupt" | "StopFailure" => hook
                     .and_then(|hook| hook.turn_id.clone())
@@ -1082,6 +1328,11 @@ impl Screen {
                 ]
             })
             .flatten()
+            .chain(
+                self.agent_clear_inputs
+                    .values()
+                    .map(|input| input.deadline.saturating_duration_since(now)),
+            )
             .min()
     }
 

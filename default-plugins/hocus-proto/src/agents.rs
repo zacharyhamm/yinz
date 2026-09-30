@@ -6632,7 +6632,7 @@ mod tests {
     /// draw a `!` beside a pane that is working.
     #[test]
     fn hook_events_map_to_the_states_they_name() {
-        for source in ["startup", "resume", "fork"] {
+        for source in ["startup", "resume", "fork", "clear"] {
             assert_eq!(
                 hook_phase(&crate::wire::HookEvent {
                     source: Some(source.to_owned()),
@@ -6641,7 +6641,7 @@ mod tests {
                 Some(HookPhase::Idle)
             );
         }
-        for source in ["clear", "compact", "something_new"] {
+        for source in ["compact", "something_new"] {
             assert_eq!(
                 hook_phase(&crate::wire::HookEvent {
                     source: Some(source.to_owned()),
