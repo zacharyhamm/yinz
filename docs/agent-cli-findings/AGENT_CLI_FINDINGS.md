@@ -64,9 +64,9 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 19 | **Fixed; automated verification** | Readiness now names its blocker in JSON, text and prompt rejection messages. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 04, 14. |
 | 20 | **Fixed; automated verification** | Diagnostics distinguish uncertain acceptance from an accepted turn and make recovery conditional. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 79, 94. |
 | 21 | **Fixed; automated verification** | Every spawn option has help. Kind errors list all recognized kinds and the JSON command alternative. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 102, 103. |
-| 22 | **Still broken** | `Ctrl+u`, `ctrl-u`, `C-u`, `Escape` and `Return` are rejected. Only `Ctrl u`/`Esc`/`Enter` work, and help does not say so. `--until` values appear only in the error (v2 104). Both orchestrators tripped on this. |
-| 23 | **Still broken** | Both orchestrators first ran `--session main` from the skill. Haiku also copied `--kind codex` and then passed `--model haiku`. |
-| 24 | **Still broken** | 26 of 30 lines are blank (v2 05). Ghost suggestions ("fix the bug", "run the tests") look like drafts. |
+| 22 | **Fixed; help verified** | Help documents one key per argument, quoted modifiers, named keys, unsupported aliases, and all four wait states. Parsing is unchanged. See [fix status](#fix-status-agent-cli-2224). |
+| 23 | **Fixed; bundled skills verified** | Bundled skills use the current session or explicit discovery, a provider placeholder, and a labeled Claude Haiku example. See [fix status](#fix-status-agent-cli-2224). |
+| 24 | **Fixed; automated verification** | Reads count nonblank lines and preserve internal spacing. Help and recovery instructions explain ghost suggestions and require deliberate empty-composer confirmation. See [fix status](#fix-status-agent-cli-2224). |
 | 25 | **Still broken** | Pane 5 running a shell-launched Codex: `action context` → `detected: codex`, but `agent list` omits it. |
 | 26 | **Still broken, wider** | `register` needs `6` and rejects `terminal_6` (v2 45b, 47b). `agent status 7` is rejected (v2 101). `action context --pane-id terminal_5` is rejected, too. |
 | 27 | **Still broken** | `agent runs --json` → "unexpected argument" (v2 11). |
@@ -409,6 +409,47 @@ and provider text through IPC. Screen tests use the fake OS backend for local, S
 They verify one reply before timeout, a released failure claim, a subsequent prompt, and
 continued rejection when newer manual input remains. No live provider API failure has been
 induced for this change. These checks do not constitute live-service, SSH or VM verification.
+
+## Fix status: agent CLI #22–24
+
+**#22:** `send-keys --help` documents one key per argument, quoted modifiers such
+as `"Ctrl u"`, and named keys such as `Esc`, `Enter`, and `Down`. It explicitly
+identifies `Ctrl+u`, `ctrl-u`, `C-u`, `Escape`, and `Return` as unsupported aliases.
+`wait --until` help lists `busy`, `waiting`, `idle`, and `exited`. Parsing is unchanged.
+
+**#23:** The bundled agent and session skills no longer hard-code `--session main`.
+They explain current-session selection through `YINZ_SESSION_NAME`. Outside a
+session, callers discover sessions and explicitly select the intended name.
+The generic launch sequence uses `--kind KIND` and requires the requested provider.
+A labeled Claude example uses `--kind claude --model haiku`. Callers must continue
+to use actual pane and conversation IDs from responses.
+
+**#24:** The shared screen handler selects the last N nonblank terminal lines.
+Whitespace-only rows count as blank. It removes blank rows at both ends and keeps
+blank rows between selected content. Nonblank lines remain verbatim. An entirely
+blank terminal returns an empty string. `--lines` keeps its default of 80 and range
+of 1–100000, but output can exceed N physical rows. Text and JSON share this content.
+Reads still preserve viewport and selection.
+
+Ghost suggestions remain visible. Read/recover help, the agent skill, and CLI
+documentation explain that plain terminal text cannot establish whether the
+composer contains a draft. Callers must not infer drafts from suggestion text or
+strip suggestions heuristically. `--confirm-empty` requires deliberate confirmation
+that the composer is empty.
+
+**Validation, 2026-09-30:** All 90 focused tests passed across `yinz-screen`,
+`yinz-cli`, and `yinz`, including the existing skill installation test. Screen
+coverage checks the captured 26-leading-blank layout, trailing whitespace,
+internal paragraph spacing, exact nonblank limits, entirely blank terminals,
+and unchanged viewport and selection. Response formatting tests verify identical
+retained content in text and JSON, with the existing final newline in text output.
+
+The compiled `send-keys`, `wait`, `read`, and `recover` help was inspected, as were
+`skills show yinz-agents` and `skills show yinz-sessions`. Both skill files passed
+the skill validator. `cargo x ci check` passed format, lint, 9,415 workspace tests
+(54 skipped), doctests, and all 474 integration tests with 16 workers. Builds and
+tests used this worktree's own native and Wasm artifacts, with socket access enabled.
+No live-provider orchestration rerun was performed for these changes.
 
 ## P2 — misleading output, docs and skill gaps
 
