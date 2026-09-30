@@ -18,7 +18,8 @@
 //! `pane_frames false` session: frames are chrome redrawn only when a pane's boundaries change, so
 //! they are not part of the steady-state cost this measures.
 //!
-//! Run with `cargo x bench`. See AGENTS.md for the baseline-comparison workflow.
+//! Run with `cargo x bench`. See AGENTS.md for the baseline-comparison workflow and
+//! `docs/render-profiling.md` for the single-pane graphics workload and live profiling.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -578,5 +579,99 @@ fn bench_render_only(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_ingest, bench_frame, bench_render_only);
+/// One pane repeatedly replaces a direct-transmission Kitty image, as a graphics-heavy TUI
+/// does. Two precomputed images alternate so ingest and host encoding cannot reuse unchanged
+/// pixels. Delete the previous image so even the ingest-only case has bounded storage.
+fn bench_kitty_graphics(c: &mut Criterion) {
+    use yinz_server::panes::kitty_graphics::test_support::{apc, apc_b64};
+
+    const WIDTH: usize = 800;
+    const HEIGHT: usize = 480;
+    // 3072 raw bytes become Kitty's maximum 4096-byte base64 payload per APC.
+    const CHUNK_BYTES: usize = 3072;
+
+    let frames: Vec<Vec<Vec<u8>>> = (1..=2)
+        .map(|seed| {
+            let mut rng = Rng::new(seed);
+            let pixels: Vec<u8> = (0..WIDTH * HEIGHT * 3).map(|_| rng.next() as u8).collect();
+            let mut frame = apc("a=d,d=I,i=1,q=2");
+            frame.extend_from_slice(b"\x1b[H");
+            for (index, chunk) in pixels.chunks(CHUNK_BYTES).enumerate() {
+                let more = usize::from((index + 1) * CHUNK_BYTES < pixels.len());
+                let control = if index == 0 {
+                    format!("a=T,f=24,t=d,i=1,s={WIDTH},v={HEIGHT},C=1,q=2,m={more}")
+                } else {
+                    format!("m={more},q=2")
+                };
+                frame.extend(apc_b64(&control, chunk));
+            }
+            vec![frame]
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("kitty_graphics");
+    for stage in ["ingest", "frame", "render_only"] {
+        let mut fleet = PaneFleet::new(1);
+        *fleet.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 8,
+            height: 16,
+        });
+        fleet
+            .kitty_host_capabilities
+            .borrow_mut()
+            .insert(CLIENT_ID, true);
+
+        // Exercise both variants before timing. A missing capability or invalid transmission
+        // must fail the benchmark instead of silently measuring text-only output.
+        let mut serialized_bytes = 0;
+        for frame in &frames {
+            fleet.ingest(frame);
+            assert_eq!(fleet.kitty_image_store.borrow().image_count(), 1);
+            let output = fleet.frame();
+            let content = &output[&CLIENT_ID];
+            assert!(content.contains("\x1b_Ga=t,"), "no Kitty image transmitted");
+            assert!(content.len() > WIDTH * HEIGHT * 4, "missing image payload");
+            serialized_bytes = content.len();
+        }
+        eprintln!(
+            "kitty_graphics/{stage}: one pane, {WIDTH}x{HEIGHT} RGB, input_bytes={}, serialized_bytes={serialized_bytes}",
+            byte_count(&frames[0]),
+        );
+        group.throughput(Throughput::Bytes(if stage == "render_only" {
+            serialized_bytes as u64
+        } else {
+            byte_count(&frames[0])
+        }));
+        let mut iteration = 0;
+        group.bench_function(stage, |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let frame = &frames[iteration % frames.len()];
+                    iteration += 1;
+                    if stage == "render_only" {
+                        fleet.ingest(black_box(frame));
+                    }
+                    let start = Instant::now();
+                    if stage != "render_only" {
+                        fleet.ingest(black_box(frame));
+                    }
+                    let output = (stage != "ingest").then(|| fleet.frame());
+                    elapsed += start.elapsed();
+                    black_box(output);
+                }
+                elapsed
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_ingest,
+    bench_frame,
+    bench_render_only,
+    bench_kitty_graphics
+);
 criterion_main!(benches);

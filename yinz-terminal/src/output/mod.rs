@@ -2106,11 +2106,10 @@ impl OutputBuffer {
             let mut padding = vec![pad_character; viewport_width - row_width];
             terminal_characters.append(&mut padding);
         } else if row_width > viewport_width {
-            let width_offset = row.excess_width_until(viewport_width);
-            let truncate_position = viewport_width.saturating_sub(width_offset);
-            if truncate_position < terminal_characters.len() {
-                terminal_characters.truncate(truncate_position);
-            }
+            // A clipped wide character still occupies cells that must erase the old frame.
+            let mut chunk = CharacterChunk::new(terminal_characters, 0, 0);
+            chunk.retain_by_width(viewport_width);
+            terminal_characters = chunk.terminal_characters;
         }
         terminal_characters
     }

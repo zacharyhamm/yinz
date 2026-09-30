@@ -2550,3 +2550,160 @@ fn a_client_that_has_not_placed_a_cursor_is_never_cropped() {
     let output = create_test_output();
     assert!(!output.cursor_is_cropped_for(ClientId::new(1), Size { rows: 10, cols: 20 }));
 }
+
+mod dirty_line_properties {
+    use super::*;
+    use crate::panes::EMPTY_TERMINAL_CHARACTER;
+    use hegel::generators;
+    use std::collections::BTreeSet;
+
+    fn check(
+        buffer: &OutputBuffer,
+        reference: &BTreeSet<usize>,
+        all: bool,
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+    ) {
+        assert_eq!(buffer.should_update_all_lines, all);
+        assert_eq!(
+            buffer.changed_lines.iter().collect::<Vec<_>>(),
+            reference.iter().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(buffer.changed_lines.is_empty(), reference.is_empty());
+        for line in 0..=140 {
+            assert_eq!(
+                buffer.changed_lines.contains(line),
+                reference.contains(&line)
+            );
+        }
+        // Short rows and a short viewport independently exercise both kinds of padding.
+        let viewport: Vec<_> = (0..height / 2)
+            .map(|line| {
+                let mut row = Row::from_columns(VecDeque::from([TerminalCharacter::new(
+                    (b'A' + (line % 26) as u8) as char,
+                )]));
+                row.bg_color = Some(AnsiCode::ColorIndex(17));
+                row
+            })
+            .collect();
+        let expected_lines: Vec<_> = if all {
+            (0..height).collect()
+        } else {
+            reference
+                .iter()
+                .copied()
+                .filter(|line| *line < height)
+                .collect()
+        };
+        let chunks = buffer.changed_chunks_in_viewport(&viewport, width, height, x, y);
+        assert_eq!(chunks.len(), expected_lines.len());
+        for (chunk, line) in chunks.iter().zip(expected_lines) {
+            assert_eq!((chunk.x, chunk.y), (x, line + y));
+            let mut expected = vec![EMPTY_TERMINAL_CHARACTER; width];
+            if line < viewport.len() {
+                expected[0] = TerminalCharacter::new((b'A' + (line % 26) as u8) as char);
+                for cell in &mut expected[1..] {
+                    cell.styles
+                        .update(|style| style.background = Some(AnsiCode::ColorIndex(17)));
+                }
+            }
+            assert_eq!(chunk.terminal_characters, expected);
+        }
+        // The rectangle API deliberately includes off-viewport dirty lines, unlike chunks.
+        let lines = if all {
+            (0..height).collect()
+        } else {
+            reference.clone()
+        };
+        let mut rectangles = HashMap::new();
+        for &start in &lines {
+            if start > 0 && lines.contains(&(start - 1)) {
+                continue;
+            }
+            let count = (start..).take_while(|line| lines.contains(line)).count();
+            rectangles.insert(start, count);
+        }
+        assert_eq!(buffer.changed_rects_in_viewport(height), rectangles);
+    }
+
+    #[hegel::test]
+    fn dirty_sequences_match_a_set(tc: hegel::TestCase) {
+        let draw = |max| tc.draw(generators::integers::<usize>().max_value(max));
+        let (width, height, x, y) = (1 + draw(7), draw(135), draw(10), draw(10));
+        let mut buffer = OutputBuffer::default();
+        let mut reference = BTreeSet::new();
+        let mut all = true;
+        check(&buffer, &reference, all, width, height, x, y);
+        for _ in 0..40 {
+            let (start, end) = (draw(140), draw(140));
+            match draw(3) {
+                0 => {
+                    buffer.update_line(start);
+                    if !all {
+                        reference.insert(start);
+                    }
+                },
+                1 => {
+                    buffer.update_lines(start, end);
+                    if !all {
+                        reference.extend(start..=end);
+                    }
+                },
+                2 => {
+                    buffer.clear();
+                    reference.clear();
+                    all = false;
+                },
+                _ => {
+                    buffer.update_all_lines();
+                    reference.clear();
+                    all = true;
+                },
+            }
+            check(&buffer, &reference, all, width, height, x, y);
+        }
+    }
+
+    #[test]
+    fn dirty_boundaries_and_viewport_clipping() {
+        let mut buffer = OutputBuffer::default();
+        buffer.clear();
+        let reference = BTreeSet::from([0, 63, 64, 65, 127, 128, 129]);
+        for &line in &reference {
+            buffer.update_line(line);
+            buffer.update_line(line);
+        }
+        for height in [0, 1, 63, 64, 65, 127, 128, 129, 130] {
+            check(&buffer, &reference, false, 4, height, 3, 5);
+        }
+        buffer.update_all_lines();
+        check(&buffer, &BTreeSet::new(), true, 4, 65, 3, 5);
+        buffer.clear();
+        check(&buffer, &BTreeSet::new(), false, 4, 65, 3, 5);
+    }
+}
+
+#[test]
+fn viewport_clipping_counts_cells_and_blanks_partial_wide_characters() {
+    let viewport = vec![Row::from_columns(
+        "界語".chars().map(TerminalCharacter::new).collect(),
+    )];
+    let buffer = OutputBuffer::default();
+    for (width, expected) in ["", " ", "界", "界 ", "界語", "界語 "]
+        .into_iter()
+        .enumerate()
+    {
+        let chunks = buffer.changed_chunks_in_viewport(&viewport, width, 1, 0, 0);
+        assert_eq!(
+            chunks[0]
+                .terminal_characters
+                .iter()
+                .map(|cell| cell.character)
+                .collect::<String>(),
+            expected,
+            "width {width}"
+        );
+    }
+}
