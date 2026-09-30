@@ -22,6 +22,7 @@ pub use super::generated_api::api::{
         InPlaceConfig as ProtobufInPlaceConfig,
         KeyModifier as ProtobufKeyModifier,
         KeyWithModifier as ProtobufKeyWithModifier,
+        KeybindPipePayload,
         LaunchOrFocusPluginPayload,
         LayoutConstraint as ProtobufLayoutConstraint,
         LayoutConstraintFloatingPair as ProtobufLayoutConstraintFloatingPair,
@@ -1146,8 +1147,27 @@ impl TryFrom<ProtobufAction> for Action {
                 }
             },
             Some(ProtobufActionName::KeybindPipe) => match protobuf_action.optional_payload {
-                Some(_) => Err("KeybindPipe should not have a payload"),
-                // TODO: at some point we might want to support a payload here
+                Some(OptionalPayload::KeybindPipePayload(payload)) => Ok(Action::KeybindPipe {
+                    name: payload.name,
+                    payload: payload.payload,
+                    args: payload
+                        .args
+                        .map(|args| args.configuration.into_iter().collect()),
+                    plugin: payload.plugin,
+                    plugin_id: payload
+                        .plugin_id
+                        .map(yinz_types::internal_ids::PluginId::new),
+                    configuration: payload
+                        .configuration
+                        .map(|config| config.configuration.into_iter().collect()),
+                    launch_new: payload.launch_new,
+                    skip_cache: payload.skip_cache,
+                    floating: payload.floating,
+                    in_place: payload.in_place,
+                    cwd: payload.cwd.map(PathBuf::from),
+                    pane_title: payload.pane_title,
+                }),
+                // Older plugins sent only the action name.
                 None => Ok(Action::KeybindPipe {
                     name: None,
                     payload: None,
@@ -1162,6 +1182,7 @@ impl TryFrom<ProtobufAction> for Action {
                     pane_title: None,
                     plugin_id: None,
                 }),
+                _ => Err("Wrong payload for Action::KeybindPipe"),
             },
             Some(ProtobufActionName::NewStackedPane) => Ok(Action::NewStackedPane {
                 command: None,
@@ -2137,9 +2158,39 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::RenameSession as i32,
                 optional_payload: Some(OptionalPayload::RenameSessionPayload(session_name.to_string())),
             }),
-            Action::KeybindPipe { .. } => Ok(ProtobufAction {
+            Action::KeybindPipe {
+                name,
+                payload,
+                args,
+                plugin,
+                plugin_id,
+                configuration,
+                launch_new,
+                skip_cache,
+                floating,
+                in_place,
+                cwd,
+                pane_title,
+            } => Ok(ProtobufAction {
                 name: ProtobufActionName::KeybindPipe as i32,
-                optional_payload: None,
+                optional_payload: Some(OptionalPayload::KeybindPipePayload(KeybindPipePayload {
+                    name,
+                    payload,
+                    args: args.map(|args| ProtobufPluginUserConfiguration {
+                        configuration: args.into_iter().collect(),
+                    }),
+                    plugin,
+                    plugin_id: plugin_id.map(|id| id.get()),
+                    configuration: configuration.map(|config| ProtobufPluginUserConfiguration {
+                        configuration: config.into_iter().collect(),
+                    }),
+                    launch_new,
+                    skip_cache,
+                    floating,
+                    in_place,
+                    cwd: cwd.map(|cwd| cwd.into_os_string().into_string().map_err(|_| "KeybindPipe cwd is not valid UTF-8")).transpose()?,
+                    pane_title,
+                })),
             }),
             Action::TogglePanePinned => Ok(ProtobufAction {
                 name: ProtobufActionName::TogglePanePinned as i32,
@@ -4034,6 +4085,7 @@ pub(crate) mod tests {
                 | Action::BreakPane
                 | Action::BreakPaneRight
                 | Action::BreakPaneLeft
+                | Action::KeybindPipe { .. }
                 | Action::FocusHostSession
                 | Action::FocusGuestSession
                 | Action::ToggleHostFullscreen
@@ -4274,21 +4326,6 @@ pub(crate) mod tests {
                 },
                 Action::StartOrReloadPlugin { plugin } => Action::StartOrReloadPlugin {
                     plugin: plugin_by_url_alone(plugin),
-                },
-                // `KeybindPipe` has no payload.
-                Action::KeybindPipe { .. } => Action::KeybindPipe {
-                    name: None,
-                    payload: None,
-                    args: None,
-                    plugin: None,
-                    plugin_id: None,
-                    configuration: None,
-                    launch_new: false,
-                    skip_cache: false,
-                    floating: None,
-                    in_place: None,
-                    cwd: None,
-                    pane_title: None,
                 },
                 // No `ActionName` at all (`CliPipe` has one, but `CliPipePayload` cannot carry
                 // a pipe id), so the encoder refuses these.

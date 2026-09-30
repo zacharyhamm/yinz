@@ -508,7 +508,7 @@ impl<'a> StackedPanes<'a> {
         let panes = self.panes.borrow();
         let running_stack_geom = panes.get(&root_pane_id).map(|p| p.position_and_size());
         let Some(mut running_stack_geom) = running_stack_geom else {
-            log::error!("Pane not found"); // TODO: better error
+            log::error!("Cannot create a stack of {pane_count_in_stack} panes: root pane {root_pane_id:?} not found");
             return stacked_geoms;
         };
         let stack_id = self.next_stack_id();
