@@ -4,18 +4,125 @@ pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigErr
     if let Some(kdl_plugin_aliases) = kdl_children_nodes!(kdl_plugin_aliases) {
         for alias_definition in kdl_plugin_aliases {
             let alias_name = kdl_name!(alias_definition);
-            if let Some(string_url) =
-                kdl_get_string_property_or_child_value!(alias_definition, "location")
-            {
-                let configuration =
-                    KdlLayoutParser::parse_plugin_user_configuration(alias_definition)?;
-                let initial_cwd = kdl_get_string_property_or_child_value!(alias_definition, "cwd")
-                    .map(PathBuf::from);
-                let run_plugin = yinz_runtime::plugin_location::run_plugin_from_url(string_url)?
-                    .with_configuration(configuration.inner().clone())
-                    .with_initial_cwd(initial_cwd);
-                aliases.insert(alias_name.to_owned(), run_plugin);
+            use yinz_types::input::{
+                git_plugin::{GitPlugin, GitRevision},
+                layout::RunPluginLocation,
+                plugins::PluginsConfigError,
+            };
+            let property = |name: &str| -> Result<Option<String>, ConfigError> {
+                let entries = alias_definition
+                    .entries()
+                    .iter()
+                    .filter(|entry| entry.name().is_some_and(|key| key.value() == name))
+                    .collect::<Vec<_>>();
+                let children = alias_definition
+                    .children()
+                    .map(|children| {
+                        children
+                            .nodes()
+                            .iter()
+                            .filter(|node| node.name().value() == name)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if entries.len() + children.len() > 1 {
+                    return Err(kdl_parsing_error!(
+                        format!("duplicate {name} property"),
+                        alias_definition
+                    ));
+                }
+                let entry = entries
+                    .first()
+                    .copied()
+                    .or_else(|| children.first().and_then(|node| node.get(0)));
+                if let Some(entry) = entry {
+                    return entry
+                        .value()
+                        .as_string()
+                        .map(|s| Some(s.to_owned()))
+                        .ok_or_else(|| {
+                            kdl_parsing_error!(format!("{name} must be a string"), alias_definition)
+                        });
+                }
+                if !children.is_empty() {
+                    return Err(kdl_parsing_error!(
+                        format!("{name} requires a string"),
+                        alias_definition
+                    ));
+                }
+                Ok(None)
+            };
+            let repo = property("repo")?;
+            let location = property("location")?;
+            let entrypoint = property("entrypoint")?;
+            let branch = property("branch")?;
+            let tag = property("tag")?;
+            let commit = property("commit")?;
+            if repo.is_some() && location.is_some() {
+                return Err(kdl_parsing_error!(
+                    "repo and location are mutually exclusive".to_owned(),
+                    alias_definition
+                ));
             }
+            if repo.is_none()
+                && [
+                    entrypoint.as_ref(),
+                    branch.as_ref(),
+                    tag.as_ref(),
+                    commit.as_ref(),
+                ]
+                .iter()
+                .any(Option::is_some)
+            {
+                return Err(kdl_parsing_error!(
+                    "repository properties require repo".to_owned(),
+                    alias_definition
+                ));
+            }
+            if [branch.as_ref(), tag.as_ref(), commit.as_ref()]
+                .iter()
+                .filter(|value| value.is_some())
+                .count()
+                > 1
+            {
+                return Err(kdl_parsing_error!(
+                    "branch, tag and commit are mutually exclusive".to_owned(),
+                    alias_definition
+                ));
+            }
+            let location = if let Some(repo) = repo {
+                let mut plugin = GitPlugin {
+                    repo,
+                    entrypoint: entrypoint.unwrap_or_else(|| "main.ts".into()).into(),
+                    revision: branch
+                        .map(GitRevision::Branch)
+                        .or_else(|| tag.map(GitRevision::Tag))
+                        .or_else(|| commit.map(GitRevision::Commit)),
+                };
+                yinz_runtime::plugin_location::resolve_repository_path(
+                    &mut plugin,
+                    std::path::Path::new(""),
+                )?;
+                RunPluginLocation::Git(plugin)
+            } else if let Some(location) = location {
+                yinz_runtime::plugin_location::parse_plugin_location(&location, None)?
+            } else {
+                return Err(PluginsConfigError::InvalidRepository(format!(
+                    "alias {alias_name} requires location or repo"
+                ))
+                .into());
+            };
+            let configuration = KdlLayoutParser::parse_plugin_user_configuration(alias_definition)?;
+            let initial_cwd = property("cwd")?.map(PathBuf::from);
+            aliases.insert(
+                alias_name.to_owned(),
+                RunPlugin {
+                    location,
+                    configuration,
+                    initial_cwd,
+                    ..Default::default()
+                },
+            );
         }
     }
     Ok(PluginAliases { aliases })
@@ -28,7 +135,19 @@ pub fn to_kdl(value: &PluginAliases, add_comments: bool) -> KdlNode {
         let mut plugin_alias_children = KdlDocument::new();
         let location_string = plugin_alias.location.display();
 
-        plugin_alias_node.insert("location", location_string);
+        if let yinz_types::input::layout::RunPluginLocation::Git(plugin) = &plugin_alias.location {
+            plugin_alias_node.insert("repo", plugin.repo.clone());
+            plugin_alias_node.insert(
+                "entrypoint",
+                plugin.entrypoint.to_string_lossy().into_owned(),
+            );
+            if let Some(revision) = &plugin.revision {
+                let (key, value) = revision.property();
+                plugin_alias_node.insert(key, value);
+            }
+        } else {
+            plugin_alias_node.insert("location", location_string);
+        }
         let cwd = plugin_alias.initial_cwd.as_ref();
         let mut has_children = false;
         if let Some(cwd) = cwd {
@@ -63,7 +182,7 @@ pub fn to_kdl(value: &PluginAliases, add_comments: bool) -> KdlNode {
         plugins.set_leading(format!(
             "\n{}\n{}\n",
             "// Plugin aliases - can be used to change the implementation of Yinz",
-            "// changing these requires a restart to take effect",
+            "// declarations are refreshed on config reload",
         ));
     }
     plugins

@@ -365,8 +365,11 @@ keybinds {
 }
 
 // Plugin aliases - can be used to change the implementation of Yinz
-// changing these requires a restart to take effect
+// declarations are refreshed on config reload
 plugins {
+    // Repository TypeScript plugins install on first use. Update with `yinz plugins update`.
+    // my-panel repo="https://github.com/example/yinz-panel.git" branch="main"
+    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.ts" { greeting "Hello"; }
     tab-bar location="yinz:tab-bar"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"

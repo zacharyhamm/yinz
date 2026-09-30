@@ -39,6 +39,8 @@ pub struct Request {
     pub path: PathBuf,
     pub source: String,
     pub declarations: bool,
+    #[serde(default)]
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,7 +60,7 @@ pub fn transpile(
     source: &str,
     declarations: bool,
 ) -> Result<(String, Option<String>)> {
-    match request(path, source, declarations, Operation::Transpile)? {
+    match request(path, source, declarations, Operation::Transpile, None)? {
         Output::Emitted { text, source_map } => Ok((text, source_map)),
         _ => bail!(
             "transpile compilation worker for {} returned the wrong operation",
@@ -68,7 +70,7 @@ pub fn transpile(
 }
 
 pub fn analyze(path: &Path, source: &str) -> Result<PluginCheckReport> {
-    match request(path, source, true, Operation::Analyze)? {
+    match request(path, source, true, Operation::Analyze, None)? {
         Output::Analysis(report) => Ok(report),
         _ => bail!(
             "analysis compilation worker for {} returned the wrong operation",
@@ -79,7 +81,16 @@ pub fn analyze(path: &Path, source: &str) -> Result<PluginCheckReport> {
 
 /// Fails when the worker does; [`crate::analysis::check`] reports that as a diagnostic instead.
 pub(crate) fn check(path: &Path, source: &str, mode: PluginCheckMode) -> Result<PluginCheckReport> {
-    match request(path, source, true, Operation::Check(mode))? {
+    check_with_root(path, source, mode, None)
+}
+
+pub(crate) fn check_with_root(
+    path: &Path,
+    source: &str,
+    mode: PluginCheckMode,
+    root: Option<&Path>,
+) -> Result<PluginCheckReport> {
+    match request(path, source, true, Operation::Check(mode), root)? {
         Output::Analysis(report) => Ok(report),
         _ => bail!("authoring worker returned the wrong operation"),
     }
@@ -89,7 +100,13 @@ fn inside_worker() -> bool {
     std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(ARG))
 }
 
-fn request(path: &Path, source: &str, declarations: bool, operation: Operation) -> Result<Output> {
+fn request(
+    path: &Path,
+    source: &str,
+    declarations: bool,
+    operation: Operation,
+    root: Option<&Path>,
+) -> Result<Output> {
     let context = format!("{operation:?} compilation worker for {}", path.display());
     (|| {
         crate::limits::check_source(path, source)?;
@@ -98,6 +115,7 @@ fn request(path: &Path, source: &str, declarations: bool, operation: Operation) 
             path: path.to_owned(),
             source: source.to_owned(),
             declarations,
+            root: root.map(Path::to_owned),
         };
         let input = serde_json::to_vec(&request).context("encode request")?;
         let binary = std::env::var_os("YINZ_COMPILATION_WORKER")
@@ -206,7 +224,7 @@ pub fn supervise(
     supervise_cancel(command, input, timeout, None)
 }
 
-fn supervise_cancel(
+pub fn supervise_cancel(
     command: &mut Command,
     input: &[u8],
     timeout: Duration,
@@ -246,7 +264,7 @@ fn supervise_cancel(
     let (mut stdout_done, mut stderr_done) = (false, false);
     loop {
         if cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Acquire)) {
-            bail!("test run cancelled");
+            bail!("operation cancelled");
         }
         if Instant::now() >= deadline {
             bail!("worker exceeded {} second deadline", timeout.as_secs_f64());

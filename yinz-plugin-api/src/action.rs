@@ -3095,6 +3095,9 @@ impl TryFrom<ProtobufRunPluginLocationData> for RunPluginLocation {
         match protobuf.location_data {
             Some(LocationData::FilePath(path)) => Ok(RunPluginLocation::File(PathBuf::from(path))),
             Some(LocationData::YinzTag(tag)) => Ok(RunPluginLocation::Yinz(tag.try_into()?)),
+            Some(LocationData::GitDescriptor(value)) => Ok(RunPluginLocation::Git(
+                yinz_types::input::git_plugin::GitPlugin::from_descriptor(&value)?,
+            )),
             None => Err("RunPluginLocationData must have location_data"),
         }
     }
@@ -3108,6 +3111,10 @@ impl TryFrom<RunPluginLocation> for ProtobufRunPluginLocationData {
             RunPluginLocation as ProtobufRunPluginLocationType,
         };
         let (location_type, location_data) = match internal {
+            RunPluginLocation::Git(plugin) => (
+                ProtobufRunPluginLocationType::Git as i32,
+                Some(LocationData::GitDescriptor(plugin.descriptor())),
+            ),
             RunPluginLocation::File(path) => (
                 ProtobufRunPluginLocationType::File as i32,
                 Some(LocationData::FilePath(path.display().to_string())),
@@ -3743,6 +3750,17 @@ pub(crate) mod tests {
     /// `RunPlugin`'s `PartialEq` ignores `relative_path`, so an `assert_eq!` on a round-tripped
     /// plugin cannot see the field dropped - and dropping it silently costs a plugin named by a
     /// relative `file:` URL its lookup in the user's plugin folder. Assert the field itself.
+    #[test]
+    fn git_plugins_survive_the_plugin_wire() {
+        let original = RunPluginLocation::Git(yinz_types::input::git_plugin::GitPlugin {
+            repo: "git@example.com:team/plugin.git".into(),
+            entrypoint: "src/panel.ts".into(),
+            revision: Some(yinz_types::input::git_plugin::GitRevision::Tag("v1".into())),
+        });
+        let protobuf: ProtobufRunPluginLocationData = original.clone().try_into().unwrap();
+        assert_eq!(RunPluginLocation::try_from(protobuf).unwrap(), original);
+    }
+
     #[test]
     fn a_relative_plugin_path_survives_the_plugin_api_round_trip() {
         let original = RunPlugin {

@@ -6,6 +6,7 @@
 //! this crate is the protocol, a supervised client for it and the file work around it, and
 //! links neither V8 nor SWC. The worker's entry point is in `yinz-plugin-host`.
 pub mod analysis;
+pub mod git;
 pub mod limits;
 mod plugin_authoring;
 pub mod worker;

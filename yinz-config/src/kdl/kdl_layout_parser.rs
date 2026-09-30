@@ -169,7 +169,10 @@ impl<'a> KdlLayoutParser<'a> {
             || property_name == "user_named"
     }
     pub fn is_a_reserved_plugin_property(property_name: &str) -> bool {
-        property_name == "location"
+        matches!(
+            property_name,
+            "repo" | "entrypoint" | "branch" | "tag" | "commit"
+        ) || property_name == "location"
             || property_name == "_allow_exec_host_cmd"
             || property_name == "path"
     }

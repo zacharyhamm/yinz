@@ -1304,6 +1304,7 @@ pub(super) fn bind_hook(
     plugin: RunPluginOrAlias,
 ) {
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id: crate::ClientId::new(1),
         keybinds: None,
         default_mode: None,

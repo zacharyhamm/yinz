@@ -128,6 +128,20 @@ fn server_client_contract() {
 /// `PartialEq` deliberately ignores `relative_path`: a whole-message comparison would pass just
 /// as happily with the field dropped.
 #[test]
+fn git_plugins_survive_the_client_server_wire() {
+    use crate::client_server_contract::client_server_contract::RunPluginLocationData;
+    let original = RunPluginLocation::Git(yinz_types::input::git_plugin::GitPlugin {
+        repo: "https://example.com/plugin.git".into(),
+        entrypoint: "src/main.ts".into(),
+        revision: Some(yinz_types::input::git_plugin::GitRevision::Branch(
+            "main".into(),
+        )),
+    });
+    let protobuf: RunPluginLocationData = original.clone().into();
+    assert_eq!(RunPluginLocation::try_from(protobuf).unwrap(), original);
+}
+
+#[test]
 fn a_relative_plugin_path_survives_the_client_server_contract() {
     use crate::client_server_contract::client_server_contract::RunPlugin as ProtoRunPlugin;
 

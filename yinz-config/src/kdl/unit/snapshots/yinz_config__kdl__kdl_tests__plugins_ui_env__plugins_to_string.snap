@@ -1,11 +1,10 @@
 ---
-source: yinz-config/src/kdl/mod.rs
-assertion_line: 5184
+source: yinz-config/src/kdl/./unit/plugins_ui_env.rs
 expression: serialized.to_string()
 ---
 
 // Plugin aliases - can be used to change the implementation of Yinz
-// changing these requires a restart to take effect
+// declarations are refreshed on config reload
 plugins {
     compact-bar location="yinz:compact-bar"
     filepicker location="yinz:strider" {

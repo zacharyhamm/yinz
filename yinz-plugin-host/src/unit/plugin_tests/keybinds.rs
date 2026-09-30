@@ -183,6 +183,7 @@ pub fn mode_update_payload_is_lightweight_for_opted_in_plugins() {
     let test_keybinds = Keybinds(keybind_map);
 
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id,
         keybinds: Some(test_keybinds),
         default_mode: None,
@@ -380,6 +381,7 @@ pub fn reconfiguration_resends_keybinds_to_opted_in_plugins() {
 
     // Send Reconfigure
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id,
         keybinds: Some(new_keybinds),
         default_mode: None,

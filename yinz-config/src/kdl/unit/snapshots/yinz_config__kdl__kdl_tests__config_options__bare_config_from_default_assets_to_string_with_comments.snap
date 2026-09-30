@@ -347,7 +347,7 @@ keybinds clear-defaults=true {
 }
 
 // Plugin aliases - can be used to change the implementation of Yinz
-// changing these requires a restart to take effect
+// declarations are refreshed on config reload
 plugins {
     about location="yinz:about"
     agent-exit location="yinz:agent-exit"

@@ -180,6 +180,12 @@ pub enum Recordings {
 /// Extensionless names select TypeScript; explicit .js, .mjs, .ts and .mts names select Deno.
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Plugins {
+    /// Install configured repository plugins; omit aliases to select all.
+    Install { aliases: Vec<String> },
+    /// Update installed branches; tags and commits stay pinned. Reload explicitly to use updates.
+    Update { aliases: Vec<String> },
+    /// Show repository sources and installed revisions without fetching.
+    Status { aliases: Vec<String> },
     /// Read bundled plugin documentation without a source checkout.
     Docs {
         #[clap(default_value = "index")]

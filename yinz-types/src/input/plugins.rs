@@ -25,9 +25,11 @@ use url::Url;
 pub enum PluginsConfigError {
     #[error("Duplication in plugin tag names is not allowed: '{}'", String::from(.0.clone()))]
     DuplicatePlugins(PluginTag),
+    #[error("Invalid repository plugin: {0}")]
+    InvalidRepository(String),
     #[error("Failed to parse url: {0:?}")]
     InvalidUrl(#[from] url::ParseError),
-    #[error("Only 'file:' and 'yinz:' url schemes are supported for plugin lookup. '{0}' does not match either.")]
+    #[error("Only 'file:', 'yinz:' and 'git://plugin' locations are supported for plugin lookup. '{0}' does not match any of them.")]
     InvalidUrlScheme(Url),
     #[error("Could not find plugin at the path: '{0:?}'")]
     InvalidPluginLocation(PathBuf),

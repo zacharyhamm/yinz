@@ -119,5 +119,11 @@ pub fn load_config_and_layout(assets: &CliAssets) -> anyhow::Result<(Config, Lay
         config_with_merged_layout_opts.themes = config_with_merged_layout_opts.themes.merge(themes);
     }
 
-    Ok((config_with_merged_layout_opts, layout))
+    let config = config_with_merged_layout_opts
+        .resolve_plugin_repositories(
+            assets.config_file_path.as_deref(),
+            assets.config_dir.as_deref(),
+        )
+        .map_err(|error| anyhow::anyhow!("failed to resolve plugin repositories: {error}"))?;
+    Ok((config, layout))
 }

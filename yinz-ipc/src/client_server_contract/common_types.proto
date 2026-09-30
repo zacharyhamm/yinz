@@ -1387,6 +1387,7 @@ enum RunPluginLocation {
   RUN_PLUGIN_LOCATION_UNSPECIFIED = 0;
   RUN_PLUGIN_LOCATION_FILE = 1;
   RUN_PLUGIN_LOCATION_YINZ = 2;
+  RUN_PLUGIN_LOCATION_GIT = 4;
   reserved 3;
   reserved "RUN_PLUGIN_LOCATION_REMOTE";
 }
@@ -1395,6 +1396,7 @@ message RunPluginLocationData {
   RunPluginLocation location_type = 1;
   oneof location_data {
     string file_path = 2;      // For FILE
+    string git_descriptor = 5;
     PluginTag yinz_tag = 3;    // For YINZ
   }
   reserved 4;

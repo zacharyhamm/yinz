@@ -10,6 +10,277 @@ const PLUGIN: PluginId = PluginId::new(0);
 const SIZE: Size = Size { cols: 80, rows: 10 };
 
 #[test]
+fn git_plugins_pin_imports_workers_and_attached_clients_until_reload() {
+    use std::process::{Command, Stdio};
+    use yinz_types::input::git_plugin::GitPlugin;
+    struct GitDaemon(std::process::Child);
+    impl Drop for GitDaemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    let repository = tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let result = Command::new("git")
+            .current_dir(repository.path())
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "user.name=Plugin test",
+                "-c",
+                "user.email=plugin@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::create_dir(repository.path().join("src")).unwrap();
+    std::fs::write(repository.path().join("src/main.ts"), r#"
+import {value} from '../shared.ts';
+let parent = 'idle', worker = 'idle', saved = 'pending';
+export default {
+  workers: {async probe() {const module = await import('../late.ts'); yinz.postMessageToPlugin('reply', module.value);}},
+  async load() {
+    await yinz.waitForPermissions(['PluginData']);
+    yinz.data.define('markers', {value:'Text'});
+    if (yinz.data.count({entity:'markers'}) === 0) yinz.data.apply([yinz.data.put('markers', {value}, {uid:'marker'})]);
+    saved = yinz.data.fetch({entity:'markers'}).records[0].value;
+    yinz.subscribe(['CustomMessage']);
+  },
+  async update(event) {
+    if (!event.CustomMessage) return false;
+    const [name, payload] = event.CustomMessage;
+    if (name === 'probe') {parent = (await import('../late.ts')).value; yinz.postMessageTo('probe', 'go');}
+    if (name === 'reply') worker = payload;
+    return true;
+  },
+  render() {return `${value} ${parent} ${worker} ${saved}`;}
+};
+"#).unwrap();
+    let write_revision = |value: &str| {
+        for name in ["shared.ts", "late.ts"] {
+            std::fs::write(
+                repository.path().join(name),
+                format!("export const value = '{value}';\n"),
+            )
+            .unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-m", value]);
+    };
+    write_revision("one");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let daemon = Command::new("git")
+        .args([
+            "daemon",
+            "--export-all",
+            "--listen=127.0.0.1",
+            &format!("--port={port}"),
+            &format!("--base-path={}", repository.path().display()),
+            repository.path().to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut daemon = GitDaemon(daemon);
+    let ready = Watched::new(false);
+    let notify = ready.clone();
+    let probe = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        *notify.lock() = true;
+    });
+    ready.wait_until("Git daemon", default_timeout(), |ready| ready.then_some(()));
+    probe.join().unwrap();
+    let source = GitPlugin {
+        repo: format!("git://127.0.0.1:{port}/"),
+        entrypoint: "src/main.ts".into(),
+        revision: None,
+    };
+    let run = RunPluginOrAlias::RunPlugin(RunPlugin {
+        location: RunPluginLocation::Git(source.clone()),
+        ..Default::default()
+    });
+    load(&harness.sender, run.clone());
+    harness.rendered("one idle idle one");
+    let first = crate::plugin_authoring::git::status(harness.directory.path(), &source)
+        .unwrap()
+        .unwrap();
+    write_revision("two");
+    let next = crate::plugin_authoring::git::install(
+        harness.directory.path(),
+        &source,
+        std::slice::from_ref(&source),
+        true,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_ne!(first.commit, next.commit);
+    // Offline delayed imports and new clients must still read the original worktree.
+    daemon.0.kill().unwrap();
+    daemon.0.wait().unwrap();
+    harness.event(Event::CustomMessage("probe".into(), "".into()));
+    harness.rendered("one one one");
+    let client = ClientId::new(2);
+    harness
+        .sender
+        .send(PluginInstruction::AddClient(client))
+        .unwrap();
+    harness.log.wait_until(
+        "attached client on original revision",
+        default_timeout(),
+        |log| {
+            rendered_assets(log)
+                .iter()
+                .any(|(id, text)| *id == client && text.contains("one idle idle"))
+                .then_some(())
+        },
+    );
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginByUrl(run))
+        .unwrap();
+    harness.rendered("two idle idle");
+    harness.event(Event::CustomMessage("probe".into(), "".into()));
+    harness.rendered("two two two one");
+    // The source, not the selected path, remains the permission and private-data identity.
+    let location = RunPluginLocation::Git(source);
+    let identity = url::Url::from(&location).to_string();
+    assert!(!identity.contains(first.root.to_str().unwrap()));
+    let permissions = yinz_config::permission::PermissionCache::from_path_or_default(Some(
+        harness.directory.path().join("permissions.kdl"),
+    ));
+    assert!(permissions
+        .get_permissions(location.to_string())
+        .unwrap()
+        .contains(&PermissionType::PluginData));
+    assert!(permissions
+        .get_permissions(first.entrypoint.to_string_lossy().into_owned())
+        .is_none());
+    harness.finish();
+}
+
+#[test]
+fn git_plugin_first_load_failure_recovers_by_id_with_original_configuration_and_pane() {
+    use yinz_types::input::git_plugin::GitPlugin;
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    let path = harness.directory.path().join("missing.ts");
+    load(
+        &harness.sender,
+        RunPluginOrAlias::RunPlugin(RunPlugin {
+            location: RunPluginLocation::Git(GitPlugin {
+                repo: harness.directory.path().to_string_lossy().into_owned(),
+                entrypoint: "missing.ts".into(),
+                revision: None,
+            }),
+            configuration: PluginUserConfiguration::new(BTreeMap::from([(
+                "greeting".into(),
+                "original configuration".into(),
+            )])),
+            initial_cwd: Some(harness.directory.path().to_owned()),
+            ..Default::default()
+        }),
+    );
+    harness.log.wait_until("repository preparation failed", default_timeout(), |log| {
+        log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+    });
+    std::fs::write(
+        path,
+        "let greeting; export default {load(config) {greeting = config.greeting;}, render(rows, cols) {return `${greeting} ${rows} ${cols}`;}};",
+    )
+    .unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginWithId(PLUGIN))
+        .unwrap();
+    harness.rendered("original configuration 10 80");
+    let log = harness.finish();
+    let panes = log
+        .iter()
+        .filter_map(|instruction| match instruction {
+            ScreenInstruction::AddPlugin(_, _, _, _, _, tab, id, ..) => Some((*id, *tab)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        panes,
+        [(PLUGIN, Some(TabId::new(1)))],
+        "recovery must retain the original pane"
+    );
+}
+
+#[test]
+fn git_plugin_aliases_refresh_on_config_reload_for_new_launches() {
+    use yinz_types::input::git_plugin::GitPlugin;
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    std::fs::create_dir(harness.directory.path().join("src")).unwrap();
+    std::fs::write(
+        harness.directory.path().join("src/main.ts"),
+        "import {value} from '../shared.ts'; export default {render() {return value;}};",
+    )
+    .unwrap();
+    std::fs::write(
+        harness.directory.path().join("shared.ts"),
+        "export const value = 'reconfigured repository';",
+    )
+    .unwrap();
+    let plugin = RunPlugin {
+        location: RunPluginLocation::Git(GitPlugin {
+            repo: harness.directory.path().to_string_lossy().into_owned(),
+            entrypoint: "src/main.ts".into(),
+            revision: None,
+        }),
+        ..Default::default()
+    };
+    harness
+        .sender
+        .send(PluginInstruction::Reconfigure {
+            plugin_aliases: PluginAliases::from_data(BTreeMap::from([(
+                "repository".into(),
+                plugin,
+            )])),
+            client_id: CLIENT,
+            keybinds: None,
+            default_mode: None,
+            default_shell: None,
+            layout_dir: None,
+            user_plugin_dir: None,
+            builtin_plugins_dir: None,
+            hooks: Default::default(),
+            context_menu: Default::default(),
+            was_written_to_disk: false,
+        })
+        .unwrap();
+    load(
+        &harness.sender,
+        RunPluginOrAlias::Alias(yinz_types::input::layout::PluginAlias::new(
+            "repository",
+            &None,
+            None,
+        )),
+    );
+    harness.rendered("reconfigured repository");
+    harness.finish();
+}
+
+#[test]
 fn deno_headless_hooks_deliver_the_first_payload_after_async_permissions_and_reload() {
     use yinz_types::input::hooks::HookPoint;
     let harness = Harness::new(
@@ -516,6 +787,7 @@ impl Harness {
             Default::default(),
             event_sender.clone(),
             data_access,
+            Some(directory.path().to_owned()),
         );
         let log = Watched::new(vec![]);
         let logger = match status {

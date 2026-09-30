@@ -315,8 +315,13 @@ impl Config {
 
         if let Some(path) = config_path {
             let default_config = Config::from_default_assets()?;
-            return Config::from_path(&path.to_path_buf(), Some(default_config))
-                .map(|config| config.with_overlay_dir(overlay_dir.as_deref()));
+            return Config::from_path(&path.to_path_buf(), Some(default_config)).and_then(
+                |config| {
+                    config
+                        .with_overlay_dir(overlay_dir.as_deref())
+                        .resolve_plugin_repositories(config_path, config_dir.as_deref())
+                },
+            );
         }
 
         let config = if let Some(ref config) = config_dir {
@@ -330,7 +335,9 @@ impl Config {
         } else {
             Config::from_default_assets()?
         };
-        Ok(config.with_overlay_dir(overlay_dir.as_deref()))
+        config
+            .with_overlay_dir(overlay_dir.as_deref())
+            .resolve_plugin_repositories(config_path, config_dir.as_deref())
     }
 }
 
@@ -342,6 +349,56 @@ use yinz_runtime::consts::CONFIG_OVERLAY_DIR_NAME;
 pub const MANAGED_CONFIG_FILE_NAME: &str = "yinz-managed.kdl";
 
 impl Config {
+    pub fn resolve_plugin_repositories(
+        mut self,
+        config_path: Option<&Path>,
+        config_dir: Option<&Path>,
+    ) -> ConfigResult {
+        let base = config_dir
+            .map(Path::to_path_buf)
+            .or_else(home::find_default_config_dir)
+            .or_else(|| config_path.and_then(Path::parent).map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let base = if base.is_absolute() {
+            base
+        } else {
+            std::env::current_dir()
+                .map_err(|e| ConfigError::IoPath(e, base.to_path_buf()))?
+                .join(base)
+        };
+        for plugin in self.plugins.aliases.values_mut() {
+            if let yinz_types::input::layout::RunPluginLocation::Git(source) = &mut plugin.location
+            {
+                yinz_runtime::plugin_location::resolve_repository_path(source, &base)?;
+            }
+        }
+        Ok(self)
+    }
+
+    /// Management commands must surface malformed drop-ins too.
+    pub fn validate_plugin_overlays(config_dir: Option<&Path>) -> Result<(), ConfigError> {
+        let directory = home::get_config_overlay_dir(
+            config_dir
+                .map(Path::to_path_buf)
+                .or_else(home::find_default_config_dir),
+        );
+        if let Some(directory) = directory.filter(|path| path.exists()) {
+            for entry in std::fs::read_dir(&directory)
+                .map_err(|e| ConfigError::IoPath(e, directory.clone()))?
+            {
+                let path = entry
+                    .map_err(|e| ConfigError::IoPath(e, directory.clone()))?
+                    .path();
+                if path.is_file()
+                    && path.extension().and_then(|value| value.to_str()) == Some("kdl")
+                {
+                    Self::from_path(&path, None)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Layer every `*.kdl` in `overlay_dir` over `self`, in file-name order, the way a config
     /// file is layered over the defaults. A drop-in that does not parse is logged and skipped
     /// rather than failing the whole config: a bad managed write must not brick the session.
@@ -901,6 +958,7 @@ pub async fn watch_config_file_changes<F, Fut>(
             None,
             config,
             config_dir.clone(),
+            Some(config_file_path),
             None,
             None,
             PathBuf::from("."),
@@ -1138,6 +1196,7 @@ pub fn load_layout_and_config(
     cli_config_options: Option<&Options>,
     config: Config,
     config_dir: Option<PathBuf>,
+    config_path: Option<&Path>,
     layout_string: Option<&str>,
     layout_path: Option<&std::path::Path>,
     cwd: PathBuf,
@@ -1183,6 +1242,11 @@ pub fn load_layout_and_config(
                 .map(|(_layout, config)| (layout_info, config))
         },
     }
+    .and_then(|(layout_info, config)| {
+        config
+            .resolve_plugin_repositories(config_path, config_dir.as_deref())
+            .map(|config| (layout_info, config))
+    })
 }
 pub fn apply_themes(
     config: &mut Config,

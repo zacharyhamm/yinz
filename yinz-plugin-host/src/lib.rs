@@ -101,7 +101,7 @@ pub fn plugin_thread_main(
     yinz_cwd: PathBuf,
     session_env_vars: std::collections::BTreeMap<String, String>,
     default_shell: Option<TerminalAction>,
-    plugin_aliases: PluginAliases,
+    mut plugin_aliases: PluginAliases,
     default_mode: InputMode,
     default_keybinds: Keybinds,
     background_plugins: BTreeSet<RunPluginOrAlias>,
@@ -1332,6 +1332,7 @@ pub fn plugin_thread_main(
                 wasm_bridge.send_pipe_outcomes(outcomes);
             },
             PluginInstruction::Reconfigure {
+                plugin_aliases: new_aliases,
                 client_id,
                 keybinds,
                 default_mode,
@@ -1348,6 +1349,8 @@ pub fn plugin_thread_main(
                 // bound here that is not loaded is not a problem - `run_hook` loads on demand, and
                 // `request_context_menu` answers that one click from the configuration while it
                 // starts.
+                plugin_aliases = new_aliases;
+                *wasm_bridge.plugin_aliases.lock().unwrap() = plugin_aliases.clone();
                 hooks = new_hooks;
                 context_menu = new_context_menu;
                 wasm_bridge

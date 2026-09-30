@@ -129,6 +129,106 @@ pub struct LoadingContext {
 }
 
 impl LoadingContext {
+    /// Git runs outside both the executor and plugin map. The queued context pins the revision.
+    fn execute_prepared<F>(
+        mut self,
+        executor: Arc<PinnedExecutor>,
+        senders: ThreadSenders,
+        load_id: u64,
+        register: bool,
+        job: F,
+    ) -> bool
+    where
+        F: FnOnce(
+                Self,
+                ThreadSenders,
+                Arc<Mutex<PluginMap>>,
+                Arc<Mutex<Vec<ClientId>>>,
+                PluginCache,
+                Engine,
+            ) + Send
+            + 'static,
+    {
+        let plugin_id = self.plugin_id;
+        if register {
+            executor.register_plugin(plugin_id);
+        }
+        let needs_repository = matches!(self.plugin_config.location, RunPluginLocation::Git(_))
+            && self.plugin_config.repository_root.is_none();
+        let enqueue = move || {
+            if let RunPluginLocation::Git(source) = &self.plugin_config.location {
+                if self.plugin_config.repository_root.is_none() {
+                    let entries = self
+                        .plugin_aliases
+                        .lock()
+                        .unwrap()
+                        .aliases
+                        .values()
+                        .filter_map(|plugin| match &plugin.location {
+                            RunPluginLocation::Git(other)
+                                if other.repo == source.repo
+                                    && other.revision == source.revision =>
+                            {
+                                Some(other.clone())
+                            },
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    match yinz_plugin_authoring::git::resolve(
+                        &self.yinz_data_dir,
+                        source,
+                        &entries,
+                        &self.cancel,
+                    ) {
+                        Ok(installed) => {
+                            self.plugin_config.path = installed.entrypoint;
+                            self.plugin_config.repository_root = Some(installed.root);
+                            self.plugin_config.installed_commit = installed.commit;
+                        },
+                        Err(error) => {
+                            handle_plugin_loading_failure(
+                                &senders,
+                                Some(load_id),
+                                plugin_id,
+                                &mut LoadingIndication::new(source.descriptor()),
+                                error,
+                                Some(self.client_id),
+                            );
+                            return true;
+                        },
+                    }
+                }
+            }
+            let work = move |senders, map, clients, cache, engine| {
+                job(self, senders, map, clients, cache, engine)
+            };
+            let accepted = if register {
+                executor.execute_plugin_load(plugin_id, work)
+            } else {
+                executor.execute_for_plugin_tagged(plugin_id, "load", false, work)
+            };
+            if !accepted {
+                handle_plugin_loading_failure(
+                    &senders,
+                    Some(load_id),
+                    plugin_id,
+                    &mut LoadingIndication::new(plugin_id.to_string()),
+                    "Plugin executor rejected loading",
+                    None,
+                );
+            }
+            accepted
+        };
+        if needs_repository {
+            std::thread::Builder::new()
+                .name(format!("plugin-repository-{plugin_id}"))
+                .spawn(enqueue)
+                .is_ok()
+        } else {
+            enqueue()
+        }
+    }
+
     pub fn new(
         wasm_bridge: &WasmBridge,
         cwd: Option<PathBuf>,
@@ -158,6 +258,26 @@ impl LoadingContext {
             .get(&client_id)
             .cloned()
             .unwrap_or_else(|| wasm_bridge.default_keybinds.clone());
+        let plugin_cwd = cwd.unwrap_or_else(|| wasm_bridge.yinz_cwd.clone());
+        if matches!(plugin_config.location, RunPluginLocation::Git(_))
+            && plugin_config.repository_root.is_none()
+        {
+            let mut plugin_map = wasm_bridge.plugin_map.lock().unwrap();
+            let resolved_source_path = plugin_map
+                .reload_metadata(plugin_id)
+                .and_then(|metadata| metadata.resolved_source_path);
+            plugin_map.remember_plugin(
+                plugin_id,
+                super::plugin_map::PluginMetadata {
+                    config: plugin_config.clone(),
+                    resolved_source_path,
+                    cwd: plugin_cwd.clone(),
+                    tab_index,
+                    size: (size.rows, size.cols),
+                    owner_client_id: client_id,
+                },
+            );
+        }
 
         Ok(LoadingContext {
             client_id,
@@ -166,7 +286,7 @@ impl LoadingContext {
             session_env_vars: wasm_bridge.session_env_vars.clone(),
             server_session: wasm_bridge.server_session.clone(),
             plugin_aliases: wasm_bridge.plugin_aliases.clone(),
-            plugin_cwd: cwd.unwrap_or_else(|| wasm_bridge.yinz_cwd.clone()),
+            plugin_cwd,
             default_shell: wasm_bridge.default_shell.clone(),
             layout_dir: wasm_bridge.layout_dir.clone(),
             user_plugin_dir: wasm_bridge.user_plugin_dir.clone(),
@@ -562,9 +682,13 @@ impl WasmBridge {
                     senders.send_to_background_jobs(BackgroundJob::AnimatePluginLoading(plugin_id));
                 let mut loading_indication = LoadingIndication::new(plugin_name.clone());
 
-                let accepted = self.plugin_executor.execute_plugin_load(
-                    plugin_id,
-                    move |senders,
+                let accepted = loading_context.execute_prepared(
+                    self.plugin_executor.clone(),
+                    senders.clone(),
+                    load_id,
+                    true,
+                    move |loading_context,
+                          senders,
                           plugin_map,
                           connected_clients,
                           plugin_cache: PluginCache,
@@ -1159,10 +1283,15 @@ impl WasmBridge {
             log::error!("No instance owner, cannot reload plugin.");
             return Ok(());
         };
-        let Some(plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
+        let Some(mut plugin_config) = self.plugin_config_of_plugin_id(plugin_id) else {
             log::error!("Could not find running plugin with id: {}", plugin_id);
             return Ok(());
         };
+        if let RunPluginLocation::Git(source) = &plugin_config.location {
+            plugin_config.path = source.entrypoint.clone();
+            plugin_config.repository_root = None;
+            plugin_config.installed_commit = None;
+        }
         let tab_index = self.tab_index_of_plugin_id(plugin_id);
         let Some(size) = self.size_of_plugin_id(plugin_id) else {
             log::error!(
@@ -1179,7 +1308,7 @@ impl WasmBridge {
         let cwd = self.cwd_of_plugin_id(plugin_id);
 
         let load_id = self.begin_plugin_load(plugin_id);
-        let mut loading_context = LoadingContext::new(
+        let loading_context = LoadingContext::new(
             self,
             cwd,
             plugin_config,
@@ -1189,11 +1318,17 @@ impl WasmBridge {
             size,
         )?;
 
-        let accepted = plugin_executor.execute_for_plugin_tagged(
-            plugin_id,
-            "reload",
+        let accepted = loading_context.execute_prepared(
+            plugin_executor,
+            self.senders.clone(),
+            load_id,
             false,
-            move |senders, plugin_map, connected_clients, plugin_cache, engine| {
+            move |mut loading_context,
+                  senders,
+                  plugin_map,
+                  connected_clients,
+                  plugin_cache,
+                  engine| {
                 let skip_cache = true; // we want to explicitly reload the plugin
                 let mut plugin_map = plugin_map.lock().unwrap();
                 // A failed instance retains its identity; explicit unload removes it.
@@ -1440,11 +1575,9 @@ impl WasmBridge {
             log::info!(
                 "attach trace: WasmBridge::add_client client_id={client_id} plugin_id={plugin_id} executor enqueue begin"
             );
-            let accepted = plugin_executor.execute_for_plugin_tagged(
-                plugin_id,
-                "load",
-                false,
-                move |senders, plugin_map, connected_clients, plugin_cache, engine| {
+            let accepted = loading_context.execute_prepared(
+                plugin_executor, self.senders.clone(), load_id, false,
+                move |loading_context, senders, plugin_map, connected_clients, plugin_cache, engine| {
                     let skip_cache = false;
                     let load_started_at = std::time::Instant::now();
                     log::info!(
@@ -4052,6 +4185,8 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         PluginConfig {
+            repository_root: None,
+            installed_commit: None,
             path: PathBuf::from("test-plugin"),
             _allow_exec_host_cmd: false,
             location: yinz_runtime::plugin_location::parse_plugin_location("yinz:tab-bar", None)

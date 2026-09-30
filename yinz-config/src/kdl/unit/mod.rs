@@ -7,3 +7,5 @@ mod keybinds;
 mod plugin_placement;
 mod plugins_ui_env;
 mod themes;
+
+mod git_plugins;

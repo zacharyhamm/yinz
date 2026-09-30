@@ -178,6 +178,7 @@ impl ThreadSenders {
             .context("reconfiguring the screen")
             .non_fatal();
             self.send_to_plugin(PluginInstruction::Reconfigure {
+                plugin_aliases: new_config.plugins.clone(),
                 client_id,
                 keybinds: Some(new_config.keybinds),
                 default_mode: new_config.options.default_mode,
