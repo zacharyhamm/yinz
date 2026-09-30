@@ -1872,18 +1872,135 @@ fn interrupted_recovery_resets_a_silent_busy_claude_after_a_quiet_period() {
         AgentOutcome::Rejected,
         "a hook may still be on its way"
     );
-    let lifecycle = screen.agent_lifecycle.get_mut(&PANE).unwrap();
-    lifecycle.last_report = Instant::now()
-        .checked_sub(crate::screen::agent_control::RECOVER_QUIET)
-        .unwrap();
-    screen.agent_control(interrupted, CLIENT);
+    let (to_plugin, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    recover_after_quiet(&mut screen, interrupted);
     let recovered = replies(&messages, CLIENT);
     assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
     assert_eq!(recovered[0].agents[0].agent.state, AgentState::Idle);
     assert!(recovered[0].agents[0].ready);
+    let events: Vec<_> = plugins
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(updates) => Some(updates),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|(_, _, event)| match event {
+            yinz_types::data::Event::AgentEvent(event) => Some(event),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 1, "plugins see the interrupted turn end");
+    assert_eq!(events[0].hook, "Interrupt");
+    assert_eq!(events[0].kind, "claude");
+    assert_eq!(events[0].session_id.as_deref(), Some("conversation"));
+    assert_eq!(events[0].state, Some(AgentState::Idle));
+    let raw: HookEvent = serde_json::from_str(&events[0].raw).unwrap();
+    assert_eq!(raw.hook_event_name, "Interrupt");
     screen.agent_control(prompt(true), CLIENT);
     assert!(replies(&messages, CLIENT).is_empty());
     assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+}
+
+fn interrupted_recover() -> AgentRequest {
+    AgentRequest::Recover {
+        pane_id: PANE,
+        expected_session_id: "conversation".into(),
+        confirm_empty: true,
+        interrupted: true,
+    }
+}
+
+fn recover_after_quiet(screen: &mut Screen, request: AgentRequest) {
+    let quiet = crate::screen::agent_control::RECOVER_QUIET;
+    screen.agent_control_at(
+        request,
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        Instant::now() + quiet + Duration::from_millis(1),
+    );
+}
+
+fn send_esc(screen: &mut Screen, messages: &CapturedClientMessages) {
+    screen.agent_control(
+        AgentRequest::SendKeys {
+            pane_id: PANE,
+            expected_session_id: None,
+            keys: vec![KeyWithModifier::new(BareKey::Esc)],
+        },
+        ClientId::new(2),
+    );
+    assert_eq!(
+        replies(messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::Ok
+    );
+}
+
+#[test]
+fn interrupted_recovery_of_a_waiting_agent_requires_input_after_its_last_report() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(false), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    let mut permission = hook("PermissionRequest");
+    permission.tool_name = Some("Bash".into());
+    report_kind(&mut screen, "claude", permission);
+    let state = screen.get_pane_info(PANE).unwrap().agent.unwrap().state;
+    assert_eq!(state, AgentState::Waiting);
+    // A dialog nobody acted on is quiet, however long it waits.
+    recover_after_quiet(&mut screen, interrupted_recover());
+    let refused = replies(&messages, CLIENT);
+    assert_eq!(refused[0].outcome, AgentOutcome::Rejected);
+    assert!(refused[0].message.as_deref().unwrap().contains("Esc"));
+    // A worker hook after the input shows the agent is still reporting.
+    send_esc(&mut screen, &messages);
+    let mut worker = hook("SubagentStop");
+    worker.agent_id = Some("worker".into());
+    report_kind(&mut screen, "claude", worker);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected,
+        "a worker hook follows the input"
+    );
+    send_esc(&mut screen, &messages);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    let recovered = replies(&messages, CLIENT);
+    assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
+    assert_eq!(recovered[0].agents[0].agent.state, AgentState::Idle);
+    assert!(recovered[0].agents[0].ready);
+}
+
+#[test]
+fn recovery_rejections_name_the_check_that_failed() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    let message = |screen: &mut Screen, request| {
+        screen.agent_control(request, ClientId::new(3));
+        let response = replies(&messages, ClientId::new(3)).remove(0);
+        assert_eq!(response.outcome, AgentOutcome::Rejected);
+        response.message.unwrap()
+    };
+    let unconfirmed = message(
+        &mut screen,
+        AgentRequest::Recover {
+            pane_id: PANE,
+            expected_session_id: "conversation".into(),
+            confirm_empty: false,
+            interrupted: true,
+        },
+    );
+    assert!(unconfirmed.contains("--confirm-empty"), "{unconfirmed}");
+    assert!(!unconfirmed.contains("--interrupted"), "{unconfirmed}");
+    let in_flight = message(&mut screen, interrupted_recover());
+    assert!(in_flight.contains("in flight"), "{in_flight}");
+    let busy = message(&mut screen, recover());
+    assert!(busy.contains("in flight"), "{busy}");
 }
 
 #[test]
@@ -1904,10 +2021,15 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
         },
         CLIENT,
     );
-    finish_paste(&writes);
+    let lead_in = yinz_types::agent::control::PASTE_LEAD_IN;
+    assert_eq!(
+        finish_paste(&writes),
+        format!("{lead_in} \x1b[200~{text}\x1b[201~").into_bytes(),
+        "the lead-in is typed ahead of the paste"
+    );
     let mut submit = hook("UserPromptSubmit");
     submit.prompt = Some(format!(
-        "\n\n<pasted_content id=\"8c9e\">\n{text}\n</pasted_content id=\"8c9e\">\n"
+        "{lead_in} \n\n<pasted_content id=\"8c9e\">\n{text}\n</pasted_content id=\"8c9e\">\n"
     ));
     report_kind(&mut screen, "claude", submit);
     report_kind(&mut screen, "claude", hook("Stop"));
@@ -1921,6 +2043,70 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
     );
     assert!(replies[0].acknowledged);
     assert!(replies[0].agents[0].ready);
+    screen.agent_control(prompt(false), CLIENT);
+    assert_eq!(
+        finish_paste(&writes),
+        b"\x1b[200~review\x1b[201~",
+        "a short prompt is pasted alone"
+    );
+}
+
+#[test]
+fn command_prefixes_preserve_delivery_and_require_prompt_acknowledgement() {
+    let long = "a".repeat(500);
+    for (text, header) in [
+        (format!("/prefix-probe {long}"), "/prefix-probe"),
+        ("/prefix-probe first\nsecond".into(), "/prefix-probe"),
+        ("/prefix-probe\nfirst\nsecond".into(), "/prefix-probe"),
+        ("/prefix-probe\t first\nsecond".into(), "/prefix-probe"),
+        ("/préfixe first\nsecond".into(), "/préfixe"),
+        ("/help".into(), "/help"),
+        (format!("!printf '{long}'"), ""),
+        ("!printf 'first\\n'\nprintf 'second\\n'".into(), ""),
+        (format!("# remember {long}"), ""),
+        ("# remember first\nsecond".into(), ""),
+    ] {
+        for kind in ["claude", "codex"] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            screen.agent_control(
+                AgentRequest::Prompt {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                    prompt: text.clone(),
+                    wait: true,
+                    timeout_ms: 30_000,
+                },
+                CLIENT,
+            );
+            let header = if kind == "claude" { header } else { "" };
+            let body = text.strip_prefix(header).unwrap();
+            assert_eq!(
+                finish_paste(&writes),
+                format!("{header}\x1b[200~{body}\x1b[201~").into_bytes(),
+                "{kind}: {text}"
+            );
+            // Native Claude shell input emits Stop without UserPromptSubmit. Execution alone
+            // must not acknowledge the command or consume its input revision.
+            if kind == "claude" && text.starts_with('!') {
+                report_kind(&mut screen, kind, hook("Stop"));
+                screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
+                let responses = replies(&messages, CLIENT);
+                assert_eq!(responses[0].outcome, AgentOutcome::TimedOut);
+                assert!(!responses[0].acknowledged);
+                assert!(!responses[0].agents[0].ready);
+            } else {
+                let mut submit = hook("UserPromptSubmit");
+                submit.prompt = Some(text.clone());
+                report_kind(&mut screen, kind, submit);
+                report_kind(&mut screen, kind, hook("Stop"));
+                let responses = replies(&messages, CLIENT);
+                assert_eq!(responses[0].outcome, AgentOutcome::Completed);
+                assert!(responses[0].acknowledged);
+                assert!(responses[0].agents[0].ready);
+            }
+        }
+    }
 }
 
 #[test]
@@ -2110,6 +2296,86 @@ fn unverified_selection_cannot_inherit_lifecycle_readiness() {
         assert_eq!(
             replies(&messages, CLIENT).pop().unwrap().outcome,
             AgentOutcome::Ok
+        );
+    }
+}
+
+fn turn_hook(name: &str, turn: Option<&str>) -> HookEvent {
+    HookEvent {
+        turn_id: turn.map(str::to_owned),
+        tool_name: name.contains("Tool").then(|| "Bash".into()),
+        ..hook(name)
+    }
+}
+
+fn pane_state(screen: &Screen) -> AgentState {
+    screen
+        .tab_containing_pane(PANE)
+        .and_then(|tab| tab.pane_agent_info(PANE))
+        .unwrap()
+        .state
+}
+
+/// Codex finishes a cancelled tool call after its `Interrupt`, and that call's hooks carry the
+/// ended turn's id. They must not make the idle agent busy with no way back but a second Esc.
+#[test]
+fn hooks_from_an_interrupted_codex_turn_leave_the_agent_idle() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report(&mut screen, turn_hook("UserPromptSubmit", Some("t1")));
+    report(&mut screen, turn_hook("PreToolUse", Some("t1")));
+    assert_eq!(pane_state(&screen), AgentState::Busy);
+    send_esc(&mut screen, &messages);
+    report(&mut screen, turn_hook("Interrupt", Some("t1")));
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Interrupted
+    );
+    assert_eq!(pane_state(&screen), AgentState::Idle);
+    for late in ["PostToolUse", "PostToolUseFailure", "PermissionRequest"] {
+        report(&mut screen, turn_hook(late, Some("t1")));
+        assert_eq!(pane_state(&screen), AgentState::Idle, "{late}");
+    }
+    screen.agent_control(recover(), CLIENT);
+    let recovered = replies(&messages, CLIENT);
+    assert_eq!(recovered[0].outcome, AgentOutcome::Ok);
+    assert!(recovered[0].agents[0].ready);
+
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report(&mut screen, turn_hook("UserPromptSubmit", Some("t2")));
+    report(&mut screen, turn_hook("PostToolUse", Some("t2")));
+    assert_eq!(pane_state(&screen), AgentState::Busy);
+    report(&mut screen, turn_hook("Stop", Some("t2")));
+    let done = replies(&messages, CLIENT);
+    assert_eq!(done[0].outcome, AgentOutcome::Completed);
+    assert!(done[0].agents[0].ready);
+}
+
+/// A blocking Stop hook continues the same turn, and a hook without a turn id cannot be
+/// placed in one, so neither is dropped.
+#[test]
+fn work_after_a_stop_or_without_a_turn_id_still_reports_busy() {
+    for (kind, turn) in [("codex", Some("t1")), ("claude", None)] {
+        let (mut screen, _messages, _writes) = setup(kind);
+        report_kind(&mut screen, kind, turn_hook("SessionStart", turn));
+        report_kind(&mut screen, kind, turn_hook("UserPromptSubmit", turn));
+        report_kind(&mut screen, kind, turn_hook("Stop", turn));
+        assert_eq!(pane_state(&screen), AgentState::Idle);
+        report_kind(&mut screen, kind, turn_hook("PreToolUse", turn));
+        assert_eq!(pane_state(&screen), AgentState::Busy, "{kind} after Stop");
+        report_kind(&mut screen, kind, turn_hook("Interrupt", turn));
+        report_kind(&mut screen, kind, turn_hook("PostToolUse", turn));
+        assert_eq!(
+            pane_state(&screen),
+            if turn.is_some() {
+                AgentState::Idle
+            } else {
+                AgentState::Busy
+            },
+            "{kind} after Interrupt"
         );
     }
 }

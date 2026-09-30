@@ -15,7 +15,8 @@ use yinz_client::{
 use {
     yinz_cli::sessions::assert_dead_session, yinz_cli::sessions::assert_session_ne,
     yinz_cli::sessions::delete_session as delete_session_impl,
-    yinz_cli::sessions::generate_unique_session_name, yinz_cli::sessions::get_active_session,
+    yinz_cli::sessions::denied_session_message, yinz_cli::sessions::generate_unique_session_name,
+    yinz_cli::sessions::get_active_session, yinz_cli::sessions::no_active_session_message,
     yinz_cli::sessions::print_sessions, yinz_cli::sessions::print_sessions_with_index,
     yinz_cli::sessions::session_listing_error_message,
     yinz_cli::sessions::undeliverable_kill_message,
@@ -748,7 +749,7 @@ pub(crate) fn send_action_to_session(
     let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
-            eprintln!("There is no active session!");
+            eprintln!("{}", no_active_session_message());
             std::process::exit(1);
         },
         ActiveSession::One(session_name) => {
@@ -865,7 +866,7 @@ pub(crate) fn resolve_session_for_stream(
     let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
-            eprintln!("There is no active session!");
+            eprintln!("{}", no_active_session_message());
             std::process::exit(1);
         },
         ActiveSession::One(session_name) => {
@@ -1023,6 +1024,7 @@ fn named_session_exists_or_error(
         Ok(SessionProbe::Alive) => Ok(true),
         Ok(SessionProbe::Absent) => Ok(false),
         Ok(SessionProbe::Unresponsive) => Err(unresponsive_session_message(session_name.as_str())),
+        Ok(SessionProbe::Denied) => Err(denied_session_message(session_name.as_str())),
         Err(kind) => Err(session_listing_error_message(kind)),
     }
 }

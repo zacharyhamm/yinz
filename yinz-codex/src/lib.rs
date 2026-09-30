@@ -173,6 +173,64 @@ fn binding_for(root: &Path, thread_id: &str) -> Result<Option<Binding>> {
     Ok(latest.map(|(_, binding)| binding))
 }
 
+/// Give a selected conversation's tool commands the pane's routing environment.
+///
+/// Codex runs tools in its shared daemon, whose environment belongs to whichever pane started
+/// it, or to none. Per-thread `shell_environment_policy.set` overrides reach those commands, so
+/// `yinz` run by the agent knows its session and pane. Hidden helper threads never run tools.
+/// Returns whether the request changed.
+fn inject_pane_env(value: &mut Value, env: &HashMap<String, String>) -> bool {
+    if env.is_empty()
+        || !matches!(
+            value["method"].as_str(),
+            Some("thread/start" | "thread/resume" | "thread/fork")
+        )
+    {
+        return false;
+    }
+    let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    if params.get("ephemeral").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    let config = params
+        .entry("config")
+        .and_modify(|config| {
+            if config.is_null() {
+                *config = Value::Object(Default::default());
+            }
+        })
+        .or_insert_with(|| Value::Object(Default::default()));
+    let Some(config) = config.as_object_mut() else {
+        return false;
+    };
+    // A nested table and dotted keys for the same table would compete, so join whichever
+    // spelling the UI already used.
+    if let Some(policy) = config
+        .get_mut("shell_environment_policy")
+        .and_then(Value::as_object_mut)
+    {
+        let set = policy
+            .entry("set")
+            .or_insert_with(|| Value::Object(Default::default()));
+        let Some(set) = set.as_object_mut() else {
+            return false;
+        };
+        for (key, value) in env {
+            set.insert(key.clone(), value.clone().into());
+        }
+    } else {
+        for (key, value) in env {
+            config.insert(
+                format!("shell_environment_policy.set.{key}"),
+                value.clone().into(),
+            );
+        }
+    }
+    true
+}
+
 #[derive(Default)]
 struct Conversations {
     /// Request ids of conversation selections awaiting their reply, and whether each asked
@@ -468,8 +526,13 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                 };
                 match message.context("read Codex UI message")? {
                     Message::Text(text) => {
-                        let value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
+                        let mut value: Value = serde_json::from_str(&text).context("parse Codex UI message")?;
                         conversations.request(&value, registration)?;
+                        let text = if inject_pane_env(&mut value, &registration.env) {
+                            value.to_string().into()
+                        } else {
+                            text
+                        };
                         backend.send(Message::Text(text)).await.context("forward Codex request")?;
                     },
                     Message::Close(frame) => {

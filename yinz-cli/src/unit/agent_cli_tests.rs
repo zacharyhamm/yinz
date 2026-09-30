@@ -58,6 +58,15 @@ fn agent_commands_require_explicit_targets_and_one_prompt_source() {
         AgentCli::try_parse_from(["agent", "spawn", "--kind", "codex", "--cwd", ".", "--branch", "review-auth", "--json"]).unwrap().command,
         Agent::Spawn { kind, branch: Some(branch), json: true, .. } if kind.as_deref() == Some("codex") && branch == "review-auth"
     ));
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "spawn", "--kind", "codex", "--allow-yinz"])
+            .unwrap()
+            .command,
+        Agent::Spawn {
+            allow_yinz: true,
+            ..
+        }
+    ));
 }
 
 #[test]

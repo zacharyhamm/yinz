@@ -22,7 +22,14 @@ pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
             None,
             None,
             yinz_cli::sessions::get_active_session(),
-        )?,
+        )
+        .map_err(|error| {
+            if yinz_cli::sessions::sessions_denied() {
+                anyhow!(yinz_cli::sessions::no_active_session_message())
+            } else {
+                error
+            }
+        })?,
     };
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
     let action = match &command {
@@ -91,6 +98,7 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
             resume,
             reuse,
             allow_outside_worktree,
+            allow_yinz,
             json,
         } => {
             let mut input = if let Some(file) = file {
@@ -131,8 +139,11 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
             if allow_outside_worktree {
                 fields.insert("allow_outside_worktree".into(), true.into());
             }
-            let spec: AgentSpawnSpec =
+            let mut spec: AgentSpawnSpec =
                 serde_json::from_value(input.clone()).context("parse launch options")?;
+            if allow_yinz {
+                allow_sandboxed_yinz(&mut spec)?;
+            }
             let project: Option<String> =
                 serde_json::from_value(input["project"].clone()).context("parse project")?;
             let remote_host: Option<String> =
@@ -302,9 +313,30 @@ fn read_prompt(text: Option<String>, file: Option<&Path>, stdin: &mut impl Read)
     Ok(prompt)
 }
 
+/// Codex's Linux sandbox blocks `connect()` on every socket, the session's included, unless
+/// the sandbox has network access. Neither writable roots nor a Unix socket allowlist lifts it.
+fn allow_sandboxed_yinz(spec: &mut AgentSpawnSpec) -> Result<()> {
+    if spec.kind.as_deref().map(str::trim) != Some("codex") {
+        bail!("--allow-yinz applies only to --kind codex");
+    }
+    spec.args.extend([
+        "-c".to_owned(),
+        "sandbox_workspace_write.network_access=true".to_owned(),
+    ]);
+    Ok(())
+}
+
 fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<AgentResponse> {
-    let socket = yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session))
-        .with_context(|| format!("cannot connect to session {session}"))?;
+    let socket =
+        match yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session)) {
+            Ok(socket) => socket,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                bail!(yinz_cli::sessions::denied_session_message(session))
+            },
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot connect to session {session}"))
+            },
+        };
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()

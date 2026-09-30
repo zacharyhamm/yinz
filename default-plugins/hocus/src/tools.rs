@@ -254,6 +254,7 @@ pub fn consequence(call: &ToolCall) -> Option<String> {
         "send_input" => format!("types into {pane}, as if you had typed it yourself"),
         "agent_prompt" => format!("types into the agent in {pane}, as if you had typed it yourself"),
         "agent_send_keys" => format!("sends deliberate keys to the agent in {pane}"),
+        "agent_recover" if args.interrupted => format!("resets the agent in {pane} to idle after confirming its draft is empty, even if it still reports busy or waiting"),
         "agent_recover" => format!("restores readiness for the agent in {pane} after confirming its draft is empty"),
         // Only the shape that stops: a spawn with no prompt is not confirmed, so
         // it has nothing to say here. See `call_needs_confirmation`.

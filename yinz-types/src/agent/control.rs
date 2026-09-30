@@ -4,7 +4,11 @@ use super::{AgentEvent, AgentInfo, AgentSpawnSpec, AgentState, HookEvent, Spawne
 use crate::{keys::KeyWithModifier, pane_id::PaneId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, path::PathBuf};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+};
 
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -262,53 +266,141 @@ impl PromptObservation {
     }
 }
 
-/// Fingerprint of a prompt as the agent received it: CRLF normalized, pasted content
-/// unwrapped, outer whitespace trimmed.
+/// Fingerprint of a prompt as the agent received it: CRLF normalized, then
+/// [`submitted_prompt`].
 pub fn prompt_sha256(prompt: &str) -> String {
     let prompt = prompt.replace("\r\n", "\n");
-    Sha256::digest(unwrap_pasted_content(&prompt).trim().as_bytes())
+    Sha256::digest(submitted_prompt(&prompt).as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
 
-const PASTED_CONTENT_OPEN: &str = "<pasted_content id=\"";
+/// Typed ahead of an ordinary paste Claude may collapse, to identify its body as instructions.
+pub const PASTE_LEAD_IN: &str = "Follow the instructions in the pasted text:";
+
+/// Whether a prompt is typed behind [`PASTE_LEAD_IN`]. Command prefixes must stay at the start
+/// of the input. The cutoff is loose on purpose: an inline paste still reads correctly.
+pub fn needs_paste_lead_in(kind: &str, prompt: &str) -> bool {
+    kind == "claude"
+        && !prompt.starts_with(['/', '!', '#'])
+        && (prompt.trim().contains('\n') || prompt.len() >= 500)
+}
+
+/// The prompt a submission carried, without pasted-content wrappers, the lead-in typed ahead of
+/// them, or outer whitespace.
+pub fn submitted_prompt(text: &str) -> Cow<'_, str> {
+    fn strip(text: &str) -> &str {
+        let text = text.trim();
+        text.strip_prefix(PASTE_LEAD_IN).map_or(text, str::trim)
+    }
+    match unwrap_pasted_content(text) {
+        Cow::Borrowed(text) => Cow::Borrowed(strip(text)),
+        Cow::Owned(text) => Cow::Owned(strip(&text).to_owned()),
+    }
+}
+
+/// The part of a pasted-content tag both the opener and the closer spell.
+const PASTED_CONTENT_NAME: &str = "pasted_content id=\"";
+
+/// One `<pasted_content id="X">` or `</pasted_content id="X">` in a prompt.
+struct PastedContentTag<'a> {
+    start: usize,
+    end: usize,
+    id: &'a str,
+    close: bool,
+}
+
+/// Every well-formed pasted-content tag in `text`, in order. One pass: an id ends at the first
+/// quote, angle bracket or newline, so no two tags' scans overlap.
+fn pasted_content_tags(text: &str) -> Vec<PastedContentTag<'_>> {
+    let mut tags = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find(PASTED_CONTENT_NAME) {
+        let name = from + found;
+        from = name + PASTED_CONTENT_NAME.len();
+        let (start, close) = if text[..name].ends_with("</") {
+            (name - 2, true)
+        } else if text[..name].ends_with('<') {
+            (name - 1, false)
+        } else {
+            continue;
+        };
+        let rest = &text[from..];
+        let Some(id_len) = rest.find(['"', '<', '>', '\n']) else {
+            continue;
+        };
+        if id_len == 0 || !rest[id_len..].starts_with("\">") {
+            continue;
+        }
+        tags.push(PastedContentTag {
+            start,
+            end: from + id_len + 2,
+            id: &rest[..id_len],
+            close,
+        });
+    }
+    tags
+}
 
 /// Claude collapses a long paste into a chip and reports it in `UserPromptSubmit.prompt` as
 /// `<pasted_content id="X">\nBODY\n</pasted_content id="X">`. This replaces each such element
-/// with its body so the prompt reads as what was pasted. A tag without a matching closer, with
-/// the same id, is left as written.
+/// with its body so the prompt reads as what was pasted. An opener pairs with the first closer
+/// with the same id; one without a closer, or whose element would cross its enclosing one, is
+/// left as written.
+///
+/// Elements inside a body are unwrapped too. Claude's wrapper and one the user typed look the
+/// same, so only a canonical form — every element unwrapped — fingerprints a typed prompt and
+/// the hooked copy Claude wrapped around it alike. Linear in the text: it runs on the screen
+/// thread for every prompt hook.
 pub fn unwrap_pasted_content(text: &str) -> Cow<'_, str> {
-    if !text.contains(PASTED_CONTENT_OPEN) {
+    if !text.contains(PASTED_CONTENT_NAME) {
         return Cow::Borrowed(text);
     }
-    let mut unwrapped = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find(PASTED_CONTENT_OPEN) {
-        let after = &rest[start + PASTED_CONTENT_OPEN.len()..];
-        let element = after.split_once('"').and_then(|(id, body)| {
-            let body = body.strip_prefix('>')?;
-            if id.is_empty() || id.contains(['<', '>', '\n']) {
-                return None;
-            }
-            let close = format!("</pasted_content id=\"{id}\">");
-            let end = body.find(&close)?;
-            Some((&body[..end], &body[end + close.len()..]))
-        });
-        match element {
-            Some((body, tail)) => {
-                unwrapped.push_str(&rest[..start]);
-                let body = body.strip_prefix('\n').unwrap_or(body);
-                unwrapped.push_str(body.strip_suffix('\n').unwrap_or(body));
-                rest = tail;
-            },
-            None => {
-                unwrapped.push_str(&rest[..start + PASTED_CONTENT_OPEN.len()]);
-                rest = after;
-            },
-        }
+    let tags = pasted_content_tags(text);
+    let mut closers: HashMap<&str, VecDeque<usize>> = HashMap::new();
+    for (index, tag) in tags.iter().enumerate().filter(|(_, tag)| tag.close) {
+        closers.entry(tag.id).or_default().push_back(index);
     }
-    unwrapped.push_str(rest);
+    // (closer index, output length where the body starts) per open element.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let mut unwrapped = String::new();
+    let mut cursor = 0;
+    for (index, tag) in tags.iter().enumerate() {
+        if tag.close {
+            let Some((_, body_start)) = open.pop_if(|&mut (closer, _)| closer == index) else {
+                continue;
+            };
+            unwrapped.push_str(&text[cursor..tag.start]);
+            if unwrapped.len() > body_start && unwrapped.ends_with('\n') {
+                unwrapped.pop();
+            }
+            cursor = tag.end;
+            continue;
+        }
+        let Some(queue) = closers.get_mut(tag.id) else {
+            continue;
+        };
+        while queue.front().is_some_and(|closer| *closer < index) {
+            queue.pop_front();
+        }
+        let Some(&closer) = queue.front() else {
+            continue;
+        };
+        if open.last().is_some_and(|(outer, _)| closer >= *outer) {
+            continue;
+        }
+        unwrapped.push_str(&text[cursor..tag.start]);
+        cursor = tag.end;
+        if text[cursor..].starts_with('\n') {
+            cursor += 1;
+        }
+        open.push((closer, unwrapped.len()));
+    }
+    if cursor == 0 {
+        return Cow::Borrowed(text);
+    }
+    unwrapped.push_str(&text[cursor..]);
     Cow::Owned(unwrapped)
 }
 

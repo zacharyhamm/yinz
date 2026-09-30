@@ -353,3 +353,91 @@ fn collapsed_pastes_unwrap_to_what_was_pasted() {
         );
     }
 }
+
+fn claude_wrap(id: &str, body: &str) -> String {
+    format!("<pasted_content id=\"{id}\">\n{body}\n</pasted_content id=\"{id}\">")
+}
+
+#[test]
+fn a_typed_paste_element_fingerprints_like_the_collapsed_copy() {
+    let typed = format!("see {} and reply", claude_wrap("u", "inner"));
+    let hooked = format!("{PASTE_LEAD_IN} \n\n{}\n", claude_wrap("8c9e", &typed));
+    assert_eq!(unwrap_pasted_content(&typed), "see inner and reply");
+    assert_eq!(submitted_prompt(&hooked), "see inner and reply");
+    assert_eq!(prompt_sha256(&hooked), prompt_sha256(&typed));
+    let mut observation = PromptObservation::new("claude", "conversation", &typed);
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("claude", "UserPromptSubmit", None, Some(&hooked))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+}
+
+#[test]
+fn crossing_and_reused_paste_ids_pair_with_their_first_closer() {
+    let crossing = "<pasted_content id=\"a\">\n<pasted_content id=\"b\">\nx\n</pasted_content id=\"a\">\n</pasted_content id=\"b\">";
+    assert_eq!(
+        unwrap_pasted_content(crossing),
+        "<pasted_content id=\"b\">\nx\n</pasted_content id=\"b\">"
+    );
+    let reused = claude_wrap("a", &claude_wrap("a", "x"));
+    assert_eq!(
+        unwrap_pasted_content(&reused),
+        "<pasted_content id=\"a\">\nx\n</pasted_content id=\"a\">"
+    );
+    assert_eq!(unwrap_pasted_content(&claude_wrap("a", "")), "");
+}
+
+/// Openers with no closer used to cost a scan of the rest of the text each.
+#[test]
+fn unmatched_paste_openers_unwrap_in_linear_time() {
+    let count = super::super::HOOK_BROADCAST_MAX_BYTES / 25;
+    let same = "<pasted_content id=\"x\">\n".repeat(count);
+    let distinct: String = (0..count)
+        .map(|n| format!("<pasted_content id=\"{n}\">\n"))
+        .collect();
+    let started = std::time::Instant::now();
+    for text in [&same, &distinct] {
+        assert!(matches!(unwrap_pasted_content(text), Cow::Borrowed(t) if t == text));
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn the_lead_in_typed_ahead_of_a_paste_is_not_part_of_the_prompt() {
+    let body = "line 1\nline 2";
+    for hooked in [
+        format!("{PASTE_LEAD_IN} \n\n<pasted_content id=\"9a9c\">\n{body}\n</pasted_content id=\"9a9c\">\n"),
+        format!("{PASTE_LEAD_IN} {body}"),
+        body.to_owned(),
+    ] {
+        assert_eq!(submitted_prompt(&hooked), body);
+        assert_eq!(prompt_sha256(&hooked), prompt_sha256(body));
+        let mut observation = PromptObservation::new("claude", "conversation", body);
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("claude", "UserPromptSubmit", None, Some(&hooked))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+    }
+    assert!(needs_paste_lead_in("claude", body));
+    assert!(needs_paste_lead_in("claude", &"a".repeat(500)));
+    assert!(!needs_paste_lead_in("claude", "review\n"));
+    assert!(!needs_paste_lead_in("codex", body));
+}
+
+#[test]
+fn command_prefixes_do_not_get_an_instruction_lead_in() {
+    for prefix in ['/', '!', '#'] {
+        for body in ["a".repeat(500), "first\nsecond".to_owned()] {
+            let prompt = format!("{prefix}{body}");
+            assert!(!needs_paste_lead_in("claude", &prompt));
+            assert!(needs_paste_lead_in("claude", &format!(" {prompt}")));
+            assert!(!needs_paste_lead_in("codex", &prompt));
+        }
+    }
+}

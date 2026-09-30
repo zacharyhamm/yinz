@@ -424,6 +424,18 @@ fn an_agent_call_targets_its_terminal_without_being_told() {
     );
 }
 
+/// `interrupted` forces a busy or waiting agent to idle, which the sentence has to say.
+#[test]
+fn an_interrupted_recovery_says_it_resets_a_busy_agent() {
+    let recover = |arguments| consequence(&call("agent_recover", arguments)).unwrap();
+    let interrupted = recover(r#"{"pane_id":"terminal_9","interrupted":true}"#);
+    assert!(interrupted.contains("to idle"), "{interrupted}");
+    assert!(interrupted.contains("busy or waiting"), "{interrupted}");
+    let plain = recover(r#"{"pane_id":"terminal_9"}"#);
+    assert!(plain.starts_with("restores readiness"), "{plain}");
+    assert!(!plain.contains("busy"), "{plain}");
+}
+
 /// Every confirmable tool that does *not* name a pane in this session: it acts
 /// on a channel, a project, a machine of its own, so there is nothing local for
 /// the session to go and show.

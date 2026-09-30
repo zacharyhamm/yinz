@@ -156,6 +156,30 @@ fn enter_on_an_unresponsive_session_explains_and_stays_open() {
 }
 
 #[test]
+fn a_session_this_process_may_not_reach_is_listed_but_not_offered() {
+    let listing = crate::sessions::format_session_line(
+        "sandboxed",
+        Duration::from_secs(60),
+        SessionListing::Denied,
+        false,
+        false,
+    );
+    assert!(listing.contains("UNREACHABLE"), "{listing}");
+    assert!(!listing.contains("kill-session"), "{listing}");
+    let rows = vec![
+        row("sandboxed", SessionListing::Denied),
+        row("there", SessionListing::Running),
+    ];
+    let mut state = PickerState::new(rows, "attach");
+    assert_eq!(selected(&state), "there");
+    state.handle(PickerKey::Up);
+    assert_eq!(selected(&state), "sandboxed");
+    assert_eq!(state.handle(PickerKey::Enter), Outcome::Continue);
+    let footer = strip(state.render(200, 10).last().unwrap());
+    assert!(footer.contains("cannot be reached"), "{footer}");
+}
+
+#[test]
 fn enter_on_the_current_session_leaves_saying_so() {
     let mut rows = running(&["here"]);
     rows[0].current = true;
@@ -313,6 +337,7 @@ fn a_live_socket_overrides_a_resurrectable_session_of_the_same_name() {
                 SessionProbe::Unresponsive,
             ),
             (SessionName::new("gone"), minute, SessionProbe::Absent),
+            (SessionName::new("sandboxed"), minute, SessionProbe::Denied),
         ],
         vec![
             (SessionName::new("both"), minute),
@@ -327,6 +352,7 @@ fn a_live_socket_overrides_a_resurrectable_session_of_the_same_name() {
         [
             ("both", SessionListing::Running),
             ("old", SessionListing::Exited),
+            ("sandboxed", SessionListing::Denied),
             ("wedged", SessionListing::Unresponsive),
         ]
     );

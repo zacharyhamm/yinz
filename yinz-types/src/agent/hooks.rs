@@ -702,7 +702,8 @@ impl HookEvent {
     /// with a bounded binary search for the largest budget that fits. An input cap cannot
     /// promise an output size, because JSON escaping expands what it encodes — six bytes for one
     /// control character — and there are several fields drawing on the budget. The last step
-    /// spends nothing on prose. Pathological metadata is bounded separately.
+    /// spends nothing on prose. Pathological metadata is bounded separately. A pruned prompt
+    /// is carried with its pasted content unwrapped; its `prompt_sha256` is of the whole one.
     pub fn broadcast_json(&self, json: String) -> String {
         self.broadcast(json).1
     }
@@ -722,6 +723,11 @@ impl HookEvent {
             .filter(|_| self.prompt_sha256.is_none())
         {
             source.prompt_sha256 = Some(crate::agent::control::prompt_sha256(prompt));
+        }
+        // Unwrapped before it is cut: a cut can drop a collapsed paste's closer, and an
+        // opener with no closer stays in the prompt readers show.
+        if let Some(prompt) = &self.prompt {
+            source.prompt = Some(crate::agent::control::unwrap_pasted_content(prompt).into_owned());
         }
         let mut low = 0;
         let mut high = PRUNED_INPUT_BUDGET;
@@ -2042,6 +2048,31 @@ mod tests {
                     > HOOK_BROADCAST_MAX_BYTES
             );
         }
+    }
+
+    /// A cut would drop a collapsed paste's closer and leave its opener in the prompt.
+    #[test]
+    fn an_oversize_collapsed_paste_is_unwrapped_before_it_is_cut() {
+        let body = "x\n".repeat(HOOK_BROADCAST_MAX_BYTES);
+        let prompt = format!(
+            "{} \n\n<pasted_content id=\"8c9e\">\n{body}\n</pasted_content id=\"8c9e\">\n",
+            crate::agent::control::PASTE_LEAD_IN
+        );
+        let hook = HookEvent {
+            prompt: Some(prompt.clone()),
+            ..event("UserPromptSubmit")
+        };
+        let (bounded, raw) = hook.broadcast(serde_json::to_string(&hook).unwrap());
+        assert!(raw.len() <= HOOK_BROADCAST_MAX_BYTES);
+        let kept = bounded.prompt.as_deref().unwrap();
+        assert!(!kept.contains("pasted_content"));
+        let submitted = crate::agent::control::submitted_prompt(kept);
+        assert!(submitted.len() > 8192);
+        assert!(body.starts_with(submitted.as_ref()));
+        assert_eq!(
+            bounded.prompt_sha256,
+            Some(crate::agent::control::prompt_sha256(&prompt))
+        );
     }
 
     /// A submitted plan survives a prune, where a passing argument does not.

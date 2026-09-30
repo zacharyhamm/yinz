@@ -596,6 +596,10 @@ pub enum Agent {
         /// Permit launching outside a linked Git worktree.
         #[clap(long)]
         allow_outside_worktree: bool,
+        /// Let a sandboxed Codex run `yinz` commands. Codex's sandbox blocks Unix socket
+        /// connections unless it has network access, so this also allows the internet.
+        #[clap(long)]
+        allow_yinz: bool,
         #[clap(long)]
         json: bool,
     },

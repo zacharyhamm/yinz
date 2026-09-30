@@ -34,6 +34,27 @@ yinz hocus hooks install --agent codex
 
 Claude Code launches receive the hooks through the existing launch planner.
 
+### Run `yinz` from inside a Codex agent
+
+Codex runs shell commands in its shared daemon rather than in the pane. Yinz's
+Codex bridge passes the pane's `YINZ_SESSION_NAME`, `YINZ_PANE_ID` and
+`YINZ_PANE_REF` to each conversation it opens, so `yinz agent` and
+`yinz action context` inside Codex find the session and the calling pane
+without `--session`.
+
+Codex's Linux sandbox blocks Unix socket connections unless the sandbox has
+network access. A Codex agent in a sandboxed mode, such as the default
+`workspace-write` or `--permission-mode on-request`, cannot reach Yinz. Spawn a
+Codex orchestrator with `--allow-yinz`, which adds
+`-c sandbox_workspace_write.network_access=true` and also allows internet access,
+or with `--permission-mode skip`. Without either, Yinz commands report that the
+connection was not permitted, and `list-sessions` marks sessions `UNREACHABLE`.
+
+```sh
+yinz agent spawn --kind codex --permission-mode on-request --allow-yinz \
+  --cwd . --branch orchestrate --json
+```
+
 1. Launch an agent in a separate worktree:
 
    ```sh
@@ -99,6 +120,21 @@ prompt queue. The server registers observation before it writes the prompt.
 Yinz waits for paste delivery, then waits 100 ms before sending Enter. It checks
 input ownership and the target again before Enter. This delay does not prove
 acceptance. Only a matching hook acknowledges the prompt.
+Claude can collapse a long or multi-line paste into `<pasted_content>`.
+For ordinary instructions, Yinz first types `Follow the instructions in the pasted text: `
+so Claude treats the pasted text as instructions.
+Inputs that start with `/`, `!` or `#` receive no instruction lead-in.
+For `/` commands, Yinz types the command name before it pastes the arguments.
+Spaces, tabs and newlines after the command name stay in the paste.
+Acknowledgement, run history and pane titles ignore the lead-in and the wrapper.
+
+Command execution and prompt acknowledgement are separate results.
+In Claude Code 2.1.285, native `!` shell input executes without a `UserPromptSubmit` hook.
+Yinz therefore times out without acknowledgement, even if the command prints its expected output.
+Inspect the output and empty composer before you use `agent recover` to restore readiness.
+This Claude version treats `#` as ordinary input and does not open a memory editor.
+See the [live prefix checks](agent-cli-findings/prefix-probes.md) for the observed behavior.
+
 Readiness requires a known consumed input revision that matches the pane's current
 revision. Startup reports establish that revision. A matching CLI prompt report
 uses the revision captured when Yinz sent the prompt. Manual acceptance alone
@@ -170,10 +206,15 @@ records the current input revision as consumed. It sends no terminal input and
 does not acknowledge the old prompt. A subsequent prompt can then be submitted.
 
 Claude reports nothing when Esc interrupts a turn, so its record stays busy.
+Esc can restore the interrupted prompt into the composer. Clear that draft first.
 After the pane output shows that the agent stopped, add `--interrupted`. It also
-accepts a busy or waiting agent, and resets its record to idle. The agent must
-not have reported for 3 seconds, so a hook that is still on its way is not
-overtaken.
+accepts a busy or waiting agent, and resets its record to idle. The pane must have
+received input, such as Esc, after the agent's last hook, and no hook, including
+a subagent's, may have arrived in the 3 seconds since. A waiting agent is always
+quiet, so quiet alone cannot show that its dialog is gone, and a hook still on its
+way is not overtaken. Plugins then receive an `Interrupt` event for the agent.
+Codex reports its own interrupt and returns to idle. Hooks that the cancelled
+turn sends afterwards, such as a tool call finishing, do not make it busy again.
 Inspect status and output before deciding what to do next. Requests are never
 retried automatically after an uncertain reply.
 
