@@ -787,30 +787,14 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         .context("start Codex pane bridge")?
         .block_on(async {
             if let Some((root, primary)) = &worktree {
-                // Persist inherited trust before the shared-daemon UI checks its workspace.
-                let trusted = tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    register_worktree_trust(program, root, primary),
-                )
-                .await
-                .context("timed out registering Codex worktree trust")
-                .and_then(|result| result);
-                if !matches!(trusted, Ok(true)) {
-                    trusted
-                        .context(
-                            "register Codex worktree trust; using normal trust prompt on failure",
-                        )
-                        .non_fatal();
-                    // --remote skips Codex's folder-access prompt, including for untrusted folders.
-                    // --no-daemon keeps hooks and tools under this pane's process and environment.
-                    return tokio::process::Command::new(program)
-                        .arg("--no-daemon")
-                        .args(args)
-                        .kill_on_drop(true)
-                        .status()
-                        .await
-                        .map(exit_code)
-                        .context("run Codex with its normal trust prompt");
+                // --remote skips Codex's folder-access prompt, so establish trust first.
+                if !register_worktree_trust(program, root, primary)
+                    .await
+                    .context(
+                        "establish Codex worktree trust; inspect Codex config and retry the launch",
+                    )?
+                {
+                    return Ok(1);
                 }
             }
             let path = registration.dir.path().join("ui.sock");
@@ -896,22 +880,62 @@ impl std::error::Error for ConfigVersionConflict {}
 
 async fn register_worktree_trust(program: &Path, root: &Path, primary: &Path) -> Result<bool> {
     let (_child, stream) = daemon_connection(program)?;
-    let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
-        .await
-        .context("connect Codex trust WebSocket")?;
-    inherit_worktree_trust(&mut ws, root, primary).await
+    let (mut ws, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio_tungstenite::client_async("ws://localhost", stream),
+    )
+    .await
+    .context("timed out connecting Codex trust WebSocket")?
+    .context("connect Codex trust WebSocket")?;
+    inherit_worktree_trust(&mut ws, root, primary, || {
+        let mut output = std::io::stdout().lock();
+        writeln!(output, "Codex worktree: {}", root.display())
+            .context("display Codex worktree path")?;
+        writeln!(
+            output,
+            "Approval persists trust for this worktree in your Codex configuration."
+        )
+        .context("explain Codex worktree trust")?;
+        write!(output, "Trust this worktree? [y/N] ").context("display Codex trust prompt")?;
+        output.flush().context("flush Codex trust prompt")?;
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .context("read Codex trust approval; launch cancelled")?;
+        Ok(matches!(
+            answer.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes"
+        ))
+    })
+    .await
+}
+
+// Bound network waits separately so time spent answering the prompt does not expire the write.
+async fn trust_request<S: AsyncRead + AsyncWrite + Unpin>(
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        capability_request(ws, id, method, params),
+    )
+    .await
+    .with_context(|| format!("timed out during Codex {method}; retry the launch"))?
 }
 
 async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
     ws: &mut tokio_tungstenite::WebSocketStream<S>,
     root: &Path,
     primary: &Path,
+    mut confirm: impl FnMut() -> Result<bool>,
 ) -> Result<bool> {
     let root = root.to_str().context("encode Codex worktree path")?;
     let primary = primary
         .to_str()
         .context("encode Codex primary checkout path")?;
-    capability_request(
+    trust_request(
         ws,
         0,
         "initialize",
@@ -922,11 +946,15 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
     .await?
     .as_object()
     .context("malformed Codex initialize response")?;
-    ws.send(Message::text(r#"{"method":"initialized"}"#))
-        .await
-        .context("initialize Codex trust connection")?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        ws.send(Message::text(r#"{"method":"initialized"}"#)),
+    )
+    .await
+    .context("timed out initializing Codex trust connection")?
+    .context("initialize Codex trust connection")?;
     for attempt in 0..2 {
-        let response = capability_request(
+        let response = trust_request(
             ws,
             1 + attempt * 2,
             "config/read",
@@ -948,27 +976,34 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
         let config = user["config"]
             .as_object()
             .context("malformed Codex user config")?;
-        let Some(projects) = config.get("projects") else {
-            return Ok(false);
-        };
-        let projects = projects
-            .as_object()
-            .context("malformed Codex projects config")?;
-        if let Some(entry) = projects.get(root) {
+        let projects = config
+            .get("projects")
+            .map(|projects| {
+                projects
+                    .as_object()
+                    .context("malformed Codex projects config")
+            })
+            .transpose()?;
+        let trust = |path| -> Result<Option<&str>> {
+            let Some(entry) = projects.and_then(|projects| projects.get(path)) else {
+                return Ok(None);
+            };
             let entry = entry
                 .as_object()
-                .context("malformed Codex worktree config")?;
-            if let Some(trust) = entry.get("trust_level") {
-                return Ok(trust == "trusted");
+                .context("malformed Codex project config")?;
+            match entry.get("trust_level") {
+                None => Ok(None),
+                Some(Value::String(level)) if matches!(level.as_str(), "trusted" | "untrusted") => {
+                    Ok(Some(level))
+                },
+                _ => Err(anyhow!("malformed Codex project trust level")),
             }
+        };
+        let worktree_trust = trust(root)?;
+        if worktree_trust == Some("trusted") {
+            return Ok(true);
         }
-        if projects
-            .get(primary)
-            .and_then(|entry| entry.get("trust_level"))
-            != Some(&Value::from("trusted"))
-        {
-            return Ok(false);
-        }
+        let inherited = worktree_trust.is_none() && trust(primary)? == Some("trusted");
         let version = user["version"]
             .as_str()
             .filter(|v| !v.is_empty())
@@ -976,7 +1011,11 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
         let file = user["name"]["file"]
             .as_str()
             .context("missing Codex user config path")?;
-        let result = capability_request(
+        // Capture the author's version before approval, never refresh it before writing.
+        if !inherited && !confirm()? {
+            return Ok(false);
+        }
+        let result = trust_request(
             ws,
             2 + attempt * 2,
             "config/value/write",
@@ -987,7 +1026,12 @@ async fn inherit_worktree_trust<S: AsyncRead + AsyncWrite + Unpin>(
         )
         .await;
         match result {
-            Err(error) if attempt == 0 && error.is::<ConfigVersionConflict>() => continue,
+            Err(error) if inherited && attempt == 0 && error.is::<ConfigVersionConflict>() => {
+                continue
+            },
+            Err(error) if error.is::<ConfigVersionConflict>() => {
+                return Err(error.context("Codex trust changed while awaiting approval; retry the launch to review the current decision"));
+            },
             Err(error) => return Err(error),
             Ok(response) => {
                 if !matches!(response["status"].as_str(), Some("ok" | "okOverridden")) {

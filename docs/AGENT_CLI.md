@@ -61,6 +61,26 @@ Use `--base` and `--worktree-dir` to override those defaults.
 `--model`, `--effort` and `--permission-mode` use the selected agent's supported values.
 `--resume` accepts a conversation ID or `last`.
 
+For a linked Codex worktree, Yinz honors its explicit trust decision. A worktree
+without a decision inherits trust from a trusted primary checkout. If trust is
+absent or explicitly untrusted, Yinz displays the canonical path and asks
+`Trust this worktree? [y/N]`. Approval saves trust for
+only that worktree. Answer with `y` or `yes`, ignoring case. Empty input, decline,
+EOF, or interruption cancels the launch.
+
+Read a fresh pane that remains `Spawned` to check for this prompt. To approve it:
+
+```sh
+yinz agent read terminal_7 --lines 30 --json
+yinz agent send-keys terminal_7 y Enter --json
+yinz agent wait terminal_7 --until idle --timeout 2m --json
+```
+
+Wait for `ready:true` before submitting a prompt. Approval continues startup
+through the Codex bridge and its hook verification. Configuration errors or a
+concurrent trust change stop the launch. Inspect the diagnostic and retry.
+Explicit standalone Codex launches retain their existing behavior.
+
 SSH launches use `--remote-host`, an absolute remote `--cwd`, and
 `--allow-outside-worktree`. They require an existing remote checkout and reject
 local project, branch, worktree and VM options.

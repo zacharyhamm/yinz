@@ -572,3 +572,39 @@ Exact `/clear` returned `target_changed`, restored readiness, and a subsequent
 prompt completed with `CLEAR_OK` (`logs/v9-16-*` through `logs/v9-20-*`).
 The scratch session, repo, settings, and copied authentication were removed.
 Earlier v8 findings and logs are preserved above and on disk.
+
+## Fix status: #42 bridged worktree trust (2026-09-30, v9)
+
+**Fixed and verified live.** An untrusted linked worktree now displays its
+canonical path and Yinz's `Trust this worktree? [y/N]` prompt. Approval saves only
+that worktree's trust entry through the existing version-guarded config RPC,
+then continues through the bridge and capability verification. A conflict fails
+without refreshing the approval's version. Decline, EOF, interruption, malformed
+configuration, and RPC failures do not launch the UI. Trusted-primary inheritance
+and explicit standalone launches retain their existing behavior.
+
+The configuration operations use the documented
+[Codex App Server interface](https://learn.chatgpt.com/docs/app-server).
+The installed Codex 0.159.2 generated schema also confirms `expectedVersion`
+on `ConfigValueWriteParams`.
+
+Automated verification: launcher subprocess tests cover inherited trust,
+case-insensitive approval, explicit untrusted decisions, decline, empty input,
+EOF, SIGINT, malformed config, timeout, write failure, and version conflict.
+They assert the bridge arguments, preserved launch arguments, and worktree-only
+upsert. Config tests preserve unrelated entries and settings. Screen tests prove
+`y Enter` startup input is consumed only by verified SessionStart. All 94 focused
+tests and the full gate passed (see `logs/v9-validation.txt`).
+
+Live verification used Codex CLI 0.159.2 with `gpt-6-luna` in an isolated configuration.
+The managed daemon reported 0.159.3 at teardown (`logs/v9-cleanup.json`).
+The first attempt correctly remained unverified because the newly installed
+scratch reporting hooks had not been trusted (`logs/v9-05-*` through `v9-09-*`).
+After trusting those twelve generated hooks, a fresh linked worktree with no
+trust entry displayed the Yinz prompt. `send-keys y Enter` followed immediately
+by `wait --until idle` returned `ok` and `ready:true`. Two successive prompts
+completed with answers `8` and `10`, acknowledgement, distinct turn IDs, and
+`ready:true`, without recovery (`logs/v9-10-*` through `v9-15-*`).
+Only the two approved worktrees gained project trust entries; the primary
+checkout remained without a trust entry (`logs/v9-live-evidence.json`).
+The scratch session, daemon, repo, settings, and copied authentication were removed.
