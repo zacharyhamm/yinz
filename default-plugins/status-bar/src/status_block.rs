@@ -11,6 +11,7 @@
 
 use unicode_width::UnicodeWidthStr;
 use yinz_tile::prelude::*;
+use yinz_tile_utils::style;
 
 use crate::LinePart;
 
@@ -84,8 +85,8 @@ struct Segment {
 enum Paint {
     /// The theme's "something is wrong / needs you" colour.
     Alert,
-    /// An emphasis colour — busy agents, and the time itself.
-    Emphasis,
+    Busy,
+    Clock,
     /// Backed off: idle counts and the date.
     Dim,
 }
@@ -102,18 +103,20 @@ impl Segment {
         self.text.width()
     }
 
-    fn serialize(&self, dimmed_session: bool) -> String {
-        let text = Text::new(&self.text);
-        let text = if dimmed_session {
-            text.disabled()
+    fn serialize(&self, help: &ModeInfo) -> String {
+        let colors = help.style.colors;
+        let text = colors.text_unselected;
+        let style = if help.session_dimmed.unwrap_or(false) {
+            style!(text.base, text.background).italic()
         } else {
             match self.paint {
-                Paint::Alert => text.error_color_range(..),
-                Paint::Emphasis => text.color_range(1, ..),
-                Paint::Dim => text.dim_range(..),
+                Paint::Alert => style!(colors.exit_code_error.base, text.background).bold(),
+                Paint::Busy => style!(text.emphasis_2, text.background).bold(),
+                Paint::Clock => style!(text.emphasis_1, text.background).bold(),
+                Paint::Dim => style!(text.base, text.background).dimmed(),
             }
         };
-        serialize_text(&text.opaque())
+        style.paint(&self.text).to_string()
     }
 }
 
@@ -156,7 +159,7 @@ fn agent_segments(counts: &AgentCounts, arrow_fonts: bool, now_ms: i64) -> Vec<S
         segments.push(Segment::new(mark(waiting, counts.waiting), paint));
     }
     if counts.busy > 0 {
-        segments.push(Segment::new(mark(busy, counts.busy), Paint::Emphasis));
+        segments.push(Segment::new(mark(busy, counts.busy), Paint::Busy));
     }
     if counts.idle > 0 {
         segments.push(Segment::new(mark(idle, counts.idle), Paint::Dim));
@@ -174,7 +177,7 @@ fn agent_segments(counts: &AgentCounts, arrow_fonts: bool, now_ms: i64) -> Vec<S
 
 /// `14:32`, and `Fri 5 Sep` beside it when `with_date`.
 fn clock_segments(clock: &Clock, with_date: bool) -> Vec<Segment> {
-    let mut segments = vec![Segment::new(clock.time.clone(), Paint::Emphasis)];
+    let mut segments = vec![Segment::new(clock.time.clone(), Paint::Clock)];
     if with_date {
         segments.push(Segment::new("  ", Paint::Dim));
         segments.push(Segment::new(clock.date.clone(), Paint::Dim));
@@ -227,7 +230,6 @@ pub fn status_block(
     now_ms: i64,
 ) -> LinePart {
     let arrow_fonts = help.capabilities.arrow_fonts;
-    let dimmed = help.session_dimmed.unwrap_or(false);
     // Widest first; the first one that fits is what gets drawn.
     let candidates = [(true, true), (true, false), (false, false)];
     for (with_clock, with_date) in candidates {
@@ -240,10 +242,10 @@ pub fn status_block(
         }
         let len: usize = segments.iter().map(|segment| segment.width()).sum();
         if len <= max_len {
-            let part = segments
-                .iter()
-                .map(|segment| segment.serialize(dimmed))
-                .collect::<String>();
+            let mut part = String::from("\u{1b}[0m");
+            for segment in &segments {
+                part.push_str(&segment.serialize(help));
+            }
             return LinePart { part, len };
         }
     }
@@ -392,19 +394,26 @@ mod tests {
                         format!("{glyph}12")
                     }
                 );
+                let colors = help.style.colors;
+                let text = colors.text_unselected;
                 let expected = if frame / 4 % 2 == 0 {
-                    Text::new(&segments[0].text).error_color_range(..)
+                    style!(colors.exit_code_error.base, text.background).bold()
                 } else {
-                    Text::new(&segments[0].text).dim_range(..)
+                    style!(text.base, text.background).dimmed()
                 };
                 assert_eq!(
-                    segments[0].serialize(false),
-                    serialize_text(&expected.opaque())
+                    segments[0].serialize(&help),
+                    expected.paint(&segments[0].text).to_string()
                 );
+                help.session_dimmed = Some(true);
                 assert_eq!(
-                    segments[0].serialize(true),
-                    serialize_text(&Text::new(&segments[0].text).disabled().opaque())
+                    segments[0].serialize(&help),
+                    style!(text.base, text.background)
+                        .italic()
+                        .paint(&segments[0].text)
+                        .to_string()
                 );
+                help.session_dimmed = Some(false);
                 for width in 0..80 {
                     let block = status_block(&help, &counts, &clock, width, now);
                     assert_eq!(
@@ -418,6 +427,24 @@ mod tests {
         }
         assert_eq!(state_marks(false, 999).0, "⣷");
         assert_eq!(state_marks(false, 1000).0, "⣾");
+    }
+
+    #[test]
+    fn disabled_sessions_use_the_theme_base_and_background_for_every_segment() {
+        for color in [PaletteColor::EightBit(42), PaletteColor::Rgb((12, 34, 56))] {
+            let mut help = mode_info();
+            help.session_dimmed = Some(true);
+            help.style.colors.text_unselected.base = color;
+            help.style.colors.text_unselected.background = PaletteColor::EightBit(17);
+            for paint in [Paint::Alert, Paint::Busy, Paint::Clock, Paint::Dim] {
+                let part = Segment::new("test", paint).serialize(&help);
+                let foreground = match color {
+                    PaletteColor::EightBit(n) => format!("38;5;{n}"),
+                    PaletteColor::Rgb((r, g, b)) => format!("38;2;{r};{g};{b}"),
+                };
+                assert_eq!(part, format!("\u{1b}[3;48;5;17;{foreground}mtest\u{1b}[0m"));
+            }
+        }
     }
 
     #[test]

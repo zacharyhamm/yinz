@@ -463,3 +463,107 @@ fn status_bar_wasm_deno_mixed_agents_and_animation_frames() {
         }
     }
 }
+
+#[test]
+fn status_bar_wasm_deno_theme_colors_follow_mode_updates() {
+    use yinz_terminal::panes::AnsiCode;
+    use yinz_types::colors::PaletteColor;
+
+    let mut pair = Pair::new(false);
+    pair.event(Event::PaneUpdate(PaneManifest {
+        panes: [(
+            yinz_types::internal_ids::TabPosition::new(0),
+            [AgentState::Waiting, AgentState::Busy, AgentState::Idle]
+                .into_iter()
+                .map(|state| PaneInfo {
+                    agent: Some(AgentInfo {
+                        state,
+                        wait_needs_a_person: true,
+                        kind: "codex".into(),
+                        source: AgentSource::Reported,
+                        detail: None,
+                        waiting_on: None,
+                        cwd: None,
+                        session_id: None,
+                        run_id: None,
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+        )]
+        .into_iter()
+        .collect(),
+    }));
+    // Change only the palette via ModeUpdate: existing counts and clock must repaint.
+    for rgb in [false, true, false] {
+        let mut info = shipped(InputMode::Normal);
+        info.capabilities.arrow_fonts = false;
+        if rgb {
+            rgb_theme(&mut info);
+            info.style.colors.exit_code_error.base = PaletteColor::Rgb((31, 32, 33));
+        }
+        let colors = info.style.colors;
+        let text = colors.text_unselected;
+        pair.event(Event::ModeUpdate(info.clone()));
+        for phase in [0, 500] {
+            pair.at(NOW / 60_000 * 60_000 + phase);
+            for cols in [5, 30, 80, 120, 200, 500] {
+                let cells = pair.render_cells(1, cols);
+                let row = &cells[0];
+                let plain: String = row.iter().map(|c| c.character).collect();
+                let Some(start) = plain.chars().position(|c| c == '◆') else {
+                    assert!(cols < 500, "agent counts must fit at {cols} columns");
+                    continue;
+                };
+                let segments = [
+                    (
+                        "◆1",
+                        if phase == 0 {
+                            colors.exit_code_error.base
+                        } else {
+                            text.base
+                        },
+                        phase != 0,
+                    ),
+                    (" ", text.base, true),
+                    (if phase == 0 { "⣾1" } else { "⡿1" }, text.emphasis_2, false),
+                    (" ", text.base, true),
+                    ("·1", text.base, true),
+                    ("   ", text.base, true),
+                    ("18:49", text.emphasis_1, false),
+                    ("  ", text.base, true),
+                    ("Fri 5 Sep", text.base, true),
+                ];
+                // Narrow forms shed the date, then the clock, while preserving counts.
+                let segment_count = if plain.contains("Fri 5 Sep") {
+                    9
+                } else if plain.contains("18:49") {
+                    7
+                } else {
+                    5
+                };
+                assert!(cols < 500 || segment_count == 9);
+                let mut at = start;
+                for (label, foreground, dim) in segments.into_iter().take(segment_count) {
+                    assert!(row[at..]
+                        .iter()
+                        .map(|c| c.character)
+                        .collect::<String>()
+                        .starts_with(label));
+                    for cell in &row[at..at + label.chars().count()] {
+                        assert_eq!(cell.styles.foreground, Some(foreground.into()));
+                        assert_eq!(cell.styles.background, Some(text.background.into()));
+                        assert_eq!(cell.styles.dim == Some(AnsiCode::On), dim);
+                        assert_eq!(cell.styles.bold == Some(AnsiCode::On), !dim);
+                    }
+                    at += label.chars().count();
+                }
+            }
+        }
+        info.session_dimmed = Some(true);
+        pair.event(Event::ModeUpdate(info));
+        let dimmed = pair.render(1, 500);
+        assert!(dimmed.contains("Ascend:"));
+        assert!(!dimmed.contains('◆'));
+    }
+}

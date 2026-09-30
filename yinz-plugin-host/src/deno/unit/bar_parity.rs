@@ -337,6 +337,13 @@ impl Pair {
     }
 
     pub(super) fn render(&mut self, rows: usize, cols: usize) -> String {
+        self.render_cells(rows, cols)
+            .iter()
+            .flat_map(|row| row.iter().map(|c| c.character))
+            .collect()
+    }
+
+    pub(super) fn render_cells(&mut self, rows: usize, cols: usize) -> Vec<Vec<TerminalCharacter>> {
         let expected = String::from_utf8(self.wasm.render(rows, cols).unwrap()).unwrap();
         let actual = eval(
             &mut self.deno,
@@ -387,9 +394,7 @@ impl Pair {
                     });
             panic!("{:?} {rows}x{cols}:\nwasm: {:?}\ndeno: {:?}\nfirst different cell (position, characters and styles): {first:?}", self.mode.mode, plain(&left), plain(&right));
         }
-        left.iter()
-            .flat_map(|row| row.iter().map(|c| c.character))
-            .collect()
+        left
     }
 }
 
