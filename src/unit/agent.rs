@@ -110,19 +110,21 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
     for (text, expected) in [
         ("result\n> ", "result\n> \n"),
         ("result\n", "result\n"),
+        ("  first\n\n \n  second", "  first\n\n \n  second\n"),
         ("", ""),
     ] {
         response.output = Some(text.into());
         let mut output = Vec::new();
         print_response(&response, false, &mut output).unwrap();
         assert_eq!(String::from_utf8(output).unwrap(), expected);
+
+        let mut output = Vec::new();
+        print_response(&response, true, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["outcome"], "ok");
+        assert_eq!(value["output"], text);
+        assert_eq!(value["agents"][0]["pane_id"], "terminal_7");
     }
-    let mut output = Vec::new();
-    print_response(&response, true, &mut output).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value["outcome"], "ok");
-    assert_eq!(value["output"], "");
-    assert_eq!(value["agents"][0]["pane_id"], "terminal_7");
     response.output = None;
     for reason in [
         None,

@@ -659,6 +659,54 @@ fn respawn_restores_readiness_without_consuming_a_new_draft() {
 }
 
 #[test]
+fn agent_read_counts_nonblank_lines_and_preserves_internal_spacing() {
+    // v2-05-read-claude captured 26 blank rows before these four UI rows.
+    let captured = "────\n❯\u{a0}Try \"refactor <filepath>\"\n────\n  ⏸ manual mode on · ? for shortcuts · ← for agents";
+    let leading_blanks = format!("{}{captured}", "\n".repeat(26));
+    let paragraphs = "\nold\n\n  first\n\u{2003}\n\n  second\n\nthird\u{a0}\n \t \n\u{2003}\n";
+    for (input, lines, expected) in [
+        (leading_blanks.as_str(), 30, captured),
+        ("first\n\nsecond\n \t \n\u{2003}\n", 80, "first\n\nsecond"),
+        (paragraphs, 1, "third\u{a0}"),
+        (paragraphs, 2, "  second\n\nthird\u{a0}"),
+        (
+            paragraphs,
+            3,
+            "  first\n\u{2003}\n\n  second\n\nthird\u{a0}",
+        ),
+        (
+            paragraphs,
+            80,
+            "old\n\n  first\n\u{2003}\n\n  second\n\nthird\u{a0}",
+        ),
+        ("", 80, ""),
+        ("\n \t \n\u{2003}\n\u{a0}\n", 1, ""),
+    ] {
+        let (mut screen, messages, _writes) = setup("codex");
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), input.replace('\n', "\r\n").into_bytes())
+            .unwrap();
+        screen.agent_control(
+            AgentRequest::Read {
+                pane_id: PANE,
+                expected_session_id: None,
+                lines,
+            },
+            CLIENT,
+        );
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Ok);
+        assert_eq!(
+            result.output.as_deref(),
+            Some(expected),
+            "{lines}: {input:?}"
+        );
+    }
+}
+
+#[test]
 fn agent_read_returns_the_latest_lines_even_when_scrolled_up() {
     let (mut screen, messages, _writes) = setup("codex");
     let lines: Vec<_> = (1..=60).map(|n| n.to_string()).collect();

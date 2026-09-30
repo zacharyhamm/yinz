@@ -658,10 +658,23 @@ impl Screen {
                     .tab_containing_pane_mut(pane)
                     .and_then(|tab| tab.get_dump_terminal_screen(pane, true))
                     .unwrap_or_default();
-                let mut last: Vec<_> = output.lines().rev().take(lines).collect();
-                last.reverse();
+                let all_lines: Vec<_> = output.lines().collect();
+                let mut nonblank = all_lines
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, line)| !line.trim().is_empty())
+                    .take(lines)
+                    .map(|(index, _)| index);
+                let output = nonblank
+                    .next()
+                    .map(|end| {
+                        let start = nonblank.last().unwrap_or(end);
+                        all_lines[start..=end].join("\n")
+                    })
+                    .unwrap_or_default();
                 let mut response = self.agent_result(pane, AgentOutcome::Ok, None);
-                response.output = Some(last.join("\n"));
+                response.output = Some(output);
                 self.agent_reply(&client, response);
             },
             SendKeys { keys, .. } => {

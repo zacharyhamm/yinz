@@ -15,7 +15,7 @@ Use `yinz --session development agent ...` to select a session. Without
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
 | `agent wait TARGET --until idle` | Observation of the requested state |
-| `agent read TARGET --lines 80` | Last lines of terminal output |
+| `agent read TARGET --lines 80` | Last 80 nonblank lines of terminal output, with internal spacing |
 | `agent recover TARGET --conversation ID --confirm-empty [--interrupted]` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
@@ -265,10 +265,15 @@ Recovery advice applies only to the same live conversation with unresolved input
 Do not recover a closed, exited or replaced target.
 After inspection confirms that the agent stopped and unresolved input remains:
 
-1. Read the pane output and inspect its current draft.
-2. Clear the draft, using deliberate key input if necessary.
+1. Read the pane output and inspect the composer in the terminal UI.
+2. Clear any actual draft with deliberate key input. Confirm that the composer is empty.
 3. Confirm that status reports the same conversation as idle.
 4. Run `yinz agent recover TARGET --conversation ID --confirm-empty`.
+
+Plain terminal text includes ghost suggestions and cannot establish whether the
+composer contains a draft. Do not infer a draft from suggestion text or strip
+suggestions heuristically. `--confirm-empty` requires deliberate confirmation
+through the terminal UI, not an assumption based on `agent read`.
 
 Recovery requires a live supported agent, no active submission, and no paste
 write in flight. It clears abandoned claims and pending Enter delivery, and
@@ -293,8 +298,14 @@ return `1`. CLI syntax errors return `2`. With `--json`, inspect `outcome`,
 `acknowledged`, `turn_id` and `message`. Connection and local input errors go to
 standard error and return `1`.
 
-`agent read` returns the latest retained terminal lines, including output below
-a scrolled viewport. Reading does not change the viewport or selection.
+`agent read --lines N` returns the last N nonblank terminal lines, including output
+below a scrolled viewport. Whitespace-only rows count as blank. Blank rows at both
+ends are removed. Blank rows between selected content remain, so output can contain
+more than N physical rows. Nonblank lines are preserved verbatim. An entirely blank
+terminal returns an empty string. The default is 80, and the accepted range is
+1–100000. Text and JSON responses contain the same retained content.
+Reading does not change the viewport or selection. Ghost suggestions remain visible
+and cannot prove that the composer contains a draft or is empty.
 
 When intervention is necessary, inspect the output before sending keys:
 
@@ -303,5 +314,10 @@ yinz agent read terminal_7 --conversation ID --lines 80
 yinz agent send-keys terminal_7 --conversation ID Esc
 ```
 
+Pass one key per argument. Quote modifiers, such as `"Ctrl u"`. Named keys include
+`Esc`, `Enter`, and `Down`. For example, `send-keys TARGET Down Enter` sends two keys.
+The aliases `Ctrl+u`, `ctrl-u`, `C-u`, `Escape`, and `Return` are unsupported.
+
 Key input does not imply a new prompt acknowledgement. Use `agent status` or
-`agent wait` to observe what happens next.
+`agent wait` to observe what happens next. `wait --until` accepts `busy`, `waiting`,
+`idle`, and `exited`.

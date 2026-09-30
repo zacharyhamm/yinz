@@ -642,6 +642,7 @@ pub enum Agent {
         target: yinz_types::pane_id::PaneId,
         #[clap(long)]
         conversation: Option<String>,
+        /// Reported state to wait for: busy, waiting, idle, or exited.
         #[clap(long, default_value = "idle", value_parser = parse_agent_state)]
         until: yinz_types::agent::AgentState,
         #[clap(long, default_value = "30s", value_parser = parse_agent_timeout)]
@@ -649,23 +650,29 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
-    /// Read the agent's terminal output.
+    /// Read the agent's terminal output. Plain text includes ghost suggestions and cannot
+    /// establish whether the composer contains a draft. Do not infer a draft from suggestion text.
     Read {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         #[clap(long)]
         conversation: Option<String>,
+        /// Maximum nonblank lines (1–100000). Preserve internal blank rows and remove blank rows
+        /// at both ends. Output can contain more physical rows than this limit.
         #[clap(long, default_value_t = 80, value_parser = clap::value_parser!(u32).range(1..=100_000))]
         lines: u32,
         #[clap(long)]
         json: bool,
     },
-    /// Restore readiness after inspecting the pane and clearing any draft.
+    /// Restore readiness after inspecting the pane and clearing any draft. Plain terminal text
+    /// includes ghost suggestions and cannot establish whether the composer contains a draft.
     Recover {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         #[clap(long)]
         conversation: String,
+        /// Confirm deliberately that the composer is empty. Do not infer this from `agent read`
+        /// or treat suggestion text as a draft. Clear actual input through the terminal UI first.
         #[clap(long, required = true)]
         confirm_empty: bool,
         /// Also reset a busy or waiting agent to idle. Use only after `agent read` shows the agent
@@ -679,6 +686,9 @@ pub enum Agent {
     SendKeys {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
+        /// One key per argument. Quote modifiers, such as "Ctrl u". Named keys include Esc,
+        /// Enter, and Down (example: Down Enter). Unsupported aliases: Ctrl+u, ctrl-u, C-u,
+        /// Escape, Return.
         #[clap(required = true, num_args = 1..=1024)]
         keys: Vec<String>,
         #[clap(long)]
