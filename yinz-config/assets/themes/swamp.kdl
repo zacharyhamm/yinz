@@ -1,0 +1,256 @@
+// Swamp Club palette: ~/swamp-club/assets/theme.css and HUD components.
+// Activate in config.kdl with: theme "swamp" or theme "swamp-hud".
+themes {
+    swamp {
+        text_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        text_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        ribbon_unselected {
+            base "#0a0a0a"
+            background "#d1d5db"
+            emphasis_0 "#0a0a0a"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#0a0a0a"
+            emphasis_3 "#0a0a0a"
+        }
+        ribbon_selected {
+            base "#0a0a0a"
+            background "#39ff14"
+            emphasis_0 "#0a0a0a"
+            emphasis_1 "#0a0a0a"
+            emphasis_2 "#0a0a0a"
+            emphasis_3 "#0a0a0a"
+        }
+        table_title {
+            base "#39ff14"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        table_cell_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        table_cell_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        list_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        list_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        frame_unselected {
+            base "#9ca3af"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        frame_selected {
+            base "#39ff14"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        frame_highlight {
+            base "#00ffff"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        exit_code_success {
+            base "#39ff14"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        exit_code_error {
+            base "#f87171"
+            background "#0a0a0a"
+            emphasis_0 "#fbbf24"
+            emphasis_1 "#00ffff"
+            emphasis_2 "#39ff14"
+            emphasis_3 "#ff00ff"
+        }
+        multiplayer_user_colors {
+            player_1 "#ff00ff"
+            player_2 "#60a5fa"
+            player_3 "#a78bfa"
+            player_4 "#fbbf24"
+            player_5 "#00ffff"
+            player_6 "#fb923c"
+            player_7 "#f87171"
+            player_8 "#d1d5db"
+            player_9 "#f472b6"
+            player_10 "#39ff14"
+        }
+    }
+    swamp-hud {
+        text_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        text_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        ribbon_unselected {
+            base "#0a0a0a"
+            background "#d1d5db"
+            emphasis_0 "#0a0a0a"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#0a0a0a"
+            emphasis_3 "#0a0a0a"
+        }
+        ribbon_selected {
+            base "#0a0a0a"
+            background "#4ade80"
+            emphasis_0 "#0a0a0a"
+            emphasis_1 "#0a0a0a"
+            emphasis_2 "#0a0a0a"
+            emphasis_3 "#0a0a0a"
+        }
+        table_title {
+            base "#4ade80"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        table_cell_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        table_cell_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        list_unselected {
+            base "#d1d5db"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        list_selected {
+            base "#ffffff"
+            background "#1a1a1a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        frame_unselected {
+            base "#9ca3af"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        frame_selected {
+            base "#4ade80"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        frame_highlight {
+            base "#22d3ee"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        exit_code_success {
+            base "#4ade80"
+            background "#0a0a0a"
+            emphasis_0 "#fb923c"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        exit_code_error {
+            base "#f87171"
+            background "#0a0a0a"
+            emphasis_0 "#fbbf24"
+            emphasis_1 "#22d3ee"
+            emphasis_2 "#4ade80"
+            emphasis_3 "#e879f9"
+        }
+        multiplayer_user_colors {
+            player_1 "#e879f9"
+            player_2 "#60a5fa"
+            player_3 "#a78bfa"
+            player_4 "#fbbf24"
+            player_5 "#22d3ee"
+            player_6 "#fb923c"
+            player_7 "#f87171"
+            player_8 "#d1d5db"
+            player_9 "#f472b6"
+            player_10 "#4ade80"
+        }
+    }
+}
