@@ -1616,6 +1616,34 @@ fn a_pane_does_not_inherit_an_outer_panes_broker_token() {
     std::env::remove_var(token);
 }
 
+#[test]
+fn panes_clear_inherited_inline_hooks_but_keep_launch_assignments() {
+    let marker = "YINZ_CLAUDE_INLINE_HOOKS";
+    std::env::set_var(marker, "1");
+    for login_session in [false, true] {
+        for inline in [false, true] {
+            let (mut host, _host_id, _sock) = TestHost::start();
+            let mut cmd = sh(&format!("echo inline=[${{{marker}-unset}}] done"));
+            if inline {
+                cmd.args
+                    .splice(0..0, [format!("{marker}=1"), "/bin/sh".into()]);
+                cmd.command = "/usr/bin/env".into();
+            }
+            let (_, mut master) = host.spawn_with_env(cmd, None, None, None, vec![], login_session);
+            let output = read_until(&mut master, "done");
+            let expected = if inline {
+                "inline=[1]"
+            } else {
+                "inline=[unset]"
+            };
+            assert!(output.contains(expected), "{output:?}");
+            host.send(&ServerToHostMsg::Terminate);
+            host.join();
+        }
+    }
+    std::env::remove_var(marker);
+}
+
 /// The other half of that: a real remote pane is *given* its token by the broker, which
 /// mints one per pane and names it in the spawn. The scrub above runs first for exactly
 /// this reason - it must not be able to take back what the spawn asked for.

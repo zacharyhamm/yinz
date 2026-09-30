@@ -221,6 +221,9 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
             }
         },
         Some("codex") => {
+            if spec.hooks.unwrap_or(true) && resume.is_some() && mode.is_some() {
+                return Err("Yinz's managed Codex bridge cannot resume with --permission-mode; omit --permission-mode to resume, or start a new conversation with the requested mode".to_owned());
+            }
             match mode {
                 None => {},
                 Some("full-auto") => flags.push("--full-auto".to_owned()),
@@ -298,8 +301,7 @@ pub fn claude_hook_settings_argument() -> String {
     super::claude_hook_settings(super::CLAUDE_HOOK_REPORT_COMMAND).to_string()
 }
 
-/// The spec's environment, plus what a Firecracker guest needs to run the agent it was
-/// asked for.
+/// The spec's environment, hook routing, and Firecracker sandbox marker.
 ///
 /// A guest logs in as root, and `claude --dangerously-skip-permissions` refuses to run as
 /// root. The refusal stands in for "you have no sandbox", and here the VM *is* the sandbox -
@@ -311,11 +313,22 @@ pub fn claude_hook_settings_argument() -> String {
 /// that mode into this flag - and the other, passing it in `args`, is just as supported and
 /// dies on the same check.
 ///
-/// A caller that sets the variable itself keeps its value. Nothing is added for a local
-/// pane, which runs as the user and needs none of this.
-fn guest_environment(spec: &Spec, kind: Option<&str>, args: &[String]) -> BTreeMap<String, String> {
+/// A caller that sets IS_SANDBOX itself keeps its value. Local panes need no sandbox marker.
+fn launch_environment(
+    spec: &Spec,
+    kind: Option<&str>,
+    args: &[String],
+) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
     let firecracker = trimmed(&spec.firecracker).is_some();
+    if kind == Some("claude") {
+        // Override inherited markers too: installed hooks must report without inline hooks.
+        let inline_hooks = spec.hooks.unwrap_or(true) && !firecracker;
+        env.insert(
+            "YINZ_CLAUDE_INLINE_HOOKS".into(),
+            if inline_hooks { "1" } else { "0" }.into(),
+        );
+    }
     let skipping = args
         .iter()
         .any(|arg| arg == "--dangerously-skip-permissions");
@@ -352,7 +365,7 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // Settled from the flags alone, before the prompt joins them: a prompt whose text reads
     // like a flag is still a prompt, and what the agent was asked to do says nothing about
     // how it was asked to run.
-    let env = guest_environment(spec, kind.as_deref(), &args);
+    let env = launch_environment(spec, kind.as_deref(), &args);
     // Last, and after every flag: a positional argument that came before a flag would
     // be read by some of these programs as the flag's value. opencode is the exception -
     // its one positional is a project *path*, so its prompt is handed over as `--prompt`.
@@ -551,7 +564,17 @@ mod tests {
                     "example",
                 ],
             ),
-            ("claude", vec!["--effort", "high", "--model", "example"]),
+            (
+                "claude",
+                vec![
+                    "YINZ_CLAUDE_INLINE_HOOKS=0",
+                    "claude",
+                    "--effort",
+                    "high",
+                    "--model",
+                    "example",
+                ],
+            ),
             ("cursor", vec!["--model", "example[effort=high]"]),
         ] {
             let (command, _) = plan(&Spec {
@@ -587,8 +610,8 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert_eq!(command.path, PathBuf::from("claude"));
-        assert!(command.args.is_empty());
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
         assert_eq!(
             checkout,
             GitCheckout::NewWorktree {
@@ -736,6 +759,8 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
+                "YINZ_CLAUDE_INLINE_HOOKS=0".to_owned(),
+                "claude".to_owned(),
                 "--verbose".to_owned(),
                 "--model".to_owned(),
                 "opus".to_owned(),
@@ -779,8 +804,11 @@ mod tests {
     #[test]
     fn claude_spawns_carry_the_hook_settings() {
         let (command, _) = plan(&spec("claude")).unwrap();
-        assert_eq!(command.args[0], "--settings");
-        let settings: serde_json::Value = serde_json::from_str(&command.args[1]).unwrap();
+        assert_eq!(
+            &command.args[..3],
+            ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude", "--settings"]
+        );
+        let settings: serde_json::Value = serde_json::from_str(&command.args[3]).unwrap();
         let hooks = settings["hooks"].as_object().unwrap();
         for event in crate::agent::CLAUDE_HOOK_EVENTS {
             assert_eq!(
@@ -795,7 +823,7 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert!(command.args.is_empty());
+        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
         let (command, _) = plan(&spec("codex")).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
         assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
@@ -834,7 +862,12 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(
             command.args,
-            vec!["IS_SANDBOX=1", "claude", "--dangerously-skip-permissions"]
+            vec![
+                "IS_SANDBOX=1",
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "claude",
+                "--dangerously-skip-permissions"
+            ]
         );
         assert_eq!(
             crate::agent::agent_kind_of(&command.path, &command.args).as_deref(),
@@ -855,7 +888,12 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(
             command.args,
-            vec!["IS_SANDBOX=1", "claude", "--dangerously-skip-permissions"]
+            vec![
+                "IS_SANDBOX=1",
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "claude",
+                "--dangerously-skip-permissions"
+            ]
         );
     }
 
@@ -869,7 +907,6 @@ mod tests {
             ..without_hooks("claude")
         })
         .unwrap();
-        assert_ne!(command.path, PathBuf::from("env"));
         assert!(
             !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
             "{command:?}"
@@ -907,7 +944,6 @@ mod tests {
             },
         ] {
             let (command, _) = plan(&spec).unwrap();
-            assert_ne!(command.path, PathBuf::from("env"), "{spec:?}");
             assert!(
                 !command.args.iter().any(|arg| arg.starts_with("IS_SANDBOX")),
                 "{command:?}"
@@ -945,7 +981,13 @@ mod tests {
         assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(
             command.args,
-            vec!["ANTHROPIC_MODEL=opus", "FOO=a=b", "claude", "go"]
+            vec![
+                "ANTHROPIC_MODEL=opus",
+                "FOO=a=b",
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "claude",
+                "go"
+            ]
         );
         assert_eq!(
             crate::agent::agent_kind_of(&command.path, &command.args).as_deref(),
@@ -967,6 +1009,8 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "claude",
                 "--model",
                 "opus",
                 "--permission-mode",
@@ -984,7 +1028,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             command.args,
-            vec!["--dangerously-skip-permissions", "--continue"]
+            vec![
+                "YINZ_CLAUDE_INLINE_HOOKS=0",
+                "claude",
+                "--dangerously-skip-permissions",
+                "--continue"
+            ]
         );
     }
 
@@ -1146,7 +1195,7 @@ mod tests {
             ..spec("claude")
         })
         .unwrap();
-        assert!(command.args.is_empty());
+        assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
         assert_eq!(checkout, GitCheckout::Current);
     }
 
@@ -1164,10 +1213,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(command.path, PathBuf::from("claude"));
+        assert_eq!(command.path, PathBuf::from("env"));
         assert_eq!(
             command.args,
             vec![
+                "YINZ_CLAUDE_INLINE_HOOKS=1",
+                "claude",
                 "--resume",
                 "9f3c1a7e-4b21-4d8e-9c02-1a2b3c4d5e6f",
                 "--settings",

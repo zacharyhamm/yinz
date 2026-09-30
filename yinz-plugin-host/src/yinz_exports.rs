@@ -3019,7 +3019,7 @@ pub fn spawn_agent_for_cli(
                 borderless: None,
             },
             false,
-            ClientTabIndexOrPaneId::ClientId(client_id),
+            ClientTabIndexOrPaneId::ClientIdNoFocus(client_id),
             Some(NotificationEnd::new(completion_tx)),
             false,
         ))

@@ -2110,11 +2110,14 @@ mod tests {
             .unwrap()
             .set_text("opus".into());
         let (command, checkout) = request(state.dialog.form()).unwrap();
-        assert_eq!(command.path, PathBuf::from("claude"));
-        assert_eq!(&command.args[..2], ["--model", "opus"]);
+        assert_eq!(command.path, PathBuf::from("env"));
+        assert_eq!(
+            &command.args[..4],
+            ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude", "--model", "opus"]
+        );
         // A claude pane the modal starts reports its own state, like one hocus starts.
-        assert_eq!(command.args[2], "--settings");
-        assert_eq!(command.args.len(), 4);
+        assert_eq!(command.args[4], "--settings");
+        assert_eq!(command.args.len(), 6);
         assert_eq!(checkout, GitCheckout::Current);
     }
 
@@ -2540,9 +2543,9 @@ mod tests {
             ..agent_pane("codex")
         };
         let command = command_in_context(&pane, "claude").unwrap();
-        assert_eq!(command.path, PathBuf::from("claude"));
+        assert_eq!(command.path, PathBuf::from("env"));
         assert!(
-            command.args.is_empty(),
+            command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
             "SSH forks preserve installed broker-aware hooks"
         );
         // The cwd of an ssh pane is a path on `builder`, so it is sent as-is.
@@ -2571,7 +2574,7 @@ mod tests {
             .args
         );
         assert_eq!(
-            local_command.args[0], "--settings",
+            local_command.args[2], "--settings",
             "local forks keep automatic reporting hooks"
         );
         assert_eq!(local_command.cwd, Some("/tmp/repo".into()));
@@ -2585,7 +2588,7 @@ mod tests {
         };
         let vm_command = command_in_context(&vm, "claude").unwrap();
         assert!(
-            vm_command.args.is_empty(),
+            vm_command.args == ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"],
             "VM hooks are already installed in the guest"
         );
         assert_eq!(vm_command.cwd, Some("/tmp/repo".into()));
@@ -2974,7 +2977,7 @@ mod tests {
             assert_eq!(pane.agent, info.agent);
             assert_eq!(pane.status, agents::AgentStatus::Held);
             let duplicate = duplicate_command(&pane, &reply.manual_kinds).unwrap();
-            assert_eq!(duplicate.path, PathBuf::from("claude"));
+            assert_eq!(duplicate.path, PathBuf::from("env"));
             assert_eq!(duplicate.cwd, Some("/work/repo".into()));
             assert_eq!(duplicate.target, target);
             let fork = command_in_context(&pane, "codex").unwrap();

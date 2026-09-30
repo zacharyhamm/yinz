@@ -558,6 +558,8 @@ pub enum Agent {
         json: bool,
     },
     /// Launch an agent with the shared launch planner and return its actual pane and checkout.
+    /// Preserve keyboard focus, including when the worker needs another tab.
+    /// Refresh existing Claude hooks with `yinz hocus hooks install --agent claude` to prevent duplicate reports.
     Spawn {
         #[clap(long, help = format!("Agent kind (recognized: {}). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
@@ -597,9 +599,11 @@ pub enum Agent {
         #[clap(long)]
         effort: Option<String>,
         /// Agent-specific permission mode; 'skip' requests its supported bypass mode.
+        /// Managed Codex resumes cannot use this option. Choose a mode for a new conversation.
         #[clap(long)]
         permission_mode: Option<String>,
         /// Resume a conversation by ID, or 'last' for the most recent.
+        /// For managed Codex launches, omit --permission-mode when resuming.
         #[clap(long)]
         resume: Option<String>,
         /// Reuse an existing branch or worktree when its name is taken.

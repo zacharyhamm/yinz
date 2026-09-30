@@ -247,6 +247,8 @@ fn handle_openpty(
             // reads that before the pane id.
             .env_remove(crate::pty_host::PANE_REF_ENV_KEY)
             .env_remove(crate::pty_host::remote::broker::PANE_TOKEN_ENV)
+            // Structured launches set this again through their env wrapper.
+            .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
             .env("YINZ_PANE_ID", format!("{}", terminal_id))
             .pre_exec(move || -> io::Result<()> {
                 if libc::login_tty(pid_secondary) != 0 {

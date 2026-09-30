@@ -11,6 +11,105 @@ use yinz_cli::args::CliAction;
 use yinz_integration_tests::{
     claim_first_terminal_and_wait_for_prompt, start_yinz, TestRunner, PROMPT, TERMINAL_SIZE,
 };
+use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+use yinz_types::agent::{
+    control::{AgentOutcome, AgentRequest},
+    AgentSpawnSpec,
+};
+
+#[test]
+fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
+    let cases = [
+        ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; } }", 1, 0),
+        ("agent_pane_min_columns 50\nagent_pane_min_rows 20", "layout { tab name=\"original\" focus=true { pane; pane; }; tab name=\"spare\" { pane; }; }", 3, 1),
+        ("", "layout { tab name=\"original\" { pane; } }", 1, 1),
+    ];
+    for (config, layout, pane_count, expected_tab) in cases {
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config("load_plugins clear-defaults=true {}")
+            .with_config(config)
+            .with_layout(yinz_integration_tests::LayoutInfo::Stringified(
+                layout.into(),
+            ))
+            .start();
+        let original = yinz.expect_pty_spawn();
+        original.output(b"originalprompt$ ");
+        for _ in 1..pane_count {
+            yinz.expect_pty_spawn().output(PROMPT);
+        }
+        yinz.wait_until("original pane is rendered", |snapshot| {
+            snapshot.text.contains("originalprompt$")
+        });
+        yinz.run_cli_action(CliAction::FocusPaneId {
+            pane_id: yinz_types::pane_id::PaneId::Terminal(original.terminal_id()).to_string(),
+        });
+
+        // A CLI connection has no attached screen, so placement uses the attached-client fallback.
+        let socket = yinz_ipc::consts::ipc_connect(
+            &yinz_runtime::consts::YINZ_SOCK_DIR.join(yinz.session_name()),
+        )
+        .unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+        let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+        receiver
+            .set_recv_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        sender
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+                spec: AgentSpawnSpec {
+                    kind: Some("claude".into()),
+                    allow_outside_worktree: Some(true),
+                    ..Default::default()
+                },
+                cwd: Some(cwd.path().into()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: false,
+            }))
+            .unwrap();
+        let IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) = receiver.recv_server_msg()
+        else {
+            panic!("expected agent spawn response");
+        };
+        assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+        let agent = yinz.expect_pty_spawn();
+        agent.output(b"workerprompt$ ");
+        let probe = b"originalkeyboard";
+        yinz.send_stdin(probe);
+        original.wait_for_stdin(
+            "keyboard stays on the original pane after CLI spawn",
+            |bytes| bytes.windows(probe.len()).any(|window| window == probe),
+        );
+        yinz.wait_until("original pane still visible after input", |snapshot| {
+            snapshot.text.contains("originalkeyboard")
+        });
+        assert!(!agent
+            .stdin_bytes()
+            .windows(probe.len())
+            .any(|window| window == probe));
+        let (code, listed) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: true,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{listed}");
+        let panes: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        let worker = panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pane| pane["is_plugin"] == false && pane["id"] == agent.terminal_id().get())
+            .unwrap();
+        assert_eq!(worker["tab_id"], expected_tab, "{listed}");
+        drop(sender);
+        drop(receiver);
+        yinz.quit();
+    }
+}
 
 fn new_pane_action(command: &[&str]) -> CliAction {
     CliAction::NewPane {
