@@ -1207,13 +1207,18 @@ fn assert_hook_report_order(kind: &str) {
             }
         }
     }
+    let stop_state = if kind == "claude" {
+        AgentState::Busy
+    } else {
+        AgentState::Waiting
+    };
     assert_eq!(
         observed,
         vec![
             ("PreToolUse".into(), Some(AgentState::Busy)),
-            ("Stop".into(), Some(AgentState::Waiting)),
-            ("PostToolUse".into(), Some(AgentState::Waiting)),
-            ("Stop".into(), Some(AgentState::Waiting)),
+            ("Stop".into(), Some(stop_state)),
+            ("PostToolUse".into(), Some(stop_state)),
+            ("Stop".into(), Some(stop_state)),
             ("SessionEnd".into(), None),
         ]
     );

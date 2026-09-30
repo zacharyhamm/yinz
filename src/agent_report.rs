@@ -115,7 +115,7 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("connect");
         let socket =
-            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(session))
+            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(&session))
                 .context("connect report session")?;
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
         let mut receiver = sender
@@ -133,6 +133,17 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("write");
         let report_id = report.report_id.clone();
+        let observation = report
+            .event
+            .as_ref()
+            .filter(|event| event.kind == "claude")
+            .and_then(|event| {
+                serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok()
+            });
+        let observer_route = yinz_process::claude_turn::Route::Local {
+            session: session.to_string(),
+            pane: pane_id.to_string(),
+        };
         sender
             .send_client_msg(ClientToServerMsg::AgentReport(report))
             .context("write report")?;
@@ -147,7 +158,13 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                     report_id: accepted,
                 },
                 _,
-            ) if accepted == report_id => return Ok(()),
+            ) if accepted == report_id => {
+                if let Some(hook) = observation {
+                    yinz_process::claude_turn::start("claude", &hook, observer_route)
+                        .context("observe Claude turn completion")?;
+                }
+                return Ok(());
+            },
             IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _) => "mismatch",
             IpcRecv::Msg(ServerToClientMsg::LogError { .. }, _) => "rejected",
             IpcRecv::Msg(_, _) => "unexpected_reply",

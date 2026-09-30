@@ -1131,7 +1131,13 @@ pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
             .context("invalid agent hook JSON")?;
         trace.event = event.hook_event_name.clone();
         trace.payload_bytes = json.len();
-        report_agent_hook_to_traced(&broker_socket_path(), &pane_token, &kind, &json, &mut trace)
+        let socket = broker_socket_path();
+        report_agent_hook_to_traced(&socket, &pane_token, &kind, &json, &mut trace)?;
+        crate::claude_turn::start(
+            &kind,
+            &event,
+            crate::claude_turn::Route::Remote { socket, pane_token },
+        )
     })();
     trace.finish(result.is_ok());
     result

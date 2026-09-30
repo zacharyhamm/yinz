@@ -2213,7 +2213,14 @@ fn remote_agent_hooks_queue_state_and_event_together() {
         for (hook, expected_state) in [
             ("SessionStart", Some(AgentState::Idle)),
             ("UserPromptSubmit", Some(AgentState::Busy)),
-            ("Stop", Some(AgentState::Idle)),
+            (
+                "Stop",
+                Some(if kind == "claude" {
+                    AgentState::Busy
+                } else {
+                    AgentState::Idle
+                }),
+            ),
             ("SessionEnd", None),
             ("UnknownHook", None),
         ] {

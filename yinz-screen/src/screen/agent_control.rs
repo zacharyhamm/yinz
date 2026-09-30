@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
-    needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus, PromptObservation,
-    MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    is_command_prompt, needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus,
+    PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -34,6 +34,9 @@ pub(super) struct Lifecycle {
     /// the idle agent busy again. `Stop` is not an end here: a blocking Stop hook continues
     /// the same turn.
     ended_turn: Option<String>,
+    claude_prompt_id: Option<String>,
+    claude_confirmation: Option<bool>,
+    claude_previous_prompt_id: Option<String>,
 }
 
 pub(super) struct DialogInput {
@@ -96,6 +99,38 @@ impl Screen {
                 && lifecycle.ended_turn.is_some()
                 && lifecycle.ended_turn == hook.turn_id
         })
+    }
+
+    pub(super) fn ignore_claude_confirmation(&self, pane: PaneId, hook: &HookEvent) -> bool {
+        if hook.is_worker() {
+            return false;
+        }
+        if hook.claude_turn_complete.is_some() {
+            return !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.kind == "claude"
+                    && lifecycle.conversation == hook.session_id
+                    && lifecycle.claude_prompt_id.is_some()
+                    && lifecycle.claude_prompt_id == hook.prompt_id
+                    && (lifecycle.claude_confirmation.is_none()
+                        || (lifecycle.claude_confirmation == Some(false)
+                            && hook.claude_turn_complete == Some(true)))
+            });
+        }
+        if hook.hook_event_name == "UserPromptSubmit" && hook.prompt_id.is_some() {
+            return self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.kind == "claude"
+                    && lifecycle.conversation == hook.session_id
+                    && (lifecycle.claude_previous_prompt_id == hook.prompt_id
+                        || (lifecycle.claude_prompt_id == hook.prompt_id
+                            && lifecycle.claude_confirmation.is_some()))
+            });
+        }
+        hook.hook_event_name == "Stop"
+            && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.kind == "claude"
+                    && lifecycle.conversation == hook.session_id
+                    && lifecycle.claude_confirmation == Some(true)
+            })
     }
 
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
@@ -561,6 +596,9 @@ impl Screen {
                 let revision = self.agent_input_revision(pane);
                 if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
                     lifecycle.input_revision = Some(revision);
+                    if lifecycle.kind == "claude" {
+                        lifecycle.claude_confirmation = Some(true);
+                    }
                 }
                 self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
             },
@@ -723,6 +761,10 @@ impl Screen {
                     );
                     return;
                 };
+                if is_command_prompt(&status.agent.kind, &prompt) {
+                    reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text and exact Claude /clear");
+                    return;
+                }
                 let observation = PromptObservation::new(
                     &status.agent.kind,
                     status.agent.session_id.as_deref().unwrap_or_default(),
@@ -912,7 +954,13 @@ impl Screen {
                                 .as_ref()
                                 .is_some_and(|prompt| !prompt.acknowledged())
                         {
-                            pending.enter_at = Some(now + Duration::from_millis(100));
+                            pending.enter_at = Some(
+                                now + Duration::from_millis(if pending.kind == "claude" {
+                                    500
+                                } else {
+                                    100
+                                }),
+                            );
                         }
                     },
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {},
@@ -1006,6 +1054,14 @@ impl Screen {
                 },
                 _ => None,
             };
+            if pending.kind == "claude" {
+                if let (Some(enter), Some(output)) = (
+                    pending.enter_at,
+                    self.pane_output_activity.get(&pending.pane),
+                ) {
+                    pending.enter_at = Some(enter.max(*output + Duration::from_millis(100)));
+                }
+            }
             if outcome.is_none() && pending.enter_at.is_some_and(|enter| now >= enter) {
                 pending.enter_at = None;
                 if pending
@@ -1089,6 +1145,14 @@ impl Screen {
     pub(super) fn agent_control_event(&mut self, event: &AgentEvent, hook: Option<&HookEvent>) {
         let pane = PaneId::Terminal(event.pane_id);
         let parent = hook.is_some_and(|hook| !hook.is_worker());
+        if parent
+            && event.kind == "claude"
+            && hook.is_some_and(|hook| hook.claude_turn_complete == Some(false))
+        {
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                lifecycle.claude_confirmation = Some(false);
+            }
+        }
         let mut clear_revision = None;
         let clear_started = self.get_pane_info(pane).is_some_and(|info| {
             info.agent.is_some_and(|agent| {
@@ -1307,6 +1371,30 @@ impl Screen {
                     input_revision,
                     last_report: Instant::now(),
                     ended_turn,
+                    claude_prompt_id: if event.hook == "UserPromptSubmit" {
+                        hook.and_then(|hook| hook.prompt_id.clone())
+                    } else {
+                        previous.and_then(|previous| previous.claude_prompt_id.clone())
+                    },
+                    claude_previous_prompt_id: previous.and_then(|previous| {
+                        if event.hook == "UserPromptSubmit"
+                            && previous.claude_confirmation.is_some()
+                        {
+                            previous.claude_prompt_id.clone()
+                        } else {
+                            previous.claude_previous_prompt_id.clone()
+                        }
+                    }),
+                    claude_confirmation: if event.hook == "UserPromptSubmit" {
+                        None
+                    } else if event.kind == "claude"
+                        && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                    {
+                        Some(true)
+                    } else {
+                        hook.and_then(|hook| hook.claude_turn_complete)
+                            .or_else(|| previous.and_then(|previous| previous.claude_confirmation))
+                    },
                 },
             );
         }

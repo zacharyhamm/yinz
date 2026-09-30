@@ -51,7 +51,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "ElicitationResult",
     // Explicit input and elicitation notifications. Permission reminders are ignored.
     "Notification",
-    // The turn ended: what moves the record back to `idle`. It also carries
+    // Stop hooks run before the turn ends; transcript confirmation restores idle. It carries
     // `last_assistant_message`, which nothing buys a summary from any more - a summary is
     // bought once, on `SessionEnd`. See `docs/AGENT_HOOKS.md`.
     "Stop",
@@ -170,7 +170,7 @@ impl AgentEvent {
             kind: kind.to_owned(),
             hook: event.hook_event_name.clone(),
             session_id: Some(event.session_id.clone()).filter(|id| !id.is_empty()),
-            state: hook_state(event),
+            state: hook_state_for(kind, event),
             detail: hook_detail(event),
             prompt: bounded.prompt.clone(),
             last_message: bounded.last_assistant_message.clone(),
@@ -499,6 +499,17 @@ pub struct HookEvent {
     /// Provider turn identity, preserved even when prose is pruned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// Claude's submitted prompt identity and host-side turn confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    #[serde(
+        default,
+        rename = "_yinz_claude_turn_complete",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub claude_turn_complete: Option<bool>,
     /// [`crate::agent::control::prompt_sha256`] of the prompt, taken before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
@@ -665,6 +676,9 @@ impl HookEvent {
             hook_event_name: self.hook_event_name.clone(),
             session_id: self.session_id.clone(),
             turn_id: self.turn_id.clone(),
+            prompt_id: self.prompt_id.clone(),
+            transcript_path: self.transcript_path.clone(),
+            claude_turn_complete: self.claude_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
             workflow_owner: self.workflow_owner.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
@@ -849,6 +863,18 @@ fn prune_value(
 ///
 /// `SessionEnd` is `None` here too, and deliberately: it does not move the record to a state,
 /// it ends one. [`hook_outcome`] is the reading that tells the two apart.
+/// Claude Stop hooks run before blocking hooks can continue the turn.
+pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
+    if kind == "claude"
+        && event.hook_event_name == "Stop"
+        && event.claude_turn_complete != Some(true)
+    {
+        Some(AgentState::Busy)
+    } else {
+        hook_state(event)
+    }
+}
+
 pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
     match event.hook_event_name.as_str() {
         "SessionStart"
@@ -1161,7 +1187,7 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
     if event.hook_event_name == HOOK_SESSION_END {
         return HookOutcome::Ended;
     }
-    match hook_state(event) {
+    match hook_state_for(kind, event) {
         Some(state) => HookOutcome::Reported(AgentInfo {
             kind: kind.to_owned(),
             state,
@@ -2019,6 +2045,8 @@ mod tests {
             let hook = HookEvent {
                 prompt: Some(prompt.clone()),
                 turn_id: Some("turn-1".into()),
+                prompt_id: Some("prompt-1".into()),
+                claude_turn_complete: Some(true),
                 workflow_owner: Some("owner".into()),
                 message: Some(prompt.clone()),
                 last_assistant_message: Some(prompt.clone()),
@@ -2029,6 +2057,8 @@ mod tests {
             assert!(raw.len() <= HOOK_BROADCAST_MAX_BYTES);
             assert!(bounded.prompt.as_ref().unwrap().len() > 8192);
             assert_eq!(bounded.turn_id, hook.turn_id);
+            assert_eq!(bounded.prompt_id, hook.prompt_id);
+            assert_eq!(bounded.claude_turn_complete, hook.claude_turn_complete);
             assert_eq!(bounded.workflow_owner, hook.workflow_owner);
             assert_eq!(
                 bounded.prompt_sha256,

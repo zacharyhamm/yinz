@@ -54,9 +54,9 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 9 | **Fixed on `agent-cli-verify-more`, verified live** (see [fix status](#fix-status-dialog-input-9-and-10)) | Before the fix, Codex trust dialog: `send-keys Enter` → `status_unavailable` "cannot verify a live agent process" (v2 65). After a raw `action write`, the wait ended `Idle`/`ready:false` until `recover` (v2 67, 68). Claude's trust dialog, answered by a person, did the same (v2 02–06). |
 | 10 | **Fixed on `agent-cli-verify-more`, verified live** (see [fix status](#fix-status-dialog-input-9-and-10)) | Before the fix, `send-keys Enter` on a permission prompt, then `wait --until idle`: a stale `needs_input` in 10 ms (v2 110). After the turn: `timed_out` with state `Idle` and no reason (v2 112). |
 | 11 | **Fixed**, verified live | `/clear` still returns `target_changed`. The clear-start hook restores the new conversation as `Idle/Reported`, `ready:true`; list/status and an idle wait succeed, and the next prompt completes without recovery. See [fix status](#fix-status-claude-clear-11) and v5 11 logs. |
-| 12 | **Still broken, cause narrowed** | U+200B and U+202E prompts stay in the composer → `timed_out` (v2 18, 21). A **second** Enter submits the U+202E draft (v2 22–24), so the first Enter is lost to timing, not filtered. Retrying Enter, or waiting for the paste to settle, looks sufficient. |
-| 13 | **Still broken** | Unknown `/probe` (created after launch), `!printf BANG_OK` and `/cost` each run to the full `--timeout` (v2 13, 52, 54). `/cost` leaves a modal. |
-| 14 | **Still broken, worse than recorded** | With a project Stop hook that blocks once, `prompt --wait` returned `completed` "FIRST. BLOCKME" in 1.2s. Claude then continued to "SECOND" while status stayed `Idle`/`ready:true` (v2 58, 59). A prompt sent in that window was accepted, and its `--wait` returned **`completed` "SECOND"**, the previous turn's output (v2 61, 62). |
+| 12 | **Still failing live; planned settling and correlation implemented** | The 500 ms minimum plus 100 ms output quiet period still leaves a Unicode draft in Claude 2.1.285. A separate two-second paste-to-Enter probe also leaves the draft. Preserved/normalized fingerprints pass unit tests, but timing alone does not fix submission. See [verification](#fix-status-agent-cli-12-14). |
+| 13 | **Fixed, verified live** | `/probe`, `/cost`, and Claude `!printf` return `rejected` before writing or claiming input, with `ready:true` and `send-keys` guidance. Exact Claude `/clear` still replaces the conversation, and the next prompt completes. See [verification](#fix-status-agent-cli-12-14). |
+| 14 | **Fixed, verified live** | A Stop hook that blocks once keeps the pane Busy and `ready:false`; a concurrent prompt is rejected. The original wait returns only `FINAL_1214` after the matching transcript `turn_duration`. See [verification](#fix-status-agent-cli-12-14). |
 | 15 | **Still present** | `~/.claude/settings.json` runs `~/.claude/hocus/hocus-hook.sh` for every event, and every spawn still adds `--settings` hooks. |
 | 16 | **Still broken** (see #32) | `--kind codex --model haiku` spawns and becomes ready (v2 77, 78). The first prompt fails at the API. |
 | 17 | Not retested | It needs a Codex auto-update. |
@@ -273,6 +273,68 @@ was used between `/clear` and the next prompt. All verification panes were close
 Evidence: [before](logs/v5-11-before.json), [clear](logs/v5-11-clear.json), [status](logs/v5-11-after.json),
 [list](logs/v5-11-list.json), [idle wait](logs/v5-11-wait.json), [next prompt](logs/v5-11-next.json),
 [terminal output](logs/v5-11-next-read.json).
+
+## Fix status: agent CLI #12–14
+
+Verified on 2026-09-29 with Claude Code 2.1.285 and Haiku, in isolated scratch sessions
+`verify-agent-12-14` and `verify-agent-12-14-fresh`. The fresh session used a 180-column terminal.
+No existing user panes or drafts were used.
+
+**#12 remains unresolved in live Claude.** The requested settling guard now waits at least 500 ms after
+paste delivery and 100 ms without pane output, then sends Enter once. Deadline, process, conversation,
+and input ownership checks remain active. Claude acknowledgement accepts the original fingerprint or
+one with U+200B/U+202E removed. The PTY receives the original text; Codex stays exact, and emoji joiners
+remain significant. Automated tests cover both hook spellings, long prompts, delayed output, and
+manual input during settling.
+
+Those checks pass, but the live combined Unicode prompt, U+200B alone, and a long collapsed Unicode
+paste still timed out with the draft in the composer. A deliberate raw paste followed by one Enter
+**two seconds later** also left the draft. This contradicts the earlier inference that waiting alone
+would solve #12. Fixing it needs a changed delivery constraint; the proposed choices are normalizing
+only these two characters before Claude paste or allowing another guarded Enter. Neither change has
+been applied without the user's choice. Evidence: [combined Unicode](logs/v6-12-unicode.json),
+[U+200B](logs/v6-12-zwsp.json), [long Unicode](logs/v6-12-long-unicode.json),
+[two-second probe](logs/v6-12-slow-paste.log).
+
+**#13 is fixed and verified live.** The screen thread rejects slash commands for both agents and `!`
+shell input for Claude before claiming or writing input. It checks leading whitespace and Claude's
+U+200B/U+202E normalization. Only exact Claude `/clear` is exempt. Live `/probe`, `/cost`, and
+`!printf BANG_OK` returned `rejected` with `ready:true` and guidance to use `send-keys`.
+`/clear` returned `target_changed`; once its clear-start hook arrived, idle waiting succeeded and the
+next prompt completed `5` with readiness restored. An immediate query between SessionEnd and
+SessionStart still sees no agent record; that existing lifecycle gap is outside findings #12–14.
+Evidence: [probe](logs/v6-13-probe.json), [cost](logs/v6-13-cost.json),
+[shell input](logs/v6-13-bang.json), [clear](logs/v6-13-clear.json),
+[idle wait](logs/v6-13-after-clear.json), [next prompt](logs/v6-13-next-prompt.json).
+
+**#14 is fixed and verified live.** Ordinary parent Claude Stop reports, including Idle reports from
+older installed hooks, now mean Busy. A detached observer on the agent's host follows the submitted
+`prompt_id` through complete transcript records and confirms only a matching `turn_duration`, using
+the last assistant text on that chain. Its hook output descriptors are closed. Local confirmations
+use the existing IPC reporter; remote confirmations use the pane broker. Duplicate and stale
+confirmations cannot change state or finish another prompt. Missing evidence returns
+`status_unavailable` and retains the submission claim. Initial transcript creation has the existing
+five-second hook budget; later loss, replacement, process exit, or the 24-hour limit ends observation.
+Host-local conversation markers also stop observers when `/clear` or resume leaves an old transcript
+file intact.
+
+A project [Stop hook](logs/v6-14-stop.py) paused for six seconds and blocked once after `BLOCKME_1214`.
+During that hook, [status](logs/v6-14-blocking-status.json) was Busy with `ready:false`, and a
+[concurrent prompt](logs/v6-14-concurrent.json) was rejected. The original wait stayed pending and
+returned [only `FINAL_1214`](logs/v6-14-final.json) with `ready:true`.
+The [transcript records](logs/v6-14-transcript.jsonl) show the final assistant message and its duration
+boundary. Ordinary prompting also verified that the observer handles a transcript created after the
+submission hook returns.
+
+**Automated validation:** `cargo x ci check` passed format, lint, all 9,347 workspace tests, doctests,
+and all 473 integration tests with 16 workers. The worktree built its own native and Wasm artifacts.
+The focused regressions cover command rejection without writes or claims, `/clear`, Unicode
+fingerprints, one Enter after settling, input interruption, blocking Stop continuation, duplicate
+reporters, old prompt IDs, partial records, initial creation, transcript loss, process identity, and
+conversation replacement. `cargo x remote-test --build --native` built this worktree's Linux binary
+and SSH fixtures; `cargo x remote-test --test` passed all 43 tests, including a real remote reporter
+that stays Busy through an ordinary Stop and a partial duration record, then confirms only the final
+answer. See the [validation record](logs/v6-validation.txt).
 
 ## P2 — misleading output, docs and skill gaps
 
