@@ -184,7 +184,62 @@ struct SendQueueState {
     control: VecDeque<ServerToClientMsg>,
     render_bytes: usize,
     pending_pane_renders: BTreeMap<yinz_types::data::PaneId, ServerToClientMsg>,
+    in_flight: Option<InFlightSend>,
     closed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InFlightSend {
+    kind: &'static str,
+    render_bytes: usize,
+    started: Instant,
+}
+
+#[derive(Debug)]
+struct QueueOverflow {
+    reason: &'static str,
+    ordered: usize,
+    pending_pane_renders: usize,
+    render_bytes: usize,
+    rejected_render_len: usize,
+    rejected_render_capacity: usize,
+    in_flight: Option<InFlightSend>,
+}
+
+impl SendQueueState {
+    fn overflow(&self, reason: &'static str, msg: &ServerToClientMsg) -> QueueOverflow {
+        let (rejected_render_len, rejected_render_capacity) = match msg {
+            ServerToClientMsg::Render { content } => (content.len(), content.capacity()),
+            _ => (0, 0),
+        };
+        QueueOverflow {
+            reason,
+            ordered: self.control.len(),
+            pending_pane_renders: self.pending_pane_renders.len(),
+            render_bytes: self.render_bytes,
+            rejected_render_len,
+            rejected_render_capacity,
+            in_flight: self.in_flight,
+        }
+    }
+}
+
+fn message_size_and_kind(msg: &ServerToClientMsg) -> (&'static str, usize) {
+    let kind = msg.into();
+    let render_bytes = match msg {
+        ServerToClientMsg::Render { content } => content.len(),
+        ServerToClientMsg::PaneRenderUpdate {
+            viewport,
+            scrollback,
+            ..
+        } => viewport
+            .iter()
+            .chain(scrollback.iter().flatten())
+            .map(String::len)
+            .sum(),
+        _ => 0,
+    };
+    (kind, render_bytes)
 }
 
 /// Which slot of the queue a message belongs in.
@@ -211,7 +266,7 @@ enum SendQueuePush {
     /// The message was a render and replaced an older pending one.
     CoalescedRender,
     /// The message was dropped: the ordered FIFO hit its count or render-byte limit.
-    ControlQueueFull,
+    ControlQueueFull(QueueOverflow),
 }
 
 impl CoalescingSendQueue {
@@ -236,11 +291,18 @@ impl CoalescingSendQueue {
             },
             SendQueueSlot::Control => {
                 if state.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
-                    return SendQueuePush::ControlQueueFull;
+                    return SendQueuePush::ControlQueueFull(state.overflow("message_count", &msg));
                 }
                 if let ServerToClientMsg::Render { content } = &msg {
+                    if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY {
+                        return SendQueuePush::ControlQueueFull(
+                            state.overflow("single_oversized_render", &msg),
+                        );
+                    }
                     if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY - state.render_bytes {
-                        return SendQueuePush::ControlQueueFull;
+                        return SendQueuePush::ControlQueueFull(
+                            state.overflow("render_allocation_bytes", &msg),
+                        );
                     }
                     state.render_bytes += content.capacity();
                 }
@@ -264,9 +326,21 @@ impl CoalescingSendQueue {
                 if let ServerToClientMsg::Render { content } = &msg {
                     state.render_bytes -= content.capacity();
                 }
+                let (kind, render_bytes) = message_size_and_kind(&msg);
+                state.in_flight = Some(InFlightSend {
+                    kind,
+                    render_bytes,
+                    started: Instant::now(),
+                });
                 return Some(msg);
             }
             if let Some((_, msg)) = state.pending_pane_renders.pop_first() {
+                let (kind, render_bytes) = message_size_and_kind(&msg);
+                state.in_flight = Some(InFlightSend {
+                    kind,
+                    render_bytes,
+                    started: Instant::now(),
+                });
                 return Some(msg);
             }
             if state.closed {
@@ -278,6 +352,9 @@ impl CoalescingSendQueue {
     fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.message_available.notify_all();
+    }
+    fn finish_send(&self) {
+        self.state.lock().unwrap().in_flight = None;
     }
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -349,6 +426,38 @@ struct ClientSender {
     stream_fd: std::os::fd::OwnedFd,
 }
 
+#[derive(Default)]
+struct SlowWarnings {
+    last_logged: Option<Instant>,
+    suppressed: usize,
+    max_suppressed: Duration,
+}
+
+impl SlowWarnings {
+    fn record(&mut self, now: Instant, elapsed: Duration) -> Option<(usize, Duration)> {
+        if elapsed < Duration::from_millis(100) {
+            return None;
+        }
+        if self
+            .last_logged
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+        {
+            self.suppressed += 1;
+            self.max_suppressed = self.max_suppressed.max(elapsed);
+            return None;
+        }
+        self.last_logged = Some(now);
+        let summary = (self.suppressed, self.max_suppressed);
+        self.suppressed = 0;
+        self.max_suppressed = Duration::ZERO;
+        Some(summary)
+    }
+
+    fn finish(&self) -> Option<(usize, Duration)> {
+        (self.suppressed > 0).then_some((self.suppressed, self.max_suppressed))
+    }
+}
+
 impl ClientSender {
     /// Stop the router thread reading this connection.
     ///
@@ -389,8 +498,10 @@ impl ClientSender {
             let err_context = || format!("failed to send message to client {client_id}");
             let mut first_message = true;
             let mut first_render = true;
+            let mut slow_warnings = SlowWarnings::default();
             while let Some(msg) = writer_queue.pop() {
                 let started_at = Instant::now();
+                let (message_kind, render_bytes) = message_size_and_kind(&msg);
                 let is_render = matches!(&msg, ServerToClientMsg::Render { .. });
                 let trace_write = first_message || (first_render && is_render);
                 if trace_write {
@@ -408,6 +519,15 @@ impl ClientSender {
                     );
                 }
                 let result = sender.send_server_msg(msg).with_context(err_context);
+                let elapsed = started_at.elapsed();
+                writer_queue.finish_send();
+                if let Some((suppressed, max_suppressed)) = slow_warnings.record(Instant::now(), elapsed) {
+                    log::warn!(
+                        "output pressure: server pid={} client_id={client_id} stage=ipc_serialization_plus_socket_delivery kind={message_kind} render_bytes={render_bytes} elapsed_ms={} suppressed={suppressed} max_suppressed_ms={} result={}",
+                        std::process::id(), elapsed.as_millis(), max_suppressed.as_millis(),
+                        if result.is_ok() { "ok" } else { "error" }
+                    );
+                }
                 if trace_write {
                     log::info!(
                         "attach trace: server client writer client_id={client_id} socket write finished after {:?} ({})",
@@ -421,9 +541,17 @@ impl ClientSender {
                 }
                 result.non_fatal();
             }
+            let started_at = Instant::now();
             let _ = sender.send_server_msg(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Disconnect,
             });
+            let elapsed = started_at.elapsed();
+            if let Some((suppressed, max_suppressed)) = slow_warnings.record(Instant::now(), elapsed) {
+                log::warn!("output pressure: server pid={} client_id={client_id} stage=ipc_serialization_plus_socket_delivery kind=Exit render_bytes=0 elapsed_ms={} suppressed={suppressed} max_suppressed_ms={}", std::process::id(), elapsed.as_millis(), max_suppressed.as_millis());
+            }
+            if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
+                log::warn!("output pressure: server pid={} client_id={client_id} stage=ipc_serialization_plus_socket_delivery final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
+            }
             // Last thing this thread does: from here on the socket has
             // everything it was ever going to get.
             finished_writers.deregister();
@@ -448,10 +576,25 @@ impl ClientSender {
 
         match self.queue.push(msg) {
             SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
-            SendQueuePush::ControlQueueFull => {
+            SendQueuePush::ControlQueueFull(overflow) => {
+                let in_flight = overflow
+                    .in_flight
+                    .map(|send| {
+                        format!(
+                            "kind={} render_bytes={} elapsed_ms={}",
+                            send.kind,
+                            send.render_bytes,
+                            send.started.elapsed().as_millis()
+                        )
+                    })
+                    .unwrap_or_else(|| "none".to_owned());
                 log::warn!(
-                    "client {} is processing server messages too slow",
-                    self.client_id
+                    "output pressure: server pid={} client_id={} queue overflow reason={} queued_messages={} ordered={}/{} pending_pane_renders={} render_allocation_bytes={}/{} rejected_render_len={} rejected_render_capacity={} in_flight={}",
+                    std::process::id(), self.client_id, overflow.reason,
+                    overflow.ordered + overflow.pending_pane_renders, overflow.ordered,
+                    SEND_QUEUE_CONTROL_CAPACITY, overflow.pending_pane_renders,
+                    overflow.render_bytes, SEND_QUEUE_RENDER_BYTE_CAPACITY,
+                    overflow.rejected_render_len, overflow.rejected_render_capacity, in_flight
                 );
                 Err(YinzError::ClientTooSlow {
                     client_id: self.client_id,

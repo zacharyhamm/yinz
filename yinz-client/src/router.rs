@@ -31,6 +31,38 @@ const MALFORMED_MESSAGE_BACKOFF: Duration = Duration::from_millis(1);
 const SERVER_HUNG_UP: &str =
     "The yinz server exited without notifying this client.\nRun `yinz ls` to see whether the session is still there.";
 
+#[derive(Default)]
+pub(crate) struct SlowWarnings {
+    last_logged: Option<Instant>,
+    suppressed: usize,
+    max_suppressed: Duration,
+}
+
+impl SlowWarnings {
+    pub(crate) fn record(&mut self, now: Instant, elapsed: Duration) -> Option<(usize, Duration)> {
+        if elapsed < Duration::from_millis(100) {
+            return None;
+        }
+        if self
+            .last_logged
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(1))
+        {
+            self.suppressed += 1;
+            self.max_suppressed = self.max_suppressed.max(elapsed);
+            return None;
+        }
+        self.last_logged = Some(now);
+        let summary = (self.suppressed, self.max_suppressed);
+        self.suppressed = 0;
+        self.max_suppressed = Duration::ZERO;
+        Some(summary)
+    }
+
+    pub(crate) fn finish(&self) -> Option<(usize, Duration)> {
+        (self.suppressed > 0).then_some((self.suppressed, self.max_suppressed))
+    }
+}
+
 /// Spawn the router thread. It runs until the server says `Exit` or the
 /// socket gives up, and the caller joins it during shutdown.
 pub(crate) fn spawn(
@@ -51,6 +83,7 @@ pub(crate) fn route(
     let started_at = Instant::now();
     let mut waiting_for_first_message = true;
     let mut waiting_for_first_render = true;
+    let mut slow_warnings = SlowWarnings::default();
     log::info!(
         "attach trace: client pid={} router started; waiting for first server message",
         std::process::id()
@@ -100,7 +133,20 @@ pub(crate) fn route(
                         }
                     );
                 }
+                let (kind, render_bytes) = match &instruction {
+                    ServerToClientMsg::Render { content } => ("Render", content.len()),
+                    ServerToClientMsg::Exit { .. } => ("Exit", 0),
+                    ServerToClientMsg::Connected { .. } => ("Connected", 0),
+                    _ => ("other", 0),
+                };
+                let started = Instant::now();
                 let should_exit = forward(&send_client_instructions, instruction, err_ctx);
+                let elapsed = started.elapsed();
+                if let Some((suppressed, max_suppressed)) =
+                    slow_warnings.record(Instant::now(), elapsed)
+                {
+                    log::warn!("output pressure: client pid={} stage=router_enqueue kind={kind} render_bytes={render_bytes} elapsed_ms={} suppressed={suppressed} max_suppressed_ms={}", std::process::id(), elapsed.as_millis(), max_suppressed.as_millis());
+                }
                 if tracing_first_message || tracing_first_render {
                     log::info!(
                         "attach trace: client pid={} {} reached client-loop queue after {:?}",
@@ -164,6 +210,9 @@ pub(crate) fn route(
             IpcRecv::Idle => {},
         }
     }
+    if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
+        log::warn!("output pressure: client pid={} stage=router_enqueue final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
+    }
 }
 
 /// Forward one message to the main loop. Returns whether this was the last
@@ -177,4 +226,40 @@ fn forward(
     let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
     send_client_instructions.send(instruction.into()).unwrap();
     is_exit
+}
+
+#[cfg(test)]
+mod slow_warning_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_suppression_peak_and_final_summary() {
+        let start = Instant::now();
+        let mut warnings = SlowWarnings::default();
+        assert_eq!(warnings.record(start, Duration::from_millis(99)), None);
+        assert_eq!(
+            warnings.record(start, Duration::from_millis(100)),
+            Some((0, Duration::ZERO))
+        );
+        assert_eq!(
+            warnings.record(
+                start + Duration::from_millis(100),
+                Duration::from_millis(150)
+            ),
+            None
+        );
+        assert_eq!(
+            warnings.record(
+                start + Duration::from_millis(200),
+                Duration::from_millis(120)
+            ),
+            None
+        );
+        assert_eq!(warnings.finish(), Some((2, Duration::from_millis(150))));
+        assert_eq!(
+            warnings.record(start + Duration::from_secs(1), Duration::from_millis(110)),
+            Some((2, Duration::from_millis(150)))
+        );
+        assert_eq!(warnings.finish(), None);
+    }
 }

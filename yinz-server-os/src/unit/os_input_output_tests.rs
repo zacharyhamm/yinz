@@ -1022,6 +1022,13 @@ mod coalescing_send_queue {
         }
     }
 
+    fn overflow(queue: &CoalescingSendQueue, msg: ServerToClientMsg) -> QueueOverflow {
+        match queue.push(msg) {
+            SendQueuePush::ControlQueueFull(details) => details,
+            _ => panic!("expected queue overflow"),
+        }
+    }
+
     #[test]
     fn incremental_renders_survive_backlog_and_precede_exit() {
         let queue = CoalescingSendQueue::new();
@@ -1054,19 +1061,22 @@ mod coalescing_send_queue {
                 SendQueuePush::Queued
             ));
         }
-        assert!(matches!(
-            queue.push(render("overflow")),
-            SendQueuePush::ControlQueueFull
-        ));
-        assert!(matches!(
-            queue.push(control("overflow")),
-            SendQueuePush::ControlQueueFull
-        ));
+        let details = overflow(&queue, render("overflow"));
+        assert_eq!(details.reason, "message_count");
+        assert_eq!(details.ordered, SEND_QUEUE_CONTROL_CAPACITY);
+        assert_eq!(details.render_bytes, SEND_QUEUE_CONTROL_CAPACITY);
+        assert_eq!(details.rejected_render_len, 8);
+        assert_eq!(details.rejected_render_capacity, 8);
+        assert_eq!(
+            overflow(&queue, control("overflow")).reason,
+            "message_count"
+        );
         queue.close();
         for i in 0..SEND_QUEUE_CONTROL_CAPACITY {
             assert_eq!(queue.pop(), Some(render(&i.to_string())));
         }
         assert_eq!(queue.pop(), None);
+        assert_eq!(queue.state.lock().unwrap().render_bytes, 0);
     }
 
     #[test]
@@ -1079,16 +1089,21 @@ mod coalescing_send_queue {
             assert!(matches!(queue.push(message), SendQueuePush::Queued));
         }
         assert!(queue.len() < SEND_QUEUE_CONTROL_CAPACITY);
-        assert!(matches!(
-            queue.push(render("overflow")),
-            SendQueuePush::ControlQueueFull
-        ));
+        let details = overflow(&queue, render("overflow"));
+        assert_eq!(details.reason, "render_allocation_bytes");
+        assert_eq!(details.ordered, 3);
+        assert_eq!(details.render_bytes, SEND_QUEUE_RENDER_BYTE_CAPACITY);
         assert_eq!(queue.pop(), Some(render(&first)));
+        assert_eq!(
+            queue.state.lock().unwrap().render_bytes,
+            SEND_QUEUE_RENDER_BYTE_CAPACITY / 2
+        );
+        queue.finish_send();
         assert!(matches!(queue.push(render(&third)), SendQueuePush::Queued));
         assert_eq!(queue.pop(), Some(control("notice")));
         assert!(matches!(
             queue.push(render("still full")),
-            SendQueuePush::ControlQueueFull
+            SendQueuePush::ControlQueueFull(_)
         ));
         let exit = ServerToClientMsg::Exit {
             exit_reason: ExitReason::Normal,
@@ -1103,12 +1118,37 @@ mod coalescing_send_queue {
     }
 
     #[test]
+    fn overflow_snapshot_reflects_a_drained_queue() {
+        let queue = CoalescingSendQueue::new();
+        assert!(matches!(queue.push(render("x")), SendQueuePush::Queued));
+        assert_eq!(queue.pop(), Some(render("x")));
+        queue.finish_send();
+        let details = overflow(
+            &queue,
+            render(&"z".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1)),
+        );
+        assert_eq!(details.ordered, 0);
+        assert_eq!(details.render_bytes, 0);
+        assert!(details.in_flight.is_none());
+    }
+
+    #[test]
     fn an_oversized_render_leaves_the_byte_budget_untouched() {
         let queue = CoalescingSendQueue::new();
-        assert!(matches!(
-            queue.push(render(&"x".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1))),
-            SendQueuePush::ControlQueueFull
-        ));
+        let details = overflow(
+            &queue,
+            render(&"x".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY + 1)),
+        );
+        assert_eq!(details.reason, "single_oversized_render");
+        assert_eq!(
+            details.rejected_render_len,
+            SEND_QUEUE_RENDER_BYTE_CAPACITY + 1
+        );
+        assert_eq!(
+            details.rejected_render_capacity,
+            SEND_QUEUE_RENDER_BYTE_CAPACITY + 1
+        );
+        assert_eq!(details.render_bytes, 0);
         assert_eq!(queue.len(), 0);
         let content = "y".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY);
         assert!(matches!(
@@ -1131,11 +1171,15 @@ mod coalescing_send_queue {
             queue.push(ServerToClientMsg::Render { content }),
             SendQueuePush::Queued
         ));
-        assert!(matches!(
-            queue.push(render("overflow")),
-            SendQueuePush::ControlQueueFull
-        ));
+        let details = overflow(&queue, render("overflow"));
+        assert_eq!(details.reason, "render_allocation_bytes");
+        assert_eq!(details.ordered, 1);
+        assert_eq!(details.render_bytes, SEND_QUEUE_RENDER_BYTE_CAPACITY);
+        assert_eq!(details.rejected_render_len, 8);
+        assert_eq!(details.rejected_render_capacity, 8);
         assert_eq!(queue.pop(), Some(render("x")));
+        assert_eq!(queue.state.lock().unwrap().render_bytes, 0);
+        queue.finish_send();
         let content = "y".repeat(SEND_QUEUE_RENDER_BYTE_CAPACITY);
         assert!(matches!(
             queue.push(render(&content)),
@@ -1144,6 +1188,50 @@ mod coalescing_send_queue {
         queue.close();
         assert_eq!(queue.pop(), Some(render(&content)));
         assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn overflow_reports_an_active_send_and_clears_it_on_finish() {
+        let queue = CoalescingSendQueue::new();
+        assert!(matches!(
+            queue.push(render("sending")),
+            SendQueuePush::Queued
+        ));
+        assert_eq!(queue.pop(), Some(render("sending")));
+        for _ in 0..SEND_QUEUE_CONTROL_CAPACITY {
+            assert!(matches!(queue.push(render("x")), SendQueuePush::Queued));
+        }
+        let details = overflow(&queue, render("rejected"));
+        let active = details.in_flight.unwrap();
+        assert_eq!(active.kind, "Render");
+        assert_eq!(active.render_bytes, 7);
+        assert!(active.started.elapsed() <= Duration::from_secs(1));
+        queue.finish_send();
+        assert!(overflow(&queue, render("rejected")).in_flight.is_none());
+    }
+
+    #[test]
+    fn slow_ipc_warnings_keep_suppressed_count_and_maximum() {
+        let start = Instant::now();
+        let mut warnings = SlowWarnings::default();
+        assert_eq!(warnings.record(start, Duration::from_millis(99)), None);
+        assert_eq!(
+            warnings.record(start, Duration::from_millis(100)),
+            Some((0, Duration::ZERO))
+        );
+        assert_eq!(
+            warnings.record(
+                start + Duration::from_millis(50),
+                Duration::from_millis(250)
+            ),
+            None
+        );
+        assert_eq!(warnings.finish(), Some((1, Duration::from_millis(250))));
+        assert_eq!(
+            warnings.record(start + Duration::from_secs(1), Duration::from_millis(120)),
+            Some((1, Duration::from_millis(250)))
+        );
+        assert_eq!(warnings.finish(), None);
     }
 
     /// The shutdown shape: the writer is popping while the router closes the queue under
@@ -1369,7 +1457,7 @@ mod coalescing_send_queue {
             } else if self.control.len() >= SEND_QUEUE_CONTROL_CAPACITY
                 || self.render_bytes() + render_bytes > SEND_QUEUE_RENDER_BYTE_CAPACITY
             {
-                assert!(matches!(outcome, SendQueuePush::ControlQueueFull));
+                assert!(matches!(outcome, SendQueuePush::ControlQueueFull(_)));
             } else {
                 assert!(matches!(outcome, SendQueuePush::Queued));
                 if let ServerToClientMsg::PaneRenderUpdate { pane_id, .. } = &msg {
@@ -1573,6 +1661,35 @@ mod client_writer_flush {
                 }
             ),
         }
+    }
+
+    #[test]
+    fn failed_send_clears_in_flight_state() {
+        use std::os::fd::AsFd;
+        let (_guard, server_end, client_end) = socket_pair();
+        let server_fd = match &server_end {
+            interprocess::local_socket::Stream::UdSocket(uds) => {
+                uds.as_fd().try_clone_to_owned().expect("dup failed")
+            },
+        };
+        let live_writers = Arc::new(LiveWriters::default());
+        let sender = ClientSender::new(
+            crate::ClientId::new(1),
+            IpcSenderWithContext::<ServerToClientMsg>::new(server_end),
+            live_writers.clone(),
+            server_fd,
+        )
+        .unwrap();
+        let queue = sender.queue.clone();
+        drop(client_end);
+        sender
+            .send_or_buffer(ServerToClientMsg::Render {
+                content: "x".to_owned(),
+            })
+            .unwrap();
+        sender.close();
+        assert!(live_writers.wait_until_drained(Duration::from_secs(5)));
+        assert!(queue.state.lock().unwrap().in_flight.is_none());
     }
 
     /// The other half of the ordering: the wait does not report drained while a writer still
