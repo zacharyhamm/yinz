@@ -284,6 +284,157 @@ fn launcher_forwards_its_directory_unless_overridden_or_bypassed() {
 }
 
 #[test]
+fn launcher_keeps_the_ui_alive_across_backend_connection_failures() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEST: &str = "tests::launcher_keeps_the_ui_alive_across_backend_connection_failures";
+    const ROLE_ENV: &str = "YINZ_TEST_CODEX_RECONNECT_ROLE";
+    const ROOT_ENV: &str = "YINZ_TEST_CODEX_RECONNECT_ROOT";
+    const REQUEST: &str =
+        r#"{"id":0,"method":"turn/start","params":{"threadId":"reconnect-thread"}}"#;
+    const REPLY: &str = r#"{"id":0,"result":true}"#;
+    let role = std::env::var(ROLE_ENV).unwrap_or_default();
+    if role == "launcher" {
+        let program = PathBuf::from(std::env::var_os(ROOT_ENV).unwrap()).join("codex");
+        assert_eq!(launch(&program, &[]).unwrap(), 23);
+        return;
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                match role.as_str() {
+                    "ui" => {
+                        let endpoint = std::env::var("YINZ_TEST_CODEX_RECONNECT_SOCKET").unwrap();
+                        let socket = Path::new(endpoint.strip_prefix("unix://").unwrap());
+                        let binding = socket.parent().unwrap().join("binding.json");
+                        let mut selected = None;
+                        for attempt in 0..3 {
+                            let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+                            let (mut ws, _) =
+                                tokio_tungstenite::client_async("ws://localhost", stream)
+                                    .await
+                                    .unwrap();
+                            if attempt != 1 {
+                                ws.send(Message::text(REQUEST)).await.unwrap();
+                                assert_eq!(
+                                    ws.next().await.unwrap().unwrap(),
+                                    Message::text(REPLY)
+                                );
+                                selected.get_or_insert_with(|| {
+                                    let bytes = std::fs::read(&binding).unwrap();
+                                    let value: Value = serde_json::from_slice(&bytes).unwrap();
+                                    assert_eq!(value["thread_id"], "reconnect-thread");
+                                    bytes
+                                });
+                            }
+                            if attempt == 2 {
+                                ws.close(None).await.unwrap();
+                                assert!(matches!(
+                                    ws.next().await.unwrap().unwrap(),
+                                    Message::Close(_)
+                                ));
+                            } else {
+                                assert!(ws.next().await.unwrap().is_err());
+                            }
+                            assert_eq!(std::fs::read(&binding).unwrap(), *selected.as_ref().unwrap());
+                        }
+                    },
+                    "backend" => {
+                        let counter = PathBuf::from(std::env::var_os(ROOT_ENV).unwrap())
+                            .join("connections");
+                        let attempt: usize = std::fs::read_to_string(&counter)
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        std::fs::write(&counter, (attempt + 1).to_string()).unwrap();
+                        // The script routes stderr to the proxy pipe, keeping libtest output out.
+                        let mut stream = tokio::io::join(tokio::io::stdin(), tokio::io::stderr());
+                        if attempt == 1 {
+                            let mut request = Vec::new();
+                            while !request.ends_with(b"\r\n\r\n") {
+                                request.push(stream.read_u8().await.unwrap());
+                            }
+                            stream
+                                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                                .await
+                                .unwrap();
+                            stream.flush().await.unwrap();
+                        } else {
+                            assert!(matches!(attempt, 0 | 2));
+                            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                            assert_eq!(
+                                ws.next().await.unwrap().unwrap(),
+                                Message::text(REQUEST)
+                            );
+                            ws.send(Message::text(REPLY)).await.unwrap();
+                            if attempt == 2 {
+                                assert!(matches!(
+                                    ws.next().await.unwrap().unwrap(),
+                                    Message::Close(_)
+                                ));
+                                ws.flush().await.unwrap();
+                            }
+                            // The first backend exits without a WebSocket closing handshake.
+                        }
+                    },
+                    "" => {
+                        let root = tempfile::tempdir().unwrap();
+                        std::fs::write(root.path().join("connections"), "0").unwrap();
+                        yinz_test_support::write_warm_script(
+                            &root.path().join("codex"),
+                            r#"
+if [ "$1" = app-server ]; then
+    [ "$2" = daemon ] && exit 0
+    export YINZ_TEST_CODEX_RECONNECT_ROLE=backend
+    exec "$YINZ_TEST_CODEX_RECONNECT_EXE" --exact "$YINZ_TEST_CODEX_RECONNECT_TEST" --nocapture 2>&1 >/dev/null
+fi
+export YINZ_TEST_CODEX_RECONNECT_ROLE=ui
+export YINZ_TEST_CODEX_RECONNECT_SOCKET="$2"
+exec "$YINZ_TEST_CODEX_RECONNECT_EXE" --exact "$YINZ_TEST_CODEX_RECONNECT_TEST" --nocapture
+"#,
+                        );
+                        let executable = std::env::current_exe().unwrap();
+                        let output = tokio::process::Command::new(&executable)
+                            .args(["--exact", TEST, "--nocapture"])
+                            .env(ROLE_ENV, "launcher")
+                            .env(ROOT_ENV, root.path())
+                            .env("YINZ_TEST_CODEX_RECONNECT_EXE", &executable)
+                            .env("YINZ_TEST_CODEX_RECONNECT_TEST", TEST)
+                            .env("YINZ_PANE_ID", "15")
+                            .env_remove("YINZ_PANE_REF")
+                            .env_remove("YINZ_REMOTE_PANE_TOKEN")
+                            .kill_on_drop(true)
+                            .output()
+                            .await
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{}\n{}",
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+                        assert_eq!(
+                            std::fs::read_to_string(root.path().join("connections")).unwrap(),
+                            "3"
+                        );
+                    },
+                    _ => panic!("unexpected mock Codex role: {role}"),
+                }
+            })
+            .await
+            .expect("mock Codex reconnect scenario timed out");
+        });
+    if role == "ui" {
+        std::process::exit(23);
+    }
+}
+
+#[test]
 fn launcher_reports_an_unresolvable_working_directory() {
     const TEST: &str = "tests::launcher_reports_an_unresolvable_working_directory";
     const CHILD_ENV: &str = "YINZ_TEST_CODEX_DELETED_CWD";
