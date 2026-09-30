@@ -989,7 +989,11 @@ impl RunningPlugin {
     pub fn new_deno(deno: DenoPlugin, rows: usize, columns: usize) -> Self {
         Self {
             instance_id: deno.env().instance_id,
-            current_configuration: deno.env().plugin.initial_userspace_configuration.clone(),
+            current_configuration: deno
+                .env()
+                .plugin_config
+                .initial_userspace_configuration
+                .clone(),
             pipes_released: false,
             failed: false,
             pipe_requests: HashMap::new(),
@@ -1055,7 +1059,11 @@ impl RunningPlugin {
     pub fn new(store: Store<PluginEnv>, instance: Instance, rows: usize, columns: usize) -> Self {
         RunningPlugin {
             instance_id: store.data().instance_id,
-            current_configuration: store.data().plugin.initial_userspace_configuration.clone(),
+            current_configuration: store
+                .data()
+                .plugin_config
+                .initial_userspace_configuration
+                .clone(),
             pipes_released: false,
             failed: false,
             pipe_requests: HashMap::new(),
