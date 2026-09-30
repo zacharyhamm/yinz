@@ -132,6 +132,9 @@ Prompts must contain UTF-8 text and fit within 1 MiB. Yinz converts CRLF line
 endings to LF and removes trailing newlines before submission. It preserves
 other spaces and internal newlines. Terminal control characters are rejected,
 except tabs and newlines.
+For Claude, Yinz removes U+200B (zero-width space) and U+202E (right-to-left
+override) before pasting. All other characters, including emoji joiners, remain
+unchanged. Text that becomes empty is rejected. Codex text is not normalized this way.
 `prompt` accepts task text and exact Claude `/clear`. It rejects other `/`
 commands, including `/exit`, and Claude `!` shell input. Use `agent send-keys`
 for command input that does not produce prompt acknowledgement.

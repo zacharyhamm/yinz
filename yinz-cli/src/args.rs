@@ -621,6 +621,7 @@ pub enum Agent {
         json: bool,
     },
     /// Submit to an idle, ready agent and wait for acknowledgement or the resulting turn.
+    /// Claude delivery removes U+200B and U+202E; other characters and Codex text are preserved.
     Prompt {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,

@@ -543,3 +543,32 @@ No live-provider orchestration rerun was performed for these changes.
 | Codex luna (full access) | The same task on `fix-sub-luna` | **Succeeded.** It needed two manual warm-up turns first (P0 #1 and #2). It found the session with `list-sessions`, used `spawn --kind claude`, `wait` (ok), `status`, and a single-line `prompt --wait`. On `needs_input` it ran `read` and then `send-keys Down Enter`, which chose "don't ask again", and it verified the tests itself: 3/3 pass. |
 
 Skill takeaways: remove the literal `--session main` and describe session discovery. The example kind should match the prose. Document the `send-keys` syntax and the dialog accounting fixed in #9/#10; manual/raw input still requires recovery. Warn that prompts should be single-line for Claude until #3 is fixed. Document the Codex sandbox, the missing environment, and the need for `--session`. Say what to do when a worker never becomes ready.
+
+## Fix status: #12 delivery normalization (2026-09-30, v9)
+
+**Fixed and verified live.** The shared screen handler removes only U+200B and
+U+202E from Claude delivery before selecting the paste lead-in and writing bytes.
+Original size/control validation, command rejection (including disguised `/clear`),
+fingerprint compatibility, the 500 ms settling period, quiet-output check, and
+single Enter remain in place. Codex text and emoji joiners remain unchanged.
+
+Automated verification: regression tests cover both characters separately and
+together, multiline and collapsed pastes, the lead-in cutoff after normalization,
+normalized-empty rejection, Arabic/emoji and Codex bytes, acknowledgement and
+completion, and manual input during settling. The full gate passed: 9,434 unit
+tests, 46 doctests, and 475 integration tests, plus format and lint. See
+[`logs/v9-validation.txt`](logs/v9-validation.txt).
+
+Live verification used this worktree's `target/debug/yinz`, Claude Code 2.1.286
+with Haiku, and the isolated session `verify-fixes-12-42`. U+200B, U+202E, both,
+multiline, collapsed, and emoji/Arabic cases each returned `completed`, answer `8`,
+and `ready:true`. Each immediately completed a subsequent prompt with answer `10`,
+without recovery. The transcript's twelve user prompts contained neither removed
+character and retained the emoji joiner and Arabic. Evidence: `logs/v9-12-{zwsp,
+rlo,both,multiline,collapsed,emoji-arabic}{,-next}.json`.
+
+Normalized-empty input and disguised `/clear` were rejected with `ready:true`.
+Exact `/clear` returned `target_changed`, restored readiness, and a subsequent
+prompt completed with `CLEAR_OK` (`logs/v9-16-*` through `logs/v9-20-*`).
+The scratch session, repo, settings, and copied authentication were removed.
+Earlier v8 findings and logs are preserved above and on disk.
