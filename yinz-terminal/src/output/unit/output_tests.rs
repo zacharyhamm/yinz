@@ -369,7 +369,12 @@ fn test_serialize_with_pre_and_post_vte_instructions() {
         .unwrap();
     output.add_post_vte_instruction_to_client(ClientId::new(1), "\u{1b}[?25h");
 
+    let sized_result = output
+        .clone()
+        .serialize_with_size(Some(Size { rows: 1, cols: 4 }), None)
+        .unwrap();
     let result = output.serialize().unwrap();
+    assert_eq!(result, sized_result);
     let client_output = result.get(&ClientId::new(1)).unwrap();
 
     // Verify correct ordering

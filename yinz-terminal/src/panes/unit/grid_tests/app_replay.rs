@@ -928,6 +928,19 @@ pub fn scroll_up_increase_width_and_scroll_down() {
 }
 
 #[test]
+fn resizing_tracks_the_current_and_saved_cursor_independently() {
+    let mut grid = create_grid_with_size_and_raw(5, 4, b"abcdefgh\x1b[sij\x1b[1;2H");
+    grid.change_size(5, 8);
+
+    assert_eq!((grid.cursor.y, grid.cursor.x), (0, 1));
+    let saved_cursor = grid.saved_cursor_position.as_ref().unwrap();
+    assert_eq!((saved_cursor.y, saved_cursor.x), (0, 8));
+
+    feed_bytes(&mut grid, b"\x1b[uZ");
+    assert_eq!(grid.dump_screen(false).trim_end(), "abcdefghZj");
+}
+
+#[test]
 fn saved_cursor_across_resize() {
     let mut vte_parser = vte::Parser::new();
     let sixel_image_store = Rc::new(RefCell::new(SixelImageStore::default()));

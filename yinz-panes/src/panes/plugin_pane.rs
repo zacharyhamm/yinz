@@ -695,32 +695,12 @@ impl Pane for PluginPane {
             frame.override_color(override_.color);
         }
 
-        let res = match self.frame.get(&client_id) {
-            // TODO: use and_then or something?
-            Some(last_frame) => {
-                if &frame != last_frame || is_pinned {
-                    if !self.borderless {
-                        let frame_output = frame.render().with_context(err_context)?;
-                        self.frame.insert(client_id, frame);
-                        Some(frame_output)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            },
-            None => {
-                if !self.borderless {
-                    let frame_output = frame.render().with_context(err_context)?;
-                    self.frame.insert(client_id, frame);
-                    Some(frame_output)
-                } else {
-                    None
-                }
-            },
-        };
-        Ok(res)
+        if !is_pinned && self.frame.get(&client_id) == Some(&frame) {
+            return Ok(None);
+        }
+        let frame_output = frame.render().with_context(err_context)?;
+        self.frame.insert(client_id, frame);
+        Ok(Some(frame_output))
     }
     fn render_fake_cursor(
         &mut self,
@@ -1372,6 +1352,10 @@ impl PluginPane {
 }
 
 #[cfg(test)]
+#[path = "./unit/plugin_pane_frame_tests.rs"]
+mod frame_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use yinz_runtime::channels;
@@ -1379,11 +1363,11 @@ mod tests {
     use yinz_types::pane_size::Dimension;
     use yinz_types::ui_components::UI_COMPONENT_DCS_PREFIX;
 
-    fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
+    pub(super) fn test_plugin_pane(rows: usize, cols: usize, content_offset: Offset) -> PluginPane {
         test_plugin_pane_with_cell_size(rows, cols, content_offset, None)
     }
 
-    fn frame_params() -> FrameParams {
+    pub(super) fn frame_params() -> FrameParams {
         FrameParams {
             focused_client: Some(ClientId::new(1)),
             is_main_client: true,

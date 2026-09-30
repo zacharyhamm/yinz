@@ -632,6 +632,9 @@ impl PluginUserConfiguration {
     pub fn inner(&self) -> &BTreeMap<String, String> {
         &self.0
     }
+    pub fn into_inner(self) -> BTreeMap<String, String> {
+        self.0
+    }
     /// This configuration with the per-launch caller context taken out of it.
     ///
     /// `caller_cwd` and `caller_terminal_pane_id` are stamped onto a launch by whoever asked for

@@ -1,5 +1,72 @@
 use super::*;
 
+#[test]
+fn unfocused_client_moves_preserve_floating_focus_stack_and_fullscreen() {
+    use crate::panes::terminal_pane::TerminalPane;
+    use yinz_types::geometry::Direction;
+    use yinz_types::pane_size::PaneGeom;
+
+    let focused = ClientId::new(1);
+    let unfocused = ClientId::new(2);
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    let mut panes = create_layout_applier_fixtures(Size { cols: 80, rows: 24 }).11;
+    let mut geom = PaneGeom::default();
+    geom.cols.set_inner(40);
+    geom.rows.set_inner(12);
+    panes.add_pane(
+        pane_id,
+        Box::new(TerminalPane::new(
+            TerminalId::new(1),
+            geom,
+            Style::default(),
+            0,
+            String::new(),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            Rc::new(RefCell::new(None)),
+            Rc::new(RefCell::new(SixelImageStore::default())),
+            Rc::new(RefCell::new(KittyImageStore::default())),
+            Rc::new(RefCell::new(Palette::default())),
+            Rc::new(RefCell::new(HashMap::new())),
+            None,
+            None,
+            false,
+            true,
+            true,
+            true,
+            false,
+            None,
+        )),
+    );
+    panes.toggle_show_panes(true);
+    panes.focus_pane(pane_id, focused);
+    panes.focus_pane(pane_id, unfocused);
+    panes.defocus_pane(unfocused);
+    assert_eq!(panes.get_active_pane_id(focused), Some(pane_id));
+    let clients = HashSet::from([focused, unfocused]);
+    for fullscreen in [None, Some(false), Some(true)] {
+        if let Some(covers_ui) = fullscreen {
+            if covers_ui {
+                panes.toggle_pane_no_ui_fullscreen(pane_id);
+            } else {
+                panes.toggle_pane_fullscreen(pane_id);
+            }
+        }
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            assert!(!panes.move_focus(unfocused, &clients, &direction).unwrap());
+            assert_eq!(panes.get_active_pane_id(focused), Some(pane_id));
+            assert_eq!(panes.rendered_pane_ids(), vec![pane_id]);
+            assert_eq!(panes.fullscreen_pane_id(), fullscreen.map(|_| pane_id));
+            assert_eq!(panes.fullscreen_covers_ui(), fullscreen.unwrap_or(false));
+        }
+        panes.unset_fullscreen();
+    }
+}
+
 // ============================================================================
 // Suite 3: override_floating_panes_layout_for_existing_panes Tests
 // ============================================================================

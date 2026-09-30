@@ -315,7 +315,7 @@ pub struct OverrideLayoutPayload {
 pub struct Action {
     #[prost(enumeration="ActionName", tag="1")]
     pub name: i32,
-    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65, 66")]
+    #[prost(oneof="action::OptionalPayload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 64, 65, 66, 67")]
     pub optional_payload: ::core::option::Option<action::OptionalPayload>,
 }
 /// Nested message and enum types in `Action`.
@@ -445,6 +445,8 @@ pub mod action {
         MoveTextSelectionPayload(i32),
         #[prost(enumeration="super::super::resize::ResizeDirection", tag="66")]
         MoveNotificationSelectionPayload(i32),
+        #[prost(message, tag="67")]
+        KeybindPipePayload(super::KeybindPipePayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -464,6 +466,34 @@ pub struct CliPipePayload {
     pub args: ::prost::alloc::vec::Vec<NameAndValue>,
     #[prost(string, optional, tag="4")]
     pub plugin: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct KeybindPipePayload {
+    #[prost(string, optional, tag="1")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="2")]
+    pub payload: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag="3")]
+    pub args: ::core::option::Option<PluginUserConfiguration>,
+    #[prost(string, optional, tag="4")]
+    pub plugin: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint32, optional, tag="5")]
+    pub plugin_id: ::core::option::Option<u32>,
+    #[prost(message, optional, tag="6")]
+    pub configuration: ::core::option::Option<PluginUserConfiguration>,
+    #[prost(bool, tag="7")]
+    pub launch_new: bool,
+    #[prost(bool, tag="8")]
+    pub skip_cache: bool,
+    #[prost(bool, optional, tag="9")]
+    pub floating: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag="10")]
+    pub in_place: ::core::option::Option<bool>,
+    #[prost(string, optional, tag="11")]
+    pub cwd: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="12")]
+    pub pane_title: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

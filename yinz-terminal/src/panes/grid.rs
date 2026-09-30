@@ -1312,41 +1312,20 @@ impl Grid {
         }
         cursor_canonical_line_index
     }
-    // TODO: merge these two functions
-    fn cursor_index_in_canonical_line(&self) -> usize {
+    fn cursor_index_in_canonical_line(&self, cursor: &Cursor) -> usize {
         let mut cursor_canonical_line_index = 0;
         let mut cursor_index_in_canonical_line = 0;
         for (i, line) in self.viewport.iter().enumerate() {
             if line.is_canonical {
                 cursor_canonical_line_index = i;
             }
-            if i == self.cursor.y {
-                let line_wraps = self.cursor.y.saturating_sub(cursor_canonical_line_index);
-                cursor_index_in_canonical_line = (line_wraps * self.width) + self.cursor.x;
+            if i == cursor.y {
+                let line_wraps = cursor.y.saturating_sub(cursor_canonical_line_index);
+                cursor_index_in_canonical_line = (line_wraps * self.width) + cursor.x;
                 break;
             }
         }
         cursor_index_in_canonical_line
-    }
-    fn saved_cursor_index_in_canonical_line(&self) -> Option<usize> {
-        if let Some(saved_cursor_position) = self.saved_cursor_position.as_ref() {
-            let mut cursor_canonical_line_index = 0;
-            let mut cursor_index_in_canonical_line = 0;
-            for (i, line) in self.viewport.iter().enumerate() {
-                if line.is_canonical {
-                    cursor_canonical_line_index = i;
-                }
-                if i == saved_cursor_position.y {
-                    let line_wraps = saved_cursor_position.y - cursor_canonical_line_index;
-                    cursor_index_in_canonical_line =
-                        (line_wraps * self.width) + saved_cursor_position.x;
-                    break;
-                }
-            }
-            Some(cursor_index_in_canonical_line)
-        } else {
-            None
-        }
     }
     fn canonical_line_y_coordinates(&self, canonical_line_index: usize) -> usize {
         let mut canonical_lines_traversed = 0;
@@ -1830,8 +1809,11 @@ impl Grid {
                 }
             }
             let mut cursor_canonical_line_index = self.cursor_canonical_line_index();
-            let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line();
-            let saved_cursor_index_in_canonical_line = self.saved_cursor_index_in_canonical_line();
+            let cursor_index_in_canonical_line = self.cursor_index_in_canonical_line(&self.cursor);
+            let saved_cursor_index_in_canonical_line = self
+                .saved_cursor_position
+                .as_ref()
+                .map(|cursor| self.cursor_index_in_canonical_line(cursor));
             let mut viewport_canonical_lines = vec![];
             for mut row in self.viewport.drain(..) {
                 if row.is_canonical {
@@ -4177,7 +4159,7 @@ impl Grid {
                 if !self.sixel_scrolling {
                     self.move_cursor_down_by_pixels(image_pixel_height);
                 }
-                self.render_full_viewport(); // TODO: this could be optimized if it's a performance bottleneck
+                self.render_full_viewport();
             }
         }
     }
