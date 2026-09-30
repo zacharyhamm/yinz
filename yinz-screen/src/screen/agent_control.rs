@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
-    is_command_prompt, needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus,
-    NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    claude_prompt_text, is_command_prompt, needs_paste_lead_in, AgentOutcome, AgentRequest,
+    AgentResponse, AgentStatus, NotReadyReason, PromptObservation, MAX_PROMPT_BYTES,
+    MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -813,6 +814,19 @@ impl Screen {
                     status.agent.session_id.as_deref().unwrap_or_default(),
                     &prompt,
                 );
+                let prompt = if status.agent.kind == "claude" {
+                    claude_prompt_text(&prompt).into_owned()
+                } else {
+                    prompt
+                };
+                if prompt.trim().is_empty() {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "prompt must contain text after Claude format-character normalization",
+                    );
+                    return;
+                }
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 self.agent_controls.push(Pending {

@@ -2853,6 +2853,70 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
 }
 
 #[test]
+fn prompt_delivery_normalizes_only_claude_format_controls() {
+    for kind in ["claude", "codex"] {
+        for text in [
+            "review \u{200b}text".into(),
+            "review \u{202e}text".into(),
+            "review \u{200b}\u{202e}👩\u{200d}💻 العربية".into(),
+            "\u{200b}line one\nline two\u{202e}".into(),
+            format!("\u{200b}{}\u{202e}", "long ".repeat(120)),
+            format!("{}\u{200b}\u{202e}", "a".repeat(499)),
+            "\u{200b}\u{202e} \t\n".into(),
+        ] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            screen.agent_control(
+                AgentRequest::Prompt {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                    prompt: text.clone(),
+                    wait: true,
+                    timeout_ms: 30_000,
+                },
+                CLIENT,
+            );
+            let delivered = if kind == "claude" {
+                text.replace(['\u{200b}', '\u{202e}'], "")
+            } else {
+                text.clone()
+            };
+            if delivered.trim().is_empty() {
+                let response = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(response.outcome, AgentOutcome::Rejected);
+                assert!(response.agents[0].ready);
+                assert!(screen.agent_controls.is_empty());
+                assert!(finish_paste(&writes).is_empty());
+                continue;
+            }
+            let lead =
+                kind == "claude" && (delivered.trim().contains('\n') || delivered.len() >= 500);
+            let prefix = if lead {
+                format!("{} ", yinz_types::agent::control::PASTE_LEAD_IN)
+            } else {
+                String::new()
+            };
+            assert_eq!(
+                finish_paste(&writes),
+                format!("{prefix}\x1b[200~{delivered}\x1b[201~").as_bytes()
+            );
+            let mut submit = hook("UserPromptSubmit");
+            submit.prompt = Some(if lead {
+                format!("{prefix}<pasted_content id=\"1\">{delivered}</pasted_content id=\"1\">")
+            } else {
+                delivered
+            });
+            report_kind(&mut screen, kind, submit);
+            report_kind(&mut screen, kind, hook("Stop"));
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Completed, "{kind}: {text}");
+            assert!(response.acknowledged);
+            assert!(response.agents[0].ready);
+        }
+    }
+}
+
+#[test]
 fn commands_are_rejected_before_claiming_or_writing_input() {
     for kind in ["claude", "codex"] {
         for command in [
@@ -2866,6 +2930,8 @@ fn commands_are_rejected_before_claiming_or_writing_input() {
         .into_iter()
         .chain((kind == "claude").then_some("!printf BANG_OK"))
         .chain((kind == "claude").then_some("\u{200b} \u{202e}/probe"))
+        .chain((kind == "claude").then_some("\u{200b}/clear"))
+        .chain((kind == "claude").then_some("\u{202e}!printf hidden"))
         {
             let (mut screen, messages, writes) = setup(kind);
             report_kind(&mut screen, kind, hook("SessionStart"));
@@ -3184,9 +3250,10 @@ fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
                 CLIENT,
             );
             let written = finish_paste(&writes);
+            let normalized = yinz_types::agent::control::claude_prompt_text(&text);
             assert!(written
-                .windows(text.len())
-                .any(|part| part == text.as_bytes()));
+                .windows(normalized.len())
+                .any(|part| part == normalized.as_bytes()));
             let now = Instant::now();
             screen.refresh_agent_controls_at(now);
             screen.refresh_agent_controls_at(now + Duration::from_millis(499));
