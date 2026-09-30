@@ -177,6 +177,7 @@ impl Setup {
             cli_config_options.as_ref(),
             config,
             cli_args.config_dir.clone(),
+            cli_args.config.as_deref(),
             cli_args.layout_string.as_deref(),
             cli_args.layout.as_deref(),
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -663,6 +664,39 @@ mod setup_test {
         let (config, _layout_info, _options, _, _) = from_cli_args(&cli_args);
         assert_snapshot!(format!("{:#?}", config));
     }
+    #[test]
+    fn layout_repository_aliases_resolve_after_cli_merges() {
+        use yinz_types::input::layout::RunPluginLocation;
+        let directory = tempfile::tempdir().unwrap();
+        let layout_directory = tempfile::tempdir().unwrap();
+        let layout = layout_directory.path().join("layout.kdl");
+        let source = "plugins { panel repo=\"tools\"; }\nlayout { pane; }";
+        std::fs::write(&layout, source).unwrap();
+        for string_layout in [false, true] {
+            let args = CliArgs {
+                config_dir: Some(directory.path().to_owned()),
+                layout: (!string_layout).then_some(layout.clone()),
+                layout_string: string_layout.then(|| source.to_owned()),
+                ..Default::default()
+            };
+            let config = Setup::from_cli_args(&args).unwrap().0;
+            let RunPluginLocation::Git(plugin) = &config.plugins.aliases["panel"].location else {
+                panic!("Git alias")
+            };
+            assert_eq!(
+                std::path::Path::new(&plugin.repo),
+                directory.path().join("tools")
+            );
+            assert_eq!(
+                config
+                    .clone()
+                    .resolve_plugin_repositories(args.config.as_deref(), args.config_dir.as_deref())
+                    .unwrap(),
+                config
+            );
+        }
+    }
+
     #[test]
     fn cli_config_dir_overrides_defaults() {
         let config_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

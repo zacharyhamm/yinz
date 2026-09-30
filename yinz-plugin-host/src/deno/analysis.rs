@@ -18,6 +18,7 @@ pub(super) fn check_authoring(
     path: &Path,
     source: &str,
     mode: PluginCheckMode,
+    root: Option<&Path>,
 ) -> PluginCheckReport {
     let mut report = match super::worker::analyze(path, source) {
         Ok(report) => report,
@@ -27,7 +28,7 @@ pub(super) fn check_authoring(
         },
     };
     if report.diagnostics.is_empty() && mode != PluginCheckMode::Syntax {
-        match super::authoring::run(path, source, mode) {
+        match super::authoring::run(path, source, mode, root) {
             Ok(formatted) => {
                 if let Some(ref source) = formatted {
                     match super::worker::analyze(path, source) {

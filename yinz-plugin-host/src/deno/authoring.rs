@@ -10,11 +10,16 @@ use yinz_types::authoring::PluginCheckMode;
 #[path = "authoring/bundle.rs"]
 pub(crate) mod bundle;
 
-pub(super) fn run(path: &Path, source: &str, mode: PluginCheckMode) -> Result<Option<String>> {
+pub(super) fn run(
+    path: &Path,
+    source: &str,
+    mode: PluginCheckMode,
+    repository_root: Option<&Path>,
+) -> Result<Option<String>> {
     let deadline = Instant::now() + Duration::from_secs(30);
     // This compiler host resolves every import using the runtime loader's confinement checks.
     // It does not evaluate source, discover configs, or resolve packages.
-    let graph = checker::authoring_graph(path, source, false, None)?;
+    let graph = checker::authoring_graph(path, source, false, repository_root)?;
     let tools = tools_dir()?;
     let scratch = OwnedDir::new(&yinz_runtime::consts::YINZ_CACHE_DIR.join("authoring-tmp"))?;
     let root = scratch.path();

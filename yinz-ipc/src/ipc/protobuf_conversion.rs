@@ -5318,6 +5318,10 @@ impl From<yinz_types::input::layout::RunPluginLocation>
             run_plugin_location_data::LocationData, RunPluginLocation as ProtoRunPluginLocation,
         };
         match location {
+            yinz_types::input::layout::RunPluginLocation::Git(plugin) => Self {
+                location_type: ProtoRunPluginLocation::Git as i32,
+                location_data: Some(LocationData::GitDescriptor(plugin.descriptor())),
+            },
             yinz_types::input::layout::RunPluginLocation::File(path) => Self {
                 location_type: ProtoRunPluginLocation::File as i32,
                 location_data: Some(LocationData::FilePath(path.to_string_lossy().to_string())),
@@ -5850,6 +5854,16 @@ impl TryFrom<crate::client_server_contract::client_server_contract::RunPluginLoc
             .location_data
             .ok_or_else(|| anyhow!("RunPluginLocationData missing location_data"))?;
         match location.location_type {
+            x if x == ProtoRunPluginLocation::Git as i32 => {
+                if let LocationData::GitDescriptor(value) = location_data {
+                    Ok(Self::Git(
+                        yinz_types::input::git_plugin::GitPlugin::from_descriptor(&value)
+                            .map_err(|e| anyhow!(e))?,
+                    ))
+                } else {
+                    Err(anyhow!("Git location type but wrong data variant"))
+                }
+            },
             x if x == ProtoRunPluginLocation::File as i32 => {
                 if let LocationData::FilePath(path) = location_data {
                     Ok(yinz_types::input::layout::RunPluginLocation::File(

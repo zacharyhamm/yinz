@@ -54,6 +54,7 @@ pub fn run_compilation_worker() {
                 &request.path,
                 &request.source,
                 mode,
+                request.root.as_deref(),
             ))),
             Operation::Analyze => Ok(Output::Analysis(analysis::analyze_native(
                 &request.path,

@@ -242,6 +242,8 @@ impl SessionConfiguration {
         &mut self,
         client_id: &ClientId,
         stringified_config: String,
+        config_file_path: Option<&Path>,
+        config_dir: Option<&Path>,
     ) -> (Option<Config>, bool) {
         // bool is whether the config changed
         let mut full_reconfigured_config = None;
@@ -250,7 +252,9 @@ impl SessionConfiguration {
         match Config::from_kdl(
             &stringified_config,
             Some(current_client_configuration.clone()),
-        ) {
+        )
+        .and_then(|config| config.resolve_plugin_repositories(config_file_path, config_dir))
+        {
             Ok(new_config) => {
                 config_changed = current_client_configuration != new_config;
                 self.runtime_config.insert(*client_id, new_config);
@@ -1796,9 +1800,12 @@ pub fn start_server_impl(
             } => {
                 let Some((new_config, runtime_config_changed)) =
                     with_session_mut(&session_data, |session| {
-                        session
-                            .session_configuration
-                            .reconfigure_runtime_config(&client_id, config.clone())
+                        session.session_configuration.reconfigure_runtime_config(
+                            &client_id,
+                            config.clone(),
+                            session.config_file_path.as_deref(),
+                            session.config_dir.as_deref(),
+                        )
                     })
                 else {
                     continue;
@@ -1834,9 +1841,12 @@ pub fn start_server_impl(
                 for client_id in client_ids {
                     let Some((new_config, runtime_config_changed)) =
                         with_session_mut(&session_data, |session| {
-                            session
-                                .session_configuration
-                                .reconfigure_runtime_config(&client_id, config.clone())
+                            session.session_configuration.reconfigure_runtime_config(
+                                &client_id,
+                                config.clone(),
+                                session.config_file_path.as_deref(),
+                                session.config_dir.as_deref(),
+                            )
                         })
                     else {
                         break;

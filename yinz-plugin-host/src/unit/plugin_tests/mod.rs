@@ -581,6 +581,7 @@ fn create_plugin_thread_with_hooks(
         hooks,
         None,
         None,
+        None,
     )
 }
 
@@ -593,6 +594,7 @@ fn create_plugin_thread_with_hooks_and_event_sender(
     hooks: yinz_types::input::hooks::Hooks,
     event_sender: Option<SenderWithContext<PluginInstruction>>,
     data_access: Option<DataAccess>,
+    repository_data_dir: Option<PathBuf>,
 ) -> PluginThreadHarness {
     let yinz_cwd = yinz_cwd.unwrap_or_else(|| PathBuf::from("."));
     let session_env_vars = session_env_vars.unwrap_or_else(|| std::env::vars().collect());
@@ -632,7 +634,7 @@ fn create_plugin_thread_with_hooks_and_event_sender(
     config.set_max_stack_height(1024 * 1024);
     config.set_max_recursion_depth(1000);
     let engine = Engine::new(&config);
-    let data_dir = PathBuf::from(tempdir().unwrap().path());
+    let data_dir = repository_data_dir.unwrap_or_else(|| PathBuf::from(tempdir().unwrap().path()));
     let data_access = Arc::new(data_access.unwrap_or_else(|| DataAccess::sqlite(&data_dir)));
     let layout_dir = PathBuf::from(tempdir().unwrap().path());
     let user_plugin_dir =

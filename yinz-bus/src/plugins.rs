@@ -250,6 +250,7 @@ pub enum PluginInstruction {
     PipeCompleted(PipeCompletion),
     ReleasePluginInstancePipes(PluginId, PluginInstanceId),
     Reconfigure {
+        plugin_aliases: yinz_types::input::plugins::PluginAliases,
         client_id: ClientId,
         keybinds: Option<Keybinds>,
         default_mode: Option<InputMode>,

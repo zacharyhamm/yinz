@@ -19,6 +19,8 @@ pub(crate) fn test_env() -> PluginEnv {
         client_id: crate::ClientId::new(1),
         owner_client_id: crate::ClientId::new(1),
         plugin: PluginConfig {
+            repository_root: None,
+            installed_commit: None,
             path: PathBuf::from("test.ts"),
             _allow_exec_host_cmd: false,
             location: RunPluginLocation::File(PathBuf::from("test.ts")),

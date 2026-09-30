@@ -779,6 +779,10 @@ fn bundled_compiler_matches_its_provenance_hashes() {
 
 #[test]
 fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
+    use yinz_types::input::{
+        actions::Action,
+        git_plugin::{GitPlugin, GitRevision},
+    };
     use yinz_types::internal_ids::*;
     use yinz_types::{authoring::*, data::*, input::layout::*};
     let fixture = |name: &str, ty: &str, value: serde_json::Value| {
@@ -846,6 +850,54 @@ fn serialized_rust_payloads_satisfy_the_handwritten_sdk() {
     );
     fixture!("style", "Style", yinz_types::style::Style::default());
     fixture!("layout", "TiledPaneLayout", TiledPaneLayout::default());
+    for (name, revision) in [
+        ("branch", Some(GitRevision::Branch("main".into()))),
+        ("tag", Some(GitRevision::Tag("v1".into()))),
+        ("commit", Some(GitRevision::Commit("abc1234".into()))),
+        ("default", None),
+    ] {
+        let git = GitPlugin {
+            repo: "https://example.com/plugin.git".into(),
+            entrypoint: "src/main.ts".into(),
+            revision,
+        };
+        let location = RunPluginLocation::Git(git.clone());
+        let run = RunPlugin {
+            location: location.clone(),
+            ..Default::default()
+        };
+        let action = Action::StartOrReloadPlugin {
+            plugin: RunPluginOrAlias::RunPlugin(run.clone()),
+        };
+        for (suffix, ty, value) in [
+            ("git", "GitPlugin", serde_json::to_value(&git).unwrap()),
+            (
+                "location",
+                "RunPluginLocation",
+                serde_json::to_value(location).unwrap(),
+            ),
+            ("run", "RunPlugin", serde_json::to_value(run).unwrap()),
+            ("action", "Action", serde_json::to_value(&action).unwrap()),
+            (
+                "keybinds",
+                "Keybinds",
+                serde_json::to_value(vec![(
+                    InputMode::Normal,
+                    vec![("Ctrl g".parse::<KeyWithModifier>().unwrap(), vec![action])],
+                )])
+                .unwrap(),
+            ),
+        ] {
+            source.push_str(&fixture(&format!("{name}_{suffix}"), ty, value));
+        }
+        if let Some(revision) = git.revision {
+            source.push_str(&fixture(
+                &format!("{name}_revision"),
+                "GitRevision",
+                serde_json::to_value(revision).unwrap(),
+            ));
+        }
+    }
     fixture!(
         "floating",
         "FloatingPaneLayout",

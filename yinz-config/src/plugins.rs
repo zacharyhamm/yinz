@@ -43,6 +43,10 @@ pub struct PluginConfig {
     /// what the folder lookups below have to join instead. See
     /// `yinz_runtime::plugin_location::parse_plugin_location_with_relative`.
     pub relative_path: Option<PathBuf>,
+    #[serde(default)]
+    pub repository_root: Option<PathBuf>,
+    #[serde(default)]
+    pub installed_commit: Option<String>,
 }
 
 /// Read one candidate script source. `Ok(None)` means only that nothing is there, so the search can
@@ -104,7 +108,19 @@ impl PluginConfig {
     }
     pub fn from_run_plugin(run_plugin: &RunPlugin) -> Option<PluginConfig> {
         match &run_plugin.location {
+            RunPluginLocation::Git(plugin) => Some(PluginConfig {
+                repository_root: None,
+                installed_commit: None,
+                path: plugin.entrypoint.clone(),
+                _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
+                location: run_plugin.location.clone(),
+                initial_userspace_configuration: run_plugin.configuration.clone(),
+                initial_cwd: run_plugin.initial_cwd.clone(),
+                relative_path: None,
+            }),
             RunPluginLocation::File(path) => Some(PluginConfig {
+                repository_root: None,
+                installed_commit: None,
                 path: path.clone(),
                 _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
                 location: run_plugin.location.clone(),
@@ -120,6 +136,8 @@ impl PluginConfig {
                     || BUILTIN_DENO_PLUGIN_NAMES.contains(&tag.as_str())
                 {
                     Some(PluginConfig {
+                        repository_root: None,
+                        installed_commit: None,
                         path: PathBuf::from(&tag),
                         _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
                         location: yinz_runtime::plugin_location::parse_plugin_location(
@@ -143,6 +161,8 @@ impl PluginConfig {
     /// (`yinz setup --check`) without caring which one.
     pub fn builtin_lookup_example() -> PluginConfig {
         PluginConfig {
+            repository_root: None,
+            installed_commit: None,
             path: PathBuf::from("compact-bar"),
             _allow_exec_host_cmd: false,
             location: RunPluginLocation::Yinz(PluginTag::new("compact-bar")),
@@ -325,7 +345,7 @@ impl PluginConfig {
     /// No new URL scheme is needed: `file:~/thing.ts` is enough.
     pub fn runtime(&self) -> PluginRuntime {
         // Builtin paths are bare tags; their registry selects the script runtime.
-        if self.is_builtin_deno() {
+        if self.is_builtin_deno() || matches!(self.location, RunPluginLocation::Git(_)) {
             return PluginRuntime::Deno;
         }
         match self.path.extension().and_then(|e| e.to_str()) {
@@ -374,6 +394,23 @@ impl PluginConfig {
     /// it without asking here, and a builtin has no file at all - its `path` is the bare tag - so
     /// anything found on disk under that name could only be a file posing as it.
     pub fn resolve_source(&self, user_plugin_dir: Option<&Path>) -> Result<(PathBuf, String)> {
+        if matches!(self.location, RunPluginLocation::Git(_)) {
+            let root = self
+                .repository_root
+                .as_ref()
+                .context("repository plugin was not prepared")?;
+            let path = self
+                .path
+                .canonicalize()
+                .context("resolve repository entrypoint")?;
+            if !path.starts_with(root) {
+                bail!("plugin entrypoint escapes repository");
+            }
+            return Ok((
+                path.clone(),
+                read_source_file(&path)?.context("repository entrypoint missing")?,
+            ));
+        }
         if self.is_builtin_deno() {
             return Err(anyhow!(
                 "'{}' is a TypeScript builtin; the plugin host compiles its source in, and no file \

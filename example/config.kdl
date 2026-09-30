@@ -170,11 +170,14 @@ keybinds {
     }
 }
 
+// Alias declarations refresh on config reload. Repository updates require an explicit reload.
 plugins {
-    tab-bar { path "tab-bar"; }
-    status-bar { path "status-bar"; }
-    strider { path "strider"; }
-    compact-bar { path "compact-bar"; }
+    // my-panel repo="https://github.com/example/yinz-panel.git" branch="main"
+    // local-tools repo="~/src/yinz-tools" entrypoint="src/main.ts" { greeting "Hello"; }
+    tab-bar location="yinz:tab-bar"
+    status-bar location="yinz:status-bar"
+    strider location="yinz:strider"
+    compact-bar location="yinz:compact-bar"
 }
 
 // Choose what to do when yinz receives SIGTERM, SIGINT, SIGQUIT or SIGHUP

@@ -6653,9 +6653,11 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "yinz-plugin-api",
  "yinz-runtime",
+ "yinz-test-support",
  "yinz-types",
 ]
 

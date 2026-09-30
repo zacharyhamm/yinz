@@ -1,6 +1,64 @@
 use super::*;
 
 #[test]
+fn repository_imports_share_the_runtime_and_semantic_boundary() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("src")).unwrap();
+    let path = directory.path().join("src/main.ts");
+    let source =
+        "import {value} from '../shared.ts'; export default {render(): string {return value;}};";
+    std::fs::write(&path, source).unwrap();
+    std::fs::write(
+        directory.path().join("shared.ts"),
+        "export const value: string = 'shared';",
+    )
+    .unwrap();
+    let loader = PluginModuleLoader::new_with_root(&path, source, Some(directory.path())).unwrap();
+    let url = loader
+        .resolve(
+            "../shared.ts",
+            loader.entrypoint().as_str(),
+            ResolutionKind::Import,
+        )
+        .unwrap();
+    assert!(loader.load_source(&url).is_ok());
+    let installed = crate::plugin_authoring::git::InstalledPlugin {
+        entrypoint: path,
+        root: directory.path().canonicalize().unwrap(),
+        commit: None,
+    };
+    let report = crate::plugin_authoring::check_repository(&installed).unwrap();
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(
+        outside.path().join("shared.ts"),
+        "export const value = 'escape';",
+    )
+    .unwrap();
+    std::fs::remove_file(directory.path().join("shared.ts")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("shared.ts"),
+        directory.path().join("shared.ts"),
+    )
+    .unwrap();
+    // Use a fresh loader because sources are intentionally cached within an instance.
+    let confined =
+        PluginModuleLoader::new_with_root(&installed.entrypoint, source, Some(directory.path()))
+            .unwrap();
+    assert!(confined
+        .resolve(
+            "../shared.ts",
+            confined.entrypoint().as_str(),
+            ResolutionKind::Import
+        )
+        .is_err());
+    assert!(!crate::plugin_authoring::check_repository(&installed)
+        .unwrap()
+        .diagnostics
+        .is_empty());
+}
+
+#[test]
 fn deno_source_and_graph_budgets_apply_before_parsing() {
     let (dir, loader) = fixture();
     let oversized = " ".repeat(limits::MAX_SOURCE_BYTES + 1);

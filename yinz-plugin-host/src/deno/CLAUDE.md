@@ -34,7 +34,9 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
   the replacement loads. Unload clears them after guest cleanup.
 - **Modules are confined** (`loader.rs`): an import is an explicit relative `.js/.mjs/.ts/.mts`
-  inside the entrypoint's folder after symlink resolution, plus `yinz:plugin`. Builtins resolve
+  inside the entrypoint's folder after symlink resolution, plus `yinz:plugin`. Repository
+  plugins use the canonical repository root instead, carried in `PluginConfig.repository_root`
+  with the installed commit and resolved entrypoint. Managed roots remain pinned until reload. Builtins resolve
   relative imports within the compiled `yinz-deno-builtins/assets/plugins` tree, including
   shared and nested modules, with no filesystem fallback. `yinz:workflow-view` remains an alias
   to the embedded `workflow-view.ts`; the checker and strict authoring use the same module graph.

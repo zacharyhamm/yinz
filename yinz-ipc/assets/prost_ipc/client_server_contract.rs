@@ -2249,7 +2249,7 @@ pub struct PluginUserConfiguration {
 pub struct RunPluginLocationData {
     #[prost(enumeration="RunPluginLocation", tag="1")]
     pub location_type: i32,
-    #[prost(oneof="run_plugin_location_data::LocationData", tags="2, 3")]
+    #[prost(oneof="run_plugin_location_data::LocationData", tags="2, 5, 3")]
     pub location_data: ::core::option::Option<run_plugin_location_data::LocationData>,
 }
 /// Nested message and enum types in `RunPluginLocationData`.
@@ -2260,6 +2260,8 @@ pub mod run_plugin_location_data {
         /// For FILE
         #[prost(string, tag="2")]
         FilePath(::prost::alloc::string::String),
+        #[prost(string, tag="5")]
+        GitDescriptor(::prost::alloc::string::String),
         /// For YINZ
         #[prost(message, tag="3")]
         YinzTag(super::PluginTag),
@@ -3377,6 +3379,7 @@ pub enum RunPluginLocation {
     Unspecified = 0,
     File = 1,
     Yinz = 2,
+    Git = 4,
 }
 impl RunPluginLocation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -3388,6 +3391,7 @@ impl RunPluginLocation {
             RunPluginLocation::Unspecified => "RUN_PLUGIN_LOCATION_UNSPECIFIED",
             RunPluginLocation::File => "RUN_PLUGIN_LOCATION_FILE",
             RunPluginLocation::Yinz => "RUN_PLUGIN_LOCATION_YINZ",
+            RunPluginLocation::Git => "RUN_PLUGIN_LOCATION_GIT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -3396,6 +3400,7 @@ impl RunPluginLocation {
             "RUN_PLUGIN_LOCATION_UNSPECIFIED" => Some(Self::Unspecified),
             "RUN_PLUGIN_LOCATION_FILE" => Some(Self::File),
             "RUN_PLUGIN_LOCATION_YINZ" => Some(Self::Yinz),
+            "RUN_PLUGIN_LOCATION_GIT" => Some(Self::Git),
             _ => None,
         }
     }

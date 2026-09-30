@@ -577,6 +577,7 @@ pub fn a_reload_replaces_the_hooks_and_the_configured_context_menu() {
         vec![Action::CloseFocus],
     )]);
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id,
         keybinds: None,
         default_mode: None,
@@ -649,6 +650,7 @@ pub fn a_second_clients_context_menu_request_loads_its_own_hook_instance() {
             .unwrap(),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id: crate::ClientId::new(1),
         keybinds: None,
         default_mode: None,
@@ -736,6 +738,7 @@ pub fn a_shared_context_menu_hook_is_loaded_on_the_first_request() {
             .with_configuration(BTreeMap::from([("shared".to_owned(), "true".to_owned())])),
     );
     let _ = plugin_thread_sender.send(PluginInstruction::Reconfigure {
+        plugin_aliases: Default::default(),
         client_id: crate::ClientId::new(1),
         keybinds: None,
         default_mode: None,

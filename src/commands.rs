@@ -1555,8 +1555,25 @@ pub(crate) fn pty_host_adopt(
 /// or `<config dir>/plugins` - so what is written here is what `plugin_reload` and a layout's
 /// `file:` location find.
 pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyhow::Result<()> {
+    use anyhow::Context;
     use yinz_cli::args::Plugins as PluginsCli;
-    let config = yinz_cli::setup::load_config(opts).ok();
+    let config = if matches!(
+        command,
+        PluginsCli::Install { .. }
+            | PluginsCli::Update { .. }
+            | PluginsCli::Status { .. }
+            | PluginsCli::Reload { .. }
+            | PluginsCli::Check { .. }
+    ) {
+        yinz_config::config::Config::validate_plugin_overlays(opts.config_dir.as_deref())
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Some(
+            yinz_cli::setup::load_config(opts)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        )
+    } else {
+        yinz_cli::setup::load_config(opts).ok()
+    };
     let plugin_dir = || {
         yinz_runtime::home::user_plugin_dir_or_default(
             config
@@ -1617,15 +1634,107 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
         }
         return Ok(());
     }
+    let update_repositories = matches!(command, PluginsCli::Update { .. });
+    let repository_status = matches!(command, PluginsCli::Status { .. });
     match command {
+        PluginsCli::Install { aliases }
+        | PluginsCli::Update { aliases }
+        | PluginsCli::Status { aliases } => {
+            use yinz_types::input::layout::RunPluginLocation;
+            let config = config
+                .as_ref()
+                .context("repository commands require configuration")?;
+            let repositories = config
+                .plugins
+                .aliases
+                .iter()
+                .filter_map(|(name, plugin)| match &plugin.location {
+                    RunPluginLocation::Git(source) => Some((name, source)),
+                    _ => None,
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let selected = if aliases.is_empty() {
+                repositories.keys().map(|name| (*name).clone()).collect()
+            } else {
+                aliases
+            };
+            for name in &selected {
+                if !repositories.contains_key(name) {
+                    anyhow::bail!("{name} is not a configured repository plugin");
+                }
+            }
+            let data_dir = opts
+                .data_dir
+                .clone()
+                .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let signals = [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM]
+                .map(|signal| signal_hook::flag::register(signal, cancel.clone()))
+                .into_iter()
+                .collect::<std::io::Result<Vec<_>>>()?;
+            let result = (|| -> anyhow::Result<()> {
+                let mut completed = std::collections::BTreeSet::new();
+                for name in selected {
+                    let source = repositories[&name];
+                    if !repository_status
+                        && completed.insert((source.repo.clone(), source.revision.clone()))
+                    {
+                        let entries = repositories
+                            .values()
+                            .filter(|other| {
+                                other.repo == source.repo && other.revision == source.revision
+                            })
+                            .map(|other| (*other).clone())
+                            .collect::<Vec<_>>();
+                        yinz_server::plugin_authoring::git::install(
+                            &data_dir,
+                            source,
+                            &entries,
+                            update_repositories,
+                            &cancel,
+                        )?;
+                    }
+                    let installed = yinz_server::plugin_authoring::git::status(&data_dir, source)?;
+                    let selector = source
+                        .revision
+                        .as_ref()
+                        .map(|value| {
+                            let (key, value) = value.property();
+                            format!("{key}={value}")
+                        })
+                        .unwrap_or_else(|| {
+                            if source.is_local() {
+                                "local".into()
+                            } else {
+                                "default branch".into()
+                            }
+                        });
+                    let revision = installed
+                        .as_ref()
+                        .map(|value| value.commit.as_deref().unwrap_or("user-managed"))
+                        .unwrap_or("not installed");
+                    println!(
+                        "{name}: {} ({selector}), entrypoint={}, revision={revision}",
+                        source.repo,
+                        source.entrypoint.display()
+                    );
+                }
+                Ok(())
+            })();
+            for signal in signals {
+                signal_hook::low_level::unregister(signal);
+            }
+            result
+        },
         PluginsCli::Test { .. } => unreachable!("tests return above"),
         PluginsCli::Docs { section } => {
             let content = match section.as_str() {
-                "index" => "guide: plugin authoring guide\nsdk: TypeScript API declarations\ntesting: plugin test API",
+                "index" => "guide: plugin authoring guide\nsdk: TypeScript API declarations\ntesting: plugin test API\nrepositories: Git repository plugins",
                 "guide" => concat!("Author plugins with yinz:plugin and confined relative imports. Use plugins write, check --json, test --json, reload, then log. Read sdk for the full API. Permissions must be requested explicitly. Complete executable example:\n\n", include_str!("../example-plugins/clock.ts"), "\n\nBroader host API example:\n\n", include_str!("../example-plugins/capabilities.ts")),
+                "repositories" => include_str!("../docs/GIT_PLUGINS.md"),
                 "sdk" => include_str!("../yinz-plugin-host/src/deno/sdk.d.ts"),
                 "testing" => include_str!("../yinz-plugin-host/src/deno/testing/testing.d.ts"),
-                _ => anyhow::bail!("unknown docs section; use index, guide, sdk or testing"),
+                _ => anyhow::bail!("unknown docs section; use index, guide, sdk, testing or repositories"),
             };
             println!(
                 "{}",
@@ -1707,6 +1816,33 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             Ok(())
         },
         PluginsCli::Check { name, file, json } => {
+            if file.is_none() {
+                if let Some(yinz_types::input::layout::RunPluginLocation::Git(source)) = name
+                    .as_ref()
+                    .and_then(|name| config.as_ref()?.plugins.aliases.get(name))
+                    .map(|plugin| &plugin.location)
+                {
+                    let data_dir = opts
+                        .data_dir
+                        .clone()
+                        .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
+                    let installed = yinz_server::plugin_authoring::git::status(&data_dir, source)?
+                        .context("repository is not installed; use plugins install")?;
+                    let report = yinz_server::plugin_authoring::check_repository(&installed)?;
+                    if json {
+                        println!("{}", serde_json::to_string(&report)?);
+                    }
+                    if !report.diagnostics.is_empty() {
+                        anyhow::bail!("{}", report.diagnostics.join("\n"));
+                    }
+                    if !json {
+                        println!("{} checks successfully", installed.entrypoint.display());
+                        print_plugin_findings(&report.warnings);
+                    }
+                    return Ok(());
+                }
+            }
+
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
@@ -1747,24 +1883,32 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             Ok(())
         },
         PluginsCli::Reload { name, headless } => {
-            let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                .map_err(|e| anyhow::anyhow!(e))?;
-            if !path.is_file() {
-                anyhow::bail!("{} is not there; write it first", path.display());
-            }
+            let url = if config
+                .as_ref()
+                .is_some_and(|config| config.plugins.aliases.contains_key(&name))
+            {
+                name
+            } else {
+                let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                if !path.is_file() {
+                    anyhow::bail!("{} is not there; write it first", path.display());
+                }
+                format!("file:{}", path.display())
+            };
             if headless {
                 let session =
                     resolve_session_for_stream(opts.session.clone(), "reload a headless plugin in");
                 let action = yinz_cli::notes_todos::pipe_action(
                     "agent_action",
-                    serde_json::json!({"op":"plugin_reload","args":{"url":format!("file:{}", path.display())},"structured_reply":true}),
+                    serde_json::json!({"op":"plugin_reload","args":{"url":url},"structured_reply":true}),
                 );
                 println!("{}", yinz_client::store_client::request(&session, action)?);
                 return Ok(());
             }
             send_action_to_session(
                 yinz_cli::args::CliAction::StartOrReloadPlugin {
-                    url: format!("file:{}", path.display()),
+                    url,
                     configuration: None,
                 },
                 opts.session.clone(),

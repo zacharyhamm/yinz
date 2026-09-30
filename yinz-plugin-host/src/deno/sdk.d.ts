@@ -595,7 +595,10 @@ export interface RunCommandAction {
   originating_plugin?: OriginatingPlugin | null; use_terminal_title?: boolean; target?: PaneTarget; remote_default_shell?: boolean;
 }
 export interface RunCommand extends Omit<RunCommandAction, 'cmd' | 'direction'> {command: string; workflow_owner?: string | null;}
-export interface RunPlugin { _allow_exec_host_cmd?: boolean; location: {File: string} | {Yinz: string}; configuration: StringMap; initial_cwd: string | null; relative_path?: string | null;}
+export type GitRevision = {Branch: string} | {Tag: string} | {Commit: string};
+export interface GitPlugin {repo: string; entrypoint: string; revision: GitRevision | null;}
+export type RunPluginLocation = {File: string} | {Yinz: string} | {Git: GitPlugin};
+export interface RunPlugin { _allow_exec_host_cmd?: boolean; location: RunPluginLocation; configuration: StringMap; initial_cwd: string | null; relative_path?: string | null;}
 export type RunPluginOrAlias = {RunPlugin: RunPlugin} | {Alias: {name: string; configuration: StringMap | null; initial_cwd: string | null; run_plugin: RunPlugin | null}};
 export type Run = {plugin: RunPluginOrAlias} | {command: RunCommand} | {EditFile: [string, Integer | null, string | null]} | {Cwd: string};
 export interface TiledPaneLayout {

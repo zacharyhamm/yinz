@@ -681,6 +681,7 @@ impl FromStr for PluginUserConfiguration {
 pub enum RunPluginLocation {
     File(PathBuf),
     Yinz(PluginTag),
+    Git(super::git_plugin::GitPlugin),
 }
 
 impl Default for RunPluginLocation {
@@ -694,6 +695,7 @@ impl RunPluginLocation {
         match self {
             RunPluginLocation::File(pathbuf) => format!("file:{}", pathbuf.display()),
             RunPluginLocation::Yinz(plugin_tag) => format!("yinz:{}", plugin_tag),
+            RunPluginLocation::Git(plugin) => plugin.descriptor(),
         }
     }
 }
@@ -706,6 +708,7 @@ impl From<&RunPluginLocation> for Url {
                 path.clone().into_os_string().into_string().unwrap()
             ),
             RunPluginLocation::Yinz(tag) => format!("yinz:{}", tag),
+            RunPluginLocation::Git(plugin) => plugin.descriptor(),
         };
         Self::parse(&url).unwrap()
     }
@@ -720,6 +723,7 @@ impl fmt::Display for RunPluginLocation {
                 path.clone().into_os_string().into_string().unwrap()
             ),
             Self::Yinz(tag) => write!(f, "{}", tag),
+            Self::Git(plugin) => write!(f, "{}", plugin.descriptor()),
         }
     }
 }

@@ -29,6 +29,52 @@ fn new_pane() -> Action {
 /// tests reconfigure under the default configuration, where no plugin has registered defaults,
 /// so the merge is only checked here.
 #[test]
+fn runtime_repository_aliases_resolve_before_replacing_configuration() {
+    use yinz_types::input::layout::RunPluginLocation;
+    let directory = tempfile::tempdir().unwrap();
+    let mut configuration = SessionConfiguration::default();
+    let (resolved, changed) = configuration.reconfigure_runtime_config(
+        &CLIENT,
+        "plugins { panel repo=\"tools\"; }".into(),
+        Some(Path::new("/elsewhere/config.kdl")),
+        Some(directory.path()),
+    );
+    assert!(changed);
+    let resolved = resolved.unwrap();
+    let RunPluginLocation::Git(plugin) = &resolved.plugins.aliases["panel"].location else {
+        panic!("Git alias")
+    };
+    assert_eq!(Path::new(&plugin.repo), directory.path().join("tools"));
+    let (again, changed) = configuration.reconfigure_runtime_config(
+        &CLIENT,
+        "plugins { panel repo=\"tools\"; }".into(),
+        None,
+        Some(directory.path()),
+    );
+    assert!(!changed);
+    assert_eq!(again, Some(resolved.clone()));
+    // Resolution also validates aliases inherited from the previous configuration.
+    let mut invalid = resolved.clone();
+    let RunPluginLocation::Git(plugin) =
+        &mut invalid.plugins.aliases.get_mut("panel").unwrap().location
+    else {
+        panic!("Git alias")
+    };
+    plugin.repo = "ext::invalid".into();
+    configuration.set_client_runtime_configuration(CLIENT, invalid.clone());
+    assert_eq!(
+        configuration.reconfigure_runtime_config(
+            &CLIENT,
+            "mouse_mode false".into(),
+            None,
+            Some(directory.path())
+        ),
+        (None, false)
+    );
+    assert_eq!(configuration.get_client_configuration(&CLIENT), invalid);
+}
+
+#[test]
 fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
     for was_written_to_disk in [false, true] {
         let (to_screen, screen_rx) = channels::unbounded();

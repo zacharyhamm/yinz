@@ -174,6 +174,7 @@ export function pluginKeys(km: Keymap, alias: string): Key[] {
           const p = launch.plugin;
           if ("Alias" in p) return p.Alias.name === alias;
           const location = p.RunPlugin.location;
+          if ("Git" in location) return false;
           const url = "Yinz" in location ? `yinz:${location.Yinz}` : `file:${location.File}`;
           return url === alias;
         }),

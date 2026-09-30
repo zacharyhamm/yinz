@@ -46,7 +46,11 @@ pub struct PluginModuleLoader {
 
 impl PluginModuleLoader {
     pub fn new(path: &Path, source: &str) -> Result<Self> {
-        let mut loader = Self::for_check(path, true)?;
+        Self::new_with_root(path, source, None)
+    }
+
+    pub fn new_with_root(path: &Path, source: &str, root: Option<&Path>) -> Result<Self> {
+        let mut loader = Self::for_check_with_root(path, true, root)?;
         media_type(path, false)?;
         let entry = loader
             .entrypoint

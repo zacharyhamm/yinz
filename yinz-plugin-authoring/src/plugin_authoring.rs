@@ -86,6 +86,19 @@ pub fn check_source(
     crate::analysis::check(path, source, mode)
 }
 
+/// Check a repository entrypoint with the same import boundary as its runtime.
+pub fn check_repository(
+    installed: &crate::git::InstalledPlugin,
+) -> anyhow::Result<yinz_types::authoring::PluginCheckReport> {
+    let source = crate::limits::read_source(&installed.entrypoint)?;
+    Ok(crate::analysis::check_with_root(
+        &installed.entrypoint,
+        &source,
+        yinz_types::authoring::PluginCheckMode::Semantic,
+        Some(&installed.root),
+    ))
+}
+
 /// A plugin written, and the copy kept of whatever it replaced.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Written {
@@ -231,6 +244,24 @@ fn publish_file(
     overwrite: bool,
     permissions: Option<std::fs::Permissions>,
 ) -> anyhow::Result<()> {
+    let resolved = path
+        .canonicalize()
+        .or_else(|_| {
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."))
+                .canonicalize()
+                .map(|parent| parent.join(path.file_name().unwrap_or_default()))
+        })
+        .with_context(|| format!("resolve authoring destination {}", path.display()))?;
+    if resolved.ancestors().any(|ancestor| {
+        ancestor.file_name().is_some_and(|name| name == "revisions")
+            && ancestor
+                .parent()
+                .is_some_and(|parent| parent.join("repository.git").is_dir())
+    }) {
+        anyhow::bail!("managed plugin revisions are immutable; edit a local repository instead");
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

@@ -755,7 +755,14 @@ impl RuntimeInstance {
             yinz_types::input::layout::RunPluginLocation::Yinz(tag) => {
                 loader::PluginModuleLoader::embedded(&tag.to_string(), source)?
             },
-            _ => loader::PluginModuleLoader::new(path, source)?,
+            _ if env.plugin.repository_root.is_none() => {
+                loader::PluginModuleLoader::new(path, source)?
+            },
+            _ => loader::PluginModuleLoader::new_with_root(
+                path,
+                source,
+                env.plugin.repository_root.as_deref(),
+            )?,
         });
         let limits = limits::Limits::new(path.display().to_string());
         let mut runtime = limits

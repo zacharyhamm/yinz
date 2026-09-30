@@ -68,6 +68,13 @@ pub fn parse_plugin_location_with_relative(
     }
     let url = url?;
     match url.scheme() {
+        "git" => Ok((
+            RunPluginLocation::Git(
+                yinz_types::input::git_plugin::GitPlugin::from_descriptor(location)
+                    .map_err(|e| PluginsConfigError::InvalidRepository(e.into()))?,
+            ),
+            None,
+        )),
         "yinz" => Ok((RunPluginLocation::Yinz(PluginTag::new(decoded_path)), None)),
         "file" => {
             // Set by the one branch that joins a cwd, so it is exactly "what the user wrote,
@@ -164,3 +171,40 @@ mod retired_script_tests {
 #[cfg(test)]
 #[path = "unit/panel_migration.rs"]
 mod panel_migration;
+
+/// Resolve a declaration's local repository against the active configuration directory.
+pub fn resolve_repository_path(
+    plugin: &mut yinz_types::input::git_plugin::GitPlugin,
+    base: &std::path::Path,
+) -> Result<(), PluginsConfigError> {
+    if plugin.repo.is_empty() || plugin.repo == "file:" {
+        return Err(PluginsConfigError::InvalidRepository(
+            "repo must not be empty".into(),
+        ));
+    }
+    if plugin.repo.starts_with("file:") {
+        if Url::parse(&plugin.repo)?
+            .host_str()
+            .is_some_and(|host| host != "localhost")
+        {
+            return Err(PluginsConfigError::InvalidRepository(
+                "file URLs must refer to the local machine".into(),
+            ));
+        }
+        let (location, _) =
+            parse_plugin_location_with_relative(&plugin.repo, Some(base.to_owned()))?;
+        if let RunPluginLocation::File(path) = location {
+            plugin.repo = path.to_string_lossy().into_owned();
+        }
+    } else if plugin.is_local() {
+        let path = expand_plugin_path(PathBuf::from(&plugin.repo));
+        plugin.repo = base.join(path).to_string_lossy().into_owned();
+    }
+    plugin
+        .validate()
+        .map_err(|e| PluginsConfigError::InvalidRepository(e.into()))
+}
+
+#[cfg(test)]
+#[path = "unit/git_plugins.rs"]
+mod git_plugins;
