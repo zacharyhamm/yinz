@@ -61,9 +61,9 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | 16 | **Fixed for Claude shorthand** | Shared launch validation rejects `--kind codex --model haiku` before spawning. Other model IDs remain the provider's responsibility. See [fix status](#fix-status-agent-cli-1618). |
 | 17 | **Existing reconnect fix, regression extended** | The launcher survives backend connection failures before and after conversation selection. A live Codex auto-update has not been retested. See [fix status](#fix-status-agent-cli-1618). |
 | 18 | **Fixed** | Initial lookups distinguish `not_agent`, `target_not_found`, and `target_exited`. Conversation pins and transitions during pending operations retain their existing outcomes. See [fix status](#fix-status-agent-cli-1618). |
-| 19 | **Still broken** | The message stays "agent is not idle or already has a pending submission" when the cause is an unconsumed input revision (v2 04, 14). |
-| 20 | **Still broken** | "Submission is uncertain… clear any draft" appears with `acknowledged:true` (v2 79) and for `/exit` (v2 94). |
-| 21 | **Still broken** | `spawn --help` has no text for `--kind`, `--model`, and the other listed flags. `--kind bogus` and a missing `--kind` list no kinds (v2 102, 103). |
+| 19 | **Fixed; automated verification** | Readiness now names its blocker in JSON, text and prompt rejection messages. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 04, 14. |
+| 20 | **Fixed; automated verification** | Diagnostics distinguish uncertain acceptance from an accepted turn and make recovery conditional. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 79, 94. |
+| 21 | **Fixed; automated verification** | Every spawn option has help. Kind errors list all recognized kinds and the JSON command alternative. See [fix status](#fix-status-agent-cli-1921-and-32). Original evidence: v2 102, 103. |
 | 22 | **Still broken** | `Ctrl+u`, `ctrl-u`, `C-u`, `Escape` and `Return` are rejected. Only `Ctrl u`/`Esc`/`Enter` work, and help does not say so. `--until` values appear only in the error (v2 104). Both orchestrators tripped on this. |
 | 23 | **Still broken** | Both orchestrators first ran `--session main` from the skill. Haiku also copied `--kind codex` and then passed `--model haiku`. |
 | 24 | **Still broken** | 26 of 30 lines are blank (v2 05). Ghost suggestions ("fix the bug", "run the tests") look like drafts. |
@@ -80,7 +80,7 @@ tree (it contains `PASTE_LEAD_IN` and `recover --interrupted`). Claude Code 2.1.
 | # | Sev | Finding | Evidence |
 |---|---|---|---|
 | 31 | P1 | **Claude background work ends the turn early and then strands the pane.** When Claude backgrounds a Bash command or launches a background subagent, `prompt --wait` returns `completed` with the interim text ("The command is running in the background…", "Agent launched. Waiting for it to complete."). When the work finishes, Claude starts its own turn with a `<task-notification>` `UserPromptSubmit`. Yinz treats it as foreign input, so the pane ends `ready:false` until `recover`, and the real answer ("DONE", "SUB=sub") never reaches the caller. While that turn runs, status can read `Idle`/`ready:true`. The archive stores the notification as a `prompt`. | v2 26, 35 (sleep), 119, 120 (subagent); runs `claude:c74f207a-…`, `claude:7308c863-…` |
-| 32 | P1 | **A Codex turn that fails at the API leaves the pane Busy.** HTTP 400 "The 'haiku' model is not supported…". `prompt --wait` burns the whole timeout (`acknowledged:true`, `timed_out`) instead of returning `failed`. | v2 79 |
+| 32 | P1 | **Fixed; automated verification.** The bridge translates a final failed turn into `StopFailure`. The original HTTP 400 failure left the pane Busy until timeout. See [fix status](#fix-status-agent-cli-1921-and-32). | v2 79 |
 | 33 | P1 | **`spawn --kind codex --resume ID --permission-mode skip` exits immediately.** Codex prints "Permission overrides are not supported when resuming a remote task", yet `spawn` returned `ok`. The wait then reports `target_changed`/`Exited`. Without `--permission-mode`, the resume works and keeps the binding. | v2 88–93 |
 | 34 | P2 | `--reuse` puts a second agent into a worktree that a live agent already occupies (`terminal_16` and `terminal_18` both in `fix-sub`), with no warning or field. | v2 106-1, 107 |
 | 35 | P2 | A worker spawned into `.worktrees/fix-sub` read and **edited the main checkout's** `calc.py` by absolute path. Its cwd and system prompt named the worktree, so the model chose the path, but nesting `.worktrees/` inside the main checkout makes this easy. `prompt --wait` reported success. | Session `0a76a8a5-…` tool calls, v2 108–112 |
@@ -342,7 +342,7 @@ answer. See the [validation record](logs/v6-validation.txt).
 for Codex, including case variants and the `[1m]` suffix. The error directs callers to use
 `--kind claude` or a Codex model ID. Validation runs before pane creation and worktree setup.
 These aliases are reserved even with a custom provider. Other model IDs and raw arguments remain the configured provider's responsibility.
-This change does not address API failure reporting in #32.
+API failure reporting is addressed separately in [#32](#fix-status-agent-cli-1921-and-32).
 
 **#17:** Commit `18684fcf6` already keeps the Codex UI alive when its backend connection fails.
 The launcher regression now also rejects the first connection, before any conversation binding exists.
@@ -361,6 +361,54 @@ passed format, lint, all 9,379 workspace tests, doctests, and all 473 integratio
 The gate includes the additional held-before-first-launch check and IPC round trips for the new outcomes.
 Builds and tests used this worktree's own native and Wasm artifacts.
 The status regressions cover local, SSH, and VM pane targets through the screen's fake OS backend.
+
+## Fix status: agent CLI #19–21 and #32
+
+**#19:** `AgentStatus.not_ready_reason` is additive and defaults to `None` when
+an older response omits it. The shared status builder selects `prompt_unsupported`,
+`not_idle`, `pending_submission`, then `unconsumed_input`, in that order.
+Ready agents have no reason. List, status and prompt rejections expose the cause.
+Responses also account for claims while the screen temporarily removes pending operations.
+
+**#20:** Unacknowledged timeouts describe uncertain acceptance. Acknowledged timeouts
+describe an accepted turn whose completion was not observed, without implying cancellation.
+Failures and interruptions retain the provider message. Recovery advice requires inspection
+of the same live conversation with unresolved input. Closed, exited and replaced targets
+receive no recovery advice. Existing outcome codes and command rejection, including `/exit`, remain.
+
+**#21:** Spawn help describes every option, JSON file/stdin input, flag overrides,
+checkout defaults, provider settings, resume, SSH and Firecracker.
+Help and errors use the full recognized-kind list. Errors explain the JSON `command`
+alternative. Case normalization, executable aliases and JSON-only configuration remain supported.
+Validation still runs before checkout creation or pane spawning.
+
+**#32:** The Codex bridge converts `turn/completed` with `turn.status == "failed"`
+into `StopFailure`, carrying conversation ID, turn ID and provider error through the
+existing local or remote reporter. It observes only the selected conversation's current turn.
+Hidden helpers, unrelated threads, stale turns and duplicate terminal events cannot fail it.
+Transient error notifications and backend disconnects do not signal final failure.
+Backend traffic passes through unchanged.
+See the [protocol's final turn events](https://learn.chatgpt.com/docs/app-server#turn-events).
+
+**Validation, 2026-09-30:** All 281 focused tests passed. A subsequent serial run passed
+five checks covering the real Codex reporter, failure/interruption messages, disappeared and
+exited targets, the server's spawn response, and the Git-plugin test described below.
+The final `cargo x ci check` passed format, lint, 9,389 workspace tests (54 skipped),
+doctests, and all 473 integration tests with 16 workers. Builds and tests used this
+worktree's own native and Wasm artifacts. The compiled `agent spawn --help` was also inspected.
+
+The first gate exposed a server test that expected the old spawn error text. Its expectation
+was updated. A Git-plugin test timed out in that run. No competing Cargo runs were found.
+`git_plugins_pin_imports_workers_and_attached_clients_until_reload` passed alone in 0.557 seconds
+and passed again in the final gate. The first gate's integration phase also passed all 473 tests.
+
+Automated coverage uses mock Codex traffic and mock reporter subprocesses to check local/remote
+routing, unchanged traffic, retryable errors, stale failures and duplicate terminal events.
+A real `yinz hocus codex-report` subprocess test verifies failure state, conversation, turn ID
+and provider text through IPC. Screen tests use the fake OS backend for local, SSH and VM targets.
+They verify one reply before timeout, a released failure claim, a subsequent prompt, and
+continued rejection when newer manual input remains. No live provider API failure has been
+induced for this change. These checks do not constitute live-service, SSH or VM verification.
 
 ## P2 — misleading output, docs and skill gaps
 

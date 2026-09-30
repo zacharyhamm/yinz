@@ -424,6 +424,10 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             status.ready, status.status_available, status.prompt_supported
         )
         .context("cannot write agent readiness")?;
+        if let Some(reason) = status.not_ready_reason {
+            writeln!(out, "  not_ready_reason: {reason}")
+                .context("cannot write readiness reason")?;
+        }
         for (label, value) in [
             ("cwd", status.cwd.as_deref()),
             ("branch", status.branch.as_deref()),

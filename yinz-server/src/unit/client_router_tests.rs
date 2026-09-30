@@ -377,7 +377,7 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
             AgentOutcome::StatusUnavailable
         });
         if ready {
-            rejected.message = Some("agent spawn requires a recognized agent command".into());
+            rejected.message = Some(format!("agent spawn requires a recognized agent command. Use --kind with a recognized kind: {}. Alternatively, use --file PATH (or --file - for stdin) with a JSON object containing a recognized executable in command and optional args.", yinz_types::agent::KINDS.join(", ")));
         }
         expected.push(ServerToClientMsg::AgentControl(rejected));
         expected.push(ServerToClientMsg::UnblockInputThread);

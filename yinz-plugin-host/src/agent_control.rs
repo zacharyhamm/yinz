@@ -212,9 +212,24 @@ pub(super) fn prepare_automation_agent(
     automatic_firecracker_vm: bool,
     data: &DataAccess,
 ) -> Result<PreparedAgent, String> {
+    let guidance = || {
+        format!("Use --kind with a recognized kind: {}. Alternatively, use --file PATH (or --file - for stdin) with a JSON object containing a recognized executable in command and optional args.", yinz_types::agent::KINDS.join(", "))
+    };
+    if [&spec.kind, &spec.command]
+        .iter()
+        .all(|value| value.as_deref().is_none_or(|value| value.trim().is_empty()))
+    {
+        return Err(format!(
+            "agent spawn requires a kind or command. {}",
+            guidance()
+        ));
+    }
     let (mut command, _) = yinz_runtime::agent::launch::plan(spec)?;
     if yinz_types::agent::kind_from_program_and_args(&command.path, &command.args).is_none() {
-        return Err("agent spawn requires a recognized agent command".into());
+        return Err(format!(
+            "agent spawn requires a recognized agent command. {}",
+            guidance()
+        ));
     }
     spec.env
         .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());

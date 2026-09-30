@@ -4565,6 +4565,7 @@ fn test_server_messages() {
         cwd: Some("/repo/review-auth".into()),
         branch: Some("review-auth".into()),
         ready: false,
+        not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::NotIdle),
         status_available: true,
         prompt_supported: true,
     };
@@ -4597,6 +4598,21 @@ fn test_server_messages() {
             message: Some("approval required".into()),
             acknowledged: true,
             turn_id: Some("turn-7".into()),
+        }));
+    }
+    for reason in [
+        None,
+        Some(yinz_types::agent::control::NotReadyReason::PromptUnsupported),
+        Some(yinz_types::agent::control::NotReadyReason::NotIdle),
+        Some(yinz_types::agent::control::NotReadyReason::PendingSubmission),
+        Some(yinz_types::agent::control::NotReadyReason::UnconsumedInput),
+    ] {
+        test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+            agents: vec![AgentStatus {
+                not_ready_reason: reason,
+                ..status.clone()
+            }],
+            ..AgentResponse::default()
         }));
     }
     test_server_roundtrip!(ServerToClientMsg::KillSessionComplete { error: None });

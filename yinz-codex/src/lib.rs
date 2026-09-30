@@ -76,9 +76,9 @@ impl Registration {
     /// Codex runs `SessionStart` hooks only when a conversation's first turn begins, so the
     /// pane would otherwise stay unverified until someone types into it.
     async fn announce(&self, mut hook: Value, program: &Path) {
-        let Some(yinz) = self.reporter.clone() else {
+        if self.reporter.is_none() {
             return;
-        };
+        }
         let ready = match tokio::time::timeout(
             std::time::Duration::from_secs(10),
             verify_capability(program, &hook),
@@ -96,15 +96,22 @@ impl Registration {
             },
         };
         hook["_yinz_codex_hooks_ready"] = ready.into();
+        self.report(hook).await;
+    }
+
+    async fn report(&self, hook: Value) {
+        let Some(yinz) = self.reporter.clone() else {
+            return;
+        };
         let env = self.env.clone();
         // Finish reporting before the UI sees the selection or any later request is forwarded.
         tokio::task::spawn_blocking(move || {
             forward(&yinz, env, hook.to_string().as_bytes())
-                .context("announce Codex conversation to its pane")
+                .context("report Codex lifecycle to its pane")
                 .non_fatal();
         })
         .await
-        .context("join Codex conversation announcement")
+        .context("join Codex lifecycle report")
         .non_fatal();
     }
 
@@ -238,9 +245,20 @@ struct Conversations {
     pending: HashMap<String, (String, bool)>,
     /// Hidden helper threads, such as the TUI's title generator, which never own the pane.
     ephemeral: HashSet<String>,
+    selected: Option<String>,
+    current_turn: Option<String>,
 }
 
 impl Conversations {
+    fn select(&mut self, thread: &str, registration: &Registration) -> Result<()> {
+        registration.select(thread)?;
+        if self.selected.as_deref() != Some(thread) {
+            self.selected = Some(thread.to_owned());
+            self.current_turn = None;
+        }
+        Ok(())
+    }
+
     fn request(&mut self, value: &Value, registration: &Registration) -> Result<()> {
         let Some(method) = value["method"].as_str() else {
             return Ok(());
@@ -256,15 +274,48 @@ impl Conversations {
         if matches!(method, "turn/start" | "turn/steer") {
             if let Some(thread) = value["params"]["threadId"].as_str() {
                 if !self.ephemeral.contains(thread) {
-                    registration.select(thread)?;
+                    self.select(thread, registration)?;
                 }
             }
         }
         Ok(())
     }
 
-    /// Returns a `SessionStart` hook announcing a newly selected conversation.
+    /// Observe selections and final failures without changing the backend's messages.
     fn response(&mut self, value: &Value, registration: &Registration) -> Result<Option<Value>> {
+        if value.get("id").is_none() {
+            let params = &value["params"];
+            if params["threadId"].as_str().is_some_and(|thread| {
+                self.selected.as_deref() == Some(thread) && !self.ephemeral.contains(thread)
+            }) {
+                let turn = &params["turn"];
+                if let Some(id) = turn["id"].as_str().filter(|id| !id.is_empty()) {
+                    match value["method"].as_str() {
+                        Some("turn/started") => self.current_turn = Some(id.to_owned()),
+                        Some("turn/completed")
+                            if self.current_turn.as_deref() == Some(id)
+                                && matches!(
+                                    turn["status"].as_str(),
+                                    Some("completed" | "interrupted" | "failed")
+                                ) =>
+                        {
+                            // Consume every terminal event so a duplicate or delayed failure
+                            // cannot end this turn twice or affect a newer turn.
+                            self.current_turn = None;
+                            if turn["status"] == "failed" {
+                                return Ok(Some(serde_json::json!({
+                                    "hook_event_name": "StopFailure",
+                                    "session_id": params["threadId"],
+                                    "turn_id": id,
+                                    "last_assistant_message": turn["error"]["message"].as_str().unwrap_or("Codex turn failed."),
+                                })));
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        }
         // Server requests have their own id namespace (eg approval requests).
         if value.get("method").is_some() {
             return Ok(None);
@@ -284,7 +335,16 @@ impl Conversations {
             return Ok(None);
         }
         // Publish before the UI sees the reply and can submit its first turn.
-        registration.select(id)?;
+        self.select(id, registration)?;
+        // Resuming an active thread may not replay its turn/started notification.
+        self.current_turn = thread["turns"].as_array().and_then(|turns| {
+            turns
+                .iter()
+                .rev()
+                .find(|turn| turn["status"] == "inProgress")
+                .and_then(|turn| turn["id"].as_str())
+                .map(str::to_owned)
+        });
         let source = match method.as_str() {
             "thread/resume" => "resume",
             "thread/fork" => "fork",
@@ -559,7 +619,11 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
                         if let Some(hook) = conversations.response(&value, registration)? {
-                            registration.announce(hook, program).await;
+                            if hook["hook_event_name"] == "SessionStart" {
+                                registration.announce(hook, program).await;
+                            } else {
+                                registration.report(hook).await;
+                            }
                         }
                         ui.send(Message::Text(text)).await.context("forward Codex daemon reply")?;
                     },
