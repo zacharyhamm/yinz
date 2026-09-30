@@ -285,6 +285,7 @@ pub enum PtyInstruction {
     OverrideLayout(
         Option<PathBuf>,        // CWD
         Option<TerminalAction>, // Default Shell
+        Vec<TabId>,             // surplus tabs to close after successful application
         Vec<(
             TabId,
             TabLayoutInfo,

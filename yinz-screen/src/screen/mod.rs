@@ -1855,227 +1855,267 @@ impl Screen {
         tab_id: TabId,
         should_change_client_focus: bool,
         client_id: ClientId,
-        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
+        mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
-        if !self.tabs.contains_key(&tab_id) {
-            // TODO: we should prevent this situation with a UI - eg. cannot close tabs with a
-            // pending state
-            log::error!("Tab with index {tab_id} not found. Cannot apply layout!");
-            return Ok(());
-        }
-        let client_id = if self.get_active_tab(client_id).is_ok() {
-            client_id
-        } else if let Some(first_client_id) = self.get_first_client_id() {
-            first_client_id
-        } else {
-            client_id
-        };
-        let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
-
-        let passthrough_affected_client_ids: Vec<ClientId> = if should_change_client_focus {
-            if self.session_is_mirrored {
-                self.connected_clients.borrow().iter().copied().collect()
+        let applied = (|| {
+            if !self.tabs.contains_key(&tab_id) {
+                let message = format!("Tab with index {tab_id} not found. Cannot apply layout!");
+                return Err(anyhow!(message));
+            }
+            let client_id = if self.get_active_tab(client_id).is_ok() {
+                client_id
+            } else if let Some(first_client_id) = self.get_first_client_id() {
+                first_client_id
             } else {
-                vec![client_id]
-            }
-        } else {
-            vec![]
-        };
-        let passthrough_old_focused_panes: Vec<(ClientId, Option<PaneId>)> =
-            passthrough_affected_client_ids
-                .iter()
-                .map(|c| (*c, self.get_active_pane_id(c)))
-                .collect();
+                client_id
+            };
+            let err_context = || format!("failed to apply layout for tab {tab_id:?}",);
 
-        let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id) {
-            let mut plugins = new_plugin_ids.clone();
-            let mut tiled = new_terminal_ids.iter();
-            let mut floating = new_floating_terminal_ids.iter();
-            let mut slots = vec![];
-            for (runs, terminals) in [
-                (layout.extract_run_instructions(), &mut tiled),
-                (
-                    floating_panes_layout
-                        .iter()
-                        .map(|pane| pane.run.clone())
-                        .collect(),
-                    &mut floating,
-                ),
-            ] {
-                for run in runs {
-                    let id = match run {
-                        Some(Run::Plugin(plugin)) => plugins
-                            .get_mut(&plugin)
-                            .and_then(|ids| ids.pop())
-                            .map(PaneId::Plugin),
-                        _ => terminals.next().map(|(id, _)| PaneId::Terminal(*id)),
-                    }
-                    .context("missing warp layout slot")?;
-                    slots.push(id);
-                }
-            }
-            Some(slots)
-        } else {
-            None
-        };
-
-        let mut hidden_companions = vec![];
-        if let (Some(slots), Some(relationships)) = (
-            warp_slots.as_ref(),
-            self.pending_warp_relationships.get(&tab_id),
-        ) {
-            relationships
-                .validate(slots.len())
-                .map_err(|e| anyhow!("{e}"))?;
-            let tiled_slots = layout.extract_run_instructions().len();
-            if relationships
-                .hidden
-                .iter()
-                .any(|hidden| (hidden.pane as usize) < tiled_slots)
-            {
-                return Err(anyhow!("hidden warp companion occupies a tiled slot"));
-            }
-            let hidden_ids: HashSet<_> = relationships
-                .hidden
-                .iter()
-                .map(|hidden| slots[hidden.pane as usize])
-                .collect();
-            let mut terminals = new_floating_terminal_ids.iter();
-            let mut visible_layout = vec![];
-            for (pane_layout, id) in floating_panes_layout.into_iter().zip(&slots[tiled_slots..]) {
-                let held_command = match id {
-                    PaneId::Terminal(_) => terminals
-                        .next()
-                        .context("missing warp terminal slot")?
-                        .1
-                        .clone(),
-                    PaneId::Plugin(_) => None,
-                };
-                if hidden_ids.contains(id) {
-                    hidden_companions.push((*id, pane_layout, held_command));
+            let passthrough_affected_client_ids: Vec<ClientId> = if should_change_client_focus {
+                if self.session_is_mirrored {
+                    self.connected_clients.borrow().iter().copied().collect()
                 } else {
-                    visible_layout.push(pane_layout);
+                    vec![client_id]
+                }
+            } else {
+                vec![]
+            };
+            let passthrough_old_focused_panes: Vec<(ClientId, Option<PaneId>)> =
+                passthrough_affected_client_ids
+                    .iter()
+                    .map(|c| (*c, self.get_active_pane_id(c)))
+                    .collect();
+
+            let warp_slots = if self.pending_warp_relationships.contains_key(&tab_id) {
+                let mut plugins = new_plugin_ids.clone();
+                let mut tiled = new_terminal_ids.iter();
+                let mut floating = new_floating_terminal_ids.iter();
+                let mut slots = vec![];
+                for (runs, terminals) in [
+                    (layout.extract_run_instructions(), &mut tiled),
+                    (
+                        floating_panes_layout
+                            .iter()
+                            .map(|pane| pane.run.clone())
+                            .collect(),
+                        &mut floating,
+                    ),
+                ] {
+                    for run in runs {
+                        let id = match run {
+                            Some(Run::Plugin(plugin)) => plugins
+                                .get_mut(&plugin)
+                                .and_then(|ids| ids.pop())
+                                .map(PaneId::Plugin),
+                            _ => terminals.next().map(|(id, _)| PaneId::Terminal(*id)),
+                        }
+                        .context("missing warp layout slot")?;
+                        slots.push(id);
+                    }
+                }
+                Some(slots)
+            } else {
+                None
+            };
+
+            let mut hidden_companions = vec![];
+            if let (Some(slots), Some(relationships)) = (
+                warp_slots.as_ref(),
+                self.pending_warp_relationships.get(&tab_id),
+            ) {
+                relationships
+                    .validate(slots.len())
+                    .map_err(|e| anyhow!("{e}"))?;
+                let tiled_slots = layout.extract_run_instructions().len();
+                if relationships
+                    .hidden
+                    .iter()
+                    .any(|hidden| (hidden.pane as usize) < tiled_slots)
+                {
+                    return Err(anyhow!("hidden warp companion occupies a tiled slot"));
+                }
+                let hidden_ids: HashSet<_> = relationships
+                    .hidden
+                    .iter()
+                    .map(|hidden| slots[hidden.pane as usize])
+                    .collect();
+                let mut terminals = new_floating_terminal_ids.iter();
+                let mut visible_layout = vec![];
+                for (pane_layout, id) in
+                    floating_panes_layout.into_iter().zip(&slots[tiled_slots..])
+                {
+                    let held_command = match id {
+                        PaneId::Terminal(_) => terminals
+                            .next()
+                            .context("missing warp terminal slot")?
+                            .1
+                            .clone(),
+                        PaneId::Plugin(_) => None,
+                    };
+                    if hidden_ids.contains(id) {
+                        hidden_companions.push((*id, pane_layout, held_command));
+                    } else {
+                        visible_layout.push(pane_layout);
+                    }
+                }
+                floating_panes_layout = visible_layout;
+                new_floating_terminal_ids
+                    .retain(|(id, _)| !hidden_ids.contains(&PaneId::Terminal(*id)));
+                for ids in new_plugin_ids.values_mut() {
+                    // Keep pop order for repeated configurations across tiled and floating slots.
+                    ids.retain(|id| !hidden_ids.contains(&PaneId::Plugin(*id)));
                 }
             }
-            floating_panes_layout = visible_layout;
-            new_floating_terminal_ids
-                .retain(|(id, _)| !hidden_ids.contains(&PaneId::Terminal(*id)));
-            for ids in new_plugin_ids.values_mut() {
-                // Keep pop order for repeated configurations across tiled and floating slots.
-                ids.retain(|id| !hidden_ids.contains(&PaneId::Plugin(*id)));
-            }
-        }
 
-        // move the relevant clients out of the current tab and place them in the new one
-        let drained_clients = if should_change_client_focus {
-            if self.session_is_mirrored {
-                let client_mode_infos_in_source_tab = if let Ok(active_tab) =
-                    self.get_active_tab_mut(client_id)
-                {
-                    let client_mode_infos_in_source_tab = active_tab.drain_connected_clients(None);
+            // Reject the layout before moving clients away from their working tab.
+            self.tabs
+                .get_mut(&tab_id)
+                .context("layout tab is missing")?
+                .validate_layout(
+                    &layout,
+                    &floating_panes_layout,
+                    &new_terminal_ids,
+                    &new_floating_terminal_ids,
+                    &new_plugin_ids,
+                )
+                .with_context(err_context)?;
+
+            // Companions must exist before apply_layout replays buffered output. Create them
+            // before moving clients too, since parking a companion can fail on its resize.
+            let tab = self
+                .tabs
+                .get_mut(&tab_id)
+                .context("layout tab is missing")?;
+            for (id, pane_layout, held_command) in hidden_companions {
+                tab.create_warp_companion(id, pane_layout, held_command)
+                    .with_context(err_context)?;
+            }
+
+            // move the relevant clients out of the current tab and place them in the new one
+            let drained_clients = if should_change_client_focus {
+                if self.session_is_mirrored {
+                    let client_mode_infos_in_source_tab =
+                        if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
+                            let client_mode_infos_in_source_tab =
+                                active_tab.drain_connected_clients(None);
+                            if active_tab.has_no_connected_clients() {
+                                active_tab
+                                    .visible(false)
+                                    .with_context(err_context)
+                                    .non_fatal();
+                            }
+                            Some(client_mode_infos_in_source_tab)
+                        } else {
+                            None
+                        };
+                    let all_connected_clients: Vec<ClientId> =
+                        self.connected_clients.borrow().iter().copied().collect();
+                    for client_id in all_connected_clients {
+                        self.update_client_tab_focus(client_id, tab_id);
+                    }
+                    client_mode_infos_in_source_tab
+                } else if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
+                    let client_mode_info_in_source_tab =
+                        active_tab.drain_connected_clients(Some(vec![client_id]));
                     if active_tab.has_no_connected_clients() {
                         active_tab
                             .visible(false)
                             .with_context(err_context)
                             .non_fatal();
                     }
-                    Some(client_mode_infos_in_source_tab)
+                    self.update_client_tab_focus(client_id, tab_id);
+                    Some(client_mode_info_in_source_tab)
                 } else {
                     None
-                };
-                let all_connected_clients: Vec<ClientId> =
-                    self.connected_clients.borrow().iter().copied().collect();
-                for client_id in all_connected_clients {
-                    self.update_client_tab_focus(client_id, tab_id);
                 }
-                client_mode_infos_in_source_tab
-            } else if let Ok(active_tab) = self.get_active_tab_mut(client_id) {
-                let client_mode_info_in_source_tab =
-                    active_tab.drain_connected_clients(Some(vec![client_id]));
-                if active_tab.has_no_connected_clients() {
-                    active_tab
-                        .visible(false)
-                        .with_context(err_context)
-                        .non_fatal();
-                }
-                self.update_client_tab_focus(client_id, tab_id);
-                Some(client_mode_info_in_source_tab)
             } else {
                 None
+            };
+
+            if !self.active_tab_ids.contains_key(&client_id) {
+                self.connected_clients.borrow_mut().insert(client_id);
             }
-        } else {
-            None
-        };
 
-        if !self.active_tab_ids.contains_key(&client_id) {
-            self.connected_clients.borrow_mut().insert(client_id);
-        }
+            // apply the layout to the new tab
+            self.tabs
+                .get_mut(&tab_id)
+                .context("couldn't find tab with index {tab_id}")
+                .and_then(|tab| {
+                    tab.apply_layout(
+                        layout,
+                        floating_panes_layout,
+                        new_terminal_ids,
+                        new_floating_terminal_ids,
+                        new_plugin_ids,
+                        client_id,
+                        blocking_terminal.take(),
+                    )?;
+                    // The layout now owns its panes. Notification or reflow failures must not
+                    // send them through rejected-layout cleanup and destroy a committed tab.
+                    if let (Some(slots), Some(relationships)) = (
+                        warp_slots.as_ref(),
+                        self.pending_warp_relationships.get(&tab_id),
+                    ) {
+                        tab.restore_warp_relationships(slots, relationships)
+                            .non_fatal();
+                    }
+                    if let Some(drained_clients) = drained_clients {
+                        tab.visible(true).non_fatal();
+                        tab.add_multiple_clients(drained_clients).non_fatal();
+                    }
+                    // after the drained clients have joined, so the plugins in this tab hear
+                    // about their modes too and not only about the client that opened it
+                    tab.update_input_modes().non_fatal();
+                    // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
+                    // reflows it against the session surface
+                    let tab_size = tab.size;
+                    tab.resize_whole_tab(tab_size)
+                        .with_context(err_context)
+                        .non_fatal();
+                    tab.set_force_render();
+                    Ok(())
+                })
+                .with_context(err_context)?;
 
-        // apply the layout to the new tab
-        self.tabs
-            .get_mut(&tab_id)
-            .context("couldn't find tab with index {tab_id}")
-            .and_then(|tab| {
-                // Buffered output is replayed by apply_layout, so companions must already exist.
-                for (id, pane_layout, held_command) in hidden_companions {
-                    tab.create_warp_companion(id, pane_layout, held_command)?;
-                }
-                tab.apply_layout(
-                    layout,
-                    floating_panes_layout,
-                    new_terminal_ids,
-                    new_floating_terminal_ids,
-                    new_plugin_ids,
-                    client_id,
-                    blocking_terminal,
-                )?;
-                if let (Some(slots), Some(relationships)) = (
-                    warp_slots.as_ref(),
-                    self.pending_warp_relationships.get(&tab_id),
-                ) {
-                    tab.restore_warp_relationships(slots, relationships)?;
-                }
-                if let Some(drained_clients) = drained_clients {
-                    tab.visible(true)?;
-                    tab.add_multiple_clients(drained_clients)?;
-                }
-                // after the drained clients have joined, so the plugins in this tab hear
-                // about their modes too and not only about the client that opened it
-                tab.update_input_modes()?;
-                // the tab keeps the size its viewers gave it here; `recompute_tab_size` below
-                // reflows it against the session surface
-                let tab_size = tab.size;
-                tab.resize_whole_tab(tab_size).with_context(err_context)?;
-                tab.set_force_render();
-                Ok(())
-            })
-            .with_context(err_context)?;
+            if !self.active_tab_ids.contains_key(&client_id) {
+                // this means this is a new client and we need to add it to our state properly
+                self.add_client(client_id)
+                    .with_context(err_context)
+                    .non_fatal();
+            }
 
-        if !self.active_tab_ids.contains_key(&client_id) {
-            // this means this is a new client and we need to add it to our state properly
-            self.add_client(client_id).with_context(err_context)?;
-        }
-
-        if let (Some(slots), Some(relationships)) =
-            (warp_slots, self.pending_warp_relationships.remove(&tab_id))
-        {
-            self.finish_warp_group(tab_id, &slots, &relationships)
+            if let (Some(slots), Some(relationships)) =
+                (warp_slots, self.pending_warp_relationships.remove(&tab_id))
+            {
+                self.finish_warp_group(tab_id, &slots, &relationships)
+                    .non_fatal();
+            }
+            self.recompute_tab_size(tab_id)
+                .with_context(err_context)
                 .non_fatal();
-        }
-        self.recompute_tab_size(tab_id).with_context(err_context)?;
 
-        for (affected_client_id, old_pane_id) in passthrough_old_focused_panes {
-            let new_pane_id = self.get_active_pane_id(&affected_client_id);
-            if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
-                self.report_key_passthrough_state(affected_client_id, old, new);
+            for (affected_client_id, old_pane_id) in passthrough_old_focused_panes {
+                let new_pane_id = self.get_active_pane_id(&affected_client_id);
+                if let (Some(old), Some(new)) = (old_pane_id, new_pane_id) {
+                    self.report_key_passthrough_state(affected_client_id, old, new);
+                }
+            }
+
+            // Populate chrome-only destinations before rendering can reap empty tabs.
+            self.resume_pending_arrangement().non_fatal();
+            self.log_and_report_session_state()
+                .and_then(|_| self.render())
+                .with_context(err_context)
+                .non_fatal();
+            Ok(())
+        })();
+        if let Err(error) = &applied {
+            if let Some((_, completion)) = blocking_terminal.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message(format!("{error:#}"));
             }
         }
-
-        // Populate chrome-only destinations before rendering can reap empty tabs.
-        self.resume_pending_arrangement()?;
-        self.log_and_report_session_state()
-            .and_then(|_| self.render())
-            .with_context(err_context)
+        applied
     }
 
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {

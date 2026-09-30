@@ -1449,20 +1449,11 @@ impl Tab {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn apply_layout(
+    fn layout_applier(
         &mut self,
-        layout: TiledPaneLayout,
-        floating_panes_layout: Vec<FloatingPaneLayout>,
-        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
-        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
-        client_id: ClientId,
         blocking_terminal: Option<(TerminalId, NotificationEnd)>,
-    ) -> Result<()> {
-        self.swap_layouts
-            .set_base_layout((layout.clone(), floating_panes_layout.clone()));
-        match LayoutApplier::new(
+    ) -> LayoutApplier<'_> {
+        LayoutApplier::new(
             &self.viewport,
             &self.senders,
             &self.sixel_image_store,
@@ -1486,36 +1477,97 @@ impl Tab {
             self.explicitly_disable_kitty_keyboard_protocol,
             blocking_terminal,
         )
-        .apply_layout(
-            layout,
-            floating_panes_layout,
-            new_terminal_ids,
-            new_floating_terminal_ids,
-            new_plugin_ids,
-            client_id,
+    }
+
+    pub fn validate_layout(
+        &mut self,
+        layout: &TiledPaneLayout,
+        floating_panes_layout: &[FloatingPaneLayout],
+        new_terminal_ids: &[(TerminalId, HoldForCommand)],
+        new_floating_terminal_ids: &[(TerminalId, HoldForCommand)],
+        new_plugin_ids: &HashMap<RunPluginOrAlias, Vec<PluginId>>,
+    ) -> Result<()> {
+        self.layout_applier(None)
+            .validate_layout(
+                layout,
+                floating_panes_layout,
+                new_terminal_ids,
+                new_floating_terminal_ids,
+                new_plugin_ids,
+            )
+            .context("invalid tab layout")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_override_layout(
+        &mut self,
+        layout: &TiledPaneLayout,
+        floating_panes_layout: &[FloatingPaneLayout],
+        new_terminal_ids: &[(TerminalId, HoldForCommand)],
+        new_floating_terminal_ids: &[(TerminalId, HoldForCommand)],
+        new_plugin_ids: &HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        retain_existing_terminal_panes: bool,
+        retain_existing_plugin_panes: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        self.layout_applier(None)
+            .validate_override_layout(
+                layout,
+                floating_panes_layout,
+                new_terminal_ids,
+                new_floating_terminal_ids,
+                new_plugin_ids,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                client_id,
+            )
+            .context("invalid replacement tab layout")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_layout(
+        &mut self,
+        layout: TiledPaneLayout,
+        floating_panes_layout: Vec<FloatingPaneLayout>,
+        new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
+        new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
+        client_id: ClientId,
+        mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
+    ) -> Result<()> {
+        if let Err(error) = self.validate_layout(
+            &layout,
+            &floating_panes_layout,
+            &new_terminal_ids,
+            &new_floating_terminal_ids,
+            &new_plugin_ids,
         ) {
-            Ok(should_show_floating_panes) => {
-                // the layout wants floating panes shown while they are hidden, or hidden while
-                // they are shown: toggle either way
-                if should_show_floating_panes != self.floating_panes.panes_are_visible() {
-                    self.toggle_floating_panes(Some(client_id), None, None)
-                        .non_fatal();
-                }
-                self.tiled_panes.reapply_pane_frames();
-                self.is_pending = false;
-                self.apply_buffered_instructions().non_fatal();
-            },
-            Err(e) => {
-                // TODO: this should only happen due to an erroneous layout created by user
-                // configuration that was somehow not caught in our KDL layout parser
-                // we should still be able to properly recover from this with a useful error
-                // message though
-                log::error!("Failed to apply layout: {}", e);
-                self.tiled_panes.reapply_pane_frames();
-                self.is_pending = false;
-                self.apply_buffered_instructions().non_fatal();
-            },
+            if let Some((_, completion)) = blocking_terminal.as_mut() {
+                completion.set_error_message(format!("{error:#}"));
+                completion.set_exit_status(1);
+            }
+            return Err(error);
         }
+        let should_show_floating_panes = self
+            .layout_applier(blocking_terminal)
+            .apply_layout(
+                layout.clone(),
+                floating_panes_layout.clone(),
+                new_terminal_ids,
+                new_floating_terminal_ids,
+                new_plugin_ids,
+                client_id,
+            )
+            .context("failed to apply tab layout")?;
+        self.swap_layouts
+            .set_base_layout((layout, floating_panes_layout));
+        if should_show_floating_panes != self.floating_panes.panes_are_visible() {
+            self.toggle_floating_panes(Some(client_id), None, None)
+                .non_fatal();
+        }
+        self.tiled_panes.reapply_pane_frames();
+        self.is_pending = false;
+        self.apply_buffered_instructions().non_fatal();
         self.refresh_overlay_expansion();
         if let Some(supported) = self.kitty_host_support {
             self.tiled_panes.update_pane_kitty_host_support(supported);
@@ -1536,98 +1588,71 @@ impl Tab {
         &mut self,
         layout: TiledPaneLayout,
         floating_panes_layout: Vec<FloatingPaneLayout>,
-        mut new_swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
-        mut new_swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
+        new_swap_tiled_layouts: Option<Vec<SwapTiledLayout>>,
+        new_swap_floating_layouts: Option<Vec<SwapFloatingLayout>>,
         new_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_floating_terminal_ids: Vec<(TerminalId, HoldForCommand)>,
         new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
-        blocking_terminal: Option<(TerminalId, NotificationEnd)>,
+        mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
-        let new_swap_tiled_layouts = new_swap_tiled_layouts.take().unwrap_or_default();
-        let new_swap_floating_layouts = new_swap_floating_layouts.take().unwrap_or_default();
-        self.swap_layouts
-            .set_swap_tiled_layouts(new_swap_tiled_layouts);
-        self.swap_layouts
-            .set_swap_floating_layouts(new_swap_floating_layouts);
-        self.swap_layouts
-            .set_base_layout((layout.clone(), floating_panes_layout.clone()));
-        match LayoutApplier::new(
-            &self.viewport,
-            &self.senders,
-            &self.sixel_image_store,
-            &self.kitty_image_store,
-            &self.link_handler,
-            &self.terminal_emulator_colors,
-            &self.terminal_emulator_color_codes,
-            &self.character_cell_size,
-            &self.connected_clients_in_app,
-            &self.style,
-            &self.display_area,
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
-            self.pane_frame_style,
-            &mut self.focus_pane_id,
-            self.os_api.as_ref(),
-            self.debug,
-            self.arrow_fonts,
-            self.styled_underlines,
-            self.osc8_hyperlinks,
-            self.explicitly_disable_kitty_keyboard_protocol,
-            blocking_terminal,
-        )
-        .override_layout(
-            layout,
-            floating_panes_layout,
-            new_terminal_ids,
-            new_floating_terminal_ids,
-            new_plugin_ids,
+        if let Err(error) = self.validate_override_layout(
+            &layout,
+            &floating_panes_layout,
+            &new_terminal_ids,
+            &new_floating_terminal_ids,
+            &new_plugin_ids,
             retain_existing_terminal_panes,
             retain_existing_plugin_panes,
             client_id,
         ) {
-            Ok(should_show_floating_panes) => {
-                // the layout wants floating panes shown while they are hidden, or hidden while
-                // they are shown: toggle either way
-                if should_show_floating_panes != self.floating_panes.panes_are_visible() {
-                    self.toggle_floating_panes(Some(client_id), None, None)
-                        .non_fatal();
-                }
-
-                // this is essentially another pass of the layout applier
-                // we do this because the layout applier does not know about swap layouts, and in
-                // this case we might have had to re-add existing panes that were not in the
-                // overridden layout (eg. if we had more panes than were in the layout). In such a
-                // case, we would like to make sure these extra panes fit the current swap layout
-                self.swap_layouts.set_is_tiled_damaged();
-                self.swap_layouts.set_is_floating_damaged();
-                let _ = self.relayout_tiled_panes(false);
-                let _ = self.relayout_floating_panes(false);
-
-                self.tiled_panes.reapply_pane_frames();
-                self.is_pending = false;
-
-                LayoutApplier::offset_viewport(
-                    self.viewport.clone(),
-                    self.display_area.clone(),
-                    &mut self.tiled_panes,
-                    self.pane_frame_style,
-                );
-                self.refresh_overlay_expansion();
-
-                self.apply_buffered_instructions().non_fatal();
-            },
-            Err(e) => {
-                // TODO: this should only happen due to an erroneous layout created by user
-                // configuration that was somehow not caught in our KDL layout parser
-                // we should still be able to properly recover from this with a useful error
-                // message though
-                log::error!("Failed to apply layout: {}", e);
-                self.is_pending = false;
-            },
+            if let Some((_, completion)) = blocking_terminal.as_mut() {
+                completion.set_error_message(format!("{error:#}"));
+                completion.set_exit_status(1);
+            }
+            return Err(error);
         }
+        let should_show_floating_panes = self
+            .layout_applier(blocking_terminal)
+            .override_layout(
+                layout.clone(),
+                floating_panes_layout.clone(),
+                new_terminal_ids,
+                new_floating_terminal_ids,
+                new_plugin_ids,
+                retain_existing_terminal_panes,
+                retain_existing_plugin_panes,
+                client_id,
+            )
+            .context("failed to override tab layout")?;
+        self.swap_layouts
+            .set_swap_tiled_layouts(new_swap_tiled_layouts.unwrap_or_default());
+        self.swap_layouts
+            .set_swap_floating_layouts(new_swap_floating_layouts.unwrap_or_default());
+        self.swap_layouts
+            .set_base_layout((layout, floating_panes_layout));
+        if should_show_floating_panes != self.floating_panes.panes_are_visible() {
+            self.toggle_floating_panes(Some(client_id), None, None)
+                .non_fatal();
+        }
+
+        // Retained panes absent from the replacement layout still need to fit its swap layout.
+        self.swap_layouts.set_is_tiled_damaged();
+        self.swap_layouts.set_is_floating_damaged();
+        self.relayout_tiled_panes(false).non_fatal();
+        self.relayout_floating_panes(false).non_fatal();
+        self.tiled_panes.reapply_pane_frames();
+        self.is_pending = false;
+        LayoutApplier::offset_viewport(
+            self.viewport.clone(),
+            self.display_area.clone(),
+            &mut self.tiled_panes,
+            self.pane_frame_style,
+        );
+        self.refresh_overlay_expansion();
+        self.apply_buffered_instructions().non_fatal();
         Ok(())
     }
     pub fn swap_layout_info(&self) -> (Option<String>, bool) {
@@ -1649,32 +1674,9 @@ impl Tab {
             .swap_layouts
             .swap_floating_panes(&self.floating_panes, search_backwards)
         {
-            LayoutApplier::new(
-                &self.viewport,
-                &self.senders,
-                &self.sixel_image_store,
-                &self.kitty_image_store,
-                &self.link_handler,
-                &self.terminal_emulator_colors,
-                &self.terminal_emulator_color_codes,
-                &self.character_cell_size,
-                &self.connected_clients_in_app,
-                &self.style,
-                &self.display_area,
-                &mut self.tiled_panes,
-                &mut self.floating_panes,
-                self.pane_frame_style,
-                &mut self.focus_pane_id,
-                self.os_api.as_ref(),
-                self.debug,
-                self.arrow_fonts,
-                self.styled_underlines,
-                self.osc8_hyperlinks,
-                self.explicitly_disable_kitty_keyboard_protocol,
-                None,
-            )
-            .apply_floating_panes_layout_to_existing_panes(&layout_candidate)
-            .non_fatal();
+            self.layout_applier(None)
+                .apply_floating_panes_layout_to_existing_panes(&layout_candidate)
+                .non_fatal();
         }
         self.set_force_render();
         self.senders
@@ -1775,31 +1777,8 @@ impl Tab {
         order: &[PaneId],
     ) -> Result<()> {
         self.tiled_panes.unset_fullscreen();
-        LayoutApplier::new(
-            &self.viewport,
-            &self.senders,
-            &self.sixel_image_store,
-            &self.kitty_image_store,
-            &self.link_handler,
-            &self.terminal_emulator_colors,
-            &self.terminal_emulator_color_codes,
-            &self.character_cell_size,
-            &self.connected_clients_in_app,
-            &self.style,
-            &self.display_area,
-            &mut self.tiled_panes,
-            &mut self.floating_panes,
-            self.pane_frame_style,
-            &mut self.focus_pane_id,
-            self.os_api.as_ref(),
-            self.debug,
-            self.arrow_fonts,
-            self.styled_underlines,
-            self.osc8_hyperlinks,
-            self.explicitly_disable_kitty_keyboard_protocol,
-            None,
-        )
-        .apply_tiled_panes_layout_in_order(layout, Some(order))?;
+        self.layout_applier(None)
+            .apply_tiled_panes_layout_in_order(layout, Some(order))?;
         self.is_pending = false;
         self.apply_buffered_instructions()?;
         self.tiled_panes.reapply_pane_frames();
@@ -1821,31 +1800,9 @@ impl Tab {
             .swap_layouts
             .swap_tiled_panes(&self.tiled_panes, search_backwards)
         {
-            let application_res = LayoutApplier::new(
-                &self.viewport,
-                &self.senders,
-                &self.sixel_image_store,
-                &self.kitty_image_store,
-                &self.link_handler,
-                &self.terminal_emulator_colors,
-                &self.terminal_emulator_color_codes,
-                &self.character_cell_size,
-                &self.connected_clients_in_app,
-                &self.style,
-                &self.display_area,
-                &mut self.tiled_panes,
-                &mut self.floating_panes,
-                self.pane_frame_style,
-                &mut self.focus_pane_id,
-                self.os_api.as_ref(),
-                self.debug,
-                self.arrow_fonts,
-                self.styled_underlines,
-                self.osc8_hyperlinks,
-                self.explicitly_disable_kitty_keyboard_protocol,
-                None,
-            )
-            .apply_tiled_panes_layout_to_existing_panes(&layout_candidate);
+            let application_res = self
+                .layout_applier(None)
+                .apply_tiled_panes_layout_to_existing_panes(&layout_candidate);
             if application_res.is_err() {
                 self.swap_layouts.set_is_tiled_damaged();
                 application_res.non_fatal();
@@ -2940,6 +2897,53 @@ impl Tab {
         self.park_new_pane(pane)
     }
 
+    /// A rejected landing cannot return supervisors already adopted from another session.
+    /// Keep them reachable, with one visible pane if this tab would otherwise be empty.
+    pub fn retain_adopted_layout_terminals(
+        &mut self,
+        terminals: Vec<(TerminalId, RunCommand, HoldForCommand)>,
+        client_id: ClientId,
+    ) -> Result<()> {
+        for (terminal_id, command, held_command) in terminals {
+            let pane_id = PaneId::Terminal(terminal_id);
+            if self.get_pane_with_id(pane_id).is_some() {
+                continue;
+            }
+            let mut pane = self
+                .build_pane(pane_id, None, Some(Run::Command(command)), None)
+                .context("failed to retain an adopted terminal after layout rejection")?;
+            if let Some(command) = held_command {
+                pane.hold(None, true, command);
+            }
+            let show_pane = self.tiled_panes.get_panes().next().is_none();
+            let geom = if show_pane {
+                PaneGeom::from(&*self.display_area.borrow())
+            } else {
+                half_size_middle_geom(&self.viewport.borrow(), 0)
+            };
+            pane.set_geom(geom);
+            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size).non_fatal();
+            if show_pane {
+                self.tiled_panes.add_pane_with_existing_geom(pane_id, pane);
+                self.tiled_panes.focus_pane(pane_id, client_id);
+                self.tiled_panes.reapply_pane_frames();
+            } else {
+                self.park_pane(pane);
+            }
+        }
+        self.finish_pending_layout();
+        Ok(())
+    }
+
+    /// A failed layout still leaves any panes already in the tab usable.
+    pub fn finish_pending_layout(&mut self) {
+        self.is_pending = false;
+        self.apply_buffered_instructions()
+            .context("failed to replay retained pane output")
+            .non_fatal();
+        self.set_force_render();
+    }
+
     /// Park a pane in the suppressed panes rather than placing it, giving it a plausible geometry
     /// so that it looks right the moment something takes it back out.
     fn park_new_pane(&mut self, mut new_pane: Box<dyn Pane>) -> Result<()> {
@@ -3287,7 +3291,7 @@ impl Tab {
 
         match new_pane_id {
             PaneId::Terminal(new_pane_id) => {
-                let next_terminal_position = self.get_next_terminal_position(); // TODO: this is not accurate in this case
+                let next_terminal_position = self.get_next_terminal_position();
                 let mut new_pane = TerminalPane::new(
                     new_pane_id,
                     PaneGeom::default(), // the initial size will be set later
@@ -7790,10 +7794,9 @@ impl Tab {
 
     pub fn scroll_terminal_page_up(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
-                                                         // don't have an actual client id here
-                                                         // TODO: traits were a mistake
-                                                         // prevent overflow when row == 0
+            // Terminal panes ignore the client ID required by the shared Pane interface.
+            let fictitious_client_id = ClientId::new(1);
+            // prevent overflow when row == 0
             let scroll_rows = terminal_pane.rows().max(1).saturating_sub(1);
             terminal_pane.scroll_up(scroll_rows, fictitious_client_id);
         }
@@ -7818,9 +7821,8 @@ impl Tab {
 
     pub fn scroll_terminal_page_down(&mut self, terminal_pane_id: TerminalId) {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
-            let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
-                                                         // don't have an actual client id here
-                                                         // TODO: traits were a mistake
+            // Terminal panes ignore the client ID required by the shared Pane interface.
+            let fictitious_client_id = ClientId::new(1);
             let scroll_rows = terminal_pane.get_content_rows();
             terminal_pane.scroll_down(scroll_rows, fictitious_client_id);
             if !terminal_pane.is_scrolled() {
@@ -7984,9 +7986,8 @@ impl Tab {
         if let Some(terminal_pane) = self.get_pane_with_id_mut(PaneId::Terminal(terminal_pane_id)) {
             terminal_pane.clear_scroll();
             if let Some(size) = terminal_pane.get_line_number() {
-                let fictitious_client_id = ClientId::new(1); // this is not checked for terminal panes and we
-                                                             // don't have an actual client id here
-                                                             // TODO: traits were a mistake
+                // Terminal panes ignore the client ID required by the shared Pane interface.
+                let fictitious_client_id = ClientId::new(1);
                 terminal_pane.scroll_up(size, fictitious_client_id);
             }
         }
@@ -8767,8 +8768,6 @@ impl Tab {
                 };
                 focused_floating_pane
             })
-            // TODO: change suppressed_panes to be a proper struct with methods that make sense rather
-            // than doing this dance every time
             .or_else(|_| {
                 match self
                     .suppressed_panes
@@ -9712,7 +9711,7 @@ impl Tab {
             return;
         }
         self.dissolve_stack_lists_for_classic_mutation();
-        self.swap_layouts.set_is_tiled_damaged(); // TODO: verify we can do all the below first
+        self.swap_layouts.set_is_tiled_damaged();
         if self.pane_is_stacked(root_pane_id) {
             for pane in self
                 .tiled_panes

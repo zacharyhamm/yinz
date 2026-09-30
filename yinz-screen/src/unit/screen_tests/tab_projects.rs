@@ -806,8 +806,9 @@ fn apply_arrangement_loads(
                 .push(PluginId::new((id.get() * 100 + index) as u32));
         }
         screen
-            .apply_layout(
+            .land_layout(
                 layout,
+                vec![],
                 vec![],
                 vec![],
                 vec![],
@@ -816,6 +817,8 @@ fn apply_arrangement_loads(
                 false,
                 client,
                 None,
+                None,
+                &mut super::super::thread_main::PendingEvents::default(),
             )
             .unwrap();
     }

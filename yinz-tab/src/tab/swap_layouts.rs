@@ -254,7 +254,6 @@ impl SwapLayouts {
                         if self.state_fits_tiled_panes_constraint(constraint, tiled_panes) {
                             let focus_layout_if_not_focused = true;
                             let display_area = self.display_area.borrow();
-                            // TODO: reuse the assets from position_panes_in_space here?
                             let pane_count = tiled_panes.visible_panes_count();
                             let display_area = PaneGeom::from(&*display_area);
                             if layout

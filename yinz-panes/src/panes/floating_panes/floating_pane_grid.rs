@@ -683,7 +683,13 @@ impl<'a> FloatingPaneGrid<'a> {
     pub fn find_room_for_new_pane(&self) -> Option<PaneGeom> {
         let panes = self.panes.borrow();
         let pane_geoms: Vec<PaneGeom> = panes.values().map(|p| p.position_and_size()).collect();
+        Self::find_room_in_viewport(self.viewport, &pane_geoms)
+    }
 
+    pub(super) fn find_room_in_viewport(
+        viewport: Viewport,
+        pane_geoms: &[PaneGeom],
+    ) -> Option<PaneGeom> {
         macro_rules! find_unoccupied_offset {
             ($get_geom_with_offset:expr, $viewport:expr, $other_geoms:expr) => {
                 let mut offset = 0;
@@ -709,29 +715,29 @@ impl<'a> FloatingPaneGrid<'a> {
             };
         }
         find_unoccupied_offset!(
-            |offset| half_size_middle_geom(&self.viewport, offset),
-            &self.viewport,
-            &pane_geoms
+            |offset| half_size_middle_geom(&viewport, offset),
+            &viewport,
+            pane_geoms
         );
         find_unoccupied_offset!(
-            |offset| half_size_top_left_geom(&self.viewport, offset),
-            &self.viewport,
-            &pane_geoms
+            |offset| half_size_top_left_geom(&viewport, offset),
+            &viewport,
+            pane_geoms
         );
         find_unoccupied_offset!(
-            |offset| half_size_top_right_geom(&self.viewport, offset),
-            &self.viewport,
-            &pane_geoms
+            |offset| half_size_top_right_geom(&viewport, offset),
+            &viewport,
+            pane_geoms
         );
         find_unoccupied_offset!(
-            |offset| half_size_bottom_left_geom(&self.viewport, offset),
-            &self.viewport,
-            &pane_geoms
+            |offset| half_size_bottom_left_geom(&viewport, offset),
+            &viewport,
+            pane_geoms
         );
         find_unoccupied_offset!(
-            |offset| half_size_bottom_right_geom(&self.viewport, offset),
-            &self.viewport,
-            &pane_geoms
+            |offset| half_size_bottom_right_geom(&viewport, offset),
+            &viewport,
+            pane_geoms
         );
         None
     }

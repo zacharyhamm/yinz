@@ -143,18 +143,26 @@ impl Screen {
         retain_existing_plugin_panes: bool,
         apply_only_to_focused_tab: bool,
         client_id: ClientId,
-        completion_tx: Option<NotificationEnd>,
+        mut completion_tx: Option<NotificationEnd>,
     ) -> Result<()> {
         let focused_tab_id = if apply_only_to_focused_tab {
             if tab_layouts.is_empty() {
-                log::error!("No tab layouts found, cannot override.");
+                self.report_layout_error(
+                    "No tab layouts found, cannot override.".into(),
+                    client_id,
+                    &mut completion_tx,
+                );
                 return Ok(());
             }
             tab_layouts.truncate(1);
             match self.get_active_tab(client_id) {
                 Ok(tab) => Some(tab.id),
                 Err(e) => {
-                    log::error!("Failed to override layout of active tab: {}", e);
+                    self.report_layout_error(
+                        format!("Failed to override layout of active tab: {e:#}"),
+                        client_id,
+                        &mut completion_tx,
+                    );
                     return Ok(());
                 },
             }
@@ -195,9 +203,6 @@ impl Screen {
                 .tabs
                 .get_mut(&tab_id)
                 .context("override tab is missing")?;
-            if let Some(name) = layout.tab_name.take() {
-                tab.name = name;
-            }
             let (tiled_to_ignore, floating_indices) =
                 find_already_running_panes(&layout.tiled_layout, &layout.floating_layouts, tab);
             for run_instruction in tiled_to_ignore {
@@ -214,17 +219,17 @@ impl Screen {
             .send_to_plugin(PluginInstruction::OverrideLayout(
                 cwd,
                 default_shell,
+                if apply_only_to_focused_tab {
+                    vec![]
+                } else {
+                    tabs_to_close.into_iter().collect()
+                },
                 processed_tab_layouts,
                 retain_existing_terminal_panes,
                 retain_existing_plugin_panes,
                 client_id,
                 completion_tx,
             ))?;
-        if !apply_only_to_focused_tab {
-            for tab_id in tabs_to_close {
-                self.close_tab_by_id(tab_id)?;
-            }
-        }
         Ok(())
     }
 

@@ -3,104 +3,157 @@ use yinz_types::internal_ids::TabId;
 
 use super::thread_main::{apply_pane_agent_report, replay_pending_pane_event, PendingEvents};
 use super::{replay_pending_plugin_events, Screen};
+use crate::background_jobs::BackgroundJob;
 use crate::panes::PaneId;
 use crate::plugins::PluginId;
+use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
-use crate::tab::Tab;
-use crate::ClientId;
+use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
 use yinz_bus::screen::{HoldForCommand, TabOverrideResult};
 use yinz_types::agent::AgentInfo;
+use yinz_types::input::command::RunCommand;
 use yinz_types::input::layout::{FloatingPaneLayout, RunPluginOrAlias, TiledPaneLayout};
 use yinz_types::internal_ids::TerminalId;
 use yinz_types::pane_size::{Size, Viewport};
 
 impl Screen {
-    /// The pty thread has spawned every tab of an override layout: apply each tab's result
-    /// (creating tabs that do not exist yet), close the tabs whose terminals could not be
-    /// spawned, and replay what was waiting for a client or a tab.
+    /// Validate the whole override before replacing any panes or closing surplus tabs.
     pub(super) fn complete_override_layout(
         &mut self,
         tab_results: Vec<TabOverrideResult>,
         failed_tabs: Vec<TabId>,
+        tabs_to_close: Vec<TabId>,
         retain_existing_terminal_panes: bool,
         retain_existing_plugin_panes: bool,
         client_id: ClientId,
         pending: &mut PendingEvents,
     ) -> Result<()> {
-        // Process each tab result
-        for tab_result in tab_results {
-            if let Some(tab) = self.tabs.get_mut(&tab_result.tab_index) {
-                if let Err(e) = tab.override_layout(
-                    tab_result.tiled_layout,
-                    tab_result.floating_layouts,
-                    tab_result.swap_tiled_layouts.clone(),
-                    tab_result.swap_floating_layouts.clone(),
-                    tab_result.new_terminal_pids,
-                    tab_result.new_floating_pane_pids,
-                    tab_result.plugin_ids,
-                    retain_existing_terminal_panes,
-                    retain_existing_plugin_panes,
-                    client_id,
-                    None,
-                ) {
-                    log::error!(
-                        "Failed to override layout for tab {}: {:?}",
-                        tab_result.tab_index,
-                        e
-                    );
-                }
-            } else {
-                // Tab doesn't exist - create it
-                let swap_layouts = (
-                    tab_result.swap_tiled_layouts.clone().unwrap_or_default(),
-                    tab_result.swap_floating_layouts.clone().unwrap_or_default(),
-                );
-                if let Err(e) = self.new_tab(
+        let mut result = if failed_tabs.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!("Failed to spawn layout for tabs {failed_tabs:?}"))
+        };
+        for tab_result in &tab_results {
+            if result.is_err() {
+                break;
+            }
+            if !self.tabs.contains_key(&tab_result.tab_index) {
+                result = self.new_tab(
                     tab_result.tab_index,
-                    swap_layouts,
+                    (
+                        tab_result.swap_tiled_layouts.clone().unwrap_or_default(),
+                        tab_result.swap_floating_layouts.clone().unwrap_or_default(),
+                    ),
                     tab_result.tab_name.clone(),
                     None,
-                ) {
-                    log::error!(
-                        "Failed to create new tab {} during override completion: {:?}",
-                        tab_result.tab_index,
-                        e
-                    );
-                    continue;
+                );
+            }
+            if result.is_ok() {
+                result = self
+                    .tabs
+                    .get_mut(&tab_result.tab_index)
+                    .context("override tab is missing")
+                    .and_then(|tab| {
+                        tab.validate_override_layout(
+                            &tab_result.tiled_layout,
+                            &tab_result.floating_layouts,
+                            &tab_result.new_terminal_pids,
+                            &tab_result.new_floating_pane_pids,
+                            &tab_result.plugin_ids,
+                            retain_existing_terminal_panes,
+                            retain_existing_plugin_panes,
+                            client_id,
+                        )
+                    })
+                    .with_context(|| {
+                        format!("Failed to override layout for tab {}", tab_result.tab_index)
+                    });
+            }
+        }
+        let reserved_tabs: Vec<_> = tab_results
+            .iter()
+            .map(|tab| tab.tab_index)
+            .chain(failed_tabs)
+            .collect();
+        for tab_result in tab_results {
+            let spawned_panes: Vec<_> = tab_result
+                .new_terminal_pids
+                .iter()
+                .chain(&tab_result.new_floating_pane_pids)
+                .map(|(id, _)| PaneId::Terminal(*id))
+                .chain(
+                    tab_result
+                        .plugin_ids
+                        .values()
+                        .flatten()
+                        .copied()
+                        .map(PaneId::Plugin),
+                )
+                .collect();
+            if result.is_ok() {
+                result = self
+                    .tabs
+                    .get_mut(&tab_result.tab_index)
+                    .context("override tab is missing")
+                    .and_then(|tab| {
+                        tab.override_layout(
+                            tab_result.tiled_layout,
+                            tab_result.floating_layouts,
+                            tab_result.swap_tiled_layouts,
+                            tab_result.swap_floating_layouts,
+                            tab_result.new_terminal_pids,
+                            tab_result.new_floating_pane_pids,
+                            tab_result.plugin_ids,
+                            retain_existing_terminal_panes,
+                            retain_existing_plugin_panes,
+                            client_id,
+                            None,
+                        )?;
+                        if let Some(name) = tab_result.tab_name {
+                            tab.name = name;
+                        }
+                        Ok(())
+                    });
+            }
+            if result.is_err() {
+                self.discard_spawned_layout_panes(spawned_panes, pending);
+            }
+        }
+        if result.is_ok() {
+            for tab_id in tabs_to_close {
+                if self.tabs.contains_key(&tab_id) {
+                    self.close_tab_by_id(tab_id)?;
                 }
-
-                // Now override the newly created tab's layout
-                if let Some(tab) = self.tabs.get_mut(&tab_result.tab_index) {
-                    if let Err(e) = tab.override_layout(
-                        tab_result.tiled_layout,
-                        tab_result.floating_layouts,
-                        tab_result.swap_tiled_layouts,
-                        tab_result.swap_floating_layouts,
-                        tab_result.new_terminal_pids,
-                        tab_result.new_floating_pane_pids,
-                        tab_result.plugin_ids,
-                        retain_existing_terminal_panes,
-                        retain_existing_plugin_panes,
-                        client_id,
-                        None,
-                    ) {
-                        log::error!(
-                            "Failed to override layout for new tab {}: {:?}",
-                            tab_result.tab_index,
-                            e
-                        );
-                    }
-                }
+            }
+        } else {
+            for tab_id in reserved_tabs {
+                self.recover_pending_tab(tab_id)?;
             }
         }
 
-        for tab_id in failed_tabs {
-            if self.tabs.get(&tab_id).is_some_and(Tab::is_pending) {
+        self.replay_events_waiting_for_layout(pending);
+
+        if !self.has_pending_tabs() {
+            self.apply_deferred_tab_switches(&mut pending.tab_switches)?;
+        }
+
+        result
+    }
+
+    /// Pending tabs can already hold panes moved or adopted before their layout arrives.
+    pub(super) fn recover_pending_tab(&mut self, tab_id: TabId) -> Result<()> {
+        if let Some(tab) = self.tabs.get_mut(&tab_id).filter(|tab| tab.is_pending()) {
+            if tab.get_all_pane_ids().is_empty() {
                 self.close_tab_by_id(tab_id)?;
+            } else {
+                tab.finish_pending_layout();
             }
         }
+        Ok(())
+    }
 
+    pub(super) fn replay_events_waiting_for_layout(&mut self, pending: &mut PendingEvents) {
         for event in std::mem::take(&mut pending.waiting_for_client) {
             replay_pending_pane_event(self, event, pending).non_fatal();
         }
@@ -108,13 +161,52 @@ impl Screen {
         for event in std::mem::take(&mut pending.waiting_for_tab) {
             replay_pending_pane_event(self, event, pending).non_fatal();
         }
+    }
 
-        if !self.has_pending_tabs() {
-            self.apply_deferred_tab_switches(&mut pending.tab_switches)?;
+    pub(super) fn report_layout_error(
+        &self,
+        message: String,
+        client_id: ClientId,
+        completion_tx: &mut Option<NotificationEnd>,
+    ) {
+        log::error!("{message}");
+        if let Some(completion) = completion_tx.as_mut() {
+            completion.set_exit_status(1);
+            completion.set_error_message(message.clone());
         }
+        if let Some(pane_id) = self.get_active_pane_id(&client_id) {
+            self.bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::DisplayPaneError(
+                    vec![pane_id],
+                    message.clone(),
+                ))
+                .context("failed to display rejected layout error")
+                .non_fatal();
+        }
+        self.bus
+            .senders
+            .send_to_server(ServerInstruction::LogError(vec![message], client_id, None))
+            .context("failed to report rejected layout")
+            .non_fatal();
+    }
 
-        // Single render and log after all tabs are updated (performance optimization)
-        Ok(())
+    fn discard_spawned_layout_panes(&mut self, pane_ids: Vec<PaneId>, pending: &mut PendingEvents) {
+        for pane_id in pane_ids {
+            if let Some(tab) = self
+                .tabs
+                .values_mut()
+                .find(|tab| tab.has_pane_with_pid(&pane_id))
+            {
+                tab.extract_pane(pane_id, true);
+            }
+            pending.waiting_for_pane.remove(&pane_id);
+            self.bus
+                .senders
+                .send_to_pty(PtyInstruction::ClosePane(pane_id, None))
+                .context("failed to close pane from rejected layout")
+                .non_fatal();
+        }
     }
 
     /// The pty thread has spawned a `NewTab`'s panes: apply the layout to the tab, restore any
@@ -126,7 +218,7 @@ impl Screen {
         floating_panes_layout: Vec<FloatingPaneLayout>,
         new_pane_pids: Vec<(TerminalId, HoldForCommand)>,
         new_floating_pane_pids: Vec<(TerminalId, HoldForCommand)>,
-        adopted_agents: Vec<(TerminalId, AgentInfo)>,
+        adopted_terminals: Vec<(TerminalId, RunCommand, Option<AgentInfo>)>,
         new_plugin_ids: HashMap<RunPluginOrAlias, Vec<PluginId>>,
         tab_id: TabId,
         should_change_focus_to_new_tab: bool,
@@ -158,7 +250,32 @@ impl Screen {
             .chain(&new_floating_pane_pids)
             .map(|(terminal_id, _)| PaneId::Terminal(*terminal_id))
             .collect();
-        self.apply_layout(
+        let adopted_commands: HashMap<_, _> = adopted_terminals
+            .iter()
+            .map(|(id, command, _)| (*id, command))
+            .collect();
+        let retained_terminals: Vec<_> = new_pane_pids
+            .iter()
+            .chain(&new_floating_pane_pids)
+            .filter_map(|(id, held_command)| {
+                adopted_commands
+                    .get(id)
+                    .map(|&command| (*id, command.clone(), held_command.clone()))
+            })
+            .collect();
+        let spawned_panes: Vec<_> = new_terminal_pane_ids
+            .iter()
+            .copied()
+            .filter(|id| !matches!(id, PaneId::Terminal(id) if adopted_commands.contains_key(id)))
+            .chain(
+                new_plugin_ids
+                    .values()
+                    .flatten()
+                    .copied()
+                    .map(PaneId::Plugin),
+            )
+            .collect();
+        let applied = self.apply_layout(
             layout,
             floating_panes_layout,
             new_pane_pids,
@@ -168,8 +285,63 @@ impl Screen {
             should_change_focus_to_new_tab,
             client_id,
             blocking_terminal,
-        )?;
-        for (terminal_id, agent) in adopted_agents {
+        );
+        let layout_failed = applied.is_err();
+        if let Err(error) = applied {
+            let mut message = format!("Failed to apply layout for tab {tab_id}: {error:#}");
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_exit_status(1);
+                completion.set_error_message(message.clone());
+            }
+            self.discard_spawned_layout_panes(spawned_panes, pending);
+            let retained = if !retained_terminals.is_empty() {
+                let retention = (|| {
+                    if !self.tabs.contains_key(&tab_id) {
+                        self.new_tab(tab_id, (vec![], vec![]), None, None)?;
+                    }
+                    self.tabs
+                        .get_mut(&tab_id)
+                        .context("missing adopted-pane destination")?
+                        .retain_adopted_layout_terminals(retained_terminals, client_id)
+                })();
+                match retention {
+                    Ok(()) => {
+                        message.push_str(
+                            "; transferred terminals were retained in their destination tab",
+                        );
+                        true
+                    },
+                    Err(error) => {
+                        message.push_str(&format!(
+                            "; could not finish retaining transferred terminals: {error:#}"
+                        ));
+                        adopted_commands.keys().all(|id| {
+                            self.tabs
+                                .values()
+                                .any(|tab| tab.has_pane_with_pid(&PaneId::Terminal(*id)))
+                        })
+                    },
+                }
+            } else {
+                false
+            };
+            self.recover_pending_tab(tab_id).non_fatal();
+            if let Some((_, _, _, Some(response))) = self.pending_group_placements.remove(&tab_id) {
+                // Receipt is successful when the recovery tab owns the transferred supervisors;
+                // the source must not roll those terminals back after a rejected layout.
+                let _ = response.send(if retained {
+                    Ok(())
+                } else {
+                    Err(anyhow!(message.clone()))
+                });
+            }
+            self.pending_warp_relationships.remove(&tab_id);
+            self.report_layout_error(message, client_id, &mut completion_tx);
+        }
+        for (terminal_id, _, agent) in adopted_terminals {
+            let Some(agent) = agent else {
+                continue;
+            };
             let pane_id = PaneId::Terminal(terminal_id);
             if !apply_pane_agent_report(self, pane_id, Some(agent))? {
                 Err::<(), _>(anyhow!(
@@ -180,12 +352,12 @@ impl Screen {
         }
         if !self.has_pending_tabs() {
             self.apply_deferred_tab_switches(&mut pending.tab_switches)?;
-            if should_change_focus_to_new_tab {
+            if should_change_focus_to_new_tab && !layout_failed {
                 if let Some(tab_position) = self.get_tab_position_by_id(tab_id) {
                     self.switch_active_tab(tab_position, None, true, client_id)?;
                 }
             }
-        } else if should_change_focus_to_new_tab {
+        } else if should_change_focus_to_new_tab && !layout_failed {
             let client_id_to_switch = if self.active_tab_ids.contains_key(&client_id) {
                 Some(client_id)
             } else {
@@ -207,9 +379,9 @@ impl Screen {
         for plugin_ids in new_plugin_ids.values() {
             for plugin_id in plugin_ids {
                 let pane_id = PaneId::Plugin(*plugin_id);
-                self.render_blocker.register_blocking_plugin(*plugin_id);
                 let plugin_exists = self.tabs.values().any(|tab| tab.has_plugin(*plugin_id));
                 if plugin_exists {
+                    self.render_blocker.register_blocking_plugin(*plugin_id);
                     if let Some(pending_events) = pending.waiting_for_pane.remove(&pane_id) {
                         replay_pending_plugin_events(self, pending_events)?;
                     }
@@ -217,13 +389,7 @@ impl Screen {
             }
         }
 
-        for event in std::mem::take(&mut pending.waiting_for_client) {
-            replay_pending_pane_event(self, event, pending).non_fatal();
-        }
-
-        for event in std::mem::take(&mut pending.waiting_for_tab) {
-            replay_pending_pane_event(self, event, pending).non_fatal();
-        }
+        self.replay_events_waiting_for_layout(pending);
 
         Ok(())
     }

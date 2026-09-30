@@ -556,6 +556,7 @@ mod floating_fullscreen;
 mod focus_movement;
 mod fullscreen;
 mod fullscreen_interaction;
+mod layout_rejection;
 mod pane_id_api;
 mod renaming;
 mod resize_down;

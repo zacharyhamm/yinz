@@ -1694,7 +1694,7 @@ pub fn screen_thread_main(
                     floating_panes_layout,
                     new_pane_pids,
                     new_floating_pane_pids,
-                    adopted_agents,
+                    adopted_terminals,
                     new_plugin_ids,
                     tab_id,
                     should_change_focus_to_new_tab,
@@ -1707,7 +1707,7 @@ pub fn screen_thread_main(
                         floating_panes_layout,
                         new_pane_pids,
                         new_floating_pane_pids,
-                        adopted_agents,
+                        adopted_terminals,
                         new_plugin_ids,
                         tab_id,
                         should_change_focus_to_new_tab,
@@ -1716,6 +1716,16 @@ pub fn screen_thread_main(
                         blocking_terminal,
                         &mut pending,
                     )?;
+                    screen.render()?;
+                },
+                ScreenInstruction::LayoutSpawnFailed(tab_id) => {
+                    screen.recover_pending_tab(tab_id).non_fatal();
+                    screen.replay_events_waiting_for_layout(&mut pending);
+                    if !screen.has_pending_tabs() {
+                        screen
+                            .apply_deferred_tab_switches(&mut pending.tab_switches)
+                            .non_fatal();
+                    }
                     screen.render()?;
                 },
                 ScreenInstruction::GoToTab(
@@ -2239,19 +2249,27 @@ pub fn screen_thread_main(
                 ScreenInstruction::OverrideLayoutComplete(
                     tab_results,
                     failed_tabs,
+                    tabs_to_close,
                     retain_existing_terminal_panes,
                     retain_existing_plugin_panes,
                     client_id,
-                    completion_tx,
+                    mut completion_tx,
                 ) => {
-                    screen.complete_override_layout(
+                    if let Err(error) = screen.complete_override_layout(
                         tab_results,
                         failed_tabs,
+                        tabs_to_close,
                         retain_existing_terminal_panes,
                         retain_existing_plugin_panes,
                         client_id,
                         &mut pending,
-                    )?;
+                    ) {
+                        screen.report_layout_error(
+                            format!("{error:#}"),
+                            client_id,
+                            &mut completion_tx,
+                        );
+                    }
                     screen.log_and_report_session_state()?;
                     let _ = screen.render();
                     drop(completion_tx); // action ends here, notify the action initiator
@@ -2738,7 +2756,14 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::CloseTabWithId(tab_id, _completion_tx) => {
-                    if screen.get_tab_by_id(tab_id).is_some() {
+                    if screen.get_tab_by_id(tab_id).is_some_and(Tab::is_pending) {
+                        screen.close_tab_by_id(tab_id).non_fatal();
+                        if !screen.has_pending_tabs() {
+                            screen
+                                .apply_deferred_tab_switches(&mut pending.tab_switches)
+                                .non_fatal();
+                        }
+                    } else if screen.get_tab_by_id(tab_id).is_some() {
                         screen.request_close_tab(tab_id, None).non_fatal();
                     } else {
                         log::error!("Failed to find tab with ID: {}", tab_id);

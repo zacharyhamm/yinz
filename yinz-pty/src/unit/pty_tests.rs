@@ -1292,6 +1292,7 @@ fn a_firecracker_layout_override_appears_before_transport() {
     let pending = PendingLayoutOverride {
         cwd: None,
         default_shell: None,
+        tabs_to_close: vec![],
         tabs: vec![(
             TabId::new(7),
             TabLayoutInfo {
@@ -1316,7 +1317,7 @@ fn a_firecracker_layout_override_appears_before_transport() {
     pty.finish_layout_override(pending).unwrap();
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        ScreenInstruction::OverrideLayoutComplete(tabs, failed_tabs, false, false, CLIENT_1, _)
+        ScreenInstruction::OverrideLayoutComplete(tabs, failed_tabs, _, false, false, CLIENT_1, _)
             if failed_tabs.is_empty() && tabs.len() == 1 && tabs[0].tab_index == TabId::new(7) && tabs[0].new_terminal_pids == vec![(TerminalId::new(0), None)]
     )));
     os_api.spawn_started.wait();
@@ -1338,6 +1339,7 @@ fn layout_override_completion_reports_failed_tabs_alongside_successes() {
         pty.finish_layout_override(PendingLayoutOverride {
             cwd: None,
             default_shell: Some(TerminalAction::RunCommand(RunCommand::default())),
+            tabs_to_close: vec![TabId::new(9)],
             tabs: (0..2)
                 .map(|id| {
                     (
@@ -1360,21 +1362,23 @@ fn layout_override_completion_reports_failed_tabs_alongside_successes() {
             completion_tx: None,
         })
         .unwrap();
-        let (tabs, failed_tabs) = screen_rx
+        let (tabs, failed_tabs, tabs_to_close) = screen_rx
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
                 ScreenInstruction::OverrideLayoutComplete(
                     tabs,
                     failed_tabs,
+                    tabs_to_close,
                     false,
                     false,
                     CLIENT_1,
                     _,
-                ) => Some((tabs, failed_tabs)),
+                ) => Some((tabs, failed_tabs, tabs_to_close)),
                 _ => None,
             })
             .expect("completion is sent even when every tab fails");
         assert_eq!(tabs.len(), successful_tabs);
+        assert_eq!(tabs_to_close, vec![TabId::new(9)]);
         if successful_tabs == 1 {
             assert_eq!(tabs[0].tab_index, TabId::new(7));
             assert_eq!(tabs[0].new_terminal_pids, vec![(TerminalId::new(0), None)]);
@@ -1772,7 +1776,7 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
     for override_layout in [false, true] {
         let os_api = MockOsApi::new();
         *os_api.local_spawns_to_allow.lock().unwrap() = 1;
-        let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+        let (mut pty, plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
         let shutdown = Shutdown::default();
         let (screen_tx, screen_rx) = channels::unbounded();
         let (pty_tx, _pty_rx) = channels::unbounded();
@@ -1806,10 +1810,15 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
             ..Default::default()
         }];
         let default_shell = Some(TerminalAction::RunCommand(local));
+        let plugin_ids = HashMap::from([(
+            RunPluginOrAlias::default(),
+            vec![PluginId::new(100), PluginId::new(101)],
+        )]);
         let result = if override_layout {
             pty.finish_layout_override(PendingLayoutOverride {
                 cwd: None,
                 default_shell,
+                tabs_to_close: vec![],
                 tabs: vec![(
                     TabId::new(0),
                     TabLayoutInfo {
@@ -1820,7 +1829,7 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
                         swap_tiled_layouts: None,
                         swap_floating_layouts: None,
                     },
-                    HashMap::new(),
+                    plugin_ids,
                 )],
                 retain_existing_terminal_panes: false,
                 retain_existing_plugin_panes: false,
@@ -1833,7 +1842,7 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
                 layout,
                 floating_layouts,
                 default_shell,
-                HashMap::new(),
+                plugin_ids,
                 None,
                 TabId::new(0),
                 false,
@@ -1857,6 +1866,14 @@ fn layout_handoffs_after_screen_shutdown_close_panes_without_starting_remote_com
         assert!(pty.pending_remote_spawns.is_empty());
         assert!(pty.spawn_workers.is_empty());
         assert!(os_api.resolved_spawns.lock().unwrap().is_empty());
+        let unloaded: Vec<_> = plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::Unload(plugin_id) => Some(plugin_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unloaded, vec![PluginId::new(100), PluginId::new(101)]);
     }
 }
 
@@ -1919,9 +1936,12 @@ fn a_failing_layout_pane_clears_its_reserved_remote_panes() {
 #[test]
 fn a_failing_layout_closes_the_panes_it_already_spawned() {
     let os_api = MockOsApi::new();
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (mut pty, plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, _pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+    let (server_tx, server_rx) = channels::unbounded();
+    pty.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
+    let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
     let layout = failing_three_slot_layout();
     // The first local pane starts for real, the second one fails.
     *os_api.local_spawns_to_allow.lock().unwrap() = 1;
@@ -1932,16 +1952,37 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
         layout,
         vec![],
         Some(TerminalAction::RunCommand(RunCommand::default())),
-        HashMap::new(),
+        HashMap::from([(
+            RunPluginOrAlias::default(),
+            vec![PluginId::new(100), PluginId::new(101)],
+        )]),
         None,
         TabId::new(0),
         false,
         true,
         crate::ClientId::new(1),
-        None,
+        Some(NotificationEnd::new(completion_tx)),
     );
 
     assert!(result.is_err(), "the local failure is still reported");
+    let completion = completion_rx
+        .try_recv()
+        .expect("failed spawn releases its caller");
+    assert_eq!(completion.exit_status, Some(1));
+    assert!(completion
+        .error_message
+        .as_ref()
+        .unwrap()
+        .contains("Failed to spawn layout"));
+    assert!(server_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ServerInstruction::LogError(messages, CLIENT_1, None)
+            if messages == vec![completion.error_message.clone().unwrap()]
+    )));
+    assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        ScreenInstruction::LayoutSpawnFailed(id) if id == TabId::new(0)
+    )));
     let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
     cleared.sort_unstable();
     assert_eq!(
@@ -1956,6 +1997,14 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
     );
     assert!(pty.id_to_child_pid.is_empty());
     assert!(pty.task_handles.is_empty());
+    let unloaded: Vec<_> = plugin_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Unload(plugin_id) => Some(plugin_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unloaded, vec![PluginId::new(100), PluginId::new(101)]);
 }
 
 /// The same, for the layout-override path - whose caller logs the failure and
@@ -1963,7 +2012,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
 #[test]
 fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
     let os_api = MockOsApi::new();
-    let (mut pty, _plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let (mut pty, plugin_rx, _screen_rx) = make_pty_with_screen_receiver(os_api.clone());
     let (pty_tx, _pty_rx) = channels::unbounded();
     pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
     let layout = failing_three_slot_layout();
@@ -1975,7 +2024,10 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
         layout,
         vec![],
         Some(TerminalAction::RunCommand(RunCommand::default())),
-        HashMap::new(),
+        HashMap::from([(
+            RunPluginOrAlias::default(),
+            vec![PluginId::new(100), PluginId::new(101)],
+        )]),
         TabId::new(0),
         None,
         crate::ClientId::new(1),
@@ -1993,6 +2045,14 @@ fn a_failing_layout_override_closes_the_panes_it_already_spawned() {
     );
     assert!(pty.id_to_child_pid.is_empty());
     assert!(pty.task_handles.is_empty());
+    let unloaded: Vec<_> = plugin_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::Unload(plugin_id) => Some(plugin_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unloaded, vec![PluginId::new(100), PluginId::new(101)]);
 }
 
 #[test]
@@ -3791,6 +3851,73 @@ fn an_in_place_command_pane_that_cannot_start_tells_its_plugin_it_exited() {
         "nothing shows the failure; only the closed pane's bookkeeping remains, got: {screen:?}"
     );
     assert!(collect_plugin_events(&plugin_rx).is_empty());
+}
+
+#[test]
+fn a_layout_marks_all_adopted_terminals_even_without_agent_records() {
+    let os_api = MockOsApi::new();
+    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+    let command = |name: &str| RunCommand {
+        command: PathBuf::from(name),
+        args: vec!["--resume".into()],
+        cwd: Some(PathBuf::from("/work")),
+        hold_on_close: true,
+        workflow_owner: Some("adopted-workflow".into()),
+        ..Default::default()
+    };
+    let tiled_command = command("codex");
+    let floating_command = command("claude");
+    let adopted = |terminal_id, cmd| AdoptedTabTerminal {
+        terminal_id,
+        cmd,
+        held: None,
+        agent: None,
+        child_exit_status: None,
+        replay: vec![],
+        caption: None,
+    };
+    pty.adopted_tabs.insert(
+        TabId::new(7),
+        (
+            vec![adopted(TERMINAL_3, tiled_command.clone())],
+            vec![adopted(TERMINAL_41, floating_command.clone())],
+        ),
+    );
+
+    pty.spawn_terminals_for_layout(
+        None,
+        TiledPaneLayout::default(),
+        vec![FloatingPaneLayout::default()],
+        Some(TerminalAction::RunCommand(RunCommand::default())),
+        HashMap::new(),
+        None,
+        TabId::new(7),
+        false,
+        true,
+        CLIENT_1,
+        None,
+    )
+    .unwrap();
+
+    let (tiled, floating, adopted) = drain_screen(&screen_rx)
+        .into_iter()
+        .find_map(|instruction| match instruction {
+            ScreenInstruction::ApplyLayout(_, _, tiled, floating, adopted, ..) => {
+                Some((tiled, floating, adopted))
+            },
+            _ => None,
+        })
+        .expect("adopted terminals are handed to Screen");
+    assert_eq!(tiled, vec![(TERMINAL_3, None)]);
+    assert_eq!(floating, vec![(TERMINAL_41, None)]);
+    assert_eq!(
+        adopted,
+        vec![
+            (TERMINAL_3, tiled_command, None),
+            (TERMINAL_41, floating_command, None),
+        ]
+    );
+    assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
 }
 
 /// The two layout paths spawn the same panes for the same layout.

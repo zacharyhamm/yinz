@@ -266,7 +266,7 @@ pub enum ScreenInstruction {
         Vec<FloatingPaneLayout>,
         Vec<(TerminalId, HoldForCommand)>, // new pane pids
         Vec<(TerminalId, HoldForCommand)>, // new floating pane pids
-        Vec<(TerminalId, AgentInfo)>,      // transferred agent records for adopted terminals
+        Vec<(TerminalId, RunCommand, Option<AgentInfo>)>, // all adopted terminals, including those without agents
         HashMap<RunPluginOrAlias, Vec<PluginId>>,
         TabId, // tab_id - stable identifier from NewTab instruction
         bool,  // should change focus to new tab
@@ -274,6 +274,7 @@ pub enum ScreenInstruction {
         Option<NotificationEnd>,               // regular completion signal
         Option<(TerminalId, NotificationEnd)>, // blocking_terminal (terminal_id, completion_tx)
     ),
+    LayoutSpawnFailed(TabId),
     SwitchTabNext(ClientId, Option<NotificationEnd>),
     SwitchTabPrev(ClientId, Option<NotificationEnd>),
     ToggleActiveSyncTab(ClientId, Option<NotificationEnd>),
@@ -431,6 +432,7 @@ pub enum ScreenInstruction {
     OverrideLayoutComplete(
         Vec<TabOverrideResult>, // results for each tab
         Vec<TabId>,             // tabs whose terminals could not be spawned
+        Vec<TabId>,             // surplus tabs to close only after successful application
         bool,                   // retain_existing_terminal_panes
         bool,                   // retain_existing_plugin_panes
         ClientId,
