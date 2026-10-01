@@ -413,7 +413,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind failed");
     let broker_registry = registry.clone();
     let broker = std::thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..9 {
             let (stream, _) = listener.accept().expect("accept failed");
             let _ = serve_connection(stream, std::path::Path::new("/bin/false"), &broker_registry);
         }
@@ -463,6 +463,68 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
         serde_json::from_str::<yinz_types::agent::HookEvent>(&json).unwrap(),
         confirmation
     );
+
+    for (hook, mode, notification, state) in [
+        (
+            "PermissionRequest",
+            "plan",
+            None,
+            Some(yinz_types::agent::AgentState::Busy),
+        ),
+        (
+            "PermissionRequest",
+            "default",
+            None,
+            Some(yinz_types::agent::AgentState::Busy),
+        ),
+        (
+            "PermissionRequest",
+            "acceptEdits",
+            None,
+            Some(yinz_types::agent::AgentState::Busy),
+        ),
+        ("Notification", "default", Some("permission_prompt"), None),
+        (
+            "Notification",
+            "default",
+            Some("worker_permission_prompt"),
+            None,
+        ),
+    ] {
+        let payload = serde_json::json!({
+            "hook_event_name": hook, "session_id": "remote-session", "permission_mode": mode,
+            "notification_type": notification, "tool_name": "Bash", "tool_input": {"command": "git status"},
+            "future_field": "preserved"
+        }).to_string();
+        let (local, local_raw) =
+            yinz_runtime::agent::hooks::parse_hook_event("claude", payload.clone()).unwrap();
+        report_agent_hook_to(&socket, "token", "claude", &payload).unwrap();
+        let BrokerToServerMsg::AgentReport { kind, json } = protocol::read_frame(&mut server_side)
+            .unwrap()
+            .unwrap()
+            .decode_control()
+            .unwrap()
+        else {
+            panic!("expected agent report");
+        };
+        assert_eq!(kind, "claude");
+        assert_eq!(json, local_raw);
+        let remote = serde_json::from_str(&json).unwrap();
+        let outcome = yinz_types::agent::hook_outcome(&kind, &remote);
+        assert_eq!(outcome, yinz_types::agent::hook_outcome(&kind, &local));
+        let Some(state) = state else {
+            assert_eq!(outcome, yinz_types::agent::HookOutcome::Nothing);
+            continue;
+        };
+        let yinz_types::agent::HookOutcome::Reported(agent) = outcome else {
+            panic!("expected state");
+        };
+        assert_eq!(agent.state, state);
+        assert_eq!(
+            agent.detail.as_deref(),
+            (state == yinz_types::agent::AgentState::Busy).then_some("Bash git")
+        );
+    }
 
     let transcript = dir.path().join("codex.jsonl");
     std::fs::write(&transcript, concat!(

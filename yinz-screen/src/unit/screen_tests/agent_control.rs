@@ -97,6 +97,17 @@ fn hook(name: &str) -> HookEvent {
     }
 }
 
+fn permission_wait(kind: &str) -> HookEvent {
+    if kind == "claude" {
+        HookEvent {
+            notification_type: Some("elicitation_dialog".into()),
+            ..hook("Notification")
+        }
+    } else {
+        hook("PermissionRequest")
+    }
+}
+
 fn report(screen: &mut Screen, hook: HookEvent) {
     report_kind(screen, "codex", hook);
 }
@@ -360,7 +371,7 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                 screen.agent_control(prompt(true), CLIENT);
                 finish_paste(&writes);
                 report_kind(&mut screen, kind, hook("UserPromptSubmit"));
-                report_kind(&mut screen, kind, hook("PermissionRequest"));
+                report_kind(&mut screen, kind, permission_wait(kind));
                 assert_eq!(
                     replies(&messages, CLIENT)[0].outcome,
                     AgentOutcome::NeedsInput
@@ -439,12 +450,12 @@ fn a_fresh_waiting_hook_requires_another_dialog_answer() {
         finish_paste(&writes);
         report_kind(&mut screen, kind, hook("UserPromptSubmit"));
         replies(&messages, CLIENT);
-        report_kind(&mut screen, kind, hook("PermissionRequest"));
+        report_kind(&mut screen, kind, permission_wait(kind));
         screen.agent_control(send_keys(vec![BareKey::Down]), CLIENT);
         assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         assert!(replies(&messages, CLIENT).is_empty());
-        report_kind(&mut screen, kind, hook("PermissionRequest"));
+        report_kind(&mut screen, kind, permission_wait(kind));
         assert_eq!(
             replies(&messages, CLIENT)[0].outcome,
             AgentOutcome::NeedsInput
@@ -468,8 +479,8 @@ fn completion_reply_accounts_for_permission_keys_before_reporting_readiness() {
         finish_paste(&writes);
         report_kind(&mut screen, kind, hook("UserPromptSubmit"));
         // A state-only update can expose the dialog before its hook finishes the prompt wait.
-        let HookOutcome::Reported(waiting) = hook_outcome(kind, &hook("PermissionRequest")) else {
-            panic!("permission request reports a waiting agent");
+        let HookOutcome::Reported(waiting) = hook_outcome(kind, &permission_wait(kind)) else {
+            panic!("human input prompt reports a waiting agent");
         };
         crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(waiting)).unwrap();
         screen.agent_control(send_keys(vec![BareKey::Enter]), ClientId::new(2));
@@ -563,7 +574,7 @@ fn dialog_keys_cannot_consume_manual_input_or_a_failed_batch() {
                 let (mut screen, messages, writes) = setup(kind);
                 if !startup {
                     report_kind(&mut screen, kind, hook("SessionStart"));
-                    report_kind(&mut screen, kind, hook("PermissionRequest"));
+                    report_kind(&mut screen, kind, permission_wait(kind));
                 }
                 if interference == "before" {
                     screen
@@ -2918,6 +2929,98 @@ fn uncertain_submission_requires_explicit_recovery_and_replies_once() {
 }
 
 #[test]
+fn claude_permission_reminders_preserve_parent_state_and_worker_waits() {
+    for target in pane_targets() {
+        for parent_state in [AgentState::Idle, AgentState::Busy] {
+            let (mut screen, messages, _writes) = setup_on_target("claude", target.clone());
+            report_kind(&mut screen, "claude", hook("SessionStart"));
+            if parent_state == AgentState::Busy {
+                report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+            }
+            let parent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            let reminder = HookEvent {
+                notification_type: Some("worker_permission_prompt".into()),
+                message: Some("A teammate needs permission".into()),
+                ..hook("Notification")
+            };
+            // Real teammate reminders have no agent_id; they cannot replace the parent.
+            for _ in 0..2 {
+                report_kind(&mut screen, "claude", reminder.clone());
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent,
+                    Some(parent.clone())
+                );
+                assert!(screen.agent_worker_waits.is_empty());
+            }
+            let mut worker = HookEvent {
+                agent_id: Some("worker".into()),
+                tool_name: Some("Bash".into()),
+                ..hook("SubagentStop")
+            };
+            report_kind(&mut screen, "claude", worker.clone());
+            assert_eq!(
+                screen.get_pane_info(PANE).unwrap().agent,
+                Some(parent.clone())
+            );
+
+            worker.hook_event_name = "PermissionRequest".into();
+            for mode in ["plan", "default", "acceptEdits", "auto"] {
+                worker.permission_mode = Some(mode.into());
+                report_kind(&mut screen, "claude", worker.clone());
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent,
+                    Some(parent.clone())
+                );
+                assert!(screen.agent_worker_waits.is_empty());
+            }
+            for tool in ["AskUserQuestion", "ExitPlanMode"] {
+                worker.tool_name = Some(tool.into());
+                worker.hook_event_name = "PreToolUse".into();
+                report_kind(&mut screen, "claude", worker.clone());
+                worker.hook_event_name = "PermissionRequest".into();
+                report_kind(&mut screen, "claude", worker.clone());
+                let waiting = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+                assert_eq!(waiting.state, AgentState::Waiting);
+                for kind in ["permission_prompt", "worker_permission_prompt"] {
+                    report_kind(
+                        &mut screen,
+                        "claude",
+                        HookEvent {
+                            notification_type: Some(kind.into()),
+                            ..reminder.clone()
+                        },
+                    );
+                    assert_eq!(
+                        screen.get_pane_info(PANE).unwrap().agent,
+                        Some(waiting.clone())
+                    );
+                    assert!(screen.agent_worker_waits.contains_key(&PANE));
+                }
+                worker.hook_event_name = "PostToolUse".into();
+                report_kind(&mut screen, "claude", worker.clone());
+                assert_eq!(
+                    screen.get_pane_info(PANE).unwrap().agent,
+                    Some(parent.clone())
+                );
+                assert!(screen.agent_worker_waits.is_empty());
+            }
+            worker.hook_event_name = "Elicitation".into();
+            report_kind(&mut screen, "claude", worker.clone());
+            report_kind(&mut screen, "claude", reminder);
+            assert_eq!(
+                screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+                AgentState::Waiting
+            );
+            worker.hook_event_name = "SubagentStop".into();
+            report_kind(&mut screen, "claude", worker);
+            assert_eq!(screen.get_pane_info(PANE).unwrap().agent, Some(parent));
+            assert!(screen.agent_worker_waits.is_empty());
+            assert!(replies(&messages, CLIENT).is_empty());
+        }
+    }
+}
+
+#[test]
 fn concurrent_worker_waits_restore_latest_parent_and_keep_identity() {
     for target in pane_targets() {
         for name in ["PermissionRequest", "PreToolUse", "Elicitation"] {
@@ -3336,7 +3439,7 @@ fn interrupted_recovery_of_a_waiting_agent_requires_input_after_its_last_report(
     finish_paste(&writes);
     report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
     replies(&messages, CLIENT);
-    let mut permission = hook("PermissionRequest");
+    let mut permission = permission_wait("claude");
     permission.tool_name = Some("Bash".into());
     report_kind(&mut screen, "claude", permission);
     let state = screen.get_pane_info(PANE).unwrap().agent.unwrap().state;

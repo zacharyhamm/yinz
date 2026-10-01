@@ -39,7 +39,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     // Compaction is work the user did not ask for and is waiting on all the same.
     "PreCompact",
     "PostCompact",
-    // Blocked on the user, said as the prompt goes up.
+    // Permission evaluation can be answered by hooks or automatic approval.
     "PermissionRequest",
     // Auto mode refusing a tool call: not a wait, but the agent carrying on, and the
     // record would otherwise still be showing the tool that never ran.
@@ -135,8 +135,8 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = r#"command -v yinz >/dev/null 2>&1 
 ///
 /// `agent-report --hook-json` sets the pane's record *and* hands the event itself to whatever
 /// plugin wants more than a record holds - hocus's daemon reads `last_assistant_message` off a
-/// `SessionEnd` to know a run is over and worth summarising, and `permission_mode` off a
-/// `PermissionRequest` to decide whether a wait is worth interrupting somebody over. Spelled here rather than in the plugin crate so
+/// `SessionEnd` to know a run is over and worth summarising, and tool arguments to keep
+/// its history. Spelled here rather than in the plugin crate so
 /// the two ends cannot drift: a pipe name that does not match is silent.
 ///
 /// The kind travels because the payload cannot carry it: a hook event is the agent's own JSON
@@ -147,8 +147,8 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = r#"command -v yinz >/dev/null 2>&1 
 /// which `yinz action agent-report --hook-json` sends beside the record it sets, and which
 /// `yinz events --type agent_event` streams.
 ///
-/// The fields a reader wants are derived here, once - `state` by [`hook_state`], `detail` by
-/// [`hook_detail`] - so a plugin never re-reads Claude Code's schema; `raw` is the agent's own
+/// The fields a reader wants are derived here, once - `state` by [`hook_state_for`], `detail` by
+/// [`hook_detail_for`] - so a plugin never re-reads Claude Code's schema; `raw` is the agent's own
 /// JSON, bounded by [`HOOK_BROADCAST_MAX_BYTES`], for the one reader that keeps a run's history
 /// and needs more than these say (`tool_input`, the permission mode, the subagent). The two
 /// prose fields, `prompt` and `last_message`, are read off the same bounded event `raw` was
@@ -199,7 +199,7 @@ impl AgentEvent {
             hook: event.hook_event_name.clone(),
             session_id: Some(event.session_id.clone()).filter(|id| !id.is_empty()),
             state: hook_state_for(kind, event),
-            detail: hook_detail(event),
+            detail: hook_detail_for(kind, event),
             prompt: bounded.prompt.clone(),
             last_message: bounded.last_assistant_message.clone(),
             tool_name: event.tool_name.clone(),
@@ -451,6 +451,7 @@ pub const HOOK_SESSION_END: &str = "SessionEnd";
 
 /// The `Notification` kinds that mean the agent is blocked on the user.
 /// Permission reminders are excluded: their timer can fire during automatic approval.
+/// Worker permission reminders also lack the identity needed to clear a worker wait.
 ///
 /// Most notifications are not about being waited on — `auth_success` and the
 /// `quota_auto_resume_*` family say nothing about the turn, and `idle_prompt` fires a minute
@@ -482,11 +483,8 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
 /// of the user and wait. Their `PostToolUse` is ordinary work again, which is what clears the
 /// wait - so a tool named here needs no special case on the way out.
 ///
-/// Read by tool name and not by agent, deliberately. `request_user_input` is Codex's, which has
-/// no `AskUserQuestion` and no `Notification` either, but the list is what *every* road that
-/// reads an event consults - the record `agent-report` writes, and `hocus_proto`'s `hook_phase`,
-/// which the daemon draws its feed from. A mapping keyed on the agent's kind would reach only
-/// the first of them, and the second would then overwrite it with `busy`.
+/// `request_user_input` is Codex's equivalent. Every reporting path reads this list through
+/// [`hook_state_for`], including the pane record and Hocus's feed.
 pub const WAITING_TOOLS: &[&str] = &[
     "AskUserQuestion",
     "ExitPlanMode",
@@ -630,7 +628,7 @@ pub struct HookEvent {
     #[serde(default)]
     pub cwd: Option<String>,
     /// Which notification this is, on a `Notification`. Most of them say nothing about whether
-    /// the user is being waited on; [`hook_state`] is where the ones that do are named.
+    /// the user is being waited on; [`hook_state_for`] is where the ones that do are named.
     #[serde(default)]
     pub notification_type: Option<String>,
     /// The provider's identity for one tool call. Accept the alternate `tool_call_id` spelling
@@ -664,9 +662,8 @@ pub struct HookEvent {
     /// The permission mode the session is in: `default`, `plan`, `acceptEdits`, `auto`,
     /// `dontAsk`, `bypassPermissions`. Carried on every event.
     ///
-    /// Read for one thing only: a mode that answers permission prompts by itself has nobody to
-    /// interrupt, so its permission requests report busy. See
-    /// [`waiting_needs_a_person`].
+    /// Providers other than Claude use it to distinguish automatic permission approval.
+    /// Claude permission evaluation and timed reminders do not establish a human wait.
     #[serde(default)]
     pub permission_mode: Option<String>,
     /// Codex's permission reviewer, supplied by the hook or its matching transcript turn.
@@ -981,6 +978,23 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
     {
         return Some(AgentState::Busy);
     }
+    if kind == "claude" {
+        match event.hook_event_name.as_str() {
+            "Stop" if event.claude_turn_complete != Some(true) => {
+                return Some(AgentState::Busy);
+            },
+            // Hooks and automatic approval can answer a permission request before a
+            // person sees it. Dedicated input tools already established their wait.
+            "PermissionRequest" => {
+                return (!event
+                    .tool_name
+                    .as_deref()
+                    .is_some_and(|tool| WAITING_TOOLS.contains(&tool)))
+                .then_some(AgentState::Busy);
+            },
+            _ => {},
+        }
+    }
     hook_state(event)
 }
 
@@ -1058,7 +1072,7 @@ pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
         .is_some_and(|tool| AUTO_ACCEPTED_EDIT_TOOLS.contains(&tool))
 }
 
-/// The tool hint for `PreToolUse` or an automatically approved `PermissionRequest`.
+/// The tool hint for `PreToolUse` or permission evaluation classified as busy.
 ///
 /// The tool's own name, and one argument's worth of hint where the tool has an obvious one:
 /// which file, or which program. Everything else about `tool_input` is ignored rather than
@@ -1067,6 +1081,16 @@ pub fn waiting_needs_a_person(event: &HookEvent) -> bool {
 /// printable.
 ///
 /// `None` for other events, which clears the hint when the tool finishes.
+pub fn hook_detail_for(kind: &str, event: &HookEvent) -> Option<String> {
+    if event.hook_event_name == "PermissionRequest"
+        && hook_state_for(kind, event) == Some(AgentState::Busy)
+    {
+        tool_summary(event)
+    } else {
+        hook_detail(event)
+    }
+}
+
 pub fn hook_detail(event: &HookEvent) -> Option<String> {
     if event.hook_event_name != "PreToolUse"
         && (event.hook_event_name != "PermissionRequest" || waiting_needs_a_person(event))
@@ -1319,7 +1343,7 @@ pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
             kind: kind.to_owned(),
             state,
             source: AgentSource::Reported,
-            detail: hook_detail(event),
+            detail: hook_detail_for(kind, event),
             // Only on a wait, the way the plugin-side feed clears it on every phase that is
             // not one. A record that says `idle` and carries a question is a record that
             // disagrees with itself, and the row, the toast and `agent_list` all read both
@@ -1750,9 +1774,8 @@ mod tests {
         }
     }
 
-    /// A wait a mode answers by itself is still a wait; it is just not one to interrupt
-    /// somebody over. The gate is on the event *and* the mode, because a mode only ever
-    /// answers a permission prompt.
+    /// Other providers use the permission mode to distinguish automatic approval.
+    /// Direct questions and elicitation still need a person under every mode.
     #[test]
     fn a_wait_the_mode_answers_needs_nobody() {
         let request = |tool: Option<&str>, mode: Option<&str>| HookEvent {
@@ -1819,6 +1842,95 @@ mod tests {
             }
             for kind in ["permission_prompt", "worker_permission_prompt"] {
                 assert_eq!(hook_state(&notification(kind)), None);
+            }
+        }
+    }
+
+    #[test]
+    fn claude_permission_evaluation_and_reminders_do_not_establish_a_wait() {
+        for mode in [
+            None,
+            Some("plan"),
+            Some("default"),
+            Some("acceptEdits"),
+            Some("auto"),
+            Some("dontAsk"),
+            Some("bypassPermissions"),
+        ] {
+            let request = HookEvent {
+                tool_name: Some("Bash".to_owned()),
+                tool_input: Some(json!({"command": "git status"})),
+                permission_mode: mode.map(str::to_owned),
+                ..event("PermissionRequest")
+            };
+            let HookOutcome::Reported(info) = hook_outcome("claude", &request) else {
+                panic!("permission evaluation reports work");
+            };
+            assert_eq!(info.state, AgentState::Busy);
+            assert_eq!(info.detail.as_deref(), Some("Bash git"));
+            assert_eq!(info.waiting_on, None);
+            assert!(!info.wait_needs_a_person);
+            let raw = serde_json::to_string(&request).unwrap();
+            let broadcast = AgentEvent::from_hook(
+                "claude",
+                crate::internal_ids::TerminalId::new(7),
+                &request,
+                raw.clone(),
+            );
+            assert_eq!(broadcast.state, Some(info.state));
+            assert_eq!(broadcast.detail, info.detail);
+            assert_eq!(broadcast.raw, raw);
+
+            for tool in WAITING_TOOLS {
+                let asking = HookEvent {
+                    tool_name: Some((*tool).to_owned()),
+                    ..request.clone()
+                };
+                assert_eq!(
+                    hook_state_for(
+                        "claude",
+                        &HookEvent {
+                            hook_event_name: "PreToolUse".to_owned(),
+                            ..asking.clone()
+                        }
+                    ),
+                    Some(AgentState::Waiting)
+                );
+                assert_eq!(hook_outcome("claude", &asking), HookOutcome::Nothing);
+                assert_eq!(
+                    hook_state_for(
+                        "claude",
+                        &HookEvent {
+                            hook_event_name: "PostToolUse".to_owned(),
+                            ..asking
+                        }
+                    ),
+                    Some(AgentState::Busy)
+                );
+            }
+            for kind in ["permission_prompt", "worker_permission_prompt"] {
+                let prompt = HookEvent {
+                    permission_mode: mode.map(str::to_owned),
+                    message: Some("Allow Bash?".to_owned()),
+                    ..notification(kind)
+                };
+                for worker in [None, Some("worker")] {
+                    let prompt = HookEvent {
+                        agent_id: worker.map(str::to_owned),
+                        ..prompt.clone()
+                    };
+                    assert_eq!(hook_outcome("claude", &prompt), HookOutcome::Nothing);
+                    for provider in ["claude", "codex", "muse", "opencode"] {
+                        assert_eq!(hook_state_for(provider, &prompt), None);
+                    }
+                    let broadcast = AgentEvent::from_hook(
+                        "claude",
+                        crate::internal_ids::TerminalId::new(7),
+                        &prompt,
+                        serde_json::to_string(&prompt).unwrap(),
+                    );
+                    assert_eq!(broadcast.state, None);
+                }
             }
         }
     }
@@ -1911,8 +2023,7 @@ mod tests {
                 run_id: None,
             })
         );
-        // A wait carries the question as well as the tool: the record is what a row draws
-        // *and* what an interruption is written from.
+        // Permission evaluation keeps the tool hint without announcing a user wait.
         let permission = HookEvent {
             tool_name: Some("Bash".to_owned()),
             tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
@@ -1920,8 +2031,9 @@ mod tests {
         };
         match hook_outcome("claude", &permission) {
             HookOutcome::Reported(info) => {
-                assert_eq!(info.state, AgentState::Waiting);
-                assert_eq!(info.waiting_on.as_deref(), Some("Bash rm"));
+                assert_eq!(info.state, AgentState::Busy);
+                assert_eq!(info.detail.as_deref(), Some("Bash rm"));
+                assert_eq!(info.waiting_on, None);
             },
             other => panic!("{other:?}"),
         }
@@ -2050,15 +2162,20 @@ mod tests {
                 let HookOutcome::Reported(info) = hook_outcome(kind, &event) else {
                     panic!("manual permission must report");
                 };
-                assert_eq!(info.state, AgentState::Waiting);
-                assert!(info.wait_needs_a_person);
+                let expected = if kind == "claude" {
+                    AgentState::Busy
+                } else {
+                    AgentState::Waiting
+                };
+                assert_eq!(info.state, expected);
+                assert_eq!(info.wait_needs_a_person, kind != "claude");
             }
         }
 
-        // The same mode, a tool it does not answer.
+        // Claude still evaluates Bash permissions under acceptEdits.
         let blocked = reported(&request("Bash", "acceptEdits"));
-        assert_eq!(blocked.state, AgentState::Waiting);
-        assert!(blocked.wait_needs_a_person);
+        assert_eq!(blocked.state, AgentState::Busy);
+        assert!(!blocked.wait_needs_a_person);
 
         // A question addressed to a person is one under every mode there is.
         for mode in ["acceptEdits", "bypassPermissions", "dontAsk", "auto"] {

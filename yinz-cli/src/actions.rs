@@ -3397,9 +3397,10 @@ mod tests {
                     *pane_id,
                     PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7))
                 );
-                assert_eq!(agent.state, AgentState::Waiting);
+                assert_eq!(agent.state, AgentState::Busy);
                 assert_eq!(agent.source, AgentSource::Reported);
-                assert_eq!(agent.waiting_on.as_deref(), Some("Bash rm"));
+                assert_eq!(agent.detail.as_deref(), Some("Bash rm"));
+                assert_eq!(agent.waiting_on, None);
                 assert_eq!(agent.session_id.as_deref(), Some("s1"));
             },
             other => panic!("{other:?}"),
@@ -3409,7 +3410,7 @@ mod tests {
         match &actions[1] {
             Action::AgentEvent(event) => {
                 assert_eq!(event.hook, "PermissionRequest");
-                assert_eq!(event.state, Some(AgentState::Waiting));
+                assert_eq!(event.state, Some(AgentState::Busy));
                 assert_eq!(event.session_id.as_deref(), Some("s1"));
                 assert_eq!(event.tool_name.as_deref(), Some("Bash"));
             },
