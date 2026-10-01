@@ -137,7 +137,7 @@ themes {
             emphasis_3 "#4ade80"
         }
         text_selected {
-            base "#ffffff"
+            base "#f9fafb"
             background "#1a1a1a"
             emphasis_0 "#4ade80"
             emphasis_1 "#4ade80"
@@ -177,7 +177,7 @@ themes {
             emphasis_3 "#4ade80"
         }
         table_cell_selected {
-            base "#ffffff"
+            base "#f9fafb"
             background "#1a1a1a"
             emphasis_0 "#4ade80"
             emphasis_1 "#4ade80"
@@ -193,7 +193,7 @@ themes {
             emphasis_3 "#4ade80"
         }
         list_selected {
-            base "#ffffff"
+            base "#f9fafb"
             background "#1a1a1a"
             emphasis_0 "#4ade80"
             emphasis_1 "#4ade80"
@@ -225,7 +225,7 @@ themes {
             emphasis_3 "#4ade80"
         }
         exit_code_success {
-            base "#22d3ee"
+            base "#4ade80"
             background "#0a0a0a"
             emphasis_0 "#4ade80"
             emphasis_1 "#4ade80"
