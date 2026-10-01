@@ -105,7 +105,6 @@ pub const PLUGINS: &[&str] = &[
     "session-manager",
     "configuration",
     "plugin-manager",
-    "about",
     "multiple-select",
     "layout-manager",
     "link",

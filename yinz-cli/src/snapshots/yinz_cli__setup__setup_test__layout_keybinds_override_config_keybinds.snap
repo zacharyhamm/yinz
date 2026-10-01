@@ -1,6 +1,5 @@
 ---
 source: yinz-cli/src/setup.rs
-assertion_line: 690
 expression: "format!(\"{:#?}\", config)"
 ---
 Config {
@@ -143,7 +142,6 @@ Config {
         agent_pane_min_columns: None,
         agent_pane_min_rows: None,
         stacked_pane_list: None,
-        show_release_notes: None,
         advanced_mouse_actions: None,
         mouse_scroll_resize: None,
         mouse_hover_effects: None,
@@ -162,19 +160,6 @@ Config {
     themes: {},
     plugins: PluginAliases {
         aliases: {
-            "about": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "about",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
             "agent-exit": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(

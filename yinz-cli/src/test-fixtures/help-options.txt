@@ -200,11 +200,6 @@ Options:
       --stacked-pane-list <STACKED_PANE_LIST>
           [possible values: true, false]
 
-      --show-release-notes <SHOW_RELEASE_NOTES>
-          Whether to show release notes on first run of a new version default is true
-          
-          [possible values: true, false]
-
       --advanced-mouse-actions <ADVANCED_MOUSE_ACTIONS>
           Whether to enable mouse hover effects and pane grouping functionality default is true
           

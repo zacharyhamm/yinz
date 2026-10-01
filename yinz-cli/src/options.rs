@@ -278,12 +278,6 @@ pub struct CliOptions {
     #[serde(default)]
     pub stacked_pane_list: Option<bool>,
 
-    /// Whether to show release notes on first run of a new version
-    /// default is true
-    #[clap(long, value_parser)]
-    #[serde(default)]
-    pub show_release_notes: Option<bool>,
-
     /// Whether to enable mouse hover effects and pane grouping functionality
     /// default is true
     #[clap(long, value_parser)]
@@ -435,7 +429,6 @@ impl From<CliOptions> for Options {
             agent_pane_min_columns: value.agent_pane_min_columns,
             agent_pane_min_rows: value.agent_pane_min_rows,
             stacked_pane_list: value.stacked_pane_list,
-            show_release_notes: value.show_release_notes,
             advanced_mouse_actions: value.advanced_mouse_actions,
             mouse_scroll_resize: value.mouse_scroll_resize,
             mouse_hover_effects: value.mouse_hover_effects,
@@ -515,7 +508,6 @@ impl From<Options> for CliOptions {
             agent_pane_min_columns: value.agent_pane_min_columns,
             agent_pane_min_rows: value.agent_pane_min_rows,
             stacked_pane_list: value.stacked_pane_list,
-            show_release_notes: value.show_release_notes,
             advanced_mouse_actions: value.advanced_mouse_actions,
             mouse_scroll_resize: value.mouse_scroll_resize,
             mouse_hover_effects: value.mouse_hover_effects,
@@ -628,7 +620,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
     let agent_pane_min_columns = other.agent_pane_min_columns.or(base.agent_pane_min_columns);
     let agent_pane_min_rows = other.agent_pane_min_rows.or(base.agent_pane_min_rows);
     let stacked_pane_list = other.stacked_pane_list.or(base.stacked_pane_list);
-    let show_release_notes = other.show_release_notes.or(base.show_release_notes);
     let advanced_mouse_actions = other.advanced_mouse_actions.or(base.advanced_mouse_actions);
     let mouse_scroll_resize = other.mouse_scroll_resize.or(base.mouse_scroll_resize);
     let mouse_hover_effects = other.mouse_hover_effects.or(base.mouse_hover_effects);
@@ -712,7 +703,6 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         agent_pane_min_columns,
         agent_pane_min_rows,
         stacked_pane_list,
-        show_release_notes,
         advanced_mouse_actions,
         mouse_scroll_resize,
         mouse_hover_effects,

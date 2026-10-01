@@ -11,7 +11,7 @@ wide:   n [New] ←→ [Change focus] x [Close] r [Rename] s [Sync] b [Break pan
 tight:  n [New] ←→ [Move] x [Close] r [Rename] s [Sync] ... 
 
 == Session
-wide:   d [Detach] w [Session Manager] c [Configure] l [Layout Manager] p [Plugin Manager] a [About] n [Notifications] ENTER [Select pane]
+wide:   d [Detach] w [Session Manager] c [Configure] l [Layout Manager] p [Plugin Manager] n [Notifications] ENTER [Select pane]
 tight:  d [Detach] w [Manager] c [Config] l [Layouts] ... 
 
 == Move

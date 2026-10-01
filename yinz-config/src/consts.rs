@@ -8,7 +8,6 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "session-manager",
     "configuration",
     "plugin-manager",
-    "about",
     "multiple-select",
     "layout-manager",
     "link",

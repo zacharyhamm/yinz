@@ -82,7 +82,6 @@ members = [
     "default-plugins/session-manager",
     "default-plugins/configuration",
     "default-plugins/plugin-manager",
-    "default-plugins/about",
     "default-plugins/multiple-select",
     "default-plugins/layout-manager",
     "default-plugins/link",

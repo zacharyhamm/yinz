@@ -160,8 +160,7 @@ use {
     yinz_config::config::ConfigWriteError, yinz_ipc::ipc::ClientAttributes,
     yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg,
     yinz_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, yinz_runtime::consts::SCROLL_BUFFER_SIZE,
-    yinz_runtime::consts::YINZ_SEEN_RELEASE_NOTES_CACHE_FILE, yinz_types::data::InputMode,
-    yinz_types::data::LayoutInfo, yinz_types::data::LayoutWithError,
+    yinz_types::data::InputMode, yinz_types::data::LayoutInfo, yinz_types::data::LayoutWithError,
     yinz_types::input::actions::Action, yinz_types::input::command::RunCommand,
     yinz_types::input::command::TerminalAction, yinz_types::input::keybinds::Keybinds,
     yinz_types::input::layout::FloatingPaneLayout, yinz_types::input::layout::Layout,
@@ -1019,10 +1018,6 @@ pub fn start_server_impl(
                             break;
                         },
                     };
-                let layout_is_welcome_screen = cli_assets.layout
-                    == Some(LayoutInfo::BuiltIn("welcome".to_owned()))
-                    || config.options.default_layout == Some(PathBuf::from("welcome"));
-
                 // A default config that cannot be written faithfully is not written at all -
                 // and then there is nothing for the setup wizard to edit.
                 let successfully_written_config = match config.to_string(true) {
@@ -1169,12 +1164,6 @@ pub fn start_server_impl(
                         // intrusive
                         let setup_wizard = setup_wizard_floating_pane();
                         floating_panes.push(setup_wizard);
-                    } else if should_show_release_notes(
-                        runtime_config_options.show_release_notes,
-                        layout_is_welcome_screen,
-                    ) {
-                        let about = about_floating_pane();
-                        floating_panes.push(about);
                     }
                     spawn_tabs(
                         None,
@@ -2569,49 +2558,6 @@ fn setup_wizard_floating_pane() -> FloatingPaneLayout {
         None,
     ))));
     setup_wizard_pane
-}
-
-fn about_floating_pane() -> FloatingPaneLayout {
-    let mut about_pane = FloatingPaneLayout::new();
-    let configuration = BTreeMap::from_iter([("is_release_notes".to_owned(), "true".to_owned())]);
-    about_pane.run = Some(Run::Plugin(RunPluginOrAlias::Alias(PluginAlias::new(
-        "about",
-        &Some(configuration),
-        None,
-    ))));
-    about_pane
-}
-
-fn should_show_release_notes(
-    should_show_release_notes_config: Option<bool>,
-    layout_is_welcome_screen: bool,
-) -> bool {
-    if layout_is_welcome_screen {
-        return false;
-    }
-    if let Some(should_show_release_notes_config) = should_show_release_notes_config {
-        if !should_show_release_notes_config {
-            // if we were explicitly told not to show release notes, we don't show them,
-            // otherwise we make sure we only show them if they were not seen AND we know
-            // we are able to write to the cache
-            return false;
-        }
-    }
-    if YINZ_SEEN_RELEASE_NOTES_CACHE_FILE.exists() {
-        false
-    } else {
-        if let Some(parent) = YINZ_SEEN_RELEASE_NOTES_CACHE_FILE.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(&*YINZ_SEEN_RELEASE_NOTES_CACHE_FILE, []) {
-            log::error!(
-                "Failed to write seen release notes indication to disk: {}",
-                e
-            );
-            return false;
-        }
-        true
-    }
 }
 
 fn report_changes_in_config_file(

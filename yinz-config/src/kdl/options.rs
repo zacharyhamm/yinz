@@ -237,8 +237,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let agent_pane_min_rows = unsigned_option(kdl_options, "agent_pane_min_rows", 0)?;
     let stacked_pane_list =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "stacked_pane_list").map(|(v, _)| v);
-    let show_release_notes =
-        kdl_property_first_arg_as_bool_or_error!(kdl_options, "show_release_notes").map(|(v, _)| v);
     let advanced_mouse_actions =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "advanced_mouse_actions")
             .map(|(v, _)| v);
@@ -353,7 +351,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         agent_pane_min_columns,
         agent_pane_min_rows,
         stacked_pane_list,
-        show_release_notes,
         advanced_mouse_actions,
         mouse_scroll_resize,
         mouse_hover_effects,
@@ -1815,31 +1812,6 @@ fn stacked_pane_list_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNo
         None
     }
 }
-fn show_release_notes_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
-    let comment_text = format!(
-        "{}\n{}\n{}\n{}",
-        " ", "// Whether to show release notes on first version run", "// Default: true", "// ",
-    );
-
-    let create_node = |node_value: bool| -> KdlNode {
-        let mut node = KdlNode::new("show_release_notes");
-        node.push(KdlValue::Bool(node_value));
-        node
-    };
-    if let Some(show_release_notes) = value.show_release_notes {
-        let mut node = create_node(show_release_notes);
-        if add_comments {
-            node.set_leading(format!("{}\n", comment_text));
-        }
-        Some(node)
-    } else if add_comments {
-        let mut node = create_node(false);
-        node.set_leading(format!("{}\n// ", comment_text));
-        Some(node)
-    } else {
-        None
-    }
-}
 fn advanced_mouse_actions_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
     let comment_text = format!(
         "{}\n{}\n{}",
@@ -2382,9 +2354,6 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(stacked_pane_list) = stacked_pane_list_to_kdl(value, add_comments) {
         nodes.push(stacked_pane_list);
-    }
-    if let Some(show_release_notes) = show_release_notes_to_kdl(value, add_comments) {
-        nodes.push(show_release_notes);
     }
     if let Some(advanced_mouse_actions) = advanced_mouse_actions_to_kdl(value, add_comments) {
         nodes.push(advanced_mouse_actions);

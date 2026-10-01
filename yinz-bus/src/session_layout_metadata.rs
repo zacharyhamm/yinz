@@ -173,9 +173,6 @@ impl SessionLayoutMetadata {
     fn should_exclude_from_count(&self, pane: &PaneLayoutMetadata) -> bool {
         if let Some(Run::Plugin(run_plugin)) = &pane.run {
             let location_string = run_plugin.location_string();
-            if location_string == "yinz:about" {
-                return true;
-            }
             if location_string == "yinz:session-manager" {
                 return true;
             }

@@ -141,9 +141,7 @@ function predicates(mode: InputMode): Predicate[] {
     case "Session":
       return [
         ...named("Detach"),
-        ...["session-manager", "plugin-manager", "configuration", "yinz:about"].map((alias) =>
-          launches(alias),
-        ),
+        ...["session-manager", "plugin-manager", "configuration"].map((alias) => launches(alias)),
       ];
     case "Notifications":
       return [
@@ -183,7 +181,6 @@ const descriptions: Readonly<Record<string, string>> = {
   SessionManager: "Session manager",
   PluginManager: "Plugin manager",
   Configuration: "Configuration",
-  About: "About Yinz",
   TogglePaneEmbedOrFloating: "Float or embed",
   NewStackedPane: "New stacked pane",
   ToggleFocusFullscreen: "Toggle fullscreen",
@@ -226,7 +223,6 @@ function actionType(action: Action): Pattern {
     "session-manager": "SessionManager",
     configuration: "Configuration",
     "plugin-manager": "PluginManager",
-    "yinz:about": "About",
   }))
     if (launches(alias)(action)) return group;
   if (typeof action !== "string") {

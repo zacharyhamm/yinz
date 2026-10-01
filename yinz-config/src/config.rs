@@ -2217,16 +2217,19 @@ mod config_test {
                 .collect()
         };
 
-        let merged =
-            Config::from_kdl("load_plugins {\n \"yinz:about\"\n}", Some(base.clone())).unwrap();
-        assert_eq!(names(&merged), vec!["yinz:about", "yinz:link"]);
+        let merged = Config::from_kdl(
+            "load_plugins {\n \"yinz:configuration\"\n}",
+            Some(base.clone()),
+        )
+        .unwrap();
+        assert_eq!(names(&merged), vec!["yinz:configuration", "yinz:link"]);
 
         let cleared = Config::from_kdl(
-            "load_plugins clear-defaults=true {\n \"yinz:about\"\n}",
+            "load_plugins clear-defaults=true {\n \"yinz:configuration\"\n}",
             Some(base),
         )
         .unwrap();
-        assert_eq!(names(&cleared), vec!["yinz:about"]);
+        assert_eq!(names(&cleared), vec!["yinz:configuration"]);
     }
 
     #[test]
@@ -2241,20 +2244,26 @@ mod config_test {
         };
 
         let cleared = Config::from_kdl(
-            "load_plugins clear-defaults=true {\n \"yinz:about\"\n}",
+            "load_plugins clear-defaults=true {\n \"yinz:configuration\"\n}",
             Some(base.clone()),
         )
         .unwrap();
         let round_tripped =
             Config::from_kdl(&cleared.to_string(false).unwrap(), Some(base.clone())).unwrap();
-        assert_eq!(names(&round_tripped), vec!["yinz:about"]);
+        assert_eq!(names(&round_tripped), vec!["yinz:configuration"]);
 
         // the additive case must not grow a clear-defaults out of nowhere
-        let merged =
-            Config::from_kdl("load_plugins {\n \"yinz:about\"\n}", Some(base.clone())).unwrap();
+        let merged = Config::from_kdl(
+            "load_plugins {\n \"yinz:configuration\"\n}",
+            Some(base.clone()),
+        )
+        .unwrap();
         let round_tripped =
             Config::from_kdl(&merged.to_string(false).unwrap(), Some(base)).unwrap();
-        assert_eq!(names(&round_tripped), vec!["yinz:about", "yinz:link"]);
+        assert_eq!(
+            names(&round_tripped),
+            vec!["yinz:configuration", "yinz:link"]
+        );
     }
 }
 

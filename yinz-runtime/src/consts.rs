@@ -124,8 +124,6 @@ lazy_static! {
     pub static ref YINZ_SESSION_INFO_CACHE_DIR: PathBuf = YINZ_CACHE_DIR
         .join(CLIENT_SERVER_CONTRACT_DIR.clone())
         .join("session_info");
-    pub static ref YINZ_SEEN_RELEASE_NOTES_CACHE_FILE: PathBuf =
-        YINZ_CACHE_DIR.join(VERSION).join("seen_release_notes");
 }
 
 #[cfg(unix)]

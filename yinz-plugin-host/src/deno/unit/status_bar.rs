@@ -230,7 +230,6 @@ fn status_bar_wasm_deno_custom_bindings_unicode_and_reconfiguration() {
             session {
                 bind "Ctrl q" { LaunchOrFocusPlugin "unrelated"; }
                 bind "Ctrl a" { LaunchPlugin "session-manager"; SwitchToMode "Normal"; }
-                bind "Alt b" { LaunchOrFocusPlugin "yinz:about"; }
                 bind "c" { LaunchOrFocusPlugin "configuration"; }
                 bind "d" { LaunchOrFocusPlugin "yinz:layout-manager"; }
                 bind "e" { LaunchOrFocusPlugin "plugin-manager"; }

@@ -271,13 +271,6 @@ keybinds clear-defaults=true {{
             }};
             SwitchToMode "Locked"
         }}
-        bind "a" {{
-            LaunchOrFocusPlugin "yinz:about" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Locked"
-        }}
         bind "l" {{
             LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
@@ -509,13 +502,6 @@ keybinds clear-defaults=true {{
         }}
         bind "p" {{
             LaunchOrFocusPlugin "plugin-manager" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "a" {{
-            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -757,13 +743,6 @@ keybinds clear-defaults=true {{
             }};
             SwitchToMode "Normal"
         }}
-        bind "a" {{
-            LaunchOrFocusPlugin "yinz:about" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
         bind "l" {{
             LaunchOrFocusPlugin "yinz:layout-manager" {{
                 floating true
@@ -976,13 +955,6 @@ keybinds clear-defaults=true {{
         }}
         bind "p" {{
             LaunchOrFocusPlugin "plugin-manager" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "a" {{
-            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};
@@ -1204,13 +1176,6 @@ keybinds clear-defaults=true {
             };
             SwitchToMode "Normal"
         }
-        bind "a" {
-            LaunchOrFocusPlugin "yinz:about" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
         bind "l" {
             LaunchOrFocusPlugin "yinz:layout-manager" {
                 floating true
@@ -1419,13 +1384,6 @@ keybinds clear-defaults=true {{
         }}
         bind "p" {{
             LaunchOrFocusPlugin "plugin-manager" {{
-                floating true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "Normal"
-        }}
-        bind "a" {{
-            LaunchOrFocusPlugin "yinz:about" {{
                 floating true
                 move_to_focused_tab true
             }};

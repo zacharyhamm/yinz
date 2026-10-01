@@ -511,7 +511,7 @@ if args.source_diff_only:
     (topic / 'file').write_text('topic\n')
     print('PASS: exact viewer argv isolates checkout and index, quotes nested repositories, excludes its own TMPDIR, and fails for a missing checkout', flush=True)
 (root / 'config/yinz').mkdir(exist_ok=True)
-(root / 'config/yinz/config.kdl').write_text('show_release_notes false\nbuiltin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/yinz-firecracker')) + '\n')
+(root / 'config/yinz/config.kdl').write_text('builtin_plugins_dir ' + json.dumps(str(builtins)) + '\nfirecracker_provider ' + json.dumps(str(source / 'target/debug/yinz-firecracker')) + '\n')
 observer = root / 'snapshot.ts'
 observer.write_text('''import z, {definePlugin} from 'yinz:plugin';
 export default definePlugin({
@@ -859,9 +859,6 @@ try:
     if args.question_latency_only:
         attach_ui()
         until('terminal client has rendered', lambda: len(ui_output) > 1000)
-        for startup in json.loads(yinz('action', 'list-panes', '--json')):
-            if startup.get('plugin_url')=='yinz:about':
-                yinz('action', 'close-pane', '--pane-id', 'plugin_' + str(startup['id']))
         samples=[]
         for index in range(8):
             pane=int(yinz('run', '--cwd', str(topic), '--', 'claude').strip().split('_')[-1])

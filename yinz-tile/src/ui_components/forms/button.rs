@@ -1,11 +1,6 @@
 //! A clickable, focusable label.
 //!
-//! Generalized from `default-plugins/about/src/active_component.rs`, which is
-//! the most developed hand-rolled version of this in the tree. Two things are
-//! dropped in the move: about's `ClickAction` enum (`ChangePage`/`OpenLink`/
-//! `LaunchPlugin`), which is about-specific — a button here carries a caller
-//! chosen id and the caller decides what pressing it means — and the assumption
-//! that a button is one row tall in a full-width box.
+//! The caller decides what pressing the button means.
 //!
 //! Hit-testing is a side effect of rendering: `render` records the rectangle it
 //! drew into, and [`Button::contains`] tests against that. A button that has
@@ -20,11 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 /// The rectangle a widget last drew into, in pane-relative coordinates.
 ///
-/// Bounds are half-open on both axes. This resolves a real disagreement between
-/// the two hand-rolled versions: about's `contains` used `x < self.x + columns`
-/// while share's `hovering_on_line` used `hover_x <= x + width && hover_x > x`,
-/// which is off by one at both ends. Half-open is the one that makes two
-/// buttons drawn side by side never both claim the same column.
+/// Bounds are half-open on both axes, so adjacent buttons never claim the same column.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub x: usize,
@@ -250,8 +241,7 @@ mod tests {
         assert!(!button.contains(1, 0), "disabled button swallowed a click");
     }
 
-    /// Half-open bounds, the point of consolidating about's and share's two
-    /// disagreeing versions: adjacent buttons must not both claim a column.
+    /// Half-open bounds: adjacent buttons must not both claim a column.
     #[test]
     fn adjacent_buttons_do_not_overlap() {
         let mut first = Button::new("A");
