@@ -323,6 +323,16 @@ pub enum Hocus {
     /// Receive a Codex hook and route it by its conversation id.
     #[clap(hide = true)]
     CodexReport,
+    /// Run Muse with pane tracking, binding its session id back to this pane.
+    Muse {
+        #[clap(long, default_value = "muse")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Receive a Muse hook and route it by its session id.
+    #[clap(hide = true)]
+    MuseReport,
     /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
     #[clap(subcommand)]
     Hooks(HocusHooks),
@@ -333,6 +343,7 @@ pub enum HocusHookAgent {
     Claude,
     Codex,
     Opencode,
+    Muse,
     All,
 }
 
@@ -714,6 +725,8 @@ pub enum Agent {
     Recover {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
+        /// Pin the expected conversation; pass an empty value when the pane reports
+        /// no session, as a fresh Muse pane does before its first turn binds one.
         #[clap(long)]
         conversation: String,
         /// Confirm deliberately that the composer is empty. Do not infer this from `agent read`
@@ -2322,7 +2335,7 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         /// The folder the agent is working in, when it is not the pane's.
         #[clap(long, value_parser)]
         cwd: Option<PathBuf>,
-        /// Read a Claude Code or Codex hook event (JSON) from stdin and report what it means. An event
+        /// Read a Claude Code, Codex or Muse hook event (JSON) from stdin and report what it means. An event
         /// that says nothing about the agent's state reports nothing.
         #[clap(long, conflicts_with = "clear")]
         hook_json: bool,

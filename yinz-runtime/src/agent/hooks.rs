@@ -21,6 +21,9 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
         let translated = serde_json::to_string(&event)?;
         return Ok((event, translated));
     }
+    if kind == "muse" {
+        return parse_muse_hook_event(json);
+    }
     let mut event: HookEvent = serde_json::from_str(&json)?;
     if kind != "codex" {
         return Ok((event, json));
@@ -52,6 +55,27 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
     }
     let json = event.broadcast_json(serde_json::to_string(&raw)?);
     Ok((serde_json::from_str(&json)?, json))
+}
+
+/// Parse a Muse hook, translating its `Notification` to the wait it names.
+///
+/// The payload is otherwise the Claude Code shape, so it parses as one. But a Muse
+/// `Notification` fires when the agent needs approval, where Claude Code's
+/// notification kinds are mostly not waits - and neither `hook_state`, the daemon's
+/// feed, nor prompt observation can tell one agent's notification from another's.
+/// Renaming it to `Elicitation`, the unconditional wait, keeps one reading everywhere:
+/// the record, the feed and a waited prompt all see the wait. Translated on the way
+/// in like opencode's native events, for the same reason, rather than branched on
+/// in every reader.
+fn parse_muse_hook_event(json: String) -> serde_json::Result<(HookEvent, String)> {
+    let mut event: HookEvent = serde_json::from_str(&json)?;
+    if event.hook_event_name != "Notification" {
+        return Ok((event, json));
+    }
+    event.hook_event_name = "Elicitation".to_owned();
+    let mut raw: Value = serde_json::from_str(&json)?;
+    raw["hook_event_name"] = "Elicitation".into();
+    Ok((event, serde_json::to_string(&raw)?))
 }
 
 fn transcript_tail(hook: &Value) -> Option<(u64, Vec<u8>)> {

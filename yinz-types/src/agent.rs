@@ -134,8 +134,9 @@ impl AgentSource {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSpawnSpec {
-    /// The agent to run, by kind: `claude`, `codex`, `cursor`, `opencode`, or any other name
-    /// the agent detection would recognise. Resolved to a program by `agent::launch::binary_for`.
+    /// The agent to run, by kind: `claude`, `codex`, `cursor`, `muse`, `opencode`, or
+    /// any other name the agent detection would recognise. Resolved to a program by
+    /// `agent::launch::binary_for`.
     pub kind: Option<String>,
     /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one
     /// of the two is required.

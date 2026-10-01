@@ -409,7 +409,7 @@ fn start_pane(
     // none, because only this machine can say what it should be.
     let mut cmd = cmd;
     let arg0 = resolve_default_shell(&mut cmd, &ShellSource::from_user(&user));
-    crate::command::resolve_codex_wrapper(host_bin, &mut cmd.command, &mut cmd.args)?;
+    crate::command::resolve_hocus_launcher(host_bin, &mut cmd.command, &mut cmd.args)?;
 
     // Recomputed here, per pane, from *this* machine's passwd entry. Nothing is
     // inherited from the broker: its environment is a frozen copy of whichever
@@ -1101,11 +1101,28 @@ fn valid_agent_kind(kind: &str) -> bool {
 /// machine's broker, which relays it to the pane's server on the pane's own
 /// channel, where it is trusted because it came over the transport rather
 /// than out of the pane's bytes.
+/// One native hook payload off the intake, bounded by what a provider sends.
+///
+/// The broadcast cap bounds the *normalized* event, not these bytes: a prompt
+/// `agent prompt` accepted arrives whole inside `UserPromptSubmit`, so this reads
+/// up to [`NATIVE_HOOK_MAX_BYTES`](yinz_types::agent::NATIVE_HOOK_MAX_BYTES) and
+/// lets the report's own parse and prune cut it to broadcast size. Rejecting here
+/// would discard the acknowledgement before the prune could preserve its
+/// fingerprint, and a large final message before it could complete the turn.
+fn read_native_hook(reader: &mut impl Read) -> Result<Vec<u8>> {
+    let mut json = Vec::new();
+    reader
+        .take(yinz_types::agent::NATIVE_HOOK_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut json)?;
+    if json.len() > yinz_types::agent::NATIVE_HOOK_MAX_BYTES {
+        return Err(anyhow!("agent hook event exceeds the native payload limit"));
+    }
+    Ok(json)
+}
+
 pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
     let mut trace = yinz_runtime::agent::report::ReportTrace::new(started);
     let result = (|| {
-        use std::io::Read;
-
         let kind = std::env::args()
             .nth(3)
             .unwrap_or_else(|| "claude".to_owned());
@@ -1117,14 +1134,8 @@ pub fn report_agent_hook(started: std::time::Instant) -> Result<()> {
         let pane_token = std::env::var(PANE_TOKEN_ENV).with_context(|| {
             format!("{PANE_TOKEN_ENV} is not set; this is not a pane of a Yinz remote broker")
         })?;
-        let mut json = Vec::new();
-        std::io::stdin()
-            .take(yinz_types::agent::HOOK_BROADCAST_MAX_BYTES as u64 + 1)
-            .read_to_end(&mut json)?;
-        if json.len() > yinz_types::agent::HOOK_BROADCAST_MAX_BYTES {
-            return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
-        }
-        let json = String::from_utf8(json).context("agent hook JSON is not UTF-8")?;
+        let json = String::from_utf8(read_native_hook(&mut std::io::stdin())?)
+            .context("agent hook JSON is not UTF-8")?;
         // Validated through the same reading the report itself uses, so an opencode event
         // written in opencode's own shape is accepted here rather than only further on.
         let (event, _) = yinz_runtime::agent::hooks::parse_hook_event(&kind, json.clone())

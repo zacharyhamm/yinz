@@ -129,6 +129,14 @@ impl Screen {
         })
     }
 
+    /// Whether the pane holds the launcher's verified Muse hook capability, still waiting on
+    /// the provider's first turn to bind a conversation. Claimed by the marker alone.
+    pub(super) fn has_provisional_muse_lifecycle(&self, pane: PaneId) -> bool {
+        self.agent_lifecycle
+            .get(&pane)
+            .is_some_and(|lifecycle| lifecycle.kind == "muse" && lifecycle.conversation.is_empty())
+    }
+
     /// Whether this hook is work from a turn that already ended by interruption or failure,
     /// such as the tool call Codex finishes after an Esc. Hooks without a turn id never are.
     pub(super) fn is_after_ended_turn(&self, pane: PaneId, kind: &str, hook: &HookEvent) -> bool {
@@ -520,15 +528,20 @@ impl Screen {
     fn agent_status(&self, pane_id: PaneId, pending_submission: bool) -> Option<AgentStatus> {
         let info = self.get_pane_info(pane_id)?;
         let agent = info.agent?;
+        // The Muse bootstrap proves hook capability before the provider speaks.
+        // Only its visible composer can establish readiness before the first turn.
+        let provisional_muse = agent.kind == "muse"
+            && agent.session_id.is_none()
+            && self.has_provisional_muse_lifecycle(pane_id);
         let status_available = agent.source == AgentSource::Reported
-            && agent.session_id.as_ref().is_some_and(|conversation| {
+            && (agent.session_id.as_ref().is_some_and(|conversation| {
                 self.has_agent_lifecycle(pane_id, &agent.kind, conversation)
-            });
+            }) || provisional_muse);
         let live = !info.is_held
             && !info.exited
             && agent.state != AgentState::Exited
             && self.agent_input_enabled(pane_id);
-        let supported = matches!(agent.kind.as_str(), "claude" | "codex");
+        let supported = matches!(agent.kind.as_str(), "claude" | "codex" | "muse");
         let prompt_supported = supported
             && status_available
             && live
@@ -555,9 +568,22 @@ impl Screen {
                 .any(|pending| pending.pane == pane_id && pending.prompt.is_some())
         {
             Some(NotReadyReason::PendingSubmission)
-        } else if !self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
-            lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
-        }) {
+        } else if (provisional_muse && !self.muse_composer(pane_id, true))
+            || !(self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
+                lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
+            }) || (provisional_muse
+                && self.agent_dialog_inputs.get(&pane_id).is_some_and(|input| {
+                    input.startup
+                        && input.kind == "muse"
+                        && input.conversation.is_none()
+                        && input.input_revision == self.agent_input_revision(pane_id)
+                        && self.agent_input_at(pane_id).is_some_and(|at| {
+                            self.pane_output_activity
+                                .get(&pane_id)
+                                .is_some_and(|output| *output > at)
+                        })
+                })))
+        {
             Some(NotReadyReason::UnconsumedInput)
         } else {
             None
@@ -633,6 +659,52 @@ impl Screen {
                 run_id: None,
             },
         })
+    }
+
+    /// Muse 1.4.2's composer has full-width rules and a visible cursor in its
+    /// `❯ ` input block. Unknown layouts fail closed; hooks alone cannot identify it.
+    fn muse_composer(&self, pane_id: PaneId, require_empty: bool) -> bool {
+        let Some(pane) = self
+            .tab_containing_pane(pane_id)
+            .and_then(|tab| tab.get_pane_with_id(pane_id))
+        else {
+            return false;
+        };
+        let contents = pane.pane_contents(None, false, None);
+        let Some((x, y)) = contents.cursor.map(|cursor| cursor.into_tuple()) else {
+            return false;
+        };
+        if contents.is_scrolled || y >= contents.viewport.len() {
+            return false;
+        }
+        let separator = |line: &String| {
+            line.chars().count() == pane.get_content_columns() && line.chars().all(|c| c == '─')
+        };
+        if separator(&contents.viewport[y]) {
+            return false;
+        }
+        let Some(top) = contents.viewport[..y].iter().rposition(separator) else {
+            return false;
+        };
+        let Some(bottom) = contents.viewport[y + 1..]
+            .iter()
+            .position(separator)
+            .map(|offset| y + 1 + offset)
+        else {
+            return false;
+        };
+        let input = &contents.viewport[top + 1..bottom];
+        let Some(text) = input[0].strip_prefix('❯') else {
+            return false;
+        };
+        if (!text.is_empty() && !text.starts_with(' ')) || (y == top + 1 && x < 2) {
+            return false;
+        }
+        !require_empty
+            || (y == top + 1
+                && x == 2
+                && text.trim().is_empty()
+                && input[1..].iter().all(|line| line.trim().is_empty()))
     }
 
     // A stale hook record in a shell is insufficient authority to type into that shell.
@@ -713,7 +785,10 @@ impl Screen {
                 pane_id,
                 expected_session_id,
                 ..
-            } => (*pane_id, Some(expected_session_id.as_str())),
+            } => (
+                *pane_id,
+                (!expected_session_id.is_empty()).then_some(expected_session_id.as_str()),
+            ),
             Status {
                 pane_id,
                 expected_session_id,
@@ -840,7 +915,12 @@ impl Screen {
                         && pending.prompt.is_some()
                         && (!pending.abandoned || pending.delivery.is_some())
                 });
-                let refusal = if !confirm_empty || expected_session_id.is_empty() {
+                // An empty pin recovers only a pane that reports no session - a fresh
+                // Muse pane before its first turn binds one. Against a pinned pane it
+                // fails closed, the way a wrong conversation does.
+                let refusal = if !confirm_empty
+                    || (expected_session_id.is_empty() && status.agent.session_id.is_some())
+                {
                     Some("recovery requires --conversation and --confirm-empty".to_owned())
                 } else if !status.prompt_supported {
                     Some("recovery requires an agent that accepts prompts".to_owned())
@@ -952,8 +1032,13 @@ impl Screen {
                 self.agent_reply(&client, response);
             },
             SendKeys { keys, .. } => {
-                let startup = status.agent.source == AgentSource::Spawned
-                    && matches!(status.agent.kind.as_str(), "claude" | "codex");
+                // An unpinned Muse pane may still show a startup dialog, but its
+                // bootstrap cannot prove that subsequent keys were consumed.
+                let provisional = status.agent.kind == "muse"
+                    && status.agent.session_id.is_none()
+                    && self.has_provisional_muse_lifecycle(pane);
+                let startup = matches!(status.agent.kind.as_str(), "claude" | "codex" | "muse")
+                    && (status.agent.source == AgentSource::Spawned || provisional);
                 if !(status.status_available || startup)
                     || !self.agent_process_matches(pane, &status.agent.kind)
                 {
@@ -989,7 +1074,8 @@ impl Screen {
                     return;
                 }
                 let revision = self.agent_input_revision(pane);
-                let dialog = (startup || status.agent.state == AgentState::Waiting)
+                let dialog = ((startup && !(provisional && self.muse_composer(pane, false)))
+                    || status.agent.state == AgentState::Waiting)
                     && (self
                         .agent_lifecycle
                         .get(&pane)
@@ -1402,7 +1488,10 @@ impl Screen {
                         && status.status_available
                         && status.agent.state == pending.until
                         && (pending.until != AgentState::Idle
-                            || !matches!(status.agent.kind.as_str(), "claude" | "codex")
+                            || !matches!(
+                                status.agent.kind.as_str(),
+                                "claude" | "codex" | "muse"
+                            )
                             || (status.ready && !self.claude_background_pending(pending.pane))) =>
                 {
                     // The reply's message is the final text of the turn that made it idle.
@@ -1456,6 +1545,9 @@ impl Screen {
                     if status
                         .as_ref()
                         .is_none_or(|status| status.agent.state != AgentState::Idle)
+                        || (pending.kind == "muse"
+                            && pending.conversation.is_none()
+                            && !self.muse_composer(pending.pane, false))
                     {
                         outcome = Some(AgentOutcome::Interrupted);
                     } else if let Err(error) =
@@ -1753,13 +1845,53 @@ impl Screen {
         if !parent {
             return;
         }
-        if hook.is_some_and(|hook| hook.codex_hooks_ready == Some(false)) {
+        if hook.is_some_and(|hook| {
+            hook.codex_hooks_ready == Some(false) || hook.muse_hooks_ready == Some(false)
+        }) {
             self.agent_lifecycle.remove(&pane);
             self.agent_dialog_inputs.remove(&pane);
         } else if event.hook == "SessionEnd" {
             self.agent_lifecycle.remove(&pane);
             self.agent_dialog_inputs.remove(&pane);
             self.agent_worker_waits.remove(&pane);
+        } else if event.kind == "muse"
+            && event.session_id.is_none()
+            && hook.is_some_and(|hook| {
+                hook.hook_event_name == "SessionStart"
+                    && hook.source.as_deref() != Some("compact")
+                    && hook.session_id.is_empty()
+                    && hook.muse_hooks_ready == Some(true)
+                    && yinz_types::agent::hook_state(hook).is_some()
+            })
+        {
+            // The launcher's startup announcement: verified hook wiring, but
+            // unpinned, because Muse speaks no session id until its first turn.
+            // Claimed by the marker alone - a provider hook never carries one.
+            let previous = self
+                .agent_lifecycle
+                .get(&pane)
+                .filter(|previous| previous.kind == "muse" && previous.conversation.is_empty());
+            let input_revision = clear_revision.or(dialog_revision).or(previous
+                .map(|previous| previous.input_revision)
+                .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)));
+            self.agent_lifecycle.insert(
+                pane,
+                Lifecycle {
+                    kind: "muse".to_owned(),
+                    conversation: String::new(),
+                    input_revision,
+                    last_report: Instant::now(),
+                    ended_turn: previous.and_then(|previous| previous.ended_turn.clone()),
+                    claude_prompt_id: None,
+                    claude_confirmation: None,
+                    claude_previous_prompt_id: None,
+                    background_tasks: BTreeSet::new(),
+                    claude_notifications: BTreeMap::new(),
+                    claude_previous_notification: None,
+                    claude_overtaken: None,
+                    last_message: None,
+                },
+            );
         } else if let Some(conversation) = event.session_id.as_ref().filter(|id| {
             !id.is_empty()
                 && hook

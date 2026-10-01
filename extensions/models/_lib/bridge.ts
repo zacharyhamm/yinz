@@ -114,7 +114,7 @@ export const Request = z.object({
 });
 export const AgentSpec = z.object({
     prompt: StartupPromptText.nullish().transform((s) => s ?? undefined),
-    kind: z.enum(["", "codex", "claude", "cursor", "opencode"]).transform((s) =>
+    kind: z.enum(["", "codex", "claude", "cursor", "opencode", "muse"]).transform((s) =>
         s || undefined
     ).optional(),
     command: Literal.transform((s) => s || undefined).optional(),

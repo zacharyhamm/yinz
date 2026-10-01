@@ -2378,7 +2378,7 @@ fn invalid_remote_agent_reports_are_rejected_without_queueing() {
     .to_string();
     for (json, message) in [
         ("{".to_owned(), "invalid remote agent report"),
-        (oversized, "agent hook event exceeds the 64 KiB limit"),
+        (oversized, "agent hook event exceeds the broadcast limit"),
     ] {
         let error = handle_remote_agent_report(&pty.bus.senders, TerminalId::new(7), "codex", json)
             .unwrap_err();

@@ -402,3 +402,59 @@ fn opencode_events_are_read_at_the_seam_and_the_translated_event_is_what_travels
     assert_eq!(broadcast.kind, "opencode");
     assert_eq!(broadcast.state, Some(AgentState::Busy));
 }
+
+/// A Muse `Notification` fires when the agent needs approval, where Claude Code's
+/// notification kinds are mostly not waits. It is translated to the unconditional
+/// wait on the way in, so the record, the daemon's feed and a waited prompt all
+/// read it the same way; everything else parses as the Claude Code shape it is.
+#[test]
+fn muse_notifications_are_translated_to_the_wait_they_name() {
+    let notification = json!({
+        "hook_event_name": "Notification",
+        "session_id": "ses_1",
+        "cwd": "/work",
+        "model": "muse-spark",
+        "permission_mode": "default",
+        "message": "Allow `cargo build`?",
+        "transcript_path": null,
+    })
+    .to_string();
+    let (event, raw) = parse_hook_event("muse", notification).unwrap();
+    assert_eq!(event.hook_event_name, "Elicitation");
+    assert_eq!(event.session_id, "ses_1");
+    assert_eq!(event.message.as_deref(), Some("Allow `cargo build`?"));
+    let raw_event: HookEvent = serde_json::from_str(&raw).unwrap();
+    assert_eq!(raw_event, event);
+
+    let actions = hook_report_actions(
+        "muse",
+        yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+        &event,
+        raw,
+    );
+    let [Action::SetPaneAgent { agent, .. }, Action::AgentEvent(broadcast)] = &actions[..] else {
+        panic!("an approval need sets the record and broadcasts: {actions:?}")
+    };
+    let agent = agent.as_ref().unwrap();
+    assert_eq!(agent.kind, "muse");
+    assert_eq!(agent.state, AgentState::Waiting);
+    assert!(agent.wait_needs_a_person);
+    assert_eq!(broadcast.kind, "muse");
+    assert_eq!(broadcast.state, Some(AgentState::Waiting));
+
+    // The rest of the feed parses untouched: a Claude Code shape under a muse kind.
+    let submit = json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "ses_1",
+        "cwd": "/work",
+        "prompt": "fix it",
+        "turn_id": "turn_1",
+        "permission_mode": "default",
+        "transcript_path": null,
+    })
+    .to_string();
+    let (event, unchanged) = parse_hook_event("muse", submit.clone()).unwrap();
+    assert_eq!(event.hook_event_name, "UserPromptSubmit");
+    assert_eq!(event.turn_id.as_deref(), Some("turn_1"));
+    assert_eq!(unchanged, submit);
+}

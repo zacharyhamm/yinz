@@ -29,7 +29,10 @@ use yinz_types::input::layout::Layout;
 use yinz_types::input::options::PaneFrameStyle;
 use yinz_types::pane_size::Size;
 use yinz_types::style::HostTerminalThemeMode;
-use yinz_types::{agent::AgentInfo, geometry::Direction};
+use yinz_types::{
+    agent::{AgentInfo, AgentSource},
+    geometry::Direction,
+};
 use {
     yinz_types::data::GetFocusedPaneInfoResponse, yinz_types::data::InputMode,
     yinz_types::data::NotificationInfo, yinz_types::data::PaneScrollbackResponse,
@@ -99,6 +102,25 @@ pub(super) fn apply_queued_agent_report(
                 && hook.codex_hooks_ready == Some(true)
                 && screen.has_agent_lifecycle(pane_id, &report.kind, &hook.session_id)
         })
+    {
+        return Ok(true);
+    }
+    // The Muse bootstrap is unpinned - it carries no session - so a pane whose
+    // provider has already spoken keeps its record whatever the launcher says.
+    if report.kind == "muse"
+        && hook.as_ref().is_some_and(|hook| {
+            hook.hook_event_name == "SessionStart"
+                && hook.muse_hooks_ready.is_some()
+                && hook.session_id.is_empty()
+        })
+        && screen
+            .get_pane_info(pane_id)
+            .and_then(|info| info.agent)
+            .is_some_and(|agent| {
+                agent.kind == "muse"
+                    && agent.source == AgentSource::Reported
+                    && agent.session_id.is_some()
+            })
     {
         return Ok(true);
     }
@@ -220,13 +242,23 @@ pub(crate) fn apply_pane_agent_report(
         .tab_containing_pane_mut(pane_id)
         .map(|tab| tab.set_pane_agent(pane_id, agent.clone()))
         .unwrap_or(false);
-    if previous
+    // A Muse pane verified at startup binds its conversation with its first turn:
+    // the record moves from the bootstrap's empty session to the provider's, and
+    // that expected edge must not end the submission that caused it.
+    let provisional_muse_bind = previous
         .as_ref()
-        .map(|agent| (&agent.kind, &agent.session_id))
-        != agent.as_ref().map(|agent| (&agent.kind, &agent.session_id))
-        || agent
+        .is_some_and(|previous| previous.kind == "muse" && previous.session_id.is_none())
+        && agent
             .as_ref()
-            .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited)
+            .is_some_and(|agent| agent.kind == "muse" && agent.session_id.is_some());
+    if !provisional_muse_bind
+        && (previous
+            .as_ref()
+            .map(|agent| (&agent.kind, &agent.session_id))
+            != agent.as_ref().map(|agent| (&agent.kind, &agent.session_id))
+            || agent
+                .as_ref()
+                .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited))
     {
         screen.invalidate_agent_lifecycle(pane_id);
     }

@@ -390,6 +390,16 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
         })))
     ));
 
+    let muse =
+        try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "muse"]).expect("parsed");
+    assert!(matches!(
+        muse.command,
+        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+            agent: Some(yinz_cli::args::HocusHookAgent::Muse),
+            ..
+        })))
+    ));
+
     assert!(
         try_parse_cli(["yinz", "hocus", "hooks"]).is_err(),
         "`hooks` on its own names no action"

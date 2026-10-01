@@ -1,0 +1,24 @@
+[package]
+name = "yinz-muse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binds a Muse session to its Yinz pane by session id, which its hooks carry in place of pane identity"
+
+[lints]
+workspace = true
+
+[dependencies]
+yinz-runtime = { workspace = true }
+yinz-types = { workspace = true }
+anyhow = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true, features = ["fs", "process", "user"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sysinfo = { version = "0.39.5", default-features = false, features = ["system"] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
+yinz-test-support = { path = "../yinz-test-support" }

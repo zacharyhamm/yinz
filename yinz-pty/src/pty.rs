@@ -320,7 +320,7 @@ fn handle_remote_agent_report(
     use {yinz_types::agent, yinz_types::agent::HookEvent, yinz_types::agent::HookOutcome};
     let accepted_at = Instant::now();
     if json.len() > agent::HOOK_BROADCAST_MAX_BYTES {
-        return Err(anyhow!("agent hook event exceeds the 64 KiB limit"));
+        return Err(anyhow!("agent hook event exceeds the broadcast limit"));
     }
     let event: HookEvent = serde_json::from_str(&json).context("invalid remote agent report")?;
     let state = match agent::hook_outcome(kind, &event) {

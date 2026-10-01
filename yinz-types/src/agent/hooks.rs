@@ -84,6 +84,29 @@ pub const CODEX_HOOK_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// The Muse hook events used to report a pane's state.
+///
+/// `Notification` fires when the agent needs approval, so it reads as the wait it is:
+/// the host translates it to `Elicitation` on the way in, because the shared
+/// [`hook_state`] cannot tell one agent's notification from another's. `PreLLMCall`
+/// and `PostLLMCall` are deliberately not wired: they carry the whole conversation
+/// on every model call.
+pub const MUSE_HOOK_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+    "Notification",
+    "Stop",
+    "SessionEnd",
+];
+
 /// Seconds a hook may take before Claude Code abandons it.
 ///
 /// Explicit because the default is ten minutes and a hook blocks the turn: a report against a
@@ -96,6 +119,11 @@ pub const CLAUDE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 /// Codex caps `SessionEnd` hook timeouts at three seconds, so every reporting hook uses that
 /// same short bound.
 pub const CODEX_HOOK_TIMEOUT_SECONDS: u64 = 3;
+
+/// Seconds a Muse hook may take. Muse hook timeouts are seconds, not milliseconds,
+/// and a report is one local `yinz` invocation - five is the same bound Claude Code's
+/// hooks run under, for the same reason (a hook blocks the turn).
+pub const MUSE_HOOK_TIMEOUT_SECONDS: u64 = 5;
 
 /// The command a spawned Claude Code pane's hooks run, with no script in between: the pane
 /// reports through the broker when remote, otherwise through the local session.
@@ -203,6 +231,12 @@ pub fn codex_hook_settings(command: &str) -> Value {
     hook_settings(CODEX_HOOK_EVENTS, command, CODEX_HOOK_TIMEOUT_SECONDS)
 }
 
+/// A Muse `settings.json` hooks block wiring every event in [`MUSE_HOOK_EVENTS`].
+/// What `yinz hocus hooks install` merges into the user's settings file.
+pub fn muse_hook_settings(command: &str) -> Value {
+    hook_settings(MUSE_HOOK_EVENTS, command, MUSE_HOOK_TIMEOUT_SECONDS)
+}
+
 /// A hook settings document for one event list. Claude Code and Codex deliberately use the
 /// same handler shape, so configuration generation needs no provider abstraction beyond this.
 pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
@@ -219,21 +253,28 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The program and arguments behind an `env(1)` or `yinz hocus codex` wrapper.
-/// Other commands are returned unchanged.
+/// The program and arguments behind an `env(1)` or a `yinz hocus` agent launcher
+/// wrapper. Other commands are returned unchanged.
 pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
     if program.file_name()? == "yinz" {
-        if let [hocus, codex, flag, command, separator, rest @ ..] = args {
-            if hocus == "hocus" && codex == "codex" && flag == "--command" && separator == "--" {
+        if let [hocus, launcher, flag, command, separator, rest @ ..] = args {
+            if hocus == "hocus"
+                && matches!(launcher.as_str(), "codex" | "muse")
+                && flag == "--command"
+                && separator == "--"
+            {
                 return Some((Path::new(command), rest));
             }
         }
-        if let [hocus, codex, separator, rest @ ..] = args {
-            if hocus == "hocus" && codex == "codex" && separator == "--" {
-                return Some((Path::new("codex"), rest));
+        if let [hocus, launcher, separator, rest @ ..] = args {
+            if hocus == "hocus"
+                && matches!(launcher.as_str(), "codex" | "muse")
+                && separator == "--"
+            {
+                return Some((Path::new(launcher), rest));
             }
         }
     }
@@ -327,8 +368,13 @@ pub fn kind_of(word: &str) -> Option<&'static str> {
 pub fn kind_from_command(command: &str) -> Option<&'static str> {
     let mut words = command.split_whitespace();
     let first = words.next().unwrap_or_default();
-    if program(first) == "yinz" && words.next() == Some("hocus") && words.next() == Some("codex") {
-        return Some("codex");
+    if program(first) == "yinz" && words.next() == Some("hocus") {
+        // The launchers only: `yinz hocus hooks install` is maintenance, not an agent.
+        match words.next() {
+            Some("codex") => return Some("codex"),
+            Some("muse") => return Some("muse"),
+            _ => {},
+        }
     }
     if let Some(kind) = kind_of(first) {
         return Some(kind);
@@ -460,6 +506,16 @@ pub const WAITING_DETAIL_CHARS: usize = 80;
 /// The surrounding event also carries typed fields and can be larger.
 pub const HOOK_BROADCAST_MAX_BYTES: usize = 256 * 1024;
 
+/// The largest native provider hook payload an intake accepts before parsing.
+///
+/// The broadcast cap bounds the *normalized* event, not the provider's own bytes: a
+/// prompt `agent prompt` accepted (up to 1 MiB) arrives whole inside
+/// `UserPromptSubmit`, so an intake that applied the broadcast cap to the native
+/// payload would discard the acknowledgement before the prune could preserve its
+/// fingerprint. Oversized-but-valid payloads are parsed and pruned to broadcast
+/// size; anything past this ceiling is not a hook event.
+pub const NATIVE_HOOK_MAX_BYTES: usize = 2 * 1024 * 1024;
+
 /// The longest any one string in a pruned event's `tool_input` keeps, unless it sits under one
 /// of [`PRUNED_HISTORY_KEYS`].
 ///
@@ -538,6 +594,15 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub codex_hooks_ready: Option<bool>,
+    /// Launcher verification of installed Muse hooks, not composer readiness.
+    /// Unpinned: Muse speaks no session id until its first turn begins,
+    /// so the bootstrap carries an empty one and the first submit binds it.
+    #[serde(
+        default,
+        rename = "_yinz_muse_hooks_ready",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub muse_hooks_ready: Option<bool>,
     /// Why a `SessionStart` fired: `startup`, `resume`, `clear`, `compact`, or `fork`.
     #[serde(default)]
     pub source: Option<String>,
@@ -705,6 +770,7 @@ impl HookEvent {
             prompt_sha256: self.prompt_sha256.clone(),
             workflow_owner: self.workflow_owner.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
+            muse_hooks_ready: self.muse_hooks_ready,
             source: self.source.clone(),
             cwd: self.cwd.clone(),
             notification_type: self.notification_type.clone(),
@@ -1245,7 +1311,7 @@ mod tests {
 
     #[test]
     fn worker_hooks_only_broadcast_without_a_parent_state_change() {
-        for kind in ["claude", "codex"] {
+        for kind in ["claude", "codex", "muse"] {
             for name in [
                 "SubagentStart",
                 "SubagentStop",
@@ -1305,6 +1371,27 @@ mod tests {
     }
 
     #[test]
+    fn the_muse_settings_wire_its_events_and_not_the_llm_firehose() {
+        let command = "/root/.config/muse/hocus/hocus-hook.sh";
+        let settings = muse_hook_settings(command);
+        let hooks = settings["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), MUSE_HOOK_EVENTS.len());
+        for event in MUSE_HOOK_EVENTS {
+            let handler = &hooks[*event][0]["hooks"][0];
+            assert_eq!(handler["type"], "command", "{event}");
+            assert_eq!(handler["command"], command, "{event}");
+            assert_eq!(handler["timeout"], MUSE_HOOK_TIMEOUT_SECONDS, "{event}");
+            assert!(
+                hooks[*event][0].get("matcher").is_none(),
+                "{event} fires on every occurrence"
+            );
+        }
+        assert!(hooks.get("Notification").is_some());
+        assert!(hooks.get("PreLLMCall").is_none());
+        assert!(hooks.get("PostLLMCall").is_none());
+    }
+
+    #[test]
     fn an_env_wrapper_is_looked_through_for_the_agents_name() {
         let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
         assert_eq!(
@@ -1331,6 +1418,43 @@ mod tests {
     }
 
     #[test]
+    fn a_hocus_launcher_is_looked_through_for_the_agents_name() {
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        for launcher in ["codex", "muse"] {
+            assert_eq!(
+                agent_kind_of(
+                    Path::new("yinz"),
+                    &args(&[
+                        "hocus",
+                        launcher,
+                        "--command",
+                        launcher,
+                        "--",
+                        "resume",
+                        "--last"
+                    ])
+                )
+                .as_deref(),
+                Some(launcher)
+            );
+            // The bare form runs the launcher's own default program.
+            assert_eq!(
+                agent_kind_of(
+                    Path::new("yinz"),
+                    &args(&["hocus", launcher, "--", "--model", "x"])
+                )
+                .as_deref(),
+                Some(launcher)
+            );
+            // Anything else under `hocus` is maintenance, not an agent pane.
+            assert_eq!(
+                agent_kind_of(Path::new("yinz"), &args(&["hocus", "hooks", "install"])).as_deref(),
+                Some("yinz")
+            );
+        }
+    }
+
+    #[test]
     fn a_command_line_names_an_agent_by_its_first_word_or_behind_an_interpreter() {
         for (command, kind) in [
             ("claude", "claude"),
@@ -1339,10 +1463,18 @@ mod tests {
             ("/Users/x/.local/bin/muse-bin-0.1.0-R708.1 --resume", "muse"),
             ("node /opt/bin/gemini", "gemini"),
             ("pi-agent", "pi"),
+            ("yinz hocus codex --command codex -- resume --last", "codex"),
+            ("yinz hocus muse --command muse -- resume --last", "muse"),
         ] {
             assert_eq!(kind_from_command(command), Some(kind), "{command}");
         }
-        for command in ["zsh", "pipenv run pi", "git commit -m 'ask claude'", ""] {
+        for command in [
+            "zsh",
+            "pipenv run pi",
+            "git commit -m 'ask claude'",
+            "yinz hocus hooks install",
+            "",
+        ] {
             assert_eq!(kind_from_command(command), None, "{command}");
         }
     }
@@ -1442,6 +1574,23 @@ mod tests {
         assert!(serde_json::to_value(event("SessionStart"))
             .unwrap()
             .get("_yinz_codex_hooks_ready")
+            .is_none());
+    }
+
+    #[test]
+    fn muse_bootstrap_marker_survives_pruning_and_provider_hooks_omit_it() {
+        for ready in [true, false] {
+            let hook = HookEvent {
+                muse_hooks_ready: Some(ready),
+                ..event("SessionStart")
+            };
+            let pruned: HookEvent =
+                serde_json::from_value(serde_json::to_value(hook.pruned_to(0)).unwrap()).unwrap();
+            assert_eq!(pruned.muse_hooks_ready, Some(ready));
+        }
+        assert!(serde_json::to_value(event("SessionStart"))
+            .unwrap()
+            .get("_yinz_muse_hooks_ready")
             .is_none());
     }
 
@@ -1778,6 +1927,60 @@ mod tests {
         assert_eq!(hook_state(&question), Some(AgentState::Waiting));
     }
 
+    /// A Muse session's feed, as the host parses it: startup is idle, a submitted turn
+    /// is busy, a plain `Stop` ends it (Muse has no blocking-hook continuation to wait
+    /// out), and the translated approval notification waits on a person. The payloads
+    /// are the shapes captured from `muse exec --provider echo`, with the ids blanked.
+    #[test]
+    fn a_muse_feed_reads_as_the_lifecycle_it_is() {
+        let start = HookEvent {
+            source: Some("startup".to_owned()),
+            ..event("SessionStart")
+        };
+        match hook_outcome("muse", &start) {
+            HookOutcome::Reported(info) => assert_eq!(info.state, AgentState::Idle),
+            other => panic!("{other:?}"),
+        }
+        match hook_outcome("muse", &event("UserPromptSubmit")) {
+            HookOutcome::Reported(info) => assert_eq!(info.state, AgentState::Busy),
+            other => panic!("{other:?}"),
+        }
+        // A snake_case tool still names the row; only its argument hint is lost.
+        let pre = HookEvent {
+            tool_name: Some("read_skill".to_owned()),
+            ..event("PreToolUse")
+        };
+        match hook_outcome("muse", &pre) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.state, AgentState::Busy);
+                assert_eq!(info.detail.as_deref(), Some("read_skill"));
+            },
+            other => panic!("{other:?}"),
+        }
+        match hook_outcome("muse", &event("Stop")) {
+            HookOutcome::Reported(info) => assert_eq!(info.state, AgentState::Idle),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            hook_outcome("muse", &event(HOOK_SESSION_END)),
+            HookOutcome::Ended
+        );
+        // The translated approval notification: a wait, on a person, carrying the
+        // sentence Muse would have shown.
+        let approval = HookEvent {
+            message: Some("Allow `cargo build`?".to_owned()),
+            ..event("Elicitation")
+        };
+        match hook_outcome("muse", &approval) {
+            HookOutcome::Reported(info) => {
+                assert_eq!(info.state, AgentState::Waiting);
+                assert!(info.wait_needs_a_person);
+                assert_eq!(info.waiting_on.as_deref(), Some("Allow `cargo build`?"));
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
     /// The record carries [`waiting_needs_a_person`]'s answer, because the pane that draws the
     /// blinking bell is a long way from the event that decided it - and the event is gone by
     /// the time the pane sees anything. Only a wait carries one, for the same reason only a
@@ -1801,7 +2004,7 @@ mod tests {
         assert_eq!(accepted.waiting_on, None);
         assert!(!accepted.wait_needs_a_person);
 
-        for kind in ["claude", "codex"] {
+        for kind in ["claude", "codex", "muse"] {
             for mode in [None, Some("default"), Some("plan"), Some("unknown-mode")] {
                 let event = HookEvent {
                     permission_mode: mode.map(str::to_owned),
