@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 use yinz_types::{colors::PaletteColor, pane_size::Dimension};
 
 const FG: PaletteColor = PaletteColor::Rgb((200, 160, 120));
@@ -28,6 +29,99 @@ fn compose(opacity: u8, under: CharacterChunk, over: CharacterChunk) -> Vec<Char
     composition.add(&[under], 0);
     composition.add(&[over], 1);
     composition.finish()
+}
+
+fn serialize_and_parse_row(
+    chunks: Vec<CharacterChunk>,
+    cols: usize,
+) -> VecDeque<TerminalCharacter> {
+    let mut bytes = String::new();
+    serialize_chunks(&mut bytes, chunks, None, None, None, true, true, None, None).unwrap();
+    let mut grid = crate::panes::Grid::new(
+        1,
+        cols,
+        Rc::new(RefCell::new(yinz_types::style::Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        yinz_types::style::Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    );
+    vte::Parser::new().advance(&mut grid, bytes.as_bytes());
+    grid.viewport.pop_front().unwrap().columns
+}
+
+#[test]
+fn serialization_preserves_all_bold_and_dim_transitions() {
+    use crate::panes::terminal_character::RESET_STYLES;
+
+    let styles = [
+        RESET_STYLES,
+        RESET_STYLES.bold(Some(AnsiCode::On)),
+        RESET_STYLES.dim(Some(AnsiCode::On)),
+        RESET_STYLES
+            .bold(Some(AnsiCode::On))
+            .dim(Some(AnsiCode::On)),
+    ];
+    for from in styles {
+        for to in styles {
+            // Repeat the destination to check the tracked state after the transition too.
+            let expected = [from, to, to];
+            let characters = expected
+                .iter()
+                .map(|styles| TerminalCharacter::new_styled('x', (*styles).into()))
+                .collect();
+            let cells = serialize_and_parse_row(vec![CharacterChunk::new(characters, 0, 0)], 3);
+            assert_eq!(cells.len(), expected.len());
+            for (cell, expected) in cells.iter().zip(expected) {
+                assert_eq!(cell.styles.bold, expected.bold, "{from:?} -> {to:?}");
+                assert_eq!(cell.styles.dim, expected.dim, "{from:?} -> {to:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn translucent_lettering_preserves_bold_dim_and_foreground_after_serialization() {
+    use crate::panes::terminal_character::RESET_STYLES;
+
+    let foreground = Some(AnsiCode::RgbCode((80, 120, 160)));
+    for opacity in [0, 50, 75] {
+        for bold in [AnsiCode::Reset, AnsiCode::On] {
+            let lettering = RESET_STYLES
+                .foreground(foreground)
+                .bold(Some(bold))
+                .dim(Some(AnsiCode::On));
+            let underlying = RESET_STYLES
+                .bold(Some(AnsiCode::On))
+                .dim(Some(AnsiCode::On));
+            let mut under = chunk("abcde", 0);
+            for cell in &mut under.terminal_characters {
+                cell.styles = underlying.into();
+            }
+            let mut over = chunk("H C S", 0);
+            for cell in &mut over.terminal_characters {
+                cell.styles = lettering.into();
+            }
+            let cells = serialize_and_parse_row(compose(opacity, under, over), 5);
+            assert_eq!(
+                cells.iter().map(|c| c.character).collect::<String>(),
+                "HbCdS"
+            );
+            for index in [0, 2, 4] {
+                let styles = &cells[index].styles;
+                assert_eq!(styles.foreground, foreground, "opacity {opacity}");
+                assert_eq!(styles.bold, Some(bold), "opacity {opacity}");
+                assert_eq!(styles.dim, Some(AnsiCode::On), "opacity {opacity}");
+            }
+        }
+    }
 }
 
 #[test]

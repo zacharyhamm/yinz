@@ -369,6 +369,13 @@ impl CharacterStyles {
         if self.dim != new_styles.dim {
             diff.dim = new_styles.dim;
         }
+        // SGR 22 resets both bold and dim, so reapply either attribute that stays enabled.
+        if diff.bold == Some(AnsiCode::Reset) && new_styles.dim == Some(AnsiCode::On) {
+            diff.dim = new_styles.dim;
+        }
+        if diff.dim == Some(AnsiCode::Reset) && new_styles.bold == Some(AnsiCode::On) {
+            diff.bold = new_styles.bold;
+        }
         if self.italic != new_styles.italic {
             diff.italic = new_styles.italic;
         }
