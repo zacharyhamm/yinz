@@ -204,6 +204,16 @@ impl RcCharacterStyles {
         Self::Reset
     }
 
+    /// Whether both are the same allocation, and so certainly equal. Consecutive cells
+    /// printed with one pen share their styles this way.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Reset, Self::Reset) => true,
+            (Self::Rc(a), Self::Rc(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     pub fn update(&mut self, f: impl FnOnce(&mut CharacterStyles)) {
         let mut styles: CharacterStyles = **self;
         f(&mut styles);
@@ -324,7 +334,9 @@ impl CharacterStyles {
         new_styles: &CharacterStyles,
         changed_colors: Option<[Option<AnsiCode>; 256]>,
     ) -> Option<CharacterStyles> {
-        if self == new_styles && changed_colors.is_none() {
+        // `changed_colors` only remaps the colors in a diff, and an unchanged style
+        // has no diff to remap.
+        if self == new_styles {
             return None;
         }
 
