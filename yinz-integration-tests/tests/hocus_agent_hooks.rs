@@ -110,6 +110,22 @@ fn pane_agent(yinz: &mut TestSession, pane_id: u32) -> serde_json::Value {
         .clone()
 }
 
+/// One Muse event, parsed on the way in exactly as `yinz hocus muse-report` parses
+/// it - including the `Notification` translation - then reported the way the
+/// router's `yinz action agent-report --kind muse` reports it.
+fn send_muse_hook(yinz: &mut TestSession, pane_id: u32, native: &str) {
+    let (event, payload) = yinz_runtime::agent::hooks::parse_hook_event("muse", native.to_owned())
+        .expect("the test's own muse event parses");
+    let actions = hook_report_actions(
+        "muse",
+        PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(pane_id)),
+        &event,
+        payload,
+    );
+    let (exit_code, reported) = yinz.run_actions_reporting(actions);
+    assert_eq!(exit_code, 0, "{reported}");
+}
+
 /// One opencode event, translated on the way in exactly as the installed plugin's payload is,
 /// then reported the way the plugin's `yinz action agent-report` reports it.
 fn send_opencode_hook(yinz: &mut TestSession, pane_id: u32, native: &str) {
@@ -654,4 +670,74 @@ fn opencode_events_report_the_pane_and_a_question_waits() {
         r#"{"type":"session.idle","properties":{"sessionID":"ses_1","cwd":"/work","lastAssistantMessage":"Done."}}"#,
     );
     assert_eq!(pane_agent(&mut yinz, pane_id)["state"], "Idle");
+}
+
+/// A Muse feed, in the shapes captured from `muse exec --provider echo`: startup is
+/// idle, a submitted turn is busy, the native approval notification waits on a
+/// person, and the turn's end returns the record to idle.
+#[test]
+fn muse_events_report_lifecycle_and_approval_needs() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    yinz.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("the prompt is dismissed", |grid| {
+        !grid.contains("Allow? (y/n)")
+    });
+    submit(&yinz, r#"/agent_list {}"#);
+    yinz.wait_until("the daemon has found the agent pane", |grid| {
+        grid.contains("agents")
+    });
+    let pane_id = agent_pane_id(&mut yinz);
+    clear(&yinz, "agents");
+
+    send_muse_hook(
+        &mut yinz,
+        pane_id,
+        r#"{"hook_event_name":"SessionStart","session_id":"ses_1","cwd":"/work","model":"muse-spark","permission_mode":"default","source":"startup"}"#,
+    );
+    let idle = pane_agent(&mut yinz, pane_id);
+    assert_eq!(idle["kind"], "muse");
+    assert_eq!(idle["state"], "Idle");
+    assert_eq!(idle["cwd"], "/work");
+
+    send_muse_hook(
+        &mut yinz,
+        pane_id,
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"ses_1","cwd":"/work","prompt":"Inspect the parser","turn_id":"turn_1","permission_mode":"default"}"#,
+    );
+    assert_eq!(pane_agent(&mut yinz, pane_id)["state"], "Busy");
+
+    // The native approval notification: a wait, on a person, carrying the sentence
+    // Muse would have shown - and the toast is the answer a person sees.
+    send_muse_hook(
+        &mut yinz,
+        pane_id,
+        r#"{"hook_event_name":"Notification","session_id":"ses_1","cwd":"/work","message":"Allow `cargo build`?","permission_mode":"default"}"#,
+    );
+    yinz.wait_until("muse's approval need raises the waiting toast", |grid| {
+        grid.contains("agent waiting")
+    });
+    let waiting = pane_agent(&mut yinz, pane_id);
+    assert_eq!(waiting["state"], "Waiting");
+    assert_eq!(waiting["wait_needs_a_person"], true);
+    assert_eq!(waiting["waiting_on"], "Allow `cargo build`?");
+
+    send_muse_hook(
+        &mut yinz,
+        pane_id,
+        r#"{"hook_event_name":"Stop","session_id":"ses_1","cwd":"/work","turn_id":"turn_1","last_assistant_message":"Parser verified.","permission_mode":"default"}"#,
+    );
+    assert_eq!(pane_agent(&mut yinz, pane_id)["state"], "Idle");
+
+    send_muse_hook(
+        &mut yinz,
+        pane_id,
+        r#"{"hook_event_name":"SessionEnd","session_id":"ses_1","cwd":"/work","reason":"other"}"#,
+    );
+    assert!(pane_agent(&mut yinz, pane_id).is_null());
 }

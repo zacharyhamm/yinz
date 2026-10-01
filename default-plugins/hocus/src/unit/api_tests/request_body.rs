@@ -221,9 +221,11 @@ fn the_tool_payload_floor_stays_under_22_kb() {
 /// Project rename and merge add two schemas to the deferred project family.
 /// The deferred Decisions schema brings the current total to 52,388 bytes.
 /// The swamp family's `swamp_issue_create` and `swamp_issue_comment` bring it to 53,856, which
-/// is what moved the cap from 53,000 to 55,000.
+/// is what moved the cap from 53,000 to 55,000. Muse's permission modes in the
+/// `agent_spawn` description bring it to 55,023, which is what moved the cap from
+/// 55,000 to 56,000.
 #[test]
-fn the_fully_loaded_tool_payload_stays_under_55_kb() {
+fn the_fully_loaded_tool_payload_stays_under_56_kb() {
     let mut cfg = test_config();
     cfg.tools = true;
     // A load of every deferred family, which is what puts them in the array — the
@@ -248,7 +250,7 @@ fn the_fully_loaded_tool_payload_stays_under_55_kb() {
     // and a real conversation's transcript is not this one.
     let tools_bytes = serde_json::to_vec(&value["tools"]).unwrap().len();
     assert!(
-        tools_bytes < 55_000,
+        tools_bytes < 56_000,
         "the fully loaded tool payload grew to {tools_bytes} bytes",
     );
 }

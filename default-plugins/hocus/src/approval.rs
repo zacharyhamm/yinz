@@ -64,18 +64,26 @@ const UNCHECKED_FLAGS: [&str; 5] = [
     "--full-auto",
     "--yolo",
 ];
-/// cursor-agent's `--force` and opencode's `--auto`, which are ordinary words
-/// to other programs (`git push --force`): they count once an agent program
-/// has appeared on the command line, or on any `agent_spawn`.
-const UNCHECKED_AGENT_FLAGS: [&str; 2] = ["--force", "--auto"];
-/// Programs whose appearance makes the flags after them an agent's.
-const AGENT_PROGRAMS: [&str; 6] = [
+/// cursor-agent's `--force`, opencode's `--auto` and Muse's `--disable-approval`
+/// and `--disable-sandbox`, which are ordinary words to other programs
+/// (`git push --force`): they count once an agent program has appeared on the
+/// command line, or on any `agent_spawn`.
+const UNCHECKED_AGENT_FLAGS: [&str; 4] = [
+    "--force",
+    "--auto",
+    "--disable-approval",
+    "--disable-sandbox",
+];
+/// Programs whose appearance makes the flags after them an agent's. Muse's
+/// versioned binary (`muse-bin-1.4.2-R4684.1`) matches by prefix below.
+const AGENT_PROGRAMS: [&str; 7] = [
     "claude",
     "claude-code",
     "codex",
     "cursor",
     "cursor-agent",
     "opencode",
+    "muse",
 ];
 /// Codex config overrides that turn its checks off, compared with quotes and
 /// spaces removed (`-c approval_policy="never"`).
@@ -405,13 +413,16 @@ fn runs_unchecked(words: &[String], agent: bool) -> bool {
         .map(|token| token.trim_matches(|c| c == '"' || c == '\''))
         .filter(|token| !token.is_empty())
         .collect();
-    let is_agent_program =
-        |token: &str| AGENT_PROGRAMS.contains(&token.rsplit('/').next().unwrap_or(token));
+    let is_agent_program = |token: &str| {
+        let file = token.rsplit('/').next().unwrap_or(token);
+        AGENT_PROGRAMS.contains(&file) || file.starts_with("muse-bin-")
+    };
     let turns_checks_off = |name: &str, value: Option<&str>, agent: bool| -> bool {
         let value = value.map(unquoted);
         match (name, value.as_deref()) {
             ("--permission-mode", Some("bypassPermissions")) => true,
             ("--ask-for-approval", Some("never")) => true,
+            ("--approval-mode", Some("never")) => true,
             ("--sandbox", Some("danger-full-access")) => true,
             ("-a", Some("never")) | ("-s", Some("danger-full-access")) => agent,
             ("--settings", _) => agent,
@@ -982,6 +993,11 @@ mod tests {
             ("codex", "--dangerously-bypass-approvals-and-sandbox"),
             ("cursor", "--force"),
             ("opencode", "--auto"),
+            ("muse", "--yolo"),
+            ("muse", "--disable-approval"),
+            ("muse", "--disable-sandbox"),
+            ("muse", "--approval-mode never"),
+            ("muse", "--approval-mode=never"),
         ] {
             let mut call = call();
             call.arguments = json!({
@@ -1031,6 +1047,46 @@ mod tests {
         assert!(prepare(&state, &schedule, &endpoint())
             .unwrap_err()
             .contains("auto-confirm"));
+    }
+
+    /// Muse's switches count from the agent program on - including the versioned
+    /// binary the launcher execs - while an approval mode that still asks does not.
+    #[test]
+    fn muse_switches_count_from_either_binary_spelling() {
+        let words = |list: &[&str]| {
+            list.iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        for program in [
+            "muse",
+            "/home/x/.local/bin/muse-bin-1.4.2-R4684.1",
+            "muse-bin-0.1.0-R708.1",
+        ] {
+            assert!(
+                runs_unchecked(&words(&[program, "--disable-approval"]), false),
+                "{program}"
+            );
+            assert!(
+                runs_unchecked(&words(&[program, "--disable-sandbox"]), false),
+                "{program}"
+            );
+        }
+        assert!(runs_unchecked(
+            &words(&["muse", "--approval-mode", "never"]),
+            false
+        ));
+        assert!(!runs_unchecked(
+            &words(&["muse", "--approval-mode", "on-request"]),
+            false
+        ));
+        assert!(!runs_unchecked(&words(&["muse", "--model", "x"]), false));
+        // Agent-scoped, the way `--force` is: another program's same-named switch
+        // is not a hazard.
+        assert!(!runs_unchecked(
+            &words(&["tool", "--disable-approval"]),
+            false
+        ));
     }
 
     #[test]

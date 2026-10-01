@@ -6347,6 +6347,7 @@ dependencies = [
  "yinz-config",
  "yinz-firecracker-provider",
  "yinz-ipc",
+ "yinz-muse",
  "yinz-plugin-api",
  "yinz-process",
  "yinz-runtime",
@@ -6595,6 +6596,23 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
  "hegeltest",
+ "yinz-types",
+]
+
+[[package]]
+name = "yinz-muse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "nix",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "uuid",
+ "yinz-runtime",
+ "yinz-test-support",
  "yinz-types",
 ]
 

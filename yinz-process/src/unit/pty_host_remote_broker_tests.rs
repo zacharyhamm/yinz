@@ -519,6 +519,65 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
 }
 
 #[test]
+fn oversized_native_hooks_are_read_for_pruning_not_rejected_at_intake() {
+    use yinz_types::agent::{HOOK_BROADCAST_MAX_BYTES, NATIVE_HOOK_MAX_BYTES};
+    // A prompt `agent prompt` accepts arrives whole inside `UserPromptSubmit`; the
+    // intake reads it so the report's own parse and prune can cut it to broadcast
+    // size while preserving the fingerprint the acknowledgement is matched by.
+    let prompt = "review\n".repeat(100 * 1024);
+    assert!(prompt.len() > HOOK_BROADCAST_MAX_BYTES);
+    assert!(prompt.len() < yinz_types::agent::control::MAX_PROMPT_BYTES);
+    let submit = serde_json::json!({
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "remote-session",
+        "cwd": "/work",
+        "prompt": prompt,
+        "turn_id": "remote-turn",
+        "permission_mode": "default",
+    })
+    .to_string();
+    let bytes = read_native_hook(&mut Cursor::new(submit.as_bytes())).unwrap();
+    assert_eq!(bytes, submit.as_bytes());
+    let (event, json) = yinz_runtime::agent::hooks::parse_hook_event("muse", submit).unwrap();
+    let pruned = event.broadcast_json(json);
+    assert!(pruned.len() <= HOOK_BROADCAST_MAX_BYTES);
+    let event: yinz_types::agent::HookEvent = serde_json::from_str(&pruned).unwrap();
+    assert_eq!(event.turn_id.as_deref(), Some("remote-turn"));
+    assert_eq!(
+        event.prompt_sha256.as_deref(),
+        Some(yinz_types::agent::control::prompt_sha256(&prompt)).as_deref()
+    );
+
+    // A large final message is likewise read, keeping the completion's turn.
+    let stop = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "remote-session",
+        "cwd": "/work",
+        "turn_id": "remote-turn",
+        "last_assistant_message": "done\n".repeat(100 * 1024),
+    })
+    .to_string();
+    let bytes = read_native_hook(&mut Cursor::new(stop.as_bytes())).unwrap();
+    let (event, json) = yinz_runtime::agent::hooks::parse_hook_event("muse", stop).unwrap();
+    assert_eq!(bytes.len(), json.len());
+    let pruned = event.broadcast_json(json);
+    assert!(pruned.len() <= HOOK_BROADCAST_MAX_BYTES);
+    let event: yinz_types::agent::HookEvent = serde_json::from_str(&pruned).unwrap();
+    assert_eq!(
+        yinz_types::agent::hook_state(&event),
+        Some(yinz_types::agent::AgentState::Idle)
+    );
+
+    // Past the native ceiling it is not a hook event.
+    let too_big = vec![b'x'; NATIVE_HOOK_MAX_BYTES + 1];
+    let error = read_native_hook(&mut Cursor::new(too_big)).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "agent hook event exceeds the native payload limit"
+    );
+}
+
+#[test]
 fn a_connection_that_just_ends_is_not_a_terminate() {
     let (ours, pump) = pump_on_a_pair();
     drop(ours);

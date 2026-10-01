@@ -41,7 +41,7 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
-pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode"];
+pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode", "muse"];
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
@@ -73,11 +73,20 @@ pub const CURSOR_PERMISSION_MODES: &[&str] = &["skip", "force"];
 /// `auto`, its own word, and `skip`, the spelling every other kind shares, name it.
 pub const OPENCODE_PERMISSION_MODES: &[&str] = &["auto", "skip"];
 
+/// The approval modes `muse --approval-mode` accepts, plus `skip` for `--yolo`,
+/// which disables approval and sandboxing and trusts the workspace - the closest
+/// analog of Codex's bypass flag. A spawned pane's workspace is the fresh worktree
+/// it was cut for, so the trust `--yolo` carries stays inside that checkout.
+pub const MUSE_PERMISSION_MODES: &[&str] = &["untrusted", "on-request", "never", "skip"];
+
 /// The reasoning efforts a kind accepts, shared by the launcher and its chooser.
 pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
     match kind {
         Some("codex") => &["none", "minimal", "low", "medium", "high", "xhigh"],
         Some("claude" | "cursor") => &["low", "medium", "high", "xhigh", "max"],
+        Some("muse") => &[
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ],
         _ => &[],
     }
 }
@@ -97,9 +106,25 @@ pub fn binary_for(kind: &str) -> &str {
 
 /// Route a Codex UI through the pane-aware launcher, retaining its original arguments.
 pub fn wrap_codex(program: String, args: Vec<String>) -> (String, Vec<String>) {
+    wrap_hocus_launcher("codex", program, args)
+}
+
+/// Route a Muse session through the pane-aware launcher, retaining its original
+/// arguments. Muse hooks run with a filtered environment, so the session id, not
+/// an inherited pane variable, routes reports back to the pane - the same reason
+/// Codex is wrapped.
+pub fn wrap_muse(program: String, args: Vec<String>) -> (String, Vec<String>) {
+    wrap_hocus_launcher("muse", program, args)
+}
+
+fn wrap_hocus_launcher(
+    launcher: &str,
+    program: String,
+    args: Vec<String>,
+) -> (String, Vec<String>) {
     let mut wrapped = vec![
         "hocus".to_owned(),
-        "codex".to_owned(),
+        launcher.to_owned(),
         "--command".to_owned(),
         program,
         "--".to_owned(),
@@ -160,6 +185,7 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 format!("model_reasoning_effort=\"{effort}\""),
             ]),
             Some("claude") => flags.extend(["--effort".to_owned(), effort.to_owned()]),
+            Some("muse") => flags.extend(["--reasoning-effort".to_owned(), effort.to_owned()]),
             Some("cursor") => {
                 let value = model
                     .as_mut()
@@ -254,6 +280,28 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                     flags.push("--resume".to_owned());
                     flags.push(id.to_owned());
                 },
+            }
+        },
+        Some("muse") => {
+            // No hooks are handed over here: Muse takes no inline hook settings, so a
+            // spawned pane reports itself only when `yinz hocus hooks install` has run -
+            // the same shape Codex has, for the same reason.
+            match mode {
+                None => {},
+                Some("skip") => flags.push("--yolo".to_owned()),
+                Some(mode) if MUSE_PERMISSION_MODES.contains(&mode) => {
+                    flags.push("--approval-mode".to_owned());
+                    flags.push(mode.to_owned());
+                },
+                Some(mode) => return unknown_mode(MUSE_PERMISSION_MODES, mode),
+            }
+            // A subcommand, so it goes first: `muse resume --last` and
+            // `muse resume <session-ref>`. Bare `muse resume` opens an interactive
+            // picker, which is why a resume is always spelled with its target.
+            match resume {
+                None => {},
+                Some("last") => leading.extend(["resume".to_owned(), "--last".to_owned()]),
+                Some(id) => leading.extend(["resume".to_owned(), id.to_owned()]),
             }
         },
         Some("opencode") => {
@@ -414,6 +462,18 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         (None, None) => return Err("an agent or a command is required".to_owned()),
     };
 
+    // `muse resume` takes no opening prompt - the parser rejects the combination -
+    // so a spec asking for both is refused rather than planned into a command
+    // that dies on launch. Every other kind takes its prompt positionally beside
+    // a resume.
+    if kind.as_deref() == Some("muse")
+        && trimmed(&spec.resume).is_some()
+        && trimmed(&spec.prompt).is_some()
+    {
+        return Err(
+            "a muse resume takes no opening prompt; prompt the pane after it starts".to_owned(),
+        );
+    }
     let (leading, flags) = shape_args(kind.as_deref(), spec)?;
     let mut args = leading;
     args.extend(spec.args.iter().cloned());
@@ -439,10 +499,10 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // Everything here is visible in `ps` and in the pane's title, so it carries settings,
     // never secrets. A credential reaches a Firecracker guest as a file, through the
     // provider's `credential_files`.
-    let (program, args) = if kind.as_deref() == Some("codex") && spec.hooks.unwrap_or(true) {
-        wrap_codex(program, args)
-    } else {
-        (program, args)
+    let (program, args) = match kind.as_deref() {
+        Some("codex") if spec.hooks.unwrap_or(true) => wrap_codex(program, args),
+        Some("muse") if spec.hooks.unwrap_or(true) => wrap_muse(program, args),
+        _ => (program, args),
     };
     let (path, args) = if env.is_empty() {
         (program, args)
@@ -632,6 +692,10 @@ mod tests {
                 ],
             ),
             ("cursor", vec!["--model", "example[effort=high]"]),
+            (
+                "muse",
+                vec!["--reasoning-effort", "high", "--model", "example"],
+            ),
         ] {
             let (command, _) = plan(&Spec {
                 model: Some("example".into()),
@@ -1131,6 +1195,78 @@ mod tests {
         assert_eq!(
             command.args,
             vec!["--dangerously-bypass-approvals-and-sandbox"]
+        );
+    }
+
+    /// `muse resume` is a subcommand like Codex's, the approval policy is an ordinary
+    /// flag, and the pane runs behind the hocus launcher so the session id routes
+    /// reports back to it - Muse hooks inherit no pane variables to route on.
+    #[test]
+    fn muse_resume_is_a_subcommand_behind_the_launcher() {
+        let (command, _) = plan(&Spec {
+            resume: Some("last".to_owned()),
+            permission_mode: Some("never".to_owned()),
+            args: vec!["--verbose".to_owned()],
+            ..without_hooks("muse")
+        })
+        .unwrap();
+        assert_eq!(command.path, PathBuf::from("muse"));
+        assert_eq!(
+            command.args,
+            vec!["resume", "--last", "--verbose", "--approval-mode", "never"]
+        );
+        let (command, _) = plan(&Spec {
+            resume: Some("01a0f4fc-89e7".to_owned()),
+            permission_mode: Some("skip".to_owned()),
+            ..without_hooks("muse")
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["resume", "01a0f4fc-89e7", "--yolo"]);
+        // A fresh session takes its prompt positionally, last of all.
+        let (command, _) = plan(&Spec {
+            model: Some("muse-spark".to_owned()),
+            prompt: Some("go".to_owned()),
+            ..without_hooks("muse")
+        })
+        .unwrap();
+        assert_eq!(command.args, vec!["--model", "muse-spark", "go"]);
+        // But never beside a resume: `muse resume` takes no opening prompt.
+        let refused = plan(&Spec {
+            resume: Some("last".to_owned()),
+            prompt: Some("go".to_owned()),
+            ..spec("muse")
+        })
+        .unwrap_err();
+        assert!(refused.contains("no opening prompt"), "{refused}");
+        let refused = plan(&Spec {
+            permission_mode: Some("plan".to_owned()),
+            ..spec("muse")
+        })
+        .unwrap_err();
+        assert!(
+            refused.contains("untrusted, on-request, never, skip"),
+            "{refused}"
+        );
+        // Behind the launcher by default, and bare with hooks off.
+        let (command, _) = plan(&spec("muse")).unwrap();
+        assert_eq!(command.path, PathBuf::from("yinz"));
+        assert_eq!(command.args, ["hocus", "muse", "--command", "muse", "--"]);
+        let (command, _) = plan(&without_hooks("muse")).unwrap();
+        assert_eq!(command.path, PathBuf::from("muse"));
+        assert!(command.args.is_empty());
+        let command = resume_command("muse", "01a0f4fc-89e7", Some("/w"), None).unwrap();
+        assert_eq!(command.path, PathBuf::from("yinz"));
+        assert_eq!(
+            command.args,
+            vec![
+                "hocus",
+                "muse",
+                "--command",
+                "muse",
+                "--",
+                "resume",
+                "01a0f4fc-89e7"
+            ]
         );
     }
 

@@ -619,7 +619,7 @@ fn fork_dialog() -> Dialog {
 /// The agent a fork opens on: the first offered kind that is not the one already running,
 /// or nothing when there is no other to offer.
 ///
-/// `OFFERED` is `codex, claude, cursor, opencode`, so the two agents a person is likeliest to be
+/// `OFFERED` leads with `codex, claude`, so the two agents a person is likeliest to be
 /// swapping between default to each other, and anything else - the other offered agents, or
 /// a kind `classify` knows and the picker does not - opens on the first.
 fn default_fork_kind(current: &str) -> Option<&'static str> {
@@ -1434,6 +1434,7 @@ fn permission_modes(kind: &str) -> &'static [&'static str] {
         "claude" => launch::CLAUDE_PERMISSION_MODES,
         "cursor" => launch::CURSOR_PERMISSION_MODES,
         "opencode" => launch::OPENCODE_PERMISSION_MODES,
+        "muse" => launch::MUSE_PERMISSION_MODES,
         _ => &[],
     }
 }

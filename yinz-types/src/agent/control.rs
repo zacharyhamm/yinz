@@ -166,7 +166,8 @@ mod pane_string {
 }
 
 /// The caller registers this before writing and verifies pane identity and input ownership.
-/// Codex requires provider turn IDs; Claude requires prompt IDs and transcript confirmation.
+/// Codex and Muse require provider turn IDs; Claude requires prompt IDs and transcript
+/// confirmation.
 #[derive(Clone, Debug)]
 pub struct PromptObservation {
     kind: String,
@@ -244,6 +245,35 @@ impl PromptObservation {
         if hook.session_id.is_empty() || event.session_id.as_deref().is_none_or(str::is_empty) {
             return Some(AgentOutcome::StatusUnavailable);
         }
+        // A Muse pane verified at startup has no conversation until its first turn
+        // begins: the bootstrap that proved it idle carries no session id, because
+        // the provider only speaks one once someone prompts it. The first submit
+        // binds the observation the way the screen binds the lifecycle; a start
+        // heard before it is that same turn arriving, not a replacement.
+        if self.kind == "muse"
+            && self.conversation_id.is_empty()
+            && !self.acknowledged
+            && event.kind == self.kind
+            && event.session_id.as_deref() == Some(hook.session_id.as_str())
+        {
+            if hook.hook_event_name == "SessionStart" && hook.source.as_deref() != Some("compact") {
+                return None;
+            }
+            if hook.hook_event_name == "UserPromptSubmit" {
+                if !submit_matches(
+                    hook,
+                    self.kind.as_str(),
+                    &self.prompt_sha256,
+                    &self.claude_prompt_sha256,
+                ) {
+                    return Some(AgentOutcome::Interrupted);
+                }
+                if hook.turn_id.clone().filter(|id| !id.is_empty()).is_none() {
+                    return Some(AgentOutcome::StatusUnavailable);
+                }
+                self.conversation_id = hook.session_id.clone();
+            }
+        }
         if event.kind != self.kind
             || hook.session_id != self.conversation_id
             || event.session_id.as_deref() != Some(self.conversation_id.as_str())
@@ -263,18 +293,17 @@ impl PromptObservation {
             return None;
         }
         if hook.hook_event_name == "UserPromptSubmit" {
-            let fingerprint = hook
-                .prompt_sha256
-                .clone()
-                .or_else(|| hook.prompt.as_deref().map(prompt_sha256));
-            if fingerprint.as_deref() != Some(self.prompt_sha256.as_str())
-                && !(self.kind == "claude" && fingerprint == self.claude_prompt_sha256)
-            {
+            if !submit_matches(
+                hook,
+                self.kind.as_str(),
+                &self.prompt_sha256,
+                &self.claude_prompt_sha256,
+            ) {
                 return Some(AgentOutcome::Interrupted);
             }
             let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
             let prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
-            if (self.kind == "codex" && turn_id.is_none())
+            if (matches!(self.kind.as_str(), "codex" | "muse") && turn_id.is_none())
                 || (self.kind == "claude" && prompt_id.is_none())
             {
                 return Some(AgentOutcome::StatusUnavailable);
@@ -288,12 +317,23 @@ impl PromptObservation {
             self.prompt_id = prompt_id;
             return Some(AgentOutcome::Submitted);
         }
-        if !self.acknowledged
-            || (self.kind != "claude"
-                && self
-                    .turn_id
-                    .as_deref()
-                    .is_some_and(|turn| hook.turn_id.as_deref() != Some(turn)))
+        if !self.acknowledged {
+            return None;
+        }
+        // A human wait in this conversation ends the wait even without turn
+        // identity: Muse's approval notification is session-scoped, and a pane
+        // blocked on a person is blocked whatever turn the provider names.
+        // Completions below still require the acknowledged turn.
+        if super::hook_state(hook) == Some(AgentState::Waiting)
+            && super::waiting_needs_a_person(hook)
+        {
+            return Some(AgentOutcome::NeedsInput);
+        }
+        if self.kind != "claude"
+            && self
+                .turn_id
+                .as_deref()
+                .is_some_and(|turn| hook.turn_id.as_deref() != Some(turn))
         {
             return None;
         }
@@ -313,14 +353,26 @@ impl PromptObservation {
             "Stop" => Some(AgentOutcome::Completed),
             "StopFailure" => Some(AgentOutcome::Failed),
             "Interrupt" => Some(AgentOutcome::Interrupted),
-            _ if super::hook_state(hook) == Some(AgentState::Waiting)
-                && super::waiting_needs_a_person(hook) =>
-            {
-                Some(AgentOutcome::NeedsInput)
-            },
             _ => None,
         }
     }
+}
+
+/// Whether a submit hook carries the prompt under observation: its fingerprint, or the
+/// prompt itself hashed the same way, matches what was sent. One reading for the pinned
+/// acknowledgement and the provisional Muse bind, so the two cannot disagree.
+fn submit_matches(
+    hook: &HookEvent,
+    kind: &str,
+    expected: &str,
+    claude_expected: &Option<String>,
+) -> bool {
+    let fingerprint = hook
+        .prompt_sha256
+        .clone()
+        .or_else(|| hook.prompt.as_deref().map(prompt_sha256));
+    fingerprint.as_deref() == Some(expected)
+        || (kind == "claude" && fingerprint == *claude_expected)
 }
 
 /// Fingerprint of a prompt as the agent received it: CRLF normalized, then

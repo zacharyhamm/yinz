@@ -29,6 +29,7 @@ yinz-runtime = { workspace = true }
 yinz-storage = { workspace = true }
 yinz-process = { path = "yinz-process", version = "0.1.0" }
 yinz-codex = { workspace = true }
+yinz-muse = { workspace = true }
 yinz-firecracker-provider = { workspace = true }
 yinz-swamp = { workspace = true }
 tokio = { workspace = true }
@@ -110,6 +111,7 @@ members = [
     "yinz-plugin-authoring",
     "yinz-process",
     "yinz-codex",
+    "yinz-muse",
     "yinz-firecracker-provider",
     "yinz-swamp",
     "yinz-terminal",
@@ -187,6 +189,7 @@ yinz-plugin-location = { path = "yinz-plugin-location", version = "0.1.0" }
 yinz-key-codec = { path = "yinz-key-codec", version = "0.1.0" }
 yinz-host-protocol = { path = "yinz-host-protocol", version = "0.1.0" }
 yinz-codex = { path = "yinz-codex", version = "0.1.0" }
+yinz-muse = { path = "yinz-muse", version = "0.1.0" }
 yinz-firecracker-provider = { path = "yinz-firecracker-provider", version = "0.1.0" }
 yinz-swamp = { path = "yinz-swamp", version = "0.1.0" }
 yinz-terminal-graphics = { path = "yinz-terminal-graphics", version = "0.1.0" }

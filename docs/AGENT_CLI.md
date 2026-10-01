@@ -26,12 +26,14 @@ between separate commands.
 
 ## Launch and submit work
 
-For Codex, install Yinz's lifecycle hooks before launching:
+For Codex and Muse, install Yinz's lifecycle hooks before launching:
 
 ```sh
 yinz hocus hooks install --agent codex
+yinz hocus hooks install --agent muse
 ```
 
+`yinz hocus hooks install` without `--agent` wires every agent at once.
 Claude Code launches receive the hooks through the existing launch planner.
 Codex launches reject Claude model aliases such as `haiku`, `sonnet`, and `opus`.
 Use `--kind claude` for these aliases. Other model IDs are validated by the configured provider.
@@ -183,7 +185,20 @@ because a live process is required.
 A launch marker or a manual registration cannot establish lifecycle readiness. Missing
 reports produce `status_unavailable`, rather than an inferred idle state.
 
-Prompt submission initially supports Claude Code and Codex integrations with
+Codex and Muse speak no session lifecycle until the first turn begins, so
+their launchers announce a verified startup instead: Codex from the selected
+conversation's idle status and hook capability check, Muse from the hook
+wiring on disk. Muse hook verification establishes reporting capability only.
+Before the first prompt, Yinz must also detect an empty Muse 1.4.2 composer
+with its cursor immediately after `❯ `. Dialogs, drafts, hidden cursors,
+scrolled views, and unknown layouts remain unready. Yinz never changes workspace
+trust automatically.
+
+The Muse announcement carries no session id. The first submit binds the
+conversation, so use `--conversation` only after that first acknowledgement.
+An unwired Muse pane stays `status_unavailable`.
+
+Prompt submission supports Claude Code, Codex and Muse integrations with
 lifecycle hooks. The terminal must support bracketed paste. Prompt submission
 and key input require a verified agent command pane. An agent started manually
 inside a shell can appear in listings without satisfying that requirement.
@@ -192,7 +207,8 @@ Yinz rejects prompts when the agent is busy, waiting or already has a pending
 submission. Unconsumed manual input also makes the pane unready. There is no
 prompt queue. The server registers observation before it writes the prompt.
 Yinz waits for paste delivery, then waits 100 ms before sending Enter. It checks
-input ownership and the target again before Enter. This delay does not prove
+input ownership and the target again before Enter. For the first Muse prompt,
+it also checks that the cursor remains inside the composer. This delay does not prove
 acceptance. Only a matching hook acknowledges the prompt.
 Claude can collapse a long or multi-line paste into `<pasted_content>`.
 For ordinary instructions, Yinz first types `Follow the instructions in the pasted text: `
@@ -215,7 +231,7 @@ Input revisions restart at zero when the pane's process respawns, including when
 scrollback is retained. Input typed after respawn still prevents startup reports
 from establishing readiness.
 
-A matching prompt report acknowledges acceptance. Codex correlation also
+A matching prompt report acknowledges acceptance. Codex and Muse correlation also
 requires a provider turn ID. Claude Code can use conversation identity and the
 prompt fingerprint when its hooks omit turn IDs. Fingerprints normalize CRLF to
 LF and trim outer whitespace before hashing. Internal whitespace remains
@@ -226,7 +242,7 @@ the pending operation. An unrelated conversation cannot complete the wait.
 ## Outcomes and deadlines
 
 Agent state and operation outcome are separate. An idle agent can have finished,
-failed or been interrupted. For Claude Code and Codex, `agent wait --until idle`
+failed or been interrupted. For Claude Code, Codex and Muse, `agent wait --until idle`
 requires reported idle state and prompt readiness. For other agents, including
 OpenCode, matching lifecycle reports of idle state can satisfy the wait even
 though `ready` and `prompt_supported` remain false. Other state waits observe the
@@ -301,6 +317,10 @@ Recovery requires a live supported agent, no active submission, and no paste
 write in flight. It clears abandoned claims and pending Enter delivery, and
 records the current input revision as consumed. It sends no terminal input and
 does not acknowledge the old prompt. A subsequent prompt can then be submitted.
+Pass an empty `--conversation` when the pane reports no session, as a fresh
+Muse pane does before its first turn binds one; startup dialog keys sent with
+`agent send-keys` need no recovery when later output shows the empty composer.
+Newer manual input still requires recovery.
 
 Claude reports nothing when Esc interrupts a turn, so its record stays busy.
 Esc can restore the interrupted prompt into the composer. Clear that draft first.

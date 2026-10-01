@@ -891,7 +891,7 @@ fn opencode_idle_wait_requires_matching_lifecycle_evidence() {
 
 #[test]
 fn supported_idle_waits_require_readiness_even_without_prompt_support() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "muse"] {
         let (mut screen, messages, _writes) = setup(kind);
         report_kind(&mut screen, kind, hook("SessionStart"));
         screen
@@ -908,6 +908,67 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
         assert!(!result.agents[0].prompt_supported);
         assert!(!result.agents[0].ready);
     }
+}
+
+/// A Muse session reports the full lifecycle - startup, turns, session ids - so once
+/// it has reported, prompts are supported, idle waits complete on readiness, and a
+/// submitted prompt reaches the pane.
+#[test]
+fn muse_prompts_are_supported_once_the_session_reports() {
+    let (mut screen, messages, writes) = setup("muse");
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Ok);
+    assert!(result.agents[0].status_available);
+    assert!(result.agents[0].prompt_supported);
+    assert!(result.agents[0].ready);
+    screen.agent_control(prompt(false), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert!(writes
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PtyWriteInstruction::Write(..))));
+}
+
+/// A Muse approval need ends a waited prompt without turn identity: the provider's
+/// `Notification` carries no turn id, and the pane is blocked on a person whatever
+/// turn the provider would have named. Completions still require the acknowledged turn.
+#[test]
+fn a_session_scoped_muse_approval_ends_a_waited_prompt() {
+    let (mut screen, messages, writes) = setup("muse");
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "muse", hook("UserPromptSubmit"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    // The translated shape of the provider's approval notification: `Elicitation`
+    // with the session but no turn.
+    let mut approval = hook("Elicitation");
+    approval.turn_id = None;
+    approval.prompt_id = None;
+    approval.message = Some("Allow `cargo build`?".into());
+    report_kind(&mut screen, "muse", approval);
+    let needs_input = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(needs_input.outcome, AgentOutcome::NeedsInput);
+    assert!(needs_input.acknowledged);
+    assert_eq!(needs_input.turn_id.as_deref(), Some("turn"));
+    let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    assert_eq!(agent.state, AgentState::Waiting);
+    assert!(agent.wait_needs_a_person);
+    assert_eq!(agent.waiting_on.as_deref(), Some("Allow `cargo build`?"));
+    // A completion for another turn is not this turn's end.
+    let mut foreign = hook("Stop");
+    foreign.turn_id = Some("other".into());
+    report_kind(&mut screen, "muse", foreign);
+    assert!(replies(&messages, CLIENT).is_empty());
+    // The acknowledged turn's end still idles the pane, with no second reply:
+    // the wait was already answered.
+    report_kind(&mut screen, "muse", hook("Stop"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert_eq!(
+        screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+        AgentState::Idle
+    );
 }
 
 #[test]
@@ -4130,4 +4191,371 @@ fn a_failed_notification_confirmation_ends_only_that_turn() {
     let recovered = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(recovered.outcome, AgentOutcome::Ok);
     assert!(recovered.agents[0].ready);
+}
+
+fn muse_bootstrap(ready: bool) -> HookEvent {
+    HookEvent {
+        session_id: String::new(),
+        muse_hooks_ready: Some(ready),
+        ..hook("SessionStart")
+    }
+}
+
+/// Muse speaks no session id until its first turn begins, so the launcher's verified
+/// startup announcement plus the empty composer readies the pane unpinned; the first submit binds it. The
+/// provider's deferred SessionStart is that same turn arriving, not a replacement.
+#[test]
+fn verified_muse_bootstrap_readies_an_unpinned_first_prompt() {
+    let (mut screen, messages, writes) = setup("muse");
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    muse_output(&mut screen, &muse_composer_frame(""));
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    let ready = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(ready.outcome, AgentOutcome::Ok);
+    assert!(ready.agents[0].ready);
+    assert_eq!(ready.agents[0].not_ready_reason, None);
+    assert!(ready.agents[0].status_available);
+    assert!(ready.agents[0].prompt_supported);
+    assert!(ready.agents[0].agent.session_id.is_none());
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    assert!(
+        replies(&messages, CLIENT).is_empty(),
+        "the deferred start must not end the submission that caused it"
+    );
+    report_kind(&mut screen, "muse", hook("UserPromptSubmit"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "muse", hook("Stop"));
+    let completed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(completed.outcome, AgentOutcome::Completed);
+    assert!(completed.acknowledged);
+    assert_eq!(completed.turn_id.as_deref(), Some("turn"));
+    assert_eq!(
+        completed.agents[0].agent.session_id.as_deref(),
+        Some("conversation")
+    );
+    // The pane stays pinned afterwards: the next prompt observes its own turn.
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "muse", hook("UserPromptSubmit"));
+    report_kind(&mut screen, "muse", hook("Stop"));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn muse_bootstrap_without_verification_proves_nothing() {
+    // An unmarked start with no session - however it arrived - claims no lifecycle.
+    let (mut screen, messages, _writes) = setup("muse");
+    muse_output(&mut screen, &muse_composer_frame(""));
+    report_kind(
+        &mut screen,
+        "muse",
+        HookEvent {
+            session_id: String::new(),
+            ..hook("SessionStart")
+        },
+    );
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(status.outcome, AgentOutcome::StatusUnavailable);
+    assert!(!status.agents[0].ready);
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::StatusUnavailable
+    );
+    // A failed verification actively clears the bootstrap it replaces.
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+    report_kind(&mut screen, "muse", muse_bootstrap(false));
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(status.outcome, AgentOutcome::StatusUnavailable);
+    assert!(!status.agents[0].prompt_supported);
+}
+
+#[test]
+fn muse_startup_keys_require_later_evidence_before_another_prompt() {
+    for (keys, bytes) in [
+        (vec![BareKey::Char('x')], b"x".as_slice()),
+        (vec![BareKey::Down, BareKey::Enter], b"\x1b[B\r".as_slice()),
+    ] {
+        for manual_draft in [false, true] {
+            let (mut screen, messages, writes) = setup("muse");
+            report_kind(&mut screen, "muse", muse_bootstrap(true));
+            screen.agent_control(send_keys(keys.clone()), CLIENT);
+            let sent = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(sent.outcome, AgentOutcome::Ok);
+            assert!(!sent.agents[0].ready);
+            assert_eq!(finish_paste(&writes), bytes);
+            screen.agent_control(prompt(true), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().outcome,
+                AgentOutcome::Rejected
+            );
+            assert!(writes.try_recv().is_err());
+
+            // Repeating the launcher verification cannot consume subsequent keys.
+            report_kind(&mut screen, "muse", muse_bootstrap(true));
+            let status = AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: None,
+            };
+            screen.agent_control(status.clone(), CLIENT);
+            assert!(!replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+            if manual_draft {
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .write_to_active_terminal(&None, b"draft".to_vec(), false, CLIENT, None)
+                    .unwrap();
+                assert_eq!(finish_paste(&writes), b"draft");
+            }
+            // A repeated announcement cannot consume newer manual input either.
+            report_kind(&mut screen, "muse", muse_bootstrap(true));
+            muse_output(&mut screen, &muse_composer_frame(""));
+            screen.agent_control(status, CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().agents[0].ready,
+                !manual_draft
+            );
+            screen.agent_control(prompt(true), CLIENT);
+            if manual_draft {
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().outcome,
+                    AgentOutcome::Rejected
+                );
+                assert!(writes.try_recv().is_err());
+            } else {
+                assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+            }
+        }
+    }
+}
+
+/// Sent text breaks provisional readiness, and recovery restores it: an
+/// empty pin matches a pane that reports no session, and fails closed on one
+/// that does.
+#[test]
+fn unpinned_muse_recovery_restores_readiness_after_a_cleared_draft() {
+    let recover_as = |conversation: &str, confirm_empty: bool| AgentRequest::Recover {
+        pane_id: PANE,
+        expected_session_id: conversation.into(),
+        confirm_empty,
+        interrupted: false,
+    };
+    let (mut screen, messages, _writes) = setup("muse");
+    muse_output(&mut screen, &muse_composer_frame(""));
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    screen.agent_control(send_keys(vec![BareKey::Char('x')]), CLIENT);
+    assert!(!replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    assert!(!replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+    screen.agent_control(recover_as("", false), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_control(send_keys(vec![BareKey::Backspace]), CLIENT);
+    assert!(!replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+    screen.agent_control(recover_as("", true), CLIENT);
+    let recovered = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    assert!(recovered.agents[0].ready);
+    assert!(screen.agent_dialog_inputs.is_empty());
+    // Once the first turn binds, the empty pin no longer matches.
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    screen.agent_control(recover_as("", true), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_control(recover_as("conversation", true), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
+}
+
+#[test]
+fn muse_bootstrap_cannot_overwrite_provider_state() {
+    let (mut screen, messages, _writes) = setup("muse");
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    report_kind(&mut screen, "muse", hook("UserPromptSubmit"));
+    let parent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    assert_eq!(parent.state, AgentState::Busy);
+    let (to_plugin, plugins) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(to_plugin));
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    assert_eq!(screen.get_pane_info(PANE).unwrap().agent.unwrap(), parent);
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert_eq!(screen.agent_controls.len(), 1);
+    assert!(plugins
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PluginInstruction::Update(_))));
+    report_kind(&mut screen, "muse", hook("Stop"));
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Completed
+    );
+}
+
+// Terminal sequences match Muse 1.4.2: full-width rules, prompt at column 1,
+// and cursor at column 3 (or after pasted text). The fixture pane is 80 columns.
+fn muse_composer_frame(text: &str) -> String {
+    let rule = "─".repeat(80);
+    format!(
+        "\x1b[?25l\x1b[2J\x1b[H{rule}\r\n❯ {text}\r\n{rule}\x1b[2;{}H\x1b[?25h",
+        3 + text.chars().count()
+    )
+}
+
+fn muse_output(screen: &mut Screen, bytes: &str) {
+    screen
+        .handle_pty_bytes(
+            TerminalId::new(7),
+            bytes.as_bytes().to_vec(),
+            &mut Default::default(),
+        )
+        .unwrap();
+    screen.refresh_agent_controls();
+}
+
+#[test]
+fn muse_bootstrap_requires_a_live_empty_composer_on_every_target() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("muse", target);
+        report_kind(&mut screen, "muse", muse_bootstrap(true));
+        for frame in [
+            "".to_owned(),
+            "\x1b[?2004h\x1b[2J\x1b[HDo you trust this workspace?\r\n❯ Yes\r\n  No".to_owned(),
+            muse_composer_frame("draft"),
+            format!("{}\x1b[?25l", muse_composer_frame("")),
+            format!("{}\x1b[2;1H", muse_composer_frame("")),
+            format!("{}\x1b[3;1H", muse_composer_frame("")),
+            format!("{}\x1b[3;1H\x1b[2K\x1b[2;3H", muse_composer_frame("")),
+            format!("{}\x1b[1;1H\x1b[2K\x1b[2;3H", muse_composer_frame("")),
+            format!("{}\x1b[4;1Hdialog", muse_composer_frame("")),
+        ] {
+            muse_output(&mut screen, &frame);
+            screen.agent_control(
+                AgentRequest::Status {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                },
+                CLIENT,
+            );
+            let status = replies(&messages, CLIENT).pop().unwrap();
+            assert!(status.agents[0].status_available);
+            assert!(!status.agents[0].ready, "{frame:?}");
+            assert_eq!(
+                status.agents[0].not_ready_reason,
+                Some(NotReadyReason::UnconsumedInput)
+            );
+            screen.agent_control(AgentRequest::List { project: None }, CLIENT);
+            assert!(!replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+            screen.agent_control(prompt(true), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT).pop().unwrap().outcome,
+                AgentOutcome::Rejected
+            );
+            assert!(finish_paste(&writes).is_empty());
+        }
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        muse_output(&mut screen, &muse_composer_frame(""));
+        assert!(replies(&messages, CLIENT).pop().unwrap().agents[0].ready);
+        // Scrolling shows historical content, even if it contains a composer.
+        muse_output(
+            &mut screen,
+            &format!("{}{}", "\r\n".repeat(40), muse_composer_frame("")),
+        );
+        screen
+            .tab_containing_pane_mut(PANE)
+            .unwrap()
+            .scroll_terminal_up(TerminalId::new(7))
+            .unwrap();
+        screen.agent_control(prompt(true), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT).pop().unwrap().outcome,
+            AgentOutcome::Rejected
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn muse_first_enter_requires_the_composer_to_keep_focus() {
+    for target in pane_targets() {
+        for dialog in [false, true] {
+            let (mut screen, messages, writes) = setup_on_target("muse", target.clone());
+            report_kind(&mut screen, "muse", muse_bootstrap(true));
+            muse_output(&mut screen, &muse_composer_frame(""));
+            screen.agent_control(prompt(true), CLIENT);
+            assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            muse_output(
+                &mut screen,
+                &if dialog {
+                    "\x1b[2J\x1b[HDo you trust this workspace?\r\n❯ Yes".to_owned()
+                } else {
+                    muse_composer_frame("review")
+                },
+            );
+            screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+            if dialog {
+                assert!(finish_paste(&writes).is_empty());
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().outcome,
+                    AgentOutcome::Interrupted
+                );
+                assert_eq!(screen.agent_controls.len(), 1);
+                muse_output(&mut screen, &muse_composer_frame(""));
+                screen.agent_control(prompt(true), CLIENT);
+                assert_eq!(
+                    replies(&messages, CLIENT).pop().unwrap().outcome,
+                    AgentOutcome::Rejected
+                );
+                assert!(finish_paste(&writes).is_empty());
+            } else {
+                assert_eq!(finish_paste(&writes), b"\r");
+                report_kind(&mut screen, "muse", hook("SessionStart"));
+                report_kind(&mut screen, "muse", hook("UserPromptSubmit"));
+                report_kind(&mut screen, "muse", hook("Stop"));
+                let completed = replies(&messages, CLIENT).pop().unwrap();
+                assert_eq!(completed.outcome, AgentOutcome::Completed);
+                assert!(completed.acknowledged);
+            }
+        }
+    }
 }

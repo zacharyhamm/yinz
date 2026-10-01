@@ -54,6 +54,10 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         Some("codex") => "codex",
         Some("cursor-agent") => "cursor",
         Some("opencode") => "opencode",
+        Some("muse") => "muse",
+        // The launcher execs a versioned binary (`muse-bin-1.4.2-R4684.1`); the pane
+        // is still a muse pane, the way `kind_of` reads it.
+        Some(name) if name.starts_with("muse-bin-") => "muse",
         _ => return Err("unsupported agent command for restart".into()),
     };
     // Only fixed-arity options are accepted. Variadic options must use an inline value;
@@ -232,6 +236,76 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "help",
             ],
         ),
+        "muse" => (
+            &[
+                "--workspace",
+                "--model",
+                "--reasoning-effort",
+                "--provider",
+                "--preset",
+                "--agents",
+                "--base-url",
+                "--permission-profile",
+                "--approval-mode",
+                "--approval-judge",
+                "--echo-delay-ms",
+                "--sandbox-network",
+                "--worktree-base",
+                "--worktree-existing",
+                "--output-schema",
+                "--max-model-steps",
+                "--max-tool-output-bytes",
+                "--context-compaction-strategy",
+                "--context-compaction-soft-threshold",
+                "--context-compaction-hard-threshold",
+            ],
+            &[
+                "--yolo",
+                "--trust-workspace",
+                "--disable-approval",
+                "--disable-sandbox",
+                "--disable-write",
+                "--disable-shell",
+                "--enable-shell-tool",
+                "--disable-web-tools",
+                "--no-foreign-personal-context",
+                "--no-session-log",
+                "--parallel-tool-calls",
+                "--no-parallel-tool-calls",
+                "--subagent-worktree-isolation",
+                "--allow-workspace-switch",
+                "--user-input-auto-resolve",
+                "--json",
+            ],
+            // Inline only, and dropped: an image belonged to the old turn. The
+            // separate-value form is refused below - the next word could be the
+            // image or the startup prompt. `-w`/`--worktree` are missing for the
+            // same reason: a bare `-w` takes no value and `--worktree create`
+            // takes one, so the arity cannot be known.
+            &["--image"],
+            &[
+                "exec",
+                "config",
+                "export",
+                "trace",
+                "model-profile",
+                "skills",
+                "voice",
+                "plugins",
+                "sandbox",
+                "schema",
+                "serve",
+                "session-message",
+                "mcp",
+                "auth",
+                "login",
+                "logout",
+                "init",
+                "help",
+            ],
+        ),
+        // opencode's table. The wildcard is the only arm left for it: `kind` is a
+        // plain `&str`, so naming it would leave the match non-exhaustive.
         _ => (
             &[
                 "-m",
@@ -302,6 +376,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 (kind, flag),
                 ("claude", "--session-id" | "--resume-session-at")
                     | ("opencode", "--prompt" | "-s" | "--session")
+                    | ("muse", "--session-id" | "--prompt-file")
             );
             let remove_optional = matches!(
                 (kind, flag),
@@ -313,6 +388,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                     ("claude", "-c" | "--continue" | "--fork-session")
                         | ("cursor", "--continue")
                         | ("opencode", "-c" | "--continue" | "--fork")
+                        | ("muse", "--last")
                 ) || (kind == "codex" && resume && matches!(flag, "--last" | "--all"));
             if remove_optional {
                 if inline.is_none() && args.get(index).is_some_and(|next| !next.starts_with('-')) {
@@ -337,7 +413,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 }
             } else if variadic.contains(&flag) && inline.is_some() {
                 // Images are input to the old turn, not launch settings.
-                if kind != "codex" {
+                if !matches!(kind, "codex" | "muse") {
                     cleaned.push(arg.clone());
                 }
             } else {
@@ -349,6 +425,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             if positionals == 0 && !after_separator {
                 if (kind == "codex" && matches!(arg.as_str(), "resume" | "fork"))
                     || (kind == "cursor" && arg == "resume")
+                    || (kind == "muse" && arg == "resume")
                 {
                     if resume {
                         return Err("ambiguous resume command".into());
@@ -395,13 +472,16 @@ mod tests {
             ("codex", "full-auto"),
             ("cursor", "force"),
             ("opencode", "auto"),
+            ("muse", "skip"),
         ] {
             for resume in [None, Some("last"), Some("conversation-id")] {
                 let mut spec = Spec {
                     kind: Some(kind.into()),
                     model: Some("chosen-model".into()),
                     permission_mode: (kind != "codex" || resume.is_none()).then(|| mode.into()),
-                    prompt: Some("original work".into()),
+                    // `muse resume` takes no opening prompt, so the planner refuses
+                    // the combination; every other kind plans - and restarts - both.
+                    prompt: (kind != "muse" || resume.is_none()).then(|| "original work".into()),
                     resume: resume.map(str::to_owned),
                     env: [("SETTING".into(), "a b=c".into())].into(),
                     args: if kind == "opencode" {
@@ -524,6 +604,44 @@ mod tests {
                 vec!["-m", "provider/model", "--", "-project"],
             ),
             (
+                "muse",
+                vec![
+                    "resume",
+                    "--last",
+                    "--approval-mode",
+                    "never",
+                    "--model",
+                    "muse-spark",
+                    "--image=shot.png",
+                    "--session-id",
+                    "old-session",
+                    "--prompt-file",
+                    "prompt.md",
+                    "original prompt",
+                ],
+                vec!["--approval-mode", "never", "--model", "muse-spark"],
+            ),
+            (
+                "muse-bin-1.4.2-R4684.1",
+                vec!["--yolo", "work"],
+                vec!["--yolo"],
+            ),
+            (
+                "yinz",
+                vec![
+                    "hocus",
+                    "muse",
+                    "--command",
+                    "muse",
+                    "--",
+                    "resume",
+                    "abc",
+                    "--model",
+                    "m",
+                ],
+                vec!["hocus", "muse", "--command", "muse", "--", "--model", "m"],
+            ),
+            (
                 "/usr/bin/env",
                 vec![
                     "-i",
@@ -565,6 +683,40 @@ mod tests {
     }
 
     #[test]
+    fn muse_restart_preserves_workspace() {
+        for workspace in [
+            strings(&["--workspace", "/project with spaces"]),
+            strings(&["--workspace=/project with spaces"]),
+        ] {
+            for session in [
+                strings(&["original prompt"]),
+                strings(&["resume", "session-id"]),
+            ] {
+                for (program, prefix) in [
+                    ("muse", vec![]),
+                    (
+                        "yinz",
+                        strings(&["hocus", "muse", "--command", "muse", "--"]),
+                    ),
+                ] {
+                    let expected = [prefix, workspace.clone()].concat();
+                    let input = [expected.clone(), session.clone()].concat();
+                    let restarted = restart_args(Path::new(program), &input).unwrap();
+                    assert_eq!(restarted, expected);
+                    assert_eq!(
+                        restart_args(Path::new(program), &restarted).unwrap(),
+                        expected
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            restart_args(Path::new("muse"), &strings(&["--workspace"])).unwrap_err(),
+            "missing value for --workspace"
+        );
+    }
+
+    #[test]
     fn restart_refuses_print_mode_including_env_wrappers() {
         for program in ["claude", "cursor-agent"] {
             for flag in ["-p", "--print"] {
@@ -595,6 +747,11 @@ mod tests {
             ("opencode", vec!["run", "work"]),
             ("opencode", vec!["/one", "/two"]),
             ("claude", vec!["one", "two"]),
+            ("muse", vec!["exec", "work"]),
+            ("muse", vec!["--worktree", "create", "prompt"]),
+            ("muse", vec!["--image", "shot.png", "prompt"]),
+            ("muse", vec!["one", "two"]),
+            ("muse", vec!["resume", "abc", "def"]),
             ("env", vec!["--split-string", "claude work"]),
             ("env", vec!["-u"]),
         ] {

@@ -1613,10 +1613,11 @@ pub fn specs() -> Value {
                     "permission_mode": {
                         "type": "string",
                         "description": format!(
-                            "skip = no permission checks; or the agent's own: claude {}; codex {}; opencode {}.",
+                            "skip = no permission checks; or the agent's own: claude {}; codex {}; opencode {}; muse {}.",
                             launch::CLAUDE_PERMISSION_MODES[..6].join("/"),
                             launch::CODEX_PERMISSION_MODES[..5].join("/"),
                             launch::OPENCODE_PERMISSION_MODES.join("/"),
+                            launch::MUSE_PERMISSION_MODES[..3].join("/"),
                         ),
                     },
                     "resume": {

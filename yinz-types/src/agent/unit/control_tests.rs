@@ -60,6 +60,110 @@ fn a_prompt_requires_acceptance_and_the_matching_provider_turn() {
     assert_eq!(observe(&mut observation, &completion), None);
 }
 
+/// Muse correlates like Codex: the submitted prompt's turn id accepts the turn, and
+/// only that turn's end completes it. A submit without a turn id cannot be tied to
+/// this prompt, so the observation waits rather than guessing.
+#[test]
+fn a_muse_prompt_requires_acceptance_and_the_matching_provider_turn() {
+    let mut observation = PromptObservation::new("muse", "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("muse", "UserPromptSubmit", None, Some("review"))
+        ),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    assert!(!observation.acknowledged());
+    let acceptance = event("muse", "UserPromptSubmit", Some("new"), Some("review"));
+    assert_eq!(
+        observe(&mut observation, &acceptance),
+        Some(AgentOutcome::Submitted)
+    );
+    assert_eq!(
+        observe(&mut observation, &event("muse", "Stop", Some("old"), None)),
+        None
+    );
+    let completion = event("muse", "Stop", Some("new"), None);
+    assert_eq!(
+        observe(&mut observation, &completion),
+        Some(AgentOutcome::Completed)
+    );
+    assert_eq!(observe(&mut observation, &completion), None);
+}
+
+/// A Muse pane verified at startup observes its first prompt unpinned: the bootstrap
+/// carries no session id, so the deferred SessionStart is not a replacement and the
+/// first submit binds the conversation the rest of the turn is correlated against.
+#[test]
+fn an_unpinned_muse_prompt_binds_on_its_first_submit() {
+    let mut observation = PromptObservation::new("muse", "", "review");
+    let start = event("muse", "SessionStart", None, None);
+    assert_eq!(observe(&mut observation, &start), None);
+    assert!(!observation.acknowledged());
+    let acceptance = event("muse", "UserPromptSubmit", Some("new"), Some("review"));
+    assert_eq!(
+        observe(&mut observation, &acceptance),
+        Some(AgentOutcome::Submitted)
+    );
+    assert!(observation.acknowledged());
+    assert_eq!(observation.turn_id(), Some("new"));
+    let completion = event("muse", "Stop", Some("new"), None);
+    assert_eq!(
+        observe(&mut observation, &completion),
+        Some(AgentOutcome::Completed)
+    );
+    // Another conversation still cannot complete the bound turn.
+    let mut observation = PromptObservation::new("muse", "", "review");
+    let acceptance = event("muse", "UserPromptSubmit", Some("new"), Some("review"));
+    assert_eq!(
+        observe(&mut observation, &acceptance),
+        Some(AgentOutcome::Submitted)
+    );
+    let hook = HookEvent {
+        session_id: "elsewhere".into(),
+        ..serde_json::from_str(&acceptance.raw).unwrap()
+    };
+    let foreign = AgentEvent::from_hook(
+        "muse",
+        TerminalId::new(7),
+        &hook,
+        serde_json::to_string(&hook).unwrap(),
+    );
+    assert_eq!(
+        observe(&mut observation, &foreign),
+        Some(AgentOutcome::TargetChanged)
+    );
+}
+
+#[test]
+fn an_unpinned_muse_prompt_rejects_conflicts_before_it_binds() {
+    // A submit for another prompt interrupts rather than binds.
+    let mut observation = PromptObservation::new("muse", "", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("muse", "UserPromptSubmit", Some("new"), Some("other"))
+        ),
+        Some(AgentOutcome::Interrupted)
+    );
+    // A submit without a turn id cannot be tied to this prompt.
+    let mut observation = PromptObservation::new("muse", "", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("muse", "UserPromptSubmit", None, Some("review"))
+        ),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    assert!(!observation.acknowledged());
+    // The session ending before any submit retargets the wait.
+    let mut observation = PromptObservation::new("muse", "", "review");
+    assert_eq!(
+        observe(&mut observation, &event("muse", "SessionEnd", None, None)),
+        Some(AgentOutcome::TargetChanged)
+    );
+}
+
 #[test]
 fn fingerprints_survive_pruning_and_preserve_failure_and_interrupt_outcomes() {
     let prompt = "a".repeat(super::super::HOOK_BROADCAST_MAX_BYTES);
@@ -152,9 +256,68 @@ fn only_person_waits_end_the_operation_and_worker_hooks_do_not() {
     );
 }
 
+/// A human wait in the observed conversation ends the wait without turn identity:
+/// Muse's approval notification is session-scoped, and the pane is blocked on a
+/// person whatever turn the provider names. Completions still require the
+/// acknowledged turn, even after the wait.
+#[test]
+fn a_session_scoped_human_wait_ends_the_operation_without_a_turn_id() {
+    for kind in ["muse", "codex"] {
+        let mut observation = PromptObservation::new(kind, "conversation", "review");
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event(kind, "UserPromptSubmit", Some("new"), Some("review"))
+            ),
+            Some(AgentOutcome::Submitted),
+            "{kind}"
+        );
+        // The reported shape: a Muse approval with no turn id, translated to
+        // the unconditional wait on the way in.
+        let name = if kind == "muse" {
+            "Elicitation"
+        } else {
+            "PermissionRequest"
+        };
+        for turn in [None, Some("new"), Some("other")] {
+            assert_eq!(
+                observe(&mut observation, &event(kind, name, turn, None)),
+                Some(AgentOutcome::NeedsInput),
+                "{kind}/{turn:?}"
+            );
+        }
+        // An automatically approved permission is work, not a wait.
+        let hook = HookEvent {
+            hook_event_name: "PermissionRequest".into(),
+            session_id: "conversation".into(),
+            approvals_reviewer: Some("auto_review".into()),
+            ..Default::default()
+        };
+        let broadcast = AgentEvent::from_hook(
+            kind,
+            TerminalId::new(7),
+            &hook,
+            serde_json::to_string(&hook).unwrap(),
+        );
+        assert_eq!(observe(&mut observation, &broadcast), None, "{kind}");
+        for turn in [None, Some("other")] {
+            assert_eq!(
+                observe(&mut observation, &event(kind, "Stop", turn, None)),
+                None,
+                "{kind}/{turn:?}"
+            );
+        }
+        assert_eq!(
+            observe(&mut observation, &event(kind, "Stop", Some("new"), None)),
+            Some(AgentOutcome::Completed),
+            "{kind}"
+        );
+    }
+}
+
 #[test]
 fn repeated_startup_does_not_retarget_a_prompt_to_the_same_conversation() {
-    for kind in ["codex", "claude"] {
+    for kind in ["codex", "claude", "muse"] {
         let mut observation = PromptObservation::new(kind, "conversation", "review");
         assert_eq!(
             observe(&mut observation, &event(kind, "SessionStart", None, None)),
@@ -178,9 +341,10 @@ fn repeated_startup_does_not_retarget_a_prompt_to_the_same_conversation() {
 }
 
 #[test]
-fn codex_requires_turn_identity_while_claude_requires_prompt_identity() {
+fn codex_and_muse_require_turn_identity_while_claude_requires_prompt_identity() {
     for (kind, expected) in [
         ("codex", AgentOutcome::StatusUnavailable),
+        ("muse", AgentOutcome::StatusUnavailable),
         ("claude", AgentOutcome::Submitted),
     ] {
         let mut observation = PromptObservation::new(kind, "conversation", "review");
@@ -261,7 +425,7 @@ fn canonical_fingerprints_survive_pruning_without_losing_internal_whitespace() {
 
 #[test]
 fn worker_human_waits_match_the_parent_without_acknowledging_it() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "muse"] {
         for name in ["PermissionRequest", "PreToolUse", "Elicitation"] {
             let mut observation = PromptObservation::new(kind, "conversation", "review");
             let mut hook = HookEvent {

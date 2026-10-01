@@ -41,10 +41,13 @@ Fix the failing test in calc.py, then run the tests.
 EOF
 ```
 
+Muse hook verification alone does not establish readiness. Before the first prompt, Yinz requires an empty Muse 1.4.2 composer with a visible cursor after `❯ `. Dialogs, drafts, scrolling, and unknown layouts remain unready. Yinz never changes workspace trust automatically.
+
+A fresh Muse pane reports no conversation until its first turn binds one: submit that first prompt unpinned, then pin `--conversation` afterwards.
 Check `ready`, `status_available`, and `prompt_supported` before submission.
 An idle state alone does not establish readiness or prove task success.
 A completed turn does not verify the resulting work. Run the checks that the task requires.
-Guarded prompts support Claude Code and Codex. Other agent kinds support launch and inspection.
+Guarded prompts support Claude Code, Codex, and Muse. Other agent kinds support launch and inspection.
 Use general pane input for deliberate interaction with other kinds. Do not fall back automatically to raw input.
 
 Live commands return `AgentResponse` with `--json`. Check `outcome` even when the command exits nonzero.
@@ -74,6 +77,7 @@ yinz agent recover terminal_3 --conversation CONVERSATION_ID --confirm-empty --j
 For `send-keys`, pass one key per argument: `Esc`, `Enter`, or `Down Enter`. Quote modifiers such as `"Ctrl u"`.
 `Ctrl+u`, `ctrl-u`, `C-u`, `Escape`, and `Return` are unsupported aliases.
 Recovery requires a live idle agent and no active submission or paste write.
+Pass `--conversation ""` when the pane reports no session (fresh Muse pane before its first turn); `send-keys` dialog answers need no recovery once later output shows the empty composer, provided no newer manual input arrived.
 Claude reports nothing when Esc interrupts a turn, so it stays `Busy`. If `agent read` shows the
 agent stopped, clear any draft (Esc can restore the interrupted prompt), then add
 `--interrupted` to reset it to idle. This also applies to a `Waiting` agent whose dialog you

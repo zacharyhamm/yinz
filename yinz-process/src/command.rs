@@ -7,14 +7,14 @@ use std::{
 use yinz_runtime::errors::prelude::*;
 use yinz_types::input::command::RunCommand;
 
-/// Resolve the portable Codex wrapper using the Yinz binary on the execution host.
-pub fn resolve_codex_wrapper(
+/// Resolve a portable hocus agent launcher using the Yinz binary on the execution host.
+pub fn resolve_hocus_launcher(
     host_bin: &Path,
     program: &mut PathBuf,
     args: &mut [String],
 ) -> Result<()> {
     if program == Path::new("yinz")
-        && matches!(args, [hocus, codex, ..] if hocus == "hocus" && codex == "codex")
+        && matches!(args, [hocus, launcher, ..] if hocus == "hocus" && matches!(launcher.as_str(), "codex" | "muse"))
     {
         *program = host_bin.to_path_buf();
     } else if program == Path::new("env") {
@@ -23,11 +23,11 @@ pub fn resolve_codex_wrapper(
             let (assignments, rest) = args.split_at_mut(index + 1);
             let executable = &mut assignments[index];
             let mut path = PathBuf::from(&*executable);
-            resolve_codex_wrapper(host_bin, &mut path, rest)?;
+            resolve_hocus_launcher(host_bin, &mut path, rest)?;
             *executable = path
                 .into_os_string()
                 .into_string()
-                .map_err(|_| anyhow!("the Codex launcher path is not valid UTF-8"))?;
+                .map_err(|_| anyhow!("the hocus launcher path is not valid UTF-8"))?;
         }
     }
     Ok(())
