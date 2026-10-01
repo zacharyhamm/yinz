@@ -481,6 +481,9 @@ const PRUNED_INPUT_BUDGET: usize = HOOK_BROADCAST_MAX_BYTES;
 /// Prose can use the full budget; serialization and other fields decide the actual cut.
 const PRUNED_MESSAGE_CHARS: usize = HOOK_BROADCAST_MAX_BYTES;
 
+/// Background task IDs one Claude turn can report; IDs past this are not tracked.
+pub const MAX_BACKGROUND_TASKS: usize = 32;
+
 /// A Claude Code hook event, as its JSON arrives.
 ///
 /// Every field but the event name is optional, because the payload's shape differs between
@@ -510,6 +513,14 @@ pub struct HookEvent {
         skip_serializing_if = "Option::is_none"
     )]
     pub claude_turn_complete: Option<bool>,
+    /// Background tasks (Bash `run_in_background` or async subagents) that the confirmed Claude
+    /// turn launched. Each finishes later in its own `<task-notification>` turn.
+    #[serde(
+        default,
+        rename = "_yinz_claude_background_tasks",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub claude_background_tasks: Vec<String>,
     /// [`crate::agent::control::prompt_sha256`] of the prompt, taken before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
@@ -679,6 +690,12 @@ impl HookEvent {
             prompt_id: self.prompt_id.clone(),
             transcript_path: self.transcript_path.clone(),
             claude_turn_complete: self.claude_turn_complete,
+            claude_background_tasks: self
+                .claude_background_tasks
+                .iter()
+                .take(MAX_BACKGROUND_TASKS)
+                .map(|task| truncate_within(task, 128, 128))
+                .collect(),
             prompt_sha256: self.prompt_sha256.clone(),
             workflow_owner: self.workflow_owner.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
@@ -2047,6 +2064,7 @@ mod tests {
                 turn_id: Some("turn-1".into()),
                 prompt_id: Some("prompt-1".into()),
                 claude_turn_complete: Some(true),
+                claude_background_tasks: (0..40).map(|task| format!("task-{task}")).collect(),
                 workflow_owner: Some("owner".into()),
                 message: Some(prompt.clone()),
                 last_assistant_message: Some(prompt.clone()),
@@ -2059,6 +2077,10 @@ mod tests {
             assert_eq!(bounded.turn_id, hook.turn_id);
             assert_eq!(bounded.prompt_id, hook.prompt_id);
             assert_eq!(bounded.claude_turn_complete, hook.claude_turn_complete);
+            assert_eq!(
+                bounded.claude_background_tasks,
+                hook.claude_background_tasks[..MAX_BACKGROUND_TASKS]
+            );
             assert_eq!(bounded.workflow_owner, hook.workflow_owner);
             assert_eq!(
                 bounded.prompt_sha256,

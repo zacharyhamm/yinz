@@ -17,6 +17,8 @@ Everything lives under [`agent-cli-findings/`](agent-cli-findings/):
 | `logs/v4-09-*.json`, `logs/v4-10-*.json` | The live startup-dialog and permission-answer checks for #9/#10. | Captured from this worktree's `target/debug/yinz` in session `verify-agent-dialogs`. |
 | `logs/v5-11-*.json` | The live `/clear` check for #11. | Captured from this worktree's `target/debug/yinz` in session `verify-agent-clear-fixed`. |
 | `logs/v8-NN-name.{json,err,txt}`, `transcripts/v8-*.jsonl` | The [v8 live revalidation](#re-verification-run-2026-09-30-v8). `.txt` files hold plain-text `agent read` output. | Captured from `~/.cargo/bin/yinz` (`891307b72`) in session `adventurous-muskrat`. |
+| `logs/v10-NN-name.{json,txt,err}`, `transcripts/v10-*.jsonl` | The [#31/#44, #45 and #43 fix checks](#fix-status-3144-45-and-43-2026-09-30-v10). `v10-hooked-*` ran beside an older installed hook; `v10-own-pane-*` replays a real adopted pane. | Captured from this worktree's `target/debug/yinz` in sessions `verify-v10` and `verify-v10b`. |
+| `logs/v11-NN-name.{json,txt}` | The [#30, #26, #28/#34, #49, #27/#29/#38 fix checks](#fix-status-30-26-2834-49-272938-2026-10-01-v11). `v11-01b` is the installed build's listing, for contrast. | Captured from this worktree's `target/debug/yinz` in session `verify-v11`. |
 | `logs/NN-name.err` | stderr for the same command, kept only when non-empty (for example, client-side validation errors). | Same as above. |
 | `transcripts/claude-haiku-orchestrator.jsonl` | The complete Claude Code session log of the **haiku orchestrator** (pane `terminal_9`, conversation `9d5cb9af-…`). It shows every `yinz` command it ran and the result it got, including the `--session main` copy, the Codex spawn, the raw-input fallbacks, and the cross-session messages. The first user message shows the `<pasted_content>` wrapper from finding #3. | `~/.claude/projects/<scratch-repo>/9d5cb9af-3a31-4870-934e-4c6dbf4cfe29.jsonl` |
 | `transcripts/codex-luna-orchestrator.jsonl` | The complete Codex rollout of the **luna orchestrator** (pane `terminal_13`, thread `01a0edf8-…`). It shows the successful spawn→wait→prompt→needs_input→send-keys sequence and its final report. | `~/.codex/sessions/2026/09/29/rollout-2026-09-29T11-21-47-01a0edf8-….jsonl` |
@@ -72,19 +74,19 @@ were removed afterwards.
 | 23 | **Fixed** | Both orchestrators found the session from `YINZ_SESSION_NAME` and spawned `--kind claude` as asked. |
 | 24 | **Fixed; residual** | Leading blanks are gone (v8 115). Internal blank runs still count as zero, so `--lines 15` on a sparse Claude screen returned 43 rows (v8 126). Ghost suggestions remain as documented. |
 | 25 | **Still broken** | A shell-launched `codex` (pane 19): `action context` → `detected: codex`, but `agent list` omits it (v8 116). |
-| 26 | **Still broken** | `status 8` → "expected an explicit terminal pane ID" (v8 102). `register terminal_8` and `action context --pane-id terminal_8` → "invalid digit". `register 8` and `context --pane-id 8` are accepted. |
-| 27 | **Still broken** | `agent runs --json` → "unexpected argument" (v8 103). Its default output is already JSON. |
-| 28 | **Still broken** | A second `--branch fix-sub` silently became `fix-sub-2` with no requested-branch field (v8 107, 108). `.worktrees/` is untracked in the main checkout. |
-| 29 | **Still broken** | `skills install --agent claude --dest D` conflicts. `prompt TEXT --file F` prints `Usage: yinz agent prompt --json <TARGET> <TEXT>` (v8 105). Stdin without `--file -` gives the same misleading usage line (Claude orchestrator). |
-| 30 | **Still broken; P2** | `list-sessions` shows `pty-broker-v8.sock` as UNRESPONSIVE and suggests `yinz kill-session pty-broker-v8.sock`. Since server restarts now hand panes over through that broker, following the advice could take down every surviving pane. |
-| 31 | **Still broken, wider** | Background Bash: `prompt --wait` returned the interim "I've started the background command…". Claude later printed `BGDONE` in a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input` (v8 58–61). The archive stores the notification as a `prompt` (v8 117). Esc now triggers it too (#44). |
+| 26 | **Fixed in v11** (was: still broken) | `status 8` → "expected an explicit terminal pane ID" (v8 102). `register terminal_8` and `action context --pane-id terminal_8` → "invalid digit". `register 8` and `context --pane-id 8` are accepted. |
+| 27 | **Fixed in v11** (was: still broken) | `agent runs --json` → "unexpected argument" (v8 103). Its default output is already JSON. |
+| 28 | **Fixed in v11** (was: still broken) | A second `--branch fix-sub` silently became `fix-sub-2` with no requested-branch field (v8 107, 108). `.worktrees/` is untracked in the main checkout. |
+| 29 | **Prompt half fixed in v11; `skills install` still open** (was: still broken) | `skills install --agent claude --dest D` conflicts. `prompt TEXT --file F` prints `Usage: yinz agent prompt --json <TARGET> <TEXT>` (v8 105). Stdin without `--file -` gives the same misleading usage line (Claude orchestrator). |
+| 30 | **Fixed in v11** (was: still broken; P2) | `list-sessions` shows `pty-broker-v8.sock` as UNRESPONSIVE and suggests `yinz kill-session pty-broker-v8.sock`. Since server restarts now hand panes over through that broker, following the advice could take down every surviving pane. |
+| 31 | **Fixed in v10** (was: still broken, wider) | Background Bash: `prompt --wait` returned the interim "I've started the background command…". Claude later printed `BGDONE` in a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input` (v8 58–61). The archive stores the notification as a `prompt` (v8 117). Esc now triggers it too (#44). |
 | 32 | **Fixed, verified live** | A Codex pane with an unsupported model: the prompt returned `failed` with the provider's 400 message and `ready:true` (v8 118–120). |
 | 33 | **Fixed** | Resume by ID and `last` with `--permission-mode skip` → `rejected`, exit 1, no branch or worktree (v8 92, 93, 93b). Resume without it kept the conversation and completed a prompt (v8 94–96). |
-| 34 | **Still broken** | `--reuse` put a third agent into `fix-sub` while `terminal_15` was live there, with no warning or field (v8 109). |
+| 34 | **Fixed in v11: reported, not refused** (was: still broken) | `--reuse` put a third agent into `fix-sub` while `terminal_15` was live there, with no warning or field (v8 109). |
 | 35 | **Not reproduced** | Both orchestrator workers edited only their own worktree. The main checkout stayed clean. |
 | 36 | **Fixed** | Fifteen CLI spawns (including both orchestrators' workers) plus a floating `run` pane: focus stayed on the caller's pane and the active tab (focus snapshots throughout). |
 | 37 | **Not reproduced** | Haiku followed a 56 KB paste ending in an instruction (`BIGPASTE_OK`, v8 23). One sample only. |
-| 38 | **Still broken** | Empty prompts and argument errors print plain stderr with no `AgentResponse`, even with `--json` (v8 102–106). |
+| 38 | **Fixed in v11 after parsing; clap errors stay plain** (was: still broken) | Empty prompts and argument errors print plain stderr with no `AgentResponse`, even with `--json` (v8 102–106). |
 | 39 | **Still broken, and leaks into summaries** | Prompt-suggestion subagents are archived as messages ("Subagent a911f…: fix the sub function in calc.py"). The run summary then invented "a subagent fix task" (v8 117). |
 | 40 | **Unchanged** | Codex `/new` via `send-keys` rebinds to the new thread and leaves `unconsumed_input` until `recover --conversation NEW` (v8 67–72). |
 | 41 | **Still broken, larger** | `action context` is 26 KB for seven panes. Each Claude command is 4.3 KB, and a spawned pane's title is the full 4.4 KB command. |
@@ -95,13 +97,13 @@ were removed afterwards.
 | # | Sev | Finding | Evidence |
 |---|---|---|---|
 | 42 | P1 | **A Codex spawned into a worktree of an untrusted repo never becomes ready.** Worktree trust registration fails when the primary checkout is untrusted. The launcher then falls back to plain `codex --no-daemon` with no bridge (`yinz-codex/src/lib.rs`, the `register_worktree_trust` fallback in `launch`). Codex shows its trust dialog, and `send-keys Enter` answers it, but no SessionStart or hooks ever arrive. The pane stays `Busy/Spawned`, and `wait` returns `status_unavailable` indefinitely. Its `ui-*` directory held only `lease`. Once the repo is trusted, the next spawn is ready in 0.44s. This is #1 again, and it hits the default `--branch` workflow in any new repo. | v8 09–17; process tree `yinz hocus codex` → `codex --no-daemon` |
-| 43 | P2 | **Panes adopted across a server restart keep the old session's routing environment.** The pty-broker moved this Claude pane from `chatty-orange` (pane 23) into `adventurous-muskrat` (pane 2), but its shell still has `YINZ_SESSION_NAME=chatty-orange` and `YINZ_PANE_ID=23`. Bare `yinz agent list` fails with "cannot connect to session chatty-orange", and `action context` cannot identify the caller. If a session with the old name returns, commands would target another session's pane 23. | `env`, `action context` (`missing: caller_pane`) |
-| 44 | P2 | **Esc during a Claude Bash call backgrounds the command instead of killing it (Claude 2.1.286).** After `recover --interrupted` and a successful follow-up prompt, the command finished. Claude then ran a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input`. The documented #5 escape therefore leads into #31. | v8 48–56 |
-| 45 | P2 | **After `needs_input`, no live command returns the turn's final answer.** `send-keys Enter` → `wait --until idle` returns `ok` with an empty `message`. `WROTE_OK` exists only in `agent run`. Both orchestrators fell back to `read` or verified the files themselves. | v8 42, 46, 117 |
+| 43 | P2 | **Fixed in v10.** **Panes adopted across a server restart keep the old session's routing environment.** The pty-broker moved this Claude pane from `chatty-orange` (pane 23) into `adventurous-muskrat` (pane 2), but its shell still has `YINZ_SESSION_NAME=chatty-orange` and `YINZ_PANE_ID=23`. Bare `yinz agent list` fails with "cannot connect to session chatty-orange", and `action context` cannot identify the caller. If a session with the old name returns, commands would target another session's pane 23. | `env`, `action context` (`missing: caller_pane`) |
+| 44 | P2 | **v10: no longer strands the pane; see #31.** **Esc during a Claude Bash call backgrounds the command instead of killing it (Claude 2.1.286).** After `recover --interrupted` and a successful follow-up prompt, the command finished. Claude then ran a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input`. The documented #5 escape therefore leads into #31. | v8 48–56 |
+| 45 | P2 | **Fixed in v10.** **After `needs_input`, no live command returns the turn's final answer.** `send-keys Enter` → `wait --until idle` returns `ok` with an empty `message`. `WROTE_OK` exists only in `agent run`. Both orchestrators fell back to `read` or verified the files themselves. | v8 42, 46, 117 |
 | 46 | P3 | After an accepted Codex turn is interrupted, status reports `not_ready_reason: pending_submission` for as long as the claim is kept (40s+). The prompt was acknowledged, so the label points callers at the wrong cause. | v8 75-* |
 | 47 | P3 | CLI output does not tolerate a closed pipe. `yinz action context \| head` panics ("failed printing to stdout: Broken pipe"), and `agent list \| head` prints "Error: cannot write agent details". | v8 84 |
 | 48 | P3 | `agent runs` covers "all sessions" but has no session field. The same `pane_id` (2, 5, 11, 15) identifies runs from different sessions or servers. | v8 132 |
-| 49 | P2 | Skill gaps found by both orchestrators. The skill has no teardown step, so both guessed at closing the worker: `close-pane terminal_23` and `--json` were rejected, and Codex searched `action --help`. Codex also tried the nonexistent `yinz project list`. Claude first passed a heredoc without `--file -`. | transcripts `v8-*` |
+| 49 | P2 | **Fixed in v11.** Skill gaps found by both orchestrators. The skill has no teardown step, so both guessed at closing the worker: `close-pane terminal_23` and `--json` were rejected, and Codex searched `action --help`. Codex also tried the nonexistent `yinz project list`. Claude first passed a heredoc without `--file -`. | transcripts `v8-*` |
 
 A wait during a startup dialog reports `status_unavailable` with `not_ready_reason: prompt_unsupported` and gives no
 hint that a dialog is showing (v8 02). Read the pane when a fresh spawn stays `Spawned`.
@@ -692,3 +694,202 @@ completed with answers `8` and `10`, acknowledgement, distinct turn IDs, and
 Only the two approved worktrees gained project trust entries; the primary
 checkout remained without a trust entry (`logs/v9-live-evidence.json`).
 The scratch session, daemon, repo, settings, and copied authentication were removed.
+
+## Fix status: #31/#44, #45 and #43 (2026-09-30, v10)
+
+**#31 is fixed and verified live.** The transcript observer collects the background
+tasks a Claude turn launches (`toolUseResult.backgroundTaskId` for Bash, and
+`async_launched` with an `agentId` for subagents). It reports them on its confirmation
+as `_yinz_claude_background_tasks`. The screen recognizes the `<task-notification>`
+submission that Claude starts when such a task finishes. That turn consumes no input
+and never interrupts or completes a caller's prompt, and its own confirmation clears
+its tasks. `AgentStatus` and `AgentResponse` gain an additive `background_tasks` list.
+A `completed` prompt reply lists the tasks it left running. `wait --until idle` stays
+pending until those notification turns finish, then returns the final text. Readiness
+is unchanged, because the composer stays usable. A long-running background server
+therefore holds an idle wait until its timeout. Recovery, `/clear`, `SessionEnd`, and a
+conversation change drop the tracking. A human draft still reports `unconsumed_input`.
+Text output adds a `background_tasks:` line and a pointer to `agent wait`. The help and
+the bundled `yinz-agents` skill describe the flow.
+
+**#44 no longer strands the pane.** A notification for a task Yinz never saw, such as a
+command backgrounded by Esc, is treated the same way and leaves the agent ready. Live,
+Esc killed the foreground command instead of backgrounding it, so this path is covered
+only by the screen test.
+
+**#45 is fixed and verified live.** A successful idle wait returns the final text of the
+last completed turn: Claude's transcript confirmation, or Codex's `Stop`. A new caller
+prompt clears it.
+
+**#43 is fixed and verified live.** Before dispatching any command, `yinz` asks the
+pane's supervisor, named by `YINZ_PANE_REF`, for its current session and terminal ID.
+When those differ from the inherited `YINZ_SESSION_NAME` and `YINZ_PANE_ID`, it
+corrects them. This is the same resolution agent hooks already used. Explicit
+`--session` still wins. Without a reference, or when the supervisor cannot answer, the
+inherited values stand.
+
+**Not changed:** the archive still records a notification as a `prompt` entry. Hocus
+deliberately keeps those entries as prompts, and deduplication, pane titles and run
+summaries reduce them through `envelope::question`. A new entry kind would change all of
+those readers. #39's subagent messages remain open.
+
+### Live evidence
+
+Sessions `verify-v10` and `verify-v10b` used this worktree's debug build, with
+Claude Code 2.1.286 (Haiku) in a scratch repo.
+
+- **Background Bash** (v10 16–17): the prompt returned `completed` with
+  `background_tasks:["b9xkdaqk8"]` and `ready:true`. `wait --until idle` returned
+  `BGDONE`. The text form is in v10 38.
+- **Background subagent** (v10 13–15): the prompt listed `ae53799c285323fcc`, and status
+  showed it pending. The wait returned `SUB=sub`, with `ready:true` and no tasks left.
+- **#45** (v10 32–37): `needs_input` → `send-keys Enter` → the wait returned `WROTE_OK`
+  in both JSON and text. `perm.txt` contained `approved`. The next prompt completed
+  with no recovery.
+- **Esc** (v10 23–29): after `recover --interrupted`, `AFTER_ESC` completed. Status stayed
+  `ready:true` for 40s.
+- **#43** (v10 40–45): `verify-v10` pane 2 was warped into `verify-v10b` as `terminal_1`,
+  and its process kept the old values. Replaying that process's environment:
+  - The new binary listed `verify-v10b`/`terminal_1`, and `action context` named caller
+    pane 1 with the worker's conversation.
+  - The installed binary silently listed `verify-v10` (the wrong session), and
+    `action context` failed.
+  - The tester's own Claude Code pane, born as `chatty-orange` pane 23 like the v8 case,
+    resolved to its current session with the caller identified. The installed binary
+    failed with "cannot connect to session chatty-orange" (`v10-own-pane-*`).
+
+**Test setup notes:**
+
+- The first attempts inherited the tester's `CLAUDE_CODE_*` variables, which turned off
+  transcript saving. They returned `status_unavailable` and were discarded; the session
+  was then restarted without those variables.
+- The user's installed v9 `hocus-hook.sh` calls `~/.cargo/bin/yinz`, an older build, so
+  two observers raced per prompt. In `v10-hooked-08`/`09`, the older observer won and no
+  task was reported. The clean runs therefore spawned workers with
+  `--setting-sources project,local` (`v10-spec-*.json`). Rerun `yinz hocus hooks install`
+  after installing this build.
+
+### Automated evidence
+
+- Observer, type, CLI, and IPC regressions: launch collection, sidechain and unlinked
+  launches, notification ID parsing, observation ignoring notifications, bounded
+  hooks, and text/JSON output.
+- Nine new screen tests cover:
+  - the full flow on local, SSH and VM targets
+  - a notification that arrives before the previous confirmation
+  - drafts
+  - an unknown notification after an interrupted recovery
+  - tracking cleared by recovery, `/clear` and `SessionEnd`
+  - wait timeouts and failed notification confirmations
+  - the last-message lifecycle
+- The existing permission-answer test now asserts the wait message for both agents.
+- #43 adds resolution unit tests and a real `yinz agent list` process test against fake
+  supervisor and session sockets.
+- `cargo x ci check` passed format, lint, 9,460 workspace tests (54 skipped), doctests,
+  and 474 of 475 integration tests. The failure,
+  `the_four_panel_plugins_keep_their_identity_drafts_and_active_focus`, was a render
+  timeout while another worktree ran its integration suite. It passed alone.
+- `cargo x remote-test --build --native` and `--test` passed all 43 SSH tests.
+
+## Fix status: #30, #26, #28/#34, #49, #27/#29/#38 (2026-10-01, v11)
+
+**#30 is fixed and verified live.** Session sweeps skip `pty-broker-v<N>.sock`
+(`yinz_ipc::consts::is_session_socket_name`). The sweeps covered are `list-sessions`,
+kill-all, the session picker, the in-session list, and dead-session cleanup.
+`validate_session_name` reserves the name. `kill-session` now validates, as `delete-session`
+already did. Both refuse the broker and explain that it keeps panes alive.
+The broker's path is built from the same constant.
+
+**#26 is fixed.** Every pane argument accepts `terminal_7` or `7`, the convention `action`
+already documented:
+
+- `agent` targets
+- `agent register`
+- `action context --pane-id`
+- `action pane-rerun`
+
+`plugin_N` is refused with a reason. The `hocus-agentd` wire format still carries a number.
+
+**#28 and #34 are fixed; #34 warns rather than refuses.** `SpawnedAgent` gains three
+additive fields:
+
+- `requested_branch`, present only when the agent landed on another branch.
+- `reused`.
+- `occupied_by`, the other live agents whose working directory canonicalizes to the
+  reused worktree. It comes from the screen's agent listing.
+
+The response `message` summarizes them, and text output prints it. `--reuse` remains an
+explicit request, so it is not refused. A worktree created inside the primary checkout
+adds its top folder (`/.worktrees/`) to `<git-common-dir>/info/exclude`, unless something
+already ignores it. Tracked files are never edited. Plugin (protobuf) spawns keep their
+existing fields.
+
+**#49 is fixed in the skill.** The skill now covers:
+
+- Teardown with `yinz action close-pane --pane-id`, and when to remove worktrees and
+  branches.
+- A `--file -` heredoc example.
+- `yinz action project-list` and `action context` for projects.
+- The new spawn fields, bare pane IDs, and JSON error behavior.
+
+**#27, #29 (prompt) and #38 are fixed.** Archive commands accept `--json`. Their output was
+already JSON; the flag also routes errors as JSON. `prompt TEXT --file F` says "pass prompt
+TEXT or --file PATH, not both" instead of clap's misleading usage line. With `--json`, an
+error found after parsing is printed to stdout as an `AgentResponse`, and the exit code
+stays 1:
+
+- `rejected`: found before the request was sent, such as an empty prompt, both prompt
+  sources, a bad key name, or an invalid spawn file.
+- `failed`: the transport or store failed afterwards.
+
+Without `--json`, nothing changes.
+
+**Not changed:**
+
+- clap's own parse errors (a bad pane ID, an unknown flag) still print plain text.
+- `skills install --agent` still conflicts with `--dest`.
+- #25, #39, #40, #41, #46–48 and the P3 list remain open.
+
+### Live evidence
+
+Session `verify-v11` used this worktree's debug build, with Claude Code (Haiku) worker
+panes that were never prompted, in a scratch repo.
+
+- **#30** (v11 01, 01b, 02): the installed build lists `pty-broker-v8.sock` as UNRESPONSIVE
+  and suggests killing it; this build omits it. `kill-session` and `delete-session` on that
+  name exit 1 with the explanation. The live broker was untouched.
+- **#26** (v11 10–14): `register terminal_1`, `status 1`, `context --pane-id terminal_1` and
+  `pane-rerun 1` all parse. `status plugin_1` is refused with the reason.
+- **#27/#29/#38** (v11 20–24): `runs --json` works. Both-sources and empty prompts return a
+  JSON `rejected`. The text form still prints `Error:` on stderr. A missing run with
+  `--json` returns `failed`.
+- **#28** (v11 30–32, 34): a second and third `--branch fix` returned `fix-2` and `fix-3`
+  with `requested_branch: "fix"` and a message. `git status --porcelain --untracked-files=all`
+  in the main checkout was empty, and `info/exclude` gained `/.worktrees/` once.
+- **#34** (v11 33, 35, 36): `--reuse` into `fix` reported `reused: true` and
+  `occupied_by: ["terminal_2","terminal_5"]` with a warning. v11 33 shows the raw
+  `{"Terminal":2}` encoding that was then fixed in the CLI formatter.
+- **#49** (v11 40): `action close-pane --pane-id terminal_N` closed all six workers.
+- **Teardown:** `kill-session verify-v11` printed "shutdown unconfirmed" because two exiting
+  Claude supervisors reset the confirmation connection. No supervisor sockets or processes
+  remained afterwards. The session, scratch repo and worktrees were removed.
+
+### Automated evidence
+
+- New tests:
+  - Session sweep and reserved-name tests.
+  - CLI parser tests for both pane-ID forms everywhere, plugin refusal, and the archive
+    `--json` flag kept out of the request.
+  - Prompt-source messages.
+  - A real-binary process test of JSON rejections.
+  - Plugin-host tests for rename/reuse reporting, the exclude entry (and its absence when
+    `.gitignore` covers it), `occupied_by` against a fake screen, and the notes.
+  - The IPC roundtrip test covers the new fields.
+- The first `cargo x ci check` caught `portable_cli`, which expects archive errors on
+  stderr without `--json`. Archive errors now become JSON only with `--json`.
+- The rerun of `cargo x ci check` passed format, lint, 9,471 workspace tests (54 skipped),
+  doctests, and all 475 integration tests.
+- The `occupied_by` formatter fix came after that rerun. Format, lint and the root
+  package's 110 tests passed again.
+- The skill validator could not run because PyYAML was missing; the frontmatter is
+  unchanged.

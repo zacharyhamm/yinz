@@ -337,7 +337,14 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                     assert!(replies(&messages, CLIENT).is_empty());
                     assert!(screen.agent_dialog_inputs.is_empty());
                 }
-                report_kind(&mut screen, kind, hook("Stop"));
+                report_kind(
+                    &mut screen,
+                    kind,
+                    HookEvent {
+                        last_assistant_message: Some("WROTE_OK".into()),
+                        ..hook("Stop")
+                    },
+                );
                 let result = replies(&messages, CLIENT).pop().unwrap();
                 assert_eq!(
                     result.outcome,
@@ -345,6 +352,8 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
                     "{kind}, {split}, {progress}"
                 );
                 assert!(result.agents[0].ready);
+                // The answered turn's final text reaches the wait, not only the run archive.
+                assert_eq!(result.message.as_deref(), Some("WROTE_OK"));
                 assert!(screen.agent_controls.is_empty());
                 screen.agent_control(prompt(true), CLIENT);
                 assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
@@ -2574,6 +2583,7 @@ fn lifecycle_survives_moving_a_pane_and_is_cleared_on_closure() {
             pane_id: PANE,
             cwd: Some("/checkout".into()),
             branch: Some("branch".into()),
+            ..Default::default()
         },
     );
     new_tab(&mut screen, 9, TabId::new(1));
@@ -3616,4 +3626,374 @@ fn lost_or_exited_targets_never_recommend_recovery() {
             assert!(!message.contains("clear"), "{change}: {message}");
         }
     }
+}
+
+fn task_notification(prompt_id: &str, tasks: &[&str]) -> HookEvent {
+    let prompt = tasks
+        .iter()
+        .map(|task| {
+            format!(
+                "<task-notification>\n<task-id>{task}</task-id>\n<status>completed</status>\n</task-notification>"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    HookEvent {
+        prompt_id: Some(prompt_id.into()),
+        prompt: Some(prompt),
+        ..hook("UserPromptSubmit")
+    }
+}
+
+fn claude_stop(prompt_id: &str, message: &str, background: &[&str]) -> HookEvent {
+    HookEvent {
+        prompt_id: Some(prompt_id.into()),
+        last_assistant_message: Some(message.into()),
+        claude_background_tasks: background.iter().map(|task| task.to_string()).collect(),
+        ..hook("Stop")
+    }
+}
+
+/// Prompt Claude and confirm a turn that left `background` running.
+fn complete_with_background(
+    screen: &mut Screen,
+    messages: &CapturedClientMessages,
+    writes: &Receiver<(PtyWriteInstruction, ErrorContext)>,
+    background: &[&str],
+) -> AgentResponse {
+    report_kind(screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(writes);
+    report_kind(screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        screen,
+        "claude",
+        claude_stop("prompt", "Started.", background),
+    );
+    replies(messages, CLIENT).pop().unwrap()
+}
+
+#[test]
+fn background_work_is_reported_and_an_idle_wait_returns_its_final_answer() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("claude", target);
+        let completed =
+            complete_with_background(&mut screen, &messages, &writes, &["bash", "agent"]);
+        assert_eq!(completed.outcome, AgentOutcome::Completed);
+        assert_eq!(completed.message.as_deref(), Some("Started."));
+        assert_eq!(completed.background_tasks, ["agent", "bash"]);
+        assert!(completed.agents[0].ready, "the composer stays usable");
+        assert_eq!(completed.agents[0].background_tasks, ["agent", "bash"]);
+
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        for (prompt_id, task, text) in [("first", "bash", "BGDONE"), ("second", "agent", "SUB=sub")]
+        {
+            report_kind(&mut screen, "claude", task_notification(prompt_id, &[task]));
+            let busy = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+            assert_eq!(busy.state, AgentState::Busy);
+            // Claude's own Stop is not the transcript confirmation.
+            report_kind(
+                &mut screen,
+                "claude",
+                HookEvent {
+                    claude_turn_complete: None,
+                    ..claude_stop(prompt_id, text, &[])
+                },
+            );
+            assert!(replies(&messages, CLIENT).is_empty());
+            report_kind(&mut screen, "claude", claude_stop(prompt_id, text, &[]));
+        }
+        let done = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(done.outcome, AgentOutcome::Ok);
+        assert_eq!(done.message.as_deref(), Some("SUB=sub"));
+        assert!(done.background_tasks.is_empty());
+        assert!(done.agents[0].ready, "notification turns consume no input");
+        assert!(done.agents[0].background_tasks.is_empty());
+
+        // A duplicate hook for a confirmed notification turn is not a new turn.
+        report_kind(
+            &mut screen,
+            "claude",
+            task_notification("second", &["agent"]),
+        );
+        assert_eq!(
+            screen.get_pane_info(PANE).unwrap().agent.unwrap().state,
+            AgentState::Idle
+        );
+        screen.agent_control(prompt(true), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    }
+}
+
+#[test]
+fn a_notification_can_start_before_the_previous_turn_is_confirmed() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    assert!(
+        replies(&messages, CLIENT).is_empty(),
+        "the prompt is not interrupted"
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "Started.", &["bash"]),
+    );
+    let completed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(completed.outcome, AgentOutcome::Completed);
+    assert_eq!(completed.message.as_deref(), Some("Started."));
+    assert_eq!(
+        completed.agents[0].agent.state,
+        AgentState::Busy,
+        "the notification turn is still running"
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("notification", "BGDONE", &[]),
+    );
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    let done = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(done.outcome, AgentOutcome::Ok);
+    assert_eq!(done.message.as_deref(), Some("BGDONE"));
+    assert!(done.agents[0].ready);
+}
+
+#[test]
+fn a_notification_confirmed_before_its_launching_turn_keeps_the_task_finished() {
+    // Detached observers can confirm the later notification turn first.
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("notification", "BGDONE", &[]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "Started.", &["bash"]),
+    );
+    replies(&messages, CLIENT);
+    let status = screen.agent_status_for_test();
+    assert!(status.background_tasks.is_empty());
+    assert!(!screen.claude_background_pending_for_test());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    let done = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(done.outcome, AgentOutcome::Ok);
+    assert_eq!(done.message.as_deref(), Some("BGDONE"));
+}
+
+#[test]
+fn interrupted_recovery_ends_an_interrupted_notification_turn() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    send_esc(&mut screen, &messages);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    let recovered = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    assert!(recovered.agents[0].ready);
+    assert!(!screen.claude_background_pending_for_test());
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+}
+
+#[test]
+fn a_notification_never_consumes_a_typed_draft() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    screen.agent_write_for_test();
+    // A person can type the same tags; the draft still advances the input revision.
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("notification", "BGDONE", &[]),
+    );
+    let status = screen.agent_status_for_test();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(status.background_tasks.is_empty());
+    assert!(!status.ready);
+    assert_eq!(
+        status.not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(
+        replies(&messages, CLIENT).is_empty(),
+        "the draft still blocks readiness"
+    );
+}
+
+#[test]
+fn an_unknown_notification_after_interrupted_recovery_leaves_the_agent_ready() {
+    // Claude 2.1.286 backgrounds a Bash command on Esc instead of killing it.
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    send_esc(&mut screen, &messages);
+    screen.refresh_agent_controls();
+    replies(&messages, CLIENT);
+    finish_paste(&writes);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    assert!(replies(&messages, CLIENT)[0].agents[0].ready);
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["escaped"]),
+    );
+    assert!(!screen.agent_status_for_test().ready);
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("notification", "I'll wait.", &[]),
+    );
+    let status = screen.agent_status_for_test();
+    assert!(status.ready);
+    assert!(status.background_tasks.is_empty());
+}
+
+#[test]
+fn background_tracking_ends_with_recovery_and_the_conversation() {
+    for end in ["recover", "clear", "session_end"] {
+        let (mut screen, messages, writes) = setup("claude");
+        complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+        match end {
+            "recover" => {
+                screen.agent_control(recover(), CLIENT);
+                assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            },
+            "clear" => {
+                deliver_clear(&mut screen, &writes);
+                report_kind(&mut screen, "claude", hook("SessionEnd"));
+                report_kind(&mut screen, "claude", clear_start());
+                replies(&messages, CLIENT);
+            },
+            _ => report_kind(&mut screen, "claude", hook("SessionEnd")),
+        }
+        if end != "session_end" {
+            assert!(
+                screen.agent_status_for_test().background_tasks.is_empty(),
+                "{end}"
+            );
+            screen.agent_control(wait(AgentState::Idle), CLIENT);
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Ok,
+                "{end}"
+            );
+        }
+        assert!(screen
+            .agent_lifecycle
+            .get(&PANE)
+            .is_none_or(|lifecycle| lifecycle.background_tasks_for_test().is_empty()));
+    }
+}
+
+#[test]
+fn an_idle_wait_times_out_while_background_work_runs() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(31));
+    let timed_out = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
+    assert!(timed_out.agents[0].ready);
+    assert_eq!(timed_out.agents[0].background_tasks, ["bash"]);
+}
+
+#[test]
+fn an_idle_wait_returns_the_last_completed_turn_and_a_new_prompt_clears_it() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &[]);
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].message.as_deref(),
+        Some("Started.")
+    );
+    screen.agent_control(prompt(false), CLIENT);
+    finish_paste(&writes);
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt_id: Some("next".into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    replies(&messages, CLIENT);
+    let lifecycle = |screen: &Screen| {
+        screen
+            .agent_lifecycle
+            .get(&PANE)
+            .unwrap()
+            .last_message_for_test()
+            .map(str::to_owned)
+    };
+    assert_eq!(lifecycle(&screen), None);
+    report_kind(&mut screen, "claude", claude_stop("next", "NEXT", &[]));
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].message.as_deref(),
+        Some("NEXT")
+    );
+}
+
+#[test]
+fn a_failed_notification_confirmation_ends_only_that_turn() {
+    let (mut screen, messages, writes) = setup("claude");
+    complete_with_background(&mut screen, &messages, &writes, &["bash"]);
+    report_kind(
+        &mut screen,
+        "claude",
+        task_notification("notification", &["bash"]),
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            claude_turn_complete: Some(false),
+            ..claude_stop("notification", "", &[])
+        },
+    );
+    // Like an unverified caller turn, the agent stays busy until recovery, but the
+    // notification no longer holds background tracking or the caller's confirmation.
+    let status = screen.agent_status_for_test();
+    assert!(status.background_tasks.is_empty());
+    assert_eq!(status.agent.state, AgentState::Busy);
+    assert!(!screen.claude_background_pending_for_test());
+    send_esc(&mut screen, &messages);
+    recover_after_quiet(&mut screen, interrupted_recover());
+    let recovered = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    assert!(recovered.agents[0].ready);
 }

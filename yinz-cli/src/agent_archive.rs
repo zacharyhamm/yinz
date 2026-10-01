@@ -23,6 +23,10 @@ pub enum AgentArchive {
         limit: usize,
         #[clap(long, default_value_t = 0)]
         offset: usize,
+        /// Accepted for symmetry with the live commands; archive output is always JSON.
+        #[clap(long, hide = true)]
+        #[serde(skip)]
+        json: bool,
     },
     /// Read an exact run and a bounded page of its timeline.
     #[clap(name = "run")]
@@ -34,6 +38,10 @@ pub enum AgentArchive {
         from_revision: Option<u64>,
         #[clap(long, default_value_t = 20)]
         limit: usize,
+        /// Accepted for symmetry with the live commands; archive output is always JSON.
+        #[clap(long, hide = true)]
+        #[serde(skip)]
+        json: bool,
     },
     /// Search recorded agent messages and prompts.
     #[clap(name = "history-search")]
@@ -55,13 +63,32 @@ pub enum AgentArchive {
         active: Option<bool>,
         #[clap(long, default_value_t = 20)]
         limit: usize,
+        /// Accepted for symmetry with the live commands; archive output is always JSON.
+        #[clap(long, hide = true)]
+        #[serde(skip)]
+        json: bool,
     },
     /// Follow recorded predecessor links from an exact run ID.
     #[clap(name = "predecessors")]
-    AgentPredecessors { run_id: String },
+    AgentPredecessors {
+        run_id: String,
+        /// Accepted for symmetry with the live commands; archive output is always JSON.
+        #[clap(long, hide = true)]
+        #[serde(skip)]
+        json: bool,
+    },
 }
 
 impl AgentArchive {
+    pub fn json(&self) -> bool {
+        match self {
+            AgentArchive::AgentRuns { json, .. }
+            | AgentArchive::AgentRun { json, .. }
+            | AgentArchive::AgentHistorySearch { json, .. }
+            | AgentArchive::AgentPredecessors { json, .. } => *json,
+        }
+    }
+
     pub fn action(&self) -> Result<yinz_types::input::actions::Action, String> {
         let mut request = serde_json::to_value(self).map_err(|e| e.to_string())?;
         request["args"]

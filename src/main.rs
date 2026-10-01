@@ -113,6 +113,7 @@ fn main() {
         let result = hocus_hooks::hocus(yinz_cli::args::Hocus::CodexReport);
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
+    commands::refresh_pane_routing_env();
     configure_logger();
     create_config_and_cache_folders();
 

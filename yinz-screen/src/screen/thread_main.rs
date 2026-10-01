@@ -66,7 +66,7 @@ pub(super) fn apply_queued_agent_report(
     {
         let hook = hook.as_ref().expect("checked Stop hook");
         normalized = report.clone();
-        if hook.claude_turn_complete != Some(true) {
+        if hook.claude_turn_complete != Some(true) || screen.claude_turn_continues(pane_id, hook) {
             if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
                 agent.state = yinz_types::agent::AgentState::Busy;
             }

@@ -38,6 +38,7 @@ fn agent_status(cwd: &std::path::Path) -> AgentStatus {
         not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::PromptUnsupported),
         status_available: false,
         prompt_supported: false,
+        background_tasks: Vec::new(),
     }
 }
 
@@ -604,4 +605,192 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
         )
         .is_ok());
     }
+}
+
+#[test]
+fn spawn_reports_renamed_and_reused_worktrees_and_keeps_them_out_of_git_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    git(&root, &["commit", "--allow-empty", "-q", "-m", "initial"]);
+    let data = DataAccess::sqlite(&base.join("data"));
+    let spawn = |reuse: bool| {
+        let mut spec = AgentSpawnSpec {
+            kind: Some("codex".into()),
+            branch: Some("topic".into()),
+            reuse: reuse.then_some(true),
+            ..Default::default()
+        };
+        prepare_automation_agent(&mut spec, Some(root.clone()), None, None, false, &data).unwrap()
+    };
+
+    let first = spawn(false);
+    assert_eq!(first.branch.as_deref(), Some("topic"));
+    assert_eq!(first.requested_branch, None);
+    assert!(!first.reused);
+
+    let second = spawn(false);
+    assert_eq!(second.branch.as_deref(), Some("topic-2"));
+    assert_eq!(second.requested_branch.as_deref(), Some("topic"));
+    assert!(!second.reused);
+
+    let third = spawn(true);
+    assert_eq!(third.cwd, root.join(".worktrees").join("topic"));
+    assert_eq!(third.requested_branch, None);
+    assert!(third.reused);
+
+    let status = process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+    let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+    for entry in ["/.worktrees/topic/\n", "/.worktrees/topic-2/\n"] {
+        assert_eq!(exclude.matches(entry).count(), 1, "{exclude}");
+    }
+}
+
+#[test]
+fn a_nested_worktree_dir_excludes_only_the_worktree() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    git(&root, &["commit", "--allow-empty", "-q", "-m", "initial"]);
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        branch: Some("topic".into()),
+        worktree_dir: Some("src/worktrees".into()),
+        ..Default::default()
+    };
+    let prepared = prepare_automation_agent(
+        &mut spec,
+        Some(root.clone()),
+        None,
+        None,
+        false,
+        &DataAccess::sqlite(&base.join("data")),
+    )
+    .unwrap();
+    assert_eq!(prepared.cwd, root.join("src/worktrees/topic"));
+    std::fs::write(root.join("src/new.rs"), "").unwrap();
+    let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains("\n/src/worktrees/topic/\n"), "{exclude}");
+    assert!(!exclude.contains("\n/src/\n"), "{exclude}");
+    let status = process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "?? src/new.rs\n");
+}
+
+#[test]
+fn a_worktree_ignored_by_the_project_adds_no_exclude_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    std::fs::write(root.join(".gitignore"), ".worktrees/\n").unwrap();
+    git(&root, &["add", ".gitignore"]);
+    git(&root, &["commit", "-q", "-m", "initial"]);
+    let before = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap_or_default();
+    let mut spec = AgentSpawnSpec {
+        kind: Some("codex".into()),
+        branch: Some("topic".into()),
+        ..Default::default()
+    };
+    prepare_automation_agent(
+        &mut spec,
+        Some(root.clone()),
+        None,
+        None,
+        false,
+        &DataAccess::sqlite(&base.join("data")),
+    )
+    .unwrap();
+    let after = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap_or_default();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn reused_worktrees_name_the_live_agents_already_in_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout = temp.path().canonicalize().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let (tx, rx) = yinz_runtime::channels::unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let new_pane = PaneId::Terminal(crate::TerminalId::new(9));
+    let screen = {
+        let checkout = checkout.clone();
+        let other = other.path().to_owned();
+        std::thread::spawn(move || {
+            let (instruction, _) = rx.recv().unwrap();
+            let ScreenInstruction::AgentControlReply(AgentRequest::List { project: None }, reply) =
+                instruction
+            else {
+                panic!("expected an agent listing");
+            };
+            let mut response = AgentResponse::new(AgentOutcome::Ok);
+            let mut same = agent_status(&checkout);
+            same.pane_id = PaneId::Terminal(crate::TerminalId::new(7));
+            let mut itself = agent_status(&checkout);
+            itself.pane_id = new_pane;
+            let mut elsewhere = agent_status(&other);
+            elsewhere.pane_id = PaneId::Terminal(crate::TerminalId::new(8));
+            response.agents = vec![same, itself, elsewhere];
+            reply.send(response).unwrap();
+        })
+    };
+    let mut spawned = SpawnedAgent {
+        pane_id: new_pane,
+        branch: Some("topic".into()),
+        cwd: Some(checkout),
+        reused: true,
+        ..Default::default()
+    };
+    spawned.occupied_by = occupants(&senders, &spawned);
+    screen.join().unwrap();
+    assert_eq!(
+        spawned.occupied_by,
+        vec![PaneId::Terminal(crate::TerminalId::new(7))]
+    );
+    let notes = spawn_notes(&spawned).unwrap();
+    assert!(notes.contains("already used by terminal_7"), "{notes}");
+}
+
+#[test]
+fn spawn_notes_explain_renames_and_stay_quiet_otherwise() {
+    let mut spawned = SpawnedAgent {
+        branch: Some("topic-2".into()),
+        requested_branch: Some("topic".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        spawn_notes(&spawned).as_deref(),
+        Some("branch topic was taken; created topic-2")
+    );
+    spawned.requested_branch = None;
+    assert_eq!(spawn_notes(&spawned), None);
+    spawned.reused = true;
+    assert_eq!(
+        spawn_notes(&spawned).as_deref(),
+        Some("reused an existing worktree")
+    );
 }

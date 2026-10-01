@@ -157,11 +157,16 @@ pub fn run() -> Result<()> {
     observation.hook.prompt = None;
     observation.hook.prompt_sha256 = None;
     observation.hook.claude_turn_complete = Some(completed.is_ok());
-    observation.hook.last_assistant_message = completed.ok().flatten();
+    if let Ok(turn) = completed {
+        observation.hook.last_assistant_message = turn.last_text;
+        observation.hook.claude_background_tasks = turn.background_tasks;
+    } else {
+        observation.hook.last_assistant_message = None;
+    }
     send(&observation.route, &observation.hook)
 }
 
-fn follow(observation: &Observation) -> Result<Option<String>> {
+fn follow(observation: &Observation) -> Result<Turn> {
     let (process_id, start_time) = observation
         .process
         .context("cannot identify Claude process")?;
@@ -251,7 +256,7 @@ fn follow(observation: &Observation) -> Result<Option<String>> {
                 serde_json::from_slice(&line).context("parse Claude transcript record")?;
             line.clear();
             if turn.record(&record)? {
-                return Ok(turn.last_text);
+                return Ok(turn);
             }
         }
         // Regular files cannot wake a condition variable; poll only while this exact process lives.
@@ -265,6 +270,8 @@ struct Turn {
     found: bool,
     ancestors: HashSet<String>,
     last_text: Option<String>,
+    /// Bash commands and subagents this turn left running in the background, in launch order.
+    background_tasks: Vec<String>,
 }
 
 impl Turn {
@@ -275,6 +282,7 @@ impl Turn {
             found: false,
             ancestors: HashSet::new(),
             last_text: None,
+            background_tasks: Vec::new(),
         }
     }
 
@@ -311,6 +319,15 @@ impl Turn {
         if let Some(id) = record["uuid"].as_str() {
             self.ancestors.insert(id.to_owned());
         }
+        if record["type"] == "user" {
+            if let Some(task) = background_task(&record["toolUseResult"]) {
+                if !self.background_tasks.iter().any(|known| known == task)
+                    && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
+                {
+                    self.background_tasks.push(task.to_owned());
+                }
+            }
+        }
         if record["type"] == "assistant" {
             if let Some(content) = record["message"]["content"].as_array() {
                 let text: String = content
@@ -325,6 +342,19 @@ impl Turn {
         }
         Ok(record["type"] == "system" && record["subtype"] == "turn_duration")
     }
+}
+
+/// The task a tool result left running: a Bash `run_in_background` command reports
+/// `backgroundTaskId`, and an async subagent launch reports `async_launched` with its `agentId`.
+/// Claude names the same ID in the `<task-id>` of the notification that ends it.
+fn background_task(result: &Value) -> Option<&str> {
+    if let Some(task) = result["backgroundTaskId"].as_str() {
+        return Some(task).filter(|task| !task.is_empty());
+    }
+    (result["isAsync"] == true && result["status"] == "async_launched")
+        .then(|| result["agentId"].as_str())
+        .flatten()
+        .filter(|task| !task.is_empty())
 }
 
 pub(crate) fn send(route: &Route, hook: &HookEvent) -> Result<()> {

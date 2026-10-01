@@ -620,6 +620,10 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
         eprintln!("Please specify the session name to kill.");
         process::exit(1);
     };
+    if let Err(e) = validate_session_name(name) {
+        eprintln!("{e}");
+        process::exit(1);
+    }
     let outcome = kill_outcome(
         session_status(&SessionName::new(name.clone())),
         || {
@@ -730,12 +734,7 @@ pub(crate) fn send_action_to_session(
         &mut cli_action,
         &mut requested_session_name,
         std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
-        |pane_ref| {
-            yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(
-                pane_ref,
-            ))
-            .map_err(|e| format!("could not resolve pane {pane_ref}: {e:#}"))
-        },
+        query_pane_supervisor,
     ) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -831,6 +830,19 @@ pub(crate) fn retarget_implicit_agent_report(
     let Some(pane_ref) = pane_ref else {
         return Ok(());
     };
+    let (session_name, terminal_id) = resolve_pane_ref(&pane_ref, query)?;
+    *pane_id = Some(terminal_id.to_string());
+    *requested_session_name = Some(session_name);
+    Ok(())
+}
+
+/// The session and terminal id a pane's supervisor currently belongs to.
+fn resolve_pane_ref(
+    pane_ref: &str,
+    query: impl FnOnce(
+        &SupervisorId,
+    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
+) -> std::result::Result<(String, u32), String> {
     if pane_ref.len() != 12 || !pane_ref.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(format!(
             "invalid {}",
@@ -838,7 +850,7 @@ pub(crate) fn retarget_implicit_agent_report(
         ));
     }
 
-    let pane_ref = SupervisorId::new(pane_ref);
+    let pane_ref = SupervisorId::new(pane_ref.to_owned());
     let status = query(&pane_ref)?;
     if status.host_id != pane_ref {
         return Err(format!(
@@ -852,9 +864,49 @@ pub(crate) fn retarget_implicit_agent_report(
     let session_name = status
         .session_name
         .ok_or_else(|| format!("pane {pane_ref} has no owning session"))?;
-    *pane_id = Some(status.terminal_id.to_string());
-    *requested_session_name = Some(session_name.into_string());
-    Ok(())
+    Ok((session_name.into_string(), status.terminal_id))
+}
+
+fn query_pane_supervisor(
+    pane_ref: &SupervisorId,
+) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String> {
+    yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(pane_ref))
+        .map_err(|e| format!("could not resolve pane {pane_ref}: {e:#}"))
+}
+
+/// The routing environment a pane's commands should use: its supervisor's current session and
+/// terminal id when they differ from the inherited `YINZ_SESSION_NAME` and `YINZ_PANE_ID`.
+///
+/// A pane adopted by another server after a restart, or warped, keeps the values it was born
+/// with. Commands that read them would reach a session that no longer exists, or another
+/// session's pane with the same id. Without a reference, or when the supervisor cannot answer,
+/// the inherited values stand.
+fn adopted_pane_routing(
+    pane_ref: Option<String>,
+    inherited: (Option<String>, Option<String>),
+    query: impl FnOnce(
+        &SupervisorId,
+    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
+) -> Option<(String, String)> {
+    let (session, terminal) = resolve_pane_ref(&pane_ref?, query).ok()?;
+    let terminal = terminal.to_string();
+    (inherited != (Some(session.clone()), Some(terminal.clone()))).then_some((session, terminal))
+}
+
+/// Correct this process's routing environment before any command reads it.
+/// See [`adopted_pane_routing`]. Runs before any thread starts.
+pub(crate) fn refresh_pane_routing_env() {
+    if let Some((session, terminal)) = adopted_pane_routing(
+        std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
+        (
+            std::env::var(envs::SESSION_NAME_ENV_KEY).ok(),
+            std::env::var("YINZ_PANE_ID").ok(),
+        ),
+        query_pane_supervisor,
+    ) {
+        std::env::set_var(envs::SESSION_NAME_ENV_KEY, session);
+        std::env::set_var("YINZ_PANE_ID", terminal);
+    }
 }
 /// The session a `yinz subscribe` / `yinz events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
@@ -2136,8 +2188,8 @@ fn format_duration(duration_us: ElapsedMicros) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        kill_outcome, named_session_exists_or_error, retarget_implicit_agent_report,
-        sessions_to_delete, sessions_to_kill,
+        adopted_pane_routing, kill_outcome, named_session_exists_or_error,
+        retarget_implicit_agent_report, sessions_to_delete, sessions_to_kill,
     };
     use std::{cell::Cell, io, time::Duration};
     use yinz_cli::args::CliAction;
@@ -2231,6 +2283,37 @@ mod tests {
                 ..
             } if pane_id == "7"
         ));
+    }
+
+    #[test]
+    fn an_adopted_pane_routes_commands_through_its_supervisor() {
+        let stale = (Some("before-restart".to_owned()), Some("23".to_owned()));
+        assert_eq!(
+            adopted_pane_routing(Some("abcdef012345".to_owned()), stale.clone(), |_| Ok(
+                pane_status(true)
+            )),
+            Some(("after-warp".to_owned(), "42".to_owned()))
+        );
+        // Current values, or no answer, leave the environment alone.
+        let current = (Some("after-warp".to_owned()), Some("42".to_owned()));
+        assert_eq!(
+            adopted_pane_routing(Some("abcdef012345".to_owned()), current, |_| Ok(
+                pane_status(true)
+            )),
+            None
+        );
+        for (pane_ref, status) in [
+            (None, Ok(pane_status(true))),
+            (Some("not-a-ref".to_owned()), Ok(pane_status(true))),
+            (Some("abcdef012345".to_owned()), Ok(pane_status(false))),
+            (Some("abcdef012345".to_owned()), Err("gone".to_owned())),
+        ] {
+            assert_eq!(
+                adopted_pane_routing(pane_ref.clone(), stale.clone(), |_| status.clone()),
+                None,
+                "{pane_ref:?}"
+            );
+        }
     }
 
     #[test]

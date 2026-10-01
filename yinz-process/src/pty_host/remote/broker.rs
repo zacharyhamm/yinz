@@ -1250,7 +1250,9 @@ fn broker_invocation_from_args<I: IntoIterator<Item = String>>(args: I) -> Optio
 /// binary simply starts its own broker alongside the old one, which keeps
 /// serving the panes it already has until they exit.
 pub fn broker_socket_path() -> std::path::PathBuf {
-    YINZ_SOCK_DIR.join(format!("pty-broker-v{REMOTE_PROTOCOL_VERSION}.sock"))
+    YINZ_SOCK_DIR.join(yinz_ipc::consts::pty_broker_socket_name(
+        REMOTE_PROTOCOL_VERSION,
+    ))
 }
 
 /// `yinz --pty-broker ensure` — make sure a broker is up and say where.

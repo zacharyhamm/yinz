@@ -243,6 +243,7 @@ fn agent_spawn_registration_failure_retains_created_pane_and_checkout() {
         pane_id: yinz_types::pane_id::PaneId::Terminal(TerminalId::new(17)),
         cwd: Some("/actual/checkout".into()),
         branch: Some("actual-branch".into()),
+        ..Default::default()
     };
     let response = agent_control::register_spawned_agent(&senders, spawned.clone());
     assert_eq!(

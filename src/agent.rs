@@ -11,6 +11,40 @@ use yinz_types::agent::control::{
 use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
+    let json = command.json();
+    match run_inner(command, opts) {
+        Ok(code) => Ok(code),
+        Err(error) if json => {
+            let (outcome, error) = match error.downcast::<RequestFailed>() {
+                Ok(RequestFailed(error)) => (AgentOutcome::Failed, error),
+                Err(error) => (AgentOutcome::Rejected, error),
+            };
+            let mut response = AgentResponse::new(outcome);
+            response.message = Some(format!("{error:#}"));
+            print_response(&response, true, &mut std::io::stdout().lock())?;
+            Ok(1)
+        },
+        Err(error) => Err(match error.downcast::<RequestFailed>() {
+            Ok(RequestFailed(error)) => error,
+            Err(error) => error,
+        }),
+    }
+}
+
+/// An error after the request left for the session, as opposed to one found before sending.
+/// With `--json`, the first is `failed` and the second `rejected`.
+#[derive(Debug)]
+struct RequestFailed(anyhow::Error);
+
+impl std::fmt::Display for RequestFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for RequestFailed {}
+
+fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     let explicit = opts.session.clone().or_else(|| {
         yinz_runtime::envs::get_session_name()
             .ok()
@@ -41,14 +75,14 @@ pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
         _ => None,
     };
     if let Some(action) = action {
-        println!(
-            "{}",
-            yinz_client::store_client::request(&session.into(), action)?
-        );
+        let reply = yinz_client::store_client::request(&session.into(), action)
+            .map_err(|error| anyhow!(RequestFailed(error)))?;
+        println!("{reply}");
         return Ok(0);
     }
     let (request, json, timeout) = request(command, &mut std::io::stdin())?;
-    let response = exchange(&session, request, timeout)?;
+    let response =
+        exchange(&session, request, timeout).map_err(|error| anyhow!(RequestFailed(error)))?;
     print_response(&response, json, &mut std::io::stdout().lock())?;
     Ok(
         if matches!(
@@ -292,7 +326,10 @@ fn read_prompt(text: Option<String>, file: Option<&Path>, stdin: &mut impl Read)
         },
         (None, Some(file)) => std::fs::read_to_string(file)
             .with_context(|| format!("cannot read prompt file {}", file.display()))?,
-        _ => bail!("provide prompt text or --file PATH"),
+        (Some(_), Some(_)) => bail!("pass prompt TEXT or --file PATH, not both"),
+        (None, None) => {
+            bail!("provide prompt TEXT or --file PATH (use --file - for standard input)")
+        },
     };
     let prompt = prompt
         .replace("\r\n", "\n")
@@ -379,6 +416,14 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         let mut value = serde_json::to_value(response).context("cannot encode agent response")?;
         if let Some(spawned) = &response.spawned {
             value["spawned"]["pane_id"] = spawned.pane_id.to_string().into();
+            if !spawned.occupied_by.is_empty() {
+                value["spawned"]["occupied_by"] = spawned
+                    .occupied_by
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .into();
+            }
         }
         serde_json::to_writer(&mut *out, &value).context("cannot write agent response")?;
         writeln!(out).context("cannot finish agent response")?;
@@ -443,6 +488,14 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             writeln!(out, "  needs_person: {}", status.agent.wait_needs_a_person)
                 .context("cannot write agent waiting reason")?;
         }
+        if !status.background_tasks.is_empty() {
+            writeln!(
+                out,
+                "  background_tasks: {}",
+                status.background_tasks.join(", ")
+            )
+            .context("cannot write background tasks")?;
+        }
     }
     if response.outcome != AgentOutcome::Ok {
         let outcome =
@@ -457,6 +510,19 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
     }
     if let Some(message) = &response.message {
         writeln!(out, "{message}").context("cannot write agent message")?;
+    }
+    if let Some(status) = response
+        .agents
+        .first()
+        .filter(|_| !response.background_tasks.is_empty())
+    {
+        writeln!(
+            out,
+            "Background work is still running ({}). `yinz agent wait {} --until idle` returns its final answer.",
+            response.background_tasks.join(", "),
+            status.pane_id
+        )
+        .context("cannot write background work guidance")?;
     }
     Ok(())
 }

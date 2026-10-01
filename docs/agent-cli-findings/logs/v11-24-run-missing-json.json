@@ -1,0 +1,3 @@
+$ yinz --session verify-v11 agent run missing-run --json
+{"outcome":"failed","agents":[],"spawned":null,"output":null,"message":"no such run missing-run","acknowledged":false,"turn_id":null}
+exit=1

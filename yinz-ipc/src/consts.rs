@@ -9,6 +9,23 @@ pub fn is_ipc_socket(file_type: &std::fs::FileType) -> bool {
     file_type.is_file()
 }
 
+/// The name prefix of the pty broker's socket, `pty-broker-v<N>.sock`.
+///
+/// The broker listens in the session socket directory but is not a session. It
+/// carries panes across server restarts, so a sweep that probed it as a session
+/// would list it as unresponsive and invite `kill-session` on it.
+pub const PTY_BROKER_SOCKET_PREFIX: &str = "pty-broker-v";
+
+/// The pty broker's socket name for a protocol version.
+pub fn pty_broker_socket_name(protocol_version: impl std::fmt::Display) -> String {
+    format!("{PTY_BROKER_SOCKET_PREFIX}{protocol_version}.sock")
+}
+
+/// Whether a file name in the session socket directory belongs to a session.
+pub fn is_session_socket_name(name: &str) -> bool {
+    !(name.starts_with(PTY_BROKER_SOCKET_PREFIX) && name.ends_with(".sock"))
+}
+
 /// How long to keep trying to connect to a session socket.
 ///
 /// A server whose listen backlog is full accepts no new connection and refuses

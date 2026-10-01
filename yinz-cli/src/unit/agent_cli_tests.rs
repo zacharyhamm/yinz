@@ -31,9 +31,6 @@ fn agent_commands_require_explicit_targets_and_one_prompt_source() {
                 && timeout == std::time::Duration::from_secs(600) && conversation == "conversation-1"
     ));
     for arguments in [
-        vec!["agent", "prompt", "terminal_7"],
-        vec!["agent", "prompt", "terminal_7", "text", "--file", "-"],
-        vec!["agent", "prompt", "7", "text"],
         vec!["agent", "status", "plugin_7"],
         vec!["agent", "wait", "terminal_7", "--timeout", "0s"],
         vec!["agent", "wait", "terminal_7", "--until", "quiet"],
@@ -67,6 +64,52 @@ fn agent_commands_require_explicit_targets_and_one_prompt_source() {
             ..
         }
     ));
+}
+
+#[test]
+fn archive_commands_accept_and_ignore_json() {
+    use clap::Parser;
+    for arguments in [
+        vec!["agent", "runs", "--json"],
+        vec!["agent", "run", "run-1", "--json"],
+        vec!["agent", "history-search", "query", "--json"],
+        vec!["agent", "predecessors", "run-1", "--json"],
+    ] {
+        let parsed = AgentCli::try_parse_from(arguments.clone()).unwrap();
+        let Agent::Archive(archive) = &parsed.command else {
+            panic!("{arguments:?}");
+        };
+        assert!(parsed.command.json());
+        let value = serde_json::to_value(archive).unwrap();
+        assert!(value["args"].get("json").is_none(), "{value}");
+    }
+}
+
+#[test]
+fn pane_ids_accept_terminal_prefix_or_bare_number_everywhere() {
+    use clap::Parser;
+    for target in ["terminal_7", "7"] {
+        assert!(matches!(
+            AgentCli::try_parse_from(["agent", "status", target]).unwrap().command,
+            Agent::Status { target, .. } if target.to_string() == "terminal_7"
+        ));
+        assert!(matches!(
+            AgentCli::try_parse_from(["agent", "register", target, "claude"])
+                .unwrap()
+                .command,
+            Agent::Register { pane_id: 7, .. }
+        ));
+    }
+    let error = AgentCli::try_parse_from(["agent", "status", "plugin_7"])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("plugin panes do not run agents"), "{error}");
+    let error = AgentCli::try_parse_from(["agent", "register", "pane7", "claude"])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("expected terminal_7 or 7"), "{error}");
 }
 
 #[test]

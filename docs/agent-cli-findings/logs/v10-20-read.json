@@ -1,0 +1,13 @@
+  ⎿  Error: Blocked: sleep 30 followed by: echo
+     SLEPT_OK. To wait for a condition, use
+     Monitor with an until-loop (e.g. `until
+     <check>; do sleep 2; done`). To wait for a
+     command you started, use run_in_background:
+     true. Do not chain shorter sleeps to work
+     around this block.
+  ⎿  Interrupted · What should Claude do instead?
+
+──────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

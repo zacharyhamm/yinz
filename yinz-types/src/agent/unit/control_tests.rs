@@ -547,3 +547,71 @@ fn readiness_reason_is_additive_and_uses_snake_case() {
         );
     }
 }
+
+#[test]
+fn task_notification_ids_come_only_from_notification_prompts() {
+    let one = "\n<task-notification>\n<task-id>bj30txqod</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>done &amp; dusted</summary>\n</task-notification>";
+    assert_eq!(
+        claude_task_notification_ids(one),
+        Some(vec!["bj30txqod".to_owned()])
+    );
+    let two = format!("{one}\n<task-notification><task-id> a91f </task-id></task-notification>");
+    assert_eq!(
+        claude_task_notification_ids(&two),
+        Some(vec!["bj30txqod".to_owned(), "a91f".to_owned()])
+    );
+    assert_eq!(
+        claude_task_notification_ids("<task-notification><task-id></task-id>"),
+        Some(Vec::new())
+    );
+    for other in [
+        "review",
+        "Explain <task-notification><task-id>x</task-id></task-notification>",
+        "/clear",
+    ] {
+        assert_eq!(claude_task_notification_ids(other), None, "{other}");
+    }
+}
+
+#[test]
+fn a_claude_notification_turn_never_interrupts_or_completes_a_prompt() {
+    let notification = "<task-notification>\n<task-id>bj30txqod</task-id>\n</task-notification>";
+    for acknowledged in [false, true] {
+        let mut observation = PromptObservation::new("claude", "conversation", "review");
+        if acknowledged {
+            assert_eq!(
+                observe(
+                    &mut observation,
+                    &event("claude", "UserPromptSubmit", Some("prompt"), Some("review"))
+                ),
+                Some(AgentOutcome::Submitted)
+            );
+        }
+        for name in ["UserPromptSubmit", "Stop"] {
+            let prompt = (name == "UserPromptSubmit").then_some(notification);
+            assert_eq!(
+                observe(
+                    &mut observation,
+                    &event("claude", name, Some("notification"), prompt)
+                ),
+                None,
+                "{name}, {acknowledged}"
+            );
+        }
+        assert_eq!(observation.acknowledged(), acknowledged);
+    }
+    // Codex has no such turns; the same text is an ordinary conflicting prompt there.
+    let mut observation = PromptObservation::new("codex", "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event(
+                "codex",
+                "UserPromptSubmit",
+                Some("turn"),
+                Some(notification)
+            )
+        ),
+        Some(AgentOutcome::Interrupted)
+    );
+}

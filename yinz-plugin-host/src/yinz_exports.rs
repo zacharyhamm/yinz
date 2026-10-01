@@ -2888,6 +2888,7 @@ fn spawn_agent(
                     pane_id,
                     branch: prepared.branch,
                     cwd: Some(prepared.cwd),
+                    ..Default::default()
                 }
             })
             .ok_or_else(|| "Yinz did not open the agent pane".to_owned())
@@ -2902,6 +2903,9 @@ struct PreparedAgent {
     command: CommandToRun,
     branch: Option<String>,
     cwd: PathBuf,
+    /// The branch asked for, when `branch` is a different one.
+    requested_branch: Option<String>,
+    reused: bool,
 }
 
 /// Shared checkout preparation for plugin and direct CLI launches. Paths are already host paths.
@@ -2922,6 +2926,12 @@ fn prepare_agent(
         )
     })?;
     let checkout_made = !matches!(checkout, GitCheckout::Current);
+    let requested_branch = match &checkout {
+        GitCheckout::NewBranch { branch, .. } | GitCheckout::NewWorktree { branch, .. } => {
+            Some(branch.clone())
+        },
+        GitCheckout::Current => None,
+    };
     // A Firecracker pane with nothing of this machine in it does not run in `folder` at
     // all - `place_agent` leaves the guest's own workspace alone - so there is no host
     // checkout for the guard to have an opinion about. Computed once, here, so the two
@@ -2945,6 +2955,7 @@ fn prepare_agent(
     };
     let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
     command = prepared.agent_command(spec)?;
+    let reused = prepared.reused_worktree;
     let branch = prepared.branch.or_else(|| {
         worktree_at(&prepared.path, &prepared.path)
             .ok()
@@ -2958,10 +2969,13 @@ fn prepare_agent(
         automatic_firecracker_vm,
         checkout_made || mirror_project,
     )?;
+    let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
         command,
         branch,
         cwd: folder,
+        requested_branch,
+        reused,
     })
 }
 
@@ -3036,6 +3050,9 @@ pub fn spawn_agent_for_cli(
         pane_id,
         branch: prepared.branch,
         cwd: Some(prepared.cwd),
+        requested_branch: prepared.requested_branch,
+        reused: prepared.reused,
+        occupied_by: Vec::new(),
     })
 }
 
@@ -3360,6 +3377,7 @@ fn prepare_git_checkout_in(
                     vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
                 };
                 run_git(&root, &args, "create the worktree")?;
+                exclude_nested_worktree(&root, &path);
                 return Ok(PreparedCheckout {
                     reused_worktree: false,
                     path,
@@ -3375,6 +3393,7 @@ fn prepare_git_checkout_in(
                 &["worktree", "add", "-b", &branch, "--", &path_string, &base],
                 "create the worktree",
             )?;
+            exclude_nested_worktree(&root, &path);
             Ok(PreparedCheckout {
                 reused_worktree: false,
                 path,
@@ -3382,6 +3401,101 @@ fn prepare_git_checkout_in(
             })
         },
     }
+}
+
+/// Keep a worktree made inside the primary checkout out of that checkout's `git status`.
+///
+/// `.worktrees/` sits in the user's own tree, so without this `git status` lists it and
+/// `git add -A` records every worktree in it as an embedded repository. The entry names the
+/// worktree itself, never a folder above it: a `worktree_dir` such as `src/worktrees` must
+/// not hide the rest of `src`. It goes to the repository's local `info/exclude`, never to a
+/// tracked `.gitignore`, and only when nothing ignores the worktree already. A failure here
+/// is logged: the worktree itself is fine.
+fn exclude_nested_worktree(root: &std::path::Path, path: &std::path::Path) {
+    let result = (|| -> Result<(), String> {
+        let canonical = |path: &std::path::Path| {
+            path.canonicalize()
+                .map_err(|error| format!("cannot resolve {}: {error}", path.display()))
+        };
+        let (root, path) = (canonical(root)?, canonical(path)?);
+        let Some(relative) = path
+            .strip_prefix(&root)
+            .ok()
+            .map(|relative| {
+                relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|relative| !relative.is_empty())
+        else {
+            return Ok(());
+        };
+        let ignored = process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["check-ignore", "-q", "--", &format!("{relative}/")])
+            .status()
+            .map_err(|error| format!("failed to run git: {error}"))?;
+        if ignored.success() {
+            return Ok(());
+        }
+        let output = process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["rev-parse", "--git-common-dir"])
+            .output()
+            .map_err(|error| format!("failed to run git: {error}"))?;
+        if !output.status.success() {
+            return Err(git_error("find the git directory", &output.stderr));
+        }
+        let info = root
+            .join(String::from_utf8_lossy(&output.stdout).trim())
+            .join("info");
+        std::fs::create_dir_all(&info)
+            .map_err(|error| format!("cannot create {}: {error}", info.display()))?;
+        let exclude = info.join("exclude");
+        let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&exclude)
+            .map_err(|error| format!("cannot open {}: {error}", exclude.display()))?;
+        let separator = if existing.is_empty() || existing.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        std::io::Write::write_all(
+            &mut file,
+            format!(
+                "{separator}# Agent worktree made by yinz\n/{}/\n",
+                gitignore_literal(&relative)
+            )
+            .as_bytes(),
+        )
+        .map_err(|error| format!("cannot write {}: {error}", exclude.display()))
+    })();
+    if let Err(error) = result {
+        log::warn!(
+            "could not exclude worktree {} from git status: {error}",
+            path.display()
+        );
+    }
+}
+
+/// `path` with its gitignore wildcards escaped, so the pattern matches only that folder.
+/// The written `/{path}/` already keeps a leading `!` or `#` and trailing spaces literal.
+fn gitignore_literal(path: &str) -> String {
+    let mut pattern = String::with_capacity(path.len());
+    for character in path.chars() {
+        if matches!(character, '\\' | '*' | '?' | '[') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern
 }
 
 /// How many suffixes are tried before a request is answered with a refusal rather than
@@ -4753,13 +4867,15 @@ fn delete_dead_session_in(session_info_cache_dir: &Path, session_name: &SessionN
 }
 
 fn delete_all_dead_sessions() -> Result<()> {
-    use yinz_ipc::consts::is_ipc_socket;
+    use yinz_ipc::consts::{is_ipc_socket, is_session_socket_name};
     let mut live_sessions = vec![];
     if let Ok(files) = std::fs::read_dir(&*YINZ_SOCK_DIR) {
         files.for_each(|file| {
             if let Ok(file) = file {
                 if let Ok(file_name) = file.file_name().into_string() {
-                    if is_ipc_socket(&file.file_type().unwrap()) {
+                    if is_ipc_socket(&file.file_type().unwrap())
+                        && is_session_socket_name(&file_name)
+                    {
                         live_sessions.push(SessionName::new(file_name));
                     }
                 }

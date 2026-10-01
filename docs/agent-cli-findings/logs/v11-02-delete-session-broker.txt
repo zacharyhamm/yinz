@@ -1,0 +1,3 @@
+$ yinz delete-session pty-broker-v8.sock
+"pty-broker-v8.sock" is the pty broker's socket, not a session. It keeps panes alive across server restarts; do not kill or delete it.
+exit=1

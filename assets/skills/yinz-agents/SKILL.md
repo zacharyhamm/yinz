@@ -7,10 +7,11 @@ Inside a Yinz pane, `YINZ_SESSION_NAME` selects the current session. Start with 
 Outside a session, run `yinz list-sessions --short`, select the intended name, and add `--session NAME` to each command below.
 A sandboxed Codex cannot reach Yinz ("connection was not permitted"). Spawn Codex orchestrators with `--allow-yinz`, which also allows internet access, or `--permission-mode skip`.
 Use `--project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
+`yinz action project-list` lists remembered projects; `yinz action context` also shows them with the caller's pane.
 Basic live operations do not require Hocus chat, `hocus-agentd`, or `hocus-store`.
 Registration requires `hocus-agentd`. Archive queries require `hocus-store`.
 
-A pane ID identifies the current terminal target, such as `terminal_3`.
+A pane ID identifies the current terminal target, such as `terminal_3` (`3` also works).
 A conversation ID identifies the provider conversation and guards against replacement.
 A run ID identifies a durable archive record. Do not substitute one ID for another.
 
@@ -32,6 +33,14 @@ yinz agent spawn --kind claude --model haiku --project work --branch feature --j
 ```
 
 Use the actual pane and conversation IDs from the responses, not the example `terminal_3`.
+For a multi-line prompt, write it to a file or pass a heredoc with `--file -`:
+
+```sh
+yinz agent prompt terminal_3 --file - --wait --json <<'EOF'
+Fix the failing test in calc.py, then run the tests.
+EOF
+```
+
 Check `ready`, `status_available`, and `prompt_supported` before submission.
 An idle state alone does not establish readiness or prove task success.
 A completed turn does not verify the resulting work. Run the checks that the task requires.
@@ -43,6 +52,9 @@ Live commands return `AgentResponse` with `--json`. Check `outcome` even when th
 Handle `needs_input`, `failed`, `interrupted`, `target_changed`, and `target_closed` before continuing.
 `timed_out` or a lost connection leaves the result uncertain. Inspect before retrying a mutation.
 The `acknowledged` and `turn_id` fields describe the original submission.
+`agent wait --until idle` returns the last completed turn's final text in `message`, such as after answering `needs_input` with `send-keys`.
+When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
+Run `yinz agent wait terminal_3 --until idle --timeout 10m --json` for the final answer. A long-running background server keeps that wait pending until its timeout.
 
 `agent read --lines N` selects the last N nonblank lines, preserves internal blank rows, and removes blank rows at both ends.
 Whitespace-only rows count as blank. Text and JSON retain the same content, including ghost suggestions.
@@ -64,16 +76,21 @@ agent stopped, clear any draft (Esc can restore the interrupted prompt), then ad
 `--interrupted` to reset it to idle. This also applies to a `Waiting` agent whose dialog you
 dismissed. It needs input, such as Esc, after the agent's last hook and 3 seconds without a
 hook since.
-Use ordinary pane commands to close or restart a pane.
+
+When a worker is done, close its pane: `yinz action close-pane --pane-id terminal_3`.
+Closing the pane leaves its branch and worktree in place. Remove them only when the work is merged or
+deliberately discarded and no pane still runs there: `git worktree remove PATH`, then `git branch -d BRANCH`.
 
 `agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.
 Spawn rejects `prompt` and `reuse_prompt`, including fields in JSON. Use spawn, wait, then prompt.
 Use `--reuse` only when the existing branch or worktree is the intended target.
-Otherwise collisions produce a fresh branch and worktree. Project defaults supply worktree directories and VM images.
+Otherwise collisions produce a fresh branch and worktree. Spawn then reports `requested_branch` beside the actual `branch`.
+A reused worktree reports `reused: true`, and `occupied_by` lists live agents already working there; two agents in one checkout can overwrite each other.
+Yinz adds a nested worktree folder such as `.worktrees/` to the repository's local `.git/info/exclude`. Project defaults supply worktree directories and VM images.
 Read `agent spawn --help` for model, effort, permissions, resume, and Firecracker options.
 For SSH, provide an absolute `--cwd` and `--remote-host`. Verify the remote worktree and explicitly use `--allow-outside-worktree`.
 SSH launches cannot use local project, branch, worktree, or VM options. General pane creation owns arbitrary programs.
-Register an existing pane with `agent register NUMERIC_PANE_ID KIND`.
+Register an existing pane with `agent register PANE_ID KIND`.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0
@@ -82,6 +99,7 @@ yinz agent history-search 'rollback' --project work
 yinz agent predecessors RUN_ID
 ```
 
-Archive commands return their existing JSON shapes without `--json`.
+Archive commands always return JSON; `--json` is accepted and also reports their errors as JSON.
+With `--json`, live commands also report input errors, such as an empty prompt, as a `rejected` `AgentResponse`. Malformed arguments still print plain errors.
 Preserve pagination cursors and filters. Use both host and session filters for one server's records.
 Workflow runs are separate from agent turns and agent archive runs.

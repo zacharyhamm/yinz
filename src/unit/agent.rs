@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 use yinz_types::pane_id::PaneId;
 
 #[test]
@@ -34,6 +35,18 @@ fn prompt_inputs_normalize_newlines_and_require_safe_nonempty_content() {
 }
 
 #[test]
+fn prompt_sources_name_the_mistake() {
+    let both = read_prompt(Some("text".into()), Some(Path::new("-")), &mut &b"x"[..])
+        .unwrap_err()
+        .to_string();
+    assert_eq!(both, "pass prompt TEXT or --file PATH, not both");
+    let neither = read_prompt(None, None, &mut &b""[..])
+        .unwrap_err()
+        .to_string();
+    assert!(neither.contains("--file -"), "{neither}");
+}
+
+#[test]
 fn prompt_request_keeps_conversation_and_wait_deadline() {
     let (request, json, timeout) = request(
         Agent::Prompt {
@@ -66,6 +79,8 @@ fn json_returns_copyable_spawn_target_and_preserves_operation_outcome() {
         pane_id: "terminal_7".parse().unwrap(),
         branch: Some("review-2".into()),
         cwd: Some("/repo/review-2".into()),
+        occupied_by: vec!["terminal_3".parse().unwrap()],
+        ..Default::default()
     });
     let mut output = Vec::new();
     print_response(&response, true, &mut output).unwrap();
@@ -74,6 +89,7 @@ fn json_returns_copyable_spawn_target_and_preserves_operation_outcome() {
     assert_eq!(value["acknowledged"], true);
     assert_eq!(value["turn_id"], "turn-1");
     assert_eq!(value["spawned"]["pane_id"], "terminal_7");
+    assert_eq!(value["spawned"]["occupied_by"], json!(["terminal_3"]));
     assert_eq!(value["spawned"]["branch"], "review-2");
 }
 
@@ -106,6 +122,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         not_ready_reason: None,
         status_available: true,
         prompt_supported: true,
+        background_tasks: Vec::new(),
     });
     for (text, expected) in [
         ("result\n> ", "result\n> \n"),
@@ -148,6 +165,49 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         let decoded: AgentResponse = serde_json::from_slice(&json).unwrap();
         assert_eq!(decoded, response);
     }
+}
+
+#[test]
+fn background_work_is_shown_with_how_to_get_its_answer() {
+    let mut response = AgentResponse::new(AgentOutcome::Completed);
+    response.message = Some("Started.".into());
+    let mut output = Vec::new();
+    print_response(&response, false, &mut output).unwrap();
+    assert!(!String::from_utf8(output).unwrap().contains("background"));
+    let mut json = Vec::new();
+    print_response(&response, true, &mut json).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert!(value.get("background_tasks").is_none());
+
+    let status: yinz_types::agent::control::AgentStatus = serde_json::from_value(json!({
+        "pane_id": "terminal_7", "session": "s", "host_id": "h", "tab_id": null,
+        "target": "Local", "cwd": null, "branch": null, "ready": true,
+        "status_available": true, "prompt_supported": true,
+        "agent": {"kind": "claude", "state": "Idle", "source": "Reported"},
+    }))
+    .unwrap();
+    assert!(
+        status.background_tasks.is_empty(),
+        "older servers omit the field"
+    );
+    response
+        .agents
+        .push(yinz_types::agent::control::AgentStatus {
+            background_tasks: vec!["bj30txqod".into()],
+            ..status
+        });
+    response.background_tasks = vec!["bj30txqod".into()];
+    let mut output = Vec::new();
+    print_response(&response, false, &mut output).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("  background_tasks: bj30txqod\n"));
+    assert!(text.ends_with(
+        "Started.\nBackground work is still running (bj30txqod). `yinz agent wait terminal_7 --until idle` returns its final answer.\n"
+    ));
+    let mut json = Vec::new();
+    print_response(&response, true, &mut json).unwrap();
+    let decoded: AgentResponse = serde_json::from_slice(&json).unwrap();
+    assert_eq!(decoded, response);
 }
 
 #[test]

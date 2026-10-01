@@ -10,7 +10,8 @@ use yinz_types::input::actions::Action;
 pub enum Operations {
     /// Discover host, session, caller, project and background services.
     Context {
-        #[clap(long)]
+        /// The terminal pane to describe as the caller, such as terminal_7 or 7.
+        #[clap(long, value_parser = crate::args::parse_terminal_pane_number)]
         pane_id: Option<u32>,
     },
     /// Assign an existing project to an explicit tab.
@@ -38,7 +39,11 @@ pub enum Operations {
         tab_id: usize,
     },
     /// Rerun a held command pane.
-    PaneRerun { pane_id: u32 },
+    PaneRerun {
+        /// The terminal pane, such as terminal_7 or 7.
+        #[clap(value_parser = crate::args::parse_terminal_pane_number)]
+        pane_id: u32,
+    },
     /// Pin an explicit floating pane.
     PanePin { pane_id: String },
     /// Unpin an explicit floating pane.
