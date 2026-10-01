@@ -4046,17 +4046,22 @@ impl Tab {
             .map(|pane| pane.set_agent_info(agent))
             .unwrap_or(false)
     }
-    /// Whether `pane_id`'s agent is still waiting on a person who has not answered yet -
-    /// which is exactly the condition the blinking frame indicator draws.
-    pub fn pane_wants_attention(&self, pane_id: PaneId) -> bool {
-        self.rendered_pane(pane_id)
-            .is_some_and(|pane| pane.agent_attention_since().is_some())
-    }
-    /// When `pane_id`'s unanswered wait started, for a test that needs to tell one blink from
-    /// a restarted one.
-    pub fn pane_agent_attention_since(&self, pane_id: PaneId) -> Option<Instant> {
-        self.rendered_pane(pane_id)
-            .and_then(|pane| pane.agent_attention_since())
+    /// Whether any pane in this tab needs human input, including hidden panes.
+    pub fn has_waiting_agent(&self) -> bool {
+        self.tiled_panes
+            .get_panes()
+            .chain(self.floating_panes.get_panes())
+            .chain(self.overlay_panes.get_panes())
+            .map(|(_, pane)| pane)
+            .chain(
+                self.suppressed_panes
+                    .values()
+                    .map(|suppressed| &suppressed.pane),
+            )
+            .any(|pane| {
+                pane.agent_info()
+                    .is_some_and(AgentInfo::is_waiting_on_a_person)
+            })
     }
     /// Whether `pane_id` is an agent pane: it has a record, whoever wrote it, or it held one
     /// at some point. The second half is what makes a clean exit fire `agent_exit` - the
@@ -4589,11 +4594,6 @@ impl Tab {
                 }
             }
         }
-
-        // Somebody is answering. Whatever the agent here was waiting for, it is no longer
-        // waiting on being *noticed* - so the indicator comes down now rather than when the
-        // agent gets round to reporting that it is busy again.
-        active_pane.acknowledge_agent_attention();
 
         match pane_id {
             PaneId::Terminal(active_terminal_id) => {

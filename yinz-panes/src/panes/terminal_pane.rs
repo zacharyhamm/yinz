@@ -24,7 +24,6 @@ use vte;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::shared::make_terminal_title;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
-use yinz_types::animation::blink_is_lit;
 use yinz_types::data::PaneContents;
 use yinz_types::data::HOCUS_AGENT_PANE_CONTEXT;
 use yinz_types::input::command::RunCommand;
@@ -140,16 +139,6 @@ pub struct TerminalPane {
     was_an_agent: bool,
     last_agent_kind: Option<String>,
     last_agent_cwd: Option<String>,
-    /// When the agent here entered a wait a person has to answer, while nobody has answered
-    /// it yet. Drives the blinking indicator in the frame's top-right corner, and nothing
-    /// else.
-    ///
-    /// Display state rather than part of the record: the record is what the agent said, and
-    /// the user answering the prompt is not the agent saying anything. It is armed on the
-    /// not-waiting → waiting edge (a repeated `waiting` report must not restart the blink)
-    /// and taken down the moment somebody types here or focuses the pane - see
-    /// `acknowledge_agent_attention`.
-    agent_attention_since: Option<Instant>,
     /// Whether this pane is kin of the focused one - see `Pane::has_related_highlight`.
     /// Written whole-session at a time by `Tab::set_related_panes`, read by `frame_color`.
     is_related: bool,
@@ -635,11 +624,14 @@ impl Pane for TerminalPane {
             pane_title = format!("Esc again {}", pane_title);
         }
 
+        if !frame_params.blank_title {
+            pane_title = self.title_with_agent_indicator(pane_title);
+        }
+
         let frame_geom = frame_params
             .frame_geom_override
             .unwrap_or_else(|| self.current_geom());
         let is_pinned = frame_geom.is_pinned;
-        let is_main_client = frame_params.is_main_client;
         let mut frame = PaneFrame::new(
             frame_geom.into(),
             self.grid.scrollback_position_and_length(),
@@ -650,21 +642,6 @@ impl Pane for TerminalPane {
         frame.subtitle = subtitle;
         if self.suspended {
             frame.indicate_suspended();
-        }
-        if let Some(since) = self.agent_attention_since {
-            if is_main_client {
-                // The client rendering this frame is focused here, so the wait is in front of
-                // somebody: it has been noticed, and the corner has nothing to say. Focus
-                // reaches a pane by a dozen routes and this is the one place that knows the
-                // answer for certain - which also means a wait that arrives while the user is
-                // already in the pane never blinks, the same rule the waiting toast keeps.
-                self.agent_attention_since = None;
-            } else {
-                // The clock is read here rather than threaded down, exactly as the bell fade
-                // reads it in `frame_color_override_strength`: a display detail, and at most a
-                // fraction of a millisecond stale.
-                frame.indicate_agent_attention(blink_is_lit(since, Instant::now()));
-            }
         }
         if let Some((exit_status, is_first_run, _run_command)) = &self.is_held {
             if *is_first_run {
@@ -1395,29 +1372,9 @@ impl Pane for TerminalPane {
         if self.agent == agent {
             return false;
         }
-        // On the edge into a wait a person has to answer, and only there: a `waiting` report
-        // repeating itself - which is every `Notification` behind a `PermissionRequest` -
-        // must not restart the blink. This is the same edge `agent_hook_edges` reads.
-        let was_waiting_on_a_person = self
-            .agent
-            .as_ref()
-            .is_some_and(AgentInfo::is_waiting_on_a_person);
-        let is_waiting_on_a_person = agent
-            .as_ref()
-            .is_some_and(AgentInfo::is_waiting_on_a_person);
-        if !is_waiting_on_a_person {
-            self.agent_attention_since = None;
-        } else if !was_waiting_on_a_person {
-            self.agent_attention_since = Some(Instant::now());
-        }
         self.agent = agent;
+        self.set_should_render(true);
         true
-    }
-    fn agent_attention_since(&self) -> Option<Instant> {
-        self.agent_attention_since
-    }
-    fn acknowledge_agent_attention(&mut self) -> bool {
-        self.agent_attention_since.take().is_some()
     }
     fn set_title_prefix(&mut self, prefix: Option<String>) {
         if self.title_prefix != prefix {
@@ -1447,7 +1404,7 @@ impl Pane for TerminalPane {
         }
     }
     fn stack_list_entry_label(&self) -> String {
-        self.title_with_bell_indicator(self.framed_title())
+        self.title_with_agent_indicator(self.title_with_bell_indicator(self.framed_title()))
     }
     fn custom_title(&self) -> Option<String> {
         if self.pane_name.is_empty() {
@@ -1806,6 +1763,17 @@ impl TerminalPane {
     fn framed_title(&self) -> String {
         format!("[{}] {}", self.pid, self.display_title())
     }
+    fn title_with_agent_indicator(&self, title: String) -> String {
+        if self
+            .agent
+            .as_ref()
+            .is_some_and(AgentInfo::is_waiting_on_a_person)
+        {
+            format!("🔔 {title}")
+        } else {
+            title
+        }
+    }
     fn title_with_bell_indicator(&self, title: String) -> String {
         if self.has_bell_notification {
             format!("{} [!]", title)
@@ -1883,9 +1851,6 @@ impl TerminalPane {
             agent,
             agent_input_revision: 0,
             agent_input_at: None,
-            // A pane the spawn path opened as an agent pane starts `Busy`, so there is
-            // never a wait to draw before the first report arrives.
-            agent_attention_since: None,
             is_related: false,
             borderless: false,
             exclude_from_sync: false,

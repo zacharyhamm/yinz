@@ -29,31 +29,6 @@ use crate::colors::{eightbit_to_rgb, PaletteColor};
 /// `Screen::animation_clock_period`.
 pub const FRAME_PERIOD: Duration = Duration::from_millis(16);
 
-/// How long one phase of a blinking indicator lasts - lit for this, then dark for this, so a
-/// blink is a one-second cycle.
-///
-/// Slow on purpose. A blink is a thing in the corner of the eye asking to be noticed, not a
-/// thing being read; at anything much faster it stops reading as a signal and starts reading as
-/// a fault.
-pub const BLINK_PERIOD: Duration = Duration::from_millis(500);
-
-/// The cadence a blinking indicator asks the shared clock for.
-///
-/// Half a phase, so every phase is certain of a frame. Ticking at exactly [`BLINK_PERIOD`] would
-/// put every wakeup on a transition, where the render debounce and a millisecond of jitter decide
-/// which side of the edge the frame lands on - and a blink that drops a phase reads as a stutter
-/// rather than as a slower blink.
-pub const BLINK_TICK: Duration = Duration::from_millis(250);
-
-/// Whether a blink that started at `since` is lit at `now`.
-///
-/// Lit first: an indicator that appears dark for half a second before its first flash has spent
-/// that half-second saying nothing.
-pub fn blink_is_lit(since: Instant, now: Instant) -> bool {
-    let phases = now.saturating_duration_since(since).as_millis() / BLINK_PERIOD.as_millis();
-    phases.is_multiple_of(2)
-}
-
 /// The shortest a re-aimed tween is allowed to take.
 ///
 /// Three frames at the animation clock's 16ms. A correction that finishes inside a frame or two
@@ -505,24 +480,5 @@ mod tests {
             matches!(blend(from, to, 0.5), PaletteColor::Rgb(_)),
             "a palette index cannot express a half-way colour"
         );
-    }
-
-    /// A blink is lit first, then dark, in equal halves — and stays on that cadence however
-    /// long the wait behind it lasts. A permission prompt can sit unanswered all day.
-    #[test]
-    fn a_blink_starts_lit_and_keeps_even_halves() {
-        let since = Instant::now();
-        let at = |ms| since + Duration::from_millis(ms);
-        assert!(blink_is_lit(since, since), "lit from the first frame");
-        assert!(blink_is_lit(since, at(499)));
-        assert!(!blink_is_lit(since, at(500)));
-        assert!(!blink_is_lit(since, at(999)));
-        assert!(blink_is_lit(since, at(1000)));
-        // Ten minutes in, still on the beat rather than drifted or settled.
-        assert!(blink_is_lit(since, at(600_000)));
-        assert!(!blink_is_lit(since, at(600_500)));
-        // A clock that appears to run backwards - `now` before `since` - is the first frame,
-        // not a panic.
-        assert!(blink_is_lit(at(500), since));
     }
 }

@@ -1551,3 +1551,93 @@ fn arrangement_selects_the_first_unknown_member_when_the_visible_member_leaves()
     assert_eq!(stacks[0].visible, pane(1));
     assert_eq!(screen.get_active_pane_id(&ClientId::new(1)), Some(pane(2)));
 }
+
+#[test]
+fn waiting_agent_bell_tracks_all_panes_and_moves_between_tabs() {
+    use crate::screen::apply_pane_agent_report;
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let mut screen = create_new_screen(
+        Size {
+            cols: 120,
+            rows: 30,
+        },
+        true,
+        true,
+    );
+    let client = ClientId::new(1);
+    let source = TabId::new(0);
+    let destination = TabId::new(1);
+    new_tab(&mut screen, 1, source);
+    new_tab(&mut screen, 2, destination);
+    let waiting = AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Waiting,
+        source: AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: true,
+        cwd: None,
+        session_id: None,
+        run_id: None,
+    };
+    let pane = |id| PaneId::Terminal(TerminalId::new(id));
+    screen
+        .tabs
+        .get_mut(&source)
+        .unwrap()
+        .rename_by_user("界".repeat(40));
+    for overlay in [false, true] {
+        let id = if overlay { 4 } else { 3 };
+        open_floating_pane(&mut screen, source, id, "waiting", overlay);
+        apply_pane_agent_report(&mut screen, pane(id), Some(waiting.clone())).unwrap();
+        assert!(name_of(&screen, source).starts_with("🔔 "));
+        assert_eq!(name_of(&screen, source).matches('🔔').count(), 1);
+        assert!(name_of(&screen, source).width() <= 40);
+    }
+    apply_pane_agent_report(&mut screen, pane(3), None).unwrap();
+    assert!(
+        name_of(&screen, source).starts_with("🔔 "),
+        "the overlay still waits"
+    );
+    screen
+        .tabs
+        .get_mut(&source)
+        .unwrap()
+        .close_pane(pane(4), false, None);
+    assert!(!name_of(&screen, source).contains('🔔'));
+    apply_pane_agent_report(&mut screen, pane(3), Some(waiting.clone())).unwrap();
+    screen
+        .tabs
+        .get_mut(&source)
+        .unwrap()
+        .suppress_pane(pane(3), None);
+    assert!(
+        name_of(&screen, source).starts_with("🔔 "),
+        "suppressed panes still wait"
+    );
+    apply_pane_agent_report(&mut screen, pane(3), None).unwrap();
+    assert!(!name_of(&screen, source).contains('🔔'));
+
+    // Leave another pane behind so moving the waiter does not remove its source tab.
+    open_floating_pane(&mut screen, source, 5, "another pane", false);
+    apply_pane_agent_report(&mut screen, pane(1), Some(waiting)).unwrap();
+    let outcome = screen
+        .break_multiple_panes_to_tab_with_id(vec![pane(1)], destination, true, client)
+        .unwrap();
+    assert!(outcome.succeeded());
+    assert!(!name_of(&screen, source).contains('🔔'));
+    assert!(name_of(&screen, destination).starts_with("🔔 "));
+    screen
+        .switch_active_tab(TabPosition::new(0), None, true, client)
+        .unwrap();
+    assert!(
+        name_of(&screen, destination).starts_with("🔔 "),
+        "switching tabs preserves the bell"
+    );
+    screen
+        .tabs
+        .get_mut(&destination)
+        .unwrap()
+        .close_pane(pane(1), false, None);
+    assert!(!name_of(&screen, destination).contains('🔔'));
+}

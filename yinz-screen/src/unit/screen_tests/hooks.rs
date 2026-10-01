@@ -113,8 +113,7 @@ fn report(state: AgentState, session_id: Option<&str>) -> AgentInfo {
         source: AgentSource::Reported,
         detail: None,
         waiting_on: None,
-        // The blinking frame indicator is the only reader; a wait a person must answer is
-        // what the common case reports, so it is what the helper reports too.
+        // A wait a person must answer is the common case.
         wait_needs_a_person: state == AgentState::Waiting,
         cwd: Some("/work".to_owned()),
         session_id: session_id.map(str::to_owned),
@@ -1010,87 +1009,116 @@ fn the_edges_of_an_agent_record() {
     }
 }
 
-/// The blinking bell in a pane's corner is armed on the *edge* into a wait a person has to
-/// answer, and taken down by the person answering it — not by the agent getting round to
-/// saying it is busy again.
-///
-/// Three things it must not do, each of which it would do if it were driven off the record's
-/// state alone: restart on a repeat `waiting` report (a `PermissionRequest` and the
-/// `Notification` behind it are two reports of one prompt), light up for a wait the permission
-/// mode is about to answer itself, or keep the shared animation clock running after the wait
-/// is over.
 #[test]
-fn a_wait_a_person_must_answer_blinks_until_somebody_answers_it() {
+fn held_waiting_agent_repaints_without_pty_output() {
+    let size = Size { cols: 80, rows: 20 };
+    let mut mock = MockScreen::new(size);
+    let screen_thread = mock.run(None, vec![]);
+    let renders = Watched::new(vec![]);
+    let server_receiver = mock.server_receiver.take().unwrap();
+    let server_thread =
+        log_actions_in_thread!(renders, ServerInstruction::KillSession, server_receiver);
+    mock.to_screen
+        .send(set_agent(0, Some(report(AgentState::Waiting, Some("s1")))))
+        .unwrap();
+    wait_for_settled_render(&renders, size, "waiting agent bell", |frame| {
+        frame.contains('🔔')
+    });
+    let checkpoint = renders.lock().len();
+    // The mock has no plugin thread or PTY EOF to trigger a repaint after this hold.
+    mock.to_screen.send(hold(0, echo_command())).unwrap();
+    wait_for_render_after(
+        &renders,
+        size,
+        checkpoint,
+        "held agent clears waiting bell",
+        |_, frame| frame.contains("EXIT CODE: 0") && !frame.contains('🔔'),
+    );
+    mock.teardown(vec![screen_thread, server_thread]);
+}
+
+#[test]
+fn replayed_held_waiting_agent_requests_repaint() {
     let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
-    new_tab(&mut screen, 1, TabId::new(0));
-    drain_background_jobs(&background_jobs);
+    let tab_id = TabId::new(0);
+    new_tab(&mut screen, 1, tab_id);
     let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
-    let blinking_since = |screen: &Screen| {
-        screen
-            .tab_containing_pane(pane_id)
-            .and_then(|tab| tab.pane_agent_attention_since(pane_id))
-    };
-
-    // A wait the mode answers by itself is a wait everywhere it is *drawn* and nowhere it
-    // would interrupt: the record says `waiting`, and nothing blinks.
-    let mut quiet = report(AgentState::Waiting, Some("s1"));
-    quiet.wait_needs_a_person = false;
-    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(quiet)).unwrap());
-    assert_eq!(blinking_since(&screen), None);
-    assert!(screen.blinking_agent_panes.is_empty());
-
     assert!(apply_pane_agent_report(
         &mut screen,
         pane_id,
-        Some(report(AgentState::Busy, Some("s1")))
+        Some(report(AgentState::Waiting, Some("s1"))),
     )
     .unwrap());
+    assert_eq!(screen.plugin_tab_names()[&tab_id], "🔔 Tab #1");
+    drain_background_jobs(&background_jobs);
 
-    // The real thing.
-    let waiting = report(AgentState::Waiting, Some("s1"));
-    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(waiting.clone())).unwrap());
-    let armed_at = blinking_since(&screen).expect("the wait is blinking");
-    assert!(screen.blinking_agent_panes.contains(&pane_id));
+    super::super::replay_pending_plugin_events(&mut screen, vec![hold(1, echo_command())]).unwrap();
 
-    // The same prompt reported again — the backstop `Notification` behind a
-    // `PermissionRequest` — is the same wait, and must not restart the blink half way
-    // through a phase.
-    let mut again = waiting.clone();
-    again.waiting_on = Some("Bash rm".to_owned());
-    assert!(apply_pane_agent_report(&mut screen, pane_id, Some(again)).unwrap());
     assert_eq!(
-        blinking_since(&screen),
-        Some(armed_at),
-        "a repeat report is the same wait"
+        screen.tabs[&tab_id].pane_agent_info(pane_id).unwrap().state,
+        AgentState::Exited,
     );
+    assert_eq!(screen.plugin_tab_names()[&tab_id], "Tab #1");
+    assert!(drain_background_jobs(&background_jobs).contains(&BackgroundJob::RenderToClients));
+}
 
-    // Somebody types here. The record is untouched — the agent has not said anything — but
-    // the wait has been noticed, so the corner goes quiet.
+#[test]
+fn waiting_agent_bell_survives_typing_and_repeated_reports_without_animation() {
+    let (mut screen, background_jobs) = screen_with_background_jobs(Size { cols: 80, rows: 20 });
+    let tab_id = TabId::new(0);
+    new_tab(&mut screen, 1, tab_id);
+    drain_background_jobs(&background_jobs);
+    let (to_plugin, plugin_updates) = channels::unbounded();
     screen
-        .tab_containing_pane_mut(pane_id)
-        .expect("pane exists")
-        .write_to_pane_id(
-            &Some(KeyWithModifier::new(BareKey::Char('y'))),
-            b"y".to_vec(),
-            false,
-            pane_id,
-            None,
-            None,
-        )
-        .expect("the write lands");
-    assert_eq!(blinking_since(&screen), None);
-    assert_eq!(
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(to_plugin));
+    screen.cli_event_subscribers_present = true;
+    let reported_name = || {
+        plugin_updates.try_iter().find_map(|(instruction, _)| {
+            let PluginInstruction::Update(events) = instruction else {
+                return None;
+            };
+            events.into_iter().find_map(|(_, _, event)| {
+                let Event::TabUpdate(tabs) = event else {
+                    return None;
+                };
+                tabs.into_iter()
+                    .find(|tab| tab.tab_id == tab_id)
+                    .map(|tab| tab.name)
+            })
+        })
+    };
+    let pane_id = PaneId::Terminal(crate::TerminalId::new(1));
+    let waiting = report(AgentState::Waiting, Some("s1"));
+    for _ in 0..2 {
+        assert!(apply_pane_agent_report(&mut screen, pane_id, Some(waiting.clone())).unwrap());
         screen
-            .tab_containing_pane(pane_id)
-            .and_then(|tab| tab.pane_agent_info(pane_id))
-            .map(|agent| agent.state),
-        Some(AgentState::Waiting),
-        "answering the prompt is not the agent saying anything"
+            .tab_containing_pane_mut(pane_id)
+            .unwrap()
+            .write_to_pane_id(
+                &Some(KeyWithModifier::new(BareKey::Char('y'))),
+                b"y".to_vec(),
+                false,
+                pane_id,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(screen.plugin_tab_names()[&tab_id], "🔔 Tab #1");
+        assert!(screen.tabs[&tab_id]
+            .pane_agent_info(pane_id)
+            .unwrap()
+            .is_waiting_on_a_person());
+    }
+    assert_eq!(reported_name().as_deref(), Some("🔔 Tab #1"));
+    assert_eq!(
+        screen.animation_clock_period(std::time::Instant::now()),
+        None
     );
-
-    // And the clock lets go of the pane, so an idle session stops waking up for it.
-    screen.advance_agent_attention_blinks();
-    assert!(screen.blinking_agent_panes.is_empty());
+    assert!(apply_pane_agent_report(&mut screen, pane_id, None).unwrap());
+    assert_eq!(screen.plugin_tab_names()[&tab_id], "Tab #1");
+    assert_eq!(reported_name().as_deref(), Some("Tab #1"));
 }
 
 /// A launch with an environment is `env K=V codex …`; `env` execs, so the pane runs the agent,

@@ -341,11 +341,16 @@ impl Screen {
             // is — as worth saying about a tab wearing a project's name as about one
             // wearing the title that pane lent it, and neither reconstructable from
             // what a bar would leave if it did the cutting itself.
-            let budget = tab.tab_name_budget().saturating_sub(suffix.width());
+            let attention = if tab.has_waiting_agent() { "🔔 " } else { "" };
+            let budget = tab
+                .tab_name_budget()
+                .saturating_sub(suffix.width())
+                .saturating_sub(attention.width());
             names.insert(
                 tab.id,
                 format!(
-                    "{}{}{}{}",
+                    "{}{}{}{}{}",
+                    attention,
                     tab.lone_pane_id_marker(),
                     ellipsize(&base, budget),
                     suffix,
@@ -407,8 +412,8 @@ impl Screen {
 
     /// The pane half of `log_and_report_session_state`, without rebuilding tab state.
     ///
-    /// An agent record lives on a pane, so a changed record does not need a
-    /// `TabUpdate`. It does need to update `SessionInfo`, which embeds the same
+    /// Used when a pane change leaves the derived tab names unchanged.
+    /// It also updates `SessionInfo`, which embeds the same
     /// pane manifest and is read by the session list and `SessionUpdate`
     /// subscribers.
     pub(super) fn report_pane_state(&mut self) -> Result<()> {

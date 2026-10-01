@@ -119,11 +119,11 @@ fn agent_double_escape_sync_preserves_ordinary_delivery_and_attention() {
     assert!(
         matches!(drain_pty_writer(&rx).as_slice(), [PtyWriteInstruction::Write(_, id, _)] if *id == TerminalId::new(2))
     );
-    assert!(tab.pane_agent_attention_since(agent_pane).is_some());
+    assert!(tab.has_waiting_agent());
     tab.write_to_terminals_on_current_tab(&esc, vec![27], false, client)
         .unwrap();
     assert_eq!(drain_pty_writer(&rx).len(), 2);
-    assert!(tab.pane_agent_attention_since(agent_pane).is_none());
+    assert!(tab.has_waiting_agent());
 }
 
 #[test]

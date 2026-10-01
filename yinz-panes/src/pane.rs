@@ -294,8 +294,7 @@ pub trait Pane {
     /// Whether this pane is kin of the focused one - one of a set some plugin named through
     /// `PluginCommand::SetRelatedPanes` - so its frame is drawn with a gentle tint.
     ///
-    /// State on the pane rather than a set threaded through the render, for the same reason
-    /// `agent_attention_since` is: the frame is decided per pane, and a pane that closes
+    /// State on the pane rather than a set threaded through the render: a pane that closes
     /// takes its answer with it. Only terminal panes carry one; agents are terminals.
     fn has_related_highlight(&self) -> bool {
         false
@@ -305,21 +304,6 @@ pub trait Pane {
     fn set_related_highlight(&mut self, _related: bool) -> bool {
         false
     }
-    /// When this pane's agent entered a wait a person has to answer, while nobody has yet.
-    /// `None` once it has been answered, and for every pane that is not an unanswered wait.
-    fn agent_attention_since(&self) -> Option<Instant> {
-        None
-    }
-    /// The wait has been noticed: somebody typed here, or focused the pane. Answers whether
-    /// there was anything to take down, so a caller can stop asking for frames.
-    ///
-    /// Deliberately not a change to the agent record. The record is what the *agent* said,
-    /// and a person answering the prompt is not the agent saying anything - the next hook
-    /// will say it, and until then the row and the manifest are right to read `waiting`.
-    fn acknowledge_agent_attention(&mut self) -> bool {
-        false
-    }
-
     fn right_boundary_x_coords(&self) -> usize {
         self.x() + self.cols()
     }

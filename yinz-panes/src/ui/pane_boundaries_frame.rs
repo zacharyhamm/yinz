@@ -168,13 +168,6 @@ pub struct PaneFrame {
     /// up at render time because `PaneFrame` is compared against the last frame
     /// to decide whether to repaint at all.
     is_suspended: bool,
-    /// The blink phase of the agent-attention indicator: `None` when there is nothing to
-    /// draw, `Some(lit)` for which half of the blink this frame is.
-    ///
-    /// A field for the same reason `is_suspended` is one: `PaneFrame` is compared against the
-    /// last frame to decide whether to repaint, so the phase flip *is* what makes the corner
-    /// redraw.
-    agent_attention: Option<bool>,
     pane_is_stacked_over: bool,
     pane_is_stacked_under: bool,
     pane_is_stacked: bool,
@@ -218,7 +211,6 @@ impl PaneFrame {
             exit_status: None,
             is_first_run: false,
             is_suspended: false,
-            agent_attention: None,
             pane_is_stacked_over: frame_params.pane_is_stacked_over,
             pane_is_stacked_under: frame_params.pane_is_stacked_under,
             pane_is_stacked: frame_params.pane_is_stacked,
@@ -257,11 +249,6 @@ impl PaneFrame {
             Some(exit_status) => Some(ExitStatus::Code(exit_status)),
             None => Some(ExitStatus::Exited),
         };
-    }
-    /// Put up the blinking indicator for an agent here that is waiting on a person, on the
-    /// `lit` half of its blink or the dark one.
-    pub fn indicate_agent_attention(&mut self, lit: bool) {
-        self.agent_attention = Some(lit);
     }
     pub fn indicate_suspended(&mut self) {
         self.is_suspended = true;
@@ -302,60 +289,6 @@ impl PaneFrame {
         }
     }
     fn render_title_right_side(
-        &self,
-        max_length: usize,
-    ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        self.render_title_right_side_inner(max_length)
-    }
-    fn render_title_right_side_inner(
-        &self,
-        max_length: usize,
-    ) -> Option<(Vec<TerminalCharacter>, usize)> {
-        // The agent indicator takes the rightmost slot and SCROLL/PIN get what is left, so a
-        // pane the user has to answer says so in the same place whatever else is going on in
-        // the corner.
-        let attention = self.render_agent_attention(max_length);
-        let space_for_the_rest = attention
-            .as_ref()
-            .map(|(_, length)| max_length.saturating_sub(*length))
-            .unwrap_or(max_length);
-        let rest = self.render_scroll_and_pin_indications(space_for_the_rest);
-        match (rest, attention) {
-            (Some((mut rest, rest_len)), Some((mut attention, attention_len))) => {
-                rest.append(&mut attention);
-                Some((rest, rest_len + attention_len))
-            },
-            (Some(rest), None) => Some(rest),
-            (None, Some(attention)) => Some(attention),
-            (None, None) => None,
-        }
-    }
-    /// The blinking bell for an agent in this pane that is waiting on a person.
-    ///
-    /// The dark half of the blink is the same width in spaces rather than nothing, so the rest
-    /// of the right side does not shuffle sideways twice a second.
-    ///
-    /// The length returned is the *display* width, not the character count - every other
-    /// indicator here is ASCII, where the two are the same, and the bell is two columns wide.
-    fn render_agent_attention(&self, max_length: usize) -> Option<(Vec<TerminalCharacter>, usize)> {
-        let lit = self.agent_attention?;
-        // The ASCII fallback is not a nicety: a two-column glyph written into a corner with
-        // one column left would be truncated mid-character.
-        let (glyph, width) = if max_length >= 4 {
-            ("\u{1f514}", 4)
-        } else if max_length >= 3 {
-            ("!", 3)
-        } else {
-            return None;
-        };
-        let content = if lit {
-            format!(" {glyph} ")
-        } else {
-            " ".repeat(width)
-        };
-        Some((foreground_color(&content, self.color), width))
-    }
-    fn render_scroll_and_pin_indications(
         &self,
         max_length: usize,
     ) -> Option<(Vec<TerminalCharacter>, usize)> {
@@ -1449,19 +1382,12 @@ impl PaneFrame {
         let Some(right_side_space) = right_side_space else {
             return false;
         };
-        let attention_width = self
-            .render_agent_attention(right_side_space)
-            .map(|(_, width)| width)
-            .unwrap_or(0);
-        if self
-            .render_pinned_indication(right_side_space.saturating_sub(attention_width))
-            .is_none()
-        {
+        if self.render_pinned_indication(right_side_space).is_none() {
             return false;
         }
-        // The checkbox is followed by one space, the attention indicator and the
-        // right border. Mouse positions are relative to the pane's content.
-        let start = self.geom.cols - 5 - attention_width - self.content_offset.left;
+        // The checkbox is followed by one space and the right border.
+        // Mouse positions are relative to the pane's content.
+        let start = self.geom.cols - 5 - self.content_offset.left;
         (start..start + 3).contains(&position.column())
     }
     pub fn render(&self) -> Result<(Vec<CharacterChunk>, Option<String>)> {
@@ -1740,29 +1666,26 @@ mod tests {
     #[test]
     fn pin_hit_target_matches_the_visible_checkbox() {
         for cols in [10, 20, 40, 80] {
-            for attention in [None, Some(false), Some(true)] {
-                for show_pin in [false, true] {
-                    for title in ["", "pane 界", "a title that takes all available space"] {
-                        let mut frame = pane_frame_with(false, true, cols);
-                        frame.title = title.into();
-                        frame.content_offset = Offset::frame(1);
-                        frame.scroll_position = (3, 20);
-                        frame.show_pinned_indication = show_pin;
-                        frame.agent_attention = attention;
-                        let rendered = characters_to_string(&frame.render_title().unwrap());
-                        let checkbox = rendered.rfind(" PIN [").map(|start| {
-                            let column = rendered[..start].width() + 5 - frame.content_offset.left;
-                            column..column + 3
-                        });
-                        for column in 0..cols {
-                            assert_eq!(
-                                frame.clicked_on_pinned(Position::new(-1, column as u16)),
-                                checkbox
-                                    .as_ref()
-                                    .is_some_and(|range| range.contains(&column)),
-                                "column {column} of {rendered:?}"
-                            );
-                        }
+            for show_pin in [false, true] {
+                for title in ["", "pane 界", "a title that takes all available space"] {
+                    let mut frame = pane_frame_with(false, true, cols);
+                    frame.title = title.into();
+                    frame.content_offset = Offset::frame(1);
+                    frame.scroll_position = (3, 20);
+                    frame.show_pinned_indication = show_pin;
+                    let rendered = characters_to_string(&frame.render_title().unwrap());
+                    let checkbox = rendered.rfind(" PIN [").map(|start| {
+                        let column = rendered[..start].width() + 5 - frame.content_offset.left;
+                        column..column + 3
+                    });
+                    for column in 0..cols {
+                        assert_eq!(
+                            frame.clicked_on_pinned(Position::new(-1, column as u16)),
+                            checkbox
+                                .as_ref()
+                                .is_some_and(|range| range.contains(&column)),
+                            "column {column} of {rendered:?}"
+                        );
                     }
                 }
             }
@@ -1829,7 +1752,7 @@ mod tests {
         frame.show_pinned_indication = show_pin;
         frame.show_scroll_indication = show_scroll;
         frame
-            .render_title_right_side_inner(80)
+            .render_title_right_side(80)
             .map(|(characters, _)| characters_to_string(&characters))
             .unwrap_or_default()
     }
@@ -1852,63 +1775,12 @@ mod tests {
         assert!(modal_title.bracketed_scroll_indicator(80).is_none());
     }
 
-    /// The blinking bell sits at the very right of the title, and takes exactly as much room
-    /// on its dark half as on its lit one.
-    ///
-    /// The width is the reason this is worth a test: every other indicator in this corner is
-    /// ASCII, where a character count and a column count are the same number, and the bell is
-    /// two columns wide. A right side measured in characters would be laid out one column too
-    /// far right and paint over the frame's corner.
     #[test]
-    fn a_waiting_agents_bell_holds_its_place_on_both_halves_of_the_blink() {
-        let with_attention = |lit: bool, cols: usize| {
-            let mut frame = pane_frame_with(false, true, cols);
-            frame.scroll_position = (1, 2);
-            frame.indicate_agent_attention(lit);
-            frame
-                .render_title_right_side_inner(cols)
-                .expect("something is drawn")
-        };
-
-        let (lit, lit_len) = with_attention(true, 80);
-        let (dark, dark_len) = with_attention(false, 80);
-        assert_eq!(lit_len, dark_len, "the corner does not shuffle sideways");
-        assert!(characters_to_string(&lit).ends_with(" \u{1f514} "));
-        assert!(characters_to_string(&dark).ends_with("    "));
-        // The bell is last, and SCROLL and PIN keep their places to its left.
-        assert!(characters_to_string(&lit).contains("SCROLL"));
-        assert!(characters_to_string(&lit).contains("PIN"));
-        // Two columns for the bell, one space either side - counted, not assumed.
-        assert_eq!(
-            lit_len,
-            dark.iter()
-                .map(|character| character.width())
-                .sum::<usize>(),
-        );
-
-        // Too narrow for a two-column glyph, which would otherwise be written into a corner
-        // with one column left and truncated mid-character.
-        let mut narrow = pane_frame_with(false, false, 10);
-        narrow.show_scroll_indication = false;
-        narrow.show_pinned_indication = false;
-        narrow.indicate_agent_attention(true);
-        assert_eq!(
-            narrow
-                .render_title_right_side_inner(3)
-                .map(|(characters, length)| (characters_to_string(&characters), length)),
-            Some((" ! ".to_owned(), 3))
-        );
-        // And nothing at all rather than half a glyph.
-        assert!(narrow.render_title_right_side_inner(2).is_none());
-    }
-
-    /// Nothing is drawn for a pane with no agent waiting in it, which is nearly every pane.
-    #[test]
-    fn a_pane_with_nothing_waiting_in_it_draws_no_bell() {
+    fn a_pane_without_scroll_or_pin_indications_has_no_right_title() {
         let mut frame = pane_frame_with(false, false, 80);
         frame.show_scroll_indication = false;
         frame.show_pinned_indication = false;
-        assert!(frame.render_title_right_side_inner(80).is_none());
+        assert!(frame.render_title_right_side(80).is_none());
     }
 
     #[test]
