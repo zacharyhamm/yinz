@@ -241,10 +241,35 @@ impl Pane for TerminalPane {
             self.pending_pty_input.extend(bytes);
             return;
         }
+        // Without a Kitty APC start, and with no escape left open at the end, the interceptor
+        // would forward every byte unchanged and finish in ground state. Hand the read to the
+        // parser whole: the loop below flushes it to vte once per escape sequence, which costs
+        // SGR-heavy output like a full-screen TUI's dearly.
+        if self.kitty_interceptor.is_in_ground_state()
+            && bytes.last() != Some(&0x1b)
+            && memchr::memmem::find(&bytes, b"\x1b_").is_none()
+        {
+            let consumed = self
+                .vte_parser
+                .advance_until_terminated(&mut self.grid, &bytes);
+            if consumed < bytes.len() {
+                self.pending_pty_input.extend(&bytes[consumed..]);
+            }
+            return;
+        }
         let mut forwarded: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut index = 0;
         let mut capture_started = false;
         while index < bytes.len() {
+            if self.kitty_interceptor.is_capturing() {
+                let run = self.kitty_interceptor.capture_run(&bytes[index..]);
+                if run > 0 {
+                    // `forwarded` was flushed when the capture began, as `Swallow` does.
+                    index += run;
+                    capture_started = true;
+                    continue;
+                }
+            }
             // Between sequences the interceptor forwards every non-escape byte unchanged and stays
             // in the same state, so the whole run up to the next escape can be copied at once.
             // Ordinary program output is almost entirely such runs, and driving them through the

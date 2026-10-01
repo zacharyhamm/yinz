@@ -15,6 +15,7 @@ yinz-types = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 libc = { workspace = true }
+memchr = { workspace = true }
 png = { version = "0.17.16", default-features = false }
 sixel-image = { version = "0.2.1", default-features = false }
 sixel-tokenizer = { version = "0.1.0", default-features = false }

@@ -7,7 +7,8 @@ Timings come from `cargo x bench` (`yinz-server/benches/multi_pane_render.rs`), 
 stack-sampling profiles of that bench (samply could not run at `perf_event_paranoid=2`), and throwaway
 microbenchmarks that copied the relevant loops. Most runs were short Criterion runs on a machine shared with other
 sessions (load averages of about 9–46), so absolute times vary up to about 2x between runs; relative results were
-consistent. Nothing here has been implemented.
+consistent. Since then, candidates 1 (without the inlining) and 2 (option A) and the Kitty
+`capture_run` change have landed; see [Implemented](#implemented). Nothing else has.
 
 ## Verdict on SIMD
 
@@ -57,6 +58,22 @@ If `fearless_simd` is adopted later, note the following, checked against the 1.0
   equally unoptimized scalar code (0.11 GB/s, against 26 GB/s in an opt-level-3 crate) and can be slower than the
   opt-level-3 dependency code it would replace. Put kernels in a small native-only crate with
   `[profile.dev.package.<crate>] opt-level = 3`.
+
+## Implemented
+
+Measured in October 2026 with `cargo bench -p yinz-server --bench multi_pane_render` against the
+previous commit, on the same shared machine (re-running outliers; single runs swung up to ±40%).
+
+| Change | Where | Measured |
+| --- | --- | --- |
+| Candidate 1, partly: skip the style diff for a cell whose styles `Rc` is the previous cell's, when the chunk has no selection; and return early from `update_and_return_diff` for an unchanged style even with `changed_colors` (an OSC 4 palette re-sent a reset on every reset cell) | `serialize_chunks`, `RcCharacterStyles::ptr_eq`, `update_and_return_diff` | Landed with the commit before the baseline, so not in these numbers |
+| Candidate 2, option A: a read with no `ESC _` and no trailing ESC, in ground state, goes to `advance_until_terminated` whole | `TerminalPane::handle_pty_bytes` | `ingest/sgr_churn` −9 to −14%, `frame/sgr_churn` −3 to −15%, `ingest/cursor_moves` −3 to −15% |
+| Kitty `capture_run` with `memchr3` + `memchr`, matching `push_capture_byte`'s overflow | `interceptor.rs`, called from `TerminalPane::handle_pty_bytes` | `kitty_graphics/ingest` −70%, `kitty_graphics/frame` −64% |
+
+Both ingest changes have property tests comparing them with the byte-at-a-time path:
+`bulk_and_intercepted_ingest_leave_identical_panes` in `yinz-panes` and
+`bulk_capture_matches_per_byte_capture` in `yinz-terminal-graphics`. `PluginPane::handle_plugin_bytes`
+still drives the interceptor byte by byte.
 
 ## Non-SIMD performance candidates
 
