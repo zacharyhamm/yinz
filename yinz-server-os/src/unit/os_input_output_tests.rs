@@ -1152,6 +1152,31 @@ mod coalescing_send_queue {
     }
 
     #[test]
+    fn render_backlog_counts_only_queued_renders_and_the_blocked_write() {
+        let queue = CoalescingSendQueue::new();
+        assert_eq!(queue.render_backlog(), RenderBacklog::default());
+        for message in [
+            render("first"),
+            control("notice"),
+            pane_render(DataPaneId::Terminal(TerminalId::new(1)), "pane"),
+            render("second"),
+        ] {
+            assert!(matches!(queue.push(message), SendQueuePush::Queued));
+        }
+        assert_eq!(queue.render_backlog().queued_renders, 2);
+        assert_eq!(queue.render_backlog().in_flight_for, None);
+        assert_eq!(queue.pop(), Some(render("first")));
+        let backlog = queue.render_backlog();
+        assert_eq!(backlog.queued_renders, 1);
+        assert!(backlog.in_flight_for.is_some());
+        queue.finish_send();
+        assert_eq!(queue.pop(), Some(control("notice")));
+        assert_eq!(queue.pop(), Some(render("second")));
+        queue.finish_send();
+        assert_eq!(queue.render_backlog().queued_renders, 0);
+    }
+
+    #[test]
     fn overflow_snapshot_reflects_a_drained_queue() {
         let queue = CoalescingSendQueue::new();
         assert!(matches!(queue.push(render("x")), SendQueuePush::Queued));

@@ -13,7 +13,7 @@ use crate::pty_host::remote::{
     RemoteConn, RemoteStatus,
 };
 use yinz_bus::os_input_output::{
-    AdoptedTerminal, AsyncReader, RemoteEndpoint, ResolvedSpawn, ServerOsApi,
+    AdoptedTerminal, AsyncReader, RemoteEndpoint, RenderBacklog, ResolvedSpawn, ServerOsApi,
 };
 use yinz_types::command::PaneTarget;
 use yinz_types::data::RemotePaneHandoff;
@@ -168,9 +168,12 @@ const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 1024;
 /// SwitchSession. Only non-initial `PaneRenderUpdate`s without scrollback are
 /// replaceable snapshots; those keep one pending update per pane.
 ///
-/// Ordered messages are bounded by `SEND_QUEUE_CONTROL_CAPACITY`, and queued
-/// render allocations by `SEND_QUEUE_RENDER_BYTE_CAPACITY`. A client that cannot
-/// keep up is disconnected so it can reattach with a complete repaint.
+/// The screen paces itself against `render_backlog`, skipping frames while
+/// renders are queued, so a slow client normally sees fewer, larger frames.
+/// The caps below are the last resort for a client that stops reading: ordered
+/// messages are bounded by `SEND_QUEUE_CONTROL_CAPACITY`, and queued render
+/// allocations by `SEND_QUEUE_RENDER_BYTE_CAPACITY`. A client that hits them is
+/// disconnected so it can reattach with a complete repaint.
 /// A pending pane render may be delivered after a `SubscribedPaneClosed` for
 /// the same pane; clients must tolerate that race anyway, since pane closure
 /// always races in-flight updates.
@@ -183,6 +186,8 @@ struct CoalescingSendQueue {
 struct SendQueueState {
     control: VecDeque<ServerToClientMsg>,
     render_bytes: usize,
+    /// `Render`s in `control`.
+    queued_renders: usize,
     pending_pane_renders: BTreeMap<yinz_types::data::PaneId, ServerToClientMsg>,
     in_flight: Option<InFlightSend>,
     closed: bool,
@@ -305,6 +310,7 @@ impl CoalescingSendQueue {
                         );
                     }
                     state.render_bytes += content.capacity();
+                    state.queued_renders += 1;
                 }
                 if let ServerToClientMsg::PaneRenderUpdate { pane_id, .. } = &msg {
                     // This response includes a newer viewport. A pending snapshot
@@ -325,6 +331,7 @@ impl CoalescingSendQueue {
             if let Some(msg) = state.control.pop_front() {
                 if let ServerToClientMsg::Render { content } = &msg {
                     state.render_bytes -= content.capacity();
+                    state.queued_renders -= 1;
                 }
                 let (kind, render_bytes) = message_size_and_kind(&msg);
                 state.in_flight = Some(InFlightSend {
@@ -355,6 +362,13 @@ impl CoalescingSendQueue {
     }
     fn finish_send(&self) {
         self.state.lock().unwrap().in_flight = None;
+    }
+    fn render_backlog(&self) -> RenderBacklog {
+        let state = self.state.lock().unwrap();
+        RenderBacklog {
+            queued_renders: state.queued_renders,
+            in_flight_for: state.in_flight.map(|send| send.started.elapsed()),
+        }
     }
     #[cfg(test)]
     fn len(&self) -> usize {
@@ -1293,6 +1307,18 @@ impl ServerOsApi for ServerOsInputOutput {
             sender.shutdown_reads();
         }
         Ok(())
+    }
+
+    fn clients_render_backlog(&self) -> Vec<(ClientId, RenderBacklog)> {
+        self.client_senders
+            .lock()
+            .map(|senders| {
+                senders
+                    .iter()
+                    .map(|(client_id, sender)| (*client_id, sender.queue.render_backlog()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn load_palette(&self) -> Palette {

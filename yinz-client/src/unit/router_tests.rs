@@ -6,6 +6,7 @@
 //! delay and then reporting an empty message rather than a departed server.
 
 use super::super::router::route;
+use crate::render_budget::{RenderBudget, RENDER_BUDGET_BYTES};
 use crate::test_support::FakeClientOsApi;
 use crate::ClientInstruction;
 use yinz_runtime::channels::{self, SenderWithContext};
@@ -14,7 +15,10 @@ use {yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg};
 fn run_router(os_input: FakeClientOsApi) -> Vec<ClientInstruction> {
     let (sender, receiver) = channels::unbounded();
     let sender = SenderWithContext::new(sender);
-    let router = std::thread::spawn(move || route(Box::new(os_input), sender));
+    let router = std::thread::spawn(move || {
+        let render_budget = RenderBudget::new(RENDER_BUDGET_BYTES);
+        route(Box::new(os_input), sender, &render_budget)
+    });
     router.join().expect("router thread panicked");
     // The sender is dropped with the router thread, so this drains and stops.
     receiver

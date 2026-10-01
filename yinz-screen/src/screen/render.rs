@@ -8,7 +8,16 @@ use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::{ClientId, ServerInstruction};
 use std::collections::HashMap;
+use std::time::Duration;
 use yinz_types::pane_size::Viewport;
+
+/// Frames a client may have queued behind its in-flight write before the screen
+/// stops rendering. See `Screen::a_client_is_behind_on_renders`.
+const MAX_QUEUED_RENDERS: usize = 1;
+/// One write can legitimately block for seconds: the client reads the next frame only
+/// once its terminal has taken several megabytes of the last. Only a client that has
+/// stopped reading should take this long.
+const STALLED_CLIENT_WRITE: Duration = Duration::from_secs(30);
 
 impl Screen {
     pub(super) fn watched_tab_id(&self) -> Option<TabId> {
@@ -38,6 +47,38 @@ impl Screen {
             .senders
             .send_to_background_jobs(BackgroundJob::RenderToClients);
         Ok(())
+    }
+
+    /// Whether a client still has a frame queued behind the one it is writing.
+    ///
+    /// Rendering then would only queue another diff it cannot drain, until its send
+    /// queue overflows and the server disconnects it. Skipping the frame loses
+    /// nothing: pane dirty state accumulates, and the next frame carries it all.
+    /// A client whose write has been blocked for `STALLED_CLIENT_WRITE` no longer
+    /// holds frames back, so a wedged client cannot freeze the others; the send
+    /// queue's caps disconnect it instead.
+    pub fn a_client_is_behind_on_renders(&self) -> bool {
+        let Some(os_input) = self.bus.os_input.as_ref() else {
+            return false;
+        };
+        os_input
+            .clients_render_backlog()
+            .iter()
+            .any(|(_, backlog)| {
+                backlog.queued_renders >= MAX_QUEUED_RENDERS
+                    && backlog
+                        .in_flight_for
+                        .is_none_or(|blocked| blocked < STALLED_CLIENT_WRITE)
+            })
+    }
+
+    /// Ask the debouncer for another frame, as `render` does, without the bookkeeping
+    /// `render` repeats for each new frame request.
+    pub fn retry_render_later(&self) {
+        let _ = self
+            .bus
+            .senders
+            .send_to_background_jobs(BackgroundJob::RenderToClients);
     }
 
     pub fn render_to_clients(&mut self) -> Result<()> {

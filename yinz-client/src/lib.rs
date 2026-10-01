@@ -28,6 +28,7 @@ mod host_transport;
 mod input_handler;
 mod keyboard_parser;
 mod nested_reannounce;
+mod render_budget;
 mod router;
 mod startup;
 mod startup_signals;
@@ -669,7 +670,14 @@ pub fn start_client(
         })
         .unwrap();
 
-    let router_thread = crate::router::spawn(os_input.clone(), send_client_instructions);
+    let render_budget = std::sync::Arc::new(crate::render_budget::RenderBudget::new(
+        crate::render_budget::RENDER_BUDGET_BYTES,
+    ));
+    let router_thread = crate::router::spawn(
+        os_input.clone(),
+        send_client_instructions,
+        render_budget.clone(),
+    );
 
     let teardown = ClientTeardown::new(
         full_screen_ws.rows,
@@ -693,8 +701,11 @@ pub fn start_client(
         nested_reannounce: &nested_reannounce,
         teardown,
         synchronised_output,
+        render_budget: &render_budget,
     }
     .run(&receive_client_instructions);
+    // The router may be waiting for frames to drain that nobody will now write.
+    render_budget.close();
     let exit_msg = outcome.exit_msg;
     let reconnect_to_session = outcome.reconnect_to_session;
 

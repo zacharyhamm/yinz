@@ -50,7 +50,7 @@ use {
 };
 
 use crate::background_jobs::BackgroundJob;
-use crate::os_input_output::{AsyncReader, NullAsyncReader};
+use crate::os_input_output::{AsyncReader, NullAsyncReader, RenderBacklog};
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{
     plugins::{PluginInstruction, PluginRenderAsset},
@@ -267,12 +267,15 @@ type PluginReceiver = Receiver<(PluginInstruction, ErrorContext)>;
 /// Every message the fake os api sent to each client, shared with the `FakeInputOutput` that
 /// records them.
 type CapturedClientMessages = Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>;
+/// What the fake os api reports as each client's render backlog.
+type RenderBacklogs = Arc<Mutex<Vec<(ClientId, RenderBacklog)>>>;
 
 #[derive(Clone, Default)]
 struct FakeInputOutput {
     fake_filesystem: Arc<Mutex<HashMap<String, String>>>,
     server_to_client_messages: CapturedClientMessages,
     tty_stdin_bytes: TtyStdinBytes,
+    render_backlog: RenderBacklogs,
 }
 
 impl ServerOsApi for FakeInputOutput {
@@ -366,6 +369,9 @@ impl ServerOsApi for FakeInputOutput {
     }
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
+    }
+    fn clients_render_backlog(&self) -> Vec<(ClientId, RenderBacklog)> {
+        self.render_backlog.lock().unwrap().clone()
     }
 }
 
@@ -2011,6 +2017,7 @@ mod plugin_broadcasts;
 mod quit;
 mod reconfigure;
 mod related_panes;
+mod render_pacing;
 mod reveal_pane;
 mod scroll_and_warp;
 mod sizing;
