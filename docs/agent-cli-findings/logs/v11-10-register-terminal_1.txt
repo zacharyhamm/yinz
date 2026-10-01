@@ -1,3 +1,0 @@
-$ yinz --session verify-v11 agent register terminal_1 reviewer
-{"kind":"reviewer","pane_id":1}
-exit=0

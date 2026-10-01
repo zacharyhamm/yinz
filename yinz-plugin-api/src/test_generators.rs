@@ -1335,6 +1335,7 @@ pub(crate) fn agent_infos(tc: &hegel::TestCase) -> AgentInfo {
             AgentSource::Spawned,
             AgentSource::Registered,
             AgentSource::Reported,
+            AgentSource::Detected,
         ])),
         detail: optional_strings(tc),
         waiting_on: optional_strings(tc),

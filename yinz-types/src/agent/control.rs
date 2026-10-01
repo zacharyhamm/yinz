@@ -120,6 +120,9 @@ pub enum NotReadyReason {
     NotIdle,
     PendingSubmission,
     UnconsumedInput,
+    /// An agent detected in the pane's foreground that Yinz did not launch. It cannot be
+    /// prompted; relaunch it with `agent spawn`.
+    Unmanaged,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -339,9 +342,15 @@ pub fn claude_prompt_text(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// Whether `prompt` is exactly the command that starts a new conversation in place: Claude's
+/// `/clear` or Codex's `/new`. Its lifecycle carries the submission to the new conversation.
+pub fn is_conversation_reset(kind: &str, prompt: &str) -> bool {
+    matches!((kind, prompt), ("claude", "/clear") | ("codex", "/new"))
+}
+
 /// Commands do not produce the lifecycle acknowledgement required by prompt submission.
 pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
-    if kind == "claude" && prompt == "/clear" {
+    if is_conversation_reset(kind, prompt) {
         return false;
     }
     let text = if kind == "claude" {

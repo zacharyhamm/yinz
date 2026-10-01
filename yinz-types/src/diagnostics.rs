@@ -131,6 +131,7 @@ pub enum ScreenContext {
     SetPaneSuspended,
     UpdatePaneName,
     UpdatePaneCwd,
+    UpdatePaneForegroundCommand,
     UpdatePaneHost,
     SetPaneTitlePrefix,
     SetPaneSubtitle,

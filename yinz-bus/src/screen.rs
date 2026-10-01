@@ -227,6 +227,12 @@ pub enum ScreenInstruction {
     /// loaded yet, or that missed the event, had no second way to find out and
     /// stayed wrong about the pane for as long as it lived.
     UpdatePaneCwd(TerminalId, Option<PathBuf>),
+    /// A terminal pane's foreground command, as pty last saw it. Empty forgets it: the
+    /// pane's shell is in the foreground, or the pane has gone.
+    ///
+    /// Held here so `agent list` can name an agent someone started by hand in a shell,
+    /// which has no agent record until it reports.
+    UpdatePaneForegroundCommand(TerminalId, Vec<String>),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
     UpdatePaneHost(TerminalId, Option<String>, Option<PathBuf>),

@@ -9948,6 +9948,30 @@ mod tests {
             assert_eq!(hocus_proto::agent::hook_state(&event), None);
         }
     }
+
+    #[test]
+    fn hidden_claude_helper_subagents_are_not_archived_but_typed_ones_are() {
+        let mut state = State::default();
+        let suggestion = wire::HookEvent {
+            agent_id: Some("a911fc5f83aef85b7".into()),
+            agent_type: Some(String::new()),
+            last_assistant_message: Some("fix the sub function in calc.py".into()),
+            ..hook("SubagentStop")
+        };
+        state.record_run_event(7, "claude", &suggestion, 1);
+        assert!(state.runs[&7].entries.is_empty());
+        let worker = wire::HookEvent {
+            agent_id: Some("worker-7".into()),
+            agent_type: Some("general-purpose".into()),
+            last_assistant_message: Some("SUB=sub".into()),
+            ..hook("SubagentStop")
+        };
+        state.record_run_event(7, "claude", &worker, 2);
+        let run = &state.runs[&7];
+        assert_eq!(run.entries.len(), 1);
+        assert_eq!(run.entries[0].text, "Subagent worker-7:\nSUB=sub");
+    }
+
     #[test]
     fn codex_assistant_message_windows_replay_once_and_keep_final_responses() {
         let mut state = State::default();

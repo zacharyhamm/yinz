@@ -160,6 +160,59 @@ fn send_keys(keys: Vec<BareKey>) -> AgentRequest {
 }
 
 #[test]
+fn list_names_a_hand_started_agent_in_a_shell_as_detected_and_unmanaged() {
+    let (mut screen, messages, _writes) = setup("bash");
+    let list = |screen: &mut Screen| {
+        screen.agent_control(AgentRequest::List { project: None }, CLIENT);
+        replies(&messages, CLIENT).pop().unwrap()
+    };
+    assert!(list(&mut screen).agents.is_empty());
+    screen.terminal_foreground_cmds.insert(
+        TerminalId::new(7),
+        vec![
+            "/usr/local/bin/codex".into(),
+            "--model".into(),
+            "luna".into(),
+        ],
+    );
+    let listed = list(&mut screen);
+    assert_eq!(listed.agents.len(), 1);
+    let status = &listed.agents[0];
+    assert_eq!(status.pane_id, PANE);
+    assert_eq!(status.agent.kind, "codex");
+    assert_eq!(
+        status.agent.source,
+        yinz_types::agent::AgentSource::Detected
+    );
+    assert_eq!(status.not_ready_reason, Some(NotReadyReason::Unmanaged));
+    assert!(!status.ready && !status.status_available && !status.prompt_supported);
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let refused = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(refused.outcome, AgentOutcome::NotAgent);
+    assert!(refused.message.unwrap().contains("did not launch"));
+    // A reported record wins, and is listed once.
+    report(&mut screen, hook("SessionStart"));
+    let listed = list(&mut screen);
+    assert_eq!(listed.agents.len(), 1);
+    assert_eq!(
+        listed.agents[0].agent.source,
+        yinz_types::agent::AgentSource::Reported
+    );
+    // Something else in the foreground is not an agent.
+    report(&mut screen, hook("SessionEnd"));
+    screen
+        .terminal_foreground_cmds
+        .insert(TerminalId::new(7), vec!["vim".into(), "codex".into()]);
+    assert!(list(&mut screen).agents.is_empty());
+}
+
+#[test]
 fn initial_status_distinguishes_missing_non_agent_and_exited_targets() {
     for target in pane_targets() {
         for case in ["missing", "shell", "cleared-exit", "retained-exit"] {
@@ -1970,6 +2023,87 @@ fn cli_clear_restores_readiness_and_allows_the_next_prompt() {
         let completed = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(completed.outcome, AgentOutcome::Completed);
         assert!(completed.agents[0].ready);
+    }
+}
+
+#[test]
+fn cli_codex_new_restores_readiness_like_claude_clear() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("codex", target);
+        report_kind(&mut screen, "codex", hook("SessionStart"));
+        screen.agent_control(
+            AgentRequest::Prompt {
+                pane_id: PANE,
+                expected_session_id: None,
+                prompt: "/new".into(),
+                wait: true,
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        // Typed alone: an empty paste after it would discard it in Codex's paste-burst handling.
+        assert_eq!(finish_paste(&writes), b"/new");
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(501));
+        assert_eq!(finish_paste(&writes), b"\r");
+        assert!(screen.agent_clear_inputs.contains_key(&PANE));
+        // The bridge reports a replaced thread as an end and a clear start.
+        report_kind(&mut screen, "codex", hook("SessionEnd"));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::TargetChanged
+        );
+        // A wait issued before the new conversation starts waits for it.
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        report_kind(
+            &mut screen,
+            "codex",
+            HookEvent {
+                codex_hooks_ready: Some(true),
+                ..clear_start()
+            },
+        );
+        assert!(screen.agent_clear_inputs.is_empty());
+        let waited = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(waited.outcome, AgentOutcome::Ok);
+        assert_eq!(
+            waited.agents[0].agent.session_id.as_deref(),
+            Some("cleared-conversation")
+        );
+        assert!(waited.agents[0].ready);
+        screen.agent_control(prompt(true), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        finish_paste(&writes);
+        for name in ["UserPromptSubmit", "Stop"] {
+            report_kind(
+                &mut screen,
+                "codex",
+                HookEvent {
+                    session_id: "cleared-conversation".into(),
+                    ..hook(name)
+                },
+            );
+        }
+        let completed = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(completed.outcome, AgentOutcome::Completed);
+        assert!(completed.agents[0].ready);
+    }
+}
+
+#[test]
+fn conversation_reset_commands_are_exact_and_per_kind() {
+    use yinz_types::agent::control::is_command_prompt;
+    assert!(!is_command_prompt("claude", "/clear"));
+    assert!(!is_command_prompt("codex", "/new"));
+    for (kind, prompt) in [
+        ("claude", "/new"),
+        ("codex", "/clear"),
+        ("codex", " /new"),
+        ("codex", "/new please"),
+    ] {
+        assert!(is_command_prompt(kind, prompt), "{kind} {prompt:?}");
     }
 }
 

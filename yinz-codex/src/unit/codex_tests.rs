@@ -892,13 +892,13 @@ fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
         .unwrap();
     assert_eq!(
         announced,
-        Some(json!({
+        vec![json!({
             "hook_event_name":"SessionStart",
             "session_id":"real",
             "source":"startup",
             "cwd":"/work",
             "_yinz_codex_hooks_ready":false,
-        }))
+        })]
     );
     // The TUI titles a conversation from a hidden thread it starts on the first prompt. Either
     // the request or the reply may be what marks it ephemeral.
@@ -931,7 +931,7 @@ fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
             connection
                 .response(&json!({"id":id,"result":{"thread":thread}}), &ui)
                 .unwrap(),
-            None
+            Vec::<Value>::new()
         );
         connection
             .request(
@@ -953,11 +953,52 @@ fn hidden_helper_threads_never_claim_the_pane_or_announce_themselves() {
                 &ui,
             )
             .unwrap()
+            .pop()
             .unwrap();
         assert_eq!(announced["source"], source);
         assert!(announced.get("cwd").is_none());
         assert!(binding_for(root.path(), "other").unwrap().is_some());
     }
+}
+
+#[test]
+fn a_new_thread_replacing_the_selected_one_is_reported_as_a_clear() {
+    let root = tempfile::tempdir().unwrap();
+    let ui = registration(root.path(), "aaaaaaaaaaaa");
+    let mut connection = Conversations::default();
+    let mut start = |id: &str, thread: Value| {
+        connection
+            .request(&json!({"id":id,"method":"thread/start"}), &ui)
+            .unwrap();
+        connection
+            .response(&json!({"id":id,"result":{"thread":thread}}), &ui)
+            .unwrap()
+    };
+    let first = start("1", json!({"id":"first","status":{"type":"idle"}}));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["source"], "startup");
+    // The title generator's hidden thread is not a replacement.
+    assert!(start("2", json!({"id":"title","ephemeral":true})).is_empty());
+    // `/new`.
+    let replaced = start(
+        "3",
+        json!({"id":"second","cwd":"/work","status":{"type":"idle"}}),
+    );
+    assert_eq!(
+        replaced,
+        vec![
+            json!({"hook_event_name":"SessionEnd","session_id":"first","reason":"clear"}),
+            json!({
+                "hook_event_name":"SessionStart",
+                "session_id":"second",
+                "source":"clear",
+                "cwd":"/work",
+                "_yinz_codex_hooks_ready":true,
+            }),
+        ]
+    );
+    assert!(binding_for(root.path(), "first").unwrap().is_none());
+    assert!(binding_for(root.path(), "second").unwrap().is_some());
 }
 
 #[test]
@@ -1475,7 +1516,7 @@ fn only_an_idle_selection_can_bootstrap_codex_readiness() {
         conversations
             .request(&json!({"id":1,"method":"thread/start"}), &registration)
             .unwrap();
-        let hook = conversations.response(&json!({"id":1,"result":{"thread":{"id":"selected","cwd":"/work","status":status}}}), &registration).unwrap().unwrap();
+        let hook = conversations.response(&json!({"id":1,"result":{"thread":{"id":"selected","cwd":"/work","status":status}}}), &registration).unwrap().pop().unwrap();
         assert_eq!(hook["_yinz_codex_hooks_ready"], status["type"] == "idle");
     }
 }
@@ -1743,7 +1784,7 @@ fn failures_belong_only_to_the_selected_current_turn() {
             &registration
         )
         .unwrap()
-        .is_none());
+        .is_empty());
     conversations
         .request(
             &json!({"id":3,"method":"turn/start","params":{"threadId":"hidden"}}),
@@ -1757,7 +1798,7 @@ fn failures_belong_only_to_the_selected_current_turn() {
     ] {
         assert!(conversations.response(&json!({"method":"turn/completed","params":{
             "threadId":thread,"turn":{"id":turn,"status":"failed","error":{"message":"ignore"}}
-        }}), &registration).unwrap().is_none());
+        }}), &registration).unwrap().is_empty());
     }
     let failure = json!({"method":"turn/completed","params":{
         "threadId":"selected","turn":{"id":"active","status":"failed","error":{"message":"API refused"}}
@@ -1765,6 +1806,7 @@ fn failures_belong_only_to_the_selected_current_turn() {
     let hook = conversations
         .response(&failure, &registration)
         .unwrap()
+        .pop()
         .unwrap();
     assert_eq!(
         hook,
@@ -1773,7 +1815,7 @@ fn failures_belong_only_to_the_selected_current_turn() {
     assert!(conversations
         .response(&failure, &registration)
         .unwrap()
-        .is_none());
+        .is_empty());
     conversations
         .response(
             &json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"new"}}}),
@@ -1786,8 +1828,8 @@ fn failures_belong_only_to_the_selected_current_turn() {
             &registration,
         )
         .unwrap();
-    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_none());
-    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_none());
+    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_empty());
+    assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_empty());
 }
 
 #[tokio::test]

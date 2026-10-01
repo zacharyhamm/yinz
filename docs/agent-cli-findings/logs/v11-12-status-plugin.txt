@@ -1,5 +1,0 @@
-$ yinz --session verify-v11 agent status plugin_1 --json
-error: invalid value 'plugin_1' for '<TARGET>': expected a terminal pane ID, such as terminal_7 or 7; plugin panes do not run agents
-
-For more information, try '--help'.
-exit=2

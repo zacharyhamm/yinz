@@ -1,1 +1,0 @@
-Moved pane to session 'verify-v10b'

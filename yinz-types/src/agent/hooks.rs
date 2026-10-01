@@ -601,6 +601,12 @@ pub struct HookEvent {
     /// finishing while the agent above it works on.
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// The subagent's type on a Claude subagent hook, such as `general-purpose`.
+    ///
+    /// Claude reports an empty type for its own hidden helpers, such as the prompt-suggestion
+    /// subagent, which no caller launched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -714,6 +720,7 @@ impl HookEvent {
             approvals_reviewer: self.approvals_reviewer.clone(),
             prompt: cut(&self.prompt, PRUNED_MESSAGE_CHARS),
             agent_id: self.agent_id.clone(),
+            agent_type: self.agent_type.clone(),
             message_id: self.message_id.clone(),
             index: self.index,
             final_batch: self.final_batch,

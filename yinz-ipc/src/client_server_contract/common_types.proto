@@ -847,6 +847,7 @@ enum AgentSource {
   AGENT_SOURCE_SPAWNED = 1;
   AGENT_SOURCE_REPORTED = 2;
   AGENT_SOURCE_REGISTERED = 3;
+  AGENT_SOURCE_DETECTED = 4;
 }
 
 // Supporting enums and messages

@@ -646,6 +646,7 @@ enum AgentSource {
     Spawned = 0;
     Reported = 1;
     Registered = 2;
+    Detected = 3;
 }
 
 message IndexInPaneGroup {

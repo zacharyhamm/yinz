@@ -2811,7 +2811,7 @@ impl Pty {
                 self.forget_terminal_cwd(id);
                 self.forget_terminal_host(id);
                 self.terminal_cmds.remove(&id);
-                self.terminal_foreground_cmds.remove(&id);
+                self.forget_terminal_foreground(id);
                 self.bus
                     .os_input
                     .as_ref()
@@ -2957,7 +2957,7 @@ impl Pty {
         self.pane_activity_flags.remove(&terminal_id);
         self.forget_terminal_cwd(terminal_id);
         self.terminal_cmds.remove(&terminal_id);
-        self.terminal_foreground_cmds.remove(&terminal_id);
+        self.forget_terminal_foreground(terminal_id);
         self.forget_terminal_host(terminal_id);
         // The plugin that spawned this pane lives in *this* session, so it does
         // not follow the pane out.
@@ -3536,6 +3536,22 @@ impl Pty {
             .send_to_screen(ScreenInstruction::UpdatePaneHost(terminal_id, None, None));
     }
 
+    fn forget_terminal_foreground(&mut self, terminal_id: TerminalId) {
+        if self
+            .terminal_foreground_cmds
+            .remove(&terminal_id)
+            .is_some_and(|command| !command.is_empty())
+        {
+            let _ =
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::UpdatePaneForegroundCommand(
+                        terminal_id,
+                        Vec::new(),
+                    ));
+        }
+    }
+
     fn forget_terminal_cwd(&mut self, terminal_id: TerminalId) {
         if self.terminal_cwds.remove(&terminal_id).is_some() {
             let _ = self
@@ -3707,6 +3723,12 @@ impl Pty {
                             focused_client_ids.into_iter().collect(),
                         ),
                     )]));
+                let _ = self.bus.senders.send_to_screen(
+                    ScreenInstruction::UpdatePaneForegroundCommand(
+                        *terminal_id,
+                        foreground_cmd.clone(),
+                    ),
+                );
                 self.terminal_foreground_cmds
                     .insert(*terminal_id, foreground_cmd);
             }

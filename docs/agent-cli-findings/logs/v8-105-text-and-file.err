@@ -1,5 +1,0 @@
-error: the argument '[TEXT]' cannot be used with '--file <FILE>'
-
-Usage: yinz agent prompt --json <TARGET> <TEXT>
-
-For more information, try '--help'.

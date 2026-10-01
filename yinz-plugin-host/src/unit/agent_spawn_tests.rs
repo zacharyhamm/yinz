@@ -77,7 +77,7 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
             let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
             let PtyInstruction::SpawnTerminal(
                 Some(TerminalAction::RunCommand(command)),
-                _,
+                title,
                 _,
                 _,
                 placement,
@@ -91,6 +91,7 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
                 placement,
                 ClientTabIndexOrPaneId::ClientIdNoFocus(crate::ClientId::new(1))
             );
+            assert_eq!(title.as_deref(), Some("codex (gpt-test)"));
             assert_eq!(
                 command.cwd,
                 Some(worker_root.join(".worktrees").join(branch))
@@ -110,7 +111,8 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
     for (pane, branch) in [(7, "review"), (8, "review-2")] {
         let spawned = spawn_agent_for_cli(
             AgentSpawnSpec {
-                kind: Some("codex".into()),
+                kind: Some(" Codex ".into()),
+                model: Some("gpt-test".into()),
                 branch: Some("review".into()),
                 ..Default::default()
             },

@@ -4174,7 +4174,7 @@ pub fn session_listing(session: &SessionInfo) -> Value {
                         "title": pane.title,
                         "focused": pane.is_focused,
                         "floating": pane.is_floating,
-                        "command": pane.terminal_command,
+                        "command": pane.terminal_command.as_deref().map(launch::display_command),
                         "exit_status": pane.exit_status,
                     })
                 })
@@ -4428,7 +4428,7 @@ mod host {
                                     "pane_id": pane.id.legacy_parts().0,
                                     "is_plugin": pane.is_plugin(),
                                     "title": pane.title,
-                                    "command": pane.terminal_command,
+                                    "command": pane.terminal_command.as_deref().map(launch::display_command),
                                     "exit_status": pane.exit_status,
                                 })
                             })

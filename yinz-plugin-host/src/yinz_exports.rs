@@ -2989,6 +2989,25 @@ fn prewarm_agent_workflows(folder: PathBuf) {
     });
 }
 
+/// A CLI-spawned agent pane's title, such as `claude (haiku)`.
+///
+/// Without one the title is the whole command line, which for claude carries kilobytes of
+/// hook wiring. `None` for a raw command, which keeps that default.
+fn agent_pane_title(spec: &AgentSpawnSpec) -> Option<String> {
+    let nonblank = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let kind = nonblank(&spec.kind)?.to_lowercase();
+    Some(match nonblank(&spec.model) {
+        Some(model) => format!("{kind} ({model})"),
+        None => kind,
+    })
+}
+
 /// Launch an agent for a direct CLI request, using the same planner and checkout policy as plugins.
 pub fn spawn_agent_for_cli(
     mut spec: AgentSpawnSpec,
@@ -3014,6 +3033,7 @@ pub fn spawn_agent_for_cli(
         data_access,
     )?;
     let command = prepared.command;
+    let title = agent_pane_title(&spec);
     let action = RunCommandAction {
         command: command.path,
         args: command.args,
@@ -3027,7 +3047,7 @@ pub fn spawn_agent_for_cli(
     senders
         .send_to_pty(PtyInstruction::SpawnTerminal(
             Some(TerminalAction::RunCommand(action.into())),
-            None,
+            title,
             NewPanePlacement::Tiled {
                 direction: None,
                 borderless: None,

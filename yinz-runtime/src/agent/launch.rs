@@ -301,6 +301,62 @@ pub fn claude_hook_settings_argument() -> String {
     super::claude_hook_settings(super::CLAUDE_HOOK_REPORT_COMMAND).to_string()
 }
 
+/// The planned arguments without the `--settings <hook json>` pair this planner adds for
+/// claude: a few kilobytes of hook wiring that say nothing about the launch. Only the
+/// planner's own pair is dropped; any other `--settings` is kept.
+pub fn display_args(args: &[String]) -> Vec<String> {
+    let hooks = claude_hook_settings_argument();
+    let mut shown = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--settings" && args.get(index + 1) == Some(&hooks) {
+            index += 2;
+            continue;
+        }
+        shown.push(args[index].clone());
+        index += 1;
+    }
+    shown
+}
+
+/// A pane's stringified command (`RunCommand`'s space-joined form) without the planner's
+/// hook wiring: the `--settings <hook json>` pair, the `YINZ_CLAUDE_INLINE_HOOKS` and
+/// agent-pane markers, and the `env` wrapper when the markers were all it carried.
+///
+/// The settings are matched as JSON, not text: a plugin and the server can order the same
+/// object's keys differently. For display only. Classification reads the full command.
+pub fn display_command(command: &str) -> String {
+    const FLAG: &str = " --settings ";
+    let mut command = command.to_owned();
+    if let Some(flag) = command.find(&format!("{FLAG}{{")) {
+        let json = flag + FLAG.len();
+        let mut values =
+            serde_json::Deserializer::from_str(&command[json..]).into_iter::<serde_json::Value>();
+        if let Some(Ok(value)) = values.next() {
+            if value == super::claude_hook_settings(super::CLAUDE_HOOK_REPORT_COMMAND) {
+                let end = json + values.byte_offset();
+                command.replace_range(flag..end, "");
+            }
+        }
+    }
+    let mut words: Vec<&str> = command.split(' ').collect();
+    let is_env = |word: &str| word == "env" || word.ends_with("/env");
+    let runs_a_program = words.iter().skip(1).any(|word| !word.contains('='));
+    if runs_a_program && words.first().is_some_and(|word| is_env(word)) {
+        let pane_marker = format!("{}=1", yinz_types::agent::AGENT_PANE_ENV);
+        words.retain(|word| {
+            !matches!(
+                *word,
+                "YINZ_CLAUDE_INLINE_HOOKS=1" | "YINZ_CLAUDE_INLINE_HOOKS=0"
+            ) && *word != pane_marker
+        });
+        if words.get(1).is_some_and(|word| !word.contains('=')) {
+            words.remove(0);
+        }
+    }
+    words.join(" ")
+}
+
 /// The spec's environment, hook routing, and Firecracker sandbox marker.
 ///
 /// A guest logs in as root, and `claude --dangerously-skip-permissions` refuses to run as

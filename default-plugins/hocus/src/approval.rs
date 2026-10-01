@@ -438,25 +438,6 @@ fn runs_unchecked(words: &[String], agent: bool) -> bool {
             }))
 }
 
-/// The planned arguments without the `--settings <hook json>` pair
-/// `launch::plan` adds for claude: a kilobyte of hook wiring that says nothing
-/// about the launch and would sit in the state as a distractor. Only the
-/// planner's own pair is dropped; any other `--settings` is shown.
-fn shown_args(args: &[String]) -> Vec<String> {
-    let hooks = launch::claude_hook_settings_argument();
-    let mut shown = Vec::with_capacity(args.len());
-    let mut index = 0;
-    while index < args.len() {
-        if args[index] == "--settings" && args.get(index + 1) == Some(&hooks) {
-            index += 2;
-            continue;
-        }
-        shown.push(args[index].clone());
-        index += 1;
-    }
-    shown
-}
-
 fn project_summary(project: &projects::Project) -> Value {
     json!({"name": project.name, "root": project.root})
 }
@@ -493,7 +474,7 @@ fn launch_context(
             };
             let mut launch = json!({
                 "program": command.path,
-                "args": shown_args(&command.args),
+                "args": launch::display_args(&command.args),
                 "directory": directory,
                 "project": project,
                 "git": git,
@@ -614,9 +595,8 @@ fn target_context(
                     .find(|tab| tab.position == position)
                     .ok_or("cannot review a pane without its tab")?;
                 let mut context = match pane_id {
-                    PaneId::Terminal(_) => json!(hocus_proto::panes::agent_pane(
-                        pane,
-                        Some((tab.tab_id, tab.name.clone())),
+                    PaneId::Terminal(_) => json!(hocus_proto::panes::displayed(
+                        hocus_proto::panes::agent_pane(pane, Some((tab.tab_id, tab.name.clone())))
                     )),
                     PaneId::Plugin(_) => {
                         let url = pane

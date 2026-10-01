@@ -104,7 +104,10 @@ impl Pending {
                 now,
             );
         }
-        if event.hook_event_name == "SubagentStop" {
+        // Claude's hidden helpers, such as the prompt-suggestion subagent, stop with an empty
+        // type. Nobody asked for their output, and archiving it misleads run summaries.
+        let hidden_helper = event.agent_type.as_deref() == Some("");
+        if event.hook_event_name == "SubagentStop" && !hidden_helper {
             if let Some(text) = event.last_assistant_message.as_ref() {
                 let agent = event.agent_id.as_deref().unwrap_or("unknown");
                 let turn = event.turn_id.as_deref().unwrap_or("");
