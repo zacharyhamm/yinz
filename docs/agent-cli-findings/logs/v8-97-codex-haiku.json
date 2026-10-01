@@ -1,0 +1,1 @@
+{"outcome":"rejected","agents":[],"spawned":null,"output":null,"message":"Codex does not support Claude model alias \"haiku\"; use --kind claude or a Codex model ID","acknowledged":false,"turn_id":null}

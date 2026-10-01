@@ -16,6 +16,7 @@ Everything lives under [`agent-cli-findings/`](agent-cli-findings/):
 | `logs/v3-NN-name.json` | The live check of the #6 fix. | Captured from `yinz agent … --json` in session `rusty-peach`. |
 | `logs/v4-09-*.json`, `logs/v4-10-*.json` | The live startup-dialog and permission-answer checks for #9/#10. | Captured from this worktree's `target/debug/yinz` in session `verify-agent-dialogs`. |
 | `logs/v5-11-*.json` | The live `/clear` check for #11. | Captured from this worktree's `target/debug/yinz` in session `verify-agent-clear-fixed`. |
+| `logs/v8-NN-name.{json,err,txt}`, `transcripts/v8-*.jsonl` | The [v8 live revalidation](#re-verification-run-2026-09-30-v8). `.txt` files hold plain-text `agent read` output. | Captured from `~/.cargo/bin/yinz` (`891307b72`) in session `adventurous-muskrat`. |
 | `logs/NN-name.err` | stderr for the same command, kept only when non-empty (for example, client-side validation errors). | Same as above. |
 | `transcripts/claude-haiku-orchestrator.jsonl` | The complete Claude Code session log of the **haiku orchestrator** (pane `terminal_9`, conversation `9d5cb9af-…`). It shows every `yinz` command it ran and the result it got, including the `--session main` copy, the Codex spawn, the raw-input fallbacks, and the cross-session messages. The first user message shows the `<pasted_content>` wrapper from finding #3. | `~/.claude/projects/<scratch-repo>/9d5cb9af-3a31-4870-934e-4c6dbf4cfe29.jsonl` |
 | `transcripts/codex-luna-orchestrator.jsonl` | The complete Codex rollout of the **luna orchestrator** (pane `terminal_13`, thread `01a0edf8-…`). It shows the successful spawn→wait→prompt→needs_input→send-keys sequence and its final report. | `~/.codex/sessions/2026/09/29/rollout-2026-09-29T11-21-47-01a0edf8-….jsonl` |
@@ -31,6 +32,89 @@ test runs, and its hook trace lines have no timestamps.
 
 Severity: **P0** = documented flow cannot work / no CLI escape; **P1** = wrong outcome or stuck state with a workaround;
 **P2** = misleading output, docs/skill gaps; **P3** = polish.
+
+## Re-verification run (2026-09-30, v8)
+
+This pass ran in the live session `adventurous-muskrat`, using `~/.cargo/bin/yinz`. That binary was installed at 17:57 from this
+worktree's release build of `891307b72` with a clean tree. The agents were Claude Code 2.1.286 (`--model haiku`) and
+Codex 0.159.2 (`--model gpt-6-luna`). No yinz hooks were installed in `~/.claude/settings.json`. The scratch repo was a
+throwaway calc module whose `sub` test fails; it had a linked worktree `base` and no `.worktrees/` ignore. Every command
+used an explicit `--session` because of #43. Evidence is in `logs/v8-NN-name.{json,err,txt}`, where "v8 NN" below refers to those files.
+Orchestrator transcripts are `transcripts/v8-*.jsonl`. All test panes, worktrees, and scratch Codex trust entries
+were removed afterwards.
+
+### Status of every finding
+
+| # | v8 status | Evidence and notes |
+|---|---|---|
+| 1 | **Fixed** (trusted repo) | Codex spawn → chained wait: `ok`/`ready:true` in 0.44s (v8 16, 17). An untrusted repo still fails; see #42. |
+| 2 | **Fixed** | Two `prompt --wait` calls completed with turn IDs ("ONE", "TWO"). `binding.json` kept the real thread (v8 18, 19). |
+| 3 | **Fixed** | 5-line, 1,100-char, and `--file task.md` prompts all `completed` with the right answer (v8 20–22). The archive stores the unwrapped prompts (v8 117). |
+| 4 | **Fixed** | Claude spawn → chained wait: `ok` in 0.65s (v8 07, 08). Codex: 0.44s (v8 17). |
+| 5 | **Fixed; side effect in #44** | Esc: the prompt returned `interrupted`. Plain `recover` was refused and named `--interrupted`. `--interrupted` returned `ok`, and the next prompt completed (v8 48–54). |
+| 6 | **Fixed** | Codex Esc during `sleep 25`: status stayed `Idle` for 40s with no Busy flip. Plain `recover`, then the next prompt completed (v8 73–78). See #46. |
+| 7 | **Fixed** | A sandboxed Codex printed `YINZ_PANE_ID`, `YINZ_PANE_REF`, `YINZ_SESSION_NAME` and `YINZ_SOCKET_DIR` (v8 81). |
+| 8 | **Fixed** | Without `--allow-yinz`, both commands explain the sandbox and name `--allow-yinz` (v8 81). With it, `agent list` and `action context` work (v8 84). |
+| 9 | **Claude fixed; Codex regressed in untrusted repos** | Claude: `send-keys Down`, then `Enter`, then a chained wait returned `ok`/`ready:true` in 0.42s (v8 04–06). Codex in a worktree of an untrusted repo: `send-keys Enter` answered the dialog, but the agent stayed `Busy/Spawned` (v8 09–15). See #42. |
+| 10 | **Fixed, both kinds** | Claude: `needs_input` → `send-keys Enter` → wait `ok`/`ready:true`, then the next prompt completed with no recover (v8 42–47). Codex with `approvals_reviewer="user"` behaved the same (v8 87–91). The turn's final text is lost; see #45. |
+| 11 | **Fixed** | `/clear` → `target_changed`. The new conversation was `Idle`/`ready:true` in status and list, and the next prompt completed (v8 63–66). |
+| 12 | **Still failing; changed** | U+200B and U+202E prompts `timed_out` with the draft in the composer and the claim kept (`pending_submission`). A later manual `send-keys Enter` **did** submit the U+200B draft (v8 27–32), unlike the earlier two-second probe. Recovery needed `Ctrl u` then `recover` (v8 34–38). |
+| 13 | **Fixed** | `/cost`, `  /probe`, and `!printf` returned `rejected` with `ready:true` (v8 24–26). |
+| 14 | **Fixed** | A project Stop hook blocked once: status was Busy, a concurrent prompt was `rejected`, and the original wait returned only `FINAL_V8` (v8 110–114). |
+| 15 | **Not applicable here** | No installed Claude hooks on this host. Spawned panes carry `YINZ_CLAUDE_INLINE_HOOKS=1`. |
+| 16 | **Fixed** | `--kind codex --model haiku` → `rejected` before spawning (v8 97). |
+| 17 | **Not retested** | This needs a live Codex auto-update. |
+| 18 | **Fixed** | A non-agent pane → `not_agent`; `terminal_999` → `target_not_found` (v8 100, 101). |
+| 19 | **Fixed, verified live** | `not_ready_reason` appeared as `not_idle`, `pending_submission`, `unconsumed_input` and `prompt_unsupported` in the relevant states (v8 02, 29, 32, 43). |
+| 20 | **Fixed, verified live** | Unacknowledged timeouts say "acceptance is uncertain" (v8 27). Acknowledged interruptions say "Observation of the accepted turn was interrupted" (v8 48). |
+| 21 | **Fixed** | `--kind bogus` and a missing kind list every recognized kind plus the JSON alternative (v8 98, 99). |
+| 22 | **Fixed** | Help documents keys and `--until` values. The Claude orchestrator still tried `Return` once and recovered from the error. |
+| 23 | **Fixed** | Both orchestrators found the session from `YINZ_SESSION_NAME` and spawned `--kind claude` as asked. |
+| 24 | **Fixed; residual** | Leading blanks are gone (v8 115). Internal blank runs still count as zero, so `--lines 15` on a sparse Claude screen returned 43 rows (v8 126). Ghost suggestions remain as documented. |
+| 25 | **Still broken** | A shell-launched `codex` (pane 19): `action context` → `detected: codex`, but `agent list` omits it (v8 116). |
+| 26 | **Still broken** | `status 8` → "expected an explicit terminal pane ID" (v8 102). `register terminal_8` and `action context --pane-id terminal_8` → "invalid digit". `register 8` and `context --pane-id 8` are accepted. |
+| 27 | **Still broken** | `agent runs --json` → "unexpected argument" (v8 103). Its default output is already JSON. |
+| 28 | **Still broken** | A second `--branch fix-sub` silently became `fix-sub-2` with no requested-branch field (v8 107, 108). `.worktrees/` is untracked in the main checkout. |
+| 29 | **Still broken** | `skills install --agent claude --dest D` conflicts. `prompt TEXT --file F` prints `Usage: yinz agent prompt --json <TARGET> <TEXT>` (v8 105). Stdin without `--file -` gives the same misleading usage line (Claude orchestrator). |
+| 30 | **Still broken; P2** | `list-sessions` shows `pty-broker-v8.sock` as UNRESPONSIVE and suggests `yinz kill-session pty-broker-v8.sock`. Since server restarts now hand panes over through that broker, following the advice could take down every surviving pane. |
+| 31 | **Still broken, wider** | Background Bash: `prompt --wait` returned the interim "I've started the background command…". Claude later printed `BGDONE` in a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input` (v8 58–61). The archive stores the notification as a `prompt` (v8 117). Esc now triggers it too (#44). |
+| 32 | **Fixed, verified live** | A Codex pane with an unsupported model: the prompt returned `failed` with the provider's 400 message and `ready:true` (v8 118–120). |
+| 33 | **Fixed** | Resume by ID and `last` with `--permission-mode skip` → `rejected`, exit 1, no branch or worktree (v8 92, 93, 93b). Resume without it kept the conversation and completed a prompt (v8 94–96). |
+| 34 | **Still broken** | `--reuse` put a third agent into `fix-sub` while `terminal_15` was live there, with no warning or field (v8 109). |
+| 35 | **Not reproduced** | Both orchestrator workers edited only their own worktree. The main checkout stayed clean. |
+| 36 | **Fixed** | Fifteen CLI spawns (including both orchestrators' workers) plus a floating `run` pane: focus stayed on the caller's pane and the active tab (focus snapshots throughout). |
+| 37 | **Not reproduced** | Haiku followed a 56 KB paste ending in an instruction (`BIGPASTE_OK`, v8 23). One sample only. |
+| 38 | **Still broken** | Empty prompts and argument errors print plain stderr with no `AgentResponse`, even with `--json` (v8 102–106). |
+| 39 | **Still broken, and leaks into summaries** | Prompt-suggestion subagents are archived as messages ("Subagent a911f…: fix the sub function in calc.py"). The run summary then invented "a subagent fix task" (v8 117). |
+| 40 | **Unchanged** | Codex `/new` via `send-keys` rebinds to the new thread and leaves `unconsumed_input` until `recover --conversation NEW` (v8 67–72). |
+| 41 | **Still broken, larger** | `action context` is 26 KB for seven panes. Each Claude command is 4.3 KB, and a spawned pane's title is the full 4.4 KB command. |
+| P3 | **Still open** | The `ui-*` leak grew from 38 to 47 directories after nine Codex panes were closed. Hook-trace log lines still have no timestamps. Titles still hold the hooks JSON. |
+
+### New findings
+
+| # | Sev | Finding | Evidence |
+|---|---|---|---|
+| 42 | P1 | **A Codex spawned into a worktree of an untrusted repo never becomes ready.** Worktree trust registration fails when the primary checkout is untrusted. The launcher then falls back to plain `codex --no-daemon` with no bridge (`yinz-codex/src/lib.rs`, the `register_worktree_trust` fallback in `launch`). Codex shows its trust dialog, and `send-keys Enter` answers it, but no SessionStart or hooks ever arrive. The pane stays `Busy/Spawned`, and `wait` returns `status_unavailable` indefinitely. Its `ui-*` directory held only `lease`. Once the repo is trusted, the next spawn is ready in 0.44s. This is #1 again, and it hits the default `--branch` workflow in any new repo. | v8 09–17; process tree `yinz hocus codex` → `codex --no-daemon` |
+| 43 | P2 | **Panes adopted across a server restart keep the old session's routing environment.** The pty-broker moved this Claude pane from `chatty-orange` (pane 23) into `adventurous-muskrat` (pane 2), but its shell still has `YINZ_SESSION_NAME=chatty-orange` and `YINZ_PANE_ID=23`. Bare `yinz agent list` fails with "cannot connect to session chatty-orange", and `action context` cannot identify the caller. If a session with the old name returns, commands would target another session's pane 23. | `env`, `action context` (`missing: caller_pane`) |
+| 44 | P2 | **Esc during a Claude Bash call backgrounds the command instead of killing it (Claude 2.1.286).** After `recover --interrupted` and a successful follow-up prompt, the command finished. Claude then ran a `<task-notification>` turn, and the pane ended `ready:false`/`unconsumed_input`. The documented #5 escape therefore leads into #31. | v8 48–56 |
+| 45 | P2 | **After `needs_input`, no live command returns the turn's final answer.** `send-keys Enter` → `wait --until idle` returns `ok` with an empty `message`. `WROTE_OK` exists only in `agent run`. Both orchestrators fell back to `read` or verified the files themselves. | v8 42, 46, 117 |
+| 46 | P3 | After an accepted Codex turn is interrupted, status reports `not_ready_reason: pending_submission` for as long as the claim is kept (40s+). The prompt was acknowledged, so the label points callers at the wrong cause. | v8 75-* |
+| 47 | P3 | CLI output does not tolerate a closed pipe. `yinz action context \| head` panics ("failed printing to stdout: Broken pipe"), and `agent list \| head` prints "Error: cannot write agent details". | v8 84 |
+| 48 | P3 | `agent runs` covers "all sessions" but has no session field. The same `pane_id` (2, 5, 11, 15) identifies runs from different sessions or servers. | v8 132 |
+| 49 | P2 | Skill gaps found by both orchestrators. The skill has no teardown step, so both guessed at closing the worker: `close-pane terminal_23` and `--json` were rejected, and Codex searched `action --help`. Codex also tried the nonexistent `yinz project list`. Claude first passed a heredoc without `--file -`. | transcripts `v8-*` |
+
+A wait during a startup dialog reports `status_unavailable` with `not_ready_reason: prompt_unsupported` and gives no
+hint that a dialog is showing (v8 02). Read the pane when a fresh spawn stays `Spawned`.
+
+### Orchestration rerun
+
+| Orchestrator | Task | Result |
+|---|---|---|
+| Claude haiku (`skip`) | Delegate the fix to a Claude haiku worker on `fix-sub-h` | **Succeeded, no intervention.** It read the skill and found the session from the environment. It ran spawn → wait (`ok`) → prompt (`needs_input`) and answered three permission prompts with `read` + `send-keys Enter`. It verified 3/3 tests in the worktree and closed the worker after two wrong `close-pane` attempts. The worker committed the fix. It polled with `status` instead of `wait`. |
+| Codex luna (`skip`) | The same task on `fix-sub-l` | **Succeeded, no intervention.** It used spawn `--base base` → wait → `prompt --file` → `needs_input` → `read` → `send-keys Enter` (twice) → wait `ok`. It verified 3/3 tests itself and found `close-pane` through `action --help`. It left the fix uncommitted; commits were not requested. |
+
+Neither orchestrator needed `recover`, raw input, or a warm-up. The earlier failures (#1, #2, #9 for Claude, #10,
+#23) did not recur. Remaining friction: #45, #49, and #22's `Return`.
 
 ## Re-verification run (2026-09-29, second pass)
 

@@ -1,0 +1,16 @@
+● I've started the background command. I'll reply with the output when it completes.
+
+✻ Crunched for 2s · done 6:18 PM
+
+● Background command "sleep 12 && echo BGDONE" completed (exit code 0)
+
+  Read 1 file
+
+● BGDONE
+
+✻ Cooked for 3s · done 6:18 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

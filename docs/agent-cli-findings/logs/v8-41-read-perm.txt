@@ -1,0 +1,19 @@
+❯ Run this exact bash command: sleep 8 && echo SLEPT_OK . Then reply with exactly DONE_SLEEP and nothing
+  else.
+
+  Ran 1 shell command
+
+● DONE_SLEEP
+
+✻ Churned for 10s · done 6:17 PM
+
+❯ Reply OK
+
+● OK
+
+✻ Worked for 0s · done 6:17 PM
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents

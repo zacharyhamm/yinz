@@ -1,0 +1,17 @@
+  Nice place you’ve got here. Very monospace.
+
+  Tip: Paste an image with Ctrl+V to attach it to your next message.
+
+
+› Reply OK
+
+
+↳ Hook · PONYTAIL:FULL
+
+■ {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-nonexistent-v8'
+model is not supported when using Codex with a ChatGPT account."}}
+
+
+› Ask Codex to do anything
+
+  gpt-nonexistent-v8 high · /tmp/claude-1000/-home-zacharyhamm-yinz--worktrees…  ⚠ 1 warning · f2 to view
