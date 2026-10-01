@@ -1,7 +1,0 @@
-error: unexpected argument '--project-dir' found
-
-  tip: a similar argument exists: '--project'
-
-Usage: yinz agent spawn --kind <KIND> --model <MODEL> --branch <BRANCH> --project <PROJECT>
-
-For more information, try '--help'.

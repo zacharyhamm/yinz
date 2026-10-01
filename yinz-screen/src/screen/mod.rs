@@ -576,6 +576,9 @@ pub(crate) struct Screen {
     /// onto every pane manifest so a plugin that missed the announcement — or
     /// loaded after it — is put right by the next update rather than never.
     terminal_cwds: HashMap<TerminalId, PathBuf>,
+    /// Each terminal pane's foreground command, as pty last reported it, while a program
+    /// other than the pane's shell is in the foreground.
+    pub(crate) terminal_foreground_cmds: HashMap<TerminalId, Vec<String>>,
     /// The machine each remote pane runs on. Absent for local panes, which is
     /// nearly all of them.
     terminal_hosts: HashMap<TerminalId, String>,
@@ -1334,6 +1337,7 @@ impl Screen {
             global_last_active_tab_id: TabId::new(0),
             tabs: BTreeMap::new(),
             terminal_cwds: HashMap::new(),
+            terminal_foreground_cmds: HashMap::new(),
             terminal_hosts: HashMap::new(),
             terminal_firecracker_worktrees: HashMap::new(),
             last_plugin_tab_names: HashMap::new(),

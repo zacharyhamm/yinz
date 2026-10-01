@@ -1518,6 +1518,13 @@ pub fn screen_thread_main(
                 ScreenInstruction::UpdatePaneHost(terminal_id, host, worktree) => {
                     screen.set_pane_host(terminal_id, host, worktree)?;
                 },
+                ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command) => {
+                    if command.is_empty() {
+                        screen.terminal_foreground_cmds.remove(&terminal_id);
+                    } else {
+                        screen.terminal_foreground_cmds.insert(terminal_id, command);
+                    }
+                },
                 ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {
                     // Only pty says a pane moved, and it only says so on a change,
                     // so there is nothing to compare against here. Pruning cannot be

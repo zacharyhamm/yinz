@@ -1,3 +1,0 @@
-$ yinz --session verify-v11 action pane-rerun 1
-pane is not a held command
-exit=1

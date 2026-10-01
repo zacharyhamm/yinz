@@ -590,6 +590,51 @@ impl Screen {
         })
     }
 
+    /// A pane with no agent record whose foreground program is a recognized agent, such as
+    /// a `codex` someone started by hand in a shell. Listed so `agent list` agrees with
+    /// `action context`, but never promptable: nothing ties its input to its conversation.
+    fn detected_agent_status(&self, pane_id: PaneId) -> Option<AgentStatus> {
+        let PaneId::Terminal(id) = pane_id else {
+            return None;
+        };
+        let info = self.get_pane_info(pane_id)?;
+        if info.agent.is_some() || info.is_held || info.exited {
+            return None;
+        }
+        let (program, args) = self.terminal_foreground_cmds.get(&id)?.split_first()?;
+        let kind =
+            yinz_types::agent::kind_from_program_and_args(std::path::Path::new(program), args)?;
+        let cwd = self
+            .terminal_cwds
+            .get(&id)
+            .map(|path| path.to_string_lossy().into_owned());
+        Some(AgentStatus {
+            pane_id,
+            session: self.session_name.to_string(),
+            host_id: yinz_runtime::host_identity::host_id(),
+            tab_id: self.tab_containing_pane(pane_id).map(|tab| tab.id),
+            target: info.target,
+            cwd: cwd.clone(),
+            branch: None,
+            ready: false,
+            not_ready_reason: Some(NotReadyReason::Unmanaged),
+            status_available: false,
+            prompt_supported: false,
+            background_tasks: Vec::new(),
+            agent: AgentInfo {
+                kind: kind.to_owned(),
+                state: AgentState::Busy,
+                source: AgentSource::Detected,
+                detail: None,
+                waiting_on: None,
+                wait_needs_a_person: false,
+                cwd,
+                session_id: None,
+                run_id: None,
+            },
+        })
+    }
+
     // A stale hook record in a shell is insufficient authority to type into that shell.
     fn agent_process_matches(&self, pane: PaneId, kind: &str) -> bool {
         self.tab_containing_pane(pane)
@@ -651,7 +696,10 @@ impl Screen {
                     .tabs
                     .values()
                     .flat_map(|tab| tab.get_all_pane_ids())
-                    .filter_map(|id| self.agent_status(id, false))
+                    .filter_map(|id| {
+                        self.agent_status(id, false)
+                            .or_else(|| self.detected_agent_status(id))
+                    })
                     .filter(|status| status.agent.state != AgentState::Exited)
                     .collect();
                 self.agent_reply(&client, response);
@@ -706,6 +754,41 @@ impl Screen {
             return;
         }
         let Some(status) = self.agent_status(pane, false) else {
+            // Between a submitted `/clear` or `/new` ending the old conversation and the new
+            // one starting there is no record. An unpinned wait then waits for the new one.
+            if let (
+                None,
+                Wait {
+                    until, timeout_ms, ..
+                },
+            ) = (expected, &request)
+            {
+                let clearing = self
+                    .agent_clear_inputs
+                    .get(&pane)
+                    .filter(|input| input.session_ended && now < input.deadline)
+                    .map(|input| input.kind.clone());
+                if let (Some(kind), Some(deadline)) = (clearing, deadline(*timeout_ms)) {
+                    self.agent_controls.push(Pending {
+                        client: Some(client.clone()),
+                        pane,
+                        kind,
+                        conversation: None,
+                        deadline: Some(deadline),
+                        input_revision: self.agent_input_revision(pane),
+                        prompt: None,
+                        clear: false,
+                        wait: true,
+                        until: *until,
+                        session_ended: true,
+                        abandoned: false,
+                        resolved: false,
+                        delivery: None,
+                        enter_at: None,
+                    });
+                    return;
+                }
+            }
             let info = self.get_pane_info(pane);
             let exited = info.as_ref().is_some_and(|info| info.exited)
                 && self
@@ -715,6 +798,11 @@ impl Screen {
                 (AgentOutcome::TargetNotFound, "target pane does not exist")
             } else if exited {
                 (AgentOutcome::TargetExited, "agent process has exited")
+            } else if self.detected_agent_status(pane).is_some() {
+                (
+                    AgentOutcome::NotAgent,
+                    "target runs an agent that Yinz did not launch; relaunch it with agent spawn to control it",
+                )
             } else {
                 (AgentOutcome::NotAgent, "target does not contain an agent")
             };
@@ -969,6 +1057,8 @@ impl Screen {
                         NotReadyReason::NotIdle => (AgentOutcome::Rejected, "agent is not idle"),
                         NotReadyReason::PendingSubmission => (AgentOutcome::Rejected, "agent has an unresolved pending submission"),
                         NotReadyReason::UnconsumedInput => (AgentOutcome::Rejected, "agent has unconsumed terminal input; inspect the pane before submitting"),
+                        // Unreachable: a detected agent has no record, so the lookup above refuses it.
+                        NotReadyReason::Unmanaged => (AgentOutcome::NotAgent, "target runs an agent that Yinz did not launch; relaunch it with agent spawn to control it"),
                     };
                     reject(self, outcome, message);
                     return;
@@ -991,7 +1081,7 @@ impl Screen {
                     return;
                 };
                 if is_command_prompt(&status.agent.kind, &prompt) {
-                    reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text and exact Claude /clear");
+                    reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text, exact Claude /clear, and exact Codex /new");
                     return;
                 }
                 let observation = PromptObservation::new(
@@ -1022,7 +1112,10 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: Some(observation),
-                    clear: status.agent.kind == "claude" && prompt == "/clear",
+                    clear: yinz_types::agent::control::is_conversation_reset(
+                        &status.agent.kind,
+                        &prompt,
+                    ),
                     wait,
                     until: AgentState::Idle,
                     session_ended: false,
@@ -1031,14 +1124,20 @@ impl Screen {
                     delivery: Some(rx),
                     enter_at: None,
                 });
-                // Expose Claude's slash command before its arguments can collapse into a chip.
+                // Expose Claude's slash command before its arguments can collapse into a chip,
+                // and type Codex's `/new`: a pasted command is draft text, not a command.
                 // Keep whitespace in the paste: typing a newline or tab would send a key.
                 let (prefix, paste) = if needs_paste_lead_in(&status.agent.kind, &prompt) {
                     (
                         format!("{PASTE_LEAD_IN} ").into_bytes(),
                         prompt.into_bytes(),
                     )
-                } else if status.agent.kind == "claude" && prompt.starts_with('/') {
+                } else if (status.agent.kind == "claude" && prompt.starts_with('/'))
+                    || yinz_types::agent::control::is_conversation_reset(
+                        &status.agent.kind,
+                        &prompt,
+                    )
+                {
                     let end = prompt.find(char::is_whitespace).unwrap_or(prompt.len());
                     (
                         prompt.as_bytes()[..end].to_vec(),
@@ -1047,16 +1146,30 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
-                let typed = (!prefix.is_empty())
-                    .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
-                let result = match typed {
-                    Some(Err(error)) => Err(error),
-                    _ => self.paste_to_pane_id(
-                        paste,
+                // Codex reads quickly typed text followed by a paste as one burst, and an empty
+                // paste there discards the typed command, so a bare command is only typed.
+                let result = if paste.is_empty() && status.agent.kind == "codex" {
+                    self.write_to_pane_id(
+                        &None,
+                        prefix,
+                        false,
                         pane,
                         None,
                         Some(yinz_bus::route::NotificationEnd::new(tx)),
-                    ),
+                    )
+                    .map(|_| ())
+                } else {
+                    let typed = (!prefix.is_empty())
+                        .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
+                    match typed {
+                        Some(Err(error)) => Err(error),
+                        _ => self.paste_to_pane_id(
+                            paste,
+                            pane,
+                            None,
+                            Some(yinz_bus::route::NotificationEnd::new(tx)),
+                        ),
+                    }
                 };
                 let revision = self.agent_input_revision(pane);
                 if let Some(pending) = self.agent_controls.last_mut() {

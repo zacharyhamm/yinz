@@ -1,1 +1,0 @@
-{"kind":"claude","model":"haiku","permission_mode":"skip","args":["--setting-sources","project,local"],"allow_outside_worktree":true}

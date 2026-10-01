@@ -1,6 +1,6 @@
 ---
 source: yinz-plugin-host/src/deno/unit/checker.rs
-assertion_line: 965
+assertion_line: 1018
 expression: wire
 ---
 commands
@@ -2277,6 +2277,7 @@ enum AgentSource {
 Spawned = 0;
 Reported = 1;
 Registered = 2;
+Detected = 3;
 }
 message IndexInPaneGroup {
 uint32 client_id = 1;

@@ -200,6 +200,12 @@ impl State {
                     .iter()
                     .filter_map(|(name, ids)| (ids.len() > 1).then_some(*name))
                     .collect();
+                let pane = pane.cloned().map(hocus_proto::panes::displayed);
+                let panes: Vec<_> = panes
+                    .iter()
+                    .cloned()
+                    .map(hocus_proto::panes::displayed)
+                    .collect();
                 Ok(
                     json!({"host_id":self.host_id,"session":session.name,"pane":pane,"tab_id":tab,"project":project,"root":project.and_then(|name| registry.get(name)).map(|p| &p.root),"services":services,"missing":missing,"ambiguous":ambiguous,"pane_candidates":panes,"projects":registry.values().collect::<Vec<_>>()}),
                 )

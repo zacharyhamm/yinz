@@ -1,3 +1,0 @@
-$ yinz --session verify-v11 agent prompt terminal_1  
-Error: prompt must not be empty
-exit=1

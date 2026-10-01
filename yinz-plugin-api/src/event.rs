@@ -2237,6 +2237,7 @@ impl TryFrom<ProtobufAgentInfo> for AgentInfo {
             Ok(ProtobufAgentSource::Spawned) => AgentSource::Spawned,
             Ok(ProtobufAgentSource::Reported) => AgentSource::Reported,
             Ok(ProtobufAgentSource::Registered) => AgentSource::Registered,
+            Ok(ProtobufAgentSource::Detected) => AgentSource::Detected,
             Err(_) => return Err("unknown agent source"),
         };
         Ok(AgentInfo {
@@ -2266,6 +2267,7 @@ impl TryFrom<AgentInfo> for ProtobufAgentInfo {
             AgentSource::Spawned => ProtobufAgentSource::Spawned,
             AgentSource::Reported => ProtobufAgentSource::Reported,
             AgentSource::Registered => ProtobufAgentSource::Registered,
+            AgentSource::Detected => ProtobufAgentSource::Detected,
         };
         Ok(ProtobufAgentInfo {
             kind: agent.kind,

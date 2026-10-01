@@ -6,6 +6,7 @@
 //! the wire belongs with the other wire types rather than inside one end of it.
 
 use crate::agents;
+use crate::launch;
 use std::collections::{BTreeMap, BTreeSet};
 use yinz_tile::prelude::TabId;
 use yinz_tile::prelude::TabPosition;
@@ -59,6 +60,20 @@ fn terminal_panes_by_visibility(
     // agent_list is read by a model on every turn; give it the same order every time.
     panes.sort_by_key(|pane| pane.pane_id);
     panes
+}
+
+/// A pane as shown to a person or a model: its command without the planner's hook wiring,
+/// kilobytes per claude pane that say nothing about it. A title that is still the raw
+/// command is shortened the same way. Detection reads the full command, so only output
+/// goes through this.
+pub fn displayed(mut pane: agents::AgentPane) -> agents::AgentPane {
+    if let Some(command) = pane.command.take() {
+        if pane.title == command {
+            pane.title = launch::display_command(&pane.title);
+        }
+        pane.command = Some(launch::display_command(&command));
+    }
+    pane
 }
 
 /// Convert a terminal's manifest record, including an explicitly requested hidden pane.
@@ -176,6 +191,39 @@ mod tests {
         assert_eq!(suppressed[0].cwd.as_deref(), Some("/work/hidden"));
         assert_eq!(suppressed[0].status, agents::AgentStatus::Exited);
         assert_eq!(suppressed[0].tab.as_ref().unwrap().0, TabId::new(100));
+    }
+
+    #[test]
+    fn agent_panes_omit_the_planners_hook_wiring() {
+        let hooks = launch::claude_hook_settings_argument();
+        let raw = format!("env YINZ_CLAUDE_INLINE_HOOKS=1 claude --model haiku --settings {hooks}");
+        let raw_pane = agent_pane(
+            &PaneInfo {
+                id: yinz_tile::prelude::PaneId::from_legacy(4, false),
+                title: raw.clone(),
+                terminal_command: Some(raw.clone()),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(raw_pane.command.as_deref(), Some(raw.as_str()));
+        let pane = displayed(raw_pane);
+        assert_eq!(pane.command.as_deref(), Some("claude --model haiku"));
+        assert_eq!(pane.title, "claude --model haiku");
+        assert_eq!(
+            agents::kind_from_command(pane.command.as_deref().unwrap()),
+            Some("claude")
+        );
+        let titled = displayed(agent_pane(
+            &PaneInfo {
+                title: "claude (haiku)".to_owned(),
+                terminal_command: Some(format!("claude --settings {hooks}")),
+                ..Default::default()
+            },
+            None,
+        ));
+        assert_eq!(titled.title, "claude (haiku)");
+        assert_eq!(titled.command.as_deref(), Some("claude"));
     }
 
     #[test]

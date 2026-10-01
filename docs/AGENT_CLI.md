@@ -205,7 +205,6 @@ In the Claude Code 2.1.285 live checks, native `!` shell input executed without 
 The prompt wait timed out even when the command printed its expected output.
 `prompt` now rejects this input before writing to the terminal.
 This Claude version treats `#` as ordinary input and does not open a memory editor.
-See the [live prefix checks](agent-cli-findings/prefix-probes.md) for the observed behavior.
 
 Readiness requires a known consumed input revision that matches the pane's current
 revision. Startup reports establish that revision. A matching CLI prompt report

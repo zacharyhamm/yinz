@@ -4322,6 +4322,7 @@ fn agent_info_to_proto(
         AgentSource::Spawned => ProtoAgentSource::Spawned,
         AgentSource::Reported => ProtoAgentSource::Reported,
         AgentSource::Registered => ProtoAgentSource::Registered,
+        AgentSource::Detected => ProtoAgentSource::Detected,
     };
     ProtoAgentInfo {
         kind: agent.kind,
@@ -4354,6 +4355,7 @@ fn agent_info_from_proto(
         Ok(ProtoAgentSource::Spawned) => AgentSource::Spawned,
         Ok(ProtoAgentSource::Reported) => AgentSource::Reported,
         Ok(ProtoAgentSource::Registered) => AgentSource::Registered,
+        Ok(ProtoAgentSource::Detected) => AgentSource::Detected,
         _ => return Err(anyhow!("Unspecified agent source")),
     };
     Ok(yinz_types::agent::AgentInfo {

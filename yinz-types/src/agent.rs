@@ -44,6 +44,10 @@ pub enum AgentSource {
     /// The agent itself said so — its hooks through `yinz action agent-report`, or a plugin
     /// speaking for it.
     Reported,
+    /// The pane's foreground program is an agent nobody launched or registered through Yinz,
+    /// such as one started by hand in a shell. Only `agent list` reports it; it is never a
+    /// pane's record, and the state is a placeholder.
+    Detected,
 }
 
 /// The agent running in a pane: what it is, what it is doing, and who said so.

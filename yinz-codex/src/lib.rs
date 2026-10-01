@@ -282,7 +282,9 @@ impl Conversations {
     }
 
     /// Observe selections and final failures without changing the backend's messages.
-    fn response(&mut self, value: &Value, registration: &Registration) -> Result<Option<Value>> {
+    ///
+    /// Returns the lifecycle hooks to report, in order.
+    fn response(&mut self, value: &Value, registration: &Registration) -> Result<Vec<Value>> {
         if value.get("id").is_none() {
             let params = &value["params"];
             if params["threadId"].as_str().is_some_and(|thread| {
@@ -303,12 +305,12 @@ impl Conversations {
                             // cannot end this turn twice or affect a newer turn.
                             self.current_turn = None;
                             if turn["status"] == "failed" {
-                                return Ok(Some(serde_json::json!({
+                                return Ok(vec![serde_json::json!({
                                     "hook_event_name": "StopFailure",
                                     "session_id": params["threadId"],
                                     "turn_id": id,
                                     "last_assistant_message": turn["error"]["message"].as_str().unwrap_or("Codex turn failed."),
-                                })));
+                                })]);
                             }
                         },
                         _ => {},
@@ -318,22 +320,29 @@ impl Conversations {
         }
         // Server requests have their own id namespace (eg approval requests).
         if value.get("method").is_some() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let Some((method, ephemeral)) = value
             .get("id")
             .and_then(|id| self.pending.remove(&id.to_string()))
         else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let thread = &value["result"]["thread"];
         let Some(id) = thread["id"].as_str() else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         if ephemeral || thread["ephemeral"].as_bool() == Some(true) {
             self.ephemeral.insert(id.to_owned());
-            return Ok(None);
+            return Ok(Vec::new());
         }
+        // A new thread replacing the selected one is the UI's `/new`: the same shape as
+        // Claude's `/clear`, so it is reported as one, an end for the old conversation and a
+        // `clear` start for the new one, and a submitted `/new` carries its input across.
+        let replaced = self
+            .selected
+            .clone()
+            .filter(|previous| method == "thread/start" && previous != id);
         // Publish before the UI sees the reply and can submit its first turn.
         self.select(id, registration)?;
         // Resuming an active thread may not replay its turn/started notification.
@@ -348,8 +357,17 @@ impl Conversations {
         let source = match method.as_str() {
             "thread/resume" => "resume",
             "thread/fork" => "fork",
+            _ if replaced.is_some() => "clear",
             _ => "startup",
         };
+        let mut hooks = Vec::new();
+        if let Some(previous) = replaced {
+            hooks.push(serde_json::json!({
+                "hook_event_name": "SessionEnd",
+                "session_id": previous,
+                "reason": "clear",
+            }));
+        }
         let mut hook = serde_json::json!({
             "hook_event_name": "SessionStart",
             "session_id": id,
@@ -360,7 +378,8 @@ impl Conversations {
         if let Some(cwd) = thread["cwd"].as_str() {
             hook["cwd"] = cwd.into();
         }
-        Ok(Some(hook))
+        hooks.push(hook);
+        Ok(hooks)
     }
 }
 
@@ -618,7 +637,7 @@ async fn relay<S: AsyncRead + AsyncWrite + Unpin>(
                 match message.context("read Codex daemon reply")? {
                     Message::Text(text) => {
                         let value: Value = serde_json::from_str(&text).context("parse Codex daemon reply")?;
-                        if let Some(hook) = conversations.response(&value, registration)? {
+                        for hook in conversations.response(&value, registration)? {
                             if hook["hook_event_name"] == "SessionStart" {
                                 registration.announce(hook, program).await;
                             } else {

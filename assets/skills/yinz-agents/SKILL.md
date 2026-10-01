@@ -56,6 +56,9 @@ The `acknowledged` and `turn_id` fields describe the original submission.
 When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
 Run `yinz agent wait terminal_3 --until idle --timeout 10m --json` for the final answer. A long-running background server keeps that wait pending until its timeout.
 
+To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex).
+The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` leaves the pane needing `recover`.
+
 `agent read --lines N` selects the last N nonblank lines, preserves internal blank rows, and removes blank rows at both ends.
 Whitespace-only rows count as blank. Text and JSON retain the same content, including ghost suggestions.
 Plain terminal text cannot establish whether the composer contains a draft. Do not infer a draft from suggestion text or strip suggestions heuristically.
@@ -91,6 +94,8 @@ Read `agent spawn --help` for model, effort, permissions, resume, and Firecracke
 For SSH, provide an absolute `--cwd` and `--remote-host`. Verify the remote worktree and explicitly use `--allow-outside-worktree`.
 SSH launches cannot use local project, branch, worktree, or VM options. General pane creation owns arbitrary programs.
 Register an existing pane with `agent register PANE_ID KIND`.
+`agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
+Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0

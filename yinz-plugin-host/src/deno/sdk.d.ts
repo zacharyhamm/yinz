@@ -556,7 +556,7 @@ export interface ContextMenuContext {
   link: {plugin_id: number; pattern: string; matched: string; context: StringMap} | null; items: ContextMenuItem[];
 }
 export type AgentState = 'Busy' | 'Waiting' | 'Idle' | 'Exited';
-export interface AgentInfo {kind: string; state: AgentState; source?: 'Spawned' | 'Registered' | 'Reported'; detail?: string | null; waiting_on?: string | null; wait_needs_a_person?: boolean; cwd?: string | null; session_id?: string | null; run_id?: string | null;}
+export interface AgentInfo {kind: string; state: AgentState; source?: 'Spawned' | 'Registered' | 'Reported' | 'Detected'; detail?: string | null; waiting_on?: string | null; wait_needs_a_person?: boolean; cwd?: string | null; session_id?: string | null; run_id?: string | null;}
 export interface AgentSpawnSpec {
   kind?: string | null; command?: string | null; args?: string[]; model?: string | null; effort?: string | null; prompt?: string | null;
   branch?: string | null; base?: string | null; worktree?: boolean | null; worktree_dir?: string | null; env?: StringMap; permission_mode?: string | null;
