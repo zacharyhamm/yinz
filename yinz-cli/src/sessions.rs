@@ -3,7 +3,7 @@ use humantime::format_duration;
 use std::{collections::HashMap, io, process, time::Duration};
 use suggest::Suggest;
 use yinz_ipc::probe::SessionProbe;
-use yinz_runtime::{consts::YINZ_SOCK_DIR, envs};
+use yinz_runtime::consts::YINZ_SOCK_DIR;
 use yinz_session::sessions::*;
 use yinz_types::internal_ids::SessionName;
 /// What to tell a user who named a session whose server is not answering.
@@ -109,8 +109,8 @@ pub fn print_sessions(
     no_formatting: bool,
     short: bool,
     reverse: bool,
+    current: Option<&SessionName>,
 ) {
-    let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
     sort_sessions(&mut sessions, reverse);
     sessions.iter().for_each(|(session_name, timestamp, kind)| {
         if short {
@@ -123,16 +123,15 @@ pub fn print_sessions(
                 session_name.as_str(),
                 *timestamp,
                 *kind,
-                curr_session == *session_name,
+                current == Some(session_name),
                 !no_formatting,
             )
         );
     })
 }
-pub fn print_sessions_with_index(sessions: Vec<SessionName>) {
-    let curr_session = envs::get_session_name().unwrap_or_else(|_| "".into());
+pub fn print_sessions_with_index(sessions: Vec<SessionName>, current: Option<&SessionName>) {
     for (i, session) in sessions.iter().enumerate() {
-        let suffix = if curr_session == *session {
+        let suffix = if current == Some(session) {
             " (current)"
         } else {
             ""
@@ -218,14 +217,20 @@ pub fn merge_listings(
         .map(|(name, (timestamp, listing))| (name, timestamp, listing))
         .collect()
 }
-pub fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
+pub fn list_sessions(
+    no_formatting: bool,
+    short: bool,
+    reverse: bool,
+    exited: bool,
+    current: Option<&SessionName>,
+) {
     let exit_code = match collect_sessions(exited) {
         Ok(all_sessions) => {
             if all_sessions.is_empty() {
                 eprintln!("No active yinz sessions found.");
                 1
             } else {
-                print_sessions(all_sessions, no_formatting, short, reverse);
+                print_sessions(all_sessions, no_formatting, short, reverse, current);
                 0
             }
         },

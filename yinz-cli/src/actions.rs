@@ -1520,8 +1520,7 @@ pub fn actions_from_cli(
         } => {
             let pane_id_str = match pane_id {
                 Some(id) => id,
-                None => std::env::var("YINZ_PANE_ID")
-                    .map_err(|_| "No --pane-id provided and YINZ_PANE_ID is not set".to_string())?,
+                None => return Err("No --pane-id provided and no resolved caller pane".to_string()),
             };
             let pane_id = PaneId::from_str(&pane_id_str).map_err(|_| {
                 format!(
@@ -1596,8 +1595,7 @@ pub fn actions_from_cli(
         } => {
             let pane_id_str = match pane_id {
                 Some(id) => id,
-                None => std::env::var("YINZ_PANE_ID")
-                    .map_err(|_| "No --pane-id provided and YINZ_PANE_ID is not set".to_string())?,
+                None => return Err("No --pane-id provided and no resolved caller pane".to_string()),
             };
             let parsed_pane_id = PaneId::from_str(&pane_id_str);
             match parsed_pane_id {
@@ -3973,9 +3971,8 @@ mod tests {
 
         /// The prefix of `cli_action_with_pane_id` whose no-`--pane-id` form is
         /// actually pane-id-free. `SetPaneColor` - the last index, and the only
-        /// one outside this prefix - falls back to `$YINZ_PANE_ID` instead of
-        /// acting on the focused pane, so its "without" form is whatever the
-        /// environment says and cannot be compared against. Everything that
+        /// one outside this prefix - requires the caller pane to be resolved
+        /// before parsing instead of acting on the focused pane. Everything that
         /// builds `pane_id: None` stops here; the with-a-pane-id sweeps still
         /// run to `PANE_ID_ACTIONS`.
         const PANE_ID_OPTIONAL_ACTIONS: usize = PANE_ID_ACTIONS - 1;

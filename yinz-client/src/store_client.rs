@@ -4,12 +4,20 @@ use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::{input::actions::Action, internal_ids::SessionName};
 
-pub fn request(session: &SessionName, action: Action) -> Result<serde_json::Value> {
-    pipe_request(session, action, decode_reply)
+pub fn request(
+    session: &SessionName,
+    action: Action,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
+) -> Result<serde_json::Value> {
+    pipe_request(session, action, caller, decode_reply)
 }
 
-pub fn raw_request(session: &SessionName, action: Action) -> Result<serde_json::Value> {
-    pipe_request(session, action, |output| {
+pub fn raw_request(
+    session: &SessionName,
+    action: Action,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
+) -> Result<serde_json::Value> {
+    pipe_request(session, action, caller, |output| {
         let value: serde_json::Value =
             serde_json::from_str(output).context("invalid service reply")?;
         if let Some(error) = value.get("error") {
@@ -22,6 +30,7 @@ pub fn raw_request(session: &SessionName, action: Action) -> Result<serde_json::
 fn pipe_request(
     session: &SessionName,
     action: Action,
+    caller: Option<yinz_types::internal_ids::TerminalId>,
     decode: impl Fn(&str) -> Result<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let timeout = Duration::from_secs(30);
@@ -34,14 +43,7 @@ fn pipe_request(
         timeout,
         ClientToServerMsg::Action {
             action,
-            terminal_id: (std::env::var("YINZ_SESSION_NAME").ok().as_deref()
-                == Some(session.as_str()))
-            .then(|| {
-                std::env::var("YINZ_PANE_ID")
-                    .ok()
-                    .and_then(|id| id.parse().ok())
-            })
-            .flatten(),
+            terminal_id: caller,
             client_id: None,
             is_cli_client: true,
         },

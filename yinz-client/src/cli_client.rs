@@ -20,15 +20,13 @@ pub fn start_cli_client(
     mut os_input: Box<dyn CliClientOs>,
     session_name: &SessionName,
     actions: Vec<Action>,
+    pane_id: Option<yinz_types::internal_ids::TerminalId>,
 ) -> i32 {
     let yinz_ipc_pipe = crate::ipc_pipe_for_session(session_name, None);
     if let Err(e) = os_input.connect_to_server(&yinz_ipc_pipe) {
         eprintln!("{e}");
         return 1;
     }
-    let pane_id = os_input
-        .env_variable("YINZ_PANE_ID")
-        .and_then(|e| e.trim().parse().ok());
 
     for action in actions {
         match action {

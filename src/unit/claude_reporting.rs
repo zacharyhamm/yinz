@@ -40,7 +40,7 @@ fn installed_and_inline_claude_hooks_report_once_with_unchanged_payloads() {
                             .args(args)
                             .env("PATH", path)
                             .env("REPORTS", &reports)
-                            .env("YINZ_PANE_ID", "7")
+                            .env("YINZ_PANE_REF", "abcdef012345")
                             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
                             .env("YINZ_REMOTE_PANE_TOKEN", if remote { "token" } else { "" })
                             .stdin(Stdio::from(std::fs::File::open(&input).unwrap()));

@@ -13,41 +13,21 @@ use {
     yinz_types::input::actions::Action,
 };
 
-pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant) -> Result<()> {
+pub fn run(mut action: CliAction, session: Option<String>, started: Instant) -> Result<()> {
     let trace = Arc::new(Mutex::new(ReportTrace::new(started)));
     reporting_watchdog(trace.clone())?;
     let result = (|| {
-        {
-            let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;
-            if let CliAction::AgentReport { kind, pane_id, .. } = &action {
-                t.kind = kind.clone().unwrap_or_else(|| "claude".into());
-                t.pane = pane_id
-                    .clone()
-                    .or_else(|| std::env::var("YINZ_PANE_ID").ok())
-                    .unwrap_or_default();
-            }
-            t.session = session
-                .clone()
-                .or_else(|| {
-                    yinz_runtime::envs::get_session_name()
-                        .ok()
-                        .map(|name| name.into_string())
-                })
-                .unwrap_or_default();
-            t.enter("pane_owner");
-        }
-        crate::commands::retarget_implicit_agent_report(
-            &mut action,
-            &mut session,
-            std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
-            |reference| {
-                yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(
-                    reference,
-                ))
-                .map_err(|_| "could not resolve pane owner".into())
-            },
-        )
-        .map_err(|e| anyhow!(e))?;
+        let explicit_target = session.is_some();
+        let explicit_pane = match &action {
+            CliAction::AgentReport { pane_id, .. } => pane_id.clone(),
+            _ => None,
+        };
+        trace
+            .lock()
+            .map_err(|_| anyhow!("report trace poisoned"))?
+            .enter("pane_owner");
+        let (session, caller) = yinz_process::pane_context::target(session.map(Into::into))?;
+        crate::commands::fill_caller_pane(&mut action, caller);
         {
             let mut t = trace.lock().map_err(|_| anyhow!("report trace poisoned"))?;
             if let CliAction::AgentReport {
@@ -90,9 +70,6 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 kind: t.kind.clone(),
             }
         };
-        let session = session
-            .map(yinz_types::internal_ids::SessionName::new)
-            .or_else(|| yinz_runtime::envs::get_session_name().ok());
         let session = match session {
             Some(session) => session,
             None => {
@@ -141,9 +118,21 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .and_then(|event| {
                 serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok()
             });
-        let observer_route = yinz_process::claude_turn::Route::Local {
-            session: session.to_string(),
-            pane: pane_id.to_string(),
+        let observer_route = if explicit_target {
+            yinz_process::claude_turn::Route::Local {
+                session: session.to_string(),
+                pane: pane_id.to_string(),
+            }
+        } else if let Ok(reference) = std::env::var(yinz_process::pty_host::PANE_REF_ENV_KEY) {
+            yinz_process::claude_turn::Route::Pane {
+                reference,
+                pane: explicit_pane,
+            }
+        } else {
+            yinz_process::claude_turn::Route::Local {
+                session: session.to_string(),
+                pane: pane_id.to_string(),
+            }
         };
         sender
             .send_client_msg(ClientToServerMsg::AgentReport(report))

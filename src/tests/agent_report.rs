@@ -88,6 +88,7 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         let dir = tempfile::tempdir().unwrap();
         let launcher_sockets = dir.path().join("launcher");
         let listener = listener(&launcher_sockets);
+        let _supervisor = pane_routing::Supervisor::new(&launcher_sockets, "report-test", 15);
         let registry = std::path::Path::new("/tmp")
             .join(format!("yinz-{}", nix::unistd::Uid::current()))
             .join("codex");
@@ -99,7 +100,7 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         let binding = serde_json::json!({
                 "thread_id": thread,
                 "env": {
-                    "YINZ_SESSION_NAME":"report-test", "YINZ_PANE_ID":"15",
+                    "YINZ_PANE_REF":"abcdef012345",
                     "YINZ_SOCKET_DIR": launcher_sockets
                 }
         });
@@ -249,7 +250,7 @@ fn bypassed_codex_launches_preserve_arguments_and_socket_config_is_not_pane_iden
 }
 
 #[test]
-fn standalone_codex_hooks_require_the_owning_in_process_pane() {
+fn standalone_codex_hooks_reject_reference_less_panes() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::{net::UnixStream, process::CommandExt};
 
@@ -404,7 +405,7 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
     .unwrap();
     let layout = root.join("layout.kdl");
     std::fs::write(&layout, format!(
-        "layout {{\n pane command={:?} {{\n args \"--exact\" \"standalone_codex_hooks_require_the_owning_in_process_pane\"\n }}\n}}\n",
+        "layout {{\n pane command={:?} {{\n args \"--exact\" \"standalone_codex_hooks_reject_reference_less_panes\"\n }}\n}}\n",
         std::env::current_exe().unwrap().to_str().unwrap()
     )).unwrap();
     let output = session
@@ -454,9 +455,7 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
                 entry["id"] == pane.parse::<u32>().unwrap() && entry["is_plugin"] == false
             })
             .unwrap();
-        assert_eq!(pane["agent"]["session_id"], "accepted", "{case}: {pane}");
-        assert_eq!(pane["agent"]["kind"], "codex");
-        assert_eq!(pane["agent"]["state"], "Busy");
+        assert!(pane["agent"].is_null(), "{case}: {pane}");
         count += 1;
         writeln!(peer, "ok").unwrap();
     }
@@ -985,3 +984,6 @@ fn agy_observer_reports_only_after_api_idle() {
     assert!(child.wait().unwrap().success());
     peer.join().unwrap();
 }
+
+#[path = "../unit/pane_routing.rs"]
+mod pane_routing;

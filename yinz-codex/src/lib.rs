@@ -773,7 +773,7 @@ pub fn launch(program: &Path, args: &[String]) -> Result<i32> {
         .filter_map(|key| std::env::var(key).ok().map(|value| ((*key).into(), value)))
         .collect();
     let options = bridge_options(args).filter(|_| {
-        ["YINZ_PANE_REF", "YINZ_PANE_ID", "YINZ_REMOTE_PANE_TOKEN"]
+        ["YINZ_PANE_REF", "YINZ_REMOTE_PANE_TOKEN"]
             .iter()
             .any(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
     });
@@ -1152,7 +1152,6 @@ fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
     let remote = env
         .get("YINZ_REMOTE_PANE_TOKEN")
         .is_some_and(|token| !token.is_empty());
-    let mut server_socket = None;
     let child = if remote {
         None
     } else if let Some(reference) = env.get("YINZ_PANE_REF") {
@@ -1169,33 +1168,13 @@ fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
         let Some(child) = status.child_pid else {
             return false;
         };
-        Some(child.get())
-    } else {
-        if env.contains_key("YINZ_REMOTE_PANE_TOKEN")
-            || env
-                .get("YINZ_PANE_ID")
-                .and_then(|id| id.parse::<u32>().ok())
-                .is_none()
+        if status.host_id.as_str() != reference || !status.attached || status.session_name.is_none()
         {
             return false;
         }
-        let Some(session) = env.get("YINZ_SESSION_NAME") else {
-            return false;
-        };
-        if yinz_session::sessions::validate_session_name(session).is_err() {
-            return false;
-        }
-        let Ok(socket) = yinz_runtime::consts::YINZ_SOCK_DIR
-            .join(session)
-            .canonicalize()
-        else {
-            return false;
-        };
-        let Ok(leader) = nix::unistd::getsid(None) else {
-            return false;
-        };
-        server_socket = Some(socket);
-        Some(leader.as_raw() as u32)
+        Some(child.get())
+    } else {
+        return false;
     };
     let mut system = sysinfo::System::new();
     let executable = std::env::current_exe()
@@ -1216,31 +1195,7 @@ fn owned_by_ancestor(env: &HashMap<String, String>) -> bool {
             break;
         };
         if Some(current.as_u32()) == child {
-            let Some(socket) = &server_socket else {
-                return true;
-            };
-            // An in-process PTY's session leader is a direct child of this session's
-            // server. A detached daemon has a different leader or has been reparented.
-            let Some(parent) = process.parent() else {
-                return false;
-            };
-            system.refresh_processes_specifics(
-                sysinfo::ProcessesToUpdate::Some(&[parent]),
-                true,
-                refresh,
-            );
-            return system.process(parent).is_some_and(|server| {
-                server
-                    .exe()
-                    .and_then(|exe| exe.canonicalize().ok())
-                    .is_some_and(|exe| Some(exe) == executable)
-                    && matches!(server.cmd(), [_, flag, path, ..]
-                        if flag == "--server"
-                            && Path::new(path)
-                                .canonicalize()
-                                .is_ok_and(|path| path == *socket)
-                    )
-            });
+            return true;
         }
         // Remote supervisors deliberately omit a local pane reference. Their child still
         // inherits the broker token, but a shared Codex daemon has no supervisor ancestor.

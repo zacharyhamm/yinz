@@ -19,6 +19,7 @@ pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub mod claude_turn;
 pub mod command;
 pub mod firecracker;
+pub mod pane_context;
 pub mod pty_host;
 
 use async_trait::async_trait;

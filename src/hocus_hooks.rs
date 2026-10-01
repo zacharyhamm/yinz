@@ -276,7 +276,7 @@ finish() {{
 # carries a ${token_env} *and* a $YINZ_PANE_ID, and the pane id it carries is the
 # asking session's, on a machine that has no such session. Neither set: not a yinz pane at all,
 # but Antigravity still requires valid JSON output.
-[ -n "${token_env}" ] || [ -n "$YINZ_PANE_ID" ] || finish "$1"
+[ -n "${token_env}" ] || [ -n "$YINZ_PANE_REF" ] || finish "$1"
 
 YINZ_BIN='{yinz}'
 [ -x "$YINZ_BIN" ] || YINZ_BIN=yinz
@@ -295,7 +295,7 @@ if [ -n "${token_env}" ]; then
     # A remote pane - ssh or Firecracker.
     feed "$1" | "$YINZ_BIN" --pty-broker report agy >/dev/null 2>&1
 else
-    # A local pane: the pane is $YINZ_PANE_ID, which the action reads itself.
+    # A local pane: the action resolves $YINZ_PANE_REF at dispatch.
     feed "$1" | "$YINZ_BIN" action agent-report --hook-json --kind agy >/dev/null 2>&1
 fi
 
@@ -350,7 +350,7 @@ finish "$1"
 # asking session's, on a machine that has no such session. Reading it here would send
 # every event to whatever session happens to run on this box, under a pane id that
 # means something else. Neither set: not a yinz pane at all, and nothing to report to.
-[ -n "${token_env}" ] || [ -n "$YINZ_PANE_ID" ] || {{ {no_pane}; }}
+[ -n "${token_env}" ] || [ -n "$YINZ_PANE_REF" ] || {{ {no_pane}; }}
 
 YINZ_BIN='{yinz}'
 [ -x "$YINZ_BIN" ] || YINZ_BIN=yinz
@@ -363,7 +363,7 @@ if [ -n "${token_env}" ]; then
     # token it put here and relays it on the pane's own channel to the pane's server.
     "$YINZ_BIN" --pty-broker report {wire_kind} >/dev/null 2>&1
 else
-    # A local pane: the pane is $YINZ_PANE_ID, which the action reads itself.
+    # A local pane: the action resolves $YINZ_PANE_REF at dispatch.
     "$YINZ_BIN" action agent-report --hook-json{kind} >/dev/null 2>&1
 fi
 {output}
@@ -425,7 +425,7 @@ import { spawn } from "node:child_process"
 const YINZ_BIN = __YINZ_BIN__
 const PANE_TOKEN_ENV = __TOKEN_ENV__
 const PANE_TOKEN = process.env[PANE_TOKEN_ENV]
-const PANE_ID = process.env.YINZ_PANE_ID
+const PANE_REF = process.env.YINZ_PANE_REF
 
 let reports = Promise.resolve()
 
@@ -434,7 +434,7 @@ function report(payload, isParent) {
   // carries a token *and* a pane id, and the pane id it carries is the asking session's,
   // on a machine that has no such session. Neither set: not a yinz pane at all, and
   // nothing to report to.
-  if (!PANE_TOKEN && !PANE_ID) return
+  if (!PANE_TOKEN && !PANE_REF) return
   const args = PANE_TOKEN
     ? ["--pty-broker", "report", "opencode"]
     : ["action", "agent-report", "--hook-json", "--kind", "opencode"]
@@ -1427,9 +1427,12 @@ fn pane_line() {
         println!("pane:    this shell is a remote yinz pane, reporting through its broker");
         return;
     }
-    match std::env::var("YINZ_PANE_ID") {
-        Ok(pane_id) => println!("pane:    this shell is yinz pane {pane_id}"),
-        Err(_) => println!(
+    match yinz_process::pane_context::current_pane() {
+        Ok(Some((session, pane_id))) => {
+            println!("pane:    this shell is yinz pane {pane_id} in {session}")
+        },
+        Err(error) => println!("pane:    {error:#}"),
+        Ok(None) => println!(
             "pane:    this shell is not in a yinz pane, so an agent started here \
              would report nothing"
         ),
@@ -1502,7 +1505,7 @@ mod tests {
         let payload = vec![b'x'; 200 * 1024];
         let mut child = Command::new(&hook)
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
-            .env("YINZ_PANE_ID", "7")
+            .env("YINZ_PANE_REF", "abcdef012345")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGC", &argc)
@@ -1534,7 +1537,7 @@ mod tests {
         make_executable(&hook).unwrap();
 
         let output = Command::new(&hook)
-            .env_remove("YINZ_PANE_ID")
+            .env_remove("YINZ_PANE_REF")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGC", &argc)
@@ -1580,7 +1583,7 @@ mod tests {
         let mut command = Command::new(&hook);
         command
             .env_remove("YINZ_CLAUDE_INLINE_HOOKS")
-            .env_remove("YINZ_PANE_ID")
+            .env_remove("YINZ_PANE_REF")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .env("CAPTURE", &captured)
             .env("ARGV", &argv)
@@ -1775,7 +1778,7 @@ mod tests {
         let output = Command::new("sh")
             .arg("-c")
             .arg(command)
-            .env("YINZ_PANE_ID", "7")
+            .env("YINZ_PANE_REF", "abcdef012345")
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -1805,7 +1808,7 @@ mod tests {
         let output = Command::new("sh")
             .arg("-c")
             .arg(command)
-            .env_remove("YINZ_PANE_ID")
+            .env_remove("YINZ_PANE_REF")
             .env_remove(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
             .output()
             .unwrap();
@@ -1877,7 +1880,7 @@ mod tests {
         let output_with_pane = Command::new("sh")
             .arg(&files.script)
             .arg("PreToolUse")
-            .env("YINZ_PANE_ID", "1")
+            .env("YINZ_PANE_REF", "abcdef012345")
             .output()
             .unwrap();
         assert!(output_with_pane.status.success());
@@ -2048,7 +2051,10 @@ mod tests {
         let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
         for remote in [false, true] {
             let mut command = Command::new("node");
-            command.arg(&harness).arg(&plugin).env("YINZ_PANE_ID", "1");
+            command
+                .arg(&harness)
+                .arg(&plugin)
+                .env("YINZ_PANE_REF", "abcdef012345");
             if remote {
                 command.env(token, "test-token");
             } else {

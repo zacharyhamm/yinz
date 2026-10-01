@@ -18,8 +18,18 @@ pub const OBSERVER_FLAG: &str = "--claude-turn-observer";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Route {
-    Local { session: String, pane: String },
-    Remote { socket: PathBuf, pane_token: String },
+    Local {
+        session: String,
+        pane: String,
+    },
+    Pane {
+        reference: String,
+        pane: Option<String>,
+    },
+    Remote {
+        socket: PathBuf,
+        pane_token: String,
+    },
 }
 
 fn default_claude_kind() -> String {
@@ -604,25 +614,37 @@ pub(crate) fn send(route: &Route, kind: &str, hook: &HookEvent) -> Result<()> {
         Route::Remote { socket, pane_token } => {
             crate::pty_host::remote::broker::report_agent_hook_to(socket, pane_token, kind, &json)
         },
-        Route::Local { session, pane } => {
-            let mut child =
-                Command::new(std::env::current_exe().context("resolve confirmation reporter")?)
-                    .args([
+        Route::Local { .. } | Route::Pane { .. } => {
+            let mut command =
+                Command::new(std::env::current_exe().context("resolve confirmation reporter")?);
+            match route {
+                Route::Local { session, pane } => {
+                    command.args([
                         "--session",
                         session,
                         "action",
                         "agent-report",
-                        "--kind",
-                        kind,
                         "--pane-id",
                         pane,
-                        "--hook-json",
-                    ])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .context("start confirmation reporter")?;
+                    ]);
+                },
+                Route::Pane { reference, pane } => {
+                    command
+                        .env(crate::pty_host::PANE_REF_ENV_KEY, reference)
+                        .args(["action", "agent-report"]);
+                    if let Some(pane) = pane {
+                        command.args(["--pane-id", pane]);
+                    }
+                },
+                Route::Remote { .. } => unreachable!(),
+            }
+            let mut child = command
+                .args(["--kind", kind, "--hook-json"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .context("start confirmation reporter")?;
             child
                 .stdin
                 .take()
