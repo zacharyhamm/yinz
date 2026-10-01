@@ -64,15 +64,14 @@ fn an_agent_spawned_into_a_tab_too_small_to_share_gets_a_tab_of_its_own_and_the_
     yinz.run_cli_action(new_pane_action(&["claude"]));
     let agent = yinz.expect_pty_spawn();
     agent.output(PROMPT);
-    // `Tab #2` on the bar is not enough: the new tab is pending until its layout lands, and
-    // in that window the first tab's own tab-bar already lists it while the client is still
-    // looking at the shell. The shell's marker gone from the screen is what says the client
-    // moved. A pane alone in its tab draws no frame, so its title is not on screen; its
-    // prompt is.
+    // The agent's title on the bar is not enough: until its pending layout lands,
+    // the shell's tab bar already lists it while the client still sees the shell.
+    // The shell's marker disappearing proves the client moved. A lone pane shows
+    // its title in the tab bar; its prompt must also be visible.
     yinz.wait_until(
         "the client is on the agent's tab and sees its prompt",
         |grid_snapshot| {
-            grid_snapshot.text.contains("Tab #2")
+            grid_snapshot.text.contains("claude")
                 && !grid_snapshot.text.contains("shellmarker")
                 && grid_snapshot.text.contains("$ ")
         },
