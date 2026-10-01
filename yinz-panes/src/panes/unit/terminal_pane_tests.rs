@@ -1633,15 +1633,8 @@ fn a_resumed_pane_forwards_input_again() {
     ));
 }
 
-/// The wait's indicator is taken down by the client that is *looking* at the pane, in the
-/// frame it draws for them.
-///
-/// Focus reaches a pane by a dozen routes - tiled, floating, fullscreen, a mouse click, a
-/// plugin - and the frame is the one place that knows the answer for certain. The corollary
-/// is deliberate: a wait that arrives while the user is already in the pane never blinks at
-/// all, which is the same rule the waiting toast keeps.
 #[test]
-pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
+pub fn waiting_agent_bell_persists_until_the_reported_wait_ends() {
     let waiting = AgentInfo {
         kind: "claude".to_owned(),
         state: AgentState::Waiting,
@@ -1653,47 +1646,61 @@ pub fn focusing_a_pane_takes_down_its_waiting_agents_bell() {
         session_id: Some("s1".to_owned()),
         run_id: None,
     };
-
-    // A client the pane is *not* focused for leaves the wait up: it is drawing the bell, not
-    // answering it.
     let mut pane = agent_pane();
-    assert!(pane.set_agent_info(Some(waiting.clone())));
-    assert!(pane.agent_attention_since().is_some());
-    pane.render_frame(
-        crate::ClientId::new(1),
-        frame_params(false),
-        InputMode::Normal,
-    )
-    .expect("the frame renders");
-    assert!(
-        pane.agent_attention_since().is_some(),
-        "somebody else's frame is not somebody answering"
-    );
-
-    // The focused client's is.
-    pane.render_frame(
-        crate::ClientId::new(1),
-        frame_params(true),
-        InputMode::Normal,
-    )
-    .expect("the frame renders");
-    assert!(pane.agent_attention_since().is_none());
-
-    // And a wait that arrives while they are already there never goes up.
-    let mut busy = waiting.clone();
-    busy.state = AgentState::Busy;
-    busy.waiting_on = None;
-    busy.wait_needs_a_person = false;
-    assert!(pane.set_agent_info(Some(busy)));
-    assert!(pane.set_agent_info(Some(waiting)));
-    assert!(pane.agent_attention_since().is_some());
-    pane.render_frame(
-        crate::ClientId::new(1),
-        frame_params(true),
-        InputMode::Normal,
-    )
-    .expect("the frame renders");
-    assert!(pane.agent_attention_since().is_none());
+    pane.update_name("my agent");
+    let render = |pane: &mut TerminalPane, focused| {
+        pane.render_frame(ClientId::new(1), frame_params(focused), InputMode::Normal)
+            .unwrap()
+            .unwrap()
+            .0
+            .into_iter()
+            .flat_map(|chunk| chunk.terminal_characters)
+            .map(|character| character.character)
+            .collect::<String>()
+    };
+    for focused in [false, true, false, true] {
+        pane.set_agent_info(Some(waiting.clone()));
+        assert!(render(&mut pane, focused).contains("🔔 [1] my agent"));
+        assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent");
+        assert_eq!(
+            pane.display_title(),
+            "my agent",
+            "lent titles stay undecorated"
+        );
+        assert_eq!(pane.custom_title().as_deref(), Some("my agent"));
+    }
+    let mut quiet = waiting.clone();
+    quiet.wait_needs_a_person = false;
+    for next in [
+        Some(AgentInfo {
+            state: AgentState::Busy,
+            ..waiting.clone()
+        }),
+        Some(AgentInfo {
+            state: AgentState::Idle,
+            ..waiting.clone()
+        }),
+        Some(AgentInfo {
+            state: AgentState::Exited,
+            ..waiting.clone()
+        }),
+        Some(quiet),
+        None,
+    ] {
+        pane.set_agent_info(Some(waiting.clone()));
+        pane.render_frame(ClientId::new(1), frame_params(true), InputMode::Normal)
+            .unwrap();
+        pane.set_should_render(false);
+        assert!(pane.set_agent_info(next));
+        assert!(pane.should_render(), "reports repaint idle panes");
+        assert!(!render(&mut pane, true).contains('🔔'));
+        assert_eq!(pane.stack_list_entry_label(), "[1] my agent");
+    }
+    pane.set_agent_info(Some(waiting));
+    pane.set_bell_notification(true);
+    assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent [!]");
+    pane.set_bell_notification(false);
+    assert_eq!(pane.stack_list_entry_label(), "🔔 [1] my agent");
 }
 
 /// A pane the host opened for `agent_spawn` starts with the kind the planner resolved,

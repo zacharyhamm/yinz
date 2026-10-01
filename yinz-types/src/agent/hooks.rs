@@ -2019,7 +2019,7 @@ mod tests {
     }
 
     /// The record carries [`waiting_needs_a_person`]'s answer, because the pane that draws the
-    /// blinking bell is a long way from the event that decided it - and the event is gone by
+    /// waiting bell is a long way from the event that decided it - and the event is gone by
     /// the time the pane sees anything. Only a wait carries one, for the same reason only a
     /// wait carries `waiting_on`: a record that has moved on has no wait for anybody to
     /// answer.

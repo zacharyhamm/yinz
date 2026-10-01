@@ -47,7 +47,6 @@ impl Screen {
         let now = self.frame_now();
         self.reap_settled_notifications(now);
         self.advance_frame_color_fades(now);
-        self.advance_agent_attention_blinks();
         self.advance_plugin_loading_animations();
 
         // Every tab is laid out over the same session surface. Re-derive it here so a render tick
