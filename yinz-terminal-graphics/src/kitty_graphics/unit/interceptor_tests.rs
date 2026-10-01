@@ -1,4 +1,4 @@
-use super::{InterceptorResult, KittyApcInterceptor};
+use super::{InterceptorResult, KittyApcInterceptor, MAX_CAPTURE_LEN};
 #[derive(Default, Clone, PartialEq, Debug)]
 struct RecordingPerformer {
     events: Vec<String>,
@@ -348,4 +348,111 @@ fn esc_esc_underscore_sequences_replay_correctly() {
     let (captured, performer) = run_through_interceptor(b"\x1b\x1b_Gx\x1b\\A", usize::MAX);
     assert_eq!(captured, vec![b"x".to_vec()]);
     assert_eq!(performer, run_bare(b"\x1bA"));
+}
+
+/// What driving the interceptor produced: forwarded bytes, then each captured payload.
+#[derive(Debug, PartialEq)]
+struct Driven {
+    forwarded: Vec<u8>,
+    captured: Vec<Vec<u8>>,
+}
+
+impl Driven {
+    fn record(&mut self, result: InterceptorResult) {
+        match result {
+            InterceptorResult::Forward(bytes) => self.forwarded.extend_from_slice(bytes.as_slice()),
+            InterceptorResult::Swallow => {},
+            InterceptorResult::Captured(payload) => self.captured.push(payload),
+        }
+    }
+}
+
+fn drive_per_byte(reads: &[&[u8]]) -> (Driven, bool) {
+    let mut interceptor = KittyApcInterceptor::new();
+    let mut driven = Driven {
+        forwarded: vec![],
+        captured: vec![],
+    };
+    for &byte in reads.concat().iter() {
+        driven.record(interceptor.advance(byte));
+    }
+    (driven, interceptor.is_in_ground_state())
+}
+
+/// The way `TerminalPane::handle_pty_bytes` drives it: payload runs in bulk.
+fn drive_in_runs(reads: &[&[u8]]) -> (Driven, bool) {
+    let mut interceptor = KittyApcInterceptor::new();
+    let mut driven = Driven {
+        forwarded: vec![],
+        captured: vec![],
+    };
+    for read in reads {
+        let mut index = 0;
+        while index < read.len() {
+            if interceptor.is_capturing() {
+                let run = interceptor.capture_run(&read[index..]);
+                if run > 0 {
+                    index += run;
+                    continue;
+                }
+            }
+            driven.record(interceptor.advance(read[index]));
+            index += 1;
+        }
+    }
+    (driven, interceptor.is_in_ground_state())
+}
+
+mod capture_run_props {
+    use super::*;
+    use hegel::generators;
+
+    #[hegel::test]
+    fn bulk_capture_matches_per_byte_capture(tc: hegel::TestCase) {
+        let alphabet = [
+            b'A', b'=', b';', b'_', b'G', b'\\', 0x1b, 0x9c, 0x18, 0x1a, 0xc3,
+        ];
+        let mut stream = vec![];
+        for _ in 0..tc.draw(generators::integers::<usize>().max_value(12)) {
+            if tc.draw(generators::booleans()) {
+                stream.extend_from_slice(b"\x1b_Ga=T;");
+            }
+            for _ in 0..tc.draw(generators::integers::<usize>().max_value(20)) {
+                let index = tc.draw(generators::integers::<usize>().max_value(alphabet.len() - 1));
+                stream.push(alphabet[index]);
+            }
+        }
+        let mut reads = vec![];
+        let mut rest = stream.as_slice();
+        while !rest.is_empty() {
+            let size = tc.draw(
+                generators::integers::<usize>()
+                    .min_value(1)
+                    .max_value(rest.len()),
+            );
+            let (read, after) = rest.split_at(size);
+            reads.push(read);
+            rest = after;
+        }
+        assert_eq!(drive_in_runs(&reads), drive_per_byte(&reads), "{stream:?}");
+    }
+}
+
+#[test]
+fn bulk_capture_overflows_on_the_same_byte_as_per_byte_capture() {
+    for payload_len in [MAX_CAPTURE_LEN - 1, MAX_CAPTURE_LEN, MAX_CAPTURE_LEN + 1] {
+        let mut stream = b"\x1b_G".to_vec();
+        stream.extend(std::iter::repeat_n(b'A', payload_len));
+        stream.extend_from_slice(b"\x1b\\after");
+        // Split mid-payload so the overflow can fall between two runs.
+        let (first, second) = stream.split_at(MAX_CAPTURE_LEN / 2);
+        let reads = [first, second];
+        let (bulk, _) = drive_in_runs(&reads);
+        assert_eq!(bulk, drive_per_byte(&reads).0, "payload_len {payload_len}");
+        assert_eq!(
+            bulk.captured.len(),
+            usize::from(payload_len <= MAX_CAPTURE_LEN),
+            "payload_len {payload_len}"
+        );
+    }
 }

@@ -216,6 +216,7 @@ kdl = { version = "4.5.0", default-features = false, features = ["span"] }
 lazy_static = { version = "1.4.0", default-features = false }
 libc = { version = "0.2", default-features = false, features = ["std"] }
 log = { version = "0.4.17", default-features = false }
+memchr = { version = "2.7.6", default-features = false, features = ["std"] }
 miette = { version = "7.6", default-features = false, features = ["derive", "fancy"] }
 # `ioctl` for every member, although only yinz-server-os uses it. That crate is in the yinz
 # binary's graph but not in the whole-app suite's, and a nix feature only one graph asks for

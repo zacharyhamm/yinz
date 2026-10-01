@@ -231,6 +231,45 @@ fn pty_partitions_preserve_styled_state_and_replies(tc: hegel::TestCase) {
     );
 }
 
+/// A read with no Kitty APC start goes to the parser whole; one with an APC goes through the
+/// interceptor a byte at a time, flushing to the parser at each escape. Splitting a stream that
+/// mixes APCs, other escapes and doubled ESCs at random points sends each piece down whichever
+/// path it qualifies for, so the two paths must leave identical panes.
+#[hegel::test]
+fn bulk_and_intercepted_ingest_leave_identical_panes(tc: hegel::TestCase) {
+    let (cols, rows) = (number(&tc, 1, 16), number(&tc, 1, 6));
+    let mut whole = Surface::new(&[geom(0, 0, cols, rows)]);
+    let mut split = Surface::new(&[geom(0, 0, cols, rows)]);
+    let sizes: Vec<_> = (0..8).map(|_| number(&tc, 1, 13)).collect();
+    let mut stream = Vec::new();
+    for _ in 0..number(&tc, 1, 20) {
+        let piece = match number(&tc, 0, 10) {
+            7 => format!(
+                "\x1b_Ga=T,f=24,s=1,v=1,i={},q=2;AAAA\x1b\\",
+                number(&tc, 1, 3)
+            ),
+            // An APC that is not Kitty graphics, and a doubled ESC.
+            8 => "\x1b_other\x1b\\".into(),
+            9 => "\x1b\x1b[1mbold\x1b[m".into(),
+            10 => "\x1b_\x1b[2mdim\x1b[m".into(),
+            kind => operation(&tc, kind, cols, rows),
+        };
+        stream.extend(piece.into_bytes());
+    }
+    whole.panes[0].handle_pty_bytes(stream.clone());
+    feed_partitioned(&mut split.panes[0], &stream, &sizes);
+    let (a, b) = (&mut whole.panes[0], &mut split.panes[0]);
+    assert_eq!(
+        cells(a),
+        cells(b),
+        "stream {stream:?}, partitions {sizes:?}"
+    );
+    assert_eq!(a.cursor_coordinates(), b.cursor_coordinates());
+    assert_eq!(a.pending_pty_input, b.pending_pty_input);
+    assert_eq!(a.drain_messages_to_pty(), b.drain_messages_to_pty());
+    assert_eq!(whole.frame(true, true), split.frame(true, true));
+}
+
 fn check_frame(surface: &mut Surface, host: &mut Surface, cols: usize, rows: usize) {
     host.panes[0].handle_pty_bytes(surface.frame(false, false).into_bytes());
     let mut fresh = Surface::new(&[geom(0, 0, cols, rows)]);

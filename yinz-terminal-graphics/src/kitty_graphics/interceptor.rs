@@ -71,6 +71,21 @@ impl KittyApcInterceptor {
     pub fn is_in_ground_state(&self) -> bool {
         self.state == State::Ground
     }
+    /// Whether the interceptor is inside a graphics payload, where `capture_run` applies.
+    pub fn is_capturing(&self) -> bool {
+        self.state == State::Capturing
+    }
+    /// Capture payload bytes from the front of `bytes`, up to the first byte `advance` treats
+    /// specially, and return how many were consumed. Equivalent to `advance` on each of them,
+    /// which returns `Swallow` and stays in the payload, without a state-machine step per byte:
+    /// a multi-megabyte direct upload spends most of its ingest here.
+    pub fn capture_run(&mut self, bytes: &[u8]) -> usize {
+        debug_assert!(self.is_capturing());
+        let run = memchr::memchr3(0x1b, 0x9c, 0x18, bytes).unwrap_or(bytes.len());
+        let run = memchr::memchr(0x1a, &bytes[..run]).unwrap_or(run);
+        self.push_capture_bytes(&bytes[..run]);
+        run
+    }
     pub fn advance(&mut self, byte: u8) -> InterceptorResult {
         match self.state {
             State::Ground => match byte {
@@ -154,6 +169,19 @@ impl KittyApcInterceptor {
                 InterceptorResult::Swallow
             },
         }
+    }
+    /// `push_capture_byte` for each byte of `run`, which overflows on byte
+    /// `MAX_CAPTURE_LEN + 1` and ignores everything after an overflow.
+    fn push_capture_bytes(&mut self, run: &[u8]) {
+        if self.overflowed || run.is_empty() {
+            return;
+        }
+        if self.buffer.len() + run.len() > MAX_CAPTURE_LEN {
+            self.overflowed = true;
+            self.buffer.clear();
+            return;
+        }
+        self.buffer.extend_from_slice(run);
     }
     fn push_capture_byte(&mut self, byte: u8) {
         if self.overflowed {
