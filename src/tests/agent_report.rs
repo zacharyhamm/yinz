@@ -890,3 +890,98 @@ fn agent_validation_errors_answer_in_json_when_asked() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("prompt must not be empty"));
 }
+
+#[test]
+fn agy_observer_reports_only_after_api_idle() {
+    use std::io::{BufRead, BufReader};
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        for _ in 0..5 {
+            let mut receiver =
+                IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+            let IpcRecv::Msg(ClientToServerMsg::AgentReport(report), _) =
+                receiver.recv_client_msg()
+            else {
+                panic!("expected AGY report");
+            };
+            let hook: yinz_types::agent::HookEvent =
+                serde_json::from_str(&report.event.unwrap().raw).unwrap();
+            receiver
+                .get_sender::<ServerToClientMsg>()
+                .unwrap()
+                .send_server_msg(ServerToClientMsg::AgentReportAccepted {
+                    report_id: report.report_id,
+                })
+                .unwrap();
+            tx.send((report.state, hook)).unwrap();
+        }
+    });
+    let script = dir.path().join("agy.py");
+    std::fs::write(
+        &script,
+        include_str!("../../yinz-test-support/fixtures/agy.py"),
+    )
+    .unwrap();
+    let mut child = Command::new("bash")
+        .args([
+            "-c",
+            "exec -a agy bash -c 'python3 \"$@\"; exit $?' -- \"$@\"",
+            "--",
+        ])
+        .arg(script)
+        .arg(dir.path().join("transcript.jsonl"))
+        .arg(env!("CARGO_BIN_EXE_yinz"))
+        .args([
+            "--session",
+            "report-test",
+            "action",
+            "agent-report",
+            "--pane-id",
+            "7",
+            "--kind",
+            "agy",
+            "--hook-json",
+        ])
+        .env("YINZ_SOCKET_DIR", dir.path())
+        .env("TMPDIR", dir.path())
+        .env_remove("YINZ_PANE_REF")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    for (gate, count) in [("first-stop", 2), ("continued-stop", 2)] {
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), gate);
+        for _ in 0..count {
+            let (state, hook) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(hook.agy_turn_complete, None);
+            if hook.hook_event_name == "UserPromptSubmit" {
+                assert_eq!(hook.prompt_id.as_deref(), Some("fixture-conversation:1"));
+                assert!(
+                    matches!(state, AgentReportState::Set(agent) if agent.state == yinz_types::agent::AgentState::Busy)
+                );
+            }
+        }
+        // A finished model response and a continued Stop must not produce confirmation.
+        assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
+        writeln!(child.stdin.as_mut().unwrap(), "continue").unwrap();
+    }
+    let (_, confirmed) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(confirmed.agy_turn_complete, Some(true));
+    assert_eq!(confirmed.session_id, "fixture-conversation");
+    assert_eq!(
+        confirmed.prompt_id.as_deref(),
+        Some("fixture-conversation:1")
+    );
+    assert_eq!(confirmed.turn_id.as_deref(), Some("1"));
+    assert_eq!(confirmed.last_assistant_message.as_deref(), Some("SECOND"));
+    writeln!(child.stdin.as_mut().unwrap(), "exit").unwrap();
+    assert!(child.wait().unwrap().success());
+    peer.join().unwrap();
+}

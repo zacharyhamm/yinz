@@ -226,6 +226,8 @@ pub struct SpawnedAgent {
 
 mod hooks;
 pub use hooks::*;
+pub mod agy;
+pub use agy::{AGY_HOOK_EVENTS, AGY_HOOK_TIMEOUT_SECONDS};
 pub mod control;
 pub mod opencode;
 pub use opencode::*;

@@ -41,7 +41,7 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
-pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode", "muse"];
+pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode", "muse", "agy"];
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
@@ -79,14 +79,26 @@ pub const OPENCODE_PERMISSION_MODES: &[&str] = &["auto", "skip"];
 /// it was cut for, so the trust `--yolo` carries stays inside that checkout.
 pub const MUSE_PERMISSION_MODES: &[&str] = &["untrusted", "on-request", "never", "skip"];
 
+/// Antigravity modes: `accept-edits`, `plan`, and `skip` for `--dangerously-skip-permissions`.
+pub const AGY_PERMISSION_MODES: &[&str] = &["accept-edits", "plan", "skip"];
+
+/// Canonicalize an agent kind alias (e.g. "antigravity" -> "agy").
+pub fn normalize_kind(kind: &str) -> &str {
+    match kind {
+        "antigravity" => "agy",
+        other => other,
+    }
+}
+
 /// The reasoning efforts a kind accepts, shared by the launcher and its chooser.
 pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
-    match kind {
+    match kind.map(normalize_kind) {
         Some("codex") => &["none", "minimal", "low", "medium", "high", "xhigh"],
         Some("claude" | "cursor") => &["low", "medium", "high", "xhigh", "max"],
         Some("muse") => &[
             "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ],
+        Some("agy") => &["low", "medium", "high", "max"],
         _ => &[],
     }
 }
@@ -98,7 +110,7 @@ pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
 /// site because there used to be two copies of it and they were one release apart from
 /// disagreeing.
 pub fn binary_for(kind: &str) -> &str {
-    match kind {
+    match normalize_kind(kind) {
         "cursor" => "cursor-agent",
         other => other,
     }
@@ -156,6 +168,7 @@ pub fn worktree_path_in(dir: Option<&str>, branch: &str) -> String {
 /// error naming the ones it does, never silently dropped: a caller who asked for permissions
 /// off and got an agent that asks would not find out until it stalled.
 pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<String>), String> {
+    let kind = kind.map(normalize_kind);
     let mut leading = Vec::new();
     let mut flags = Vec::new();
     let mut model = trimmed(&spec.model).map(str::to_owned);
@@ -184,7 +197,7 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 "-c".to_owned(),
                 format!("model_reasoning_effort=\"{effort}\""),
             ]),
-            Some("claude") => flags.extend(["--effort".to_owned(), effort.to_owned()]),
+            Some("claude" | "agy") => flags.extend(["--effort".to_owned(), effort.to_owned()]),
             Some("muse") => flags.extend(["--reasoning-effort".to_owned(), effort.to_owned()]),
             Some("cursor") => {
                 let value = model
@@ -326,6 +339,29 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 },
             }
         },
+        Some("agy") => {
+            match mode {
+                None => {},
+                Some("skip") => flags.push("--dangerously-skip-permissions".to_owned()),
+                Some("accept-edits" | "acceptEdits") => {
+                    flags.push("--mode".to_owned());
+                    flags.push("accept-edits".to_owned());
+                },
+                Some("plan") => {
+                    flags.push("--mode".to_owned());
+                    flags.push("plan".to_owned());
+                },
+                Some(mode) => return unknown_mode(AGY_PERMISSION_MODES, mode),
+            }
+            match resume {
+                None => {},
+                Some("last") => flags.push("--continue".to_owned()),
+                Some(id) => {
+                    flags.push("--conversation".to_owned());
+                    flags.push(id.to_owned());
+                },
+            }
+        },
         _ => {
             // A kind nothing here knows, or a bare command: `--model` is the one flag every
             // agent spells the same, and nothing else can be guessed at.
@@ -455,7 +491,9 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         trimmed(&spec.firecracker_image),
         None,
     )?;
-    let kind = trimmed(&spec.kind).map(str::to_lowercase);
+    let kind = trimmed(&spec.kind)
+        .map(str::to_lowercase)
+        .map(|k| normalize_kind(&k).to_owned());
     let program = match (kind.as_deref(), trimmed(&spec.command)) {
         (Some(kind), _) => binary_for(kind).to_owned(),
         (None, Some(command)) => command.to_owned(),
@@ -488,6 +526,8 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     if let Some(prompt) = trimmed(&spec.prompt) {
         if kind.as_deref() == Some("opencode") {
             args.push("--prompt".to_owned());
+        } else if kind.as_deref() == Some("agy") {
+            args.push("--prompt-interactive".to_owned());
         }
         args.push(prompt.to_owned());
     }
@@ -691,6 +731,7 @@ mod tests {
                     "example",
                 ],
             ),
+            ("agy", vec!["--effort", "high", "--model", "example"]),
             ("cursor", vec!["--model", "example[effort=high]"]),
             (
                 "muse",
@@ -706,7 +747,7 @@ mod tests {
             .unwrap();
             assert_eq!(command.args, expected);
         }
-        for kind in ["cursor", "opencode", "unknown"] {
+        for kind in ["opencode", "unknown"] {
             assert!(plan(&Spec {
                 effort: Some("high".into()),
                 ..spec(kind)
@@ -1508,5 +1549,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(command.cwd, Some(PathBuf::from("/tmp/scratch-repo")));
+    }
+
+    #[test]
+    fn agy_launch_spec_translation() {
+        assert_eq!(normalize_kind("agy"), "agy");
+        assert_eq!(normalize_kind("antigravity"), "agy");
+        assert_eq!(binary_for("agy"), "agy");
+        assert_eq!(binary_for("antigravity"), "agy");
+
+        for alias in ["agy", "antigravity", "Antigravity"] {
+            let (command, _) = plan(&Spec {
+                kind: Some(alias.into()),
+                effort: Some("high".into()),
+                permission_mode: Some("skip".into()),
+                prompt: Some("investigate bug".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(command.path, PathBuf::from("agy"), "{alias}");
+            assert_eq!(
+                command.args,
+                vec![
+                    "--effort",
+                    "high",
+                    "--dangerously-skip-permissions",
+                    "--prompt-interactive",
+                    "investigate bug"
+                ],
+                "{alias}"
+            );
+
+            let (command, _) = plan(&Spec {
+                kind: Some(alias.into()),
+                permission_mode: Some("accept-edits".into()),
+                resume: Some("last".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(
+                command.args,
+                vec!["--mode", "accept-edits", "--continue"],
+                "{alias}"
+            );
+
+            let (command, _) = plan(&Spec {
+                kind: Some(alias.into()),
+                permission_mode: Some("plan".into()),
+                resume: Some("conv-abc".into()),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(
+                command.args,
+                vec!["--mode", "plan", "--conversation", "conv-abc"],
+                "{alias}"
+            );
+        }
+
+        let command = resume_command("antigravity", "conv-xyz", Some("/w"), None).unwrap();
+        assert_eq!(command.path, PathBuf::from("agy"));
+        assert_eq!(command.args, vec!["--conversation", "conv-xyz"]);
     }
 }

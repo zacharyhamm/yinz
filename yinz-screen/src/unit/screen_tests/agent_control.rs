@@ -90,6 +90,7 @@ fn hook(name: &str) -> HookEvent {
         turn_id: Some("turn".into()),
         prompt_id: Some("prompt".into()),
         claude_turn_complete: (name == "Stop").then_some(true),
+        agy_turn_complete: (name == "Stop").then_some(true),
         source: (name == "SessionStart").then(|| "startup".into()),
         prompt: (name == "UserPromptSubmit").then(|| "review".into()),
         ..Default::default()
@@ -908,6 +909,379 @@ fn supported_idle_waits_require_readiness_even_without_prompt_support() {
         assert!(!result.agents[0].prompt_supported);
         assert!(!result.agents[0].ready);
     }
+
+    // Antigravity does not emit SessionStart; it bootstraps readiness from native
+    // PreInvocation and Stop lifecycle events.
+    let (mut screen, messages, _writes) = setup("agy");
+    for name in ["UserPromptSubmit", "Stop"] {
+        let mut event = hook(name);
+        event.prompt_id = Some("startup".into());
+        report_kind(&mut screen, "agy", event);
+    }
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
+        .unwrap();
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.refresh_agent_controls();
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::TimedOut);
+    assert!(!result.agents[0].prompt_supported);
+    assert!(!result.agents[0].ready);
+}
+
+#[test]
+fn agy_native_turn_bootstraps_readiness_and_allows_prompt() {
+    let (mut screen, messages, writes) = setup("agy");
+    let mut startup = hook("UserPromptSubmit");
+    startup.prompt_id = Some("startup".into());
+    report_kind(&mut screen, "agy", startup.clone());
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status_busy = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status_busy.agent.state, AgentState::Busy);
+    assert!(status_busy.status_available);
+    assert!(status_busy.prompt_supported);
+    assert!(!status_busy.ready);
+
+    startup.hook_event_name = "Stop".into();
+    startup.agy_turn_complete = Some(true);
+    report_kind(&mut screen, "agy", startup);
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status_idle = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status_idle.agent.state, AgentState::Idle);
+    assert!(status_idle.status_available);
+    assert!(status_idle.prompt_supported);
+    assert!(status_idle.ready);
+
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    let wait_res = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(wait_res.outcome, AgentOutcome::Ok);
+    assert!(wait_res.agents[0].ready);
+
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    screen.refresh_agent_controls();
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    report_kind(&mut screen, "agy", hook("PreToolUse"));
+    report_kind(&mut screen, "agy", hook("PostToolUse"));
+    report_kind(&mut screen, "agy", hook("PreInvocation"));
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "agy", hook("Stop"));
+    let done = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(done.outcome, AgentOutcome::Completed);
+    assert!(done.agents[0].ready);
+}
+
+#[test]
+fn agy_native_turn_with_draft_leaves_agent_not_ready() {
+    let (mut screen, messages, _writes) = setup("agy");
+    let mut turn_hook = hook("UserPromptSubmit");
+    turn_hook.session_id = "conversation".into();
+    report_kind(&mut screen, "agy", turn_hook.clone());
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"stray draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+    turn_hook.hook_event_name = "Stop".into();
+    turn_hook.agy_turn_complete = Some(true);
+    report_kind(&mut screen, "agy", turn_hook);
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(status.status_available);
+    assert!(status.prompt_supported);
+    assert!(!status.ready);
+
+    screen.agent_control(prompt(true), CLIENT);
+    let prompt_res = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(prompt_res.outcome, AgentOutcome::Rejected);
+
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.refresh_agent_controls();
+    let wait_res = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(wait_res.outcome, AgentOutcome::TimedOut);
+    assert!(!wait_res.agents[0].ready);
+
+    screen.agent_control(recover(), CLIENT);
+    let recovered = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    assert!(recovered.agents[0].ready);
+}
+
+#[test]
+fn agy_orphan_stop_without_preinvocation_cannot_establish_readiness() {
+    let (mut screen, messages, writes) = setup("agy");
+    report_kind(&mut screen, "agy", hook("Stop"));
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Busy);
+    assert!(!status.status_available);
+    assert!(!status.prompt_supported);
+    assert!(!status.ready);
+
+    screen.agent_control(prompt(true), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::StatusUnavailable);
+    assert!(!result.agents[0].ready);
+    assert!(writes
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+}
+
+#[test]
+fn agy_late_user_prompt_submit_preserves_unconsumed_draft() {
+    let (mut screen, messages, _writes) = setup("agy");
+    for name in ["UserPromptSubmit", "Stop"] {
+        let mut event = hook(name);
+        event.prompt_id = Some("startup".into());
+        report_kind(&mut screen, "agy", event);
+    }
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert!(status.ready);
+
+    // Native prompt submission
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"review\n".to_vec(), false, CLIENT, None)
+        .unwrap();
+
+    // User types a new draft before acceptance hook reaches the screen
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"unsubmitted draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+
+    // Acceptance arrives late
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    report_kind(&mut screen, "agy", hook("Stop"));
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(!status.ready, "Unconsumed draft must prevent ready status");
+
+    screen.agent_control(prompt(true), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Rejected);
+    assert!(!result.agents[0].ready);
+}
+
+#[test]
+fn agy_late_preinvocation_preserves_unconsumed_draft() {
+    let (mut screen, messages, _writes) = setup("agy");
+    for name in ["UserPromptSubmit", "Stop"] {
+        let mut event = hook(name);
+        event.prompt_id = Some("startup".into());
+        report_kind(&mut screen, "agy", event);
+    }
+
+    // Native prompt submission
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"review\n".to_vec(), false, CLIENT, None)
+        .unwrap();
+
+    // Unsubmitted draft before hook
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"another draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+
+    // PreInvocation arrives late without correlation
+    report_kind(&mut screen, "agy", hook("PreInvocation"));
+    let mut completed = hook("Stop");
+    completed.prompt_id = Some("startup".into());
+    report_kind(&mut screen, "agy", completed);
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(!status.ready);
+
+    screen.agent_control(prompt(true), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Rejected);
+    assert!(!result.agents[0].ready);
+}
+
+#[test]
+fn agy_late_acceptance_after_interrupted_prompt_preserves_unconsumed_draft() {
+    let (mut screen, messages, writes) = setup("agy");
+    for name in ["UserPromptSubmit", "Stop"] {
+        let mut event = hook(name);
+        event.prompt_id = Some("startup".into());
+        report_kind(&mut screen, "agy", event);
+    }
+
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+
+    // User types new draft before acceptance
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"interrupted draft".to_vec(), false, CLIENT, None)
+        .unwrap();
+
+    screen.refresh_agent_controls();
+    let interrupted = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(interrupted.outcome, AgentOutcome::Interrupted);
+
+    // Late acceptance arrives
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    report_kind(&mut screen, "agy", hook("PreInvocation"));
+    report_kind(&mut screen, "agy", hook("Stop"));
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(
+        !status.ready,
+        "Interrupted unsubmitted draft must not be marked consumed"
+    );
+
+    screen.agent_control(prompt(true), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Rejected);
+    assert!(!result.agents[0].ready);
+}
+
+#[test]
+fn agy_draft_before_startup_lifecycle_leaves_agent_not_ready() {
+    let (mut screen, messages, _writes) = setup("agy");
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"draft before start".to_vec(), false, CLIENT, None)
+        .unwrap();
+    for name in ["UserPromptSubmit", "Stop"] {
+        let mut event = hook(name);
+        event.prompt_id = Some("startup".into());
+        report_kind(&mut screen, "agy", event);
+    }
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status.agent.state, AgentState::Idle);
+    assert!(
+        !status.ready,
+        "Pane with prior input must not bootstrap readiness"
+    );
+
+    screen.agent_control(prompt(true), CLIENT);
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Rejected);
+    assert!(!result.agents[0].ready);
 }
 
 /// A Muse session reports the full lifecycle - startup, turns, session ids - so once
@@ -4558,4 +4932,267 @@ fn muse_first_enter_requires_the_composer_to_keep_focus() {
             }
         }
     }
+}
+
+#[test]
+fn agy_blocking_stop_and_continuation_cannot_finish_a_prompt() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("agy", target);
+        report_kind(&mut screen, "agy", hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+        let mut stop = hook("Stop");
+        stop.agy_turn_complete = None;
+        stop.prompt_id = None;
+        stop.last_assistant_message = Some("FIRST. BLOCKME".into());
+        // Replay an old installed reporter's Idle state.
+        let mut old_idle = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+        old_idle.state = AgentState::Idle;
+        report_state(
+            &mut screen,
+            "agy",
+            stop.clone(),
+            AgentReportState::Set(old_idle),
+        );
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), ClientId::new(2));
+        let rejected = replies(&messages, ClientId::new(2)).pop().unwrap();
+        assert_eq!(rejected.outcome, AgentOutcome::Rejected);
+        assert!(!rejected.agents[0].ready);
+        assert_eq!(rejected.agents[0].agent.state, AgentState::Busy);
+        assert!(finish_paste(&writes).is_empty());
+        report_kind(&mut screen, "agy", hook("PreInvocation"));
+        report_kind(&mut screen, "agy", hook("PostToolUse"));
+        let mut confirmation = hook("Stop");
+        confirmation.prompt_id = Some("old".into());
+        confirmation.last_assistant_message = Some("OLD".into());
+        report_kind(&mut screen, "agy", confirmation.clone());
+        assert!(replies(&messages, CLIENT).is_empty());
+        confirmation.prompt_id = Some("prompt".into());
+        confirmation.last_assistant_message = Some("SECOND".into());
+        report_kind(&mut screen, "agy", confirmation.clone());
+        let completed = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(completed.outcome, AgentOutcome::Completed);
+        assert_eq!(completed.message.as_deref(), Some("SECOND"));
+        assert!(completed.agents[0].ready);
+        report_kind(&mut screen, "agy", confirmation);
+        report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "agy", stop);
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.agent_control(prompt(true), CLIENT);
+        finish_paste(&writes);
+        let mut next = hook("UserPromptSubmit");
+        next.prompt_id = Some("next".into());
+        report_kind(&mut screen, "agy", next);
+        report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "agy", hook("Stop"));
+        assert!(
+            replies(&messages, CLIENT).is_empty(),
+            "old turn cannot finish next prompt"
+        );
+    }
+}
+
+#[test]
+fn agy_confirmation_failure_retains_the_uncertain_submission_claim() {
+    let (mut screen, messages, writes) = setup("agy");
+    report_kind(&mut screen, "agy", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    let mut unavailable = hook("Stop");
+    unavailable.agy_turn_complete = Some(false);
+    report_kind(&mut screen, "agy", unavailable);
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::StatusUnavailable);
+    assert!(response.acknowledged);
+    assert!(!response.agents[0].ready);
+    assert_eq!(screen.agent_controls.len(), 1);
+    screen.agent_control(prompt(true), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(finish_paste(&writes).is_empty());
+    // A second observer can supply valid late evidence after the first was unavailable.
+    report_kind(&mut screen, "agy", hook("Stop"));
+    assert!(screen.agent_controls.is_empty());
+    assert!(
+        replies(&messages, CLIENT).is_empty(),
+        "the caller already received unavailable"
+    );
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    assert!(replies(&messages, CLIENT)[0].agents[0].ready);
+}
+
+#[test]
+fn agy_subsequent_prompt_is_admitted_and_acknowledged() {
+    let (mut screen, messages, writes) = setup("agy");
+    report_kind(&mut screen, "agy", hook("SessionStart"));
+
+    // Turn 1
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    let mut submit1 = hook("UserPromptSubmit");
+    submit1.prompt_id = Some("conv:1".into());
+    report_kind(&mut screen, "agy", submit1);
+
+    let mut stop1 = hook("Stop");
+    stop1.prompt_id = Some("conv:1".into());
+    stop1.agy_turn_complete = Some(true);
+    stop1.last_assistant_message = Some("turn 1 complete".into());
+    report_kind(&mut screen, "agy", stop1);
+
+    let reply1 = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply1.outcome, AgentOutcome::Completed);
+    assert_eq!(reply1.message.as_deref(), Some("turn 1 complete"));
+    assert!(reply1.agents[0].ready);
+
+    // Turn 2: A different prompt ID in the same conversation must not be filtered out
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    let mut submit2 = hook("UserPromptSubmit");
+    submit2.prompt_id = Some("conv:2".into());
+    report_kind(&mut screen, "agy", submit2);
+
+    let mut stop2 = hook("Stop");
+    stop2.prompt_id = Some("conv:2".into());
+    stop2.agy_turn_complete = Some(true);
+    stop2.last_assistant_message = Some("turn 2 complete".into());
+    report_kind(&mut screen, "agy", stop2);
+
+    let reply2 = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(reply2.outcome, AgentOutcome::Completed);
+    assert_eq!(reply2.message.as_deref(), Some("turn 2 complete"));
+    assert!(reply2.agents[0].ready);
+}
+
+#[test]
+fn agy_switched_conversation_is_admitted_and_acknowledged() {
+    let (mut screen, messages, _writes) = setup("agy");
+
+    // Turn 1 on conv-1
+    let mut submit1 = hook("UserPromptSubmit");
+    submit1.session_id = "conv-1".into();
+    submit1.prompt_id = Some("conv-1:1".into());
+    report_kind(&mut screen, "agy", submit1);
+
+    let mut stop1 = hook("Stop");
+    stop1.session_id = "conv-1".into();
+    stop1.prompt_id = Some("conv-1:1".into());
+    stop1.agy_turn_complete = Some(true);
+    report_kind(&mut screen, "agy", stop1.clone());
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status1 = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status1.agent.session_id.as_deref(), Some("conv-1"));
+    assert_eq!(status1.agent.state, AgentState::Idle);
+
+    // Conversation switches to conv-2: new prompt establishes identity
+    // (previously discarded by the conversation check in ignore_agy_confirmation)
+    let mut submit2 = hook("UserPromptSubmit");
+    submit2.session_id = "conv-2".into();
+    submit2.prompt_id = Some("conv-2:1".into());
+    assert!(!screen.ignore_agy_confirmation(PANE, &submit2));
+    report_kind(&mut screen, "agy", submit2);
+
+    let mut stop2 = hook("Stop");
+    stop2.session_id = "conv-2".into();
+    stop2.prompt_id = Some("conv-2:1".into());
+    stop2.agy_turn_complete = Some(true);
+    assert!(!screen.ignore_agy_confirmation(PANE, &stop2));
+    report_kind(&mut screen, "agy", stop2);
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status2 = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status2.agent.session_id.as_deref(), Some("conv-2"));
+    assert_eq!(status2.agent.state, AgentState::Idle);
+
+    // Stale confirmation from old conv-1 is filtered out and ignored
+    assert!(screen.ignore_agy_confirmation(PANE, &stop1));
+
+    // Normal subsequent submission on conv-2 is admitted and acknowledged
+    let mut submit3 = hook("UserPromptSubmit");
+    submit3.session_id = "conv-2".into();
+    submit3.prompt_id = Some("conv-2:2".into());
+    assert!(!screen.ignore_agy_confirmation(PANE, &submit3));
+    report_kind(&mut screen, "agy", submit3);
+
+    let mut stop3 = hook("Stop");
+    stop3.session_id = "conv-2".into();
+    stop3.prompt_id = Some("conv-2:2".into());
+    stop3.agy_turn_complete = Some(true);
+    assert!(!screen.ignore_agy_confirmation(PANE, &stop3));
+    report_kind(&mut screen, "agy", stop3);
+
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status3 = replies(&messages, CLIENT)
+        .pop()
+        .unwrap()
+        .agents
+        .pop()
+        .unwrap();
+    assert_eq!(status3.agent.session_id.as_deref(), Some("conv-2"));
+    assert_eq!(status3.agent.state, AgentState::Idle);
+}
+
+#[test]
+fn agy_confirmations_require_nonempty_matching_identities() {
+    let (mut screen, messages, _writes) = setup("agy");
+    report_kind(&mut screen, "agy", hook("UserPromptSubmit"));
+    for (conversation, prompt) in [
+        ("", Some("prompt")),
+        ("conversation", None),
+        ("conversation", Some("")),
+        ("other", Some("prompt")),
+        ("conversation", Some("stale")),
+    ] {
+        let mut confirmation = hook("Stop");
+        confirmation.session_id = conversation.into();
+        confirmation.prompt_id = prompt.map(str::to_owned);
+        assert!(screen.ignore_agy_confirmation(PANE, &confirmation));
+        report_kind(&mut screen, "agy", confirmation);
+    }
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, "agy", hook("Stop"));
+    let done = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(done.outcome, AgentOutcome::Ok);
+    assert!(done.agents[0].ready);
+    assert!(screen.ignore_agy_confirmation(PANE, &hook("Stop")));
 }

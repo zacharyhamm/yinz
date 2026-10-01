@@ -1,4 +1,4 @@
-//! Detached, host-local observation of Claude's transcript turn boundary.
+//! Detached, host-local observation of Claude and AGY turn boundaries.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -22,8 +22,14 @@ pub enum Route {
     Remote { socket: PathBuf, pane_token: String },
 }
 
+fn default_claude_kind() -> String {
+    "claude".into()
+}
+
 #[derive(Serialize, Deserialize)]
 struct Observation {
+    #[serde(default = "default_claude_kind")]
+    kind: String,
     hook: HookEvent,
     route: Route,
     process: Option<(u32, u64)>,
@@ -34,7 +40,7 @@ struct Observation {
 /// Start only after the prompt report is delivered, so confirmation cannot overtake it.
 /// Each installed reporter may start one; the screen deduplicates by prompt identity.
 pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
-    if kind != "claude"
+    if !matches!(kind, "claude" | "agy")
         || hook.is_worker()
         || !matches!(
             hook.hook_event_name.as_str(),
@@ -44,32 +50,34 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         return Ok(());
     }
     let result = (|| {
-        let process = claude_ancestor();
+        let process = agent_ancestor(kind);
         // A clear/resume can leave the old transcript intact. Host-side lifecycle hooks
         // replace this process's conversation marker so its detached observers stop too.
         let conversation_file = process.map(|(pid, started)| {
-            yinz_runtime::consts::YINZ_TMP_DIR.join(format!("claude-conversation-{pid}-{started}"))
+            yinz_runtime::consts::YINZ_TMP_DIR.join(format!("{kind}-conversation-{pid}-{started}"))
         });
         if let Some(path) = &conversation_file {
             if hook.hook_event_name == "SessionEnd" {
                 if std::fs::read_to_string(path).ok().as_deref() == Some(&hook.session_id) {
-                    std::fs::remove_file(path).context("end Claude conversation observation")?;
+                    std::fs::remove_file(path)
+                        .with_context(|| format!("end {kind} conversation observation"))?;
                 }
             } else {
                 std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_TMP_DIR)
-                    .context("create Claude observation directory")?;
+                    .with_context(|| format!("create {kind} observation directory"))?;
                 let temporary = path.with_extension(uuid::Uuid::new_v4().to_string());
                 let result = (|| {
                     let mut marker = std::fs::File::create_new(&temporary)
-                        .context("create Claude conversation marker")?;
+                        .with_context(|| format!("create {kind} conversation marker"))?;
                     marker
-                        .write_all(hook.session_id.as_bytes())
-                        .context("write Claude conversation marker")?;
-                    std::fs::rename(&temporary, path).context("replace Claude conversation marker")
+                        .write_all(conversation_marker(kind, hook).as_bytes())
+                        .with_context(|| format!("write {kind} conversation marker"))?;
+                    std::fs::rename(&temporary, path)
+                        .with_context(|| format!("replace {kind} conversation marker"))
                 })();
                 if result.is_err() {
                     std::fs::remove_file(&temporary)
-                        .context("clean up Claude conversation marker")
+                        .with_context(|| format!("clean up {kind} conversation marker"))
                         .non_fatal();
                 }
                 result?;
@@ -81,6 +89,7 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
             return Ok(());
         }
         let observation = Observation {
+            kind: kind.to_owned(),
             hook: hook.clone(),
             route: route.clone(),
             process,
@@ -103,12 +112,14 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
                 Ok(())
             });
         }
-        let mut child = command.spawn().context("start Claude turn observer")?;
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("start {kind} turn observer"))?;
         serde_json::to_writer(
             child.stdin.take().context("open observer input")?,
             &observation,
         )
-        .context("write Claude turn observation")?;
+        .with_context(|| format!("write {kind} turn observation"))?;
         Ok(())
     })();
     if result.is_err()
@@ -118,14 +129,18 @@ pub fn start(kind: &str, hook: &HookEvent, route: Route) -> Result<()> {
         let mut unavailable = hook.clone();
         unavailable.hook_event_name = "Stop".into();
         unavailable.prompt = None;
-        unavailable.claude_turn_complete = Some(false);
+        if kind == "claude" {
+            unavailable.claude_turn_complete = Some(false);
+        } else if kind == "agy" {
+            unavailable.agy_turn_complete = Some(false);
+        }
         unavailable.last_assistant_message = None;
-        return send(&route, &unavailable);
+        return send(&route, kind, &unavailable);
     }
     result
 }
 
-fn claude_ancestor() -> Option<(u32, u64)> {
+fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
     let mut system = System::new();
     let mut pid = sysinfo::Pid::from_u32(std::process::id());
     for _ in 0..32 {
@@ -135,47 +150,95 @@ fn claude_ancestor() -> Option<(u32, u64)> {
             ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
         );
         let process = system.process(pid)?;
-        if process.name() == "claude"
-            || process.cmd().first().is_some_and(|program| {
-                std::path::Path::new(program)
-                    .file_name()
-                    .is_some_and(|name| name == "claude")
-            })
-        {
+        let matches = match kind {
+            "claude" => {
+                process.name() == "claude"
+                    || process.cmd().first().is_some_and(|program| {
+                        std::path::Path::new(program)
+                            .file_name()
+                            .is_some_and(|name| name == "claude")
+                    })
+            },
+            "agy" => {
+                let name = process.name().to_string_lossy();
+                name == "agy"
+                    || name == "antigravity"
+                    || process.cmd().first().is_some_and(|program| {
+                        std::path::Path::new(program)
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name == "agy"
+                                    || name == "antigravity"
+                                    || yinz_types::agent::kind_of(name) == Some("agy")
+                            })
+                    })
+            },
+            _ => false,
+        };
+        if matches {
             return Some((pid.as_u32(), process.start_time()));
         }
         pid = process.parent()?;
     }
     None
 }
-
 pub fn run() -> Result<()> {
     let mut observation: Observation =
-        serde_json::from_reader(std::io::stdin()).context("read Claude turn observation")?;
+        serde_json::from_reader(std::io::stdin()).context("read turn observation")?;
     let completed = follow(&observation);
     observation.hook.hook_event_name = "Stop".into();
     observation.hook.prompt = None;
     observation.hook.prompt_sha256 = None;
-    observation.hook.claude_turn_complete = Some(completed.is_ok());
+    if observation.kind == "claude" {
+        observation.hook.claude_turn_complete = Some(completed.is_ok());
+    } else if observation.kind == "agy" {
+        observation.hook.agy_turn_complete = Some(completed.is_ok());
+    }
     if let Ok(turn) = completed {
         observation.hook.last_assistant_message = turn.last_text;
         observation.hook.claude_background_tasks = turn.background_tasks;
     } else {
         observation.hook.last_assistant_message = None;
     }
-    send(&observation.route, &observation.hook)
+    send(&observation.route, &observation.kind, &observation.hook)
+}
+
+fn conversation_marker(kind: &str, hook: &HookEvent) -> String {
+    if kind == "agy" {
+        format!(
+            "{}:{}",
+            hook.session_id,
+            hook.prompt_id.as_deref().unwrap_or_default()
+        )
+    } else {
+        hook.session_id.clone()
+    }
 }
 
 fn follow(observation: &Observation) -> Result<Turn> {
+    let api = if observation.kind == "agy" {
+        Some(AgyApi::new(
+            &std::env::var("ANTIGRAVITY_LS_ADDRESS").context("AGY API address missing")?,
+            std::env::var("ANTIGRAVITY_CSRF_TOKEN").context("AGY API authentication missing")?,
+        )?)
+    } else {
+        None
+    };
+    follow_with_api(observation, api)
+}
+
+fn follow_with_api(observation: &Observation, api: Option<AgyApi>) -> Result<Turn> {
+    let kind = &observation.kind;
     let (process_id, start_time) = observation
         .process
-        .context("cannot identify Claude process")?;
+        .with_context(|| format!("cannot identify {kind} process"))?;
     let pid = sysinfo::Pid::from_u32(process_id);
     let path = observation
         .hook
         .transcript_path
         .as_ref()
-        .context("Claude transcript path missing")?;
+        .with_context(|| format!("{kind} transcript path missing"))?;
     let mut options = OpenOptions::new();
     options.read(true);
     use std::os::unix::fs::OpenOptionsExt;
@@ -190,20 +253,24 @@ fn follow(observation: &Observation) -> Result<Turn> {
         if !system.process(pid).is_some_and(|process| {
             process.start_time() == start_time && process.status() != sysinfo::ProcessStatus::Zombie
         }) {
-            return Err(anyhow!("Claude process exited"));
+            return Err(anyhow!("{kind} process exited"));
         }
         if let Some(marker) = &observation.conversation_file {
-            if std::fs::read_to_string(marker).context("Claude conversation ended")?
-                != observation.hook.session_id
+            if std::fs::read_to_string(marker)
+                .with_context(|| format!("{kind} conversation ended"))?
+                != conversation_marker(kind, &observation.hook)
             {
-                return Err(anyhow!("Claude conversation replaced"));
+                return Err(anyhow!("{kind} conversation replaced"));
             }
         }
         Ok(())
     };
     // The first prompt's file can be created only after UserPromptSubmit hooks return.
-    let creation_deadline =
-        Instant::now() + Duration::from_secs(yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS);
+    let timeout_seconds = match kind.as_str() {
+        "agy" => yinz_types::agent::AGY_HOOK_TIMEOUT_SECONDS,
+        _ => yinz_types::agent::CLAUDE_HOOK_TIMEOUT_SECONDS,
+    };
+    let creation_deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     let file = loop {
         alive(&mut system)?;
         match options.open(path) {
@@ -214,49 +281,76 @@ fn follow(observation: &Observation) -> Result<Turn> {
             {
                 std::thread::sleep(Duration::from_millis(100));
             },
-            Err(error) => return Err(error).context("open Claude transcript"),
+            Err(error) => return Err(error).with_context(|| format!("open {kind} transcript")),
         }
     };
-    let metadata = file.metadata().context("inspect Claude transcript")?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect {kind} transcript"))?;
     if !metadata.is_file() {
-        return Err(anyhow!("Claude transcript is not a regular file"));
+        return Err(anyhow!("{kind} transcript is not a regular file"));
     }
     let mut reader = BufReader::new(file);
-    let mut turn = Turn::new(&observation.hook);
+    let mut turn = Turn::new(kind, &observation.hook);
+    if kind == "agy"
+        && (turn.session.is_empty()
+            || turn.step_idx.is_none_or(|step| step == 0)
+            || observation.hook.prompt_id.as_deref()
+                != turn
+                    .step_idx
+                    .map(|step| format!("{}:{step}", turn.session))
+                    .as_deref())
+    {
+        return Err(anyhow!("AGY prompt identity missing or inconsistent"));
+    }
     let mut line = Vec::new();
     let mut offset = 0;
     let deadline =
         Instant::now() + Duration::from_millis(yinz_types::agent::control::MAX_TIMEOUT_MS);
     loop {
         if Instant::now() >= deadline {
-            return Err(anyhow!("Claude turn observation expired"));
+            return Err(anyhow!("{kind} turn observation expired"));
         }
         alive(&mut system)?;
-        let current = std::fs::metadata(path).context("Claude transcript disappeared")?;
+        let current =
+            std::fs::metadata(path).with_context(|| format!("{kind} transcript disappeared"))?;
         if current.ino() != metadata.ino()
             || current.dev() != metadata.dev()
             || current.len() < offset
         {
-            return Err(anyhow!("Claude transcript replaced or truncated"));
+            return Err(anyhow!("{kind} transcript replaced or truncated"));
         }
         loop {
             let bytes = reader
                 .by_ref()
                 .take((16 * 1024 * 1024 + 1 - line.len()) as u64)
                 .read_until(b'\n', &mut line)
-                .context("read Claude transcript record")?;
+                .with_context(|| format!("read {kind} transcript record"))?;
             offset += bytes as u64;
             if line.len() > 16 * 1024 * 1024 {
-                return Err(anyhow!("Claude transcript record exceeds 16 MiB"));
+                return Err(anyhow!("{kind} transcript record exceeds 16 MiB"));
             }
             if line.last() != Some(&b'\n') {
                 break;
             }
-            let record: Value =
-                serde_json::from_slice(&line).context("parse Claude transcript record")?;
+            let record: Value = serde_json::from_slice(&line)
+                .with_context(|| format!("parse {kind} transcript record"))?;
             line.clear();
             if turn.record(&record)? {
                 return Ok(turn);
+            }
+        }
+        if let Some(api) = &api {
+            if turn.found && line.is_empty() && api.idle(&turn)? {
+                // A process exit or a newer submission during the request invalidates Idle.
+                alive(&mut system)?;
+                if std::fs::metadata(path)
+                    .context("inspect AGY transcript after Idle")?
+                    .len()
+                    == offset
+                {
+                    return Ok(turn);
+                }
             }
         }
         // Regular files cannot wake a condition variable; poll only while this exact process lives.
@@ -265,6 +359,7 @@ fn follow(observation: &Observation) -> Result<Turn> {
 }
 
 struct Turn {
+    kind: String,
     session: String,
     prompt: String,
     found: bool,
@@ -272,75 +367,127 @@ struct Turn {
     last_text: Option<String>,
     /// Bash commands and subagents this turn left running in the background, in launch order.
     background_tasks: Vec<String>,
+    step_idx: Option<u64>,
 }
 
 impl Turn {
-    fn new(hook: &HookEvent) -> Self {
+    fn new(kind: &str, hook: &HookEvent) -> Self {
+        let step_idx = hook
+            .turn_id
+            .as_deref()
+            .and_then(|id| id.parse::<u64>().ok());
         Self {
+            kind: kind.to_owned(),
             session: hook.session_id.clone(),
             prompt: hook.prompt_id.clone().unwrap_or_default(),
             found: false,
             ancestors: HashSet::new(),
             last_text: None,
             background_tasks: Vec::new(),
+            step_idx,
         }
     }
 
     fn record(&mut self, record: &Value) -> Result<bool> {
-        if record["isSidechain"] == true {
-            return Ok(false);
-        }
-        if record["sessionId"]
-            .as_str()
-            .is_some_and(|session| session != self.session)
-        {
-            return Err(anyhow!("Claude conversation replaced"));
-        }
-        if record["type"] == "user" {
-            if let Some(prompt) = record["promptId"].as_str() {
-                if self.found && prompt != self.prompt {
-                    return Err(anyhow!("Claude prompt replaced"));
+        if self.kind == "claude" {
+            if record["isSidechain"] == true {
+                return Ok(false);
+            }
+            if record["sessionId"]
+                .as_str()
+                .is_some_and(|session| session != self.session)
+            {
+                return Err(anyhow!("Claude conversation replaced"));
+            }
+            if record["type"] == "user" {
+                if let Some(prompt) = record["promptId"].as_str() {
+                    if self.found && prompt != self.prompt {
+                        return Err(anyhow!("Claude prompt replaced"));
+                    }
+                    if prompt == self.prompt {
+                        self.found = true;
+                    }
                 }
-                if prompt == self.prompt {
+            }
+            if !self.found {
+                return Ok(false);
+            }
+            let linked = record["promptId"].as_str() == Some(&self.prompt)
+                || record["parentUuid"]
+                    .as_str()
+                    .is_some_and(|parent| self.ancestors.contains(parent));
+            if !linked {
+                return Ok(false);
+            }
+            if let Some(id) = record["uuid"].as_str() {
+                self.ancestors.insert(id.to_owned());
+            }
+            if record["type"] == "user" {
+                if let Some(task) = background_task(&record["toolUseResult"]) {
+                    if !self.background_tasks.iter().any(|known| known == task)
+                        && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
+                    {
+                        self.background_tasks.push(task.to_owned());
+                    }
+                }
+            }
+            if record["type"] == "assistant" {
+                if let Some(content) = record["message"]["content"].as_array() {
+                    let text: String = content
+                        .iter()
+                        .filter(|part| part["type"] == "text")
+                        .filter_map(|part| part["text"].as_str())
+                        .collect();
+                    if !text.is_empty() {
+                        self.last_text = Some(text);
+                    }
+                }
+            }
+            return Ok(record["type"] == "system" && record["subtype"] == "turn_duration");
+        }
+
+        if self.kind == "agy" {
+            if record["conversationId"]
+                .as_str()
+                .is_some_and(|id| id != self.session)
+            {
+                return Err(anyhow!("AGY conversation replaced"));
+            }
+            let step = record["step_index"]
+                .as_u64()
+                .context("AGY transcript step missing")?;
+            let expected = self
+                .step_idx
+                .and_then(|step| step.checked_sub(1))
+                .context("AGY prompt step missing")?;
+            if record["type"] == "USER_INPUT" {
+                if step > expected {
+                    return Err(anyhow!("AGY prompt replaced"));
+                }
+                if step == expected {
                     self.found = true;
                 }
+                return Ok(false);
             }
-        }
-        if !self.found {
-            return Ok(false);
-        }
-        let linked = record["promptId"].as_str() == Some(&self.prompt)
-            || record["parentUuid"]
-                .as_str()
-                .is_some_and(|parent| self.ancestors.contains(parent));
-        if !linked {
-            return Ok(false);
-        }
-        if let Some(id) = record["uuid"].as_str() {
-            self.ancestors.insert(id.to_owned());
-        }
-        if record["type"] == "user" {
-            if let Some(task) = background_task(&record["toolUseResult"]) {
-                if !self.background_tasks.iter().any(|known| known == task)
-                    && self.background_tasks.len() < yinz_types::agent::MAX_BACKGROUND_TASKS
-                {
-                    self.background_tasks.push(task.to_owned());
+            if !self.found || step < expected {
+                return Ok(false);
+            }
+            if record["status"] == "ERROR" || record["type"] == "ERROR" {
+                return Err(anyhow!("AGY turn failed"));
+            }
+
+            if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE") {
+                if let Some(content) = record.get("content").and_then(Value::as_str) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        self.last_text = Some(trimmed.to_owned());
+                    }
                 }
             }
+            return Ok(false);
         }
-        if record["type"] == "assistant" {
-            if let Some(content) = record["message"]["content"].as_array() {
-                let text: String = content
-                    .iter()
-                    .filter(|part| part["type"] == "text")
-                    .filter_map(|part| part["text"].as_str())
-                    .collect();
-                if !text.is_empty() {
-                    self.last_text = Some(text);
-                }
-            }
-        }
-        Ok(record["type"] == "system" && record["subtype"] == "turn_duration")
+
+        Ok(false)
     }
 }
 
@@ -357,14 +504,105 @@ fn background_task(result: &Value) -> Option<&str> {
         .filter(|task| !task.is_empty())
 }
 
-pub(crate) fn send(route: &Route, hook: &HookEvent) -> Result<()> {
-    let json = hook
-        .broadcast_json(serde_json::to_string(hook).context("serialize Claude turn confirmation")?);
+struct AgyApi {
+    client: isahc::HttpClient,
+    url: String,
+    token: String,
+}
+
+impl AgyApi {
+    fn new(address: &str, token: String) -> Result<Self> {
+        use isahc::prelude::*;
+        let address: std::net::SocketAddr = address.parse().context("invalid AGY API address")?;
+        if !address.ip().is_loopback() || token.is_empty() {
+            return Err(anyhow!(
+                "AGY API requires a loopback address and authentication"
+            ));
+        }
+        Ok(Self {
+            client: isahc::HttpClient::builder()
+                .timeout(Duration::from_secs(2))
+                .redirect_policy(isahc::config::RedirectPolicy::None)
+                .proxy(None)
+                .build()
+                .context("create AGY API client")?,
+            url: format!("http://{address}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"),
+            token,
+        })
+    }
+
+    fn idle(&self, turn: &Turn) -> Result<bool> {
+        let request = isahc::Request::post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("x-codeium-csrf-token", &self.token)
+            .body(serde_json::json!({"cascadeId": turn.session}).to_string())
+            .map_err(|_| anyhow!("invalid AGY API request"))?;
+        let mut response = self
+            .client
+            .send(request)
+            .map_err(|_| anyhow!("AGY API unavailable"))?;
+        if !response.status().is_success() {
+            return Err(anyhow!("AGY API request rejected"));
+        }
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| anyhow!("read AGY API response"))?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(anyhow!("AGY API response exceeds 16 MiB"));
+        }
+        let value: Value = serde_json::from_slice(&bytes).context("invalid AGY API response")?;
+        Self::trajectory_idle(turn, &value)
+    }
+
+    fn trajectory_idle(turn: &Turn, value: &Value) -> Result<bool> {
+        let trajectory = &value["trajectory"];
+        if trajectory["cascadeId"].as_str() != Some(&turn.session) {
+            return Err(anyhow!("AGY API conversation missing or replaced"));
+        }
+        let steps = trajectory["steps"]
+            .as_array()
+            .context("AGY API steps missing")?;
+        if value["numTotalSteps"].as_u64() != Some(steps.len() as u64) {
+            return Err(anyhow!("AGY API trajectory incomplete"));
+        }
+        let expected = turn
+            .step_idx
+            .and_then(|step| step.checked_sub(1))
+            .context("AGY prompt step missing")?;
+        let latest = steps
+            .iter()
+            .rposition(|step| step["type"] == "CORTEX_STEP_TYPE_USER_INPUT")
+            .context("AGY API prompt missing")?;
+        if latest as u64 != expected {
+            return Err(anyhow!("AGY API prompt replaced"));
+        }
+        if steps
+            .iter()
+            .skip(latest)
+            .any(|step| step["status"] == "CORTEX_STEP_STATUS_ERROR")
+        {
+            return Err(anyhow!("AGY API turn failed"));
+        }
+        match value["status"].as_str() {
+            // A step after the submitted user input proves this execution has started.
+            Some("CASCADE_RUN_STATUS_IDLE") => Ok(turn.found && steps.len() > latest + 1),
+            Some("CASCADE_RUN_STATUS_RUNNING" | "CASCADE_RUN_STATUS_BUSY") => Ok(false),
+            _ => Err(anyhow!("unsupported AGY API status")),
+        }
+    }
+}
+
+pub(crate) fn send(route: &Route, kind: &str, hook: &HookEvent) -> Result<()> {
+    let json = hook.broadcast_json(
+        serde_json::to_string(hook)
+            .with_context(|| format!("serialize {kind} turn confirmation"))?,
+    );
     match route {
         Route::Remote { socket, pane_token } => {
-            crate::pty_host::remote::broker::report_agent_hook_to(
-                socket, pane_token, "claude", &json,
-            )
+            crate::pty_host::remote::broker::report_agent_hook_to(socket, pane_token, kind, &json)
         },
         Route::Local { session, pane } => {
             let mut child =
@@ -375,7 +613,7 @@ pub(crate) fn send(route: &Route, hook: &HookEvent) -> Result<()> {
                         "action",
                         "agent-report",
                         "--kind",
-                        "claude",
+                        kind,
                         "--pane-id",
                         pane,
                         "--hook-json",
@@ -396,7 +634,7 @@ pub(crate) fn send(route: &Route, hook: &HookEvent) -> Result<()> {
                 .context("wait for confirmation reporter")?
                 .success()
             {
-                return Err(anyhow!("Claude confirmation was not delivered"));
+                return Err(anyhow!("{kind} confirmation was not delivered"));
             }
             Ok(())
         },

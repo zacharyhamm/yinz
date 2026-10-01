@@ -458,3 +458,250 @@ fn muse_notifications_are_translated_to_the_wait_they_name() {
     assert_eq!(event.turn_id.as_deref(), Some("turn_1"));
     assert_eq!(unchanged, submit);
 }
+
+#[test]
+fn agy_events_are_translated_and_enriched_from_transcript() {
+    let mut transcript = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        transcript,
+        r#"{{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nfix authentication timeout\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime\n</ADDITIONAL_METADATA>"}}"#
+    )
+    .unwrap();
+    writeln!(
+        transcript,
+        r#"{{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"I fixed the timeout in auth.rs."}}"#
+    )
+    .unwrap();
+
+    // 1. PreInvocation at turn start (invocationNum == 0) translates to UserPromptSubmit and extracts prompt
+    let (event, raw) = parse_hook_event(
+        "agy",
+        json!({
+            "hook_event_name": "PreInvocation",
+            "conversationId": "agy-conv-1",
+            "workspacePaths": ["/home/user/code"],
+            "transcriptPath": transcript.path(),
+            "invocationNum": 0,
+            "stepIdx": 1,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "UserPromptSubmit");
+    assert_eq!(event.session_id, "agy-conv-1");
+    assert_eq!(event.cwd.as_deref(), Some("/home/user/code"));
+    assert_eq!(event.prompt.as_deref(), Some("fix authentication timeout"));
+    assert!(event.prompt_sha256.is_some());
+    let raw_event: HookEvent = serde_json::from_str(&raw).unwrap();
+    assert_eq!(raw_event, event);
+
+    // 2. Stop translates to Stop and extracts last assistant message
+    let (event, _) = parse_hook_event(
+        "agy",
+        json!({
+            "hook_event_name": "Stop",
+            "conversationId": "agy-conv-1",
+            "workspacePaths": ["/home/user/code"],
+            "transcriptPath": transcript.path(),
+            "terminationReason": "model_stop",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "Stop");
+    assert_eq!(
+        event.last_assistant_message.as_deref(),
+        Some("I fixed the timeout in auth.rs.")
+    );
+
+    // 3. PreToolUse with ask_question translates to Waiting state
+    let (event, raw) = parse_hook_event(
+        "agy",
+        json!({
+            "hook_event_name": "PreToolUse",
+            "conversationId": "agy-conv-1",
+            "workspacePaths": ["/home/user/code"],
+            "toolCall": {
+                "name": "ask_question",
+                "args": {
+                    "questions": [{ "question": "Apply migration?" }]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "PreToolUse");
+    let actions = hook_report_actions(
+        "agy",
+        yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(3)),
+        &event,
+        raw,
+    );
+    let [Action::SetPaneAgent { agent, .. }, Action::AgentEvent(broadcast)] = &actions[..] else {
+        panic!("unexpected actions: {actions:?}");
+    };
+    assert_eq!(agent.as_ref().unwrap().state, AgentState::Waiting);
+    assert_eq!(broadcast.state, Some(AgentState::Waiting));
+}
+
+#[test]
+fn agy_last_assistant_message_is_bounded_to_current_turn() {
+    let mut transcript = tempfile::NamedTempFile::new().unwrap();
+    // Turn 1 completes successfully
+    writeln!(
+        transcript,
+        r#"{{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nfirst request\n</USER_REQUEST>"}}"#
+    )
+    .unwrap();
+    writeln!(
+        transcript,
+        r#"{{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"first turn answer"}}"#
+    )
+    .unwrap();
+
+    // Turn 2: User prompt submitted, but fails before any PLANNER_RESPONSE
+    writeln!(
+        transcript,
+        r#"{{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nresumed request that fails\n</USER_REQUEST>"}}"#
+    )
+    .unwrap();
+
+    let (event, _) = parse_hook_event(
+        "agy",
+        json!({
+            "hook_event_name": "Stop",
+            "conversationId": "agy-conv-1",
+            "workspacePaths": ["/home/user/code"],
+            "transcriptPath": transcript.path(),
+            "terminationReason": "error",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "StopFailure");
+    assert_eq!(event.last_assistant_message, None);
+
+    // If Turn 2 later produces a PLANNER_RESPONSE, it should be extracted
+    writeln!(
+        transcript,
+        r#"{{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"second turn answer"}}"#
+    )
+    .unwrap();
+
+    let (event, _) = parse_hook_event(
+        "agy",
+        json!({
+            "hook_event_name": "Stop",
+            "conversationId": "agy-conv-1",
+            "workspacePaths": ["/home/user/code"],
+            "transcriptPath": transcript.path(),
+            "terminationReason": "model_stop",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(event.hook_event_name, "Stop");
+    assert_eq!(
+        event.last_assistant_message.as_deref(),
+        Some("second turn answer")
+    );
+}
+
+#[test]
+fn agy_prompt_preserves_request_delimiters_in_submitted_prompt() {
+    let test_prompts = [
+        "Explain the </USER_REQUEST> closing tag",
+        "Explain the <USER_REQUEST> opening tag",
+        "<USER_REQUEST>nested</USER_REQUEST> and more </USER_REQUEST>",
+        "prompt ending with </USER_REQUEST>",
+        "Explain </USER_REQUEST> and how <ADDITIONAL_METADATA> works",
+    ];
+
+    for expected_prompt in test_prompts {
+        let mut transcript = tempfile::NamedTempFile::new().unwrap();
+        // Transcript contains the wrapper, the prompt containing literal delimiters,
+        // and trailing metadata sections.
+        let record = json!({
+            "step_index": 0,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": format!(
+                "<USER_REQUEST>\n{expected_prompt}\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\ntime: 2026-10-01\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmodel\n</USER_SETTINGS_CHANGE>"
+            )
+        });
+        writeln!(transcript, "{record}").unwrap();
+
+        let (event, raw) = parse_hook_event(
+            "agy",
+            json!({
+                "hook_event_name": "PreInvocation",
+                "conversationId": "agy-conv-1",
+                "workspacePaths": ["/home/user/code"],
+                "transcriptPath": transcript.path(),
+                "invocationNum": 0,
+                "stepIdx": 1,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(event.hook_event_name, "UserPromptSubmit");
+        assert_eq!(
+            event.prompt.as_deref(),
+            Some(expected_prompt),
+            "Extracted prompt must match original prompt without truncating at delimiters"
+        );
+        let expected_sha256 = yinz_types::agent::control::prompt_sha256(expected_prompt);
+        assert_eq!(
+            event.prompt_sha256.as_deref(),
+            Some(expected_sha256.as_str()),
+            "Fingerprint must match full submitted prompt"
+        );
+
+        // Verify PromptObservation accepts the prompt as Submitted instead of Interrupted
+        let mut observation = yinz_types::agent::control::PromptObservation::new(
+            "agy",
+            "agy-conv-1",
+            expected_prompt,
+        );
+        let agent_event = yinz_types::agent::AgentEvent::from_hook(
+            "agy",
+            yinz_types::internal_ids::TerminalId::new(1),
+            &event,
+            raw,
+        );
+        assert_eq!(
+            observation.observe(&agent_event, Some(&event)),
+            Some(yinz_types::agent::control::AgentOutcome::Submitted),
+            "PromptObservation must report Submitted when prompt delimiters are preserved"
+        );
+    }
+}
+
+#[test]
+fn agy_native_submissions_and_normalized_confirmations_round_trip() {
+    let (submission, normalized) = parse_hook_event(
+        "agy",
+        serde_json::json!({
+            "hook_event_name":"PreInvocation", "conversationId":"conversation", "initialNumSteps":3,
+            "invocationNum":0
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(submission.prompt_id.as_deref(), Some("conversation:3"));
+    assert_eq!(submission.turn_id.as_deref(), Some("3"));
+    assert_eq!(parse_hook_event("agy", normalized).unwrap().0, submission);
+    for complete in [false, true] {
+        let mut confirmation = submission.clone();
+        confirmation.hook_event_name = "Stop".into();
+        confirmation.agy_turn_complete = Some(complete);
+        confirmation.last_assistant_message = Some("final answer".into());
+        let json = serde_json::to_string(&confirmation).unwrap();
+        let (parsed, raw) = parse_hook_event("agy", json).unwrap();
+        assert_eq!(parsed, confirmation);
+        assert_eq!(parse_hook_event("agy", raw).unwrap().0, confirmation);
+    }
+}

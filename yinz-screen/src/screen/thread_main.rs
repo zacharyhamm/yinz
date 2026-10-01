@@ -52,7 +52,7 @@ pub(super) fn apply_queued_agent_report(
         .event
         .as_ref()
         .and_then(|event| serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok());
-    // Older installed reporters can still send Idle for an ordinary Claude Stop.
+    // Older installed reporters can still send Idle for an ordinary Claude or Antigravity Stop.
     // Correlate internal confirmations before applying or broadcasting any state.
     if report.kind == "claude"
         && hook
@@ -61,15 +61,27 @@ pub(super) fn apply_queued_agent_report(
     {
         return Ok(true);
     }
+    if report.kind == "agy"
+        && hook
+            .as_ref()
+            .is_some_and(|hook| screen.ignore_agy_confirmation(pane_id, hook))
+    {
+        return Ok(true);
+    }
     let mut normalized;
-    let report = if report.kind == "claude"
+    let report = if matches!(report.kind.as_str(), "claude" | "agy")
         && hook
             .as_ref()
             .is_some_and(|hook| hook.hook_event_name == "Stop")
     {
         let hook = hook.as_ref().expect("checked Stop hook");
         normalized = report.clone();
-        if hook.claude_turn_complete != Some(true) || screen.claude_turn_continues(pane_id, hook) {
+        let complete = match report.kind.as_str() {
+            "claude" => hook.claude_turn_complete,
+            "agy" => hook.agy_turn_complete,
+            _ => None,
+        };
+        if complete != Some(true) || screen.claude_turn_continues(pane_id, hook) {
             if let yinz_types::agent::report::AgentReportState::Set(agent) = &mut normalized.state {
                 agent.state = yinz_types::agent::AgentState::Busy;
             }

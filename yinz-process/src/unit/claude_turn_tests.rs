@@ -11,7 +11,7 @@ fn hook() -> HookEvent {
 
 #[test]
 fn a_blocking_stop_continues_until_the_matching_transcript_boundary() {
-    let mut turn = Turn::new(&hook());
+    let mut turn = Turn::new("claude", &hook());
     for record in [
         json!({"type":"system","subtype":"turn_duration","uuid":"old"}),
         json!({"type":"user","sessionId":"conversation","promptId":"prompt","uuid":"user"}),
@@ -31,7 +31,7 @@ fn a_blocking_stop_continues_until_the_matching_transcript_boundary() {
 
 #[test]
 fn background_launches_in_the_turn_are_reported_once_in_launch_order() {
-    let mut turn = Turn::new(&hook());
+    let mut turn = Turn::new("claude", &hook());
     for record in [
         json!({"type":"user","promptId":"prompt","uuid":"user"}),
         json!({"type":"assistant","parentUuid":"user","uuid":"bash","message":{"content":[{"type":"tool_use"}]}}),
@@ -57,10 +57,13 @@ fn background_launches_in_the_turn_are_reported_once_in_launch_order() {
 
 #[test]
 fn a_task_notification_turn_is_followed_by_its_own_prompt_id() {
-    let mut turn = Turn::new(&HookEvent {
-        prompt_id: Some("notification".into()),
-        ..hook()
-    });
+    let mut turn = Turn::new(
+        "claude",
+        &HookEvent {
+            prompt_id: Some("notification".into()),
+            ..hook()
+        },
+    );
     for record in [
         json!({"type":"user","promptId":"prompt","uuid":"earlier"}),
         json!({"type":"user","promptId":"notification","uuid":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<task-id>bj30txqod</task-id>\n</task-notification>"}}),
@@ -81,7 +84,7 @@ fn replacement_prompts_and_conversations_never_confirm_the_previous_turn() {
         json!({"type":"user","promptId":"new"}),
         json!({"sessionId":"other","type":"system","subtype":"turn_duration"}),
     ] {
-        let mut turn = Turn::new(&hook());
+        let mut turn = Turn::new("claude", &hook());
         turn.record(&json!({"type":"user","promptId":"prompt","uuid":"user"}))
             .unwrap();
         assert!(turn.record(&replacement).is_err());
@@ -95,6 +98,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
     system.refresh_processes(ProcessesToUpdate::Some(&[process]), true);
     let started = system.process(process).unwrap().start_time();
     let observation = Observation {
+        kind: "claude".into(),
         hook: HookEvent {
             transcript_path: Some("/nonexistent/yinz-claude.jsonl".into()),
             ..hook()
@@ -111,6 +115,7 @@ fn missing_transcripts_and_exited_processes_are_unavailable() {
     let path = dir.path().join("turn.jsonl");
     std::fs::write(&path, "").unwrap();
     let observation = Observation {
+        kind: "claude".into(),
         hook: HookEvent {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..hook()
@@ -135,7 +140,7 @@ fn a_partial_transcript_record_is_not_completion() {
     assert_ne!(line.last(), Some(&b'\n'));
     writer.write_all(b",\"parentUuid\":\"user\"}\n").unwrap();
     reader.read_until(b'\n', &mut line).unwrap();
-    let mut turn = Turn::new(&hook());
+    let mut turn = Turn::new("claude", &hook());
     turn.record(&json!({"type":"user","promptId":"prompt","uuid":"user"}))
         .unwrap();
     assert!(turn
@@ -148,6 +153,7 @@ fn observation(path: &std::path::Path, marker: Option<PathBuf>) -> Observation {
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     Observation {
+        kind: "claude".into(),
         hook: HookEvent {
             transcript_path: Some(path.to_string_lossy().into_owned()),
             ..hook()
@@ -216,4 +222,335 @@ fn transcript_loss_and_conversation_replacement_stop_the_observer() {
         assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap().is_err());
         observer.join().unwrap();
     }
+}
+
+#[test]
+fn an_agy_model_response_never_confirms_completion() {
+    let hook = HookEvent {
+        session_id: "agy-conv".into(),
+        turn_id: Some("1".into()),
+        prompt: Some("fix auth".into()),
+        ..Default::default()
+    };
+    let mut turn = Turn::new("agy", &hook);
+
+    // 1. Initial user request
+    let user_step = json!({
+        "step_index": 0,
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": "<USER_REQUEST>\nfix auth\n</USER_REQUEST>"
+    });
+    assert!(!turn.record(&user_step).unwrap());
+
+    // 2. Intermediate model response with tool calls is not completion
+    let tool_step = json!({
+        "step_index": 1,
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "tool_calls": [{"name": "run_command", "args": {"CommandLine": "cargo check"}}]
+    });
+    assert!(!turn.record(&tool_step).unwrap());
+
+    // 3. Tool execution output is not completion
+    let generic_step = json!({
+        "step_index": 2,
+        "type": "GENERIC",
+        "status": "DONE",
+        "content": "Finished dev target"
+    });
+    assert!(!turn.record(&generic_step).unwrap());
+
+    // A finished model response is text evidence, never turn completion.
+    let final_step = json!({
+        "step_index": 3,
+        "type": "PLANNER_RESPONSE",
+        "status": "DONE",
+        "content": "I fixed the authentication bug."
+    });
+    assert!(!turn.record(&final_step).unwrap());
+    assert_eq!(
+        turn.last_text.as_deref(),
+        Some("I fixed the authentication bug.")
+    );
+}
+
+#[test]
+fn an_agy_turn_observer_detects_prompt_replacement() {
+    let hook = HookEvent {
+        session_id: "agy-conv".into(),
+        turn_id: Some("1".into()),
+        prompt: Some("initial prompt".into()),
+        ..Default::default()
+    };
+    let mut turn = Turn::new("agy", &hook);
+
+    let prompt1 = json!({
+        "step_index": 0,
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": "<USER_REQUEST>\ninitial prompt\n</USER_REQUEST>"
+    });
+    assert!(!turn.record(&prompt1).unwrap());
+
+    // A competing prompt in the same conversation fails the previous turn observation
+    let prompt2 = json!({
+        "step_index": 1,
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": "<USER_REQUEST>\nreplacement prompt\n</USER_REQUEST>"
+    });
+    assert!(turn.record(&prompt2).is_err());
+}
+
+#[test]
+fn an_agy_turn_observer_detects_error_status() {
+    let hook = HookEvent {
+        session_id: "agy-conv".into(),
+        turn_id: Some("1".into()),
+        prompt: Some("do task".into()),
+        ..Default::default()
+    };
+    let mut turn = Turn::new("agy", &hook);
+
+    let prompt = json!({
+        "step_index": 0,
+        "type": "USER_INPUT",
+        "status": "DONE",
+        "content": "<USER_REQUEST>\ndo task\n</USER_REQUEST>"
+    });
+    assert!(!turn.record(&prompt).unwrap());
+
+    let error_step = json!({
+        "step_index": 1,
+        "type": "PLANNER_RESPONSE",
+        "status": "ERROR",
+        "content": "API error"
+    });
+    assert!(turn.record(&error_step).is_err());
+}
+
+fn agy_response(status: &str) -> Value {
+    json!({"status":status,"numTotalSteps":2,"trajectory":{"cascadeId":"conversation","steps":[
+        {"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"CORTEX_STEP_STATUS_DONE"},
+        {"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","status":"CORTEX_STEP_STATUS_DONE"}
+    ]}})
+}
+
+#[test]
+fn agy_api_requires_matching_identity_and_execution_evidence() {
+    let hook = HookEvent {
+        turn_id: Some("1".into()),
+        ..hook()
+    };
+    let mut turn = Turn::new("agy", &hook);
+    let idle = agy_response("CASCADE_RUN_STATUS_IDLE");
+    assert!(!AgyApi::trajectory_idle(&turn, &idle).unwrap());
+    turn.record(&json!({"step_index":0,"type":"USER_INPUT","content":"same text"}))
+        .unwrap();
+    assert!(AgyApi::trajectory_idle(&turn, &idle).unwrap());
+    assert!(!AgyApi::trajectory_idle(&turn, &agy_response("CASCADE_RUN_STATUS_RUNNING")).unwrap());
+    for bad in [
+        json!({}),
+        {
+            let mut v = idle.clone();
+            v["status"] = "unknown".into();
+            v
+        },
+        {
+            let mut v = idle.clone();
+            v["trajectory"]["cascadeId"] = "replacement".into();
+            v
+        },
+        {
+            let mut v = idle.clone();
+            v["numTotalSteps"] = 3.into();
+            v
+        },
+        {
+            let mut v = idle.clone();
+            v["trajectory"]["steps"][1]["type"] = "CORTEX_STEP_TYPE_USER_INPUT".into();
+            v
+        },
+    ] {
+        assert!(AgyApi::trajectory_idle(&turn, &bad).is_err(), "{bad}");
+    }
+    let unstarted = json!({"status":"CASCADE_RUN_STATUS_IDLE","numTotalSteps":1,
+        "trajectory":{"cascadeId":"conversation","steps":[{"type":"CORTEX_STEP_TYPE_USER_INPUT"}]}});
+    assert!(!AgyApi::trajectory_idle(&turn, &unstarted).unwrap());
+    assert!(turn
+        .record(&json!({"step_index":2,"type":"USER_INPUT","content":"same text"}))
+        .is_err());
+    let mut next = Turn::new(
+        "agy",
+        &HookEvent {
+            turn_id: Some("3".into()),
+            ..hook
+        },
+    );
+    next.record(&json!({"step_index":0,"type":"USER_INPUT","content":"same text"}))
+        .unwrap();
+    assert!(!next.found);
+    next.record(&json!({"step_index":2,"type":"USER_INPUT","content":"same text"}))
+        .unwrap();
+    assert!(next.found);
+}
+
+#[test]
+fn agy_observer_waits_for_api_idle_after_model_completion() {
+    use std::net::TcpListener;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let api = AgyApi::new(
+        &listener.local_addr().unwrap().to_string(),
+        "fixture-token".into(),
+    )
+    .unwrap();
+    let idle = Arc::new(AtomicBool::new(false));
+    let server_idle = idle.clone();
+    let (queried_tx, queried_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || loop {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            headers.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        assert!(headers.starts_with(
+            "POST /exa.language_server_pb.LanguageServerService/GetCascadeTrajectory "
+        ));
+        assert!(headers
+            .to_lowercase()
+            .contains("x-codeium-csrf-token: fixture-token"));
+        let done = server_idle.load(Ordering::SeqCst);
+        let body = agy_response(if done {
+            "CASCADE_RUN_STATUS_IDLE"
+        } else {
+            "CASCADE_RUN_STATUS_RUNNING"
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        queried_tx.send(()).unwrap();
+        if done {
+            break;
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("transcript.jsonl");
+    std::fs::write(&path, concat!(
+        "{\"step_index\":0,\"type\":\"USER_INPUT\",\"content\":\"same text\"}\n",
+        "{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"content\":\"FIRST\"}\n"
+    )).unwrap();
+    let mut observation = observation(&path, None);
+    observation.kind = "agy".into();
+    observation.hook.turn_id = Some("1".into());
+    observation.hook.prompt_id = Some("conversation:1".into());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let observer =
+        std::thread::spawn(move || tx.send(follow_with_api(&observation, Some(api))).unwrap());
+    queried_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The timed absence of completion is the behavior under test, even with model DONE.
+    assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+    let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        json!({"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","content":"SECOND"})
+    )
+    .unwrap();
+    idle.store(true, Ordering::SeqCst);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap()
+            .last_text
+            .as_deref(),
+        Some("SECOND")
+    );
+    observer.join().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn agy_unavailable_api_and_invalid_responses_fail_closed() {
+    use std::net::TcpListener;
+    let turn = Turn::new(
+        "agy",
+        &HookEvent {
+            turn_id: Some("1".into()),
+            ..hook()
+        },
+    );
+    assert!(AgyApi::new("192.0.2.1:1234", "secret".into()).is_err());
+    assert!(AgyApi::new("127.0.0.1:1234", String::new()).is_err());
+    for (status, body) in [
+        ("200 OK", "not JSON"),
+        ("200 OK", "{}"),
+        ("302 Found", ""),
+        ("503 Unavailable", ""),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            AgyApi::new(&listener.local_addr().unwrap().to_string(), "secret".into()).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        assert!(api.idle(&turn).is_err());
+        server.join().unwrap();
+        assert!(api.idle(&turn).is_err());
+    }
+}
+
+#[test]
+fn agy_missing_identity_process_exit_and_replacement_are_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("transcript.jsonl");
+    let marker = dir.path().join("marker");
+    std::fs::write(&path, "").unwrap();
+    let mut observation = observation(&path, Some(marker.clone()));
+    observation.kind = "agy".into();
+    observation.hook.prompt_id = Some("conversation:1".into());
+    observation.hook.turn_id = Some("1".into());
+    let identity = conversation_marker("agy", &observation.hook);
+    for replacement in ["other:other:1", "conversation:conversation:3"] {
+        std::fs::write(&marker, replacement).unwrap();
+        assert!(follow_with_api(&observation, None).is_err());
+    }
+    std::fs::write(&marker, &identity).unwrap();
+    let mut missing = observation.hook.clone();
+    missing.prompt_id = None;
+    let original = std::mem::replace(&mut observation.hook, missing);
+    observation.conversation_file = None;
+    assert!(follow_with_api(&observation, None).is_err());
+    observation.hook = original;
+    observation.process.as_mut().unwrap().1 += 1;
+    assert!(follow_with_api(&observation, None).is_err());
 }
