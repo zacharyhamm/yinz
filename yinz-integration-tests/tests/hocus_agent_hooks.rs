@@ -195,15 +195,37 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
     })
     .to_string();
     for kind in ["claude", "codex"] {
-        for payload in [
-            if kind == "codex" {
-                codex_permission.as_str()
-            } else {
-                r#"{"hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git status"}}"#
-            },
-            r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#,
-            r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#,
-        ] {
+        let mut payloads = if kind == "codex" {
+            vec![codex_permission.clone(),
+                r#"{"hook_event_name":"Notification","notification_type":"permission_prompt"}"#.to_owned(),
+                r#"{"hook_event_name":"Notification","notification_type":"worker_permission_prompt"}"#.to_owned()]
+        } else {
+            vec![]
+        };
+        if kind == "claude" {
+            for mode in ["plan", "default", "acceptEdits", "auto"] {
+                for hook in ["PreToolUse", "PermissionRequest", "PostToolUse"] {
+                    payloads.push(
+                        serde_json::json!({"hook_event_name": hook, "permission_mode": mode,
+                        "tool_name": "Bash", "tool_input": {"command": "git status"}})
+                        .to_string(),
+                    );
+                    if hook == "PermissionRequest" {
+                        for reminder in ["permission_prompt", "worker_permission_prompt"] {
+                            payloads.push(
+                                serde_json::json!({
+                                    "hook_event_name": "Notification",
+                                    "notification_type": reminder,
+                                    "permission_mode": mode,
+                                })
+                                .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for payload in payloads {
             // The same host-side parser as local CLI ingestion; the in-process client cannot
             // supply stdin to `--hook-json`.
             let (event, payload) =
@@ -233,12 +255,17 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
                 .find(|pane| pane["id"] == pane_id && pane["is_plugin"] == false)
                 .unwrap();
             assert_eq!(pane["agent"]["state"], "Busy");
-            assert_eq!(pane["agent"]["detail"], "Bash git");
+            let completed = event.hook_event_name == "PostToolUse";
+            if completed {
+                assert!(pane["agent"]["detail"].is_null());
+            } else {
+                assert_eq!(pane["agent"]["detail"], "Bash git");
+            }
             assert!(pane["agent"]["waiting_on"].is_null());
             assert_eq!(pane["agent"]["wait_needs_a_person"], false);
             submit(&yinz, r#"/agent_list {}"#);
             yinz.wait_until("hocus agrees that automatic approval is busy", |grid| {
-                grid.contains("busy") && grid.contains("Bash git")
+                grid.contains("busy") && (completed || grid.contains("Bash git"))
             });
             // The daemon publishes its list after processing the event and deciding whether
             // to notify. A persistent toast would therefore be visible with this busy result.
@@ -252,7 +279,7 @@ fn hooks_keep_the_pane_record_and_hocus_waiting_status_in_agreement() {
     send_hook(
         &mut yinz,
         pane_id,
-        r#"{"hook_event_name":"PermissionRequest","session_id":"cc-1"}"#,
+        r#"{"hook_event_name":"Notification","notification_type":"elicitation_dialog","session_id":"cc-1"}"#,
     );
     yinz.wait_until("a genuine wait still raises a notification", |grid| {
         grid.contains("agent waiting")
@@ -421,13 +448,15 @@ fn delayed_daemon_events_do_not_overwrite_newer_pane_state() {
     for (hook, expected, mark) in [
         ("UserPromptSubmit", "Busy", "⣾1"),
         ("Stop", "Idle", "·1"),
-        ("PermissionRequest", "Waiting", "◆1"),
+        ("PermissionRequest", "Busy", "⣾1"),
+        ("Notification", "Waiting", "◆1"),
     ] {
         send_hook(
             &mut yinz,
             pane_id,
             &serde_json::json!({
                 "hook_event_name": hook, "session_id": "current", "tool_name": "Bash",
+                "notification_type": (hook == "Notification").then_some("elicitation_dialog"),
                 "_yinz_claude_turn_complete": (hook == "Stop").then_some(true),
             })
             .to_string(),
@@ -540,7 +569,8 @@ keybinds {{
         ("UserPromptSubmit", "Busy"),
         ("Stop", "Idle"),
         ("PreToolUse", "Busy"),
-        ("PermissionRequest", "Waiting"),
+        ("PermissionRequest", "Busy"),
+        ("Notification", "Waiting"),
         ("Stop", "Idle"),
     ] {
         send_hook(
@@ -548,6 +578,7 @@ keybinds {{
             pane_id,
             &serde_json::json!({
                 "hook_event_name": parent, "session_id": "recap-parent", "cwd": "/work",
+                "notification_type": (parent == "Notification").then_some("elicitation_dialog"),
                 "_yinz_claude_turn_complete": (parent == "Stop").then_some(true),
                 "tool_name": "Bash", "tool_input": {"command": "git status"},
             })

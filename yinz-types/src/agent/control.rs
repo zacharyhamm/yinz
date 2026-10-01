@@ -238,7 +238,7 @@ impl PromptObservation {
             return (event.kind == self.kind
                 && hook.session_id == self.conversation_id
                 && event.session_id.as_deref() == Some(self.conversation_id.as_str())
-                && super::hook_state(hook) == Some(AgentState::Waiting)
+                && super::hook_state_for(&event.kind, hook) == Some(AgentState::Waiting)
                 && super::waiting_needs_a_person(hook))
             .then_some(AgentOutcome::NeedsInput);
         }
@@ -333,7 +333,7 @@ impl PromptObservation {
         // identity: Muse's approval notification is session-scoped, and a pane
         // blocked on a person is blocked whatever turn the provider names.
         // Completions below still require the acknowledged turn.
-        if super::hook_state(hook) == Some(AgentState::Waiting)
+        if super::hook_state_for(&event.kind, hook) == Some(AgentState::Waiting)
             && super::waiting_needs_a_person(hook)
         {
             return Some(AgentOutcome::NeedsInput);

@@ -145,7 +145,7 @@ impl Screen {
             hook.hook_event_name.as_str(),
             "UserPromptSubmit" | "PreInvocation" | "SessionStart" | "SessionEnd"
         ) && matches!(
-            yinz_types::agent::hook_state(hook),
+            yinz_types::agent::hook_state_for(kind, hook),
             Some(AgentState::Busy | AgentState::Waiting)
         ) && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == kind
@@ -383,7 +383,7 @@ impl Screen {
         hook: Option<&HookEvent>,
     ) -> Result<bool> {
         use yinz_types::agent::report::AgentReportState;
-        use yinz_types::agent::{hook_state, waiting_detail, waiting_needs_a_person};
+        use yinz_types::agent::{hook_state_for, waiting_detail, waiting_needs_a_person};
         let pane = report.pane_id;
         // Only the matching clear lifecycle may carry its submitted input across the
         // record removal and conversation replacement. All other invalidations discard it.
@@ -443,7 +443,9 @@ impl Screen {
                 return Ok(true);
             }
             if let Some(id) = &hook.agent_id {
-                if hook_state(hook) == Some(AgentState::Waiting) && waiting_needs_a_person(hook) {
+                if hook_state_for(&report.kind, hook) == Some(AgentState::Waiting)
+                    && waiting_needs_a_person(hook)
+                {
                     workers
                         .get_or_insert_with(|| WorkerWaits {
                             parent: parent.clone(),
@@ -451,7 +453,7 @@ impl Screen {
                         })
                         .waits
                         .insert(id.clone(), waiting_detail(hook));
-                } else if hook_state(hook).is_some()
+                } else if hook_state_for(&report.kind, hook).is_some()
                     || matches!(hook.hook_event_name.as_str(), "SubagentStop" | "SessionEnd")
                 {
                     if let Some(workers) = &mut workers {
@@ -507,7 +509,7 @@ impl Screen {
                                 .as_deref()
                                 .is_none_or(|conversation| conversation == hook.session_id)
                     })
-                    && ((hook_state(hook) == Some(AgentState::Idle)
+                    && ((hook_state_for(&report.kind, hook) == Some(AgentState::Idle)
                         && hook.hook_event_name == "SessionStart")
                         || (report.kind == "agy"
                             && matches!(
@@ -1759,7 +1761,8 @@ impl Screen {
                             .is_none_or(|conversation| conversation == hook.session_id)
                 })
             {
-                let state = hook.and_then(yinz_types::agent::hook_state);
+                let state =
+                    hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook));
                 if state == Some(AgentState::Waiting) {
                     input.fresh_waiting = true;
                 } else if (input.startup
@@ -1921,7 +1924,7 @@ impl Screen {
                     && hook.source.as_deref() != Some("compact")
                     && hook.session_id.is_empty()
                     && hook.muse_hooks_ready == Some(true)
-                    && yinz_types::agent::hook_state(hook).is_some()
+                    && yinz_types::agent::hook_state_for(&event.kind, hook).is_some()
             })
         {
             // The launcher's startup announcement: verified hook wiring, but
@@ -1957,7 +1960,7 @@ impl Screen {
             !id.is_empty()
                 && hook
                     .as_ref()
-                    .and_then(|hook| yinz_types::agent::hook_state(hook))
+                    .and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook))
                     .is_some()
         }) {
             let previous = self.agent_lifecycle.get(&pane).filter(|previous| {

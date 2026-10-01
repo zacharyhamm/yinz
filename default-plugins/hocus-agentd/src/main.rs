@@ -966,9 +966,8 @@ impl State {
     ///   `SessionEnd` is the ordinary way that happens, but not the only one — see
     ///   `finish_run_as`, which queues every close that knows the run is over, and
     ///   `drain_finished_runs`, which is where the asking happens.
-    /// - **The waiting toast.** A `PermissionRequest` is the user being asked a question,
-    ///   said as the question goes up. Drawing it in a sidebar nobody is looking at was
-    ///   only ever half the answer.
+    /// - **The waiting toast.** A classified user wait announces a question or approval
+    ///   prompt. Claude permission evaluation and timed reminders do not establish a wait.
     ///
     /// The screen heuristic keeps running, but only for the idle *clock*: `activity` is what
     /// `status_cell` counts minutes with, on both paths, so a hook-fed pane's `idle 3m` reads
@@ -1041,7 +1040,7 @@ impl State {
             // now this one is a shell prompt where an agent was.
             return;
         }
-        let Some(phase) = agents::hook_phase(event) else {
+        let Some(phase) = agents::hook_phase(kind, event) else {
             return;
         };
         let pane_is_agent = self
@@ -1133,7 +1132,7 @@ impl State {
             .and_then(|was| was.waiting_on.clone());
         let feed = agents::HookFeed {
             phase,
-            detail: agents::hook_detail(event),
+            detail: agents::hook_detail_for(kind, event),
             waiting_on: match phase {
                 agents::HookPhase::Waiting => {
                     // An elicitation reminder keeps the original question's wording.
@@ -4367,11 +4366,7 @@ mod tests {
     /// user answers it, which is the one thing nobody was going to be told about.
     #[test]
     fn an_event_that_builds_no_feed_leaves_the_manifest_road_open() {
-        let request = wire::HookEvent {
-            tool_name: Some("Bash".to_owned()),
-            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
-            ..hook("PermissionRequest")
-        };
+        let request = elicitation_notification("Bash rm");
         // No snapshot yet, which is what a reloaded daemon has.
         let mut state = State::default();
         state.on_hook(7, &request);
@@ -4530,11 +4525,7 @@ mod tests {
             latched: BTreeMap::from([(7, CLAUDE.to_owned())]),
             ..State::default()
         };
-        let request = wire::HookEvent {
-            tool_name: Some("Bash".to_owned()),
-            tool_input: Some(serde_json::json!({ "command": "rm -rf target" })),
-            ..hook("PermissionRequest")
-        };
+        let request = elicitation_notification("Bash rm");
         state.on_hook(7, &request);
         assert_eq!(state.hooks[&7].waiting_on.as_deref(), Some("Bash rm"));
         assert!(state.event_fed.contains(&7));
@@ -6533,7 +6524,16 @@ mod tests {
             hook_event_name: name.to_owned(),
             session_id: "cc-session-1".to_owned(),
             source: Some("startup".to_owned()),
+            claude_turn_complete: (name == "Stop").then_some(true),
             ..Default::default()
+        }
+    }
+
+    fn elicitation_notification(message: &str) -> wire::HookEvent {
+        wire::HookEvent {
+            notification_type: Some("elicitation_dialog".to_owned()),
+            message: Some(message.to_owned()),
+            ..hook("Notification")
         }
     }
 
@@ -6566,6 +6566,12 @@ mod tests {
         poll_showing(&mut state, BUSY_PANE);
         assert_eq!(cell(&state, 7), "busy", "the screen is moving");
 
+        let unconfirmed = wire::HookEvent {
+            claude_turn_complete: None,
+            ..hook("Stop")
+        };
+        state.on_hook(7, &unconfirmed);
+        assert_eq!(cell(&state, 7), "busy");
         state.on_hook(7, &hook("Stop"));
 
         assert_eq!(cell(&state, 7), "idle");
@@ -7014,15 +7020,13 @@ mod tests {
         state.on_hook(7, &event);
         assert_eq!(state.seq, seq);
 
-        state.on_hook(7, &hook("PermissionRequest"));
+        state.on_hook(7, &elicitation_notification("Allow Bash?"));
         assert_eq!(state.seq, seq + 1, "a changed phase still publishes");
     }
 
-    /// The other half: blocked on the user, said outright rather than guessed at from a
-    /// screenful of text. `PermissionRequest` fires as the prompt goes up, where the
-    /// notification that used to be the only signal waits six seconds for silence.
+    /// Permission evaluation stays busy; elicitation establishes a user wait.
     #[test]
-    fn a_permission_request_marks_the_pane_waiting_at_once() {
+    fn an_elicitation_notification_reports_the_pane_is_waiting() {
         let mut state = State {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
@@ -7031,7 +7035,9 @@ mod tests {
         assert_eq!(cell(&state, 7), "busy");
 
         state.on_hook(7, &hook("PermissionRequest"));
-        assert_eq!(cell(&state, 7), "waiting");
+        assert_eq!(cell(&state, 7), "busy");
+        state.on_hook(7, &elicitation_notification("Allow Bash?"));
+        assert_eq!(cell(&state, 7), "waiting · Allow Bash?");
 
         // Approved, and back to work.
         state.on_hook(7, &hook("PostToolUse"));
@@ -7281,7 +7287,7 @@ mod tests {
     #[test]
     fn the_feed_marks_a_pane_waiting_that_the_model_called_finished() {
         let (mut state, _) = idle_agent(BUSY_PANE);
-        state.on_hook(7, &hook("PermissionRequest"));
+        state.on_hook(7, &elicitation_notification("Allow Bash?"));
 
         finish(&mut state, 200, &reply("All done.", false), &context(7, 1));
 
@@ -7378,9 +7384,7 @@ mod tests {
     const REPLY: &str = "I ran the test suite and every test passes. Two snapshots were \
                          regenerated on the way; both diffs are whitespace only.";
 
-    /// The interruption the feed exists to make in time. The `!` in a sidebar was only
-    /// ever half the answer: a permission prompt lands in the milliseconds the pipe took,
-    /// and the sidebar is very often not what is being looked at.
+    /// An elicitation prompt interrupts the user once.
     #[test]
     fn an_agent_that_starts_waiting_says_so_over_whatever_pane_the_user_is_in() {
         let mut state = State {
@@ -7390,55 +7394,48 @@ mod tests {
         let (toasts, _) = feed(&mut state, 7, &hook("UserPromptSubmit"), None);
         assert!(toasts.is_empty(), "work is not an interruption");
 
-        let (toasts, _) = feed(
-            &mut state,
-            7,
-            &tool_hook(
-                "PermissionRequest",
-                "Bash",
-                serde_json::json!({"command": "rm -rf target"}),
-            ),
-            None,
-        );
+        let (toasts, _) = feed(&mut state, 7, &elicitation_notification("Bash rm"), None);
         assert_eq!(
             toasts,
             vec![(7, "agent waiting · 7 · claude◆\nBash rm".to_owned())],
             "one toast, naming the pane and what it is asking for"
         );
         assert_eq!(cell(&state, 7), "waiting · Bash rm");
+        let (repeated, _) = feed(&mut state, 7, &elicitation_notification("Bash rm"), None);
+        assert!(repeated.is_empty());
     }
 
-    /// `PermissionRequest` puts the prompt up and the `Notification` for that same prompt
-    /// follows about six seconds later. An agent blocked once must interrupt once.
+    /// Evaluation and its timed reminders never establish a human wait.
     #[test]
-    fn one_prompt_reported_twice_interrupts_only_once() {
-        let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
-            ..State::default()
-        };
-        let (first, _) = feed(
-            &mut state,
-            7,
-            &tool_hook("PermissionRequest", "Bash", serde_json::json!({})),
-            None,
-        );
-        assert_eq!(first.len(), 1);
+    fn permission_reminders_do_not_interrupt_or_change_the_feed() {
+        for notification in ["permission_prompt", "worker_permission_prompt"] {
+            let mut state = State {
+                panes: Some(vec![pane(7, "claude", "/work")]),
+                ..State::default()
+            };
+            let (first, _) = feed(
+                &mut state,
+                7,
+                &tool_hook("PermissionRequest", "Bash", serde_json::json!({})),
+                None,
+            );
+            assert!(first.is_empty());
+            assert_eq!(cell(&state, 7), "busy · Bash");
 
-        let backstop = wire::HookEvent {
-            notification_type: Some("permission_prompt".to_owned()),
-            message: Some("Claude needs your permission to use Bash".to_owned()),
-            ..hook("Notification")
-        };
-        let (second, _) = feed(&mut state, 7, &backstop, None);
-        assert!(
-            second.is_empty(),
-            "the backstop for a prompt already announced says nothing"
-        );
-        assert_eq!(
-            cell(&state, 7),
-            "waiting · Bash",
-            "the row keeps the request's own account of the prompt, not the backstop's"
-        );
+            let backstop = wire::HookEvent {
+                notification_type: Some(notification.to_owned()),
+                message: Some("Allow Bash?".to_owned()),
+                ..hook("Notification")
+            };
+            let (second, _) = feed(&mut state, 7, &backstop, None);
+            assert!(second.is_empty());
+            let (repeated, _) = feed(&mut state, 7, &backstop, None);
+            assert!(repeated.is_empty());
+            assert_eq!(cell(&state, 7), "busy · Bash");
+            feed(&mut state, 7, &hook("PostToolUse"), None);
+            assert_eq!(cell(&state, 7), "busy");
+            assert_eq!(state.hooks[&7].waiting_on, None);
+        }
     }
 
     /// The backstop is a backstop: for a prompt nothing else reported it is the only
@@ -7475,12 +7472,7 @@ mod tests {
             panes: Some(vec![pane(7, "claude", "/work")]),
             ..State::default()
         };
-        feed(
-            &mut state,
-            7,
-            &tool_hook("PermissionRequest", "Bash", serde_json::json!({})),
-            None,
-        );
+        feed(&mut state, 7, &elicitation_notification("Bash"), None);
         // Allowed, and the tool it was asking about runs.
         feed(&mut state, 7, &hook("PostToolUse"), None);
         let (toasts, _) = feed(
@@ -7508,18 +7500,13 @@ mod tests {
             focused: Some(7),
             ..State::default()
         };
-        let (toasts, _) = feed(
-            &mut state,
-            7,
-            &tool_hook("PermissionRequest", "Bash", serde_json::json!({})),
-            None,
-        );
+        let (toasts, _) = feed(&mut state, 7, &elicitation_notification("Bash"), None);
         assert!(toasts.is_empty(), "no toast over the pane itself");
         // The row still says it, which is the half that is not an interruption.
         assert_eq!(cell(&state, 7), "waiting · Bash");
     }
 
-    /// Automatic approval stays busy through reminders, and a direct question still waits.
+    /// Automatic tool sequences stay busy; direct questions wait immediately.
     #[test]
     fn automatic_permissions_stay_busy_until_a_person_is_asked() {
         for (kind, question) in [
@@ -7538,12 +7525,20 @@ mod tests {
                     );
                     (toasts, ())
                 };
-            for (mode, tool) in [
+            let mut modes = vec![
                 ("auto", "Bash"),
                 ("bypassPermissions", "Bash"),
                 ("dontAsk", "Bash"),
                 ("acceptEdits", "Edit"),
-            ] {
+            ];
+            if kind == "claude" {
+                modes.extend([
+                    ("plan", "Bash"),
+                    ("default", "Bash"),
+                    ("acceptEdits", "Bash"),
+                ]);
+            }
+            for (mode, tool) in modes {
                 let mut state = State {
                     panes: Some(vec![pane(7, kind, "/work")]),
                     ..State::default()
@@ -7556,6 +7551,11 @@ mod tests {
                         serde_json::json!({"command": "git status", "file_path": "/work/main.rs"}),
                     )
                 };
+                let pre = wire::HookEvent {
+                    hook_event_name: "PreToolUse".to_owned(),
+                    ..request.clone()
+                };
+                assert!(feed(&mut state, 7, &pre, None).0.is_empty());
                 let (toasts, _) = feed(&mut state, 7, &request, None);
                 assert!(toasts.is_empty(), "{kind} {mode}");
                 let expected = if tool == "Bash" {
@@ -7565,15 +7565,6 @@ mod tests {
                 };
                 assert_eq!(cell(&state, 7), expected);
                 assert_eq!(state.hooks[&7].waiting_on, None);
-                for notification in ["permission_prompt", "worker_permission_prompt"] {
-                    let reminder = wire::HookEvent {
-                        notification_type: Some(notification.to_owned()),
-                        ..hook("Notification")
-                    };
-                    let (toasts, _) = feed(&mut state, 7, &reminder, None);
-                    assert!(toasts.is_empty());
-                    assert_eq!(cell(&state, 7), expected);
-                }
                 feed(&mut state, 7, &hook("PostToolUse"), None);
                 assert_eq!(cell(&state, 7), "busy");
                 feed(&mut state, 7, &request, None);
@@ -7588,6 +7579,26 @@ mod tests {
                 let (toasts, _) = feed(&mut state, 7, &asking, None);
                 assert_eq!(toasts.len(), 1, "{kind} {mode}");
                 assert_eq!(cell(&state, 7), "waiting · Which crate?");
+                if kind == "claude" {
+                    let evaluation = wire::HookEvent {
+                        hook_event_name: "PermissionRequest".to_owned(),
+                        ..asking.clone()
+                    };
+                    assert!(feed(&mut state, 7, &evaluation, None).0.is_empty());
+                    assert_eq!(cell(&state, 7), "waiting · Which crate?");
+                    assert!(feed(
+                        &mut state,
+                        7,
+                        &wire::HookEvent {
+                            notification_type: Some("permission_prompt".to_owned()),
+                            ..hook("Notification")
+                        },
+                        None
+                    )
+                    .0
+                    .is_empty());
+                    assert_eq!(cell(&state, 7), "waiting · Which crate?");
+                }
                 feed(&mut state, 7, &hook("PostToolUse"), None);
                 assert_eq!(cell(&state, 7), "busy");
                 assert_eq!(state.hooks[&7].waiting_on, None);
@@ -7597,16 +7608,23 @@ mod tests {
         }
     }
 
-    /// But only the prompts that mode actually answers. `acceptEdits` accepts edits;
-    /// a `Bash` prompt under it blocks until somebody says otherwise, and a question is
-    /// not a permission prompt at all — so both still interrupt. The toast is the only
-    /// thing that ever says so, because it is gated on the edge into the wait and the
-    /// `Notification` six seconds later cannot cross that edge a second time.
+    /// Codex still uses permission modes to distinguish manual approval.
     #[test]
     fn an_unattended_mode_only_silences_the_prompts_it_answers() {
         let mut state = State {
-            panes: Some(vec![pane(7, "claude", "/work")]),
+            panes: Some(vec![pane(7, "codex", "/work")]),
             ..State::default()
+        };
+        let feed = |state: &mut State, pane_id, event: &wire::HookEvent, _: Option<&Endpoint>| {
+            let mut toasts = Vec::new();
+            state.on_hook_with(
+                pane_id,
+                "codex",
+                event,
+                |pane_id, text| toasts.push((pane_id, text.to_owned())),
+                |_, _| {},
+            );
+            (toasts, ())
         };
         let accept_edits = |event: wire::HookEvent| wire::HookEvent {
             permission_mode: Some("acceptEdits".to_owned()),
@@ -9577,7 +9595,12 @@ mod tests {
             ..State::default()
         };
         feed(&mut state, 7, &prompt("implement capture"), None);
-        feed(&mut state, 7, &hook("PermissionRequest"), None);
+        feed(
+            &mut state,
+            7,
+            &elicitation_notification("Allow Bash?"),
+            None,
+        );
         let waiting = cell(&state, 7);
         for event in [
             display("t1", "m1", 2, true, ""),

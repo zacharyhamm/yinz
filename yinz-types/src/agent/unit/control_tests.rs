@@ -424,12 +424,101 @@ fn canonical_fingerprints_survive_pruning_without_losing_internal_whitespace() {
 }
 
 #[test]
+fn claude_permission_evaluation_does_not_end_prompt_observation() {
+    let mut observation = PromptObservation::new("claude", "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("claude", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "claude",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+    for worker in [None, Some("worker")] {
+        for mode in [
+            "plan",
+            "default",
+            "acceptEdits",
+            "auto",
+            "dontAsk",
+            "bypassPermissions",
+        ] {
+            let hook = HookEvent {
+                hook_event_name: "PermissionRequest".into(),
+                session_id: "conversation".into(),
+                permission_mode: Some(mode.into()),
+                tool_name: Some("Bash".into()),
+                agent_id: worker.map(str::to_owned),
+                ..Default::default()
+            };
+            assert_eq!(observe(&mut observation, &broadcast(&hook)), None);
+            for kind in ["permission_prompt", "worker_permission_prompt"] {
+                let notification = HookEvent {
+                    hook_event_name: "Notification".into(),
+                    notification_type: Some(kind.into()),
+                    ..hook.clone()
+                };
+                assert_eq!(observe(&mut observation, &broadcast(&notification)), None);
+            }
+            let finished = HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                ..hook
+            };
+            assert_eq!(observe(&mut observation, &broadcast(&finished)), None);
+        }
+        for tool in ["AskUserQuestion", "ExitPlanMode"] {
+            let hook = HookEvent {
+                hook_event_name: "PreToolUse".into(),
+                session_id: "conversation".into(),
+                tool_name: Some(tool.into()),
+                agent_id: worker.map(str::to_owned),
+                ..Default::default()
+            };
+            assert_eq!(
+                observe(&mut observation, &broadcast(&hook)),
+                Some(AgentOutcome::NeedsInput)
+            );
+            let evaluation = HookEvent {
+                hook_event_name: "PermissionRequest".into(),
+                ..hook.clone()
+            };
+            assert_eq!(observe(&mut observation, &broadcast(&evaluation)), None);
+            let finished = HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                ..hook
+            };
+            assert_eq!(observe(&mut observation, &broadcast(&finished)), None);
+        }
+    }
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("claude", "Stop", Some("new"), None)
+        ),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
 fn worker_human_waits_match_the_parent_without_acknowledging_it() {
     for kind in ["claude", "codex", "muse"] {
-        for name in ["PermissionRequest", "PreToolUse", "Elicitation"] {
+        for name in [
+            "Notification",
+            "PermissionRequest",
+            "PreToolUse",
+            "Elicitation",
+        ] {
             let mut observation = PromptObservation::new(kind, "conversation", "review");
             let mut hook = HookEvent {
                 hook_event_name: name.into(),
+                notification_type: (name == "Notification").then(|| "elicitation_dialog".into()),
                 session_id: "other".into(),
                 agent_id: Some("worker".into()),
                 tool_name: Some("AskUserQuestion".into()),
@@ -447,7 +536,8 @@ fn worker_human_waits_match_the_parent_without_acknowledging_it() {
             hook.session_id = "conversation".into();
             assert_eq!(
                 observation.observe(&broadcast(&hook), Some(&hook)),
-                Some(AgentOutcome::NeedsInput)
+                (kind != "claude" || name != "PermissionRequest")
+                    .then_some(AgentOutcome::NeedsInput)
             );
             assert!(!observation.acknowledged());
             assert_eq!(

@@ -381,8 +381,8 @@ pub fn activity_hash(activity: &Activity, pane_id: u32) -> Option<u64> {
 // ---------------------------------------------------------------------------
 
 pub use yinz_tile::agent::{
-    clean_hint, hook_detail, question_text, waiting_detail, waiting_needs_a_person,
-    HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
+    clean_hint, hook_detail, hook_detail_for, question_text, waiting_detail,
+    waiting_needs_a_person, HOOK_DETAIL_CHARS, HOOK_SESSION_END, WAITING_DETAIL_CHARS,
 };
 use yinz_tile::prelude::{AgentInfo, AgentSource, AgentState};
 
@@ -483,8 +483,8 @@ pub type HookFeeds = BTreeMap<u32, HookFeed>;
 ///
 /// `SessionEnd` is `None` here too, and deliberately: it does not move a feed to a
 /// state, it ends one. Callers check [`HOOK_SESSION_END`] first.
-pub fn hook_phase(event: &crate::wire::HookEvent) -> Option<HookPhase> {
-    yinz_tile::agent::hook_state(event).and_then(HookPhase::from_state)
+pub fn hook_phase(kind: &str, event: &crate::wire::HookEvent) -> Option<HookPhase> {
+    yinz_tile::agent::hook_state_for(kind, event).and_then(HookPhase::from_state)
 }
 
 /// A line already cleaned for a toast, cut again to what one cell of a row can hold.
@@ -2058,7 +2058,7 @@ pub fn summary_toast(pane_id: u32, kind: Option<&str>, summary: &Summary) -> Str
 /// will not resume until somebody answers. Before the hook feed there was no way to draw
 /// this in time — the screen heuristic needed fifteen seconds of stillness and a round
 /// trip to a model to reach the same conclusion, by which point the interruption was
-/// stale. A `PermissionRequest` arrives in the milliseconds the pipe took.
+/// stale. Direct questions arrive immediately; Claude permission notifications confirm waits.
 ///
 /// Shaped exactly like [`summary_toast`], down to the `·` separators, so a user who has
 /// seen one recognises the other: headline, then one line saying what is being asked.
@@ -6634,48 +6634,72 @@ mod tests {
     fn hook_events_map_to_the_states_they_name() {
         for source in ["startup", "resume", "fork", "clear"] {
             assert_eq!(
-                hook_phase(&crate::wire::HookEvent {
-                    source: Some(source.to_owned()),
-                    ..event("SessionStart")
-                }),
+                hook_phase(
+                    "claude",
+                    &crate::wire::HookEvent {
+                        source: Some(source.to_owned()),
+                        ..event("SessionStart")
+                    }
+                ),
                 Some(HookPhase::Idle)
             );
         }
         for source in ["compact", "something_new"] {
             assert_eq!(
-                hook_phase(&crate::wire::HookEvent {
-                    source: Some(source.to_owned()),
-                    ..event("SessionStart")
-                }),
+                hook_phase(
+                    "claude",
+                    &crate::wire::HookEvent {
+                        source: Some(source.to_owned()),
+                        ..event("SessionStart")
+                    }
+                ),
                 None
             );
         }
-        assert_eq!(hook_phase(&event("SessionStart")), None);
-        assert_eq!(hook_phase(&event("Stop")), Some(HookPhase::Idle));
+        assert_eq!(hook_phase("claude", &event("SessionStart")), None);
+        assert_eq!(hook_phase("claude", &event("Stop")), Some(HookPhase::Busy));
         assert_eq!(
-            hook_phase(&event("UserPromptSubmit")),
+            hook_phase("claude", &event("UserPromptSubmit")),
             Some(HookPhase::Busy)
         );
-        assert_eq!(hook_phase(&event("PreToolUse")), Some(HookPhase::Busy));
-        assert_eq!(hook_phase(&event("PostToolUse")), Some(HookPhase::Busy));
         assert_eq!(
-            hook_phase(&event("PermissionRequest")),
+            hook_phase("claude", &event("PreToolUse")),
+            Some(HookPhase::Busy)
+        );
+        assert_eq!(
+            hook_phase("claude", &event("PostToolUse")),
+            Some(HookPhase::Busy)
+        );
+        assert_eq!(
+            hook_phase("claude", &event("PermissionRequest")),
+            Some(HookPhase::Busy)
+        );
+        assert_eq!(
+            hook_phase("claude", &notification("permission_prompt")),
+            None
+        );
+        assert_eq!(
+            hook_phase("claude", &notification("agent_needs_input")),
             Some(HookPhase::Waiting)
         );
-        assert_eq!(hook_phase(&notification("permission_prompt")), None);
         assert_eq!(
-            hook_phase(&notification("agent_needs_input")),
-            Some(HookPhase::Waiting)
+            hook_phase("claude", &notification("worker_permission_prompt")),
+            None
         );
-        assert_eq!(hook_phase(&notification("worker_permission_prompt")), None);
 
         // A finished turn nobody has answered yet is idleness, not a question.
-        assert_eq!(hook_phase(&notification("idle_prompt")), None);
-        assert_eq!(hook_phase(&notification("quota_auto_resume_fired")), None);
+        assert_eq!(hook_phase("claude", &notification("idle_prompt")), None);
+        assert_eq!(
+            hook_phase("claude", &notification("quota_auto_resume_fired")),
+            None
+        );
         // Ending a session is not a state to be in - callers check HOOK_SESSION_END.
-        assert_eq!(hook_phase(&event(HOOK_SESSION_END)), None);
+        assert_eq!(hook_phase("claude", &event(HOOK_SESSION_END)), None);
         // A version that grows an event we have never heard of costs us nothing.
-        assert_eq!(hook_phase(&event("SomethingNewInAYearsTime")), None);
+        assert_eq!(
+            hook_phase("claude", &event("SomethingNewInAYearsTime")),
+            None
+        );
     }
 
     /// A turn that dies on an API error has ended as surely as one that finished, and
@@ -6689,7 +6713,7 @@ mod tests {
             last_assistant_message: Some("I was about to run the tests.".to_owned()),
             ..Default::default()
         };
-        assert_eq!(hook_phase(&failed), Some(HookPhase::Idle));
+        assert_eq!(hook_phase("claude", &failed), Some(HookPhase::Idle));
     }
 
     /// The two tools that are themselves a question. Every other tool starting is work;
@@ -6703,11 +6727,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            hook_phase(&pre("AskUserQuestion")),
+            hook_phase("claude", &pre("AskUserQuestion")),
             Some(HookPhase::Waiting)
         );
-        assert_eq!(hook_phase(&pre("ExitPlanMode")), Some(HookPhase::Waiting));
-        assert_eq!(hook_phase(&pre("Bash")), Some(HookPhase::Busy));
+        assert_eq!(
+            hook_phase("claude", &pre("ExitPlanMode")),
+            Some(HookPhase::Waiting)
+        );
+        assert_eq!(hook_phase("claude", &pre("Bash")), Some(HookPhase::Busy));
 
         // And the answer coming back is ordinary work again, which is what clears the
         // wait without either tool needing a case of its own on the way out.
@@ -6716,7 +6743,7 @@ mod tests {
             tool_name: Some("AskUserQuestion".to_owned()),
             ..Default::default()
         };
-        assert_eq!(hook_phase(&post), Some(HookPhase::Busy));
+        assert_eq!(hook_phase("claude", &post), Some(HookPhase::Busy));
     }
 
     /// The events wired since the first eight, each in the state it names.
@@ -6730,20 +6757,23 @@ mod tests {
             "PostCompact",
         ] {
             assert_eq!(
-                hook_phase(&event(name)),
+                hook_phase("claude", &event(name)),
                 Some(HookPhase::Busy),
                 "{name} is the agent working"
             );
         }
-        assert_eq!(hook_phase(&event("Elicitation")), Some(HookPhase::Waiting));
+        assert_eq!(
+            hook_phase("claude", &event("Elicitation")),
+            Some(HookPhase::Waiting)
+        );
         for name in ["SubagentStart", "SubagentStop"] {
-            assert_eq!(hook_phase(&event(name)), None);
+            assert_eq!(hook_phase("claude", &event(name)), None);
         }
         // A *background* session that finished, which is the pane's agent still working —
         // Claude Code raises this one from its background-job monitor, on the foreground
         // session's payload. The pane's own turn ending is `Stop`, which arrives earlier and
         // carries the words to describe it. See `agent::WAITING_NOTIFICATIONS`.
-        assert_eq!(hook_phase(&notification("agent_completed")), None);
+        assert_eq!(hook_phase("claude", &notification("agent_completed")), None);
     }
 
     /// One `PermissionRequest` for a tool, under a mode.
@@ -6761,7 +6791,7 @@ mod tests {
     fn permission_phases_distinguish_manual_and_automatic_approval() {
         assert!(waiting_needs_a_person(&request(Some("Bash"), None)));
         assert_eq!(
-            hook_phase(&request(Some("Bash"), None)),
+            hook_phase("codex", &request(Some("Bash"), None)),
             Some(HookPhase::Waiting)
         );
         assert!(!waiting_needs_a_person(&request(
@@ -6769,7 +6799,7 @@ mod tests {
             Some("bypassPermissions")
         )));
         assert_eq!(
-            hook_phase(&request(Some("Bash"), Some("bypassPermissions"))),
+            hook_phase("claude", &request(Some("Bash"), Some("bypassPermissions"))),
             Some(HookPhase::Busy)
         );
     }
@@ -7072,7 +7102,7 @@ mod tests {
                 panic!("permission request must report a record");
             };
             let hooks = HookFeeds::from([(3, HookFeed::from_agent(&record).unwrap())]);
-            assert_eq!(hook_phase(&event), Some(HookPhase::Busy));
+            assert_eq!(hook_phase(kind, &event), Some(HookPhase::Busy));
             assert_eq!(
                 status_cell(AgentStatus::Running, None, hooks.get(&3)),
                 "busy · Bash git"
