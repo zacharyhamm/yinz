@@ -2772,3 +2772,162 @@ fn translucency_preserves_rectangular_kitty_and_sixel_clipping() {
         format!("{:?}", translucent.client_kitty_chunks)
     );
 }
+
+#[test]
+fn each_tabs_links_resolve_against_that_tabs_link_table() {
+    use crate::panes::terminal_character::DEFAULT_STYLES;
+
+    // Two clients on two tabs. Each tab has its own link table, and a frame renders every tab
+    // before it serializes once.
+    let linked_chunk = |handler: &Rc<RefCell<LinkHandler>>, uri: &str| {
+        let anchor = handler
+            .borrow_mut()
+            .dispatch_osc8(&[b"8", b"", uri.as_bytes()]);
+        CharacterChunk::new(
+            vec![TerminalCharacter::new_styled(
+                'x',
+                DEFAULT_STYLES.link_anchor(anchor).into(),
+            )],
+            0,
+            0,
+        )
+    };
+    let first_tab = Rc::new(RefCell::new(LinkHandler::new()));
+    let second_tab = Rc::new(RefCell::new(LinkHandler::new()));
+    // Without this the second tab's table would be the shorter one and the first tab's anchor
+    // would be missing from it, rather than pointing at the wrong link.
+    second_tab
+        .borrow_mut()
+        .dispatch_osc8(&[b"8", b"", b"https://second.example/0"]);
+    let first_chunk = linked_chunk(&first_tab, "https://first.example");
+    let second_chunk = linked_chunk(&second_tab, "https://second.example/1");
+
+    let mut output = create_test_output();
+    let first_client = ClientId::new(1);
+    let second_client = ClientId::new(2);
+    output.add_clients(&HashSet::from([first_client]), first_tab, None);
+    output
+        .add_character_chunks_to_client(first_client, vec![first_chunk], None)
+        .unwrap();
+    output.add_clients(&HashSet::from([second_client]), second_tab, None);
+    output
+        .add_character_chunks_to_client(second_client, vec![second_chunk], None)
+        .unwrap();
+
+    let serialized = output.serialize().unwrap();
+    let first = &serialized[&first_client];
+    let second = &serialized[&second_client];
+    assert!(
+        first.contains("\u{1b}]8;;https://first.example"),
+        "{first:?}"
+    );
+    assert!(!first.contains("second.example"), "{first:?}");
+    assert!(
+        second.contains("\u{1b}]8;;https://second.example/1"),
+        "{second:?}"
+    );
+}
+
+mod shared_style_serialization {
+    use super::super::super::serialize_chunks;
+    use super::*;
+    use crate::panes::terminal_character::{CharacterStyles, RcCharacterStyles, DEFAULT_STYLES};
+    use hegel::generators;
+
+    fn style(tc: &hegel::TestCase) -> CharacterStyles {
+        let color = |tc: &hegel::TestCase| match tc.draw(generators::integers::<u8>().max_value(3))
+        {
+            0 => None,
+            1 => Some(AnsiCode::Reset),
+            2 => Some(AnsiCode::ColorIndex(
+                tc.draw(generators::integers::<u8>().max_value(3)),
+            )),
+            _ => Some(AnsiCode::RgbCode((
+                tc.draw(generators::integers::<u8>()),
+                0,
+                0,
+            ))),
+        };
+        let on = |tc: &hegel::TestCase| tc.draw(generators::booleans()).then_some(AnsiCode::On);
+        DEFAULT_STYLES
+            .foreground(color(tc))
+            .background(color(tc))
+            .bold(on(tc))
+            .dim(on(tc))
+            .italic(on(tc))
+    }
+
+    fn serialize(chunk: CharacterChunk) -> String {
+        let mut bytes = String::new();
+        serialize_chunks(
+            &mut bytes,
+            vec![chunk],
+            None,
+            None,
+            None,
+            true,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        bytes
+    }
+
+    /// Cells printed with one pen share a styles allocation, and the serializer skips
+    /// their style diff. That must emit exactly what comparing each cell would.
+    #[hegel::test]
+    fn sharing_a_styles_allocation_does_not_change_the_bytes(tc: hegel::TestCase) {
+        let runs = tc.draw(generators::integers::<usize>().min_value(1).max_value(6));
+        let mut shared = vec![];
+        let mut separate = vec![];
+        for _ in 0..runs {
+            let styles = style(&tc);
+            let pen: RcCharacterStyles = styles.into();
+            for _ in 0..tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) {
+                shared.push(TerminalCharacter::new_styled('x', pen.clone()));
+                separate.push(TerminalCharacter::new_styled(
+                    'x',
+                    RcCharacterStyles::Rc(Rc::new(styles)),
+                ));
+            }
+        }
+        let changed_colors = tc.draw(generators::booleans()).then(|| {
+            let mut colors = [None; 256];
+            colors[1] = Some(AnsiCode::RgbCode((1, 2, 3)));
+            colors
+        });
+        let pane_default_fg = tc
+            .draw(generators::booleans())
+            .then_some(AnsiCode::ColorIndex(2));
+        let chunk = |characters| {
+            let mut chunk = CharacterChunk::new(characters, 0, 0);
+            chunk.changed_colors = changed_colors;
+            chunk.pane_default_fg = pane_default_fg;
+            chunk
+        };
+        assert_eq!(serialize(chunk(shared)), serialize(chunk(separate)));
+    }
+
+    #[test]
+    fn a_changed_palette_does_not_repeat_an_unchanged_style() {
+        use crate::panes::terminal_character::RESET_STYLES;
+        // Separate allocations, so only the style comparison can tell they are equal.
+        let mut chunk = CharacterChunk::new(
+            (0..3)
+                .map(|_| {
+                    TerminalCharacter::new_styled('x', RcCharacterStyles::Rc(Rc::new(RESET_STYLES)))
+                })
+                .collect(),
+            0,
+            0,
+        );
+        let mut colors = [None; 256];
+        colors[1] = Some(AnsiCode::RgbCode((1, 2, 3)));
+        chunk.changed_colors = Some(colors);
+        let bytes = serialize(chunk);
+        // One from the chunk's goto, one for the first cell; none for the cells after it.
+        assert_eq!(bytes.matches("\u{1b}[m").count(), 2, "{bytes:?}");
+        assert!(bytes.ends_with("xxx"), "{bytes:?}");
+    }
+}

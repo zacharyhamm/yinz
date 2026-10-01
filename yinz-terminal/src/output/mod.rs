@@ -7,7 +7,7 @@ use crate::panes::Selection;
 use crate::{
     panes::kitty_graphics::store::{InternalImageId, KittyImageStore},
     panes::sixel::SixelImageStore,
-    panes::terminal_character::{AnsiCode, CharacterStyles},
+    panes::terminal_character::{AnsiCode, CharacterStyles, RcCharacterStyles},
     panes::{LinkHandler, PaneId, TerminalCharacter, DEFAULT_STYLES, EMPTY_TERMINAL_CHARACTER},
     ClientId,
 };
@@ -204,7 +204,7 @@ fn serialize_chunks(
     vte_output: &mut String,
     character_chunks: Vec<CharacterChunk>,
     sixel_chunks: Option<&Vec<SixelImageChunk>>,
-    link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
+    link_handler: Option<&Rc<RefCell<LinkHandler>>>,
     sixel_image_store: Option<&mut SixelImageStore>,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
@@ -220,8 +220,13 @@ fn serialize_chunks(
     // cells would land on a terminal that renders U+10EEEE as garbage, which is what a mosh
     // client sees. Blank them instead; the placeholder is width 1, so the row still lines up.
     let suppress_kitty_placeholders = kitty_input.is_none();
-    let link_handler = link_handler.map(|l_h| l_h.borrow());
     for character_chunk in character_chunks {
+        // A chunk's link anchors index the link table of the tab it was drawn in.
+        let link_handler = character_chunk
+            .link_handler
+            .as_ref()
+            .or(link_handler)
+            .map(|l_h| l_h.borrow());
         // Skip chunks that are completely outside the size bounds
         if let Some(size) = max_size {
             if character_chunk.y >= size.rows {
@@ -239,6 +244,10 @@ fn serialize_chunks(
         vte_goto_instruction(character_chunk.x, character_chunk.y, vte_output)
             .with_context(err_context)?;
         let mut chunk_width = character_chunk.x;
+        // Selections vary by column; everything else that adjusts a cell's style is fixed
+        // for the chunk. Without them, a cell sharing the previous cell's styles needs no SGR.
+        let has_selections = !character_chunk.selection_and_colors().is_empty();
+        let mut previous_styles: Option<&RcCharacterStyles> = None;
         for t_character in character_chunk.terminal_characters.iter() {
             // Stop rendering if the next character would exceed max_size.cols
             if let Some(size) = max_size {
@@ -247,25 +256,30 @@ fn serialize_chunks(
                 }
             }
 
-            let current_character_styles = adjust_styles_for_custom_bg_fg(
-                adjust_styles_for_possible_selection(
-                    character_chunk.selection_and_colors(),
-                    *t_character.styles,
-                    character_chunk.y,
-                    chunk_width,
-                ),
-                pane_default_fg,
-                pane_default_bg,
-            );
-            write_changed_styles(
-                &mut character_styles,
-                current_character_styles,
-                chunk_changed_colors,
-                link_handler.as_ref(),
-                osc8_hyperlinks,
-                vte_output,
-            )
-            .with_context(err_context)?;
+            let styles_unchanged = !has_selections
+                && previous_styles.is_some_and(|previous| previous.ptr_eq(&t_character.styles));
+            if !styles_unchanged {
+                let current_character_styles = adjust_styles_for_custom_bg_fg(
+                    adjust_styles_for_possible_selection(
+                        character_chunk.selection_and_colors(),
+                        *t_character.styles,
+                        character_chunk.y,
+                        chunk_width,
+                    ),
+                    pane_default_fg,
+                    pane_default_bg,
+                );
+                write_changed_styles(
+                    &mut character_styles,
+                    current_character_styles,
+                    chunk_changed_colors,
+                    link_handler.as_ref(),
+                    osc8_hyperlinks,
+                    vte_output,
+                )
+                .with_context(err_context)?;
+            }
+            previous_styles = Some(&t_character.styles);
             chunk_width += t_character.width();
             if suppress_kitty_placeholders && t_character.character == PLACEHOLDER {
                 vte_output.push(' ');
@@ -927,6 +941,15 @@ impl Output {
         mut character_chunks: Vec<CharacterChunk>,
         z_index: Option<usize>,
     ) -> Result<()> {
+        // `add_clients` replaces the handler for each tab, but the frame is serialized once,
+        // after every tab: pin this tab's handler to its chunks now.
+        if let Some(link_handler) = &self.link_handler {
+            for chunk in &mut character_chunks {
+                if chunk.link_handler.is_none() {
+                    chunk.link_handler = Some(link_handler.clone());
+                }
+            }
+        }
         if let Some(composition) = self.compositions.get_mut(&client_id) {
             composition.add(&character_chunks, z_index.unwrap_or(0));
             character_chunks =
@@ -1190,7 +1213,7 @@ impl Output {
                 &mut client_serialized_render_instructions,
                 client_character_chunks,
                 sixel_chunks_for_client,
-                self.link_handler.as_mut(),
+                self.link_handler.as_ref(),
                 Some(&mut self.sixel_image_store.borrow_mut()),
                 self.styled_underlines,
                 self.osc8_hyperlinks,
@@ -1269,7 +1292,7 @@ impl Output {
                 &mut client_serialized_render_instructions,
                 client_character_chunks,
                 sixel_chunks_for_client,
-                self.link_handler.as_mut(),
+                self.link_handler.as_ref(),
                 Some(&mut self.sixel_image_store.borrow_mut()),
                 self.styled_underlines,
                 self.osc8_hyperlinks,
@@ -1727,6 +1750,7 @@ impl FloatingPanesStack {
                 left_chunk.pane_default_fg = c_chunk.pane_default_fg;
                 left_chunk.pane_default_bg = c_chunk.pane_default_bg;
                 left_chunk.changed_colors = c_chunk.changed_colors;
+                left_chunk.link_handler = c_chunk.link_handler.clone();
                 if !c_chunk.selection_and_colors.is_empty() {
                     left_chunk.selection_and_colors = c_chunk.selection_and_colors.clone();
                 }
@@ -1935,6 +1959,9 @@ pub struct CharacterChunk {
     pub pane_default_fg: Option<AnsiCode>,
     pub pane_default_bg: Option<AnsiCode>,
     selection_and_colors: Vec<HighlightSelection>,
+    /// The link table this chunk's link anchors index. Set by
+    /// `Output::add_character_chunks_to_client`.
+    link_handler: Option<Rc<RefCell<LinkHandler>>>,
 }
 
 pub use crate::panes::kitty_graphics::grid_state::KittyImageChunk;
