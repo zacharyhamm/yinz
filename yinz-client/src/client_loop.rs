@@ -6,6 +6,7 @@
 //! paints output, and the only place that decides the client is done.
 
 use crate::os_input_output::ClientOsApi;
+use crate::render_budget::RenderBudget;
 use crate::router::SlowWarnings;
 use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser, SyncOutput};
 use crate::terminal_escapes::{write_synchronised, ClientTeardown};
@@ -46,6 +47,8 @@ pub(crate) struct ClientLoop<'a> {
     /// The host's synchronised-output support, which the server can change
     /// at runtime once it learns what the terminal advertised.
     pub synchronised_output: Option<SyncOutput>,
+    /// Released as each frame reaches the terminal, so the router reads the next.
+    pub render_budget: &'a RenderBudget,
 }
 
 impl ClientLoop<'_> {
@@ -156,7 +159,16 @@ impl ClientLoop<'_> {
                 let render_bytes = output.len();
                 let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
-                write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
+                let written =
+                    write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
+                self.render_budget.release(render_bytes);
+                if let Err(e) = written {
+                    log::error!("failed to write a frame to the terminal: {e}");
+                    self.os_input
+                        .send_to_server(ClientToServerMsg::ClientExited);
+                    outcome.exit_msg = format!("Could not write to the terminal: {e}");
+                    return true;
+                }
                 let elapsed = started.elapsed();
                 if let Some((suppressed, max_suppressed)) =
                     slow_warnings.record(Instant::now(), elapsed)

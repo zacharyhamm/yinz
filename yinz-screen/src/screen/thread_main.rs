@@ -525,8 +525,12 @@ pub fn screen_thread_main(
                     // render_blocker.can_render() returning true means that either all pending plugins
                     // (only those waiting for a new tab layout to be applied!) have been rendered or
                     // that a 100ms timeout has been reached (more info in the RenderBlocker comment)
-                    if screen.render_blocker.can_render() {
-                        let tracing_attach = !attach_traces_waiting_for_first_render.is_empty();
+                    let tracing_attach = !attach_traces_waiting_for_first_render.is_empty();
+                    if !tracing_attach && screen.a_client_is_behind_on_renders() {
+                        // Polls every debounce interval until the client drains; see
+                        // `a_client_is_behind_on_renders`.
+                        screen.retry_render_later();
+                    } else if screen.render_blocker.can_render() {
                         let render_started_at = Instant::now();
                         if tracing_attach {
                             log::info!(

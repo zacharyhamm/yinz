@@ -5,7 +5,9 @@
 //! main loop never blocks on the socket.
 
 use crate::os_input_output::ClientOsApi;
+use crate::render_budget::RenderBudget;
 use crate::ClientInstruction;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use yinz_runtime::channels::SenderWithContext;
@@ -68,16 +70,18 @@ impl SlowWarnings {
 pub(crate) fn spawn(
     os_input: Box<dyn ClientOsApi>,
     send_client_instructions: SenderWithContext<ClientInstruction>,
+    render_budget: Arc<RenderBudget>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("router".to_string())
-        .spawn(move || route(os_input, send_client_instructions))
+        .spawn(move || route(os_input, send_client_instructions, &render_budget))
         .unwrap()
 }
 
 pub(crate) fn route(
     os_input: Box<dyn ClientOsApi>,
     send_client_instructions: SenderWithContext<ClientInstruction>,
+    render_budget: &RenderBudget,
 ) {
     let mut consecutive_malformed_messages_received = 0;
     let started_at = Instant::now();
@@ -140,6 +144,10 @@ pub(crate) fn route(
                     _ => ("other", 0),
                 };
                 let started = Instant::now();
+                if let ServerToClientMsg::Render { content } = &instruction {
+                    // Stop reading while the terminal is behind; see `RenderBudget`.
+                    render_budget.reserve(content.len());
+                }
                 let should_exit = forward(&send_client_instructions, instruction, err_ctx);
                 let elapsed = started.elapsed();
                 if let Some((suppressed, max_suppressed)) =
@@ -178,18 +186,21 @@ pub(crate) fn route(
                 // once and leave, rather than spinning until a counter runs out
                 // and then blaming an empty message.
                 log::error!("The server closed the connection without sending Exit");
-                send_client_instructions
-                    .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()))
-                    .unwrap();
+                // The loop may already be gone, and then there is nobody left to tell.
+                let _ = send_client_instructions
+                    .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()));
                 break;
             },
             IpcRecv::Malformed => {
                 consecutive_malformed_messages_received += 1;
                 // Unblock the input thread so it doesn't sit waiting on a
                 // reply that is never going to arrive.
-                send_client_instructions
+                if send_client_instructions
                     .send(ClientInstruction::UnblockInputThread)
-                    .unwrap();
+                    .is_err()
+                {
+                    break;
+                }
                 if consecutive_malformed_messages_received == 1 {
                     log::error!("Received an unreadable message from the server");
                 }
@@ -198,11 +209,9 @@ pub(crate) fn route(
                         "Received {} unreadable messages in a row from the server, giving up",
                         consecutive_malformed_messages_received
                     );
-                    send_client_instructions
-                        .send(ClientInstruction::Error(
-                            "The connection to the yinz server desynchronised.".to_string(),
-                        ))
-                        .unwrap();
+                    let _ = send_client_instructions.send(ClientInstruction::Error(
+                        "The connection to the yinz server desynchronised.".to_string(),
+                    ));
                     break;
                 }
                 thread::sleep(MALFORMED_MESSAGE_BACKOFF);
@@ -216,7 +225,8 @@ pub(crate) fn route(
 }
 
 /// Forward one message to the main loop. Returns whether this was the last
-/// one — `Exit` is still delivered before the thread stops.
+/// one — `Exit` is still delivered before the thread stops — or the main loop
+/// has already exited, say after failing to write to the terminal.
 fn forward(
     send_client_instructions: &SenderWithContext<ClientInstruction>,
     instruction: ServerToClientMsg,
@@ -224,8 +234,7 @@ fn forward(
 ) -> bool {
     yinz_runtime::errors::update_thread_ctx(&err_ctx);
     let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
-    send_client_instructions.send(instruction.into()).unwrap();
-    is_exit
+    send_client_instructions.send(instruction.into()).is_err() || is_exit
 }
 
 #[cfg(test)]

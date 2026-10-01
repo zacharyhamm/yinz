@@ -137,16 +137,45 @@ pub fn claim_terminal<O>(
 
 /// Write terminal output, wrapped in the host's synchronised-output markers
 /// when it supports them, so a frame is presented atomically.
-pub fn write_synchronised(w: &mut dyn Write, sync: Option<SyncOutput>, bytes: &[u8]) {
+pub fn write_synchronised(
+    w: &mut dyn Write,
+    sync: Option<SyncOutput>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
     if let Some(sync) = sync {
-        w.write_all(sync.start_seq())
-            .expect("cannot write to stdout");
+        write_all_waiting(w, sync.start_seq())?;
     }
-    w.write_all(bytes).expect("cannot write to stdout");
+    write_all_waiting(w, bytes)?;
     if let Some(sync) = sync {
-        w.write_all(sync.end_seq()).expect("cannot write to stdout");
+        write_all_waiting(w, sync.end_seq())?;
     }
-    w.flush().expect("could not flush");
+    loop {
+        match w.flush() {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_for_host(),
+            result => return result,
+        }
+    }
+}
+
+/// `write_all`, except that a host terminal that is merely full waits rather than
+/// failing. Stdout's file description is shared with whatever else runs on the
+/// host terminal, and any of them may have made it non-blocking; a large frame
+/// then meets `EAGAIN` exactly when the host falls behind.
+fn write_all_waiting(w: &mut dyn Write, mut bytes: &[u8]) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        match w.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_for_host(),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_host() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
 }
 
 /// Tell an enclosing Yinz pane that a client is running inside it, so the
