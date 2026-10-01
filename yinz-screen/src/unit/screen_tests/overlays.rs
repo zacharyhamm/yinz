@@ -263,7 +263,8 @@ fn self_sizing_builtins_and_resolved_aliases_await_placement_without_new_configu
             .awaits_placement());
         }
     }
-    let mut ordinary = yinz_runtime::plugin_location::run_plugin_from_url("yinz:about").unwrap();
+    let mut ordinary =
+        yinz_runtime::plugin_location::run_plugin_from_url("yinz:configuration").unwrap();
     ordinary.configuration.insert("modal", "true");
     assert!(!RunPluginOrAlias::RunPlugin(ordinary.clone()).awaits_placement());
     ordinary.configuration.insert("awaits_placement", "true");
@@ -411,7 +412,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         let mut grid = grid_for_render_snapshot(size);
         render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
         let url = if recovery == "ordinary" {
-            "yinz:about"
+            "yinz:configuration"
         } else {
             "yinz:hocus-new-agent"
         };

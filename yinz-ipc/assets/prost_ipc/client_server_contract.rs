@@ -2387,8 +2387,6 @@ pub struct Options {
     pub report_modifier_keys: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="30")]
     pub stacked_resize: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="32")]
-    pub show_release_notes: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="33")]
     pub advanced_mouse_actions: ::core::option::Option<bool>,
     #[prost(string, optional, tag="39")]

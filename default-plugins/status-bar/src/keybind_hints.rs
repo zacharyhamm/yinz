@@ -340,7 +340,6 @@ pub fn hints_for_mode(mi: &ModeInfo) -> Vec<Hint> {
         hint("Configure", "Config", plugin_launch_key(&km, "configuration")),
         hint("Layout Manager", "Layouts", plugin_launch_key(&km, "yinz:layout-manager")),
         hint("Plugin Manager", "Plugins", plugin_launch_key(&km, "plugin-manager")),
-        hint("About", "About", plugin_launch_key(&km, "yinz:about")),
         hint("Notifications", "Notif",
             action_key(&km, &[A::SwitchToMode{input_mode: IM::Notifications}])),
         hint("Select pane", "Select", to_base_mode),

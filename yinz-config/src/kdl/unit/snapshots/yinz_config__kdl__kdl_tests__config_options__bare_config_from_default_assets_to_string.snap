@@ -1,6 +1,5 @@
 ---
 source: yinz-config/src/kdl/./unit/config_options.rs
-assertion_line: 381
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -108,13 +107,6 @@ keybinds clear-defaults=true {
     session {
         bind "[" { FocusGuestSession; SwitchToMode "normal"; }
         bind "]" { FocusHostSession; SwitchToMode "normal"; }
-        bind "a" {
-            LaunchOrFocusPlugin "yinz:about" {
-                floating true
-                move_to_focused_tab true
-            }
-            SwitchToMode "normal"
-        }
         bind "c" {
             LaunchOrFocusPlugin "configuration" {
                 floating true
@@ -346,7 +338,6 @@ keybinds clear-defaults=true {
     }
 }
 plugins {
-    about location="yinz:about"
     agent-exit location="yinz:agent-exit"
     agent-policy location="yinz:agent-policy"
     compact-bar location="yinz:compact-bar"

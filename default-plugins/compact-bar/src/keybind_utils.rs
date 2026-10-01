@@ -775,7 +775,6 @@ impl KeybindProcessor {
                     |action: &Action| action.launches_plugin("session-manager"),
                     |action: &Action| action.launches_plugin("plugin-manager"),
                     |action: &Action| action.launches_plugin("configuration"),
-                    |action: &Action| action.launches_plugin("yinz:about"),
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },

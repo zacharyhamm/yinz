@@ -430,11 +430,6 @@ pub struct Options {
     #[serde(default)]
     pub stacked_pane_list: Option<bool>,
 
-    /// Whether to show release notes on first run of a new version
-    /// default is true
-    #[serde(default)]
-    pub show_release_notes: Option<bool>,
-
     /// Whether to enable mouse hover effects and pane grouping functionality
     /// default is true
     #[serde(default)]
@@ -622,7 +617,6 @@ impl Options {
         let agent_pane_min_columns = other.agent_pane_min_columns.or(self.agent_pane_min_columns);
         let agent_pane_min_rows = other.agent_pane_min_rows.or(self.agent_pane_min_rows);
         let stacked_pane_list = other.stacked_pane_list.or(self.stacked_pane_list);
-        let show_release_notes = other.show_release_notes.or(self.show_release_notes);
         let advanced_mouse_actions = other.advanced_mouse_actions.or(self.advanced_mouse_actions);
         let mouse_scroll_resize = other.mouse_scroll_resize.or(self.mouse_scroll_resize);
         let mouse_hover_effects = other.mouse_hover_effects.or(self.mouse_hover_effects);
@@ -705,7 +699,6 @@ impl Options {
             agent_pane_min_columns,
             agent_pane_min_rows,
             stacked_pane_list,
-            show_release_notes,
             advanced_mouse_actions,
             mouse_scroll_resize,
             mouse_hover_effects,

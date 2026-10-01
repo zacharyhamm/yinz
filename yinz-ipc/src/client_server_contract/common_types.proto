@@ -1467,7 +1467,8 @@ message Options {
   optional bool stacked_resize = 30;
   reserved 31;
   reserved "show_startup_tips";
-  optional bool show_release_notes = 32;
+  reserved 32;
+  reserved "show_release_notes";
   optional bool advanced_mouse_actions = 33;
   optional string post_command_discovery_hook = 39;
   optional bool osc8_hyperlinks = 40;

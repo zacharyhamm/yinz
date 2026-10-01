@@ -164,13 +164,6 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        bind "a" {
-            LaunchOrFocusPlugin "yinz:about" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
         bind "l" {
             LaunchOrFocusPlugin "yinz:layout-manager" {
                 floating true
@@ -383,7 +376,6 @@ plugins {
     }
     configuration location="yinz:configuration"
     plugin-manager location="yinz:plugin-manager"
-    about location="yinz:about"
     // The shipped TypeScript hooks, so `hooks { agent_exit "agent-exit" }` below and
     // `yinz action set-hook agent_waiting agent-policy --write` can name them by alias.
     context-menu location="yinz:context-menu"
@@ -947,11 +939,6 @@ load_plugins {
 // Default: true
 //
 // stacked_pane_list false
-
-// Whether to show release notes on first version run
-// Default: true
-//
-// show_release_notes false
 
 // Whether to enable mouse hover effects and pane grouping functionality
 // Default: true

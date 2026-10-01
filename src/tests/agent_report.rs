@@ -383,7 +383,7 @@ fn standalone_codex_hooks_require_the_owning_in_process_pane() {
     let config = root.join("config.kdl");
     std::fs::write(
         &config,
-        "detachable_panes false\nshow_release_notes false\nload_plugins clear-defaults=true\n",
+        "detachable_panes false\nload_plugins clear-defaults=true\n",
     )
     .unwrap();
     let layout = root.join("layout.kdl");

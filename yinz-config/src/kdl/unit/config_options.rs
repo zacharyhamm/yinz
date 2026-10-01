@@ -657,10 +657,12 @@ fn pane_animations_round_trip_and_merge() {
 }
 
 #[test]
-fn legacy_startup_tip_option_is_ignored_like_other_unknown_options() {
+fn legacy_startup_options_are_ignored_like_other_unknown_options() {
     for text in [
         "show_startup_tips true",
         "show_startup_tips false",
+        "show_release_notes true",
+        "show_release_notes false",
         "unknown_option true",
     ] {
         let document: KdlDocument = text.parse().unwrap();

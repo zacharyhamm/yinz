@@ -254,7 +254,6 @@ pub fn acquire_concurrency_slot() -> ConcurrencySlot {
 }
 
 pub const DEFAULT_TEST_CONFIG: &str = r#"
-show_release_notes false
 session_serialization false
 disable_session_metadata true
 visual_bell false

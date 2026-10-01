@@ -145,13 +145,6 @@ keybinds {
             };
             SwitchToMode "Normal"
         }
-        bind "a" {
-            LaunchOrFocusPlugin "yinz:about" {
-                floating true
-                move_to_focused_tab true
-            };
-            SwitchToMode "Normal"
-        }
         bind "l" {
             LaunchOrFocusPlugin "yinz:layout-manager" {
                 floating true
@@ -362,7 +355,6 @@ plugins {
     }
     configuration location="yinz:configuration"
     plugin-manager location="yinz:plugin-manager"
-    about location="yinz:about"
     // Fuzzy file finder for the project of the focused pane, bound to Alt e above.
     // Requires `fzf` on PATH.
     //
@@ -822,11 +814,6 @@ context_menu {
 // Default: true
 //
 // stacked_pane_list false
-
-// Whether to show release notes on first version run
-// Default: true
-//
-// show_release_notes false
 
 // Whether to enable mouse hover effects and pane grouping functionality
 // Default: true

@@ -198,7 +198,6 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
         hint("Configure", "Config", plugin("configuration")),
         hint("Layout Manager", "Layouts", plugin("yinz:layout-manager")),
         hint("Plugin Manager", "Plugins", plugin("plugin-manager")),
-        hint("About", "About", plugin("yinz:about")),
         hint("Notifications", "Notif", exact(switchMode("Notifications"))),
         select,
       ];
