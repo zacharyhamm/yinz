@@ -613,6 +613,7 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                         pane_id: PaneId::try_from(id).map_err(|e| anyhow!(e))?,
                         branch: r.branch,
                         cwd: r.cwd.map(Into::into),
+                        ..Default::default()
                     })
                 },
                 Some(spawn_agent_response::Result::Error(e)) => Err(anyhow!("{}", e)),

@@ -198,7 +198,7 @@ pub struct AgentSpawnSpec {
 /// always what it asked for - a name already taken is cut afresh with a suffix, and a branch
 /// held by another worktree sends the agent there. Both travel back rather than being
 /// re-derived from the request, because the request no longer knows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnedAgent {
     pub pane_id: PaneId,
     /// The branch the agent is on, when git work was done. `None` for a spawn that made no
@@ -206,6 +206,17 @@ pub struct SpawnedAgent {
     pub branch: Option<String>,
     /// The folder the pane runs in, when git work was done.
     pub cwd: Option<PathBuf>,
+    /// The branch the caller asked for, present only when the agent ended up on another one:
+    /// a taken name cut afresh with a suffix, or a reused worktree holding a different branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_branch: Option<String>,
+    /// The agent joined a worktree that already existed (`--reuse`) instead of a new one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reused: bool,
+    /// Other live agents already working in `cwd`. Reported, not refused: `--reuse` asked
+    /// for this folder, but two agents editing one checkout can overwrite each other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occupied_by: Vec<PaneId>,
 }
 
 mod hooks;

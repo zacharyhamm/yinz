@@ -1,0 +1,3 @@
+$ yinz --session verify-v11 agent runs --limit 1 --json
+{"count":1,"more":true,"next_offset":1,"offset":0,"runs":[{"active":true,"age":"5m","cwd":"/tmp/muse-bootstrap-probe","ended_at_ms":null,"entries":4,"kind":"muse","outcome":"active","pane_id":2,"project":null,"run_id":"muse:pane:2:1790864657652:8d3977592b414edeb601d5d565c5ceab","started_at_ms":1790864657652,"summary":null,"title":"Reply with exactly: bootstrap ok"}],"scope":"all sessions"}
+exit=0

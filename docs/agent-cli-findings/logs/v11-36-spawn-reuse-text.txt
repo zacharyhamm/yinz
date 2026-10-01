@@ -1,0 +1,4 @@
+$ yinz --session verify-v11 agent spawn --kind claude --model haiku --cwd /tmp/claude-1000/-home-zacharyhamm-yinz--worktrees-agent-cli-verification-continued/bbb69e22-c8d0-4e0c-83ae-f636b6b7f2da/scratchpad/v11repo --branch fix-2 --reuse
+terminal_7	fix-2	/tmp/claude-1000/-home-zacharyhamm-yinz--worktrees-agent-cli-verification-continued/bbb69e22-c8d0-4e0c-83ae-f636b6b7f2da/scratchpad/v11repo/.worktrees/fix-2
+warning: this worktree is already used by terminal_3; agents sharing a checkout can overwrite each other's changes
+exit=0

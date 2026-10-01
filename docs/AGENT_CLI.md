@@ -1,8 +1,8 @@
 # Control agents from the command line
 
 `yinz agent` finds, launches and controls agents in terminal panes. Each target
-must be an explicit pane ID, such as `terminal_7`. Commands never use the focused
-pane as an implicit target.
+must be an explicit terminal pane ID, such as `terminal_7` or `7`. Commands never
+use the focused pane as an implicit target.
 
 Use `yinz --session development agent ...` to select a session. Without
 `--session`, Yinz uses the current session or the only active session.

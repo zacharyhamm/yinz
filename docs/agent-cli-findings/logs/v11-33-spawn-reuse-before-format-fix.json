@@ -1,0 +1,3 @@
+$ yinz --session verify-v11 agent spawn --kind claude --model haiku --cwd /tmp/claude-1000/-home-zacharyhamm-yinz--worktrees-agent-cli-verification-continued/bbb69e22-c8d0-4e0c-83ae-f636b6b7f2da/scratchpad/v11repo --branch fix --reuse --json
+{"outcome":"ok","agents":[],"spawned":{"pane_id":"terminal_5","branch":"fix","cwd":"/tmp/claude-1000/-home-zacharyhamm-yinz--worktrees-agent-cli-verification-continued/bbb69e22-c8d0-4e0c-83ae-f636b6b7f2da/scratchpad/v11repo/.worktrees/fix","reused":true,"occupied_by":[{"Terminal":2}]},"output":null,"message":"warning: this worktree is already used by terminal_2; agents sharing a checkout can overwrite each other's changes","acknowledged":false,"turn_id":null}
+exit=0

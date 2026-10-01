@@ -30,6 +30,52 @@ fn a_blocking_stop_continues_until_the_matching_transcript_boundary() {
 }
 
 #[test]
+fn background_launches_in_the_turn_are_reported_once_in_launch_order() {
+    let mut turn = Turn::new(&hook());
+    for record in [
+        json!({"type":"user","promptId":"prompt","uuid":"user"}),
+        json!({"type":"assistant","parentUuid":"user","uuid":"bash","message":{"content":[{"type":"tool_use"}]}}),
+        json!({"type":"user","parentUuid":"bash","uuid":"bash-result","toolUseResult":{"stdout":"","backgroundTaskId":"bj30txqod"}}),
+        json!({"type":"assistant","parentUuid":"bash-result","uuid":"agent","message":{"content":[{"type":"tool_use"}]}}),
+        json!({"type":"user","parentUuid":"agent","uuid":"agent-result","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a91f"}}),
+        // A worker's own background launch and an unlinked one belong to other turns.
+        json!({"type":"user","parentUuid":"agent-result","uuid":"worker","isSidechain":true,"toolUseResult":{"backgroundTaskId":"sidechain"}}),
+        json!({"type":"user","parentUuid":"elsewhere","uuid":"stray","toolUseResult":{"backgroundTaskId":"stray"}}),
+        // A finished subagent and a repeated report are not new background work.
+        json!({"type":"user","parentUuid":"agent-result","uuid":"sync","toolUseResult":{"status":"completed","agentId":"sync"}}),
+        json!({"type":"user","parentUuid":"sync","uuid":"again","toolUseResult":{"backgroundTaskId":"bj30txqod"}}),
+        json!({"type":"assistant","parentUuid":"again","uuid":"last","message":{"content":[{"type":"text","text":"Started."}]}}),
+    ] {
+        assert!(!turn.record(&record).unwrap());
+    }
+    assert!(turn
+        .record(&json!({"type":"system","subtype":"turn_duration","parentUuid":"last"}))
+        .unwrap());
+    assert_eq!(turn.background_tasks, ["bj30txqod", "a91f"]);
+    assert_eq!(turn.last_text.as_deref(), Some("Started."));
+}
+
+#[test]
+fn a_task_notification_turn_is_followed_by_its_own_prompt_id() {
+    let mut turn = Turn::new(&HookEvent {
+        prompt_id: Some("notification".into()),
+        ..hook()
+    });
+    for record in [
+        json!({"type":"user","promptId":"prompt","uuid":"earlier"}),
+        json!({"type":"user","promptId":"notification","uuid":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>\n<task-id>bj30txqod</task-id>\n</task-notification>"}}),
+        json!({"type":"assistant","parentUuid":"user","uuid":"last","message":{"content":[{"type":"text","text":"BGDONE"}]}}),
+    ] {
+        assert!(!turn.record(&record).unwrap());
+    }
+    assert!(turn
+        .record(&json!({"type":"system","subtype":"turn_duration","parentUuid":"last"}))
+        .unwrap());
+    assert!(turn.background_tasks.is_empty());
+    assert_eq!(turn.last_text.as_deref(), Some("BGDONE"));
+}
+
+#[test]
 fn replacement_prompts_and_conversations_never_confirm_the_previous_turn() {
     for replacement in [
         json!({"type":"user","promptId":"new"}),
@@ -139,6 +185,7 @@ fn an_observer_waits_for_initial_creation_and_complete_records() {
         rx.recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap()
+            .last_text
             .as_deref(),
         Some("final")
     );

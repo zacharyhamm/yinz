@@ -8,9 +8,10 @@ use yinz_ipc::probe::{classify_probe_connect_error, classify_probe_reply};
 use yinz_runtime::session_checkpoint::SessionCheckpoint;
 use yinz_types::internal_ids::SessionName;
 use {
-    yinz_ipc::consts::is_ipc_socket, yinz_ipc::ipc::ClientToServerMsg,
-    yinz_ipc::ipc::IpcReceiverWithContext, yinz_ipc::ipc::IpcSenderWithContext,
-    yinz_ipc::ipc::ServerToClientMsg, yinz_runtime::consts::session_info_folder_for_session,
+    yinz_ipc::consts::is_ipc_socket, yinz_ipc::consts::is_session_socket_name,
+    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcReceiverWithContext,
+    yinz_ipc::ipc::IpcSenderWithContext, yinz_ipc::ipc::ServerToClientMsg,
+    yinz_runtime::consts::session_info_folder_for_session,
     yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR, yinz_runtime::consts::YINZ_SOCK_DIR,
     yinz_types::data::SessionInfo, yinz_types::input::layout::Layout,
 };
@@ -70,7 +71,13 @@ fn probe_sockets_with_status<T: Send + 'static>(
 /// Unprobed: this is the candidate list the probe sweeps, shared by the two
 /// entry points below so that they cannot disagree about what a session is.
 fn session_socket_candidates() -> Result<Vec<(SessionName, Duration)>, io::ErrorKind> {
-    match fs::read_dir(&*YINZ_SOCK_DIR) {
+    session_socket_candidates_in(&YINZ_SOCK_DIR)
+}
+
+fn session_socket_candidates_in(
+    sock_dir: &Path,
+) -> Result<Vec<(SessionName, Duration)>, io::ErrorKind> {
+    match fs::read_dir(sock_dir) {
         Ok(files) => {
             let mut candidates = Vec::new();
             files.for_each(|file| {
@@ -85,7 +92,9 @@ fn session_socket_candidates() -> Result<Vec<(SessionName, Duration)>, io::Error
                         .and_then(|d| d.elapsed().ok())
                         .unwrap_or_default();
                     let duration = Duration::from_secs(ctime.as_secs());
-                    if is_ipc_socket(&file.file_type().unwrap()) {
+                    if is_ipc_socket(&file.file_type().unwrap())
+                        && is_session_socket_name(&file_name)
+                    {
                         candidates.push((SessionName::new(file_name), duration));
                     }
                 }
@@ -195,7 +204,7 @@ pub fn get_sessions_sorted_by_mtime() -> anyhow::Result<Vec<SessionName>> {
                 let file = file?;
                 let file_name = file.file_name().into_string().unwrap();
                 let file_modified_at = file.metadata()?.modified()?;
-                if is_ipc_socket(&file.file_type()?) {
+                if is_ipc_socket(&file.file_type()?) && is_session_socket_name(&file_name) {
                     candidates.push((SessionName::new(file_name), file_modified_at));
                 }
             }
@@ -452,6 +461,12 @@ pub fn validate_session_name(name: &str) -> Result<(), String> {
     if name.contains('/') {
         return Err("Session name cannot contain '/'.".to_string());
     }
+    if !is_session_socket_name(name) {
+        return Err(format!(
+            "\"{name}\" is the pty broker's socket, not a session. It keeps panes alive \
+             across server restarts; do not kill or delete it."
+        ));
+    }
     Ok(())
 }
 
@@ -466,10 +481,11 @@ pub fn read_live_session_states(
         files.for_each(|file| {
             if let Ok(file) = file {
                 if let Ok(file_name) = file.file_name().into_string() {
-                    if file
-                        .file_type()
-                        .map(|file_type| is_ipc_socket(&file_type))
-                        .unwrap_or(false)
+                    if is_session_socket_name(&file_name)
+                        && file
+                            .file_type()
+                            .map(|file_type| is_ipc_socket(&file_type))
+                            .unwrap_or(false)
                     {
                         let creation_time = std::fs::metadata(file.path())
                             .ok()
@@ -684,3 +700,7 @@ const NOUNS: &[&str] = &[
     "yak",
     "zebra",
 ];
+
+#[cfg(all(test, unix))]
+#[path = "unit/sessions_tests.rs"]
+mod tests;

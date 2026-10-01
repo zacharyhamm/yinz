@@ -18,7 +18,7 @@ pub fn control_agent(
             automatic_firecracker_vm,
         } = request
         {
-            let spawned = spawn_agent_for_cli(
+            let mut spawned = spawn_agent_for_cli(
                 spec,
                 cwd,
                 project,
@@ -28,7 +28,14 @@ pub fn control_agent(
                 senders,
                 data,
             )?;
-            return Ok(register_spawned_agent(senders, spawned));
+            if spawned.reused {
+                spawned.occupied_by = occupants(senders, &spawned);
+            }
+            let mut response = register_spawned_agent(senders, spawned);
+            if response.message.is_none() {
+                response.message = response.spawned.as_ref().and_then(spawn_notes);
+            }
+            return Ok(response);
         }
         let timeout = match &request {
             AgentRequest::Prompt { timeout_ms, .. } | AgentRequest::Wait { timeout_ms, .. } => {
@@ -258,6 +265,8 @@ pub(super) fn prepare_automation_agent(
             command,
             cwd,
             branch: None,
+            requested_branch: None,
+            reused: false,
         });
     }
     let registry = project
@@ -322,6 +331,68 @@ pub(super) fn prepare_automation_agent(
         false,
         data,
     )
+}
+
+/// Other live agents whose folder is the one a reused worktree put this agent in.
+/// Best effort: a screen that does not answer leaves the list empty rather than failing a
+/// spawn whose pane already exists.
+pub(super) fn occupants(senders: &ThreadSenders, spawned: &SpawnedAgent) -> Vec<PaneId> {
+    let Some(cwd) = spawned.cwd.as_deref() else {
+        return Vec::new();
+    };
+    let resolve = |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let cwd = resolve(cwd);
+    let (reply, receiver) = std::sync::mpsc::channel();
+    if senders
+        .send_to_screen(ScreenInstruction::AgentControlReply(
+            AgentRequest::List { project: None },
+            reply,
+        ))
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let Ok(listing) = receiver.recv_timeout(std::time::Duration::from_secs(5)) else {
+        return Vec::new();
+    };
+    listing
+        .agents
+        .into_iter()
+        .filter(|status| status.pane_id != spawned.pane_id)
+        .filter(|status| {
+            status
+                .cwd
+                .as_deref()
+                .is_some_and(|other| resolve(std::path::Path::new(other)) == cwd)
+        })
+        .map(|status| status.pane_id)
+        .collect()
+}
+
+/// What a spawn did that the caller did not literally ask for, in one line.
+pub(super) fn spawn_notes(spawned: &SpawnedAgent) -> Option<String> {
+    let mut notes = Vec::new();
+    if let (Some(requested), Some(branch)) = (&spawned.requested_branch, &spawned.branch) {
+        notes.push(if spawned.reused {
+            format!("requested branch {requested}; the reused worktree holds {branch}")
+        } else {
+            format!("branch {requested} was taken; created {branch}")
+        });
+    }
+    if !spawned.occupied_by.is_empty() {
+        let panes: Vec<String> = spawned
+            .occupied_by
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        notes.push(format!(
+            "warning: this worktree is already used by {}; agents sharing a checkout can overwrite each other's changes",
+            panes.join(", ")
+        ));
+    } else if spawned.reused {
+        notes.push("reused an existing worktree".to_owned());
+    }
+    (!notes.is_empty()).then(|| notes.join("; "))
 }
 
 pub(super) fn register_spawned_agent(

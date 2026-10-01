@@ -4568,6 +4568,7 @@ fn test_server_messages() {
         not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::NotIdle),
         status_available: true,
         prompt_supported: true,
+        background_tasks: vec!["bj30txqod".into()],
     };
     for outcome in [
         AgentOutcome::Ok,
@@ -4593,11 +4594,15 @@ fn test_server_messages() {
                 pane_id,
                 branch: Some("review-auth-2".into()),
                 cwd: Some("/repo/review-auth-2".into()),
+                requested_branch: Some("review-auth".into()),
+                reused: true,
+                occupied_by: vec![pane_id],
             }),
             output: Some("Ready\n>".into()),
             message: Some("approval required".into()),
             acknowledged: true,
             turn_id: Some("turn-7".into()),
+            background_tasks: vec!["bj30txqod".into()],
         }));
     }
     for reason in [

@@ -97,6 +97,10 @@ pub struct AgentResponse {
     pub message: Option<String>,
     pub acknowledged: bool,
     pub turn_id: Option<String>,
+    /// Claude background work the completed turn launched. Its final answer arrives in a later
+    /// turn; `agent wait --until idle` returns it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_tasks: Vec<String>,
 }
 
 impl AgentResponse {
@@ -134,6 +138,9 @@ pub struct AgentStatus {
     pub not_ready_reason: Option<NotReadyReason>,
     pub status_available: bool,
     pub prompt_supported: bool,
+    /// Claude background tasks whose `<task-notification>` turn has not finished.
+    #[serde(default)]
+    pub background_tasks: Vec<String>,
 }
 
 mod pane_string {
@@ -247,6 +254,11 @@ impl PromptObservation {
             // the conversation, and Claude repeats hooks once per hook registration.
             return self.acknowledged.then_some(AgentOutcome::TargetChanged);
         }
+        if is_claude_task_notification(&self.kind, hook) {
+            // Claude starts these turns itself when background work finishes, possibly before
+            // this prompt's own submission or confirmation arrives. They carry no caller input.
+            return None;
+        }
         if hook.hook_event_name == "UserPromptSubmit" {
             let fingerprint = hook
                 .prompt_sha256
@@ -339,6 +351,41 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     };
     let text = text.trim_start();
     text.starts_with('/') || (kind == "claude" && text.starts_with('!'))
+}
+
+const TASK_NOTIFICATION_OPEN: &str = "<task-notification>";
+
+/// The task IDs of a turn Claude starts by itself when background work finishes. Its
+/// `UserPromptSubmit.prompt` is one or more `<task-notification>` elements, each naming the
+/// `<task-id>` of the Bash command or subagent that finished. `None` for any other prompt.
+pub fn claude_task_notification_ids(prompt: &str) -> Option<Vec<String>> {
+    let text = prompt.trim_start();
+    if !text.starts_with(TASK_NOTIFICATION_OPEN) {
+        return None;
+    }
+    let ids = text
+        .split(TASK_NOTIFICATION_OPEN)
+        .filter_map(|element| {
+            let id = element
+                .split_once("<task-id>")?
+                .1
+                .split_once("</task-id>")?
+                .0;
+            let id = id.trim();
+            (!id.is_empty()).then(|| id.to_owned())
+        })
+        .collect();
+    Some(ids)
+}
+
+/// Whether a hook is the submission of a Claude `<task-notification>` turn.
+pub fn is_claude_task_notification(kind: &str, hook: &HookEvent) -> bool {
+    kind == "claude"
+        && hook.hook_event_name == "UserPromptSubmit"
+        && hook
+            .prompt
+            .as_deref()
+            .is_some_and(|prompt| claude_task_notification_ids(prompt).is_some())
 }
 
 /// Typed ahead of an ordinary paste Claude may collapse, to identify its body as instructions.

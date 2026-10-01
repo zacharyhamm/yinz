@@ -6917,6 +6917,7 @@ impl TryFrom<ProtobufSpawnAgentResponse> for SpawnAgentResponse {
                 pane_id: pane_id.try_into()?,
                 branch,
                 cwd,
+                ..Default::default()
             })),
             Some(spawn_agent_response::Result::Error(error)) => Ok(Err(error)),
             None => Err("SpawnAgentResponse without a result"),

@@ -1,0 +1,4 @@
+$ ~/.cargo/bin/yinz list-sessions --no-formatting   # installed build, before
+pty-broker-v8.sock [Created 2days 14h 54m 24s ago] (UNRESPONSIVE - run `yinz kill-session pty-broker-v8.sock`)
+verify-agent-clear-fixed [Created 1day 13h 17m 47s ago] 
+fascinating-yak [Created 15h 20m 50s ago] 

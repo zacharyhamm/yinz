@@ -757,3 +757,136 @@ fn claude_observer_outlives_the_hook_and_reports_missing_evidence() {
         })
         .unwrap();
 }
+
+#[test]
+fn commands_in_an_adopted_pane_reach_the_adopting_session() {
+    use yinz_server::pty_host::protocol::{
+        read_msg, write_msg, HostStatus, HostToServerMsg, ServerToHostMsg,
+    };
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = listener(dir.path());
+    let supervisors = dir
+        .path()
+        .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
+        .join("pty");
+    std::fs::create_dir_all(&supervisors).unwrap();
+    let supervisor =
+        std::os::unix::net::UnixListener::bind(supervisors.join("abcdef012345.sock")).unwrap();
+    let answered = std::thread::spawn(move || {
+        let (mut stream, _) = supervisor.accept().unwrap();
+        let query: ServerToHostMsg = read_msg(&mut stream).unwrap().unwrap();
+        assert!(matches!(query, ServerToHostMsg::Query), "{query:?}");
+        write_msg(
+            &mut stream,
+            &HostToServerMsg::Status(HostStatus {
+                host_id: yinz_types::internal_ids::SupervisorId::new("abcdef012345"),
+                session_name: Some("report-test".to_owned().into()),
+                terminal_id: 2,
+                command: "claude".to_owned(),
+                cwd: None,
+                child_pid: None,
+                host_pid: yinz_types::internal_ids::ProcessId::new(1),
+                started_at_unix: yinz_types::units::UnixSeconds::new(0),
+                attached: true,
+                supports_relabel: true,
+                child_exit_status: None,
+                child_group_terminated: false,
+                buffered_bytes: 0,
+            }),
+        )
+        .unwrap();
+    });
+    // The pane was born as pane 23 of a session that no longer exists.
+    let child = Command::new(env!("CARGO_BIN_EXE_yinz"))
+        .args(["agent", "list", "--json"])
+        .env("YINZ_SOCKET_DIR", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("YINZ_SESSION_NAME", "chatty-orange")
+        .env("YINZ_PANE_ID", "23")
+        .env("YINZ_PANE_REF", "abcdef012345")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    answered.join().unwrap();
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(sessions.accept().unwrap());
+    match receiver.recv_client_msg() {
+        IpcRecv::Msg(ClientToServerMsg::AgentControl(request), _) => assert!(
+            matches!(
+                request,
+                yinz_types::agent::control::AgentRequest::List { .. }
+            ),
+            "{request:?}"
+        ),
+        _ => panic!("expected an agent request"),
+    }
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentControl(
+            yinz_types::agent::control::AgentResponse::new(
+                yinz_types::agent::control::AgentOutcome::Ok,
+            ),
+        ))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"outcome\":\"ok\""));
+}
+
+#[test]
+fn agent_validation_errors_answer_in_json_when_asked() {
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yinz"))
+            .args(["--session", "json-errors"])
+            .args(args)
+            .env("YINZ_SOCKET_DIR", dir.path())
+            .env("TMPDIR", dir.path())
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env_remove("YINZ_PANE_REF")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for (args, message) in [
+        (
+            &["agent", "prompt", "terminal_7", " ", "--json"][..],
+            "prompt must not be empty",
+        ),
+        (
+            &["agent", "prompt", "7", "text", "--file", "-", "--json"][..],
+            "not both",
+        ),
+    ] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let response: serde_json::Value =
+            serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+                panic!(
+                    "{args:?}: {error}: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                )
+            });
+        assert_eq!(response["outcome"], "rejected", "{args:?}");
+        assert!(
+            response["message"].as_str().unwrap().contains(message),
+            "{response}"
+        );
+    }
+    // Without --json the error stays on stderr.
+    let output = run(&["agent", "prompt", "terminal_7", " "]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("prompt must not be empty"));
+}

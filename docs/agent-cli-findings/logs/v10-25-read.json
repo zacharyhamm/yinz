@@ -1,0 +1,12 @@
+  (not in the background): python3 -c "import
+  time; time.sleep(40); print('SLEPT_OK')" . Then
+  reply with exactly DONE40 and nothing else.
+
+● Bash(python3 -c "import time; time.sleep(40);
+      print('SLEPT_OK')")
+  ⎿  Interrupted · What should Claude do instead?
+
+──────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

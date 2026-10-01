@@ -510,13 +510,44 @@ pub enum Command {
     PtyHosts(PtyHosts),
 }
 
-fn parse_agent_target(value: &str) -> Result<yinz_types::pane_id::PaneId, String> {
-    if !value.starts_with("terminal_") {
-        return Err("expected an explicit terminal pane ID, such as terminal_7".to_owned());
+/// A terminal pane named the way `action` documents it: `terminal_7`, or `7` for short.
+/// Plugin panes are refused, because no agent runs in one.
+pub(crate) fn parse_terminal_pane_number(value: &str) -> Result<u32, String> {
+    match value.parse() {
+        Ok(yinz_types::pane_id::PaneId::Terminal(id)) => Ok(id.get()),
+        Ok(yinz_types::pane_id::PaneId::Plugin(_)) => Err(
+            "expected a terminal pane ID, such as terminal_7 or 7; plugin panes do not run agents"
+                .to_owned(),
+        ),
+        Err(error) => Err(format!(
+            "invalid terminal pane ID {value:?} (expected terminal_7 or 7): {error}"
+        )),
     }
-    value
-        .parse()
-        .map_err(|error| format!("invalid terminal pane ID: {error}"))
+}
+
+fn parse_agent_target(value: &str) -> Result<yinz_types::pane_id::PaneId, String> {
+    parse_terminal_pane_number(value).map(|id| {
+        yinz_types::pane_id::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(id))
+    })
+}
+
+impl Agent {
+    /// Whether the caller asked for machine-readable output, including for errors. Archive
+    /// replies are JSON either way.
+    pub fn json(&self) -> bool {
+        match self {
+            Agent::Archive(archive) => archive.json(),
+            Agent::Register { .. } => false,
+            Agent::List { json, .. }
+            | Agent::Status { json, .. }
+            | Agent::Spawn { json, .. }
+            | Agent::Prompt { json, .. }
+            | Agent::Wait { json, .. }
+            | Agent::Read { json, .. }
+            | Agent::Recover { json, .. }
+            | Agent::SendKeys { json, .. } => *json,
+        }
+    }
 }
 
 fn parse_agent_timeout(value: &str) -> Result<std::time::Duration, String> {
@@ -539,7 +570,12 @@ pub enum Agent {
     #[clap(flatten)]
     Archive(crate::agent_archive::AgentArchive),
     /// Register a terminal pane through the persistent agent service.
-    Register { pane_id: u32, kind: String },
+    Register {
+        /// The terminal pane, such as terminal_7 or 7.
+        #[clap(value_parser = parse_terminal_pane_number)]
+        pane_id: u32,
+        kind: String,
+    },
     /// List agents and their reported lifecycle state.
     List {
         #[clap(long)]
@@ -625,14 +661,16 @@ pub enum Agent {
     Prompt {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
-        #[clap(required_unless_present = "file", conflicts_with = "file")]
+        /// The prompt. Pass either TEXT or --file, not both.
         text: Option<String>,
         /// Read the prompt from a UTF-8 file, or from standard input with '-'.
-        #[clap(long, conflicts_with = "text")]
+        #[clap(long)]
         file: Option<PathBuf>,
         #[clap(long)]
         conversation: Option<String>,
-        /// Wait for this turn's outcome after the agent acknowledges the prompt.
+        /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude left
+        /// background work running, the reply lists `background_tasks`; `agent wait --until idle`
+        /// returns its final answer.
         #[clap(long)]
         wait: bool,
         /// Total deadline, including acknowledgement (default: 30s, or 10m with --wait).
@@ -641,7 +679,9 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
-    /// Observe a reported state without sending input.
+    /// Observe a reported state without sending input. A successful idle wait returns the final
+    /// text of the last completed turn. For Claude, it also waits for background work (listed
+    /// as `background_tasks`) to finish its notification turn.
     Wait {
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
