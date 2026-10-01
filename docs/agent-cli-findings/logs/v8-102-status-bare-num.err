@@ -1,0 +1,3 @@
+error: invalid value '8' for '<TARGET>': expected an explicit terminal pane ID, such as terminal_7
+
+For more information, try '--help'.

@@ -1,0 +1,24 @@
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+
+› Reply with exactly NEW_OK and nothing else.
+
+
+↳ Hook · PONYTAIL:FULL
+
+• NEW_OK
+
+  Worked for 1s • 6:19 PM
+
+
+› Run the shell command: sleep 25 && echo SLEPT. Then reply DONE25.
+
+
+• I’ll run the requested shell command now.
+
+■ Conversation interrupted - use /feedback if something went wrong
+
+
+› Ask Codex to do anything
+
+  GPT-6-Luna high · /tmp/claude-1000/-home-zacharyhamm-yinz--worktrees-agent-cli-verification-continued/3…
