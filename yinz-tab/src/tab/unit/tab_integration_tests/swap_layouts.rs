@@ -1,6 +1,235 @@
 use super::*;
 
 #[test]
+fn pending_pane_insertion_preserves_title_borderless_and_swap_layout() {
+    let layout = yinz_config::kdl::layout::from_kdl(
+        r#"
+        layout {
+            pane size=1 borderless=true { plugin location="yinz:tab-bar"; }
+            pane
+            pane size=1 borderless=true { plugin location="yinz:status-bar"; }
+            swap_tiled_layout name="ui" {
+                tab {
+                    pane size=1 borderless=true { plugin location="yinz:tab-bar"; }
+                    pane { children; }
+                    pane size=1 borderless=true { plugin location="yinz:status-bar"; }
+                }
+            }
+        }
+        "#,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let client_id = ClientId::new(1);
+    let pane_id = PaneId::Terminal(TerminalId::new(2));
+    for borderless in [false, true] {
+        let mut tab = create_new_tab_with_swap_layouts(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+            (vec![], vec![]),
+            None,
+            true,
+            true,
+        );
+        tab.tiled_panes.drain();
+        tab.is_pending = true;
+        tab.swap_layouts = crate::tab::swap_layouts::SwapLayouts::new(
+            (
+                layout.swap_tiled_layouts.clone(),
+                layout.swap_floating_layouts.clone(),
+            ),
+            tab.display_area.clone(),
+        );
+        let swap_layout_before = tab.swap_layouts.tiled_layout_info();
+        let mut pane = tab
+            .build_pane(pane_id, Some("travelling terminal".into()), None, None)
+            .unwrap();
+        pane.set_borderless(borderless);
+        tab.add_tiled_pane(pane, pane_id, false, Some(client_id))
+            .unwrap();
+
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        assert_eq!(pane.current_title(), "travelling terminal");
+        assert_eq!(pane.borderless(), borderless);
+        assert_eq!(tab.swap_layouts.tiled_layout_info(), swap_layout_before);
+        assert!(tab.is_pending());
+
+        let (mut base_layout, floating_layout) = layout.template.clone().unwrap();
+        base_layout.ignore_run_instruction(None);
+        let plugin_ids = ["yinz:tab-bar", "yinz:status-bar"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, url)| {
+                let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+                    url, &None, None, None,
+                )
+                .unwrap();
+                (run, vec![crate::PluginId::new(index as u32 + 1)])
+            })
+            .collect();
+        tab.apply_layout(
+            base_layout,
+            floating_layout,
+            vec![],
+            vec![],
+            plugin_ids,
+            client_id,
+            None,
+        )
+        .unwrap();
+
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        assert_eq!(pane.current_title(), "travelling terminal");
+        assert_eq!(pane.borderless(), borderless);
+        assert_eq!(
+            tab.swap_layouts.tiled_layout_info(),
+            (Some("BASE".into()), false)
+        );
+        assert!(!tab.is_pending());
+    }
+}
+
+#[test]
+fn pending_tab_retains_two_arrivals_and_replays_their_output() {
+    let layout = yinz_config::kdl::layout::from_kdl(
+        r#"
+        layout {
+            pane
+            pane
+            swap_tiled_layout name="two panes" {
+                tab { pane; pane; }
+            }
+        }
+        "#,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let client_id = ClientId::new(1);
+    for apply_layout in [true, false] {
+        let mut tab = create_new_tab_with_swap_layouts(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            ModeInfo::default(),
+            (
+                layout.swap_tiled_layouts.clone(),
+                layout.swap_floating_layouts.clone(),
+            ),
+            None,
+            true,
+            true,
+        );
+        tab.tiled_panes.drain();
+        tab.is_pending = true;
+        let swap_state = format!("{:?}", tab.swap_layouts);
+        for (id, title, borderless, focus) in [
+            (2, "first arrival", false, Some(client_id)),
+            (3, "second arrival", true, None),
+        ] {
+            let terminal_id = TerminalId::new(id);
+            let pane_id = PaneId::Terminal(terminal_id);
+            let mut pane = tab
+                .build_pane(pane_id, Some(title.into()), None, None)
+                .unwrap();
+            pane.set_borderless(borderless);
+            tab.add_tiled_pane(pane, pane_id, false, focus).unwrap();
+            tab.handle_pty_bytes(terminal_id, title.as_bytes().to_vec())
+                .unwrap();
+            let pane = tab.get_pane_with_id(pane_id).unwrap();
+            assert!(pane.cols() > 0 && pane.rows() > 0);
+            assert_eq!(pane.current_title(), title);
+            assert_eq!(pane.borderless(), borderless);
+            assert!(!pane.dump_screen(false, None).contains(title));
+            assert_eq!(format!("{:?}", tab.swap_layouts), swap_state);
+        }
+        assert!(tab.is_pending());
+        assert_eq!(tab.tiled_panes.get_panes().count(), 2);
+        assert!(tab.suppressed_panes.is_empty());
+        assert_eq!(
+            tab.get_active_pane_id(client_id),
+            Some(PaneId::Terminal(TerminalId::new(2)))
+        );
+
+        if apply_layout {
+            let (mut base_layout, floating_layout) = layout.template.clone().unwrap();
+            base_layout.ignore_run_instruction(None);
+            base_layout.ignore_run_instruction(None);
+            tab.apply_layout(
+                base_layout,
+                floating_layout,
+                vec![],
+                vec![],
+                HashMap::new(),
+                client_id,
+                None,
+            )
+            .unwrap();
+        } else {
+            tab.finish_pending_layout();
+            assert_eq!(format!("{:?}", tab.swap_layouts), swap_state);
+        }
+
+        assert!(!tab.is_pending());
+        assert!(tab.pending_instructions.is_empty());
+        assert_eq!(tab.tiled_panes.get_panes().count(), 2);
+        for (id, title, borderless) in [(2, "first arrival", false), (3, "second arrival", true)] {
+            let pane = tab
+                .get_pane_with_id(PaneId::Terminal(TerminalId::new(id)))
+                .unwrap();
+            assert_eq!(pane.current_title(), title);
+            assert_eq!(pane.borderless(), borderless);
+            assert!(pane.dump_screen(false, None).contains(title));
+        }
+        tab.assert_invariants();
+    }
+}
+
+#[test]
+fn pending_tab_parks_arrivals_when_no_tiled_room_remains() {
+    let mut tab = create_new_tab_with_swap_layouts(
+        Size { cols: 5, rows: 5 },
+        ModeInfo::default(),
+        (vec![], vec![]),
+        None,
+        true,
+        true,
+    );
+    tab.tiled_panes.drain();
+    tab.is_pending = true;
+    let swap_state = format!("{:?}", tab.swap_layouts);
+    let client_id = ClientId::new(1);
+    for id in [2, 3] {
+        let pane_id = PaneId::Terminal(TerminalId::new(id));
+        let pane = tab.build_pane(pane_id, None, None, None).unwrap();
+        tab.add_tiled_pane(pane, pane_id, false, Some(client_id))
+            .unwrap();
+    }
+
+    let first = PaneId::Terminal(TerminalId::new(2));
+    let second = PaneId::Terminal(TerminalId::new(3));
+    assert_eq!(tab.tiled_panes.get_panes().count(), 1);
+    assert_eq!(tab.get_active_pane_id(client_id), Some(first));
+    assert!(tab.get_pane_with_id(second).is_some());
+    assert!(tab.suppressed_panes.contains_key(&second));
+    assert_eq!(format!("{:?}", tab.swap_layouts), swap_state);
+    assert!(tab.is_pending());
+
+    tab.finish_pending_layout();
+    assert!(!tab.is_pending());
+    assert_eq!(tab.get_all_pane_ids().len(), 2);
+    assert!(tab.suppressed_panes.contains_key(&second));
+    tab.assert_invariants();
+}
+
+#[test]
 fn layout_with_plugins_and_commands_swaped_properly() {
     let size = Size {
         cols: 121,

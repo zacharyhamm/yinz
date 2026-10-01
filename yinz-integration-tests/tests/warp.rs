@@ -275,6 +275,67 @@ fn stack_list_entries(yinz: &TestSession) -> Vec<String> {
 }
 
 #[test]
+fn an_individual_warp_to_a_new_tab_preserves_the_terminal_header() {
+    let receiver = start(Some(
+        r#"
+        layout {
+            pane size=1 borderless=true { plugin location="tab-bar"; }
+            pane
+            pane size=1 borderless=true { plugin location="status-bar"; }
+            swap_tiled_layout name="ui" {
+                tab {
+                    pane size=1 borderless=true { plugin location="tab-bar"; }
+                    pane split_direction="vertical" { children; }
+                    pane size=1 borderless=true { plugin location="status-bar"; }
+                }
+            }
+        }
+        "#,
+    ));
+    receiver.expect_pty_spawn().output(PROMPT);
+    receiver.wait_for_app_load();
+    let (sender, _sender_shell) = start_with_a_shell();
+    let travelling = split_off_a_pane(&sender, "before transfer");
+    let title = "travelling terminal";
+    let (code, reported) = sender.run_cli_action_reporting(CliAction::RenamePane {
+        name: title.into(),
+        pane_id: Some(format!("terminal_{}", travelling.terminal_id())),
+    });
+    assert_eq!(code, 0, "{reported}");
+
+    let (code, reported) = sender.run_cli_action_reporting(CliAction::WarpPane {
+        to_session: receiver.session_name().to_owned(),
+        pane_id: Some(format!("terminal_{}", travelling.terminal_id())),
+        focused_tab: false,
+        floating: false,
+    });
+    assert_eq!(code, 0, "the warp was refused: {reported}");
+    let arrived = receiver.expect_adopted_pty();
+    receiver.wait_until("the terminal to arrive in its new tab", |grid| {
+        grid.contains("before transfer") && grid.tab_bar_appears() && grid.status_bar_appears()
+    });
+
+    // Title-style frames show a lone terminal's title in the tab bar; a second
+    // terminal makes the transferred terminal's own header visible.
+    split_off_a_pane(&receiver, "beside the transferred terminal");
+    receiver.wait_until("the transferred title in its pane header", |grid| {
+        grid.lines().iter().skip(1).any(|line| line.contains(title))
+    });
+    assert!(
+        !arrived.is_exited(),
+        "the transfer killed the terminal process"
+    );
+    arrived.output(b"still writing after transfer\r\n");
+    receiver.wait_until(
+        "the transferred terminal to keep producing output",
+        |grid| {
+            grid.contains("still writing after transfer")
+                && grid.lines().iter().skip(1).any(|line| line.contains(title))
+        },
+    );
+}
+
+#[test]
 fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     let travelling = split_off_a_pane(&sender, "here before the warp");

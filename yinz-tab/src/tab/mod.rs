@@ -2938,6 +2938,8 @@ impl Tab {
     /// A failed layout still leaves any panes already in the tab usable.
     pub fn finish_pending_layout(&mut self) {
         self.is_pending = false;
+        // The rejected initial layout never supplied final geometry for arriving panes.
+        self.tiled_panes.force_resize();
         self.apply_buffered_instructions()
             .context("failed to replay retained pane output")
             .non_fatal();
@@ -9160,6 +9162,10 @@ impl Tab {
         self.dissolve_stack_lists_for_classic_mutation();
         let should_auto_layout =
             self.auto_layout && !self.swap_layouts.is_tiled_damaged() && !without_relayout;
+        if self.is_pending && self.tiled_panes.get_panes().next().is_none() {
+            // Later arrivals need usable geometry to split before the initial layout lands.
+            pane.set_geom(PaneGeom::from(&*self.display_area.borrow()));
+        }
         if self.tiled_panes.has_room_for_new_pane() {
             pane.set_active_at(Instant::now());
             let not_placed = if should_auto_layout {
@@ -9193,8 +9199,11 @@ impl Tab {
             if let Some(client_id) = client_id {
                 self.tiled_panes.focus_pane(pane_id, client_id);
             }
+        } else if self.is_pending {
+            self.park_pane(pane);
         }
-        if should_auto_layout {
+        // Wait for the initial layout before applying swap layouts.
+        if should_auto_layout && !self.is_pending {
             // only do this if we're already in this layout, otherwise it might be
             // confusing and not what the user intends
             self.swap_layouts.set_is_tiled_damaged(); // we do this so that we won't skip to the
