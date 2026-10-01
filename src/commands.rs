@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 use yinz_types::internal_ids::SessionName;
-use yinz_types::internal_ids::SupervisorId;
+use yinz_types::internal_ids::TerminalId;
 use yinz_types::units::{ElapsedMicros, UnixMicros};
 
 use yinz_client::{
@@ -34,7 +34,6 @@ use {
 use yinz_runtime::consts::session_layout_cache_file_name;
 
 use miette::{Report, Result};
-use yinz_runtime::envs;
 use yinz_server::start_server as start_server_impl;
 use yinz_server_os::get_server_os_input_from_termios_arg;
 use {
@@ -44,7 +43,15 @@ use {
     yinz_types::input::actions::Action, yinz_types::input::options::Options,
 };
 
-pub(crate) use yinz_cli::sessions::list_sessions;
+pub(crate) fn list_sessions(no_formatting: bool, short: bool, reverse: bool, exited: bool) {
+    yinz_cli::sessions::list_sessions(
+        no_formatting,
+        short,
+        reverse,
+        exited,
+        current_session().as_ref(),
+    );
+}
 
 /// Whether a nameless `yinz attach` may ask which session to attach to: only
 /// a person at a terminal can answer.
@@ -70,7 +77,7 @@ fn pick_session_to_attach(config_options: Options, config: &Config) -> ClientInf
     }
     // Newest first, as the listing this replaces printed them.
     yinz_cli::sessions::sort_sessions(&mut sessions, true);
-    let current = envs::get_session_name().ok();
+    let current = current_session();
     let rows = sessions
         .into_iter()
         .map(|(name, age, listing)| PickerRow {
@@ -250,7 +257,7 @@ pub(crate) fn run_firecracker(
             Some(session) => Ok(session),
             None => resolve_firecracker_session(
                 None,
-                envs::get_session_name().ok(),
+                yinz_process::pane_context::target(None)?.0,
                 get_active_session(),
             ),
         }
@@ -716,7 +723,7 @@ fn find_indexed_session(
                 "No session indexed by {} found. The following sessions are active:",
                 index
             );
-            print_sessions_with_index(sessions);
+            print_sessions_with_index(sessions, current_session().as_ref());
             process::exit(1);
         },
     }
@@ -727,25 +734,17 @@ fn find_indexed_session(
 /// Checks session to send the action to and attaches with client
 pub(crate) fn send_action_to_session(
     mut cli_action: yinz_cli::args::CliAction,
-    mut requested_session_name: Option<String>,
+    requested_session_name: Option<String>,
     config: Option<Config>,
 ) {
-    if let Err(e) = retarget_implicit_agent_report(
-        &mut cli_action,
-        &mut requested_session_name,
-        std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
-        query_pane_supervisor,
-    ) {
-        eprintln!("{e}");
-        std::process::exit(1);
-    }
+    let (requested_session_name, caller) = command_target(requested_session_name);
+    fill_caller_pane(&mut cli_action, caller);
     let named_store_action = matches!(
         cli_action,
         yinz_cli::args::CliAction::NotesTodos(_)
             | yinz_cli::args::CliAction::Operations(_)
             | yinz_cli::args::CliAction::Wait(_)
     );
-    let requested_session_name = requested_session_name.map(SessionName::new);
     match get_active_session() {
         ActiveSession::None => {
             eprintln!("{}", no_active_session_message());
@@ -762,7 +761,7 @@ pub(crate) fn send_action_to_session(
                     std::process::exit(1);
                 }
             }
-            attach_with_cli_client(cli_action, &session_name, config);
+            attach_with_cli_client(cli_action, &session_name, config, caller);
         },
         ActiveSession::Many => {
             let existing_sessions: Vec<SessionName> = get_sessions()
@@ -772,7 +771,7 @@ pub(crate) fn send_action_to_session(
                 .collect();
             if let Some(session_name) = requested_session_name {
                 if existing_sessions.contains(&session_name) {
-                    attach_with_cli_client(cli_action, &session_name, config);
+                    attach_with_cli_client(cli_action, &session_name, config, caller);
                 } else {
                     eprintln!(
                         "Session '{}' not found. The following sessions are active:",
@@ -787,8 +786,6 @@ pub(crate) fn send_action_to_session(
                     }
                     std::process::exit(1);
                 }
-            } else if let Ok(session_name) = envs::get_session_name() {
-                attach_with_cli_client(cli_action, &session_name, config);
             } else {
                 eprintln!("Please specify the session name to send actions to. The following sessions are active:");
                 if named_store_action {
@@ -804,110 +801,34 @@ pub(crate) fn send_action_to_session(
     };
 }
 
-/// Resolve the stable supervisor reference before choosing which session receives a report.
-///
-/// A warped process keeps the session name and terminal id it was born with in its environment,
-/// while its supervisor is re-keyed to the adopting session and id. Explicit CLI targets still
-/// win; this only replaces the implicit environment-based route used by agent hooks.
-pub(crate) fn retarget_implicit_agent_report(
-    cli_action: &mut yinz_cli::args::CliAction,
-    requested_session_name: &mut Option<String>,
-    pane_ref: Option<String>,
-    query: impl FnOnce(
-        &SupervisorId,
-    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
-) -> std::result::Result<(), String> {
-    let yinz_cli::args::CliAction::AgentReport {
-        pane_id: pane_id @ None,
-        ..
-    } = cli_action
-    else {
-        return Ok(());
-    };
-    if requested_session_name.is_some() {
-        return Ok(());
-    }
-    let Some(pane_ref) = pane_ref else {
-        return Ok(());
-    };
-    let (session_name, terminal_id) = resolve_pane_ref(&pane_ref, query)?;
-    *pane_id = Some(terminal_id.to_string());
-    *requested_session_name = Some(session_name);
-    Ok(())
+pub(crate) fn command_target(
+    explicit: Option<String>,
+) -> (Option<SessionName>, Option<TerminalId>) {
+    yinz_process::pane_context::target(explicit.map(SessionName::new)).unwrap_or_else(|error| {
+        eprintln!("{error:#}");
+        process::exit(1);
+    })
 }
 
-/// The session and terminal id a pane's supervisor currently belongs to.
-fn resolve_pane_ref(
-    pane_ref: &str,
-    query: impl FnOnce(
-        &SupervisorId,
-    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
-) -> std::result::Result<(String, u32), String> {
-    if pane_ref.len() != 12 || !pane_ref.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(
-            "invalid {}",
-            yinz_server::pty_host::PANE_REF_ENV_KEY
-        ));
-    }
-
-    let pane_ref = SupervisorId::new(pane_ref.to_owned());
-    let status = query(&pane_ref)?;
-    if status.host_id != pane_ref {
-        return Err(format!(
-            "pane reference {pane_ref} resolved to supervisor {}",
-            status.host_id
-        ));
-    }
-    if !status.attached {
-        return Err(format!("pane {pane_ref} is currently between sessions"));
-    }
-    let session_name = status
-        .session_name
-        .ok_or_else(|| format!("pane {pane_ref} has no owning session"))?;
-    Ok((session_name.into_string(), status.terminal_id))
-}
-
-fn query_pane_supervisor(
-    pane_ref: &SupervisorId,
-) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String> {
-    yinz_server::pty_host::client::query(&yinz_server::pty_host::protocol::socket_path(pane_ref))
-        .map_err(|e| format!("could not resolve pane {pane_ref}: {e:#}"))
-}
-
-/// The routing environment a pane's commands should use: its supervisor's current session and
-/// terminal id when they differ from the inherited `YINZ_SESSION_NAME` and `YINZ_PANE_ID`.
-///
-/// A pane adopted by another server after a restart, or warped, keeps the values it was born
-/// with. Commands that read them would reach a session that no longer exists, or another
-/// session's pane with the same id. Without a reference, or when the supervisor cannot answer,
-/// the inherited values stand.
-fn adopted_pane_routing(
-    pane_ref: Option<String>,
-    inherited: (Option<String>, Option<String>),
-    query: impl FnOnce(
-        &SupervisorId,
-    ) -> std::result::Result<yinz_server::pty_host::protocol::HostStatus, String>,
-) -> Option<(String, String)> {
-    let (session, terminal) = resolve_pane_ref(&pane_ref?, query).ok()?;
-    let terminal = terminal.to_string();
-    (inherited != (Some(session.clone()), Some(terminal.clone()))).then_some((session, terminal))
-}
-
-/// Correct this process's routing environment before any command reads it.
-/// See [`adopted_pane_routing`]. Runs before any thread starts.
-pub(crate) fn refresh_pane_routing_env() {
-    if let Some((session, terminal)) = adopted_pane_routing(
-        std::env::var(yinz_server::pty_host::PANE_REF_ENV_KEY).ok(),
-        (
-            std::env::var(envs::SESSION_NAME_ENV_KEY).ok(),
-            std::env::var("YINZ_PANE_ID").ok(),
-        ),
-        query_pane_supervisor,
-    ) {
-        std::env::set_var(envs::SESSION_NAME_ENV_KEY, session);
-        std::env::set_var("YINZ_PANE_ID", terminal);
+pub(crate) fn fill_caller_pane(action: &mut yinz_cli::args::CliAction, caller: Option<TerminalId>) {
+    match action {
+        yinz_cli::args::CliAction::AgentReport { pane_id, .. }
+        | yinz_cli::args::CliAction::SetPaneColor { pane_id, .. }
+            if pane_id.is_none() =>
+        {
+            *pane_id = caller.map(|id| id.to_string());
+        },
+        _ => {},
     }
 }
+
+pub(crate) fn current_session() -> Option<SessionName> {
+    yinz_process::pane_context::current_pane()
+        .ok()
+        .flatten()
+        .map(|(session, _)| session)
+}
+
 /// The session a `yinz subscribe` / `yinz events` client attaches to: the one running, the
 /// one asked for, or the one this shell is inside. Anything else is an error naming the choices,
 /// with `purpose` finishing the sentence ("subscribe to", "stream events from").
@@ -915,8 +836,15 @@ pub(crate) fn resolve_session_for_stream(
     requested_session_name: Option<String>,
     purpose: &str,
 ) -> SessionName {
-    let requested_session_name = requested_session_name.map(SessionName::new);
-    match get_active_session() {
+    resolve_session_for_command(requested_session_name, purpose).0
+}
+
+pub(crate) fn resolve_session_for_command(
+    requested_session_name: Option<String>,
+    purpose: &str,
+) -> (SessionName, Option<TerminalId>) {
+    let (requested_session_name, caller) = command_target(requested_session_name);
+    let session = match get_active_session() {
         ActiveSession::None => {
             eprintln!("{}", no_active_session_message());
             std::process::exit(1);
@@ -951,8 +879,6 @@ pub(crate) fn resolve_session_for_stream(
                     list_sessions(false, false, true, false);
                     std::process::exit(1);
                 }
-            } else if let Ok(session_name) = envs::get_session_name() {
-                session_name
             } else {
                 eprintln!(
                     "Please specify the session name to {purpose}. The following sessions are \
@@ -962,7 +888,8 @@ pub(crate) fn resolve_session_for_stream(
                 std::process::exit(1);
             }
         },
-    }
+    };
+    (session, caller)
 }
 
 pub(crate) fn subscribe_to_session(
@@ -993,6 +920,7 @@ fn attach_with_cli_client(
     cli_action: yinz_cli::args::CliAction,
     session_name: &SessionName,
     config: Option<Config>,
+    caller: Option<TerminalId>,
 ) {
     if let yinz_cli::args::CliAction::Wait(request) = cli_action {
         match yinz_client::wait_client::wait(session_name, request) {
@@ -1018,7 +946,7 @@ fn attach_with_cli_client(
     if let Some(action) = service_action {
         let result = action
             .map_err(anyhow::Error::msg)
-            .and_then(|action| yinz_client::store_client::request(session_name, action));
+            .and_then(|action| yinz_client::store_client::request(session_name, action, caller));
         match result {
             Ok(data) => {
                 println!("{data}");
@@ -1038,6 +966,7 @@ fn attach_with_cli_client(
                 Box::new(os_input),
                 session_name,
                 actions,
+                caller,
             );
             std::process::exit(exit_status);
         },
@@ -1119,6 +1048,7 @@ fn attach_with_session_name(
                     false,
                     false,
                     true,
+                    current_session().as_ref(),
                 );
                 process::exit(1);
             },
@@ -1297,8 +1227,8 @@ pub(crate) fn start_client(opts: CliArgs) {
                 }
             };
 
-            if let Ok(val) = std::env::var(envs::SESSION_NAME_ENV_KEY) {
-                if val == client.get_session_name().as_str() {
+            if let Some(val) = current_session() {
+                if &val == client.get_session_name() {
                     panic!("You are trying to attach to the current session (\"{}\"). This is not supported.", val);
                 }
             }
@@ -1340,7 +1270,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                 );
             } else {
                 if let Some(session_name) = config_options.session_name.as_ref() {
-                    if let Ok(val) = envs::get_session_name() {
+                    if let Some(val) = current_session() {
                         // This prevents the same type of recursion as above, only that here we
                         // don't get the command to "attach", but to start a new session instead.
                         // This occurs for example when declaring the session name inside a layout
@@ -1459,6 +1389,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
         },
     };
 
+    let session_name = session_name.or(opts.session.clone());
     // Resolve the session name to watch
     let client_info = match &session_name {
         Some(prefix) => match match_session_name(prefix.as_str()).unwrap() {
@@ -1478,6 +1409,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
                     false,
                     false,
                     true,
+                    current_session().as_ref(),
                 );
                 process::exit(1);
             },
@@ -1486,6 +1418,10 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
                 process::exit(1);
             },
         },
+        None if yinz_process::pane_context::inside_pane() => ClientInfo::Watch(
+            resolve_session_for_stream(None, "watch"),
+            config_options.clone(),
+        ),
         None => match get_active_session() {
             ActiveSession::None => {
                 eprintln!("No active yinz sessions found.");
@@ -1576,7 +1512,8 @@ pub(crate) fn pty_host_adopt(
         return;
     };
 
-    let session = session.or(requested_session_name);
+    let (session, caller) = command_target(session.or(requested_session_name));
+    let session = session.map(SessionName::into_string);
     // With `--host`, `host_id` is a broker pane token rather than a local
     // supervisor id, and the broker on that machine is the only thing that can
     // resolve it.
@@ -1600,6 +1537,7 @@ pub(crate) fn pty_host_adopt(
             payload: Box::new(payload),
             placement: warp_placement(focused_tab, floating),
         }],
+        caller,
     );
     let _ = config;
     std::process::exit(exit_status);
@@ -1951,13 +1889,18 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 format!("file:{}", path.display())
             };
             if headless {
-                let session =
-                    resolve_session_for_stream(opts.session.clone(), "reload a headless plugin in");
+                let (session, caller) = resolve_session_for_command(
+                    opts.session.clone(),
+                    "reload a headless plugin in",
+                );
                 let action = yinz_cli::notes_todos::pipe_action(
                     "agent_action",
                     serde_json::json!({"op":"plugin_reload","args":{"url":url},"structured_reply":true}),
                 );
-                println!("{}", yinz_client::store_client::request(&session, action)?);
+                println!(
+                    "{}",
+                    yinz_client::store_client::request(&session, action, caller)?
+                );
                 return Ok(());
             }
             send_action_to_session(
@@ -2188,12 +2131,9 @@ fn format_duration(duration_us: ElapsedMicros) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        adopted_pane_routing, kill_outcome, named_session_exists_or_error,
-        retarget_implicit_agent_report, sessions_to_delete, sessions_to_kill,
+        kill_outcome, named_session_exists_or_error, sessions_to_delete, sessions_to_kill,
     };
     use std::{cell::Cell, io, time::Duration};
-    use yinz_cli::args::CliAction;
-    use yinz_server::pty_host::protocol::HostStatus;
     use {
         yinz_cli::sessions::session_listing_error_message,
         yinz_cli::sessions::unresponsive_session_message, yinz_ipc::probe::SessionProbe,
@@ -2201,119 +2141,6 @@ mod tests {
 
     fn session(name: &str) -> (yinz_types::internal_ids::SessionName, Duration) {
         (name.into(), Duration::default())
-    }
-
-    fn agent_report(pane_id: Option<&str>) -> CliAction {
-        CliAction::AgentReport {
-            pane_id: pane_id.map(str::to_owned),
-            kind: Some("codex".to_owned()),
-            state: Some("busy".to_owned()),
-            detail: None,
-            cwd: None,
-            hook_json: false,
-            clear: false,
-            run_id: None,
-        }
-    }
-
-    fn pane_status(attached: bool) -> HostStatus {
-        HostStatus {
-            supports_relabel: true,
-            child_group_terminated: false,
-            host_id: yinz_types::internal_ids::SupervisorId::new("abcdef012345"),
-            session_name: Some("after-warp".to_owned().into()),
-            terminal_id: 42,
-            command: "codex".to_owned(),
-            cwd: Some("/work".into()),
-            child_pid: Some(yinz_types::internal_ids::ProcessId::new(10)),
-            host_pid: yinz_types::internal_ids::ProcessId::new(11),
-            started_at_unix: yinz_types::units::UnixSeconds::new(0),
-            attached,
-            child_exit_status: None,
-            buffered_bytes: 0,
-        }
-    }
-
-    #[test]
-    fn implicit_agent_reports_follow_the_supervisor_after_a_warp() {
-        let mut action = agent_report(None);
-        let mut session = None;
-        retarget_implicit_agent_report(
-            &mut action,
-            &mut session,
-            Some("abcdef012345".to_owned()),
-            |_| Ok(pane_status(true)),
-        )
-        .unwrap();
-
-        assert_eq!(session.as_deref(), Some("after-warp"));
-        assert!(matches!(
-            action,
-            CliAction::AgentReport {
-                pane_id: Some(ref pane_id),
-                ..
-            } if pane_id == "42"
-        ));
-    }
-
-    #[test]
-    fn stable_agent_reports_never_fall_back_to_a_detached_or_explicit_target() {
-        let mut detached = agent_report(None);
-        assert!(retarget_implicit_agent_report(
-            &mut detached,
-            &mut None,
-            Some("abcdef012345".to_owned()),
-            |_| Ok(pane_status(false)),
-        )
-        .unwrap_err()
-        .contains("between sessions"));
-
-        let mut explicit = agent_report(Some("7"));
-        retarget_implicit_agent_report(
-            &mut explicit,
-            &mut None,
-            Some("abcdef012345".to_owned()),
-            |_| panic!("an explicit pane must not query the supervisor"),
-        )
-        .unwrap();
-        assert!(matches!(
-            explicit,
-            CliAction::AgentReport {
-                pane_id: Some(ref pane_id),
-                ..
-            } if pane_id == "7"
-        ));
-    }
-
-    #[test]
-    fn an_adopted_pane_routes_commands_through_its_supervisor() {
-        let stale = (Some("before-restart".to_owned()), Some("23".to_owned()));
-        assert_eq!(
-            adopted_pane_routing(Some("abcdef012345".to_owned()), stale.clone(), |_| Ok(
-                pane_status(true)
-            )),
-            Some(("after-warp".to_owned(), "42".to_owned()))
-        );
-        // Current values, or no answer, leave the environment alone.
-        let current = (Some("after-warp".to_owned()), Some("42".to_owned()));
-        assert_eq!(
-            adopted_pane_routing(Some("abcdef012345".to_owned()), current, |_| Ok(
-                pane_status(true)
-            )),
-            None
-        );
-        for (pane_ref, status) in [
-            (None, Ok(pane_status(true))),
-            (Some("not-a-ref".to_owned()), Ok(pane_status(true))),
-            (Some("abcdef012345".to_owned()), Ok(pane_status(false))),
-            (Some("abcdef012345".to_owned()), Err("gone".to_owned())),
-        ] {
-            assert_eq!(
-                adopted_pane_routing(pane_ref.clone(), stale.clone(), |_| status.clone()),
-                None,
-                "{pane_ref:?}"
-            );
-        }
     }
 
     #[test]

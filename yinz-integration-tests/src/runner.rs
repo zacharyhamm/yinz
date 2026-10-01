@@ -715,6 +715,7 @@ impl TestSession {
                     Box::new(fake_client_os_api),
                     &yinz_types::internal_ids::SessionName::new(&session_name),
                     actions,
+                    None,
                 )
             })
             .unwrap();

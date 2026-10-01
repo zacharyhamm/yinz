@@ -31,7 +31,7 @@ fn action_and_pipe_clients_fail_when_the_server_disconnects() {
         // failing on EOF, so this regression does not itself spin forever.
         os.queue_from_server(ServerToClientMsg::Log { lines: vec![] });
         assert_eq!(
-            start_cli_client(Box::new(os), &"test".into(), vec![action]),
+            start_cli_client(Box::new(os), &"test".into(), vec![action], None),
             2
         );
     }
@@ -75,7 +75,8 @@ fn invalid_pipe_input_is_an_error_not_end_of_input() {
         start_cli_client(
             Box::new(os.clone()),
             &"test".into(),
-            vec![pipe_action(None)]
+            vec![pipe_action(None)],
+            None,
         ),
         2,
     );
@@ -96,7 +97,8 @@ fn a_pipe_output_failure_does_not_report_success() {
         start_cli_client(
             Box::new(os),
             &"test".into(),
-            vec![pipe_action(Some("input".into()))]
+            vec![pipe_action(Some("input".into()))],
+            None,
         ),
         2,
     );
@@ -117,7 +119,8 @@ fn a_pipe_error_before_its_unblock_exits_non_zero() {
         start_cli_client(
             Box::new(os.clone()),
             &"test".into(),
-            vec![pipe_action(Some("input".into()))]
+            vec![pipe_action(Some("input".into()))],
+            None,
         ),
         2,
     );
@@ -149,7 +152,8 @@ fn pipe_input_eof_waits_for_the_final_response() {
             start_cli_client(
                 Box::new(os.clone()),
                 &"test".into(),
-                vec![pipe_action(None)]
+                vec![pipe_action(None)],
+                None,
             ),
             0,
         );

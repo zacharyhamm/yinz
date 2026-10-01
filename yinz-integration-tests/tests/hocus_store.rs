@@ -143,6 +143,7 @@ fn closed_tab_assignments_stay_removed_after_daemon_reload_with_and_without_chat
                     "agent_action",
                     json!({"op":op,"args":args,"structured_reply":true}),
                 ),
+                None,
             )
             .unwrap()
         };
@@ -426,7 +427,7 @@ fn named_notes_todos_share_hocus_data_and_survive_reload() {
     });
     let request = |command: NotesTodos| -> Value {
         let action = command.action(&mut std::io::empty()).unwrap();
-        yinz_client::store_client::request(&yinz.session_name().into(), action).unwrap()
+        yinz_client::store_client::request(&yinz.session_name().into(), action, None).unwrap()
     };
     request(NotesTodos::ProjectRemember {
         name: "named".into(),
@@ -493,7 +494,7 @@ fn named_notes_todos_share_hocus_data_and_survive_reload() {
         .action(&mut std::io::empty())
         .unwrap();
     let error =
-        yinz_client::store_client::request(&yinz.session_name().into(), missing).unwrap_err();
+        yinz_client::store_client::request(&yinz.session_name().into(), missing, None).unwrap_err();
     assert!(error.to_string().contains("no note"));
     second_client.quit();
     yinz.quit();
@@ -516,7 +517,7 @@ fn named_notes_todos_fail_when_the_store_is_missing_without_launching_it() {
         .unwrap();
     let started = std::time::Instant::now();
     let error =
-        yinz_client::store_client::request(&yinz.session_name().into(), action).unwrap_err();
+        yinz_client::store_client::request(&yinz.session_name().into(), action, None).unwrap_err();
     assert!(
         error
             .to_string()

@@ -275,7 +275,7 @@ fn a_todo_launches_an_agent_with_its_project_and_task_context() {
     yinz.wait_until("the session is ready", |grid| grid.contains("ready"));
     let request = |command: NotesTodos| {
         let action = command.action(&mut std::io::empty()).unwrap();
-        yinz_client::store_client::request(&yinz.session_name().into(), action).unwrap()
+        yinz_client::store_client::request(&yinz.session_name().into(), action, None).unwrap()
     };
     request(NotesTodos::ProjectRemember {
         name: "todo-agent".into(),
@@ -1189,7 +1189,7 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     }
     .action(&mut std::io::empty())
     .unwrap();
-    yinz_client::store_client::request(&yinz.session_name().into(), action).unwrap();
+    yinz_client::store_client::request(&yinz.session_name().into(), action, None).unwrap();
     open_sidebar(&yinz);
     let tabs = || -> PaneTabsInfo {
         panel_members(&yinz)

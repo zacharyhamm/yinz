@@ -11,11 +11,7 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
         return Err(anyhow!(error));
     }
     let binary = std::env::current_exe().context("cannot resolve Yinz executable")?;
-    let session = opts.session.clone().or_else(|| {
-        yinz_runtime::envs::get_session_name()
-            .ok()
-            .map(|name| name.into_string())
-    });
+    let session = opts.session.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -25,10 +21,13 @@ pub(crate) fn run(command: Workflow, opts: &CliArgs) -> Result<()> {
             let request = operation
                 .request(&cwd, &mut std::io::stdin())
                 .map_err(anyhow::Error::msg)?;
-            let session =
-                crate::commands::resolve_session_for_stream(session, "operate workflows in");
+            let (session, caller) =
+                crate::commands::resolve_session_for_command(session, "operate workflows in");
             let action = yinz_cli::notes_todos::pipe_action("workflow_action", request);
-            println!("{}", yinz_client::store_client::request(&session, action)?);
+            println!(
+                "{}",
+                yinz_client::store_client::request(&session, action, caller)?
+            );
         },
         Workflow::Server { command } => {
             use yinz_cli::args::WorkflowServer;
@@ -145,13 +144,14 @@ fn pipe(
     request: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     if plugin == "yinz:swamp-bridge" {
-        let session = crate::commands::resolve_session_for_stream(
+        let (session, caller) = crate::commands::resolve_session_for_command(
             session.map(str::to_owned),
             "operate workflows in",
         );
         return yinz_client::store_client::raw_request(
             &session,
             yinz_cli::notes_todos::pipe_action(name, request.clone()),
+            caller,
         );
     }
     let mut command = Command::new(binary);

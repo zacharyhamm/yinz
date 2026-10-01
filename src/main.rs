@@ -12,7 +12,7 @@ mod workflow;
 compile_error!("Yinz does not support Windows");
 
 use clap::Parser;
-use yinz_runtime::{envs, logging::*};
+use yinz_runtime::logging::*;
 use {
     yinz_cli::args::CliAction, yinz_cli::args::CliArgs, yinz_cli::args::Command,
     yinz_cli::args::Sessions, yinz_cli::setup::Setup,
@@ -113,7 +113,6 @@ fn main() {
         let result = hocus_hooks::hocus(yinz_cli::args::Hocus::CodexReport);
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
-    commands::refresh_pane_routing_env();
     configure_logger();
     create_config_and_cache_folders();
 
@@ -496,12 +495,7 @@ fn main() {
         );
         std::process::exit(1);
     } else if opts.layout.is_some() || opts.layout_string.is_some() {
-        if let Some(session_name) = opts
-            .session
-            .as_ref()
-            .cloned()
-            .or_else(|| envs::get_session_name().ok().map(|name| name.into_string()))
-        {
+        if opts.session.is_some() || yinz_process::pane_context::inside_pane() {
             let config = yinz_cli::setup::load_config(&opts).ok();
             let options = Setup::from_cli_args(&opts).ok().map(|r| r.2);
             let new_layout_cli_action = CliAction::NewTab {
@@ -519,7 +513,7 @@ fn main() {
                 block_until_exit: false,
                 no_focus: false,
             };
-            commands::send_action_to_session(new_layout_cli_action, Some(session_name), config);
+            commands::send_action_to_session(new_layout_cli_action, opts.session.clone(), config);
         } else {
             commands::start_client(opts);
         }

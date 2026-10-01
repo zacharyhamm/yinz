@@ -253,11 +253,10 @@ pub fn kill(host_id: &str) -> Result<()> {
 /// thing that can give the pane a home.
 pub fn adopt_request(host_id: &str, session: Option<String>) -> Result<(String, WarpedPane)> {
     let payload = adopt_payload(host_id)?;
-    let session = match session.or_else(|| {
-        yinz_runtime::envs::get_session_name()
-            .ok()
-            .map(|name| name.into_string())
-    }) {
+    let session = match crate::pane_context::target(session.map(Into::into))?
+        .0
+        .map(|name| name.into_string())
+    {
         Some(session) => session,
         None => {
             return Err(anyhow!(
@@ -392,11 +391,10 @@ pub fn remote_adopt_request(
     session: Option<String>,
 ) -> Result<(String, WarpedPane)> {
     let payload = remote_adopt_payload(host, pane_token)?;
-    let session = match session.or_else(|| {
-        yinz_runtime::envs::get_session_name()
-            .ok()
-            .map(|name| name.into_string())
-    }) {
+    let session = match crate::pane_context::target(session.map(Into::into))?
+        .0
+        .map(|name| name.into_string())
+    {
         Some(session) => session,
         None => {
             return Err(anyhow!(

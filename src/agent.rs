@@ -45,11 +45,9 @@ impl std::fmt::Display for RequestFailed {
 impl std::error::Error for RequestFailed {}
 
 fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
-    let explicit = opts.session.clone().or_else(|| {
-        yinz_runtime::envs::get_session_name()
-            .ok()
-            .map(|name| name.into_string())
-    });
+    let (explicit, caller) =
+        yinz_process::pane_context::target(opts.session.clone().map(Into::into))?;
+    let explicit = explicit.map(|session| session.into_string());
     let session = match explicit {
         Some(session) => session,
         None => crate::commands::resolve_firecracker_session(
@@ -75,7 +73,7 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
         _ => None,
     };
     if let Some(action) = action {
-        let reply = yinz_client::store_client::request(&session.into(), action)
+        let reply = yinz_client::store_client::request(&session.into(), action, caller)
             .map_err(|error| anyhow!(RequestFailed(error)))?;
         println!("{reply}");
         return Ok(0);

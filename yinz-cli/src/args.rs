@@ -2321,7 +2321,7 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
     /// (PaneInfo.agent), so `yinz events`, plugins and the agents list all see it. Coding-agent
     /// hooks call this with --hook-json and the hook's JSON on stdin.
     AgentReport {
-        /// The pane the agent runs in, eg. terminal_1 or 3. Defaults to $YINZ_PANE_ID.
+        /// The pane the agent runs in, eg. terminal_1 or 3. Defaults to the current pane resolved through $YINZ_PANE_REF.
         #[clap(long, value_parser)]
         pane_id: Option<String>,
         /// What the agent is: claude, codex, ... Defaults to claude.
@@ -2353,7 +2353,7 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
     /// Set the default foreground/background color of a pane
     SetPaneColor {
         /// The pane_id of the pane, eg. terminal_1, plugin_2 or 3 (equivalent to terminal_3).
-        /// Defaults to $YINZ_PANE_ID if not provided.
+        /// Defaults to the current pane resolved through $YINZ_PANE_REF.
         #[clap(short, long, value_parser)]
         pane_id: Option<String>,
         /// Foreground color (e.g. "#00e000", "rgb:00/e0/00")

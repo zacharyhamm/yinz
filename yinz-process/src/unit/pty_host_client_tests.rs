@@ -743,10 +743,17 @@ fn a_full_supervisor_backlog_is_bounded_and_not_dead() {
         assert!(pending.len() < 64, "backlog did not fill");
     }
     let (sent, received) = std::sync::mpsc::channel();
-    let probe = std::thread::spawn(move || sent.send(socket_is_dead(&path)).unwrap());
+    let probe = std::thread::spawn(move || {
+        sent.send(socket_is_dead(&path)).unwrap();
+        assert!(query(&path).is_err());
+        sent.send(true).unwrap();
+    });
     assert!(!received
         .recv_timeout(TEST_TIMEOUT)
         .expect("socket probe blocked on a full backlog"));
+    assert!(received
+        .recv_timeout(TEST_TIMEOUT)
+        .expect("supervisor query blocked on a full backlog"));
     probe.join().unwrap();
 }
 

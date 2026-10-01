@@ -932,10 +932,15 @@ pub fn socket_is_dead(socket: &Path) -> bool {
 /// Ask a supervisor for its status over its named socket. Used by
 /// `yinz pty-host list`.
 pub fn query(socket: &Path) -> Result<super::protocol::HostStatus> {
-    let mut stream = UnixStream::connect(socket)
+    use interprocess::local_socket::traits::Stream;
+    let mut stream = yinz_ipc::consts::ipc_connect(socket)
         .with_context(|| format!("failed to connect to {}", socket.display()))?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
-    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
+    stream
+        .set_recv_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("bound supervisor query read")?;
+    stream
+        .set_send_timeout(Some(HANDSHAKE_TIMEOUT))
+        .context("bound supervisor query write")?;
     write_msg(&mut stream, &ServerToHostMsg::Query).context("failed to send Query")?;
     match read_msg::<HostToServerMsg, _>(&mut stream).context("failed to read Status")? {
         Some(HostToServerMsg::Status(status)) => Ok(status),
