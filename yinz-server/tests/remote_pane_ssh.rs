@@ -2505,3 +2505,69 @@ fn a_claude_turn_observer_confirms_only_complete_remote_transcript_records() {
     pane.wait_until_ended(SETTLE).unwrap();
     pane.close();
 }
+
+#[test]
+#[ignore]
+fn agy_observer_confirms_api_idle_over_ssh() {
+    let hosts = start();
+    let path = format!("/tmp/yinz-agy-{}", uuid::Uuid::new_v4());
+    let script = format!(
+        "printf '%s' {} > {}.py; exec -a agy bash -c {}",
+        shell_quote(include_str!("../../yinz-test-support/fixtures/agy.py")),
+        shell_quote(&path),
+        shell_quote(&format!(
+            "python3 {path}.py {path}.jsonl yinz --pty-broker report agy; exit $?"
+        )),
+    );
+    let cmd = RunCommand {
+        command: "/bin/bash".into(),
+        args: vec!["-c".into(), script],
+        target: PaneTarget::Ssh { host: HOST.into() },
+        ..Default::default()
+    };
+    let terminal = yinz_types::internal_ids::TerminalId::new(11);
+    let (conn, socket) = hosts
+        .open_pane_with_env(HOST, &cmd, None, terminal, vec![])
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = RemoteReader::new(conn.clone(), socket)
+        .unwrap()
+        .on_exit(terminal, cmd, Box::new(|_, _, _| {}))
+        .on_agent_report(Arc::new(move |pane, kind, raw| {
+            tx.send((
+                pane,
+                kind,
+                serde_json::from_str::<yinz_types::agent::HookEvent>(&raw).unwrap(),
+            ))
+            .unwrap();
+        }));
+    let pane = pump(conn, reader);
+    for gate in ["first-stop", "continued-stop"] {
+        pane.wait_for_output(gate);
+        for _ in 0..2 {
+            let (reported, kind, hook) = rx.recv_timeout(SETTLE).unwrap();
+            assert_eq!(reported, terminal);
+            assert_eq!(kind, "agy");
+            assert_eq!(hook.session_id, "fixture-conversation");
+            assert_eq!(hook.agy_turn_complete, None);
+            if hook.hook_event_name == "UserPromptSubmit" {
+                assert_eq!(hook.prompt_id.as_deref(), Some("fixture-conversation:1"));
+            }
+        }
+        // These timed absences check that neither model DONE nor a Stop hook confirms.
+        assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
+        pane.send_line("continue");
+    }
+    let (_, _, completed) = rx.recv_timeout(SETTLE).unwrap();
+    assert_eq!(completed.session_id, "fixture-conversation");
+    assert_eq!(
+        completed.prompt_id.as_deref(),
+        Some("fixture-conversation:1")
+    );
+    assert_eq!(completed.turn_id.as_deref(), Some("1"));
+    assert_eq!(completed.agy_turn_complete, Some(true));
+    assert_eq!(completed.last_assistant_message.as_deref(), Some("SECOND"));
+    pane.send_line("exit");
+    pane.wait_until_ended(SETTLE).unwrap();
+    pane.close();
+}

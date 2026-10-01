@@ -6752,6 +6752,7 @@ dependencies = [
  "futures-util",
  "hegeltest",
  "highway",
+ "isahc",
  "libc",
  "log",
  "nix",

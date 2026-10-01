@@ -26,21 +26,31 @@ between separate commands.
 
 ## Launch and submit work
 
-For Codex and Muse, install Yinz's lifecycle hooks before launching:
+For Codex, Muse, and Antigravity (agy), install Yinz's lifecycle hooks before launching:
 
 ```sh
 yinz hocus hooks install --agent codex
 yinz hocus hooks install --agent muse
+yinz hocus hooks install --agent agy
 ```
 
 `yinz hocus hooks install` without `--agent` wires every agent at once.
 Claude Code launches receive the hooks through the existing launch planner.
+Antigravity hooks can also be installed at the project level with `yinz hocus hooks install --agent agy --project`.
+
+AGY completion requires its host-local `GetCascadeTrajectory` API to report Idle
+for the submitted prompt. Hooks must inherit `ANTIGRAVITY_LS_ADDRESS` (a loopback
+IP address and port) and `ANTIGRAVITY_CSRF_TOKEN`. Model responses and Stop hooks
+alone do not confirm completion. Missing API access or unsupported responses
+produce unavailable status. AGY CLI 1.2.14 does not supply these variables to
+hooks by default, so hook installation alone cannot enable confirmed completion.
+
 Codex launches reject Claude model aliases such as `haiku`, `sonnet`, and `opus`.
 Use `--kind claude` for these aliases. Other model IDs are validated by the configured provider.
 
 `agent spawn --help` describes every launch option. Recognized kinds are
 `muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
-`opencode` and `pi`. Recognition does not imply prompt support.
+`opencode`, `pi` and `agy`. Recognition does not imply prompt support.
 Kind names ignore case. Recognized executable aliases, such as `cursor-agent`,
 remain valid.
 
@@ -198,7 +208,7 @@ The Muse announcement carries no session id. The first submit binds the
 conversation, so use `--conversation` only after that first acknowledgement.
 An unwired Muse pane stays `status_unavailable`.
 
-Prompt submission supports Claude Code, Codex and Muse integrations with
+Prompt submission supports Claude Code, Codex, Muse, and Antigravity (agy) integrations with
 lifecycle hooks. The terminal must support bracketed paste. Prompt submission
 and key input require a verified agent command pane. An agent started manually
 inside a shell can appear in listings without satisfying that requirement.
@@ -242,7 +252,7 @@ the pending operation. An unrelated conversation cannot complete the wait.
 ## Outcomes and deadlines
 
 Agent state and operation outcome are separate. An idle agent can have finished,
-failed or been interrupted. For Claude Code, Codex and Muse, `agent wait --until idle`
+failed or been interrupted. For Claude Code, Codex, Muse, and Antigravity (agy), `agent wait --until idle`
 requires reported idle state and prompt readiness. For other agents, including
 OpenCode, matching lifecycle reports of idle state can satisfy the wait even
 though `ready` and `prompt_supported` remain false. Other state waits observe the

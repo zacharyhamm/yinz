@@ -242,6 +242,15 @@ impl PromptObservation {
                 && super::waiting_needs_a_person(hook))
             .then_some(AgentOutcome::NeedsInput);
         }
+        if self.kind == "agy"
+            && hook.agy_turn_complete.is_some()
+            && (hook.session_id.is_empty()
+                || hook.session_id != self.conversation_id
+                || hook.prompt_id.as_deref().is_none_or(str::is_empty)
+                || hook.prompt_id != self.prompt_id)
+        {
+            return None;
+        }
         if hook.session_id.is_empty() || event.session_id.as_deref().is_none_or(str::is_empty) {
             return Some(AgentOutcome::StatusUnavailable);
         }
@@ -304,7 +313,7 @@ impl PromptObservation {
             let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
             let prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
             if (matches!(self.kind.as_str(), "codex" | "muse") && turn_id.is_none())
-                || (self.kind == "claude" && prompt_id.is_none())
+                || (matches!(self.kind.as_str(), "claude" | "agy") && prompt_id.is_none())
             {
                 return Some(AgentOutcome::StatusUnavailable);
             }
@@ -329,7 +338,7 @@ impl PromptObservation {
         {
             return Some(AgentOutcome::NeedsInput);
         }
-        if self.kind != "claude"
+        if !matches!(self.kind.as_str(), "claude" | "agy")
             && self
                 .turn_id
                 .as_deref()
@@ -343,6 +352,18 @@ impl PromptObservation {
                     return None;
                 }
                 hook.claude_turn_complete.map(|complete| {
+                    if complete {
+                        AgentOutcome::Completed
+                    } else {
+                        AgentOutcome::StatusUnavailable
+                    }
+                })
+            },
+            "Stop" if self.kind == "agy" => {
+                if hook.prompt_id != self.prompt_id {
+                    return None;
+                }
+                hook.agy_turn_complete.map(|complete| {
                     if complete {
                         AgentOutcome::Completed
                     } else {

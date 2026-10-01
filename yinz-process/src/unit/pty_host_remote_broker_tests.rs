@@ -446,6 +446,7 @@ fn an_agent_report_is_relayed_on_the_named_panes_channel() {
             socket: socket.clone(),
             pane_token: "token".into(),
         },
+        "claude",
         &confirmation,
     )
     .unwrap();

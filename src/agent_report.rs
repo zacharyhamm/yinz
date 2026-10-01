@@ -133,10 +133,11 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
             .map_err(|_| anyhow!("report trace poisoned"))?
             .enter("write");
         let report_id = report.report_id.clone();
+        let kind = report.kind.clone();
         let observation = report
             .event
             .as_ref()
-            .filter(|event| event.kind == "claude")
+            .filter(|event| matches!(event.kind.as_str(), "claude" | "agy"))
             .and_then(|event| {
                 serde_json::from_str::<yinz_types::agent::HookEvent>(&event.raw).ok()
             });
@@ -160,8 +161,8 @@ pub fn run(mut action: CliAction, mut session: Option<String>, started: Instant)
                 _,
             ) if accepted == report_id => {
                 if let Some(hook) = observation {
-                    yinz_process::claude_turn::start("claude", &hook, observer_route)
-                        .context("observe Claude turn completion")?;
+                    yinz_process::claude_turn::start(&kind, &hook, observer_route)
+                        .with_context(|| format!("observe {kind} turn completion"))?;
                 }
                 return Ok(());
             },

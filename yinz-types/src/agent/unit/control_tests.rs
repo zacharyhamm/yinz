@@ -779,3 +779,404 @@ fn a_claude_notification_turn_never_interrupts_or_completes_a_prompt() {
         Some(AgentOutcome::Interrupted)
     );
 }
+
+#[test]
+fn agy_continuation_invocation_is_treated_as_progress_not_prompt_acceptance() {
+    let mut observation = PromptObservation::new("agy", "conv-1", "fix bug");
+    assert!(!observation.acknowledged());
+
+    // PreInvocation before acceptance without prompt fingerprint does not accept or interrupt
+    let raw_pre_inv = HookEvent {
+        hook_event_name: "PreInvocation".into(),
+        session_id: "conv-1".into(),
+        ..Default::default()
+    };
+    let event_pre_inv = AgentEvent::from_hook(
+        "agy",
+        TerminalId::new(7),
+        &raw_pre_inv,
+        serde_json::to_string(&raw_pre_inv).unwrap(),
+    );
+    assert_eq!(observe(&mut observation, &event_pre_inv), None);
+    assert!(!observation.acknowledged());
+
+    // UserPromptSubmit accepts the prompt
+    let raw_submit = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-1".into(),
+        prompt: Some("fix bug".into()),
+        prompt_sha256: Some(prompt_sha256("fix bug")),
+        ..Default::default()
+    };
+    let event_submit = AgentEvent::from_hook(
+        "agy",
+        TerminalId::new(7),
+        &raw_submit,
+        serde_json::to_string(&raw_submit).unwrap(),
+    );
+    assert_eq!(
+        observe(&mut observation, &event_submit),
+        Some(AgentOutcome::Submitted)
+    );
+    assert!(observation.acknowledged());
+
+    // Tool execution is progress
+    let raw_tool = HookEvent {
+        hook_event_name: "PreToolUse".into(),
+        session_id: "conv-1".into(),
+        tool_name: Some("run_command".into()),
+        ..Default::default()
+    };
+    let event_tool = AgentEvent::from_hook(
+        "agy",
+        TerminalId::new(7),
+        &raw_tool,
+        serde_json::to_string(&raw_tool).unwrap(),
+    );
+    assert_eq!(observe(&mut observation, &event_tool), None);
+
+    // Continuation invocation (invocationNum > 0) preserves PreInvocation without fingerprint;
+    // it must be treated as progress rather than prompt acceptance or interruption.
+    assert_eq!(observe(&mut observation, &event_pre_inv), None);
+
+    // Pre-decision Stop keeps the wait pending
+    let raw_stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conv-1".into(),
+        ..Default::default()
+    };
+    let event_stop = AgentEvent::from_hook(
+        "agy",
+        TerminalId::new(7),
+        &raw_stop,
+        serde_json::to_string(&raw_stop).unwrap(),
+    );
+    assert_eq!(observe(&mut observation, &event_stop), None);
+
+    // Confirmed Stop completes the turn
+    let confirmed_stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conv-1".into(),
+        agy_turn_complete: Some(true),
+        prompt_id: Some("prompt".into()),
+        ..Default::default()
+    };
+    let event_confirmed = AgentEvent::from_hook(
+        "agy",
+        TerminalId::new(7),
+        &confirmed_stop,
+        serde_json::to_string(&confirmed_stop).unwrap(),
+    );
+    assert_eq!(
+        observe(&mut observation, &event_confirmed),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
+fn agy_complete_translated_hook_sequence_from_raw_payloads() {
+    let mut observation = PromptObservation::new("agy", "conv-1234", "review code");
+
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "agy",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+
+    // 1. Initial PreInvocation (invocationNum: 0) translated to UserPromptSubmit and enriched with fingerprint
+    let payload_turn_start = serde_json::json!({
+        "hook_event_name": "PreInvocation",
+        "conversationId": "conv-1234",
+        "workspacePaths": ["/workspace"],
+        "invocationNum": 0,
+        "stepIdx": 5,
+    });
+    let mut hook_start = super::super::agy::to_hook_event(&payload_turn_start);
+    assert_eq!(hook_start.hook_event_name, "UserPromptSubmit");
+    hook_start.prompt = Some("review code".into());
+    hook_start.prompt_sha256 = Some(prompt_sha256("review code"));
+
+    assert_eq!(
+        observe(&mut observation, &broadcast(&hook_start)),
+        Some(AgentOutcome::Submitted)
+    );
+
+    // 2. PreToolUse for run_command
+    let payload_pre_tool = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "conversationId": "conv-1234",
+        "toolCall": {
+            "name": "run_command",
+            "args": { "CommandLine": "cargo test" }
+        },
+        "stepIdx": 6,
+    });
+    let hook_pre_tool = super::super::agy::to_hook_event(&payload_pre_tool);
+    assert_eq!(observe(&mut observation, &broadcast(&hook_pre_tool)), None);
+
+    // 3. PostToolUse
+    let payload_post_tool = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "conversationId": "conv-1234",
+        "toolCall": {
+            "name": "run_command",
+            "args": { "CommandLine": "cargo test" }
+        },
+        "stepIdx": 6,
+    });
+    let hook_post_tool = super::super::agy::to_hook_event(&payload_post_tool);
+    assert_eq!(observe(&mut observation, &broadcast(&hook_post_tool)), None);
+
+    // 4. Continuation PreInvocation (invocationNum: 1, stepIdx: 7) preserves PreInvocation
+    let payload_continuation = serde_json::json!({
+        "hook_event_name": "PreInvocation",
+        "conversationId": "conv-1234",
+        "invocationNum": 1,
+        "stepIdx": 7,
+    });
+    let hook_continuation = super::super::agy::to_hook_event(&payload_continuation);
+    assert_eq!(hook_continuation.hook_event_name, "PreInvocation");
+    assert!(hook_continuation.prompt_sha256.is_none());
+    assert_eq!(
+        observe(&mut observation, &broadcast(&hook_continuation)),
+        None
+    );
+
+    // 5. PreToolUse with ask_question needs input
+    let payload_question = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "conversationId": "conv-1234",
+        "toolCall": {
+            "name": "ask_question",
+            "args": {
+                "questions": [{ "question": "Proceed?" }]
+            }
+        },
+        "stepIdx": 8,
+    });
+    let hook_question = super::super::agy::to_hook_event(&payload_question);
+    assert_eq!(
+        observe(&mut observation, &broadcast(&hook_question)),
+        Some(AgentOutcome::NeedsInput)
+    );
+
+    // 6. Pre-decision Stop keeps wait pending
+    let payload_stop = serde_json::json!({
+        "hook_event_name": "Stop",
+        "conversationId": "conv-1234",
+        "terminationReason": "model_stop",
+    });
+    let hook_stop = super::super::agy::to_hook_event(&payload_stop);
+    assert_eq!(observe(&mut observation, &broadcast(&hook_stop)), None);
+
+    // 7. Confirmed Stop completes the turn
+    let payload_confirmed = serde_json::json!({
+        "hook_event_name": "Stop",
+        "conversationId": "conv-1234",
+        "terminationReason": "model_stop",
+        "_yinz_agy_turn_complete": true,
+    });
+    let mut hook_confirmed = super::super::agy::to_hook_event(&payload_confirmed);
+    hook_confirmed.prompt_id = hook_start.prompt_id.clone();
+    assert_eq!(
+        observe(&mut observation, &broadcast(&hook_confirmed)),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
+fn agy_blocking_stop_and_continuation_resumes_loop() {
+    let mut observation = PromptObservation::new("agy", "conv-loop", "run tasks");
+
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "agy",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+
+    // 1. Prompt submit
+    let start = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-loop".into(),
+        prompt: Some("run tasks".into()),
+        prompt_sha256: Some(prompt_sha256("run tasks")),
+        turn_id: Some("1".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&start)),
+        Some(AgentOutcome::Submitted)
+    );
+
+    // 2. Initial tool execution
+    let tool1 = HookEvent {
+        hook_event_name: "PreToolUse".into(),
+        session_id: "conv-loop".into(),
+        tool_name: Some("run_command".into()),
+        ..Default::default()
+    };
+    assert_eq!(observe(&mut observation, &broadcast(&tool1)), None);
+
+    // 3. Pre-decision Stop notification arrives while Stop hooks execute
+    let pre_decision_stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conv-loop".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::agent::hooks::hook_state_for("agy", &pre_decision_stop),
+        Some(crate::agent::AgentState::Busy)
+    );
+    assert_eq!(
+        observe(&mut observation, &broadcast(&pre_decision_stop)),
+        None
+    );
+
+    // 4. A later Stop handler returns {"decision":"continue"}.
+    // Antigravity resumes the loop, emitting PreInvocation (continuation).
+    let continuation = HookEvent {
+        hook_event_name: "PreInvocation".into(),
+        session_id: "conv-loop".into(),
+        ..Default::default()
+    };
+    assert_eq!(observe(&mut observation, &broadcast(&continuation)), None);
+
+    // 5. Model calls another tool to address the Stop hook decision
+    let tool2 = HookEvent {
+        hook_event_name: "PreToolUse".into(),
+        session_id: "conv-loop".into(),
+        tool_name: Some("replace_file_content".into()),
+        ..Default::default()
+    };
+    assert_eq!(observe(&mut observation, &broadcast(&tool2)), None);
+
+    // 6. Stop hooks finish with confirmation
+    let confirmed_stop = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conv-loop".into(),
+        agy_turn_complete: Some(true),
+        prompt_id: Some("prompt".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::agent::hooks::hook_state_for("agy", &confirmed_stop),
+        Some(crate::agent::AgentState::Idle)
+    );
+    assert_eq!(
+        observe(&mut observation, &broadcast(&confirmed_stop)),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
+fn agy_stop_confirmation_failure_returns_status_unavailable() {
+    let mut observation = PromptObservation::new("agy", "conv-fail", "run tasks");
+
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "agy",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+
+    let start = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-fail".into(),
+        prompt: Some("run tasks".into()),
+        prompt_sha256: Some(prompt_sha256("run tasks")),
+        turn_id: Some("1".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&start)),
+        Some(AgentOutcome::Submitted)
+    );
+
+    let failed_confirmation = HookEvent {
+        hook_event_name: "Stop".into(),
+        session_id: "conv-fail".into(),
+        agy_turn_complete: Some(false),
+        prompt_id: Some("prompt".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&failed_confirmation)),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+}
+
+#[test]
+fn agy_competing_prompt_and_stop_failure() {
+    let mut observation = PromptObservation::new("agy", "conv-1", "original prompt");
+
+    let broadcast = |hook: &HookEvent| {
+        AgentEvent::from_hook(
+            "agy",
+            TerminalId::new(7),
+            hook,
+            serde_json::to_string(hook).unwrap(),
+        )
+    };
+
+    let submit = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-1".into(),
+        prompt: Some("original prompt".into()),
+        prompt_sha256: Some(prompt_sha256("original prompt")),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&submit)),
+        Some(AgentOutcome::Submitted)
+    );
+
+    // A competing prompt with different fingerprint interrupts
+    let competing = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-1".into(),
+        prompt: Some("different prompt".into()),
+        prompt_sha256: Some(prompt_sha256("different prompt")),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation, &broadcast(&competing)),
+        Some(AgentOutcome::Interrupted)
+    );
+
+    // StopFailure outcome
+    let mut observation_fail = PromptObservation::new("agy", "conv-2", "failing prompt");
+    let submit_fail = HookEvent {
+        hook_event_name: "UserPromptSubmit".into(),
+        prompt_id: Some("prompt".into()),
+        session_id: "conv-2".into(),
+        prompt: Some("failing prompt".into()),
+        prompt_sha256: Some(prompt_sha256("failing prompt")),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation_fail, &broadcast(&submit_fail)),
+        Some(AgentOutcome::Submitted)
+    );
+    let stop_failure = HookEvent {
+        hook_event_name: "StopFailure".into(),
+        session_id: "conv-2".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        observe(&mut observation_fail, &broadcast(&stop_failure)),
+        Some(AgentOutcome::Failed)
+    );
+}

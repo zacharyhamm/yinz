@@ -39,6 +39,7 @@ pub(super) struct Lifecycle {
     claude_prompt_id: Option<String>,
     claude_confirmation: Option<bool>,
     claude_previous_prompt_id: Option<String>,
+    agy_confirmation: Option<bool>,
     /// Claude background tasks launched by confirmed turns whose `<task-notification>` turn
     /// has not been confirmed yet.
     background_tasks: BTreeSet<String>,
@@ -142,7 +143,7 @@ impl Screen {
     pub(super) fn is_after_ended_turn(&self, pane: PaneId, kind: &str, hook: &HookEvent) -> bool {
         !matches!(
             hook.hook_event_name.as_str(),
-            "UserPromptSubmit" | "SessionStart" | "SessionEnd"
+            "UserPromptSubmit" | "PreInvocation" | "SessionStart" | "SessionEnd"
         ) && matches!(
             yinz_types::agent::hook_state(hook),
             Some(AgentState::Busy | AgentState::Waiting)
@@ -315,6 +316,42 @@ impl Screen {
         .expect("the test pane has an agent")
     }
 
+    pub(super) fn ignore_agy_confirmation(&self, pane: PaneId, hook: &HookEvent) -> bool {
+        if hook.is_worker() {
+            return false;
+        }
+        let Some(lifecycle) = self.agent_lifecycle.get(&pane) else {
+            return hook.agy_turn_complete.is_some();
+        };
+        if hook.agy_turn_complete.is_some() {
+            if lifecycle.kind != "agy"
+                || hook.session_id.is_empty()
+                || lifecycle.conversation != hook.session_id
+            {
+                return true;
+            }
+            if hook.prompt_id.as_deref().is_none_or(str::is_empty)
+                || lifecycle.claude_prompt_id != hook.prompt_id
+            {
+                return true;
+            }
+            return !(lifecycle.agy_confirmation.is_none()
+                || (lifecycle.agy_confirmation == Some(false)
+                    && hook.agy_turn_complete == Some(true)));
+        }
+        if hook.hook_event_name == "UserPromptSubmit" && hook.prompt_id.is_some() {
+            return lifecycle.kind == "agy"
+                && lifecycle.conversation == hook.session_id
+                && (lifecycle.claude_previous_prompt_id == hook.prompt_id
+                    || (lifecycle.claude_prompt_id == hook.prompt_id
+                        && lifecycle.agy_confirmation.is_some()));
+        }
+        hook.hook_event_name == "Stop"
+            && lifecycle.kind == "agy"
+            && lifecycle.conversation == hook.session_id
+            && lifecycle.agy_confirmation == Some(true)
+    }
+
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
         self.agent_lifecycle.remove(&pane);
         self.agent_dialog_inputs.remove(&pane);
@@ -461,8 +498,6 @@ impl Screen {
         let startup_input = hook
             .filter(|hook| {
                 !hook.is_worker()
-                    && hook_state(hook) == Some(AgentState::Idle)
-                    && hook.hook_event_name == "SessionStart"
                     && hook.codex_hooks_ready != Some(false)
                     && self.agent_dialog_inputs.get(&pane).is_some_and(|input| {
                         input.startup
@@ -472,6 +507,13 @@ impl Screen {
                                 .as_deref()
                                 .is_none_or(|conversation| conversation == hook.session_id)
                     })
+                    && ((hook_state(hook) == Some(AgentState::Idle)
+                        && hook.hook_event_name == "SessionStart")
+                        || (report.kind == "agy"
+                            && matches!(
+                                hook.hook_event_name.as_str(),
+                                "UserPromptSubmit" | "PreInvocation"
+                            )))
             })
             .and_then(|_| self.agent_dialog_inputs.remove(&pane));
         let clear_input = clear_transition
@@ -541,7 +583,7 @@ impl Screen {
             && !info.exited
             && agent.state != AgentState::Exited
             && self.agent_input_enabled(pane_id);
-        let supported = matches!(agent.kind.as_str(), "claude" | "codex" | "muse");
+        let supported = matches!(agent.kind.as_str(), "claude" | "codex" | "muse" | "agy");
         let prompt_supported = supported
             && status_available
             && live
@@ -982,6 +1024,9 @@ impl Screen {
                     if lifecycle.kind == "claude" {
                         lifecycle.claude_confirmation = Some(true);
                     }
+                    if lifecycle.kind == "agy" {
+                        lifecycle.agy_confirmation = Some(true);
+                    }
                 }
                 self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
             },
@@ -1037,8 +1082,10 @@ impl Screen {
                 let provisional = status.agent.kind == "muse"
                     && status.agent.session_id.is_none()
                     && self.has_provisional_muse_lifecycle(pane);
-                let startup = matches!(status.agent.kind.as_str(), "claude" | "codex" | "muse")
-                    && (status.agent.source == AgentSource::Spawned || provisional);
+                let startup = matches!(
+                    status.agent.kind.as_str(),
+                    "claude" | "codex" | "muse" | "agy"
+                ) && (status.agent.source == AgentSource::Spawned || provisional);
                 if !(status.status_available || startup)
                     || !self.agent_process_matches(pane, &status.agent.kind)
                 {
@@ -1490,7 +1537,7 @@ impl Screen {
                         && (pending.until != AgentState::Idle
                             || !matches!(
                                 status.agent.kind.as_str(),
-                                "claude" | "codex" | "muse"
+                                "claude" | "codex" | "muse" | "agy"
                             )
                             || (status.ready && !self.claude_background_pending(pending.pane))) =>
                 {
@@ -1645,6 +1692,14 @@ impl Screen {
                 lifecycle.claude_confirmation = Some(false);
             }
         }
+        if parent
+            && event.kind == "agy"
+            && hook.is_some_and(|hook| hook.agy_turn_complete == Some(false))
+        {
+            if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                lifecycle.agy_confirmation = Some(false);
+            }
+        }
         let mut clear_revision = None;
         let clear_started = self.get_pane_info(pane).is_some_and(|info| {
             info.agent.is_some_and(|agent| {
@@ -1709,8 +1764,13 @@ impl Screen {
                     input.fresh_waiting = true;
                 } else if (input.startup
                     && parent
-                    && event.hook == "SessionStart"
-                    && state == Some(AgentState::Idle))
+                    && ((event.hook == "SessionStart" && state == Some(AgentState::Idle))
+                        || (input.kind == "agy"
+                            && matches!(
+                                event.hook.as_str(),
+                                "UserPromptSubmit" | "PreInvocation"
+                            )
+                            && matches!(state, Some(AgentState::Busy | AgentState::Idle)))))
                     || (!input.startup
                         && parent
                         && event.hook != "SessionStart"
@@ -1885,6 +1945,7 @@ impl Screen {
                     claude_prompt_id: None,
                     claude_confirmation: None,
                     claude_previous_prompt_id: None,
+                    agy_confirmation: None,
                     background_tasks: BTreeSet::new(),
                     claude_notifications: BTreeMap::new(),
                     claude_previous_notification: None,
@@ -1911,7 +1972,21 @@ impl Screen {
                         .map(|previous| previous.input_revision)
                         .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),
                     // Claude starts a notification turn by itself; it consumes no input.
-                    "UserPromptSubmit" if !notification => accepted_input_revision,
+                    "UserPromptSubmit" if !notification => accepted_input_revision.or_else(|| {
+                        (event.kind == "agy"
+                            && previous.is_none()
+                            && self.agent_input_revision(pane) == 0)
+                            .then_some(0)
+                    }),
+                    "PreInvocation" if event.kind == "agy" => {
+                        accepted_input_revision.or_else(|| {
+                            previous
+                                .map(|previous| previous.input_revision)
+                                .unwrap_or_else(|| {
+                                    (self.agent_input_revision(pane) == 0).then_some(0)
+                                })
+                        })
+                    },
                     // An uncorrelated acceptance may arrive after a newer draft. Tool progress
                     // and completion preserve consumption, including when it is unknown.
                     _ => previous.and_then(|previous| previous.input_revision),
@@ -1921,6 +1996,7 @@ impl Screen {
                     .and_then(|hook| hook.turn_id.clone())
                     .filter(|turn| !turn.is_empty()),
                 "UserPromptSubmit" if !notification => None,
+                "PreInvocation" => None,
                 _ => previous.and_then(|previous| previous.ended_turn.clone()),
             };
             self.agent_lifecycle.insert(
@@ -1939,7 +2015,8 @@ impl Screen {
                     claude_previous_prompt_id: previous.and_then(|previous| {
                         if event.hook == "UserPromptSubmit"
                             && !notification
-                            && previous.claude_confirmation.is_some()
+                            && (previous.claude_confirmation.is_some()
+                                || previous.agy_confirmation.is_some())
                         {
                             previous.claude_prompt_id.clone()
                         } else {
@@ -1969,6 +2046,19 @@ impl Screen {
                     claude_overtaken: previous
                         .and_then(|previous| previous.claude_overtaken.clone()),
                     last_message: previous.and_then(|previous| previous.last_message.clone()),
+                    agy_confirmation: if matches!(
+                        event.hook.as_str(),
+                        "UserPromptSubmit" | "PreInvocation"
+                    ) {
+                        None
+                    } else if event.kind == "agy"
+                        && matches!(event.hook.as_str(), "StopFailure" | "Interrupt")
+                    {
+                        Some(true)
+                    } else {
+                        hook.and_then(|hook| hook.agy_turn_complete)
+                            .or_else(|| previous.and_then(|previous| previous.agy_confirmation))
+                    },
                 },
             );
         }

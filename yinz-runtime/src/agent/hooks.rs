@@ -24,6 +24,20 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
     if kind == "muse" {
         return parse_muse_hook_event(json);
     }
+    if kind == "agy" {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        // Detached confirmations and broker deliveries already use HookEvent's shape.
+        // Re-translating them as native hooks drops conversation and prompt identities.
+        if value.get("session_id").is_some() {
+            return Ok((serde_json::from_value(value)?, json));
+        }
+        let mut event = yinz_types::agent::agy::to_hook_event(&value);
+        if let Some(path) = event.transcript_path.clone() {
+            enrich_agy_transcript(&mut event, &path);
+        }
+        let translated = serde_json::to_string(&event)?;
+        return Ok((event, translated));
+    }
     let mut event: HookEvent = serde_json::from_str(&json)?;
     if kind != "codex" {
         return Ok((event, json));
@@ -225,6 +239,102 @@ fn transcript_messages(
         }
     }
     messages
+}
+
+fn enrich_agy_transcript(event: &mut HookEvent, path: &str) {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let Ok(mut file) = options.open(path) else {
+        return;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return;
+    };
+    if !metadata.is_file() {
+        return;
+    }
+
+    let start = metadata.len().saturating_sub(TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut tail = Vec::new();
+    if file.read_to_end(&mut tail).is_err() {
+        return;
+    }
+
+    if event.hook_event_name == "UserPromptSubmit" && event.prompt.is_none() {
+        if let Some(prompt) = extract_agy_prompt(&tail, event.turn_id.as_deref()) {
+            event.prompt_sha256 = Some(yinz_types::agent::control::prompt_sha256(&prompt));
+            event.prompt = Some(prompt);
+        }
+    }
+
+    if matches!(event.hook_event_name.as_str(), "Stop" | "StopFailure")
+        && event.last_assistant_message.is_none()
+    {
+        if let Some(last_msg) = extract_agy_last_assistant_message(&tail) {
+            event.last_assistant_message = Some(last_msg);
+        }
+    }
+}
+
+fn extract_agy_prompt(tail: &[u8], initial_steps: Option<&str>) -> Option<String> {
+    let expected = initial_steps?.parse::<u64>().ok()?.checked_sub(1)?;
+    for line in tail.split_inclusive(|byte| *byte == b'\n').rev() {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") {
+            if record["step_index"].as_u64() != Some(expected) {
+                return None;
+            }
+            let content = record.get("content").and_then(Value::as_str)?;
+            let text = if let Some(start) = content.find("<USER_REQUEST>") {
+                let rest = &content[start + "<USER_REQUEST>".len()..];
+                // Find the outer wrapper's closing delimiter from the end so that literal
+                // `</USER_REQUEST>` delimiters within user prompt content are preserved.
+                if let Some(end) = rest.rfind("</USER_REQUEST>") {
+                    &rest[..end]
+                } else {
+                    rest
+                }
+            } else {
+                content
+            };
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn extract_agy_last_assistant_message(tail: &[u8]) -> Option<String> {
+    for line in tail.split_inclusive(|byte| *byte == b'\n').rev() {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        match record.get("type").and_then(Value::as_str) {
+            Some("USER_INPUT") => break,
+            Some("PLANNER_RESPONSE") => {
+                if let Some(content) = record.get("content").and_then(Value::as_str) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_owned());
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -322,6 +322,7 @@ pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
 /// pane goes before the process has said anything. Two lists would be two answers.
 pub const KINDS: &[&str] = &[
     "muse", "codex", "claude", "cursor", "qwen", "gemini", "aider", "cline", "opencode", "pi",
+    "agy",
 ];
 
 /// Programs that run another program named in their own arguments. Half the table
@@ -354,7 +355,13 @@ pub fn kind_of(word: &str) -> Option<&'static str> {
         stem.split('-').next().unwrap_or_default(),
     ]
     .iter()
-    .find_map(|candidate| KINDS.iter().find(|kind| *kind == candidate).copied())
+    .find_map(|candidate| {
+        if *candidate == "antigravity" {
+            Some("agy")
+        } else {
+            KINDS.iter().find(|kind| *kind == candidate).copied()
+        }
+    })
 }
 
 /// The agent kind a command line names, or `None`.
@@ -480,7 +487,12 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
 /// reads an event consults - the record `agent-report` writes, and `hocus_proto`'s `hook_phase`,
 /// which the daemon draws its feed from. A mapping keyed on the agent's kind would reach only
 /// the first of them, and the second would then overwrite it with `busy`.
-pub const WAITING_TOOLS: &[&str] = &["AskUserQuestion", "ExitPlanMode", "request_user_input"];
+pub const WAITING_TOOLS: &[&str] = &[
+    "AskUserQuestion",
+    "ExitPlanMode",
+    "request_user_input",
+    "ask_question",
+];
 
 /// Permission modes whose automatic approval is work, not a wait for user input.
 /// `acceptEdits` is handled separately because it only answers file-editing prompts.
@@ -577,6 +589,13 @@ pub struct HookEvent {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub claude_background_tasks: Vec<String>,
+    /// Antigravity's host-side turn confirmation.
+    #[serde(
+        default,
+        rename = "_yinz_agy_turn_complete",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agy_turn_complete: Option<bool>,
     /// [`crate::agent::control::prompt_sha256`] of the prompt, taken before pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
@@ -767,6 +786,7 @@ impl HookEvent {
                 .take(MAX_BACKGROUND_TASKS)
                 .map(|task| truncate_within(task, 128, 128))
                 .collect(),
+            agy_turn_complete: self.agy_turn_complete,
             prompt_sha256: self.prompt_sha256.clone(),
             workflow_owner: self.workflow_owner.clone(),
             codex_hooks_ready: self.codex_hooks_ready,
@@ -953,16 +973,15 @@ fn prune_value(
 ///
 /// `SessionEnd` is `None` here too, and deliberately: it does not move the record to a state,
 /// it ends one. [`hook_outcome`] is the reading that tells the two apart.
-/// Claude Stop hooks run before blocking hooks can continue the turn.
+/// Claude and Antigravity Stop hooks run before blocking hooks can continue the turn.
 pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
-    if kind == "claude"
-        && event.hook_event_name == "Stop"
-        && event.claude_turn_complete != Some(true)
+    if event.hook_event_name == "Stop"
+        && ((kind == "claude" && event.claude_turn_complete != Some(true))
+            || (kind == "agy" && event.agy_turn_complete != Some(true)))
     {
-        Some(AgentState::Busy)
-    } else {
-        hook_state(event)
+        return Some(AgentState::Busy);
     }
+    hook_state(event)
 }
 
 pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
@@ -1001,10 +1020,9 @@ pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
         // Workers can start or finish after the parent stops, or while it waits for input.
         "SubagentStart" | "SubagentStop" => None,
         // Work by the parent, including compaction.
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-        | "PermissionDenied" | "ElicitationResult" | "PreCompact" | "PostCompact" => {
-            Some(AgentState::Busy)
-        },
+        "UserPromptSubmit" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse"
+        | "PostToolUseFailure" | "PermissionDenied" | "ElicitationResult" | "PreCompact"
+        | "PostCompact" => Some(AgentState::Busy),
         // Waiting or nothing, never idle: see [`WAITING_NOTIFICATIONS`] for why no
         // notification is read as the turn ending, `agent_completed` included.
         "Notification" => match event.notification_type.as_deref() {
@@ -1071,8 +1089,27 @@ fn tool_summary(event: &HookEvent) -> Option<String> {
         "Bash" => input
             .and_then(|input| input.get("command")?.as_str())
             .and_then(|command| command.split_whitespace().next()),
+        "run_command" => input
+            .and_then(|input| input.get("CommandLine")?.as_str())
+            .and_then(|command| command.split_whitespace().next()),
         "Read" | "Edit" | "Write" | "NotebookEdit" => input
             .and_then(|input| input.get("file_path")?.as_str())
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+            }),
+        "view_file" => input
+            .and_then(|input| input.get("AbsolutePath")?.as_str())
+            .map(|path| {
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+            }),
+        "write_to_file" | "replace_file_content" => input
+            .and_then(|input| input.get("TargetFile")?.as_str())
             .map(|path| {
                 Path::new(path)
                     .file_name()
@@ -1112,7 +1149,7 @@ pub fn waiting_detail(event: &HookEvent) -> Option<String> {
     };
     match event.hook_event_name.as_str() {
         "PreToolUse" => match event.tool_name.as_deref() {
-            Some("AskUserQuestion" | "request_user_input") => question(),
+            Some("AskUserQuestion" | "request_user_input" | "ask_question") => question(),
             Some("ExitPlanMode") => Some("approve the plan".to_owned()),
             _ => None,
         },
@@ -2275,6 +2312,7 @@ mod tests {
                 prompt_id: Some("prompt-1".into()),
                 claude_turn_complete: Some(true),
                 claude_background_tasks: (0..40).map(|task| format!("task-{task}")).collect(),
+                agy_turn_complete: Some(true),
                 workflow_owner: Some("owner".into()),
                 message: Some(prompt.clone()),
                 last_assistant_message: Some(prompt.clone()),
@@ -2291,6 +2329,7 @@ mod tests {
                 bounded.claude_background_tasks,
                 hook.claude_background_tasks[..MAX_BACKGROUND_TASKS]
             );
+            assert_eq!(bounded.agy_turn_complete, hook.agy_turn_complete);
             assert_eq!(bounded.workflow_owner, hook.workflow_owner);
             assert_eq!(
                 bounded.prompt_sha256,

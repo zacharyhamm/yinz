@@ -14,6 +14,7 @@ RUN apt-get update \
     openssh-server \
     git \
     procps \
+    python3 \
     coreutils \
     bash \
     passwd \

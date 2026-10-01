@@ -1435,6 +1435,7 @@ fn permission_modes(kind: &str) -> &'static [&'static str] {
         "cursor" => launch::CURSOR_PERMISSION_MODES,
         "opencode" => launch::OPENCODE_PERMISSION_MODES,
         "muse" => launch::MUSE_PERMISSION_MODES,
+        "agy" => launch::AGY_PERMISSION_MODES,
         _ => &[],
     }
 }

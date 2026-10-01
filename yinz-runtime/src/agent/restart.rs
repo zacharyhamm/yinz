@@ -58,6 +58,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         // The launcher execs a versioned binary (`muse-bin-1.4.2-R4684.1`); the pane
         // is still a muse pane, the way `kind_of` reads it.
         Some(name) if name.starts_with("muse-bin-") => "muse",
+        Some("agy" | "antigravity") => "agy",
         _ => return Err("unsupported agent command for restart".into()),
     };
     // Only fixed-arity options are accepted. Variadic options must use an inline value;
@@ -304,9 +305,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "help",
             ],
         ),
-        // opencode's table. The wildcard is the only arm left for it: `kind` is a
-        // plain `&str`, so naming it would leave the match non-exhaustive.
-        _ => (
+        "opencode" => (
             &[
                 "-m",
                 "--model",
@@ -353,6 +352,44 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "help",
             ],
         ),
+        "agy" => (
+            &[
+                "--model",
+                "--mode",
+                "--effort",
+                "--agent",
+                "--project",
+                "--add-dir",
+                "--log-file",
+                "--json-schema",
+                "--input-format",
+                "--output-format",
+                "--print-timeout",
+            ],
+            &[
+                "--dangerously-skip-permissions",
+                "--disable-slash-commands",
+                "--new-project",
+                "--remote-control",
+                "--sandbox",
+            ],
+            &[],
+            &[
+                "agent",
+                "agents",
+                "changelog",
+                "help",
+                "install",
+                "mcp",
+                "mic-serve",
+                "models",
+                "plugin",
+                "plugins",
+                "remote-control",
+                "update",
+            ],
+        ),
+        _ => unreachable!(),
     };
     let mut cleaned = Vec::new();
     let mut index = 0;
@@ -377,6 +414,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 ("claude", "--session-id" | "--resume-session-at")
                     | ("opencode", "--prompt" | "-s" | "--session")
                     | ("muse", "--session-id" | "--prompt-file")
+                    | ("agy", "--conversation" | "--prompt-interactive" | "-i")
             );
             let remove_optional = matches!(
                 (kind, flag),
@@ -389,6 +427,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                         | ("cursor", "--continue")
                         | ("opencode", "-c" | "--continue" | "--fork")
                         | ("muse", "--last")
+                        | ("agy", "-c" | "--continue")
                 ) || (kind == "codex" && resume && matches!(flag, "--last" | "--all"));
             if remove_optional {
                 if inline.is_none() && args.get(index).is_some_and(|next| !next.starts_with('-')) {
@@ -473,6 +512,8 @@ mod tests {
             ("cursor", "force"),
             ("opencode", "auto"),
             ("muse", "skip"),
+            ("agy", "skip"),
+            ("agy", "accept-edits"),
         ] {
             for resume in [None, Some("last"), Some("conversation-id")] {
                 let mut spec = Spec {
@@ -673,6 +714,73 @@ mod tests {
                     "gpt",
                 ],
             ),
+            (
+                "agy",
+                vec![
+                    "--model",
+                    "chosen-model",
+                    "--prompt-interactive",
+                    "work",
+                    "--mode",
+                    "plan",
+                    "--effort",
+                    "high",
+                ],
+                vec![
+                    "--model",
+                    "chosen-model",
+                    "--mode",
+                    "plan",
+                    "--effort",
+                    "high",
+                ],
+            ),
+            (
+                "agy",
+                vec![
+                    "-i",
+                    "work",
+                    "-c",
+                    "--conversation=conv-123",
+                    "--dangerously-skip-permissions",
+                    "--",
+                    "--literal prompt",
+                ],
+                vec!["--dangerously-skip-permissions"],
+            ),
+            ("agy", vec!["--conversation", "conv-1", "work"], vec![]),
+            (
+                "agy",
+                vec!["--add-dir", "/work", "--prompt-interactive", "task"],
+                vec!["--add-dir", "/work"],
+            ),
+            (
+                "agy",
+                vec!["--add-dir", "/work", "prompt"],
+                vec!["--add-dir", "/work"],
+            ),
+            (
+                "agy",
+                vec!["--add-dir", "/work", "--add-dir", "/extra dir", "task"],
+                vec!["--add-dir", "/work", "--add-dir", "/extra dir"],
+            ),
+            (
+                "agy",
+                vec!["--add-dir=/extra", "--prompt-interactive", "work"],
+                vec!["--add-dir=/extra"],
+            ),
+            (
+                "antigravity",
+                vec![
+                    "--model",
+                    "custom",
+                    "--add-dir",
+                    "/work",
+                    "--prompt-interactive",
+                    "work",
+                ],
+                vec!["--model", "custom", "--add-dir", "/work"],
+            ),
         ] {
             assert_eq!(
                 restart_args(Path::new(program), &strings(&input)).unwrap(),
@@ -718,7 +826,7 @@ mod tests {
 
     #[test]
     fn restart_refuses_print_mode_including_env_wrappers() {
-        for program in ["claude", "cursor-agent"] {
+        for program in ["claude", "cursor-agent", "agy"] {
             for flag in ["-p", "--print"] {
                 assert!(restart_args(Path::new(program), &strings(&[flag, "work"])).is_err());
                 assert!(restart_args(
@@ -728,6 +836,7 @@ mod tests {
                 .is_err());
             }
         }
+        assert!(restart_args(Path::new("agy"), &strings(&["--prompt", "work"])).is_err());
         assert_eq!(
             restart_args(Path::new("codex"), &strings(&["-p", "profile", "work"])).unwrap(),
             strings(&["-p", "profile"])
@@ -754,6 +863,10 @@ mod tests {
             ("muse", vec!["resume", "abc", "def"]),
             ("env", vec!["--split-string", "claude work"]),
             ("env", vec!["-u"]),
+            ("agy", vec!["update"]),
+            ("agy", vec!["one", "two"]),
+            ("agy", vec!["--add-dir"]),
+            ("agy", vec!["--model"]),
         ] {
             assert!(
                 restart_args(Path::new(program), &strings(&input)).is_err(),
