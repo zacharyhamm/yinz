@@ -118,3 +118,32 @@ fn malformed_frames_are_survivable() {
         "a single bad frame should unblock the input thread and then carry on: {instructions:?}"
     );
 }
+
+#[test]
+fn a_router_blocked_on_a_full_channel_stops_once_the_main_loop_is_gone() {
+    // The main loop has exited, after failing to write to the terminal, and the server
+    // keeps sending frames. With nobody draining the channel, the router blocks on the
+    // first send that does not fit; dropping the receiver is what lets it go.
+    let os_input = FakeClientOsApi::default();
+    for _ in 0..5 {
+        os_input.queue_from_server(ServerToClientMsg::Render {
+            content: "frame".to_string(),
+        });
+    }
+    let (sender, receiver) = channels::bounded(1);
+    let sender = SenderWithContext::new(sender);
+    let (finished, router_finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let render_budget = RenderBudget::new(RENDER_BUDGET_BYTES);
+        route(Box::new(os_input), sender, &render_budget);
+        let _ = finished.send(());
+    });
+    // Nothing else stops the router: the fake server never hangs up.
+    assert!(router_finished
+        .recv_timeout(std::time::Duration::from_millis(200))
+        .is_err());
+    drop(receiver);
+    router_finished
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the router should stop once nobody reads its channel");
+}

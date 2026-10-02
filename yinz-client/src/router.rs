@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use yinz_runtime::channels::SenderWithContext;
+use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ErrorContext;
 use {yinz_ipc::ipc::IpcRecv, yinz_ipc::ipc::ServerToClientMsg};
 
@@ -88,6 +89,7 @@ pub(crate) fn route(
     let mut waiting_for_first_message = true;
     let mut waiting_for_first_render = true;
     let mut slow_warnings = SlowWarnings::default();
+    let mut budget_warnings = SlowWarnings::default();
     log::info!(
         "attach trace: client pid={} router started; waiting for first server message",
         std::process::id()
@@ -143,11 +145,23 @@ pub(crate) fn route(
                     ServerToClientMsg::Connected { .. } => ("Connected", 0),
                     _ => ("other", 0),
                 };
-                let started = Instant::now();
                 if let ServerToClientMsg::Render { content } = &instruction {
                     // Stop reading while the terminal is behind; see `RenderBudget`.
-                    render_budget.reserve(content.len());
+                    let waiting_since = Instant::now();
+                    let reserved = render_budget.reserve(content.len());
+                    if reserved.is_err() {
+                        // Only a client loop that panicked mid-frame poisons the budget.
+                        reserved.non_fatal();
+                        break;
+                    }
+                    let waited = waiting_since.elapsed();
+                    if let Some((suppressed, max_suppressed)) =
+                        budget_warnings.record(Instant::now(), waited)
+                    {
+                        log::warn!("output pressure: client pid={} stage=render_budget kind={kind} render_bytes={render_bytes} elapsed_ms={} suppressed={suppressed} max_suppressed_ms={}", std::process::id(), waited.as_millis(), max_suppressed.as_millis());
+                    }
                 }
+                let started = Instant::now();
                 let should_exit = forward(&send_client_instructions, instruction, err_ctx);
                 let elapsed = started.elapsed();
                 if let Some((suppressed, max_suppressed)) =
@@ -221,6 +235,9 @@ pub(crate) fn route(
     }
     if let Some((suppressed, max_suppressed)) = slow_warnings.finish() {
         log::warn!("output pressure: client pid={} stage=router_enqueue final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
+    }
+    if let Some((suppressed, max_suppressed)) = budget_warnings.finish() {
+        log::warn!("output pressure: client pid={} stage=render_budget final suppressed={suppressed} max_suppressed_ms={}", std::process::id(), max_suppressed.as_millis());
     }
 }
 
