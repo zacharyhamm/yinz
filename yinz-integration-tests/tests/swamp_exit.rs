@@ -956,7 +956,7 @@ export default hook;
         .agent
         .as_ref()
         .is_some_and(|a| { a.session_id.as_deref() == Some("old-session") })));
-    for _ in 0..2 {
+    for cycle in 0..2 {
         original.exit(Some(0));
         yinz.wait_until("exit panel or its permissions", |s| {
             s.contains("Allow? (y/n)") || s.contains("Enter: restart")
@@ -976,6 +976,12 @@ export default hook;
                         && a.run_id.is_none()
                 }) && !p.pane_info.exited
             })
+        });
+        // Consume the old exit panel's render before the next cycle can match its text.
+        let restarted_output = format!("RESTARTED AGENT {cycle}");
+        original.output(format!("{restarted_output}\r\n").as_bytes());
+        yinz.wait_until("restarted agent has rendered", |s| {
+            s.contains(&restarted_output)
         });
     }
     yinz.quit();

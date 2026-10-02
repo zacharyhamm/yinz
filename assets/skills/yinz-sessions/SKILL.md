@@ -3,10 +3,12 @@ name: yinz-sessions
 description: Discover Yinz context and manage sessions, tabs, panes, remote terminals, VMs, and bounded output waits through the Yinz CLI.
 ---
 
-Use the installed `yinz` CLI. Inside a Yinz pane, `YINZ_SESSION_NAME` selects the
-current session. Start with `yinz action context`. Outside a session, run
-`yinz list-sessions --short`, select the intended name, and add `--session NAME`
-to each command below. Context reports missing caller/project information and
+Use the installed `yinz` CLI. Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves
+the current session and caller. Start with `yinz action context`. Outside a pane, run
+`yinz list-sessions --short`, select the intended name, and put the root option before
+the command: `yinz --session NAME action ...`. `YINZ_SESSION_NAME` alone does not
+select a session; use an explicit `--session` when pane context is unavailable.
+Context reports missing caller/project information and
 candidates. Select an explicit session, pane, or project when context is incomplete.
 Do not infer the caller from whichever pane is focused.
 Background operations require `hocus-agentd`; notes and project registry actions

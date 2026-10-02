@@ -1,6 +1,203 @@
 use super::*;
 use yinz_runtime::channels::{self, SenderWithContext};
 
+fn launch_failure_repository() -> (tempfile::TempDir, PathBuf, DataAccess) {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ] {
+        let output = process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let data = DataAccess::sqlite(&root.join("data"));
+    (directory, root, data)
+}
+
+#[test]
+fn failed_spawn_retains_checkout_created_before_the_pane_request() {
+    let (_directory, root, data) = launch_failure_repository();
+    let response = agent_control::control_agent(
+        yinz_types::agent::control::AgentRequest::Spawn {
+            spec: AgentSpawnSpec {
+                kind: Some("codex".into()),
+                branch: Some("review".into()),
+                ..Default::default()
+            },
+            cwd: Some(root.clone()),
+            project: None,
+            remote_host: None,
+            automatic_firecracker_vm: false,
+        },
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Failed);
+    assert!(response.spawned.is_none());
+    let resources = response.launch_resources.unwrap();
+    assert_eq!(resources.cwd, Some(root.join(".worktrees/review")));
+    assert_eq!(resources.branch.as_deref(), Some("review"));
+    assert!(root.join(".worktrees/review/.git").exists());
+    assert!(response.message.unwrap().contains("inspect"));
+}
+
+#[test]
+fn git_spawn_failures_distinguish_validation_from_attempted_checkout_changes() {
+    let (_directory, root, data) = launch_failure_repository();
+    std::fs::write(root.join(".worktrees"), "blocks worktree creation").unwrap();
+    for (branch, outcome) in [
+        ("invalid..branch", AgentOutcome::Rejected),
+        ("review", AgentOutcome::Failed),
+    ] {
+        let response = agent_control::control_agent(
+            yinz_types::agent::control::AgentRequest::Spawn {
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some(branch.into()),
+                    ..Default::default()
+                },
+                cwd: Some(root.clone()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: false,
+            },
+            crate::ClientId::new(1),
+            &ThreadSenders::default(),
+            &data,
+        );
+        assert_eq!(response.outcome, outcome, "{:?}", response.message);
+        assert!(response.spawned.is_none());
+        if outcome == AgentOutcome::Failed {
+            let resources = response.launch_resources.unwrap();
+            assert_eq!(resources.cwd, Some(root.join(".worktrees/review")));
+            assert_eq!(resources.branch.as_deref(), Some("review"));
+        } else {
+            assert!(response.launch_resources.is_none());
+        }
+    }
+}
+
+#[test]
+fn failed_or_unknown_pane_completion_keeps_known_launch_resources() {
+    let (_directory, root, data) = launch_failure_repository();
+    for (branch, failed_pane) in [("failed", true), ("unknown", false)] {
+        let (to_pty, pty_rx) = channels::unbounded();
+        let senders = ThreadSenders {
+            to_pty: Some(SenderWithContext::new(to_pty)),
+            ..Default::default()
+        };
+        let worker = thread::spawn(move || {
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(mut completion), _) = instruction
+            else {
+                panic!("expected spawn");
+            };
+            if failed_pane {
+                completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+                completion.set_error_message("provider failed after creating the pane".into());
+            }
+        });
+        let response = agent_control::control_agent(
+            yinz_types::agent::control::AgentRequest::Spawn {
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some(branch.into()),
+                    ..Default::default()
+                },
+                cwd: Some(root.clone()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: false,
+            },
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        );
+        worker.join().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Failed);
+        if failed_pane {
+            let spawned = response.spawned.unwrap();
+            assert_eq!(spawned.pane_id, PaneId::Terminal(TerminalId::new(17)));
+            assert_eq!(spawned.cwd, Some(root.join(".worktrees/failed")));
+            assert_eq!(spawned.branch.as_deref(), Some(branch));
+            assert!(response.launch_resources.is_none());
+        } else {
+            assert!(response.spawned.is_none());
+            assert_eq!(
+                response.launch_resources.unwrap().cwd,
+                Some(root.join(".worktrees/unknown"))
+            );
+            assert!(response.message.unwrap().contains("outcome is unknown"));
+        }
+    }
+}
+
+#[test]
+fn guest_only_spawn_does_not_report_a_fabricated_host_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    let (to_pty, pty_rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty: Some(SenderWithContext::new(to_pty)),
+        ..Default::default()
+    };
+    let worker = thread::spawn(move || {
+        let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let PtyInstruction::SpawnTerminal(
+            Some(TerminalAction::RunCommand(command)),
+            _,
+            _,
+            _,
+            _,
+            Some(mut completion),
+            _,
+        ) = instruction
+        else {
+            panic!("expected spawn");
+        };
+        assert_eq!(command.cwd, None);
+        assert!(matches!(
+            command.target,
+            PaneTarget::Firecracker { worktree: None, .. }
+        ));
+        completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+    });
+    let spawned = spawn_agent_for_cli(
+        AgentSpawnSpec {
+            kind: Some("codex".into()),
+            firecracker: Some("guest".into()),
+            ..Default::default()
+        },
+        None,
+        None,
+        None,
+        false,
+        crate::ClientId::new(1),
+        &senders,
+        &data,
+    )
+    .unwrap();
+    worker.join().unwrap();
+    assert_eq!(spawned.cwd, None);
+    assert_eq!(spawned.branch, None);
+}
+
 #[test]
 fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
     let directory = tempfile::tempdir().unwrap();

@@ -7,8 +7,8 @@ use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
-    is_command_prompt, needs_paste_lead_in, pi_prompt_text, AgentOutcome, AgentRequest,
-    AgentResponse, AgentStatus, NotReadyReason, PromptObservation, MAX_PROMPT_BYTES,
+    is_command_prompt, needs_paste_lead_in, pi_prompt_text, validate_submission_id, AgentOutcome,
+    AgentRequest, AgentResponse, AgentStatus, NotReadyReason, PromptObservation, MAX_PROMPT_BYTES,
     MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
@@ -106,6 +106,25 @@ pub(super) struct ClearInput {
 /// reset it to idle, so recovery cannot overtake a hook that is still on its way.
 pub(super) const RECOVER_QUIET: Duration = Duration::from_secs(3);
 
+/// One conversation retains a small recent result window; replacing it releases its history.
+pub(super) const SUBMISSION_HISTORY_LIMIT: usize = 32;
+
+pub(super) struct Submission {
+    id: String,
+    kind: String,
+    conversation: Option<String>,
+    acknowledged: bool,
+    turn_id: Option<String>,
+    result: Option<SubmissionResult>,
+}
+
+#[derive(Clone)]
+struct SubmissionResult {
+    outcome: AgentOutcome,
+    message: Option<String>,
+    background_tasks: Vec<String>,
+}
+
 pub(super) struct Pending {
     client: Option<Reply>,
     pane: PaneId,
@@ -114,6 +133,7 @@ pub(super) struct Pending {
     pub(super) deadline: Option<Instant>,
     input_revision: u64,
     prompt: Option<PromptObservation>,
+    submission_id: Option<String>,
     clear: bool,
     wait: bool,
     until: AgentState,
@@ -137,6 +157,59 @@ impl Pending {
 }
 
 impl Screen {
+    fn submission(&self, pane: PaneId, id: &str) -> Option<&Submission> {
+        self.agent_submissions
+            .get(&pane)?
+            .iter()
+            .find(|submission| submission.id == id)
+    }
+
+    fn record_submission(&mut self, pending: &Pending, result: Option<SubmissionResult>) {
+        let Some(prompt) = &pending.prompt else {
+            return;
+        };
+        let Some(id) = &pending.submission_id else {
+            return;
+        };
+        let Some(submission) =
+            self.agent_submissions
+                .get_mut(&pending.pane)
+                .and_then(|submissions| {
+                    submissions
+                        .iter_mut()
+                        .find(|submission| &submission.id == id)
+                })
+        else {
+            return;
+        };
+        submission.acknowledged = prompt.acknowledged();
+        submission.turn_id = prompt.turn_id().map(str::to_owned);
+        if pending.conversation.is_some() {
+            submission.conversation = pending.conversation.clone();
+        }
+        if let Some(result) = result.filter(|_| submission.result.is_none()) {
+            submission.result = Some(result);
+        }
+    }
+
+    fn agent_task_notification(&self, pane: PaneId, kind: &str, hook: &HookEvent) -> bool {
+        is_claude_task_notification(kind, hook)
+            && !self.agent_controls.iter().any(|pending| {
+                pending.pane == pane
+                    && pending.kind == kind
+                    && pending
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|prompt| prompt.matches_submission(hook))
+            })
+            && !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                lifecycle.kind == kind
+                    && lifecycle.conversation == hook.session_id
+                    && hook.prompt_id.is_some()
+                    && lifecycle.claude_prompt_id == hook.prompt_id
+            })
+    }
+
     pub(super) fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
             lifecycle.kind == kind && lifecycle.conversation == conversation
@@ -184,7 +257,7 @@ impl Screen {
                                     && hook.claude_turn_complete == Some(true)))))
             });
         }
-        if is_claude_task_notification("claude", hook) {
+        if self.agent_task_notification(pane, "claude", hook) {
             // A repeated hook for a notification turn already in flight or confirmed.
             return self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
                 lifecycle.kind == "claude"
@@ -237,6 +310,7 @@ impl Screen {
     /// Track Claude background tasks and the final text of completed turns before pending
     /// operations are answered, so their replies carry both.
     fn track_agent_turn(&mut self, pane: PaneId, event: &AgentEvent, hook: &HookEvent) {
+        let notification = self.agent_task_notification(pane, &event.kind, hook);
         let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane).filter(|lifecycle| {
             lifecycle.kind == event.kind
                 && lifecycle.conversation == hook.session_id
@@ -244,7 +318,7 @@ impl Screen {
         }) else {
             return;
         };
-        if is_claude_task_notification(&event.kind, hook) {
+        if notification {
             if let Some(prompt) = hook.prompt_id.clone().filter(|id| !id.is_empty()) {
                 let tasks = hook
                     .prompt
@@ -372,7 +446,7 @@ impl Screen {
         self.agent_worker_waits.remove(&pane);
         let mut keep = Vec::new();
         for pending in std::mem::take(&mut self.agent_controls) {
-            if pending.pane == pane && pending.prompt.is_some() {
+            if pending.pane == pane && pending.submission_id.is_some() {
                 self.finish_agent_control(
                     &pending,
                     if self.destroyed_panes.contains(&pane) {
@@ -388,6 +462,7 @@ impl Screen {
             }
         }
         self.agent_controls = keep;
+        self.agent_submissions.remove(&pane);
     }
 
     pub(super) fn apply_agent_report_state(
@@ -876,6 +951,11 @@ impl Screen {
                 pane_id,
                 expected_session_id,
                 ..
+            }
+            | WaitTurn {
+                pane_id,
+                expected_session_id,
+                ..
             } => (*pane_id, expected_session_id.as_deref()),
         };
         let reject = |screen: &Self, outcome, message: &str| {
@@ -916,6 +996,7 @@ impl Screen {
                         deadline: Some(deadline),
                         input_revision: self.agent_input_revision(pane),
                         prompt: None,
+                        submission_id: None,
                         clear: false,
                         wait: true,
                         until: *until,
@@ -1032,6 +1113,18 @@ impl Screen {
                     self.broadcast_interrupt(pane, &status.agent)
                         .context("announce an interrupted turn to plugins")
                         .non_fatal();
+                }
+                if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
+                    for submission in submissions
+                        .iter_mut()
+                        .filter(|submission| submission.result.is_none())
+                    {
+                        submission.result = Some(SubmissionResult {
+                            outcome: AgentOutcome::Interrupted,
+                            message: Some("Observation ended by explicit recovery; the task's completion was not verified.".into()),
+                            background_tasks: Vec::new(),
+                        });
+                    }
                 }
                 self.agent_controls
                     .retain(|pending| pending.pane != pane || pending.prompt.is_none());
@@ -1210,8 +1303,22 @@ impl Screen {
                 prompt,
                 wait,
                 timeout_ms,
+                submission_id,
                 ..
             } => {
+                let submission_id =
+                    submission_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                if let Err(message) = validate_submission_id(&submission_id) {
+                    reject(self, AgentOutcome::Rejected, message);
+                    return;
+                }
+                if self.submission(pane, &submission_id).is_some() {
+                    let mut response = self.agent_result(pane, AgentOutcome::Rejected,
+                        Some(format!("submission ID is already retained; inspect its outcome with agent wait {pane} --submission {submission_id}; no input was sent")));
+                    response.submission_id = Some(submission_id);
+                    self.agent_reply(&client, response);
+                    return;
+                }
                 if let Some(reason) = status.not_ready_reason {
                     let (outcome, message) = match reason {
                         NotReadyReason::PromptUnsupported => (AgentOutcome::StatusUnavailable,
@@ -1271,6 +1378,18 @@ impl Screen {
                     return;
                 }
                 let (tx, rx) = tokio::sync::oneshot::channel();
+                let submissions = self.agent_submissions.entry(pane).or_default();
+                while submissions.len() >= SUBMISSION_HISTORY_LIMIT {
+                    submissions.pop_front();
+                }
+                submissions.push_back(Submission {
+                    id: submission_id.clone(),
+                    kind: status.agent.kind.clone(),
+                    conversation: status.agent.session_id.clone(),
+                    acknowledged: false,
+                    turn_id: None,
+                    result: None,
+                });
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
                 self.agent_controls.push(Pending {
                     client: Some(client.clone()),
@@ -1280,6 +1399,7 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: Some(observation),
+                    submission_id: Some(submission_id),
                     clear: yinz_types::agent::control::is_conversation_reset(
                         &status.agent.kind,
                         &prompt,
@@ -1360,6 +1480,57 @@ impl Screen {
                     self.agent_controls.push(pending);
                 }
             },
+            WaitTurn {
+                submission_id,
+                timeout_ms,
+                expected_session_id,
+                ..
+            } => {
+                if let Err(message) = validate_submission_id(&submission_id) {
+                    reject(self, AgentOutcome::Rejected, message);
+                    return;
+                }
+                let Some(submission) = self.submission(pane, &submission_id) else {
+                    reject(self, AgentOutcome::Rejected,
+                        "submission is unknown or no longer retained; inspect the pane before retrying any prompt");
+                    return;
+                };
+                if expected_session_id.is_some() && expected_session_id != submission.conversation {
+                    reject(
+                        self,
+                        AgentOutcome::TargetChanged,
+                        "submission belongs to a different conversation",
+                    );
+                    return;
+                }
+                let Some(deadline) = deadline(timeout_ms) else {
+                    reject(
+                        self,
+                        AgentOutcome::Rejected,
+                        "timeout must be between 1ms and 24h",
+                    );
+                    return;
+                };
+                self.agent_controls.push(Pending {
+                    client: Some(client.clone()),
+                    pane,
+                    kind: submission.kind.clone(),
+                    conversation: submission.conversation.clone(),
+                    deadline: Some(deadline),
+                    input_revision: self.agent_input_revision(pane),
+                    prompt: None,
+                    submission_id: Some(submission_id),
+                    clear: false,
+                    wait: true,
+                    until: AgentState::Idle,
+                    session_ended: false,
+                    abandoned: false,
+                    resolved: false,
+                    delivery: None,
+                    enter_at: None,
+                });
+                self.refresh_agent_controls();
+            },
             Wait {
                 until, timeout_ms, ..
             } => {
@@ -1379,6 +1550,7 @@ impl Screen {
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: None,
+                    submission_id: None,
                     clear: false,
                     wait: true,
                     until,
@@ -1401,24 +1573,53 @@ impl Screen {
     }
 
     fn finish_agent_control(
-        &self,
+        &mut self,
         pending: &Pending,
         outcome: AgentOutcome,
         message: Option<String>,
         pending_claim: Option<NotReadyReason>,
     ) {
+        let completed = pending.resolved
+            || matches!(
+                outcome,
+                AgentOutcome::TargetChanged | AgentOutcome::TargetClosed
+            );
+        let background_tasks = self
+            .agent_status(pending.pane, pending_claim)
+            .map(|status| status.background_tasks)
+            .unwrap_or_default();
+        self.record_submission(
+            pending,
+            completed.then(|| SubmissionResult {
+                outcome,
+                message: message.clone(),
+                background_tasks: background_tasks.clone(),
+            }),
+        );
         if let Some(client) = &pending.client {
             let mut response = AgentResponse::new(outcome);
+            response.submission_id = pending.submission_id.clone();
             response
                 .agents
                 .extend(self.agent_status(pending.pane, pending_claim));
             response.message = message;
             if matches!(outcome, AgentOutcome::Completed | AgentOutcome::Ok) {
-                response.background_tasks = response
-                    .agents
-                    .first()
-                    .map(|status| status.background_tasks.clone())
-                    .unwrap_or_default();
+                response.background_tasks = background_tasks;
+            }
+            if pending.prompt.is_none() {
+                if let Some(submission) = pending
+                    .submission_id
+                    .as_deref()
+                    .and_then(|id| self.submission(pending.pane, id))
+                {
+                    response.acknowledged = submission.acknowledged;
+                    response.turn_id = submission.turn_id.clone();
+                    if let Some(result) = &submission.result {
+                        response.outcome = result.outcome;
+                        response.message = result.message.clone();
+                        response.background_tasks = result.background_tasks.clone();
+                    }
+                }
             }
             if let Some(prompt) = &pending.prompt {
                 response.acknowledged = prompt.acknowledged();
@@ -1454,8 +1655,17 @@ impl Screen {
                                 || status.not_ready_reason == Some(NotReadyReason::UnconsumedInput))
                     });
                     if unresolved {
+                        let conversation = pending.conversation.as_deref().unwrap_or_default();
+                        let conversation = if !conversation.is_empty()
+                            && conversation.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                            }) {
+                            conversation.to_owned()
+                        } else {
+                            format!("'{}'", conversation.replace('\'', "'\\''"))
+                        };
                         message.push_str(&format!(" Inspect with agent read {}. Only if the same live conversation has stopped and unresolved input remains, clear its draft and use agent recover {} --conversation {} --confirm-empty. Add --interrupted if it stopped without reporting idle.",
-                            pending.pane, pending.pane, pending.conversation.as_deref().unwrap_or_default()));
+                            pending.pane, pending.pane, conversation));
                     }
                     response.message = Some(message);
                 }
@@ -1530,7 +1740,14 @@ impl Screen {
                 continue;
             }
             let status = self.agent_status(pending.pane, claimed.get(&pending.pane).copied());
+            let submission_result = pending
+                .submission_id
+                .as_deref()
+                .filter(|_| pending.prompt.is_none())
+                .and_then(|id| self.submission(pending.pane, id))
+                .and_then(|submission| submission.result.as_ref());
             let mut outcome = match &status {
+                _ if submission_result.is_some() => submission_result.map(|result| result.outcome),
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
                     Some(AgentOutcome::TargetClosed)
@@ -1563,7 +1780,10 @@ impl Screen {
                     Some(AgentOutcome::StatusUnavailable)
                 },
                 Some(status) if status.agent.state == AgentState::Exited => Some(
-                    if pending.prompt.is_none() && pending.until == AgentState::Exited {
+                    if pending.prompt.is_none()
+                        && pending.submission_id.is_none()
+                        && pending.until == AgentState::Exited
+                    {
                         AgentOutcome::Ok
                     } else {
                         AgentOutcome::TargetChanged
@@ -1571,6 +1791,7 @@ impl Screen {
                 ),
                 Some(status)
                     if pending.prompt.is_none()
+                        && pending.submission_id.is_none()
                         && status.status_available
                         && status.agent.state == pending.until
                         && (pending.until != AgentState::Idle
@@ -1708,6 +1929,9 @@ impl Screen {
                     pending.conversation = self
                         .agent_status(pending.pane, None)
                         .and_then(|s| s.agent.session_id);
+                    // Muse can announce its first conversation before acknowledging the
+                    // prompt. The receipt must accept that pin as soon as the observer does.
+                    self.record_submission(&pending, None);
                 }
                 keep.push(pending);
             }
@@ -1777,8 +2001,8 @@ impl Screen {
         if let Some(hook) = hook.filter(|_| parent) {
             self.track_agent_turn(pane, event, hook);
         }
-        let notification =
-            parent && hook.is_some_and(|hook| is_claude_task_notification(&event.kind, hook));
+        let notification = parent
+            && hook.is_some_and(|hook| self.agent_task_notification(pane, &event.kind, hook));
         if parent
             && event.hook == "SessionStart"
             && hook.is_some_and(|hook| hook.source.as_deref() != Some("compact"))
@@ -1889,6 +2113,24 @@ impl Screen {
                 // not a newer draft that interrupted the caller's wait.
                 accepted_input_revision = Some(pending.input_revision);
             }
+            if outcome == Some(AgentOutcome::Submitted) && pending.conversation.is_none() {
+                pending.conversation = event.session_id.clone();
+            }
+            let interrupted = (outcome == Some(AgentOutcome::Interrupted)
+                && event.hook == "Interrupt")
+                .then(|| SubmissionResult {
+                    outcome: AgentOutcome::Interrupted,
+                    message: Some(
+                        format!(
+                            "{} The turn was interrupted.",
+                            event.last_message.as_deref().unwrap_or_default()
+                        )
+                        .trim()
+                        .to_owned(),
+                    ),
+                    background_tasks: Vec::new(),
+                });
+            self.record_submission(&pending, interrupted);
             match outcome {
                 Some(AgentOutcome::Submitted) => {
                     pending.enter_at = None;

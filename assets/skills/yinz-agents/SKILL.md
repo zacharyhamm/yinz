@@ -3,40 +3,51 @@ name: yinz-agents
 description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, and inspect their durable archives.
 ---
 
-Inside a Yinz pane, `YINZ_SESSION_NAME` selects the current session. Start with `yinz agent list --json`.
-Outside a session, run `yinz list-sessions --short`, select the intended name, and add `--session NAME` to each command below.
+Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves the current session and caller. Start with `yinz agent list --json`.
+Outside a pane, run `yinz list-sessions --short` and select the intended name with the root option: `yinz --session NAME agent ...` (before `agent`).
+`YINZ_SESSION_NAME` alone does not select a session. If pane context is missing or stale, pass `--session` explicitly.
 A sandboxed Codex cannot reach Yinz ("connection was not permitted"). Spawn Codex orchestrators with `--allow-yinz`, which also allows internet access, or `--permission-mode skip`.
-Use `--project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
+Use `agent list --project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
 `yinz action project-list` lists remembered projects; `yinz action context` also shows them with the caller's pane.
 Basic live operations do not require Hocus chat, `hocus-agentd`, or `hocus-store`.
 Registration requires `hocus-agentd`. Archive queries require `hocus-store`.
 
+Guarded prompts support Claude Code, Codex, Muse, Pi, and Antigravity (`agy`). Other kinds support launch and inspection.
+Before a first Codex, Muse, or AGY launch, check `yinz hocus hooks status --agent KIND` and install missing hooks with `yinz hocus hooks install --agent KIND` on the target host.
+Claude receives inline hooks; refresh older installed Claude hooks with the install command to prevent duplicate reports. Local Pi launches inject their reporting extension automatically; SSH Pi needs the extension installed remotely, and Firecracker does not provision it.
+AGY completion additionally requires its hooks to inherit `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN` for the local completion API. AGY CLI 1.2.14 does not supply these automatically; without them completion cannot be confirmed.
+Do not replace unavailable guarded prompting with raw input. Use general pane input only for deliberate interaction with unsupported kinds.
+
 A pane ID identifies the current terminal target, such as `terminal_3` (`3` also works).
 A conversation ID identifies the provider conversation and guards against replacement.
+A submission ID identifies one prompt operation. A turn ID comes from the provider and may be absent.
 A run ID identifies a durable archive record. Do not substitute one ID for another.
 
-Use this sequence. Replace `KIND` with the requested provider, such as `claude` or `codex`.
-Choose a model for that provider. The kind must match the task, not an example.
+Choose the requested provider and its model. Select the actual project, a task-specific branch, and the intended Git baseline before launch.
+`--branch` creates a separate worktree from `main` by default. Pass `--base REF` explicitly when delegating work from another branch or commit. Uncommitted changes are not copied into the new worktree.
+For a local checkout without a remembered project, use `--cwd PATH` instead of `--project NAME`.
 
 ```sh
-yinz agent spawn --kind KIND --project work --branch feature --json
+yinz agent spawn --kind KIND --project PROJECT --branch TASK_BRANCH --base BASE_REF --json
 yinz agent wait terminal_3 --until idle --timeout 2m --json
-yinz agent status terminal_3 --json
-yinz agent prompt terminal_3 --file prompt.md --conversation CONVERSATION_ID --wait --timeout 10m --json
-yinz agent read terminal_3 --conversation CONVERSATION_ID --lines 100 --json
+yinz agent prompt terminal_3 --file prompt.md --conversation CONVERSATION_ID --submission SUBMISSION_ID --wait --timeout 10m --json
 ```
 
 Claude Haiku launch example:
 
 ```sh
-yinz agent spawn --kind claude --model haiku --project work --branch feature --json
+yinz agent spawn --kind claude --model haiku --cwd . --branch review-auth --base main --json
 ```
 
-Use the actual pane and conversation IDs from the responses, not the example `terminal_3`.
+Use the actual `spawned.pane_id`, `spawned.cwd`, and `spawned.branch` returned by spawn.
+If spawn fails, inspect `spawned` and `launch_resources`: a pane, branch, or worktree may already exist. Reconcile those resources before retrying. Guest-only VM launches can return `cwd: null`; inspect the guest rather than treating a host path as its directory.
+The idle wait already returns status in `agents`; use its `agent.session_id` as the conversation guard and check `ready`, `status_available`, and `prompt_supported` before prompting.
+Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
+If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
 For a multi-line prompt, write it to a file or pass a heredoc with `--file -`:
 
 ```sh
-yinz agent prompt terminal_3 --file - --wait --json <<'EOF'
+yinz agent prompt terminal_3 --file - --conversation CONVERSATION_ID --wait --json <<'EOF'
 Fix the failing test in calc.py, then run the tests.
 EOF
 ```
@@ -44,43 +55,44 @@ EOF
 Muse hook verification alone does not establish readiness. Before the first prompt, Yinz requires an empty Muse 1.4.2 composer with a visible cursor after `❯ `. Dialogs, drafts, scrolling, and unknown layouts remain unready. Yinz never changes workspace trust automatically.
 
 A fresh Muse pane reports no conversation until its first turn binds one: submit that first prompt unpinned, then pin `--conversation` afterwards.
-Check `ready`, `status_available`, and `prompt_supported` before submission.
 An idle state alone does not establish readiness or prove task success.
 A completed turn does not verify the resulting work. Run the checks that the task requires.
-Guarded prompts support Claude Code, Codex, and Muse. Other agent kinds support launch and inspection.
-Use general pane input for deliberate interaction with other kinds. Do not fall back automatically to raw input.
 
-Live commands return `AgentResponse` with `--json`. Check `outcome` even when the command exits nonzero.
+Live control commands return `AgentResponse` with `--json`. Registration returns the service's JSON acknowledgement; its `--json` flag also makes errors structured. Check `outcome` even when a control command exits nonzero.
 `submitted` means the provider acknowledged the prompt. `completed` means that correlated turn ended.
 Handle `needs_input`, `failed`, `interrupted`, `target_changed`, and `target_closed` before continuing.
-`timed_out` or a lost connection leaves the result uncertain. Inspect before retrying a mutation.
-The `acknowledged` and `turn_id` fields describe the original submission.
-`agent wait --until idle` returns the last completed turn's final text in `message`, such as after answering `needs_input` with `send-keys`.
-When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
-Run `yinz agent wait terminal_3 --until idle --timeout 10m --json` for the final answer. A long-running background server keeps that wait pending until its timeout.
+Save `submission_id` from prompt responses. To retain it even if the command's output is lost, choose a unique `--submission ID` before sending (1–128 ASCII letters, digits, `.`, `_`, or `-`). The CLI otherwise generates an ID.
+After `needs_input`, read the dialog, answer deliberately with `send-keys` within the user's authorization, then retrieve the original turn by its submission ID. Use the same retrieval after `timed_out` or a lost connection:
 
-To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex).
+```sh
+yinz agent wait terminal_3 --submission SUBMISSION_ID --conversation CONVERSATION_ID --timeout 10m --json
+```
+
+This returns the original turn's outcome, including failure; `acknowledged` and `turn_id` describe that submission. It can return `needs_input` again while a dialog remains.
+For parallel workers, submit without `--wait`, save each pane/conversation/submission triple, and wait on those submissions later.
+Do not combine `--submission` with `--until`. A plain `wait --until idle` observes readiness and returns the last completed turn's text, which does not establish the outcome of your task.
+Only the last 32 submissions per pane/conversation are retained in memory; target replacement, exit, closure, and server restart discard them. Unknown or expired IDs return `rejected`. A retained ID cannot be submitted again. An unavailable result does not prove the work never ran: inspect before any retry rather than treating the ID as durable deduplication.
+When Claude runs a command or subagent in the background, `completed` carries only its interim text and lists `background_tasks`.
+Use a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
+
+To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex or Pi).
 The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` leaves the pane needing `recover`.
 
 `agent read --lines N` returns at most N terminal lines, including internal blank rows.
 Trailing blank rows do not count toward the limit. Blank rows at both ends are removed.
 Whitespace-only rows count as blank. Text and JSON retain the same content, including ghost suggestions.
 Plain terminal text cannot establish whether the composer contains a draft. Do not infer a draft from suggestion text or strip suggestions heuristically.
-If a submission is uncertain, inspect the composer in the terminal UI and clear any actual draft deliberately.
-Use `--confirm-empty` only after deliberately confirming the composer is empty and the conversation is unchanged.
-Recovery example (Esc alone does not confirm an empty composer):
-
-```sh
-yinz agent send-keys terminal_3 Esc --conversation CONVERSATION_ID --json
-yinz agent recover terminal_3 --conversation CONVERSATION_ID --confirm-empty --json
-```
+If recovery is necessary, inspect the composer in the terminal UI and clear any actual draft deliberately.
+Only then use `agent recover PANE --conversation ID --confirm-empty --json`, after confirming the conversation is unchanged.
+If your tools expose only `agent read` text, ask the user to verify the stopped agent and empty composer in the terminal before recovering. Esc alone is not verification and can restore an interrupted prompt into the composer.
 
 For `send-keys`, pass one key per argument: `Esc`, `Enter`, or `Down Enter`. Quote modifiers such as `"Ctrl u"`.
 `Ctrl+u`, `ctrl-u`, `C-u`, `Escape`, and `Return` are unsupported aliases.
-Recovery requires a live idle agent and no active submission or paste write.
+Recovery requires a live agent and no active submission or paste write. It normally requires idle; `--interrupted` permits the stopped busy/waiting case described below.
+Recovery ends unresolved submissions as `interrupted`; it does not prove whether their work ran. Inspect that work before deciding whether to submit a new task.
 Pass `--conversation ""` when the pane reports no session (fresh Muse pane before its first turn); `send-keys` dialog answers need no recovery once later output shows the empty composer, provided no newer manual input arrived.
-Claude reports nothing when Esc interrupts a turn, so it stays `Busy`. If `agent read` shows the
-agent stopped, clear any draft (Esc can restore the interrupted prompt), then add
+Claude reports nothing when Esc interrupts a turn, so it stays `Busy`. After verifying in the
+terminal UI that the agent stopped, clear any draft (Esc can restore the interrupted prompt), then add
 `--interrupted` to reset it to idle. This also applies to a `Waiting` agent whose dialog you
 dismissed. It needs input, such as Esc, after the agent's last hook and 3 seconds without a
 hook since.
@@ -98,7 +110,7 @@ Yinz adds a nested worktree folder such as `.worktrees/` to the repository's loc
 Read `agent spawn --help` for model, effort, permissions, resume, and Firecracker options.
 For SSH, provide an absolute `--cwd` and `--remote-host`. Verify the remote worktree and explicitly use `--allow-outside-worktree`.
 SSH launches cannot use local project, branch, worktree, or VM options. General pane creation owns arbitrary programs.
-Register an existing pane with `agent register PANE_ID KIND`.
+Register an existing pane with `agent register PANE_ID KIND --json` for tracking. Registration alone does not enable guarded prompts or turn a shell-launched agent into a managed command pane.
 `agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
 Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
 
@@ -111,5 +123,8 @@ yinz agent predecessors RUN_ID
 
 Archive commands always return JSON; `--json` is accepted and also reports their errors as JSON.
 With `--json`, live commands also report input errors, such as an empty prompt, as a `rejected` `AgentResponse`. Malformed arguments still print plain errors.
-Preserve pagination cursors and filters. Use both host and session filters for one server's records.
+For `runs`, continue with `--offset NEXT_OFFSET` while `more` is true. For `run`, pass `next_revision` as `--from-revision` while `more` is true. Preserve filters across pages.
+`history-search` returns `truncated` rather than a continuation cursor; narrow the filters or query when it is true.
+Use both `--host-id HOST` and `--run-session SESSION` for one server's records. The root `--session` selects the server handling the query; it does not filter the archive.
+Live `agent list --json` entries include `host_id` and `session`; archive run headers include them too. Use those values rather than substituting a hostname or provider conversation ID.
 Workflow runs are separate from agent turns and agent archive runs.

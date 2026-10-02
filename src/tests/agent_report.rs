@@ -67,6 +67,25 @@ fn listener(dir: &std::path::Path) -> interprocess::local_socket::Listener {
         .unwrap()
 }
 
+fn agent_command(dir: &std::path::Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
+    command
+        .args(["--session", "report-test", "agent"])
+        .args(args)
+        .env("YINZ_SOCKET_DIR", dir)
+        .env("TMPDIR", dir)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir)
+        .env_remove("YINZ_PANE_REF")
+        .env_remove("YINZ_PANE_ID")
+        .env_remove("YINZ_SESSION_NAME")
+        .env_remove("YINZ_REMOTE_PANE_TOKEN")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
 fn write_event(child: &mut Child, json: &str) {
     child
         .stdin
@@ -888,6 +907,138 @@ fn agent_validation_errors_answer_in_json_when_asked() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("prompt must not be empty"));
+}
+
+#[test]
+fn delivered_agent_prompts_keep_their_submission_id_after_transport_disconnect() {
+    use yinz_types::agent::control::AgentRequest;
+
+    warm_binary();
+    for chosen_id in [None, Some("orchestrator-review-7")] {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = listener(dir.path());
+        let mut args = vec![
+            "prompt",
+            "terminal_7",
+            "Review local changes",
+            "--conversation",
+            "conversation-a",
+            "--timeout",
+            "5s",
+            "--json",
+        ];
+        if let Some(id) = chosen_id {
+            args.extend(["--submission", id]);
+        }
+        let child = agent_command(dir.path(), &args).spawn().unwrap();
+        let mut receiver =
+            IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let IpcRecv::Msg(
+            ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                pane_id,
+                expected_session_id,
+                submission_id,
+                prompt,
+                wait,
+                timeout_ms,
+            }),
+            _,
+        ) = receiver.recv_client_msg()
+        else {
+            panic!("expected a delivered agent prompt");
+        };
+        assert_eq!(pane_id.to_string(), "terminal_7");
+        assert_eq!(expected_session_id.as_deref(), Some("conversation-a"));
+        assert_eq!(prompt, "Review local changes");
+        assert!(!wait);
+        assert_eq!(timeout_ms, 5000);
+        let delivered_id = submission_id.expect("the CLI must assign an ID before sending");
+        if let Some(chosen_id) = chosen_id {
+            assert_eq!(delivered_id, chosen_id);
+        } else {
+            assert!(uuid::Uuid::parse_str(&delivered_id).is_ok());
+        }
+        // The server received the mutation, but its acceptance/result was lost.
+        drop(receiver);
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(response["outcome"], "failed");
+        assert_eq!(response["submission_id"], delivered_id);
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("disconnected"),
+            "{response}"
+        );
+    }
+}
+
+#[test]
+fn agent_submission_wait_forwards_its_receipt_and_preserves_failed_outcome() {
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse};
+
+    warm_binary();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = listener(dir.path());
+    let child = agent_command(
+        dir.path(),
+        &[
+            "wait",
+            "7",
+            "--submission",
+            "saved-submission-7",
+            "--conversation",
+            "conversation-a",
+            "--timeout",
+            "17s",
+            "--json",
+        ],
+    )
+    .spawn()
+    .unwrap();
+    let mut receiver = IpcReceiverWithContext::<ClientToServerMsg>::new(listener.accept().unwrap());
+    receiver
+        .set_recv_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let IpcRecv::Msg(
+        ClientToServerMsg::AgentControl(AgentRequest::WaitTurn {
+            pane_id,
+            expected_session_id,
+            submission_id,
+            timeout_ms,
+        }),
+        _,
+    ) = receiver.recv_client_msg()
+    else {
+        panic!("expected an exact submission wait, not a state wait");
+    };
+    assert_eq!(pane_id.to_string(), "terminal_7");
+    assert_eq!(expected_session_id.as_deref(), Some("conversation-a"));
+    assert_eq!(submission_id, "saved-submission-7");
+    assert_eq!(timeout_ms, 17_000);
+    let mut response = AgentResponse::new(AgentOutcome::Failed);
+    response.submission_id = Some(submission_id.clone());
+    response.turn_id = Some("provider-turn-7".into());
+    response.acknowledged = true;
+    response.message = Some("provider rejected the selected model".into());
+    receiver
+        .get_sender::<ServerToClientMsg>()
+        .unwrap()
+        .send_server_msg(ServerToClientMsg::AgentControl(response))
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["outcome"], "failed");
+    assert_eq!(response["submission_id"], submission_id);
+    assert_eq!(response["turn_id"], "provider-turn-7");
+    assert_eq!(response["acknowledged"], true);
+    assert_eq!(response["message"], "provider rejected the selected model");
 }
 
 #[test]

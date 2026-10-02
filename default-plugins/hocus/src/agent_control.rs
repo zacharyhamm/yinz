@@ -63,12 +63,16 @@ impl State {
         }
         let pane_id = PaneId::Terminal(TerminalId::new(args.pane_id.ok_or("pane_id is required")?));
         let expected_session_id = args.conversation;
+        if let Some(id) = &args.submission_id {
+            yinz_tile::agent::control::validate_submission_id(id).map_err(str::to_owned)?;
+        }
         Ok(match call.name.as_str() {
             "agent_status" => AgentRequest::Status {
                 pane_id,
                 expected_session_id,
             },
             "agent_prompt" => AgentRequest::Prompt {
+                submission_id: args.submission_id,
                 pane_id,
                 expected_session_id,
                 prompt: args.text.ok_or("text is required")?,
@@ -77,14 +81,28 @@ impl State {
                     .timeout_ms
                     .unwrap_or(if args.wait { 600_000 } else { 30_000 }),
             },
-            "agent_wait" => AgentRequest::Wait {
-                pane_id,
-                expected_session_id,
-                until: yinz_tile::agent::AgentState::parse_lenient(
-                    args.until.as_deref().unwrap_or("idle"),
-                )
-                .ok_or("until must be busy, waiting, idle or exited")?,
-                timeout_ms: args.timeout_ms.unwrap_or(30_000),
+            "agent_wait" => {
+                if let Some(submission_id) = args.submission_id {
+                    if args.until.is_some() {
+                        return Err("pass submission_id or until, not both".into());
+                    }
+                    AgentRequest::WaitTurn {
+                        pane_id,
+                        expected_session_id,
+                        submission_id,
+                        timeout_ms: args.timeout_ms.unwrap_or(30_000),
+                    }
+                } else {
+                    AgentRequest::Wait {
+                        pane_id,
+                        expected_session_id,
+                        until: yinz_tile::agent::AgentState::parse_lenient(
+                            args.until.as_deref().unwrap_or("idle"),
+                        )
+                        .ok_or("until must be busy, waiting, idle or exited")?,
+                        timeout_ms: args.timeout_ms.unwrap_or(30_000),
+                    }
+                }
             },
             "agent_read" => AgentRequest::Read {
                 pane_id,

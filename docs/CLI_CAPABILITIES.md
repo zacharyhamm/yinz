@@ -5,7 +5,7 @@ host controller for live agent operations. Timeouts never trigger automatic retr
 
 | Topic | Canonical interface | Boundary |
 |---|---|---|
-| Live agents | `agent list/status/spawn/prompt/wait/read/recover/send-keys` | Readiness, conversation guards, acknowledgement, and turn outcomes. Use `--json`. Project filtering is available on list. |
+| Live agents | `agent list/status/spawn/prompt/wait/read/recover/send-keys` | Readiness, conversation guards, acknowledgement, and turn outcomes. Use `--json`. `wait --submission ID` resumes a particular prompt; `wait --until idle` observes readiness. Project filtering is available on list. |
 | Agent records | `agent register/runs/run/history-search/predecessors` | Registration uses `hocus-agentd`. Archive queries use `hocus-store` and retain pagination and ownership filters. |
 | Sessions and panes | `list-sessions`, `action list-panes/list-tabs/new-pane/new-tab/dump-screen/pane-wait`, pane and tab actions, `pty-host`, `firecracker`, `recordings` | General programs, remote placement, output, exit, and closure waits. |
 | Projects, notes, todos | Named project, note, and todo commands under `action` | Preserve domain rules and revisions from the original read. |
@@ -17,7 +17,10 @@ host controller for live agent operations. Timeouts never trigger automatic retr
 Hocus agent tools submit the same typed live requests and receive correlated responses.
 Its summaries and inferred attention indicators remain UI observations. They do not establish readiness.
 Use spawn, wait, then prompt. Automation spawn inputs reject `prompt` and `reuse_prompt`.
-UI and SDK launch prompts remain supported. Guarded prompts support Claude Code and Codex.
+UI and SDK launch prompts remain supported. Guarded prompts support Claude Code, Codex, Muse,
+Pi, and Antigravity (agy), subject to their reporting and completion prerequisites.
+Retain prompt `submission_id` values to retrieve exact turn outcomes after dialogs or timeouts.
+Submission records are bounded and kept in memory; they are not durable idempotency keys.
 Use general pane commands for arbitrary programs, deliberate raw input, close, or restart.
 
 Basic live operations do not require background Hocus services. Registration and archive access do.

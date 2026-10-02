@@ -119,6 +119,23 @@ export default {
         ..Default::default()
     });
     load(&harness.sender, run.clone());
+    wait_for_plugin_to_handle(&harness.log, PLUGIN, &["one idle idle one"]);
+    let loading_error = harness
+        .log
+        .lock()
+        .iter()
+        .find_map(|instruction| match instruction {
+            ScreenInstruction::UpdatePluginLoadingStage(id, stage)
+                if *id == PLUGIN && stage.is_error() =>
+            {
+                Some(format!("{stage:?}"))
+            },
+            _ => None,
+        });
+    assert!(
+        loading_error.is_none(),
+        "Git plugin failed to load: {loading_error:?}"
+    );
     harness.rendered("one idle idle one");
     let first = crate::plugin_authoring::git::status(harness.directory.path(), &source)
         .unwrap()
@@ -149,7 +166,7 @@ export default {
         |log| {
             rendered_assets(log)
                 .iter()
-                .any(|(id, text)| *id == client && text.contains("one idle idle"))
+                .any(|(id, text)| *id == client && text.contains("one idle idle one"))
                 .then_some(())
         },
     );
@@ -157,7 +174,18 @@ export default {
         .sender
         .send(PluginInstruction::ReloadPluginByUrl(run))
         .unwrap();
-    harness.rendered("two idle idle");
+    // The probe targets client 1. Its async load must finish subscribing before the
+    // event is sent; client 2's render or a frame with pending data cannot establish that.
+    harness.log.wait_until(
+        "original client ready on reloaded revision",
+        default_timeout(),
+        |log| {
+            rendered_assets(log)
+                .iter()
+                .any(|(id, text)| *id == CLIENT && text.contains("two idle idle one"))
+                .then_some(())
+        },
+    );
     harness.event(Event::CustomMessage("probe".into(), "".into()));
     harness.rendered("two two two one");
     // The source, not the selected path, remains the permission and private-data identity.

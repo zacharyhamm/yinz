@@ -1689,7 +1689,7 @@ fn index_pending(conn: &mut rusqlite::Connection) -> Result<()> {
             )?;
             let mut rows = stmt.query(rusqlite::params![pane_id, last_event_id])?;
             while let Some(row) = rows.next()? {
-                last_seen = Some(row.get(0)?);
+                last_seen = last_seen.max(Some(row.get(0)?));
                 if row.get_ref(2)?.as_str()? == "o" {
                     let data: Vec<u8> = row.get(3)?;
                     index_event(row.get(1)?, &data);
@@ -2727,6 +2727,52 @@ mod compaction_tests {
         }
         assert_eq!(exports(packed.path()), exports(plain.path()));
         assert_eq!(search_index(packed.path()), search_index(plain.path()));
+    }
+
+    #[test]
+    fn indexing_keeps_the_highest_event_id_across_segments_and_rows() -> Result<()> {
+        let (packed, plain) = (tempdir()?, tempdir()?);
+        let mut stores = [open_store(packed.path()), open_store(plain.path())];
+        let events = [
+            output(1, 1, b"first\n"),
+            // Input arrives after the output but carries an earlier timestamp, so the
+            // first compacted segment holds ID 2 while output ID 1 stays a row.
+            RecordedEvent::input(TerminalId::new(1), ElapsedMicros::new(0), b"k".to_vec()),
+            output(2, 1, b"other\n"),
+        ];
+        for store in &mut stores {
+            store.record_events(&events)?;
+        }
+        let live = own_clock(packed.path(), LATER);
+        assert_eq!(pass(&mut connection(packed.path()), live, 1, 1)?.events, 1);
+
+        let expected = search_index(plain.path());
+        assert_eq!(
+            expected.0,
+            vec![("first".into(), 1, 1), ("other".into(), 2, 1)]
+        );
+        assert_eq!(expected.1, vec![(1, 2, vec![]), (2, 3, vec![])]);
+        for _ in 0..2 {
+            assert_eq!(search_index(packed.path()), expected);
+        }
+
+        for store in &mut stores {
+            store.record_events(&[output(1, 2, b"later\n")])?;
+        }
+        let expected = search_index(plain.path());
+        assert_eq!(
+            expected.0,
+            vec![
+                ("first".into(), 1, 1),
+                ("other".into(), 2, 1),
+                ("later".into(), 1, 2),
+            ]
+        );
+        assert_eq!(expected.1, vec![(1, 4, vec![]), (2, 3, vec![])]);
+        for _ in 0..2 {
+            assert_eq!(search_index(packed.path()), expected);
+        }
+        Ok(())
     }
 
     #[test]

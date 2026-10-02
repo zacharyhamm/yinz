@@ -59,7 +59,8 @@ impl Drop for Pane {
 
 #[test]
 fn a_pane_reports_its_own_command_and_directory() {
-    let pane = Pane::new("cd /tmp && sleep 5");
+    // Keep the shell alive: some shells replace themselves with a final external command.
+    let pane = Pane::new("cd /tmp && sleep 5; :");
     pane.settle();
 
     let probe = probe(pane.master_fd(), ProcessId::new(pane.pid()));

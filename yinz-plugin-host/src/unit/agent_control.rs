@@ -4,6 +4,87 @@ use yinz_types::command::PaneTarget;
 use yinz_types::internal_ids::TabId;
 use yinz_types::plugin_data::Mutation;
 
+#[test]
+fn lost_host_control_replies_keep_the_submission_identity_sent_to_screen() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    let prompt = |submission_id| AgentRequest::Prompt {
+        pane_id: PaneId::Terminal(TerminalId::new(7)),
+        expected_session_id: Some("conversation".into()),
+        submission_id,
+        prompt: "Review the checkout".into(),
+        wait: true,
+        timeout_ms: 30_000,
+    };
+    for (request, expected_id) in [
+        (prompt(None), None),
+        (
+            prompt(Some("explicit-prompt".into())),
+            Some("explicit-prompt"),
+        ),
+        (
+            AgentRequest::WaitTurn {
+                pane_id: PaneId::Terminal(TerminalId::new(7)),
+                expected_session_id: Some("conversation".into()),
+                submission_id: "prior-turn".into(),
+                timeout_ms: 30_000,
+            },
+            Some("prior-turn"),
+        ),
+    ] {
+        let (to_screen, screen_rx) = yinz_runtime::channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(yinz_runtime::channels::SenderWithContext::new(to_screen)),
+            ..Default::default()
+        };
+        let screen = thread::spawn(move || {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::AgentControlReply(request, reply) = instruction else {
+                panic!("expected control request");
+            };
+            let submission_id = match request {
+                AgentRequest::Prompt { submission_id, .. } => submission_id.unwrap(),
+                AgentRequest::WaitTurn { submission_id, .. } => submission_id,
+                _ => panic!("expected a prompt or turn wait"),
+            };
+            // Dropping the reply exercises the same fallback as its deadline, immediately.
+            drop(reply);
+            submission_id
+        });
+        let response = control_agent(request, crate::ClientId::new(1), &senders, &data);
+        let sent_id = screen.join().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::TimedOut);
+        assert_eq!(response.submission_id.as_deref(), Some(sent_id.as_str()));
+        assert!(response.message.unwrap().contains("outcome unknown"));
+        if let Some(expected_id) = expected_id {
+            assert_eq!(sent_id, expected_id);
+        } else {
+            assert!(uuid::Uuid::parse_str(&sent_id).is_ok());
+        }
+    }
+}
+
+#[test]
+fn host_control_routing_rejection_keeps_the_prompt_submission_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(directory.path());
+    let response = control_agent(
+        AgentRequest::Prompt {
+            pane_id: PaneId::Terminal(TerminalId::new(7)),
+            expected_session_id: None,
+            submission_id: Some("not-routed".into()),
+            prompt: "Review the checkout".into(),
+            wait: false,
+            timeout_ms: 30_000,
+        },
+        crate::ClientId::new(1),
+        &ThreadSenders::default(),
+        &data,
+    );
+    assert_eq!(response.outcome, AgentOutcome::Rejected);
+    assert_eq!(response.submission_id.as_deref(), Some("not-routed"));
+}
+
 fn git(root: &std::path::Path, args: &[&str]) {
     let output = process::Command::new("git")
         .arg("-C")
@@ -398,7 +479,7 @@ fn project_containment_uses_canonical_paths() {
                 false,
                 &data,
             );
-            assert!(result.err().unwrap().contains(error));
+            assert!(result.err().unwrap().to_string().contains(error));
         }
     }
 }
@@ -573,7 +654,8 @@ fn spawn_guidance_lists_recognized_kinds_before_any_checkout_work() {
             &data,
         )
         .err()
-        .unwrap();
+        .unwrap()
+        .to_string();
         for kind in yinz_types::agent::KINDS {
             assert!(error.contains(kind), "{error}");
         }

@@ -86,6 +86,66 @@ fn archive_commands_accept_and_ignore_json() {
 }
 
 #[test]
+fn submission_waits_are_distinct_from_state_waits_and_registration_accepts_json() {
+    use clap::Parser;
+    for args in [
+        vec![
+            "agent",
+            "prompt",
+            "7",
+            "review",
+            "--submission",
+            "review_1.v2",
+        ],
+        vec!["agent", "wait", "7", "--submission", "review_1.v2"],
+        vec!["agent", "wait", "7", "--until", "idle"],
+    ] {
+        assert!(AgentCli::try_parse_from(args.clone()).is_ok(), "{args:?}");
+    }
+    for args in [
+        vec![
+            "agent",
+            "wait",
+            "7",
+            "--submission",
+            "review",
+            "--until",
+            "idle",
+        ],
+        vec!["agent", "wait", "7", "--submission", ""],
+        vec![
+            "agent",
+            "prompt",
+            "7",
+            "review",
+            "--submission",
+            "spaces forbidden",
+        ],
+        vec![
+            "agent",
+            "prompt",
+            "7",
+            "review",
+            "--submission",
+            "shell;input",
+        ],
+    ] {
+        assert!(AgentCli::try_parse_from(args.clone()).is_err(), "{args:?}");
+    }
+    let registered =
+        AgentCli::try_parse_from(["agent", "register", "7", "claude", "--json"]).unwrap();
+    assert!(registered.command.json());
+    assert!(matches!(
+        registered.command,
+        Agent::Register {
+            pane_id: 7,
+            json: true,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn pane_ids_accept_terminal_prefix_or_bare_number_everywhere() {
     use clap::Parser;
     for target in ["terminal_7", "7"] {

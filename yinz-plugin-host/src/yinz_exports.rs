@@ -47,7 +47,8 @@ use yinz_routing::{route_action, wait_for_action_completion};
 use yinz_runtime::home::{absolute_lexical, default_layout_dir, default_user_plugin_dir};
 use yinz_storage::data_access::DataAccess;
 use yinz_storage::plugin_data_store;
-use yinz_types::agent::SpawnedAgent;
+use yinz_types::agent::control::{AgentOutcome, AgentResponse};
+use yinz_types::agent::{AgentLaunchResources, SpawnedAgent};
 use yinz_types::data::EnqueueQueueJobResponse;
 use yinz_types::internal_ids::DataWatchId;
 use yinz_types::internal_ids::ProcessId;
@@ -2900,17 +2901,21 @@ fn spawn_agent(
             false,
             host_workflow,
             &env.data_access,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
+        let resources = prepared.resources();
         let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
             .unwrap_or_else(|| "true".to_owned());
         context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, prepared.command, context, name, true, start_suppressed)
             .map(|pane_id| {
-                prewarm_agent_workflows(prepared.cwd.clone());
+                if let Some(cwd) = &resources.cwd {
+                    prewarm_agent_workflows(cwd.clone());
+                }
                 SpawnedAgent {
                     pane_id,
-                    branch: prepared.branch,
-                    cwd: Some(prepared.cwd),
+                    branch: resources.branch,
+                    cwd: resources.cwd,
                     ..Default::default()
                 }
             })
@@ -2922,6 +2927,7 @@ fn spawn_agent(
         .non_fatal();
 }
 
+#[derive(Debug)]
 struct PreparedAgent {
     command: CommandToRun,
     branch: Option<String>,
@@ -2929,6 +2935,60 @@ struct PreparedAgent {
     /// The branch asked for, when `branch` is a different one.
     requested_branch: Option<String>,
     reused: bool,
+}
+
+impl PreparedAgent {
+    fn resources(&self) -> AgentLaunchResources {
+        let guest_only = matches!(
+            self.command.target,
+            PaneTarget::Firecracker { worktree: None, .. }
+        );
+        AgentLaunchResources {
+            cwd: (!guest_only).then(|| self.cwd.clone()),
+            branch: self.branch.clone(),
+            requested_branch: self.requested_branch.clone(),
+            reused: self.reused,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AgentSpawnError(Box<AgentResponse>);
+
+impl AgentSpawnError {
+    fn failed(message: impl Into<String>, resources: Option<AgentLaunchResources>) -> Self {
+        let mut response = AgentResponse::new(AgentOutcome::Failed);
+        response.message = Some(format!(
+            "{}; inspect the launch resources and agent list before retrying",
+            message.into()
+        ));
+        response.launch_resources = resources;
+        Self(Box::new(response))
+    }
+
+    fn into_response(self) -> AgentResponse {
+        *self.0
+    }
+}
+
+impl From<String> for AgentSpawnError {
+    fn from(message: String) -> Self {
+        let mut response = AgentResponse::new(AgentOutcome::Rejected);
+        response.message = Some(message);
+        Self(Box::new(response))
+    }
+}
+
+impl From<&str> for AgentSpawnError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+impl std::fmt::Display for AgentSpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.message.as_deref().unwrap_or("agent launch failed"))
+    }
 }
 
 /// Shared checkout preparation for plugin and direct CLI launches. Paths are already host paths.
@@ -2940,7 +3000,7 @@ fn prepare_agent(
     mirror_project: bool,
     host_workflow: bool,
     data_access: &DataAccess,
-) -> Result<PreparedAgent, String> {
+) -> Result<PreparedAgent, AgentSpawnError> {
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
     apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
         data_access.plugin_data().fetch(
@@ -2976,14 +3036,47 @@ fn prepare_agent(
     } else {
         WorktreeGuard::Required
     };
-    let prepared = agent_folder(checkout, cwd, source, spec.reuse.unwrap_or(false), guard)?;
-    command = prepared.agent_command(spec)?;
+    // Resolve reporting assets before Git changes, so an unwritable data directory cannot
+    // strand a fresh checkout. A reused opening prompt only changes the final command text.
+    yinz_runtime::agent::pi::prepare_command(&mut command)?;
+    let mut attempted = None;
+    let prepared = agent_folder_tracked(
+        checkout,
+        cwd,
+        source,
+        spec.reuse.unwrap_or(false),
+        guard,
+        &mut attempted,
+    )
+    .map_err(|error| match attempted {
+        Some(resources) => AgentSpawnError::failed(error, Some(resources)),
+        None => error.into(),
+    })?;
+    let resources = AgentLaunchResources {
+        cwd: (!guest_only).then(|| prepared.path.clone()),
+        branch: prepared.branch.clone(),
+        requested_branch: requested_branch
+            .clone()
+            .filter(|requested| prepared.branch.as_ref() != Some(requested)),
+        reused: prepared.reused_worktree,
+    };
+    if prepared.reused_worktree && spec.reuse_prompt.is_some() {
+        command = prepared
+            .agent_command(spec)
+            .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
+        yinz_runtime::agent::pi::prepare_command(&mut command)
+            .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?;
+    }
     let reused = prepared.reused_worktree;
     let branch = prepared.branch.or_else(|| {
-        worktree_at(&prepared.path, &prepared.path)
-            .ok()
-            .flatten()
-            .and_then(|worktree| worktree.branch)
+        if guest_only {
+            None
+        } else {
+            worktree_at(&prepared.path, &prepared.path)
+                .ok()
+                .flatten()
+                .and_then(|worktree| worktree.branch)
+        }
     });
     let folder = prepared.path;
     place_agent(
@@ -2991,8 +3084,8 @@ fn prepare_agent(
         folder.clone(),
         automatic_firecracker_vm,
         checkout_made || mirror_project,
-    )?;
-    yinz_runtime::agent::pi::prepare_command(&mut command)?;
+    )
+    .map_err(|error| AgentSpawnError::failed(error, Some(resources)))?;
     let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
         command,
@@ -3025,7 +3118,7 @@ fn agent_pane_title(spec: &AgentSpawnSpec) -> Option<String> {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     };
-    let kind = nonblank(&spec.kind)?.to_lowercase();
+    let kind = yinz_runtime::agent::launch::kind_for_spec(spec)?;
     Some(match nonblank(&spec.model) {
         Some(model) => format!("{kind} ({model})"),
         None => kind,
@@ -3034,7 +3127,7 @@ fn agent_pane_title(spec: &AgentSpawnSpec) -> Option<String> {
 
 /// Launch an agent for a direct CLI request, using the same planner and checkout policy as plugins.
 pub fn spawn_agent_for_cli(
-    mut spec: AgentSpawnSpec,
+    spec: AgentSpawnSpec,
     cwd: Option<PathBuf>,
     project: Option<String>,
     remote_host: Option<String>,
@@ -3043,6 +3136,29 @@ pub fn spawn_agent_for_cli(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> SpawnAgentResponse {
+    spawn_agent_for_control(
+        spec,
+        cwd,
+        project,
+        remote_host,
+        automatic_firecracker_vm,
+        client_id,
+        senders,
+        data_access,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn spawn_agent_for_control(
+    mut spec: AgentSpawnSpec,
+    cwd: Option<PathBuf>,
+    project: Option<String>,
+    remote_host: Option<String>,
+    automatic_firecracker_vm: bool,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    data_access: &DataAccess,
+) -> Result<SpawnedAgent, AgentSpawnError> {
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
         return Err(
             "spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt".into(),
@@ -3056,6 +3172,7 @@ pub fn spawn_agent_for_cli(
         automatic_firecracker_vm,
         data_access,
     )?;
+    let resources = prepared.resources();
     let command = prepared.command;
     let title = agent_pane_title(&spec);
     let action = RunCommandAction {
@@ -3081,21 +3198,43 @@ pub fn spawn_agent_for_cli(
             Some(NotificationEnd::new(completion_tx)),
             false,
         ))
-        .map_err(|error| format!("failed to request agent pane: {error:#}"))?;
+        .map_err(|error| {
+            AgentSpawnError::failed(
+                format!("failed to request agent pane: {error:#}"),
+                Some(resources.clone()),
+            )
+        })?;
     let result = wait_for_action_completion(completion_rx, "agent spawn", true);
     if let Some(error) = result.error_message {
-        return Err(error);
+        let mut failure = AgentSpawnError::failed(error, Some(resources.clone()));
+        if let Some(pane_id) = result.affected_pane_id {
+            failure.0.spawned = Some(SpawnedAgent {
+                pane_id,
+                branch: resources.branch,
+                cwd: resources.cwd,
+                requested_branch: resources.requested_branch,
+                reused: resources.reused,
+                occupied_by: Vec::new(),
+            });
+            failure.0.launch_resources = None;
+        }
+        return Err(failure);
     }
-    let pane_id = result
-        .affected_pane_id
-        .ok_or("Yinz did not open the agent pane")?;
-    prewarm_agent_workflows(prepared.cwd.clone());
+    let pane_id = result.affected_pane_id.ok_or_else(|| {
+        AgentSpawnError::failed(
+            "agent pane creation outcome is unknown",
+            Some(resources.clone()),
+        )
+    })?;
+    if let Some(cwd) = &resources.cwd {
+        prewarm_agent_workflows(cwd.clone());
+    }
     Ok(SpawnedAgent {
         pane_id,
-        branch: prepared.branch,
-        cwd: Some(prepared.cwd),
-        requested_branch: prepared.requested_branch,
-        reused: prepared.reused,
+        branch: resources.branch,
+        cwd: resources.cwd,
+        requested_branch: resources.requested_branch,
+        reused: resources.reused,
         occupied_by: Vec::new(),
     })
 }
@@ -3164,12 +3303,24 @@ fn apply_project_worktree_dir(
 /// hocus sends the focused pane's folder, a TypeScript plugin's default is its own - never the
 /// repository root, which `command=zsh` in a subfolder of a checkout does not want and which
 /// costs a `git rev-parse` to find.
+#[cfg(test)]
 fn agent_folder(
     checkout: GitCheckout,
     cwd: Option<PathBuf>,
     source: PathBuf,
     reuse: bool,
     guard: WorktreeGuard,
+) -> Result<PreparedCheckout, String> {
+    agent_folder_tracked(checkout, cwd, source, reuse, guard, &mut None)
+}
+
+fn agent_folder_tracked(
+    checkout: GitCheckout,
+    cwd: Option<PathBuf>,
+    source: PathBuf,
+    reuse: bool,
+    guard: WorktreeGuard,
+    attempted: &mut Option<AgentLaunchResources>,
 ) -> Result<PreparedCheckout, String> {
     match (checkout, cwd) {
         (GitCheckout::Current, Some(cwd)) => {
@@ -3188,7 +3339,7 @@ fn agent_folder(
                 branch: None,
             })
         },
-        (checkout, _) => prepare_git_checkout_in(source, checkout, reuse, guard),
+        (checkout, _) => prepare_git_checkout_in_tracked(source, checkout, reuse, guard, attempted),
     }
 }
 
@@ -3313,6 +3464,24 @@ fn prepare_git_checkout_in(
     reuse: bool,
     guard: WorktreeGuard,
 ) -> Result<PreparedCheckout, String> {
+    prepare_git_checkout_in_tracked(source_directory, checkout, reuse, guard, &mut None)
+}
+
+fn prepare_git_checkout_in_tracked(
+    source_directory: PathBuf,
+    checkout: GitCheckout,
+    reuse: bool,
+    guard: WorktreeGuard,
+    attempted: &mut Option<AgentLaunchResources>,
+) -> Result<PreparedCheckout, String> {
+    let mut before_git_write = |path: &Path, branch: &str, requested: &str| {
+        *attempted = Some(AgentLaunchResources {
+            cwd: Some(path.to_owned()),
+            branch: Some(branch.to_owned()),
+            requested_branch: (branch != requested).then(|| requested.to_owned()),
+            reused: false,
+        });
+    };
     let root_output = process::Command::new("git")
         .arg("-C")
         .arg(&source_directory)
@@ -3352,6 +3521,7 @@ fn prepare_git_checkout_in(
             // refused request with the user's checkout already moved.
             guard.check(&root)?;
             if reuse && branch_exists(&root, &branch) {
+                before_git_write(&root, &branch, &branch);
                 run_git(&root, &["switch", &branch], "switch to the branch")?;
                 return Ok(PreparedCheckout {
                     reused_worktree: false,
@@ -3359,11 +3529,13 @@ fn prepare_git_checkout_in(
                     branch: Some(branch),
                 });
             }
+            let requested = branch.clone();
             let branch = if reuse {
                 branch
             } else {
                 free_branch(&root, &branch)?
             };
+            before_git_write(&root, &branch, &requested);
             run_git(
                 &root,
                 &["switch", "-c", &branch, &base],
@@ -3420,6 +3592,7 @@ fn prepare_git_checkout_in(
                 } else {
                     vec!["worktree", "add", "-b", &branch, "--", &path_string, &base]
                 };
+                before_git_write(&path, &branch, &branch);
                 run_git(&root, &args, "create the worktree")?;
                 exclude_nested_worktree(&root, &path);
                 return Ok(PreparedCheckout {
@@ -3430,8 +3603,10 @@ fn prepare_git_checkout_in(
             }
             // A worktree is named after its branch, so one search settles both: the
             // first suffix whose branch does not exist and whose folder is free.
+            let requested = branch.clone();
             let (branch, path) = free_worktree(&root, &path, &branch)?;
             let path_string = path.to_string_lossy().into_owned();
+            before_git_write(&path, &branch, &requested);
             run_git(
                 &root,
                 &["worktree", "add", "-b", &branch, "--", &path_string, &base],

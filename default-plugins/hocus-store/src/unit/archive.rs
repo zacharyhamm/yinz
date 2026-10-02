@@ -52,3 +52,56 @@ fn archive_replies_identify_sessions_and_hosts_with_reused_pane_ids() {
         }
     }
 }
+
+#[test]
+fn run_pages_can_be_followed_with_structured_revision_cursors() {
+    let backend = store::Local::shared("hocus");
+    backend.define_all(&store::shared_defs()).unwrap();
+    let run: agents::AgentRun = serde_json::from_value(json!({
+        "id": "claude:paged", "pane_id": 7, "yinz_session_name": "main",
+        "host_id": "host-a", "kind": "claude", "started_at_ms": 1,
+    }))
+    .unwrap();
+    let run = agents::AgentRun {
+        entries: (1..=3)
+            .map(|revision| agents::RunEntry {
+                revision,
+                event_id: Some(format!("event-{revision}")),
+                kind: agents::RunEntryKind::Result,
+                text: format!("result {revision}"),
+                created_at_ms: Some(revision as i64),
+            })
+            .collect(),
+        revision: 3,
+        ..run
+    };
+    backend.apply(agents::rows::run_mutations(&run)).unwrap();
+    let first: Value = serde_json::from_str(
+        &query(
+            &backend,
+            "agent_run",
+            &json!({
+                "run_id": run.id, "from_revision": 1, "limit": 2,
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["more"], true);
+    assert_eq!(first["next_revision"], 3);
+    assert_eq!(first["entries"].as_array().unwrap().len(), 2);
+    let last: Value = serde_json::from_str(
+        &query(
+            &backend,
+            "agent_run",
+            &json!({
+                "run_id": run.id, "from_revision": first["next_revision"], "limit": 2,
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(last["entries"][0]["text"], "result 3");
+    assert_eq!(last["more"], false);
+    assert!(last["next_revision"].is_null());
+}

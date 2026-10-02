@@ -1,6 +1,119 @@
 use super::{display_command, plan, Spec};
 
 #[test]
+fn custom_executables_keep_their_path_and_receive_their_agent_launch_support() {
+    for kind in [None, Some(" CoDeX ")] {
+        let spec = Spec {
+            kind: kind.map(str::to_owned),
+            command: Some("/opt/tools/codex-cli".into()),
+            args: vec!["--search".into()],
+            effort: Some("high".into()),
+            resume: Some("conversation".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::kind_for_spec(&spec).as_deref(), Some("codex"));
+        let (command, _) = plan(&spec).unwrap();
+        assert_eq!(command.path.to_str(), Some("yinz"));
+        assert_eq!(
+            &command.args[..7],
+            &[
+                "hocus",
+                "codex",
+                "--command",
+                "/opt/tools/codex-cli",
+                "--",
+                "resume",
+                "conversation"
+            ]
+        );
+        assert!(command.args.contains(&"--search".into()));
+        assert!(command
+            .args
+            .contains(&"model_reasoning_effort=\"high\"".into()));
+    }
+    let (command, _) = plan(&Spec {
+        command: Some("/opt/tools/claude.js".into()),
+        permission_mode: Some("plan".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(command.path.to_str(), Some("env"));
+    assert!(command.args.contains(&"/opt/tools/claude.js".into()));
+    assert!(command.args.contains(&"--settings".into()));
+    assert!(command.args.contains(&"--permission-mode".into()));
+    assert!(command.args.contains(&"YINZ_CLAUDE_INLINE_HOOKS=1".into()));
+}
+
+#[test]
+fn executable_aliases_share_argument_translation_and_validate_conflicting_kinds() {
+    for alias in ["cursor-agent", "CuRsOr-AgEnT"] {
+        let (command, _) = plan(&Spec {
+            kind: Some(alias.into()),
+            permission_mode: Some("force".into()),
+            resume: Some("session".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(command.path.to_str(), Some("cursor-agent"));
+        assert_eq!(command.args, ["--force", "--resume", "session"]);
+    }
+
+    let error = plan(&Spec {
+        kind: Some("claude".into()),
+        command: Some("/opt/codex".into()),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("conflicts"), "{error}");
+    let error = plan(&Spec {
+        command: Some("node".into()),
+        args: vec!["/opt/codex.js".into()],
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("executable shim"), "{error}");
+}
+
+#[test]
+fn indirect_agent_resumes_reject_subcommands_that_would_precede_the_executable() {
+    for (program, arguments, resume_arguments) in [
+        ("node", vec!["/opt/cursor-agent.js"], vec!["resume"]),
+        ("node", vec!["/opt/codex.js"], vec!["resume", "--last"]),
+        (
+            "env",
+            vec!["SETTING=value", "/opt/codex"],
+            vec!["resume", "--last"],
+        ),
+    ] {
+        let spec = Spec {
+            command: Some(program.into()),
+            args: arguments.iter().map(|arg| (*arg).to_owned()).collect(),
+            hooks: Some(false),
+            resume: Some("last".into()),
+            ..Default::default()
+        };
+        let error = plan(&spec).unwrap_err();
+        assert!(error.contains("directly executable agent shim"), "{error}");
+        assert!(
+            error.contains("complete resume invocation in args"),
+            "{error}"
+        );
+
+        // Callers can supply an exact invocation without Yinz moving the wrapper prefix.
+        let mut exact = Spec {
+            resume: None,
+            ..spec
+        };
+        exact
+            .args
+            .extend(resume_arguments.into_iter().map(str::to_owned));
+        let (command, _) = plan(&exact).unwrap();
+        assert_eq!(command.path.to_str(), Some(program));
+        assert_eq!(command.args, exact.args);
+    }
+}
+
+#[test]
 fn managed_codex_resumes_reject_permission_overrides() {
     for mode in super::CODEX_PERMISSION_MODES {
         for resume in ["conversation-id", "last"] {
