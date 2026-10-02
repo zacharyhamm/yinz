@@ -2920,8 +2920,7 @@ impl Grid {
             if scroll_region_top >= self.viewport.len() {
                 return;
             }
-            let wrapped_row =
-                Row::with_capacity(self.width).with_bg_color(self.cursor.pending_styles.background);
+            let wrapped_row = Row::new().with_bg_color(self.cursor.pending_styles.background);
             self.scroll_region_up_at_bottom(wrapped_row, true);
         } else if self.cursor.y == self.height.saturating_sub(1) {
             // the cursor is on the last line of the screen but below the scroll region's
@@ -6245,13 +6244,6 @@ impl Row {
             bg_color: None,
             osc133_markers: vec![],
             placeholder_marks: vec![],
-        }
-    }
-    /// A row with room for `columns` cells, for one about to be printed across.
-    pub fn with_capacity(columns: usize) -> Self {
-        Row {
-            columns: VecDeque::with_capacity(columns),
-            ..Row::new()
         }
     }
     pub fn from_columns(columns: VecDeque<TerminalCharacter>) -> Self {
