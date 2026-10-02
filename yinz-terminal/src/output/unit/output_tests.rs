@@ -2828,6 +2828,72 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
     );
 }
 
+#[test]
+fn translucently_composed_links_resolve_against_their_tabs_link_table() {
+    use crate::panes::terminal_character::DEFAULT_STYLES;
+    use crate::ui::damage::CellRect;
+    use yinz_types::colors::PaletteColor;
+
+    // The first tab's link sits under a translucent floating pane, so it reaches the frame
+    // through the composition rather than as a chunk of its own. The second tab renders after
+    // it and leaves its own link table current when the frame serializes.
+    let first_tab = Rc::new(RefCell::new(LinkHandler::new()));
+    let second_tab = Rc::new(RefCell::new(LinkHandler::new()));
+    second_tab
+        .borrow_mut()
+        .dispatch_osc8(&[b"8", b"", b"https://second.example/0"]);
+    let anchor = first_tab
+        .borrow_mut()
+        .dispatch_osc8(&[b"8", b"", b"https://first.example"]);
+    let linked_chunk = CharacterChunk::new(
+        vec![TerminalCharacter::new_styled(
+            'x',
+            DEFAULT_STYLES.link_anchor(anchor).into(),
+        )],
+        0,
+        0,
+    );
+    let overlay_chunk = CharacterChunk::new(vec![TerminalCharacter::new(' ')], 0, 0);
+
+    let mut output = create_test_output();
+    let first_client = ClientId::new(1);
+    let second_client = ClientId::new(2);
+    output.add_clients(&HashSet::from([first_client]), first_tab, None);
+    output.begin_translucent_composition(
+        &HashSet::from([first_client]),
+        vec![(
+            1,
+            CellRect {
+                x: 0,
+                y: 0,
+                cols: 1,
+                rows: 1,
+            },
+            50,
+        )],
+        PaletteColor::EightBit(7),
+        PaletteColor::EightBit(0),
+        PaletteColor::EightBit(0),
+        &HashMap::new(),
+    );
+    output
+        .add_character_chunks_to_client(first_client, vec![linked_chunk], Some(0))
+        .unwrap();
+    output
+        .add_character_chunks_to_client(first_client, vec![overlay_chunk], Some(1))
+        .unwrap();
+    output.finish_translucent_composition();
+    output.add_clients(&HashSet::from([second_client]), second_tab, None);
+
+    let serialized = output.serialize().unwrap();
+    let first = &serialized[&first_client];
+    assert!(
+        first.contains("\u{1b}]8;;https://first.example"),
+        "{first:?}"
+    );
+    assert!(!first.contains("second.example"), "{first:?}");
+}
+
 mod shared_style_serialization {
     use super::super::super::serialize_chunks;
     use super::*;
