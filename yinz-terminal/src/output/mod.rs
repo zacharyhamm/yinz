@@ -865,10 +865,25 @@ impl Output {
             .is_some_and(|composition| composition.contains_layer(z_index.unwrap_or(0)))
     }
     /// Flush before screen menus and notifications contribute their opaque cells.
+    ///
+    /// Called within the tab that began the composition, so its link table is still current.
     pub fn finish_translucent_composition(&mut self) {
-        for (client, composition) in self.compositions.drain() {
+        for (client, composition) in std::mem::take(&mut self.compositions) {
+            let mut composed = composition.finish();
+            self.pin_link_handler(&mut composed);
             if let Some(chunks) = self.client_character_chunks.get_mut(&client) {
-                chunks.extend(composition.finish());
+                chunks.extend(composed);
+            }
+        }
+    }
+    /// `add_clients` replaces the handler for each tab, but the frame is serialized once,
+    /// after every tab: pin the current tab's handler to its chunks now.
+    fn pin_link_handler(&self, character_chunks: &mut [CharacterChunk]) {
+        if let Some(link_handler) = &self.link_handler {
+            for chunk in character_chunks {
+                if chunk.link_handler.is_none() {
+                    chunk.link_handler = Some(link_handler.clone());
+                }
             }
         }
     }
@@ -941,15 +956,7 @@ impl Output {
         mut character_chunks: Vec<CharacterChunk>,
         z_index: Option<usize>,
     ) -> Result<()> {
-        // `add_clients` replaces the handler for each tab, but the frame is serialized once,
-        // after every tab: pin this tab's handler to its chunks now.
-        if let Some(link_handler) = &self.link_handler {
-            for chunk in &mut character_chunks {
-                if chunk.link_handler.is_none() {
-                    chunk.link_handler = Some(link_handler.clone());
-                }
-            }
-        }
+        self.pin_link_handler(&mut character_chunks);
         if let Some(composition) = self.compositions.get_mut(&client_id) {
             composition.add(&character_chunks, z_index.unwrap_or(0));
             character_chunks =
