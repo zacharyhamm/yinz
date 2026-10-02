@@ -18,6 +18,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use yinz_runtime::channels::SenderWithContext;
+use yinz_runtime::errors::prelude::*;
 use yinz_types::diagnostics::ContextType;
 use {
     yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason, yinz_ipc::nested_session,
@@ -161,7 +162,7 @@ impl ClientLoop<'_> {
                 let mut stdout = self.os_input.get_stdout_writer();
                 let written =
                     write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
-                self.render_budget.release(render_bytes);
+                self.render_budget.release(render_bytes).non_fatal();
                 if let Err(e) = written {
                     log::error!("failed to write a frame to the terminal: {e}");
                     self.os_input

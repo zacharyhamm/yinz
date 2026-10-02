@@ -704,8 +704,11 @@ pub fn start_client(
         render_budget: &render_budget,
     }
     .run(&receive_client_instructions);
-    // The router may be waiting for frames to drain that nobody will now write.
-    render_budget.close();
+    // The router may be waiting for frames to drain that nobody will now write,
+    // or for room in a channel nobody will now read. Dropping the receiver fails
+    // its next send, so it stops instead of holding up the join below.
+    render_budget.close().non_fatal();
+    drop(receive_client_instructions);
     let exit_msg = outcome.exit_msg;
     let reconnect_to_session = outcome.reconnect_to_session;
 
