@@ -1414,7 +1414,6 @@ impl ClientInfo {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneRenderReport {
     pub all_pane_contents: HashMap<ClientId, HashMap<PaneId, PaneContents>>,
-    pub all_pane_contents_with_ansi: HashMap<ClientId, HashMap<PaneId, PaneContents>>,
 }
 
 impl PaneRenderReport {
@@ -1426,20 +1425,6 @@ impl PaneRenderReport {
     ) {
         for client_id in client_ids {
             let p = self.all_pane_contents.entry(*client_id).or_default();
-            p.insert(pane_id, pane_contents.clone());
-        }
-    }
-    pub fn add_pane_contents_with_ansi(
-        &mut self,
-        client_ids: &[ClientId],
-        pane_id: PaneId,
-        pane_contents: PaneContents,
-    ) {
-        for client_id in client_ids {
-            let p = self
-                .all_pane_contents_with_ansi
-                .entry(*client_id)
-                .or_default();
             p.insert(pane_id, pane_contents.clone());
         }
     }

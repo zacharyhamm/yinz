@@ -221,7 +221,7 @@ pub(crate) fn route(
                 // Unblock the input thread so it doesn't sit waiting on a
                 // reply that is never going to arrive.
                 if send_client_instructions
-                    .send(ClientInstruction::UnblockInputThread)
+                    .send_required(ClientInstruction::UnblockInputThread)
                     .is_err()
                 {
                     break;
@@ -267,7 +267,10 @@ fn forward(
     yinz_runtime::errors::update_thread_ctx(&err_ctx);
     let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
     // A disconnected receiver is the normal way shutdown stops the router.
-    send_client_instructions.send(instruction.into()).is_err() || is_exit
+    send_client_instructions
+        .send_required(instruction.into())
+        .is_err()
+        || is_exit
 }
 
 #[cfg(test)]

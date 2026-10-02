@@ -373,6 +373,43 @@ fn dcs_cleanup_is_only_retained_after_an_unclosed_dcs_start() {
 }
 
 #[test]
+fn an_unclosed_dcs_survives_later_frames_until_its_own_end_is_flushed() {
+    use super::{write_synchronised_tracking, ClientTeardown};
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    for next_sync in [None, Some(SyncOutput::Csi), Some(SyncOutput::Dcs)] {
+        for prefix in [0, 1, usize::MAX] {
+            let open = AtomicU8::new(0);
+            let mut broken = PartialFrameHost {
+                prefix: 1,
+                cleanup_fails: true,
+                ..Default::default()
+            };
+            assert!(write_synchronised_tracking(
+                &mut broken,
+                Some(SyncOutput::Dcs),
+                b"frame",
+                &open
+            )
+            .is_err());
+            assert_eq!(open.load(Ordering::SeqCst), 2);
+
+            let mut next = PartialFrameHost {
+                prefix,
+                ..Default::default()
+            };
+            let _ = write_synchronised_tracking(&mut next, next_sync, b"next", &open);
+            let ribbon = ClientTeardown::at_startup(false)
+                .restore_sequences_with_sync(open.load(Ordering::SeqCst));
+            assert_eq!(
+                ribbon.contains("\x1bP=2s"),
+                !matches!(next_sync, Some(SyncOutput::Dcs))
+            );
+        }
+    }
+}
+
+#[test]
 fn startup_and_panic_restoration_restore_input_between_flushed_output_phases() {
     use super::ClientTeardown;
     use std::cell::RefCell;

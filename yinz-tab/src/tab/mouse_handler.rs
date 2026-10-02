@@ -1605,7 +1605,7 @@ impl MouseHandler {
         if let Some(prev_pane_id) = previous_hover_pane_id {
             if Some(prev_pane_id) != pane_id {
                 if let Some(pane) = tab.get_pane_with_id_mut(prev_pane_id) {
-                    pane.set_hover_position(None);
+                    should_render |= pane.set_hover_position(None);
                 }
             }
         }

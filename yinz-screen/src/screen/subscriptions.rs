@@ -1,13 +1,57 @@
 use std::collections::{HashMap, HashSet};
 
-use yinz_types::data::PaneContents;
+use yinz_types::data::{PaneContents, PaneRenderReport};
 use {yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg};
 
 use crate::{panes::PaneId, ClientId};
 
-use super::{PaneRenderSubscription, Screen};
+use super::{Pane, PaneRenderSubscription, Screen};
 
 impl Screen {
+    fn subscriber_pane_contents(
+        &self,
+        pane: &dyn Pane,
+        get_full_scrollback: bool,
+        max_lines: Option<usize>,
+        ansi: bool,
+        report: Option<&PaneRenderReport>,
+    ) -> PaneContents {
+        let contents = |client| {
+            if ansi {
+                pane.pane_contents_with_ansi(client, get_full_scrollback, max_lines)
+            } else {
+                report
+                    .and_then(|report| match client {
+                        Some(client) => report
+                            .all_pane_contents
+                            .get(&client)
+                            .and_then(|panes| panes.get(&pane.pid())),
+                        None => report
+                            .all_pane_contents
+                            .values()
+                            .find_map(|panes| panes.get(&pane.pid())),
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| pane.pane_contents(client, get_full_scrollback, max_lines))
+            }
+        };
+        if matches!(pane.pid(), PaneId::Terminal(_)) {
+            return contents(None);
+        }
+        // Include live clients on other tabs: an inactive plugin can retain their grids.
+        let mut clients: Vec<_> = self.connected_clients.borrow().iter().copied().collect();
+        clients.sort_unstable();
+        clients
+            .into_iter()
+            .chain(self.followed_client_id)
+            .filter(|id| !self.watcher_clients.contains_key(id))
+            .find_map(|id| {
+                let contents = contents(Some(id));
+                (!contents.viewport.is_empty()).then_some(contents)
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn subscribe_to_pane_renders(
         &mut self,
         subscriber_client_id: ClientId,
@@ -27,11 +71,13 @@ impl Screen {
                     let get_full_scrollback = scrollback.is_some();
                     let max_lines = scrollback.filter(|&n| n != 0);
 
-                    let contents = if ansi {
-                        pane.pane_contents_with_ansi(None, get_full_scrollback, max_lines)
-                    } else {
-                        pane.pane_contents(None, get_full_scrollback, max_lines)
-                    };
+                    let contents = self.subscriber_pane_contents(
+                        pane,
+                        get_full_scrollback,
+                        max_lines,
+                        ansi,
+                        None,
+                    );
 
                     if let Some(os_input) = &self.bus.os_input {
                         let scrollback_data = if scrollback.is_some() {
@@ -80,7 +126,7 @@ impl Screen {
             );
         }
     }
-    pub(super) fn deliver_to_pane_subscribers_directly(&mut self) {
+    pub(super) fn deliver_to_pane_subscribers(&mut self, report: Option<&PaneRenderReport>) {
         if !self.pane_subscriber_snapshots_dirty || self.deferred_subscriber_renders {
             return;
         }
@@ -93,17 +139,22 @@ impl Screen {
 
         let has_ansi_subscribers = self.pane_render_subscribers.values().any(|s| s.ansi);
 
-        // Query pane contents directly from tabs
+        // Reuse this pass's plain snapshots; missing panes and ANSI still need direct reads.
         let mut pane_map: HashMap<yinz_types::data::PaneId, PaneContents> = HashMap::new();
         let mut ansi_pane_map: HashMap<yinz_types::data::PaneId, PaneContents> = HashMap::new();
         for pane_id in &all_subscribed_ids {
             let server_pane_id: PaneId = *pane_id;
             for tab in self.tabs.values() {
                 if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
-                    pane_map.insert(*pane_id, pane.pane_contents(None, false, None));
+                    pane_map.insert(
+                        *pane_id,
+                        self.subscriber_pane_contents(pane, false, None, false, report),
+                    );
                     if has_ansi_subscribers {
-                        ansi_pane_map
-                            .insert(*pane_id, pane.pane_contents_with_ansi(None, false, None));
+                        ansi_pane_map.insert(
+                            *pane_id,
+                            self.subscriber_pane_contents(pane, false, None, true, None),
+                        );
                     }
                     break;
                 }

@@ -517,10 +517,49 @@ pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 pub(crate) fn stdout_writer() -> Box<dyn io::Write> {
     // Hold the lock for the writer's whole life, including its waits on a full
     // terminal, so another thread cannot write into the middle of a frame.
+    let stdout = ::std::io::stdout().lock();
+    // Reopen the tty instead of changing stdout's shared file description: stdin
+    // and the invoking shell can share it, and must retain their blocking mode.
+    let tty = io::stdout().is_terminal().then(|| {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = nix::unistd::ttyname(&stdout).map_err(io::Error::from)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
+            .open(path)
+    });
     Box::new(crate::terminal_escapes::HostWriter::new(
-        ::std::io::stdout().lock(),
-        wait_until_stdout_is_writable,
+        StdoutWriter { stdout, tty },
+        |writer| match &writer.tty {
+            Some(Ok(tty)) => wait_until_stdout_is_writable(tty),
+            _ => wait_until_stdout_is_writable(&writer.stdout),
+        },
     ))
+}
+
+struct StdoutWriter {
+    stdout: io::StdoutLock<'static>,
+    tty: Option<io::Result<std::fs::File>>,
+}
+
+impl StdoutWriter {
+    fn writer(&mut self) -> io::Result<&mut dyn Write> {
+        match &mut self.tty {
+            Some(Ok(tty)) => Ok(tty),
+            Some(Err(error)) => Err(io::Error::new(error.kind(), error.to_string())),
+            None => Ok(&mut self.stdout),
+        }
+    }
+}
+
+impl Write for StdoutWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.writer()?.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer()?.flush()
+    }
 }
 
 /// Pause while the terminal is full, then let HostWriter retry. A timeout is temporary

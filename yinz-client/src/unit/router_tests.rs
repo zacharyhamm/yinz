@@ -9,7 +9,7 @@ use super::super::router::route;
 use crate::render_budget::{RenderBudget, RENDER_BUDGET_BYTES};
 use crate::test_support::FakeClientOsApi;
 use crate::ClientInstruction;
-use yinz_runtime::channels::{self, SenderWithContext};
+use yinz_runtime::channels::{self, SenderWithContext, Shutdown};
 use {yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg};
 
 fn run_router(os_input: FakeClientOsApi) -> Vec<ClientInstruction> {
@@ -124,28 +124,37 @@ fn a_router_blocked_on_a_full_channel_stops_once_the_main_loop_is_gone() {
     // The main loop has exited, after failing to write to the terminal, and the server
     // keeps sending frames. With nobody draining the channel, the router blocks on the
     // first send that does not fit; dropping the receiver is what lets it go.
-    let os_input = FakeClientOsApi::default();
-    for _ in 0..5 {
-        os_input.queue_from_server(ServerToClientMsg::Render {
-            content: "frame".to_string(),
+    for malformed in [false, true] {
+        let os_input = FakeClientOsApi::default();
+        for _ in 0..5 {
+            if malformed {
+                os_input.queue_malformed_from_server();
+            } else {
+                os_input.queue_from_server(ServerToClientMsg::Render {
+                    content: "frame".to_string(),
+                });
+            }
+        }
+        let (sender, receiver) = channels::bounded(1);
+        let shutdown = Shutdown::default();
+        let sender = shutdown.sender(sender);
+        let (finished, router_finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let render_budget = RenderBudget::new(RENDER_BUDGET_BYTES);
+            route(Box::new(os_input), sender, &render_budget);
+            let _ = finished.send(());
         });
+        // Nothing else stops the router: the fake server never hangs up.
+        assert!(router_finished
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err());
+        // Production begins shutdown before dropping the receiver.
+        shutdown.begin();
+        drop(receiver);
+        router_finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the router should stop once nobody reads its channel");
     }
-    let (sender, receiver) = channels::bounded(1);
-    let sender = SenderWithContext::new(sender);
-    let (finished, router_finished) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let render_budget = RenderBudget::new(RENDER_BUDGET_BYTES);
-        route(Box::new(os_input), sender, &render_budget);
-        let _ = finished.send(());
-    });
-    // Nothing else stops the router: the fake server never hangs up.
-    assert!(router_finished
-        .recv_timeout(std::time::Duration::from_millis(200))
-        .is_err());
-    drop(receiver);
-    router_finished
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the router should stop once nobody reads its channel");
 }
 
 #[test]
@@ -177,12 +186,13 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
         let (finished, completion) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let (sender, receiver) = channels::bounded(1);
+            let shutdown = Shutdown::default();
             // The second frame must wait until the first is delivered; it is also
             // larger than the budget, exercising the oversized-frame escape hatch.
             let budget = Arc::new(RenderBudget::new(5));
             let router = crate::router::spawn(
                 Box::new(os_input.clone()),
-                SenderWithContext::new(sender),
+                shutdown.sender(sender),
                 budget.clone(),
             );
             let nested_reannounce = NestedReannounce::spawn(
@@ -205,6 +215,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             // Mirror start_client's shutdown: neither a reservation nor a send may
             // keep its router alive once the terminal loop has left.
             budget.close().unwrap();
+            shutdown.begin();
             drop(receiver);
             router.join().unwrap();
             finished.send(outcome.exit_msg).unwrap();

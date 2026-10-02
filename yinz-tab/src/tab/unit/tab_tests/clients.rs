@@ -1,4 +1,76 @@
 use super::*;
+use yinz_bus::loading_indication::LoadingIndication;
+use yinz_types::data::{PermissionType, PluginPermission};
+
+#[test]
+fn joining_clients_see_plugin_errors_and_permission_prompts_without_plugin_bytes() {
+    for (placement, suppressed) in [
+        (NewPanePlacement::default(), false),
+        (NewPanePlacement::Floating(None), false),
+        (
+            NewPanePlacement::Overlay(OverlayPlacement::default()),
+            false,
+        ),
+        (NewPanePlacement::default(), true),
+    ] {
+        let mut tab = create_new_tab(
+            Size {
+                cols: 121,
+                rows: 20,
+            },
+            false,
+        );
+        let (sender, _receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let first = ClientId::new(1);
+        let joining = ClientId::new(2);
+        let plugin = PaneId::Plugin(crate::PluginId::new(2));
+        tab.new_pane(
+            plugin,
+            None,
+            None,
+            suppressed,
+            true,
+            placement,
+            Some(first),
+            None,
+        )
+        .unwrap();
+        let pane = tab.get_pane_with_id_mut(plugin).unwrap();
+        let mut loading = LoadingIndication::new("test".into());
+        loading.indicate_loading_error("plugin failed to load".into());
+        loading.ended = true;
+        pane.update_loading_indication(loading);
+
+        tab.add_client(joining, None).unwrap();
+
+        let pane = tab.get_pane_with_id_mut(plugin).unwrap();
+        assert!(pane
+            .dump_screen(false, Some(joining))
+            .contains("plugin failed to load"));
+        pane.request_permissions_from_user(Some(PluginPermission::new(
+            "test".into(),
+            vec![PermissionType::ReadApplicationState],
+        )));
+        tab.remove_client_pane_state(joining);
+        tab.remove_client(joining);
+        tab.add_client(joining, None).unwrap();
+        let pane = tab.get_pane_with_id_mut(plugin).unwrap();
+        let contents = pane.dump_screen(false, Some(joining));
+        assert!(contents.contains("Allow?"), "{contents:?}");
+
+        pane.request_permissions_from_user(None);
+        pane.handle_plugin_bytes(joining, b"client-specific output".to_vec());
+        tab.remove_client(joining); // Switching tabs retains the client's grid.
+        tab.add_client(joining, None).unwrap();
+        assert!(tab
+            .get_pane_with_id(plugin)
+            .unwrap()
+            .dump_screen(false, Some(joining))
+            .contains("client-specific output"));
+    }
+}
 
 #[test]
 fn removing_a_client_forgets_its_mode_info() {

@@ -1,5 +1,70 @@
 use super::*;
 
+#[test]
+fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use nix::sys::termios::{tcflow, FlowArg};
+    use std::sync::mpsc;
+    const CHILD: &str = "YINZ_TEST_BLOCKING_STDOUT_STALL";
+    if std::env::var_os(CHILD).is_some() {
+        let stdout = io::stdout();
+        let flags = OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL).unwrap());
+        assert!(!flags.contains(OFlag::O_NONBLOCK));
+        // The kernel's Ctrl-S effect, with an initially blocking stdout.
+        tcflow(&stdout, FlowArg::TCOOFF).unwrap();
+        let (entered, ready) = mpsc::channel();
+        let (finished, result) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let mut stdout = get_client_os_input().unwrap().get_stdout_writer();
+            entered.send(()).unwrap();
+            let written = stdout
+                .write_all(b"paused output\n")
+                .and_then(|()| stdout.flush());
+            finished.send(written).unwrap();
+        });
+        ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
+        crate::terminal_escapes::abandon_stalled_output();
+        let written = result.recv_timeout(time::Duration::from_secs(10));
+        // Resume even on failure, so the harness can print the regression instead of hanging.
+        tcflow(&stdout, FlowArg::TCOON).unwrap();
+        writer.join().unwrap();
+        assert_eq!(
+            written.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL).unwrap()),
+            flags
+        );
+        assert_eq!(
+            OFlag::from_bits_truncate(fcntl(io::stdin(), FcntlArg::F_GETFL).unwrap()),
+            flags
+        );
+        // Teardown can take the same lock and restore terminal output.
+        let mut stdout = stdout_writer();
+        stdout.write_all(b"restored\n").unwrap();
+        stdout.flush().unwrap();
+        return;
+    }
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "os_input_output::tests::quitting_interrupts_a_flow_controlled_blocking_stdout",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
+        .stdout(std::process::Stdio::from(pty.slave))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// The host terminal is a tty, which is what macOS `poll` cannot wait on. A full one is
 /// backpressure, a drained one is ready, and a closed one fails the write, not the wait.
 #[test]

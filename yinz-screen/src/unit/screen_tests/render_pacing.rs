@@ -88,6 +88,46 @@ fn a_client_with_a_queued_frame_holds_back_rendering() {
 }
 
 #[test]
+fn deferred_panes_still_deliver_bells_and_directory_updates_once() {
+    for visual_bell in [false, true] {
+        let mut paced = screen_with_backlog();
+        paced.screen.visual_bell = visual_bell;
+        paced_render(&mut paced.screen);
+        let _ = rendered_bytes(&paced.to_server);
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
+        let osc7 = "\x1b]7;file://host/deferred\x1b\\";
+        paced
+            .screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(1),
+                format!("pending-content\x07{osc7}").into_bytes(),
+            )
+            .unwrap();
+
+        paced_render(&mut paced.screen);
+
+        assert!(!paced.screen.deferred_tabs().is_empty());
+        let bytes = rendered_bytes(&paced.to_server);
+        assert!(bytes.contains('\x07'), "{bytes:?}");
+        assert!(bytes.contains(osc7), "{bytes:?}");
+        assert!(!bytes.contains("pending-content"), "{bytes:?}");
+        assert_eq!(
+            paced.screen.last_forwarded_osc7[&CLIENT].as_deref(),
+            Some("file://host/deferred")
+        );
+
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, backlog(0, None))];
+        paced_render(&mut paced.screen);
+        let bytes = rendered_bytes(&paced.to_server);
+        assert!(bytes.contains("pending-content"), "{bytes:?}");
+        assert!(!bytes.contains('\x07'), "{bytes:?}");
+        assert!(!bytes.contains(osc7), "{bytes:?}");
+    }
+}
+
+#[test]
 fn a_client_stalled_on_one_write_stops_holding_back_rendering() {
     let mut paced = screen_with_backlog();
     *paced.backlog.lock().unwrap() = vec![(CLIENT, backlog(3, Some(Duration::from_secs(60))))];
