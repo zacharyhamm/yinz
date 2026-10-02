@@ -1,9 +1,9 @@
 //! The notification browser: `Notifications` mode's in-place list of this session's toasts.
 //!
 //! While a client is in the mode, the corner its toasts stack in shows every notification the
-//! session has received and not yet acted on, newest first, in place of the live toasts. The list
+//! session has received, newest first, in place of the live toasts. The list
 //! is keyboard-navigable, and activating an entry does exactly what clicking its toast does - see
-//! `Screen::activate_notification` - then leaves the mode, since the entry is consumed.
+//! `Screen::activate_notification` - then leaves the mode.
 //!
 //! Per client, because the input mode is: two clients can browse different selections, and a
 //! client that is not browsing keeps seeing its toasts.
@@ -52,11 +52,7 @@ pub(super) struct BrowserFrame {
 impl Screen {
     /// The notifications the browser lists, newest first.
     fn browser_entries(&self) -> Vec<&NotificationRecord> {
-        self.notification_history
-            .iter()
-            .rev()
-            .filter(|record| !record.consumed)
-            .collect()
+        self.notification_history.iter().rev().collect()
     }
 
     fn browser_selected_index(
@@ -113,7 +109,7 @@ impl Screen {
                 .map(|record| record.info.message.as_str())
                 .collect()
         };
-        let layout = notification_browser_layout(
+        let mut layout = notification_browser_layout(
             viewport,
             self.notification_position,
             &texts,
@@ -121,6 +117,21 @@ impl Screen {
             browser.expanded,
             browser.first,
         )?;
+        if !entries.is_empty() {
+            if let Some(entry) = layout
+                .entries
+                .iter_mut()
+                .find(|entry| entry.index == selected)
+            {
+                // Keep both one-column viewport margins without changing width or wrapping.
+                let shift = viewport.cols.saturating_sub(layout.width + 2).min(2);
+                if self.notification_position.is_left() {
+                    entry.x += shift;
+                } else {
+                    entry.x -= shift;
+                }
+            }
+        }
         Some(BrowserFrame {
             layout,
             ids: entries.iter().map(|record| record.info.id).collect(),
@@ -186,7 +197,9 @@ impl Screen {
         };
         for entry in &frame.layout.entries {
             let declaration = if !frame.ids.is_empty() && entry.index == frame.selected {
-                self.style.colors.text_selected
+                let mut declaration = self.style.colors.text_selected;
+                declaration.emphasis_0 = self.style.colors.frame_selected.base;
+                declaration
             } else {
                 self.style.colors.text_unselected
             };

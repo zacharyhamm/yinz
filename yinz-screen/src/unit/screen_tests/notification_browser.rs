@@ -3,11 +3,22 @@
 use super::*;
 use crate::screen::{Notification, NotificationClick, NotificationRecord};
 use crate::ui::damage::CellRect;
+use crate::ui::notification::{notification_browser_layout, notification_height};
 use std::time::Instant;
 use yinz_types::animation::Tween;
+use yinz_types::colors::PaletteColor;
 use yinz_types::data::NotificationInfo;
+use yinz_types::input::options::NotificationPosition;
 use yinz_types::internal_ids::NotificationId;
 use yinz_types::internal_ids::TabId;
+use yinz_types::pane_size::Viewport;
+
+const CORNERS: [NotificationPosition; 4] = [
+    NotificationPosition::TopLeft,
+    NotificationPosition::TopRight,
+    NotificationPosition::BottomLeft,
+    NotificationPosition::BottomRight,
+];
 
 fn record(
     id: u64,
@@ -23,7 +34,6 @@ fn record(
         },
         pane_id,
         on_click,
-        consumed: false,
     }
 }
 
@@ -87,18 +97,23 @@ fn mode_changes(server_rx: &Receiver<(ServerInstruction, ErrorContext)>) -> Vec<
 }
 
 #[test]
-fn entering_the_mode_lists_every_unconsumed_notification_newest_first() {
-    let mut consumed = record(2, "already clicked", None, None);
-    consumed.consumed = true;
+fn entering_the_mode_lists_every_notification_newest_first() {
     let (screen, client_id) = browsing(vec![
         record(0, "first", None, None),
         record(1, "second", None, None),
-        consumed,
+        record(2, "third", None, None),
     ]);
 
     assert_eq!(
         listed(&screen, client_id),
-        (vec![NotificationId::new(1), NotificationId::new(0)], 0)
+        (
+            vec![
+                NotificationId::new(2),
+                NotificationId::new(1),
+                NotificationId::new(0)
+            ],
+            0
+        )
     );
 }
 
@@ -133,6 +148,110 @@ fn the_selection_moves_down_the_list_and_stops_at_both_ends() {
     screen.move_notification_selection(Direction::Up, client_id);
     screen.move_notification_selection(Direction::Up, client_id);
     assert_eq!(selected_id(&screen, client_id), NotificationId::new(2));
+}
+
+#[test]
+fn only_the_selected_box_shifts_inward_within_viewport_margins() {
+    let text =
+        "a notification long enough to reach the maximum box width and wrap onto several rows";
+    for corner in CORNERS {
+        let (mut screen, client_id) =
+            browsing((0..12).map(|id| record(id, text, None, None)).collect());
+        screen.notification_position = corner;
+        for selected in 0..12 {
+            for expanded in [false, true] {
+                if expanded {
+                    screen.toggle_notification_detail(client_id);
+                }
+                for (cols, shift) in [(7, 0), (20, 0), (52, 0), (53, 1), (54, 2), (80, 2)] {
+                    let viewport = Viewport {
+                        x: 11,
+                        y: 5,
+                        cols,
+                        rows: 9,
+                    };
+                    let frame = screen
+                        .notification_browser_frame(client_id, viewport)
+                        .unwrap();
+                    let unshifted = notification_browser_layout(
+                        viewport,
+                        corner,
+                        &[text; 12],
+                        selected,
+                        expanded,
+                        frame.layout.first,
+                    )
+                    .unwrap();
+                    assert_eq!(frame.selected, selected);
+                    assert_eq!(frame.layout.width, unshifted.width);
+                    assert_eq!(frame.layout.entries.len(), unshifted.entries.len());
+                    assert!(frame
+                        .layout
+                        .entries
+                        .iter()
+                        .any(|entry| entry.index == selected));
+                    if selected == 11 {
+                        assert!(
+                            frame.layout.first > 0,
+                            "the history scrolls beyond the visible window"
+                        );
+                    }
+                    for (entry, original) in frame.layout.entries.iter().zip(unshifted.entries) {
+                        let offset = if entry.index == selected { shift } else { 0 };
+                        let expected_x = if corner.is_left() {
+                            original.x + offset
+                        } else {
+                            original.x - offset
+                        };
+                        assert_eq!(
+                            entry.x, expected_x,
+                            "{corner:?}, {cols} columns, selected {selected}"
+                        );
+                        assert_eq!(entry.y, original.y);
+                        assert_eq!(entry.lines, original.lines);
+                        assert!(entry.x > viewport.x);
+                        assert!(entry.x + frame.layout.width < viewport.x + viewport.cols);
+                        assert!(entry.y >= viewport.y);
+                        assert!(
+                            entry.y + notification_height(entry.lines.len())
+                                <= viewport.y + viewport.rows
+                        );
+                    }
+                }
+            }
+            screen.move_notification_selection(
+                if corner.is_top() {
+                    Direction::Down
+                } else {
+                    Direction::Up
+                },
+                client_id,
+            );
+        }
+    }
+}
+
+#[test]
+fn the_empty_history_placeholder_stays_at_the_anchor() {
+    let (mut screen, client_id) = browsing(vec![]);
+    let viewport = Viewport {
+        x: 11,
+        y: 5,
+        cols: 80,
+        rows: 9,
+    };
+    for corner in CORNERS {
+        screen.notification_position = corner;
+        let frame = screen
+            .notification_browser_frame(client_id, viewport)
+            .unwrap();
+        assert!(frame.ids.is_empty());
+        assert_eq!(
+            frame.layout,
+            notification_browser_layout(viewport, corner, &["No notifications"], 0, false, 0,)
+                .unwrap()
+        );
+    }
 }
 
 #[test]
@@ -246,41 +365,111 @@ fn activating_an_entry_does_what_clicking_its_toast_does_and_leaves_the_mode() {
         ),
         record(1, "newer", None, None),
     ]);
+    new_tab(&mut screen, 2, TabId::new(1));
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
     screen
         .notifications
         .push(settled_toast(0, "hocus has a plan"));
+    let now = Instant::now();
+    screen.pinned_now = Some(now);
 
-    screen.move_notification_selection(Direction::Down, client_id);
-    screen.activate_selected_notification(client_id, Instant::now());
+    for _ in 0..2 {
+        screen
+            .focus_pane_with_id(PaneId::Terminal(TerminalId::new(2)), true, false, client_id)
+            .unwrap();
+        screen.move_notification_selection(Direction::Down, client_id);
+        screen.activate_selected_notification(client_id, now);
 
-    let payload = plugin_rx
-        .try_iter()
-        .find_map(|(instruction, _)| match instruction {
-            PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
-            _ => None,
-        })
-        .expect("the plugin that raised the notification hears about it");
-    assert_eq!(payload, "42");
-    assert!(screen.notifications[0].is_dismissing());
-    assert!(screen.notification_history[0].consumed);
-    assert!(!screen.notification_history[1].consumed);
-    assert!(!screen.notification_browsers.contains_key(&client_id));
-    assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+        let payloads: Vec<_> = plugin_rx
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(payloads, vec!["42"]);
+        assert_eq!(
+            screen.get_active_pane_id(&client_id),
+            Some(PaneId::Terminal(TerminalId::new(1)))
+        );
+        assert!(screen.notifications[0].is_dismissing());
+        assert!(!screen.notification_browsers.contains_key(&client_id));
+        assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+
+        screen.open_notification_browser(client_id);
+        assert_eq!(
+            listed(&screen, client_id),
+            (vec![NotificationId::new(1), NotificationId::new(0)], 0)
+        );
+    }
 }
 
 #[test]
-fn activating_a_notification_with_no_target_consumes_it_and_leaves_the_mode() {
+fn activating_a_notification_with_no_target_keeps_it_and_leaves_the_mode() {
     let (server_tx, server_rx) = channels::unbounded::<(ServerInstruction, ErrorContext)>();
     let (mut screen, client_id) = browsing(vec![record(0, "just saying", None, None)]);
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
 
     screen.activate_selected_notification(client_id, Instant::now());
 
-    assert!(screen.notification_history[0].consumed);
     assert!(!screen.notification_browsers.contains_key(&client_id));
     assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+    screen.open_notification_browser(client_id);
+    assert_eq!(
+        listed(&screen, client_id),
+        (vec![NotificationId::new(0)], 0)
+    );
+}
+
+#[test]
+fn a_toast_with_a_missing_pane_can_be_activated_again_from_history() {
+    let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+    let (mut screen, client_id) = browsing(vec![record(
+        0,
+        "gone",
+        Some(PaneId::Terminal(TerminalId::new(99))),
+        Some(click_target("gone")),
+    )]);
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+    let focused = screen.get_active_pane_id(&client_id);
+    let mut toast = settled_toast(0, "gone");
+    toast.pane_id = screen.notification_history[0].pane_id;
+    toast.on_click = screen.notification_history[0].on_click.clone();
+    screen.notifications.push(toast);
+    screen.close_notification_browser(client_id);
+    let viewport = screen.notification_browser_viewport(client_id).unwrap();
+    let now = Instant::now();
+    let rect = screen.notification_cell_rects(viewport, now)[0];
+    assert!(screen.handle_pane_notification_click(
+        &MouseEvent::new_left_press_event(Position::new((rect.y + 1) as i32, rect.x as u16)),
+        viewport,
+        client_id,
+        now,
+    ));
+
+    screen.open_notification_browser(client_id);
+    assert_eq!(
+        listed(&screen, client_id),
+        (vec![NotificationId::new(0)], 0)
+    );
+    screen.activate_selected_notification(client_id, now);
+
+    let payloads: Vec<_> = plugin_rx
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::NotificationClicked { payload, .. } => Some(payload),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(payloads, vec!["gone", "gone"]);
+    assert_eq!(screen.get_active_pane_id(&client_id), focused);
+    assert!(!screen.notification_browsers.contains_key(&client_id));
+    screen.open_notification_browser(client_id);
+    assert_eq!(
+        listed(&screen, client_id),
+        (vec![NotificationId::new(0)], 0)
+    );
 }
 
 #[test]
@@ -329,9 +518,143 @@ fn clicking_an_entry_activates_that_entry() {
         })
         .collect();
     assert_eq!(payloads, vec!["older".to_owned()]);
-    assert!(screen.notification_history[0].consumed);
-    assert!(!screen.notification_history[1].consumed);
     assert_eq!(mode_changes(&server_rx), vec![InputMode::Normal]);
+    screen.open_notification_browser(client_id);
+    assert_eq!(
+        listed(&screen, client_id),
+        (vec![NotificationId::new(1), NotificationId::new(0)], 0)
+    );
+}
+
+#[test]
+fn clicking_the_shifted_edge_activates_the_selected_entry() {
+    for corner in CORNERS {
+        let (plugin_tx, plugin_rx) = channels::unbounded::<(PluginInstruction, ErrorContext)>();
+        let (mut screen, client_id) =
+            browsing(vec![record(0, "edge", None, Some(click_target("edge")))]);
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
+        screen.notification_position = corner;
+        let viewport = screen.notification_browser_viewport(client_id).unwrap();
+        let rect = screen.notification_browser_rects(client_id, viewport)[0];
+        let x = if corner.is_left() {
+            rect.x + rect.cols - 1
+        } else {
+            rect.x
+        };
+
+        screen.handle_mouse_event(
+            MouseEvent::new_left_press_event(Position::new((rect.y + 1) as i32, x as u16)),
+            client_id,
+        );
+
+        assert!(
+            !screen.notification_browsers.contains_key(&client_id),
+            "{corner:?}"
+        );
+        assert!(plugin_rx.try_iter().any(|(instruction, _)| matches!(
+            instruction, PluginInstruction::NotificationClicked { payload, .. } if payload == "edge"
+        )));
+    }
+}
+
+#[test]
+fn selection_rendering_occlusion_and_cleanup_follow_the_shifted_boxes() {
+    for corner in CORNERS {
+        let (mut screen, client_id) = browsing(vec![
+            record(0, "older", None, None),
+            record(1, "newer", None, None),
+        ]);
+        screen.notification_position = corner;
+        screen.style.colors.frame_selected.base = PaletteColor::Rgb((12, 34, 56));
+        let receiver = screen_wired_to_server(&mut screen);
+        let viewport = screen.notification_browser_viewport(client_id).unwrap();
+        let rect = screen.notification_browser_rects(client_id, viewport)[0];
+        let x = if corner.is_left() {
+            rect.x + rect.cols - 1
+        } else {
+            rect.x
+        };
+        let target = (x, rect.y + 1);
+        screen
+            .get_active_tab_mut(client_id)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(1),
+                format!("\x1b[{};{}H", target.1 + 1, target.0 + 1).into_bytes(),
+            )
+            .unwrap();
+        assert_eq!(pane_cursor(&mut screen, client_id), target);
+
+        let mut grid = grid_for_render_snapshot(screen.surface_size());
+        screen.close_notification_browser(client_id);
+        let (_, baseline) =
+            render_frame_and_cursor_into(&mut screen, &receiver, client_id, &mut grid);
+        let uncovered_cell = grid.get_character_at(target.0, target.1).unwrap();
+        screen.open_notification_browser(client_id);
+
+        let (cursor, _) =
+            render_frame_and_cursor_into(&mut screen, &receiver, client_id, &mut grid);
+        assert_eq!(
+            cursor, None,
+            "the shifted edge hides the cursor at {corner:?}"
+        );
+        let frame = screen
+            .notification_browser_frame(client_id, viewport)
+            .unwrap();
+        for entry in frame.layout.entries {
+            let selected = entry.index == frame.selected;
+            let declaration = if selected {
+                screen.style.colors.text_selected
+            } else {
+                screen.style.colors.text_unselected
+            };
+            let border_color = if selected {
+                screen.style.colors.frame_selected.base
+            } else {
+                declaration.emphasis_0
+            };
+            for (x, y) in [
+                (entry.x, entry.y),
+                (entry.x, entry.y + 1),
+                (entry.x + frame.layout.width - 1, entry.y + 2),
+            ] {
+                let border = grid.get_character_at(x, y).unwrap();
+                assert_eq!(border.styles.foreground, Some(border_color.into()));
+                assert_eq!(
+                    border.styles.background,
+                    Some(declaration.background.into())
+                );
+            }
+            let text = grid.get_character_at(entry.x + 2, entry.y + 1).unwrap();
+            assert_eq!(text.character, if selected { 'n' } else { 'o' });
+            assert_eq!(text.styles.foreground, Some(declaration.base.into()));
+            assert_eq!(text.styles.background, Some(declaration.background.into()));
+        }
+
+        screen.move_notification_selection(
+            if corner.is_top() {
+                Direction::Down
+            } else {
+                Direction::Up
+            },
+            client_id,
+        );
+        let (cursor, _) =
+            render_frame_and_cursor_into(&mut screen, &receiver, client_id, &mut grid);
+        assert_eq!(cursor, Some(target));
+        assert_eq!(
+            grid.get_character_at(target.0, target.1).unwrap(),
+            uncovered_cell
+        );
+        screen.close_notification_browser(client_id);
+        let (cursor, restored) =
+            render_frame_and_cursor_into(&mut screen, &receiver, client_id, &mut grid);
+        assert_eq!(cursor, Some(target));
+        assert_eq!(
+            restored, baseline,
+            "closing the browser restores every cell at {corner:?}"
+        );
+    }
 }
 
 #[test]
@@ -343,7 +666,7 @@ fn a_click_outside_the_list_keeps_the_mode() {
     screen.handle_mouse_event(MouseEvent::new_left_release_event(pane_position), client_id);
 
     assert!(screen.notification_browsers.contains_key(&client_id));
-    assert!(!screen.notification_history[0].consumed);
+    assert_eq!(selected_id(&screen, client_id), NotificationId::new(0));
 }
 
 #[test]

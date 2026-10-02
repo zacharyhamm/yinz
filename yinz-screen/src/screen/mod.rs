@@ -1011,9 +1011,6 @@ struct NotificationRecord {
     info: NotificationInfo,
     pane_id: Option<PaneId>,
     on_click: Option<NotificationClick>,
-    /// Activated, from its toast or from the browser. The browser stops listing it;
-    /// `ListNotifications` still reports it, because that promises every notification received.
-    consumed: bool,
 }
 
 #[derive(Debug, Clone)]

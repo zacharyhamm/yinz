@@ -455,12 +455,11 @@ impl Screen {
     }
 
     /// Do what clicking a notification's toast does: dismiss the toast if it is still up, bring
-    /// back the pane it names, and tell the plugin that raised it. The notification is consumed,
-    /// so the browser stops listing it.
+    /// back the pane it names, and tell the plugin that raised it. It stays in session history.
     ///
     /// Shared by a click on a toast and by the notification browser, which is what makes Enter on
     /// an entry "exactly a click". A notification with neither a pane nor a plugin is only
-    /// dismissed and consumed.
+    /// dismissed.
     pub(super) fn activate_notification(
         &mut self,
         notification_id: NotificationId,
@@ -470,14 +469,6 @@ impl Screen {
         now: Instant,
     ) {
         self.dismiss_notification(notification_id, now).non_fatal();
-        if let Some(record) = self
-            .notification_history
-            .iter_mut()
-            .rev()
-            .find(|record| record.info.id == notification_id)
-        {
-            record.consumed = true;
-        }
         if let Some(pane_id) =
             pane_id.filter(|pane_id| self.tab_containing_pane(*pane_id).is_some())
         {
