@@ -227,6 +227,8 @@ impl Screen {
         let mut replay_contents = HashSet::new();
         let mut replay_frames = HashSet::new();
         let mut replay_boundaries = false;
+        // A display clear the regular pass emits never reaches watchers through pane replay.
+        let mut replay_clear = false;
 
         // === PHASE 1: Render for regular clients ===
         if has_regular_clients {
@@ -307,6 +309,13 @@ impl Screen {
             // destination, or the last tab waiting for its replacement. Drawing it is harmless:
             // `render_panes` copes with no active tiled pane, and its overlays are what there
             // is to see.
+            replay_clear = self
+                .followed_client_id
+                .filter(|_| has_watchers)
+                .and_then(|client| self.active_tab_ids.get(&client))
+                .filter(|tab_id| !deferred_tabs.contains(tab_id))
+                .and_then(|tab_id| self.tabs.get(tab_id))
+                .is_some_and(|tab| tab.should_clear_display_before_rendering());
             let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
                 if !deferred_tabs.contains(tab_index)
@@ -552,7 +561,10 @@ impl Screen {
                     .get_mut(&focused_tab_index_of_followed_client_id)
                     .as_mut()
                 {
-                    if any_watcher_needs_force_render {
+                    let repaint_whole = any_watcher_needs_force_render
+                        || replay_clear
+                        || tab.should_clear_display_before_rendering();
+                    if repaint_whole {
                         tab.set_force_render();
                         // A forced pane repaint cannot erase overlays outside the panes.
                         watcher_output.add_pre_vte_instruction_to_client(
@@ -575,7 +587,7 @@ impl Screen {
                             }
                         }
                     }
-                    if any_watcher_needs_force_render {
+                    if repaint_whole {
                         // A watcher about to be repainted whole has not necessarily seen this
                         // screen before - it may have just attached, resized, or changed which
                         // client it follows, none of which the tab's memo (which is keyed by the

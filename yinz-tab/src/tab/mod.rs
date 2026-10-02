@@ -5741,6 +5741,9 @@ impl Tab {
             ExtractedPanePlacement::Tiled
         }
     }
+    pub fn should_clear_display_before_rendering(&self) -> bool {
+        self.should_clear_display_before_rendering
+    }
     pub fn set_should_clear_display_before_rendering(&mut self) {
         self.should_clear_display_before_rendering = true;
         self.floating_panes.set_force_render(); // we do this to make sure pinned panes are
