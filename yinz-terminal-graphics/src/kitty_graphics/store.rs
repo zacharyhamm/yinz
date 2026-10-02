@@ -1,8 +1,6 @@
-use base64::engine::general_purpose::STANDARD as BASE64_ENCODER;
-use base64::engine::Engine as _;
-
 use super::parser::{DecodedImage, KittyError, KittyErrorCode, KittyFormat};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 pub const DEFAULT_KITTY_STORE_QUOTA_BYTES: usize = 335_544_320;
 
@@ -78,7 +76,7 @@ struct StoredImage {
     image: KittyImage,
     refcount: usize,
     lru_stamp: u64,
-    base64_cache: HashMap<Option<(u16, u16)>, String>,
+    base64_cache: HashMap<Option<(u16, u16)>, Rc<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -214,7 +212,8 @@ impl KittyImageStore {
         &mut self,
         id: InternalImageId,
         variant: Option<(u16, u16)>,
-    ) -> Option<String> {
+    ) -> Option<Rc<String>> {
+        // Shared rather than cloned: an image is megabytes of base64.
         let encoded = {
             let stored = self.images.get(&id)?;
             if let Some(cached) = stored.base64_cache.get(&variant) {
@@ -224,7 +223,7 @@ impl KittyImageStore {
                 Some(cells) => stored.image.scaled_variants.get(&cells)?,
                 None => stored.image.displayed_rgba(),
             };
-            BASE64_ENCODER.encode(bytes)
+            Rc::new(base64_simd::STANDARD.encode_to_string(bytes))
         };
         // This cache is an optimization, not image data. Do not evict or reject anything merely
         // to retain a second representation of pixels that can be encoded again later.
@@ -345,7 +344,11 @@ impl KittyImageStore {
                 .values()
                 .map(Vec::len)
                 .sum::<usize>()
-                + stored.base64_cache.values().map(String::len).sum::<usize>();
+                + stored
+                    .base64_cache
+                    .values()
+                    .map(|b64| b64.len())
+                    .sum::<usize>();
             stored.image.scaled_variants.clear();
             stored.base64_cache.clear();
             self.total_bytes -= freed;
@@ -445,7 +448,7 @@ impl KittyImageStore {
         }
     }
     fn base64_cache_bytes(stored: &StoredImage) -> usize {
-        stored.base64_cache.values().map(String::len).sum()
+        stored.base64_cache.values().map(|b64| b64.len()).sum()
     }
     fn stored_image_data_bytes(stored: &StoredImage) -> usize {
         stored.image.rgba.len()
@@ -542,10 +545,11 @@ impl KittyImageStore {
     pub fn normalize_to_rgba(image: DecodedImage) -> (Vec<u8>, u32, u32) {
         match image.format {
             KittyFormat::Rgb24 => {
-                let mut rgba = Vec::with_capacity(image.bytes.len() / 3 * 4);
-                for pixel in image.bytes.as_chunks::<3>().0 {
-                    rgba.extend_from_slice(pixel);
-                    rgba.push(255);
+                let pixels = image.bytes.as_chunks::<3>().0;
+                // Opaque from the start, so each pixel is a single 3-byte copy.
+                let mut rgba = vec![255; pixels.len() * 4];
+                for (rgba_pixel, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(pixels) {
+                    rgba_pixel[..3].copy_from_slice(pixel);
                 }
                 (rgba, image.width, image.height)
             },

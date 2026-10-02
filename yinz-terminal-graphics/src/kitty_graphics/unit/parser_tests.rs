@@ -1,5 +1,6 @@
 use super::*;
 use base64::engine::general_purpose::STANDARD as BASE64_ENCODER;
+use base64::Engine as _;
 use std::io::{Seek, Write};
 
 const PNG_2X2_RGBA: [u8; 75] = [
@@ -440,4 +441,61 @@ fn parse_never_panics_on_any_chunk_sequence(tc: hegel::TestCase) {
         "abort_pending left an upload pending after {:?}",
         chunks
     );
+}
+
+mod decode_base64_props {
+    use super::*;
+    use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
+    use base64::engine::DecodePaddingMode;
+    use hegel::generators;
+
+    /// The decoder the payload pipeline used before `base64-simd`.
+    const ORACLE: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+
+    /// Trailing padding is trimmed first, as `run_payload_pipeline` does.
+    fn trimmed(payload: &[u8]) -> &[u8] {
+        let end = payload
+            .iter()
+            .rposition(|b| *b != b'=')
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        &payload[..end]
+    }
+
+    #[hegel::test]
+    fn decode_base64_matches_the_base64_crate(tc: hegel::TestCase) {
+        let mut payload = if tc.draw(generators::booleans()) {
+            // Usually-valid input: an encoding, then a few corruptions.
+            let len = tc.draw(generators::integers::<usize>().max_value(64));
+            let bytes: Vec<u8> = (0..len)
+                .map(|_| tc.draw(generators::integers::<u8>()))
+                .collect();
+            BASE64_ENCODER.encode(bytes).into_bytes()
+        } else {
+            vec![]
+        };
+        let alphabet = [
+            b'A', b'Q', b'g', b'/', b'+', b'=', b' ', b'\n', b'-', b'_', 0xff,
+        ];
+        for _ in 0..tc.draw(generators::integers::<usize>().max_value(4)) {
+            let byte =
+                alphabet[tc.draw(generators::integers::<usize>().max_value(alphabet.len() - 1))];
+            let at = tc.draw(generators::integers::<usize>().max_value(payload.len()));
+            if tc.draw(generators::booleans()) || at == payload.len() {
+                payload.insert(at, byte);
+            } else {
+                payload[at] = byte;
+            }
+        }
+        let input = trimmed(&payload);
+        assert_eq!(
+            decode_base64(input).ok(),
+            ORACLE.decode(input).ok(),
+            "{:?}",
+            String::from_utf8_lossy(input)
+        );
+    }
 }

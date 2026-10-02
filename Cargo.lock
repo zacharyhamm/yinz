@@ -7078,6 +7078,7 @@ name = "yinz-terminal-graphics"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "base64-simd",
  "flate2",
  "hegeltest",
  "libc",

@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 yinz-types = { workspace = true }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
+# Image payloads are megabytes of base64 each way; this is several times faster than `base64`.
+base64-simd = "0.8"
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 libc = { workspace = true }
 memchr = { workspace = true }
