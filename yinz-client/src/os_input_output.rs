@@ -363,8 +363,10 @@ impl StdioAccess for ClientOsInputOutput {
         }
     }
     fn get_stdout_writer(&self) -> Box<dyn io::Write> {
-        let stdout = ::std::io::stdout();
-        Box::new(stdout)
+        Box::new(crate::terminal_escapes::HostWriter::new(
+            ::std::io::stdout(),
+            wait_until_stdout_is_writable,
+        ))
     }
 
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
@@ -513,6 +515,21 @@ pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> 
 }
 
 pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
+
+/// Block until the host terminal can take more output. Bounded, so a terminal that
+/// will never drain is retried, and its error reported, rather than waited on forever.
+#[cfg(unix)]
+fn wait_until_stdout_is_writable(stdout: &io::Stdout) {
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+    use std::os::fd::AsFd;
+    let mut fds = [PollFd::new(stdout.as_fd(), PollFlags::POLLOUT)];
+    let _ = poll(&mut fds, PollTimeout::from(100u16));
+}
+
+#[cfg(not(unix))]
+fn wait_until_stdout_is_writable(_stdout: &io::Stdout) {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
 
 #[cfg(test)]
 mod tests {

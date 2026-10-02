@@ -143,39 +143,57 @@ pub fn write_synchronised(
     bytes: &[u8],
 ) -> std::io::Result<()> {
     if let Some(sync) = sync {
-        write_all_waiting(w, sync.start_seq())?;
+        w.write_all(sync.start_seq())?;
     }
-    write_all_waiting(w, bytes)?;
+    w.write_all(bytes)?;
     if let Some(sync) = sync {
-        write_all_waiting(w, sync.end_seq())?;
+        w.write_all(sync.end_seq())?;
     }
-    loop {
-        match w.flush() {
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_for_host(),
-            result => return result,
-        }
+    w.flush()
+}
+
+/// A writer to the host terminal that waits out a full terminal rather than failing.
+///
+/// Stdout's file description is shared with whatever else runs on the host terminal,
+/// and any of them may have made it non-blocking; a large write then meets `EAGAIN`
+/// exactly when the host falls behind, and `write_all` would give up partway through
+/// an escape sequence. `wait` blocks until the host may take more.
+pub struct HostWriter<W> {
+    inner: W,
+    wait: fn(&W),
+}
+
+impl<W: Write> HostWriter<W> {
+    pub fn new(inner: W, wait: fn(&W)) -> Self {
+        HostWriter { inner, wait }
+    }
+
+    #[cfg(test)]
+    pub fn get_ref(&self) -> &W {
+        &self.inner
     }
 }
 
-/// `write_all`, except that a host terminal that is merely full waits rather than
-/// failing. Stdout's file description is shared with whatever else runs on the
-/// host terminal, and any of them may have made it non-blocking; a large frame
-/// then meets `EAGAIN` exactly when the host falls behind.
-fn write_all_waiting(w: &mut dyn Write, mut bytes: &[u8]) -> std::io::Result<()> {
-    while !bytes.is_empty() {
-        match w.write(bytes) {
-            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-            Ok(written) => bytes = &bytes[written..],
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => wait_for_host(),
-            Err(e) => return Err(e),
+impl<W: Write> Write for HostWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        loop {
+            match self.inner.write(bytes) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (self.wait)(&self.inner),
+                result => return result,
+            }
         }
     }
-    Ok(())
-}
 
-fn wait_for_host() {
-    std::thread::sleep(std::time::Duration::from_millis(1));
+    fn flush(&mut self) -> std::io::Result<()> {
+        loop {
+            match self.inner.flush() {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (self.wait)(&self.inner),
+                result => return result,
+            }
+        }
+    }
 }
 
 /// Tell an enclosing Yinz pane that a client is running inside it, so the
