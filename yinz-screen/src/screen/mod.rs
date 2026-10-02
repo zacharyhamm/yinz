@@ -891,6 +891,7 @@ impl Screen {
     /// stops the clock getting stuck on and burning wakeups over an idle session.
     ///
     /// A toast sliding or a bell fading is continuous motion and needs [`FRAME_PERIOD`].
+    /// Waiting borders pulse slowly enough to use 50ms frames.
     /// The plugin loading dots are a four-character
     /// "still working" pulse that changes once every [`DOT_PERIOD`], and holding the clock at 60fps
     /// for them means a full `render_to_clients` - global panes, every tab's layout, every pane's
@@ -906,6 +907,22 @@ impl Screen {
             || self.tabs.values().any(|tab| tab.overlay_ripple_is_live())
         {
             Some(FRAME_PERIOD)
+        } else if self.pane_animations
+            && self
+                .active_tab_ids
+                .values()
+                .copied()
+                .chain(self.watched_tab_id())
+                .any(|id| {
+                    self.tabs.get(&id).is_some_and(|tab| {
+                        tab.has_visible_waiting_pulse(
+                            self.followed_client_id
+                                .filter(|_| self.watched_tab_id() == Some(id)),
+                        )
+                    })
+                })
+        {
+            Some(Duration::from_millis(50))
         } else if !self.animating_plugin_loads.is_empty()
             || self
                 .tabs

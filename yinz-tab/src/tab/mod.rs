@@ -15,7 +15,9 @@ pub use yinz_panes::pane::{
 };
 
 use crate::plugins::PluginId;
-use crate::ui::damage::CellRect;
+use crate::ui::boundaries::Boundaries;
+use crate::ui::damage::{overlay_damage, CellRect};
+use crate::ui::pane_contents_and_ui::{frame_color, FrameColorState};
 use copy_command::CopyCommand;
 pub use mouse_handler::{MouseEffect, MouseHandler, PaneResizeState, ResizeDragTarget};
 use std::env::temp_dir;
@@ -1297,6 +1299,19 @@ impl Tab {
             }
         }
     }
+    fn stack_list_header_geom(mut rect: PaneGeom, content_offset: Offset, rank: usize) -> PaneGeom {
+        rect.x += content_offset.left;
+        rect.cols.set_inner(
+            rect.cols
+                .as_usize()
+                .saturating_sub(content_offset.left + content_offset.right),
+        );
+        rect.y += rank;
+        rect.rows = Dimension::fixed(1);
+        rect.stacked = None;
+        rect
+    }
+
     fn render_stack_list_headers(
         &mut self,
         output: &mut Output,
@@ -1363,11 +1378,6 @@ impl Tab {
                 Some(p) => (p.position_and_size(), p.get_content_offset()),
                 None => continue,
             };
-            let entry_x = rect.x + visible_content_offset.left;
-            let entry_cols = rect
-                .cols
-                .as_usize()
-                .saturating_sub(visible_content_offset.left + visible_content_offset.right);
             let widest_member_title = list
                 .members
                 .iter()
@@ -1383,12 +1393,7 @@ impl Tab {
                 .unwrap_or(0);
             let stack_is_focused = active_panes.values().any(|p_id| *p_id == list.visible);
             for (rank, member) in list.members.iter().enumerate() {
-                let mut header_geom = rect;
-                header_geom.x = entry_x;
-                header_geom.cols.set_inner(entry_cols);
-                header_geom.y = rect.y + rank;
-                header_geom.rows = Dimension::fixed(1);
-                header_geom.stacked = None;
+                let header_geom = Self::stack_list_header_geom(rect, visible_content_offset, rank);
                 let pane_box = if *member == list.visible {
                     if floating {
                         self.floating_panes.get_pane_mut(*member)
@@ -1437,9 +1442,10 @@ impl Tab {
                     )?;
                 }
             }
-            let padding_row = vec![EMPTY_TERMINAL_CHARACTER; entry_cols];
-            let padding_chunk =
-                CharacterChunk::new(padding_row, entry_x, rect.y + list.members.len());
+            let padding_geom =
+                Self::stack_list_header_geom(rect, visible_content_offset, list.members.len());
+            let padding_row = vec![EMPTY_TERMINAL_CHARACTER; padding_geom.cols.as_usize()];
+            let padding_chunk = CharacterChunk::new(padding_row, padding_geom.x, padding_geom.y);
             output.add_character_chunks_to_multiple_clients(
                 vec![padding_chunk],
                 connected_clients.iter().copied(),
@@ -5383,6 +5389,273 @@ impl Tab {
 
     pub fn overlay_ripple_is_live(&self) -> bool {
         self.overlay_panes.opening_ripple_is_live()
+    }
+
+    fn waiting_border_is_visible(
+        &self,
+        pane_id: PaneId,
+        client_id_override: Option<ClientId>,
+    ) -> bool {
+        let Some(pane) = self.get_pane_with_id(pane_id) else {
+            return false;
+        };
+        if pane.borderless() || pane.rows() == 0 || pane.cols() == 0 {
+            return false;
+        }
+        let groups = self.current_pane_group.borrow().clone_inner();
+        let clients = self.connected_clients.borrow();
+        // TerminalPane applies overrides after computing the frame color, even for groups.
+        // Shared boundaries and stack-list borders retain the computed group color instead.
+        let frame_can_pulse = clients
+            .iter()
+            .copied()
+            .chain(client_id_override)
+            .any(|client_id| pane.frame_color_override(client_id).is_none());
+        if !frame_can_pulse
+            && !clients
+                .iter()
+                .copied()
+                .chain(client_id_override)
+                .any(|client_id| {
+                    groups
+                        .get(&client_id)
+                        .is_some_and(|group| group.contains(&pane_id))
+                })
+        {
+            return false;
+        }
+        if let Some(list) = self
+            .stack_list_id_of_member(&pane_id)
+            .and_then(|id| self.stack_lists.get(&id))
+        {
+            let visible = if self.floating_panes.panes_contain(&list.visible) {
+                self.has_floating_panes_to_render()
+                    && self
+                        .floating_panes
+                        .rendered_pane_ids()
+                        .contains(&list.visible)
+                    && self.floating_stack_headers_visible(list)
+            } else {
+                !self.tiled_panes.fullscreen_is_active()
+                    && !self.tiled_panes.panes_to_hide_contains(list.visible)
+            };
+            if visible
+                && self
+                    .get_pane_with_id(list.visible)
+                    .zip(list.rank_of(&pane_id))
+                    .is_some_and(|(visible_pane, rank)| {
+                        let header = Self::stack_list_header_geom(
+                            visible_pane.position_and_size(),
+                            visible_pane.get_content_offset(),
+                            rank,
+                        );
+                        self.waiting_border_is_uncovered(list.visible, &[header])
+                    })
+            {
+                return true;
+            }
+            if list.visible != pane_id {
+                return false;
+            }
+        }
+        let visible = if self.tiled_panes.panes_contain(&pane_id) {
+            let viewport = self.viewport.borrow();
+            !self.tiled_panes.panes_to_hide_contains(pane_id)
+                && !self.tiled_panes.fullscreen_covers_ui()
+                && (pane.get_content_offset() != Offset::default()
+                    || pane.current_geom().is_stacked()
+                    || pane.x() > viewport.x
+                    || pane.y() > viewport.y)
+        } else {
+            pane.get_content_offset() != Offset::default()
+                && ((self.has_floating_panes_to_render()
+                    && self.floating_panes.rendered_pane_ids().contains(&pane_id))
+                    || self.overlay_panes.rendered_pane_ids().contains(&pane_id))
+        };
+        if !visible {
+            return false;
+        }
+        let geom = pane.current_geom();
+        if !self.tiled_panes.panes_contain(&pane_id) || self.pane_frame_style.draws_full_frames() {
+            return frame_can_pulse && self.waiting_border_is_uncovered(pane_id, &[geom]);
+        }
+
+        let viewport = *self.viewport.borrow();
+        // ponytail: scan stack members per pane; precompute flags if large stacks make this costly.
+        let stack_flags = |pane: &dyn Pane| {
+            let geom = pane.position_and_size();
+            let mut top = true;
+            let mut bottom = true;
+            let mut under = false;
+            if let Some(stack_id) = geom.stacked {
+                for (_, other) in self.tiled_panes.get_panes() {
+                    let other = other.position_and_size();
+                    if other.stacked == Some(stack_id)
+                        && other.x == geom.x
+                        && other.cols == geom.cols
+                    {
+                        top &= other.y >= geom.y;
+                        bottom &= other.y <= geom.y;
+                        under |= other.y < geom.y && other.rows.is_percent();
+                    }
+                }
+            }
+            (top, bottom, under)
+        };
+        // Titles and stack headers are rendered separately from shared boundaries.
+        if frame_can_pulse
+            && (geom.is_stacked()
+                || (self.pane_frame_style.draws_titles() && pane.get_content_offset().top > 0))
+        {
+            let (_, _, under) = stack_flags(pane);
+            let header = PaneGeom {
+                y: geom.y.saturating_sub(if under {
+                    pane.get_content_offset().bottom
+                } else {
+                    0
+                }),
+                rows: Dimension::fixed(1),
+                ..geom
+            };
+            if self.waiting_border_is_uncovered(pane_id, &[header]) {
+                return true;
+            }
+        }
+        let foreground = self.terminal_emulator_colors.borrow().fg;
+        self.connected_clients
+            .borrow()
+            .iter()
+            .copied()
+            .chain(client_id_override)
+            .any(|client_id| {
+                let mode = self
+                    .mode_info
+                    .borrow()
+                    .get(&client_id)
+                    .unwrap_or(&self.default_mode_info)
+                    .mode;
+                let mut unpulsed = Boundaries::new(viewport);
+                let mut pulsed = Boundaries::new(viewport);
+                for (id, other) in self
+                    .tiled_panes
+                    .get_panes()
+                    .filter(|(id, _)| !self.tiled_panes.panes_to_hide_contains(**id))
+                {
+                    let (top, bottom, under) = stack_flags(other.as_ref());
+                    for (boundaries, pulse) in [(&mut unpulsed, false), (&mut pulsed, true)] {
+                        let color = frame_color(
+                            &self.style,
+                            FrameColorState {
+                                frame_color_override: other.frame_color_override(client_id).map(
+                                    |color| (color, other.frame_color_override_strength(client_id)),
+                                ),
+                                // Test a positive pulse, even at the cycle's zero point or before
+                                // its first sample. Otherwise visibility could stop its own clock.
+                                waiting_pulse: (pulse && *id == pane_id)
+                                    .then_some((0.4, foreground)),
+                                pane_is_focused: !self.floating_panes.panes_are_visible()
+                                    && self.tiled_panes.get_active_pane_id(client_id) == Some(*id),
+                                pane_is_in_group: groups
+                                    .get(&client_id)
+                                    .is_some_and(|group| group.contains(id)),
+                                pane_is_related: other.has_related_highlight(),
+                                mouse_is_hovering_over_pane: self
+                                    .mouse_hover_pane_id
+                                    .get(&client_id)
+                                    == Some(id),
+                                multiple_users_exist_in_session: self
+                                    .connected_clients_in_app
+                                    .borrow()
+                                    .len()
+                                    > 1,
+                            },
+                            client_id,
+                            mode,
+                            self.stack_list_session_is_mirrored,
+                        );
+                        boundaries.add_rect(other.as_ref(), color, top, bottom, under);
+                    }
+                }
+                let cells: Vec<_> = pulsed
+                    .changed_color_cells(&unpulsed)
+                    .map(|(x, y)| PaneGeom {
+                        x,
+                        y,
+                        cols: Dimension::fixed(1),
+                        rows: Dimension::fixed(1),
+                        ..geom
+                    })
+                    .collect();
+                !cells.is_empty() && self.waiting_border_is_uncovered(pane_id, &cells)
+            })
+    }
+
+    fn waiting_border_is_uncovered(&self, pane_id: PaneId, geoms: &[PaneGeom]) -> bool {
+        let Some(stack) = self.occlusion_stack() else {
+            return true;
+        };
+        let floating_layers = self.floating_layer_count();
+        let first_above = self
+            .floating_panes
+            .get_pane_z_index(pane_id)
+            .or_else(|| {
+                self.overlay_panes
+                    .get_pane_z_index(pane_id)
+                    .map(|index| index + floating_layers)
+            })
+            .map_or(0, |index| index + 1);
+        let translucent = self.overlay_panes.translucent_layers(floating_layers);
+        let covered: Vec<_> = stack
+            .layers
+            .iter()
+            .enumerate()
+            .skip(first_above)
+            .filter(|(index, _)| !translucent.iter().any(|(layer, _, _)| layer == index))
+            .map(|(_, geom)| CellRect {
+                x: geom.x,
+                y: geom.y,
+                cols: geom.cols.as_usize(),
+                rows: geom.rows.as_usize(),
+            })
+            .collect();
+        let rects: Vec<_> = geoms
+            .iter()
+            .map(|geom| CellRect {
+                x: geom.x,
+                y: geom.y,
+                cols: geom.cols.as_usize(),
+                rows: geom.rows.as_usize(),
+            })
+            .collect();
+        !overlay_damage(&rects, &covered).is_empty()
+    }
+
+    pub fn has_visible_waiting_pulse(&self, client_id_override: Option<ClientId>) -> bool {
+        self.get_all_pane_ids().into_iter().any(|id| {
+            self.get_pane_with_id(id)
+                .is_some_and(|pane| pane.waiting_pulse_started_at().is_some())
+                && self.waiting_border_is_visible(id, client_id_override)
+        })
+    }
+
+    pub fn sample_waiting_pulses(
+        &mut self,
+        now: Instant,
+        enabled: bool,
+        client_id_override: Option<ClientId>,
+    ) {
+        let foreground = self.terminal_emulator_colors.borrow().fg;
+        for id in self.get_all_pane_ids() {
+            if !self.get_pane_with_id(id).is_some_and(|pane| {
+                pane.waiting_pulse_started_at().is_some() || pane.waiting_pulse().is_some()
+            }) {
+                continue;
+            }
+            let visible = enabled && self.waiting_border_is_visible(id, client_id_override);
+            if let Some(pane) = self.get_pane_with_id_mut(id) {
+                pane.sample_waiting_pulse(now, visible, foreground);
+            }
+        }
     }
 
     pub fn overlay_carry_for(&self, pane_id: PaneId) -> OverlayCarry {

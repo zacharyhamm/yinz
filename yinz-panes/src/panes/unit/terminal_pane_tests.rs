@@ -16,7 +16,10 @@ use yinz_types::{
     agent::{AgentInfo, AgentSource, AgentState},
     pane_size::{Offset, PaneGeom, SizeInPixels},
 };
-use {yinz_types::data::InputMode, yinz_types::input::command::RunCommand};
+use {
+    yinz_types::data::{InputMode, PaletteColor},
+    yinz_types::input::command::RunCommand,
+};
 
 use std::fmt::Write;
 
@@ -1799,6 +1802,108 @@ fn agent_pane() -> TerminalPane {
         false, // explicitly_disable_kitty_keyboard_protocol
         None,
     )
+}
+
+#[test]
+fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
+    let mut pane = agent_pane();
+    let mut waiting = AgentInfo {
+        kind: "claude".into(),
+        state: AgentState::Waiting,
+        source: AgentSource::Reported,
+        detail: None,
+        waiting_on: Some("approval".into()),
+        wait_needs_a_person: true,
+        cwd: None,
+        session_id: None,
+        run_id: None,
+    };
+    pane.set_agent_info(Some(waiting.clone()));
+    let start = pane.waiting_pulse_started_at().unwrap();
+    let foreground = PaletteColor::Rgb((100, 150, 200));
+    for (millis, strength) in [
+        (0, 0.0),
+        (450, 0.2),
+        (900, 0.4),
+        (1350, 0.2),
+        (1800, 0.0),
+        (2700, 0.4),
+        (3600, 0.0),
+    ] {
+        pane.set_should_render(false);
+        pane.sample_waiting_pulse(
+            start + std::time::Duration::from_millis(millis),
+            true,
+            foreground,
+        );
+        assert_eq!(pane.waiting_pulse(), Some((strength, foreground)));
+        assert!(
+            pane.should_render(),
+            "an idle pane repaints when the sample changes"
+        );
+    }
+    // Earlier, late and repeated samples never accumulate a per-tick step.
+    for millis in [901, 12, 1377, 2700, 2700] {
+        pane.sample_waiting_pulse(
+            start + std::time::Duration::from_millis(millis),
+            true,
+            foreground,
+        );
+    }
+    assert_eq!(pane.waiting_pulse(), Some((0.4, foreground)));
+    pane.sample_waiting_pulse(start, false, foreground);
+    assert_eq!(pane.waiting_pulse(), None);
+    assert_eq!(
+        pane.waiting_pulse_started_at(),
+        Some(start),
+        "disabled effects retain attention"
+    );
+    assert!(!pane.set_agent_info(Some(waiting.clone())));
+    waiting.detail = Some("updated detail".into());
+    waiting.session_id = Some("metadata".into());
+    pane.set_agent_info(Some(waiting.clone()));
+    assert_eq!(pane.waiting_pulse_started_at(), Some(start));
+
+    pane.sample_waiting_pulse(
+        start + std::time::Duration::from_millis(900),
+        true,
+        foreground,
+    );
+    pane.acknowledge_waiting();
+    assert_eq!(pane.waiting_pulse(), None);
+    pane.sample_waiting_pulse(start, true, foreground);
+    assert_eq!(pane.waiting_pulse(), None);
+    pane.set_agent_info(Some(waiting.clone()));
+    waiting.cwd = Some("/work".into());
+    pane.set_agent_info(Some(waiting.clone()));
+    assert_eq!(pane.waiting_pulse_started_at(), None);
+    assert!(pane.stack_list_entry_label().contains('🔔'));
+
+    for next in [
+        None,
+        Some(AgentInfo {
+            state: AgentState::Busy,
+            ..waiting.clone()
+        }),
+        Some(AgentInfo {
+            wait_needs_a_person: false,
+            ..waiting.clone()
+        }),
+    ] {
+        pane.set_agent_info(next);
+        assert_eq!(pane.waiting_pulse_started_at(), None);
+        pane.set_agent_info(Some(waiting.clone()));
+        assert!(
+            pane.waiting_pulse_started_at().is_some(),
+            "a new human wait re-arms attention"
+        );
+    }
+    pane.hold(Some(0), false, RunCommand::default());
+    assert_eq!(pane.waiting_pulse_started_at(), None);
+    pane.set_agent_info(Some(waiting.clone()));
+    assert!(pane.waiting_pulse_started_at().is_some());
+    pane.respawn(Some(RunCommand::default()), false).unwrap();
+    assert_eq!(pane.waiting_pulse_started_at(), None);
 }
 
 fn frame_params(is_main_client: bool) -> FrameParams {

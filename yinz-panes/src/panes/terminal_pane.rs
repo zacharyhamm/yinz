@@ -24,6 +24,7 @@ use vte;
 use yinz_runtime::errors::prelude::*;
 use yinz_runtime::shared::make_terminal_title;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+use yinz_types::animation::Easing;
 use yinz_types::data::PaneContents;
 use yinz_types::data::HOCUS_AGENT_PANE_CONTEXT;
 use yinz_types::input::command::RunCommand;
@@ -128,6 +129,9 @@ pub struct TerminalPane {
     /// The agent running here, if the session knows of one. Starts as what the spawn path
     /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
     agent: Option<AgentInfo>,
+    // None after acknowledgment; the agent record still prevents re-arming until waiting ends.
+    waiting_pulse_started_at: Option<Instant>,
+    waiting_pulse: Option<(f32, PaletteColor)>,
     agent_input_revision: u64,
     agent_input_at: Option<Instant>,
     /// Whether this pane has ever held an agent record, however it got there.
@@ -1205,6 +1209,7 @@ impl Pane for TerminalPane {
         // would leave the resume hint up over a dead pane forever.
         self.suspended = false;
         self.is_held = Some((exit_status, is_first_run, run_command));
+        self.acknowledge_waiting();
         if let Some(agent) = self.agent.as_mut() {
             agent.state = AgentState::Exited;
             agent.detail = None;
@@ -1293,6 +1298,37 @@ impl Pane for TerminalPane {
             .filter(|override_| override_.applies_to(client_id))
             .map_or(1.0, |override_| override_.strength(Instant::now()))
     }
+    fn waiting_pulse_started_at(&self) -> Option<Instant> {
+        self.waiting_pulse_started_at
+    }
+    fn acknowledge_waiting(&mut self) {
+        self.waiting_pulse_started_at = None;
+        if self.waiting_pulse.take().is_some() {
+            self.set_should_render(true);
+        }
+    }
+    fn sample_waiting_pulse(&mut self, now: Instant, enabled: bool, foreground: PaletteColor) {
+        let pulse = self
+            .waiting_pulse_started_at
+            .filter(|_| enabled)
+            .map(|start| {
+                // Two eased 900ms halves, sampled from elapsed time rather than tick count.
+                let phase = (now.saturating_duration_since(start).as_nanos() % 1_800_000_000)
+                    as f32
+                    / 900_000_000.0;
+                (
+                    0.4 * Easing::EaseInOut.apply(1.0 - (phase - 1.0).abs()),
+                    foreground,
+                )
+            });
+        if self.waiting_pulse != pulse {
+            self.waiting_pulse = pulse;
+            self.set_should_render(true);
+        }
+    }
+    fn waiting_pulse(&self) -> Option<(f32, PaletteColor)> {
+        self.waiting_pulse
+    }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with
     }
@@ -1370,6 +1406,18 @@ impl Pane for TerminalPane {
         }
         if self.agent == agent {
             return false;
+        }
+        let waiting = agent
+            .as_ref()
+            .is_some_and(AgentInfo::is_waiting_on_a_person);
+        if !waiting {
+            self.acknowledge_waiting();
+        } else if !self
+            .agent
+            .as_ref()
+            .is_some_and(AgentInfo::is_waiting_on_a_person)
+        {
+            self.waiting_pulse_started_at = Some(Instant::now());
         }
         self.agent = agent;
         self.set_should_render(true);
@@ -1490,6 +1538,7 @@ impl Pane for TerminalPane {
             self.suspended = false;
             self.agent_input_revision = 0;
             self.agent_input_at = None;
+            self.acknowledge_waiting();
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
                 if fresh_agent {
@@ -1848,6 +1897,8 @@ impl TerminalPane {
             last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),
             agent,
+            waiting_pulse_started_at: None,
+            waiting_pulse: None,
             agent_input_revision: 0,
             agent_input_at: None,
             is_related: false,

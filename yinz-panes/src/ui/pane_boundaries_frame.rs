@@ -75,6 +75,7 @@ pub struct StackListEntry {
     pub is_selected: bool,
     pub is_emphasized: bool,
     pub stack_is_focused: bool,
+    pub border_color: Option<PaletteColor>,
 }
 
 /// A sampled 450ms opening wave. Coordinates are the linked panel's, so its halves have
@@ -875,13 +876,19 @@ impl PaneFrame {
         } else {
             line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, marker_width));
         }
-        line.append(&mut foreground_color(boundary_type::VERTICAL, None));
+        line.append(&mut foreground_color(
+            boundary_type::VERTICAL,
+            entry.border_color,
+        ));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
         line.append(&mut style_entry_text(&content));
         let content_padding = inner_width.saturating_sub(content.width());
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, content_padding));
         line.extend(repeat_n(EMPTY_TERMINAL_CHARACTER, corner_padding));
-        line.append(&mut foreground_color(boundary_type::VERTICAL, None));
+        line.append(&mut foreground_color(
+            boundary_type::VERTICAL,
+            entry.border_color,
+        ));
         let mut occupied_columns = entry_start + full_width_entry_length;
         let (mut scroll_part, scroll_length) = self
             .bracketed_scroll_indicator(usable_cols.saturating_sub(occupied_columns))
@@ -1731,6 +1738,7 @@ mod tests {
                         is_selected: false,
                         is_emphasized: false,
                         stack_is_focused: false,
+                        border_color: None,
                     });
                     assert_eq!(
                         frame.render().unwrap().0.len(),

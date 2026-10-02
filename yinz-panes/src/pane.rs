@@ -636,6 +636,16 @@ pub trait Pane {
     fn frame_color_override_strength(&self, _client_id: ClientId) -> f32 {
         1.0
     }
+    /// Pending attention for the current human-input waiting episode. Focus clears it once.
+    fn waiting_pulse_started_at(&self) -> Option<Instant> {
+        None
+    }
+    fn acknowledge_waiting(&mut self) {}
+    /// Sample once per frame, using the host foreground when the border inherits its color.
+    fn sample_waiting_pulse(&mut self, _now: Instant, _enabled: bool, _foreground: PaletteColor) {}
+    fn waiting_pulse(&self) -> Option<(f32, PaletteColor)> {
+        None
+    }
     fn invoked_with(&self) -> &Option<Run>;
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);

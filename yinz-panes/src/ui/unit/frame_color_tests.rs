@@ -28,6 +28,7 @@ fn style_with_frame_unselected() -> Style {
 fn state() -> FrameColorState {
     FrameColorState {
         frame_color_override: None,
+        waiting_pulse: None,
         pane_is_focused: false,
         pane_is_in_group: false,
         pane_is_related: false,
@@ -58,8 +59,8 @@ fn a_related_pane_is_coloured_where_an_ordinary_one_is_not() {
     )
     .expect("a related pane is drawn in some colour");
     assert_eq!(
-        precedence, 1,
-        "related sits one above nothing in particular"
+        precedence, 2,
+        "related leaves room for an idle waiting pulse below it"
     );
     assert_ne!(
         color, style.colors.frame_selected.base,
@@ -183,7 +184,7 @@ fn every_ambient_state_has_a_precedence_of_its_own() {
     });
     assert_eq!(
         (related, hovered, grouped, focused),
-        (Some(1), Some(2), Some(3), Some(4)),
+        (Some(2), Some(4), Some(6), Some(8)),
         "nothing in particular < related < hovered < grouped < focused"
     );
 }
@@ -228,5 +229,113 @@ fn an_override_at_full_strength_wins_outright() {
     )
     .expect("an override is always a colour");
     assert_eq!(color, style.colors.exit_code_error.base);
-    assert_eq!(precedence, 5);
+    assert_eq!(precedence, 10);
+}
+
+#[test]
+fn waiting_pulse_brightens_the_resolved_color_and_breaks_base_priority_ties() {
+    let foreground = PaletteColor::Rgb((100, 150, 200));
+    let mut indexed = style_with_frame_unselected();
+    indexed.colors.frame_unselected.as_mut().unwrap().base = PaletteColor::EightBit(24);
+    for style in [default_style(), indexed] {
+        for flags in 0..16 {
+            let make_state = || FrameColorState {
+                pane_is_focused: flags & 1 != 0,
+                pane_is_in_group: flags & 2 != 0,
+                pane_is_related: flags & 4 != 0,
+                mouse_is_hovering_over_pane: flags & 8 != 0,
+                ..state()
+            };
+            let base = color_of(&style, make_state());
+            assert_eq!(
+                color_of(
+                    &style,
+                    FrameColorState {
+                        waiting_pulse: Some((0.0, foreground)),
+                        ..make_state()
+                    }
+                ),
+                base
+            );
+            let (color, precedence) = base.unwrap_or((foreground, 0));
+            assert_eq!(
+                color_of(
+                    &style,
+                    FrameColorState {
+                        waiting_pulse: Some((0.4, foreground)),
+                        ..make_state()
+                    }
+                ),
+                Some((
+                    blend(color, PaletteColor::Rgb((255, 255, 255)), 0.4),
+                    precedence + 1
+                ))
+            );
+        }
+        // Errors, explicit highlights and fading terminal bells all use this override slot.
+        for strength in [0.0, 0.3, 1.0] {
+            let override_ = Some((PaletteColor::EightBit(1), strength));
+            assert_eq!(
+                color_of(
+                    &style,
+                    FrameColorState {
+                        frame_color_override: override_,
+                        waiting_pulse: Some((0.4, foreground)),
+                        ..state()
+                    }
+                ),
+                color_of(
+                    &style,
+                    FrameColorState {
+                        frame_color_override: override_,
+                        ..state()
+                    }
+                ),
+            );
+        }
+    }
+}
+
+#[test]
+fn waiting_pulse_loses_to_every_higher_base_state() {
+    let style = style_with_frame_unselected();
+    let states = || {
+        [
+            state(),
+            FrameColorState {
+                pane_is_related: true,
+                ..state()
+            },
+            FrameColorState {
+                mouse_is_hovering_over_pane: true,
+                ..state()
+            },
+            FrameColorState {
+                pane_is_in_group: true,
+                ..state()
+            },
+            FrameColorState {
+                pane_is_focused: true,
+                ..state()
+            },
+            FrameColorState {
+                frame_color_override: Some((style.colors.exit_code_error.base, 1.0)),
+                ..state()
+            },
+        ]
+    };
+    for (index, base) in states().into_iter().take(5).enumerate() {
+        let pulsed = color_of(
+            &style,
+            FrameColorState {
+                waiting_pulse: Some((0.4, PaletteColor::Rgb((100, 150, 200)))),
+                ..base
+            },
+        )
+        .unwrap()
+        .1;
+        for higher in states().into_iter().skip(index + 1) {
+            assert!(pulsed < color_of(&style, higher).unwrap().1);
+        }
+    }
 }

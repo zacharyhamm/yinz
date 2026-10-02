@@ -11,6 +11,32 @@ use std::collections::HashMap;
 use yinz_types::pane_size::Viewport;
 
 impl Screen {
+    pub(super) fn watched_tab_id(&self) -> Option<TabId> {
+        self.followed_client_id
+            .filter(|_| !self.watcher_clients.is_empty())
+            .map(|client| {
+                self.active_tab_ids
+                    .get(&client)
+                    .copied()
+                    .unwrap_or(TabId::new(0))
+            })
+    }
+
+    fn acknowledge_waiting_panes(&mut self) {
+        for (client_id, tab_id) in &self.active_tab_ids {
+            if self.watcher_clients.contains_key(client_id) {
+                continue;
+            }
+            if let Some(pane) = self
+                .tabs
+                .get_mut(tab_id)
+                .and_then(|tab| tab.get_active_pane_mut(*client_id))
+            {
+                pane.acknowledge_waiting();
+            }
+        }
+    }
+
     pub fn render(&mut self) -> Result<()> {
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
@@ -19,6 +45,8 @@ impl Screen {
         // message, triggering our render_to_clients method which does the actual rendering
 
         self.dismiss_stale_command_palettes();
+        // Selection acknowledges immediately, even if focus leaves again before the debounced frame.
+        self.acknowledge_waiting_panes();
         self.sync_nested_guest_fullscreen_state();
         self.report_pane_tabs()?;
 
@@ -46,6 +74,7 @@ impl Screen {
         // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
         let now = self.frame_now();
+        self.acknowledge_waiting_panes();
         self.reap_settled_notifications(now);
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
@@ -75,8 +104,17 @@ impl Screen {
             );
         }
 
-        for tab in self.tabs.values_mut() {
+        let watched_tab_id = self.watched_tab_id();
+        for (tab_id, tab) in &mut self.tabs {
             tab.sample_overlay_ripples(now, self.pane_animations);
+            tab.sample_waiting_pulses(
+                now,
+                self.pane_animations
+                    && (self.active_tab_ids.values().any(|id| id == tab_id)
+                        || watched_tab_id == Some(*tab_id)),
+                self.followed_client_id
+                    .filter(|_| watched_tab_id == Some(*tab_id)),
+            );
         }
 
         // Separate rendering for regular clients and watchers
@@ -356,7 +394,9 @@ impl Screen {
 
         // === PHASE 2: Render for watchers ===
         if has_watchers {
-            if let Some(followed_client_id) = self.followed_client_id {
+            if let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
+                (self.followed_client_id, watched_tab_id)
+            {
                 // Create fresh output for watchers
                 let mut watcher_output = Output::new(
                     self.sixel_image_store.clone(),
@@ -384,10 +424,6 @@ impl Screen {
                 watcher_output
                     .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
 
-                let focused_tab_index_of_followed_client_id = *self
-                    .active_tab_ids
-                    .get(&followed_client_id)
-                    .unwrap_or(&TabId::new(0));
                 let followed_content_size =
                     self.followed_frame_size(focused_tab_index_of_followed_client_id);
 

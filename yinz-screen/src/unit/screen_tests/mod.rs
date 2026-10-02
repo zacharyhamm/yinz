@@ -2018,3 +2018,4 @@ mod subscribers;
 mod tab_projects;
 mod tabs;
 mod theme;
+mod waiting_pulse;

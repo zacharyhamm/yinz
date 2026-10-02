@@ -581,6 +581,19 @@ impl Boundaries {
             }
         }
     }
+    /// Cells whose resolved color or precedence differs from another boundary pass.
+    pub fn changed_color_cells<'a>(
+        &'a self,
+        other: &'a Boundaries,
+    ) -> impl Iterator<Item = (usize, usize)> + 'a {
+        self.boundary_characters
+            .iter()
+            .filter_map(|(coords, symbol)| {
+                (!symbol.invisible
+                    && other.boundary_characters.get(coords).map(|s| s.color) != Some(symbol.color))
+                .then_some((coords.x, coords.y))
+            })
+    }
     pub fn render(
         &self,
         existing_boundaries_on_screen: Option<&Boundaries>,
