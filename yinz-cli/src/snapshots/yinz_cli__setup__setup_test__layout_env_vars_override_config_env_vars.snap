@@ -118,16 +118,6 @@ Config {
             ],
             KeyWithModifier {
                 bare_key: Char(
-                    'd',
-                ),
-                key_modifiers: {
-                    Ctrl,
-                },
-            }: [
-                ToggleCommandPalette,
-            ],
-            KeyWithModifier {
-                bare_key: Char(
                     'e',
                 ),
                 key_modifiers: {
@@ -330,6 +320,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -393,6 +394,17 @@ Config {
                 SwitchToMode {
                     input_mode: Normal,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
         },
         Resize: {
@@ -886,6 +898,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -1450,6 +1473,17 @@ Config {
                 SwitchToMode {
                     input_mode: Normal,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -2173,6 +2207,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -2744,6 +2789,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -3156,6 +3212,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -3706,6 +3773,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -4119,6 +4197,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -4509,6 +4598,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -5043,6 +5143,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -5562,6 +5673,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -5947,6 +6069,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -6561,6 +6694,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -7159,6 +7303,17 @@ Config {
                     'p',
                 ),
                 key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
                     Alt,
                 },
             }: [
@@ -7390,6 +7545,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(
@@ -7787,6 +7953,17 @@ Config {
                 SwitchToMode {
                     input_mode: Pane,
                 },
+            ],
+            KeyWithModifier {
+                bare_key: Char(
+                    'p',
+                ),
+                key_modifiers: {
+                    Ctrl,
+                    Alt,
+                },
+            }: [
+                ToggleCommandPalette,
             ],
             KeyWithModifier {
                 bare_key: Char(

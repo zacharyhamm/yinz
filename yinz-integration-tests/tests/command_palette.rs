@@ -1,6 +1,9 @@
 #![cfg(unix)]
 
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, PROMPT, TERMINAL_SIZE};
+use yinz_types::data::InputMode;
+
+const DO: &[u8] = b"\x1b[112;7u"; // Ctrl+Alt+p, encoded with CSI u.
 
 #[test]
 fn command_palette_receives_original_keys_before_write_bindings() {
@@ -23,7 +26,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
     shell.output(PROMPT);
     yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
     let before = shell.stdin_bytes();
-    yinz.send_stdin(&keys::ctrl('d'));
+    yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
         snapshot.contains("Open settings")
     });
@@ -51,51 +54,54 @@ fn command_palette_receives_original_keys_before_write_bindings() {
 
 #[test]
 fn command_palette_default_binding_captures_keys_and_paste_without_running_commands() {
-    let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}")
-        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
-        .start();
-    let shell = yinz.expect_pty_spawn();
-    shell.output(PROMPT);
-    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
-    let before = shell.stdin_bytes();
-    yinz.send_stdin(&keys::ctrl('d'));
-    yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Open settings")
-    });
-    // Ctrl+p normally enters Pane mode; it must stay inside the palette.
-    yinz.send_stdin(&keys::ctrl('p'));
-    yinz.send_stdin(b"\x1b[200~New\npane\x1b[201~");
-    yinz.wait_until("paste filtered", |snapshot| {
-        snapshot.contains("> New pane") && !snapshot.contains("New tab")
-    });
-    yinz.send_stdin(&keys::ENTER);
-    yinz.wait_until("dummy selection acknowledged", |snapshot| {
-        snapshot.contains("Selected: New pane")
-    });
-    assert_eq!(shell.stdin_bytes(), before);
-    yinz.send_stdin(&keys::ctrl('d'));
-    yinz.wait_until("toggle closed palette", |snapshot| {
-        !snapshot.contains("Selected:") && !snapshot.contains("Esc Close")
-    });
-    yinz.send_stdin(b"still focused");
-    shell.wait_for_stdin("typing reaches original pane", |bytes| {
-        bytes.ends_with(b"still focused")
-    });
-    yinz.send_stdin(&keys::ctrl('d'));
-    yinz.wait_until("reopened palette is empty", |snapshot| {
-        snapshot.contains("Open settings") && snapshot.contains("New tab")
-    });
-    yinz.send_stdin(&keys::ESC);
-    yinz.wait_until("Escape closes palette", |snapshot| {
-        !snapshot.contains("Open settings")
-    });
-    yinz.send_stdin(&keys::ctrl('g'));
-    yinz.send_stdin(&keys::ctrl('d'));
-    shell.wait_for_stdin("Ctrl+d still reaches the pane in Locked mode", |bytes| {
-        bytes.ends_with(&[4])
-    });
-    yinz.quit();
+    let config = yinz_config::config::Config::from_default_assets().unwrap();
+    for mode in config.keybinds.0.into_keys() {
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config(&format!(
+                "load_plugins clear-defaults=true {{}}\ndefault_mode \"{mode:?}\""
+            ))
+            .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+            .start();
+        let shell = yinz.expect_pty_spawn();
+        shell.output(PROMPT);
+        yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+        let mut expected = shell.stdin_bytes();
+        for close in [DO, keys::ESC.as_slice()] {
+            yinz.send_stdin(DO);
+            yinz.wait_until("palette opens with an empty query", |snapshot| {
+                snapshot.contains("Open settings") && snapshot.contains("New tab")
+            });
+            // Ctrl+p normally enters Pane mode; it must stay inside the palette.
+            yinz.send_stdin(&keys::ctrl('p'));
+            yinz.send_stdin(b"N");
+            yinz.send_stdin(b"\x1b[200~ew\npane\x1b[201~");
+            yinz.wait_until("typing and paste filtered", |snapshot| {
+                snapshot.contains("> New pane") && !snapshot.contains("New tab")
+            });
+            yinz.send_stdin(&keys::ENTER);
+            yinz.wait_until("dummy selection acknowledged", |snapshot| {
+                snapshot.contains("Selected: New pane")
+            });
+            assert_eq!(shell.stdin_bytes(), expected, "{mode:?}");
+            yinz.send_stdin(close);
+            yinz.wait_until("toggle or Escape closes palette", |snapshot| {
+                !snapshot.contains("Selected:") && !snapshot.contains("Esc Close")
+            });
+            if matches!(mode, InputMode::Normal | InputMode::Locked) {
+                yinz.send_stdin(b"still focused\x04");
+                expected.extend_from_slice(b"still focused\x04");
+            }
+            if mode == InputMode::Locked {
+                // Quit must still be unbound after either way of closing Do.
+                yinz.send_stdin(&keys::ctrl('q'));
+                expected.extend_from_slice(&keys::ctrl('q'));
+            }
+            shell.wait_for_stdin("mode and Ctrl+d passthrough preserved", |bytes| {
+                bytes == expected
+            });
+        }
+        yinz.quit();
+    }
 }
 
 #[test]
@@ -107,11 +113,6 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
                 load_plugins clear-defaults=true {{}}
                 default_mode "{mode}"
                 pane_frame_style "full"
-                keybinds {{
-                    {mode} {{
-                        bind "Ctrl d" {{ ToggleCommandPalette; }}
-                    }}
-                }}
                 "#,
             ))
             .with_layout(LayoutInfo::Stringified(
@@ -132,7 +133,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
             });
         }
         // Opening and dismissing the palette also drains any ignored Pane-mode paste.
-        yinz.send_stdin(&keys::ctrl('d'));
+        yinz.send_stdin(DO);
         yinz.wait_until("palette opened", |snapshot| {
             snapshot.contains("Open settings")
         });
@@ -141,7 +142,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
             !snapshot.contains("Esc Close") && snapshot.tab_bar_appears()
         });
         let stdin_before = shell.stdin_bytes();
-        yinz.send_stdin(&keys::ctrl('d'));
+        yinz.send_stdin(DO);
         yinz.wait_until("palette reopened", |snapshot| {
             snapshot.contains("Open settings")
         });
@@ -167,7 +168,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
                 snapshot.contains("baseé")
             });
         }
-        yinz.send_stdin(&keys::ctrl('d'));
+        yinz.send_stdin(DO);
         yinz.wait_until("palette still opens after fallback", |snapshot| {
             snapshot.contains("Open settings")
         });

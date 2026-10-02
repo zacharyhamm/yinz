@@ -63,7 +63,7 @@ fn guest_normal_mode_bar_settled(guest_grid: &GridSnapshot) -> bool {
             .split_whitespace()
             .map(|token| token.to_owned())
             .collect();
-        ["g", "Do", "p", "t", "n", "h", "s", "o"]
+        ["g", "e", "p", "t", "n", "h", "s", "o", "q"]
             .iter()
             .all(|mode_letter| tokens.iter().any(|token| token == mode_letter))
     })

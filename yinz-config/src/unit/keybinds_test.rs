@@ -7,6 +7,63 @@ use yinz_types::input::actions::*;
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 #[test]
+fn default_command_palette_binding_is_shared_by_every_mode() {
+    let config = Config::from_default_assets().unwrap();
+    for mode in InputMode::iter() {
+        assert_eq!(
+            config
+                .keybinds
+                .get_actions_for_key_in_mode(&mode, &"Ctrl Alt p".parse().unwrap()),
+            Some(&vec![Action::ToggleCommandPalette]),
+            "{mode:?}"
+        );
+    }
+    for mode in [InputMode::Normal, InputMode::Locked] {
+        assert_eq!(
+            config
+                .keybinds
+                .get_actions_for_key_in_mode(&mode, &"Ctrl d".parse().unwrap()),
+            None,
+            "{mode:?}"
+        );
+    }
+    assert_eq!(
+        config
+            .keybinds
+            .get_actions_for_key_in_mode(&InputMode::Locked, &"Ctrl q".parse().unwrap()),
+        None
+    );
+}
+
+#[test]
+fn default_command_palette_binding_can_be_overridden() {
+    for (binding, expected) in [
+        (r#"unbind "Ctrl Alt p";"#, None),
+        (
+            r#"bind "Ctrl Alt p" { WriteChars "custom"; }"#,
+            Some(vec![Action::WriteChars {
+                chars: "custom".into(),
+            }]),
+        ),
+    ] {
+        let config = Config::from_kdl(
+            &format!("keybinds {{\n shared {{\n {binding}\n }}\n}}"),
+            Some(Config::from_default_assets().unwrap()),
+        )
+        .unwrap();
+        for mode in InputMode::iter() {
+            assert_eq!(
+                config
+                    .keybinds
+                    .get_actions_for_key_in_mode(&mode, &"Ctrl Alt p".parse().unwrap()),
+                expected.as_ref(),
+                "{mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn can_define_shared_keybinds_for_all_modes() {
     let config_contents = r#"
         keybinds {

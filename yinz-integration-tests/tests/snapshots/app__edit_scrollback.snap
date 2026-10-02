@@ -6,4 +6,4 @@ expression: normalized(&grid_snapshot)
 $ SCROLLBACK_MARKER_ONE
 SCROLLBACK_MARKER_TWO
 █
- Ctrl + <g> LOCK  <d> Do  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 

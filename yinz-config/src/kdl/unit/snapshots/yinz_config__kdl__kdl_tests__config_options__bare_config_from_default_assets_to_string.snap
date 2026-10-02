@@ -3,9 +3,6 @@ source: yinz-config/src/kdl/./unit/config_options.rs
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
-    normal {
-        bind "Ctrl d" { ToggleCommandPalette; }
-    }
     locked {
         bind "Ctrl g" { SwitchToMode "normal"; }
     }
@@ -204,6 +201,9 @@ keybinds clear-defaults=true {
         bind "j" { MoveNotificationSelection "down"; }
         bind "k" { MoveNotificationSelection "up"; }
         bind "enter" { ActivateNotification; }
+    }
+    shared {
+        bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
     shared_except "locked" "select" {
         bind "Alt left" { MoveFocusOrTab "left"; }
