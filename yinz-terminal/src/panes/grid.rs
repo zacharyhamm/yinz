@@ -344,12 +344,13 @@ fn transfer_rows_from_viewport_to_lines_above(
             next_lines.append(&mut bottom_canonical_row_and_wraps_in_dst);
         }
         next_lines.push(next_line);
-        let dropped_line_width = bounded_push(
-            lines_above,
-            sixel_grid,
-            kitty_grid,
-            Row::from_rows(next_lines),
-        );
+        let mut line = Row::from_rows(next_lines);
+        // Viewport rows are allocated a screen width up front; a short line should not keep
+        // that room for as long as it sits in the scrollback.
+        if line.columns.len() < line.columns.capacity() / 2 {
+            line.columns.shrink_to_fit();
+        }
+        let dropped_line_width = bounded_push(lines_above, sixel_grid, kitty_grid, line);
         if let Some(width) = dropped_line_width {
             transferred_rows_count -=
                 calculate_row_display_height(width, max_viewport_width) as isize;
@@ -2670,7 +2671,9 @@ impl Grid {
                 return;
             }
             let scroll_bg = self.cursor.pending_styles.background;
-            let new_row = Row::new().canonical().with_bg_color(scroll_bg);
+            let new_row = Row::with_capacity(self.width)
+                .canonical()
+                .with_bg_color(scroll_bg);
             self.scroll_region_up_at_bottom(new_row, false);
             self.kitty_reanchor_all_from_pixels();
             return;
@@ -2916,7 +2919,8 @@ impl Grid {
             if scroll_region_top >= self.viewport.len() {
                 return;
             }
-            let wrapped_row = Row::new().with_bg_color(self.cursor.pending_styles.background);
+            let wrapped_row =
+                Row::with_capacity(self.width).with_bg_color(self.cursor.pending_styles.background);
             self.scroll_region_up_at_bottom(wrapped_row, true);
         } else if self.cursor.y == self.height.saturating_sub(1) {
             // the cursor is on the last line of the screen but below the scroll region's
@@ -6240,6 +6244,13 @@ impl Row {
             bg_color: None,
             osc133_markers: vec![],
             placeholder_marks: vec![],
+        }
+    }
+    /// A row with room for `columns` cells, for one about to be printed across.
+    pub fn with_capacity(columns: usize) -> Self {
+        Row {
+            columns: VecDeque::with_capacity(columns),
+            ..Row::new()
         }
     }
     pub fn from_columns(columns: VecDeque<TerminalCharacter>) -> Self {
