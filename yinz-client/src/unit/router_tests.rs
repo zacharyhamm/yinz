@@ -261,10 +261,8 @@ fn late_terminal_replies_do_not_panic_after_the_client_loop_exits() {
         input_loop(
             Box::new(FakeClientOsApi::default()),
             Default::default(),
-            Default::default(),
             CommandIsExecuting::new(),
             SenderWithContext::new(client_sender),
-            Default::default(),
             input_receiver,
             nested_reannounce,
         );
