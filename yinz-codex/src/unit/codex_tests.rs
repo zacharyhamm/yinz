@@ -1829,9 +1829,62 @@ fn failures_belong_only_to_the_selected_current_turn() {
     assert!(conversations.response(&json!({"method":"turn/completed","params":{"threadId":"other","turn":{"id":"new","status":"failed"}}}), &registration).unwrap().is_empty());
 }
 
+#[test]
+fn proposed_plans_do_not_report_waiting_on_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    let mut conversations = Conversations::default();
+    conversations
+        .request(
+            &json!({"id":1,"method":"turn/start","params":{"threadId":"selected"}}),
+            &registration,
+        )
+        .unwrap();
+    for event in [
+        json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"plan"}}}),
+        json!({"method":"item/completed","params":{"threadId":"selected","turnId":"plan","item":{"type":"plan"}}}),
+        json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"plan","status":"completed"}}}),
+        json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"plan","status":"completed"}}}),
+        // A delayed failure cannot change the completed turn either.
+        json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"plan","status":"failed"}}}),
+    ] {
+        assert!(conversations
+            .response(&event, &registration)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn resumed_plans_do_not_report_waiting_on_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let registration = registration(root.path(), "aaaaaaaaaaaa");
+    for active_plan in [false, true] {
+        let mut conversations = Conversations::default();
+        conversations
+            .request(&json!({"id":1,"method":"thread/resume"}), &registration)
+            .unwrap();
+        conversations
+            .response(
+                &json!({"id":1,"result":{"thread":{"id":"selected","turns":[
+                    {"id":"old","status":"completed","items":[{"type":"plan"}]},
+                    {"id":"active","status":"inProgress","items":[{"type":if active_plan { "plan" } else { "agentMessage" }}]}
+                ]}}}),
+                &registration,
+            )
+            .unwrap();
+        let hooks = conversations
+            .response(
+                &json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"active","status":"completed"}}}),
+                &registration,
+            )
+            .unwrap();
+        assert!(hooks.is_empty());
+    }
+}
+
 #[tokio::test]
-async fn bridge_reports_final_failures_through_local_and_remote_reporters_without_changing_traffic()
-{
+async fn bridge_reports_only_failures_locally_and_remotely_without_changing_traffic() {
     for remote in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let reports = root.path().join("reports");
@@ -1906,6 +1959,15 @@ async fn bridge_reports_final_failures_through_local_and_remote_reporters_withou
             let failure = Message::text(events.last().unwrap().to_string());
             backend.send(failure.clone()).await.unwrap();
             assert_eq!(ui.next().await.unwrap().unwrap(), failure);
+            for event in [
+                json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"plan"}}}),
+                json!({"method":"item/completed","params":{"threadId":"selected","turnId":"plan","item":{"type":"plan","id":"proposal","text":"Implement the change"}}}),
+                json!({"method":"turn/completed","params":{"threadId":"selected","turn":{"id":"plan","status":"completed"}}}),
+            ] {
+                let message = Message::text(format!(" {event} "));
+                backend.send(message.clone()).await.unwrap();
+                assert_eq!(ui.next().await.unwrap().unwrap(), message);
+            }
             // A new turn followed by a transport disconnect is not a final failure.
             let start = Message::text(json!({"method":"turn/started","params":{"threadId":"selected","turn":{"id":"next"}}}).to_string());
             backend.send(start.clone()).await.unwrap();
@@ -1920,7 +1982,7 @@ async fn bridge_reports_final_failures_through_local_and_remote_reporters_withou
         .unwrap();
         let reports = std::fs::read_to_string(&reports).unwrap();
         let lines: Vec<_> = reports.lines().collect();
-        assert_eq!(lines.len(), 2, "exactly one reporter subprocess: {reports}");
+        assert_eq!(lines.len(), 2, "only the failure is reported: {reports}");
         assert_eq!(
             lines[0],
             if remote {

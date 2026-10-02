@@ -3,6 +3,10 @@
 use super::*;
 use crate::notifications::NotificationProtocol;
 use crate::panes::grid::PendingNotification;
+use yinz_types::agent::report::{AgentReport, AgentReportState};
+use yinz_types::agent::{
+    hook_outcome, AgentEvent, AgentSource, AgentState, HookEvent, HookOutcome,
+};
 use yinz_types::input::options::HostNotificationProtocol;
 use yinz_types::internal_ids::TabId;
 
@@ -345,4 +349,217 @@ fn a_departing_client_leaves_no_host_notification_state_behind() {
             .contains_key(&ClientId::new(2)),
         "the reported host environment is forgotten"
     );
+}
+
+const PLAN_PROMPT: &str = "Plan mode prompt: Implement this plan?";
+
+fn agent_events(receiver: &Receiver<(PluginInstruction, ErrorContext)>) -> Vec<AgentEvent> {
+    receiver
+        .try_iter()
+        .flat_map(|(instruction, _)| match instruction {
+            PluginInstruction::Update(events) => events
+                .into_iter()
+                .filter_map(|(_, _, event)| {
+                    if let Event::AgentEvent(event) = event {
+                        Some(event)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn codex_plan_notifications_preserve_metadata_and_report_once() {
+    for owner in [None, Some("workflow")] {
+        for bytes in [
+            format!("\x1b]9;{PLAN_PROMPT}\x07"),
+            format!("\x1b]777;notify;{PLAN_PROMPT};Codex\x07"),
+            format!("\x1b]99;i=plan:d=0;Codex\x07\x1b]99;i=plan:p=body;{PLAN_PROMPT}\x07"),
+        ] {
+            let (mut screen, server_receiver) = screen_with_a_client_for_notifications(
+                HostNotificationProtocol::Osc9,
+                BTreeMap::new(),
+            );
+            let terminal = TerminalId::new(7);
+            let pane_id = PaneId::Terminal(terminal);
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .new_pane(
+                    pane_id,
+                    None,
+                    Some(Run::Command(RunCommand {
+                        command: PathBuf::from("codex"),
+                        cwd: Some(PathBuf::from("/pane")),
+                        workflow_owner: owner.map(str::to_owned),
+                        ..Default::default()
+                    })),
+                    false,
+                    true,
+                    NewPanePlacement::default(),
+                    Some(ClientId::new(1)),
+                    None,
+                )
+                .unwrap();
+            let hook = HookEvent {
+                hook_event_name: "Stop".into(),
+                session_id: "conversation".into(),
+                cwd: Some("/conversation/worktree".into()),
+                turn_id: Some("completed-turn".into()),
+                workflow_owner: owner.map(str::to_owned),
+                ..Default::default()
+            };
+            let HookOutcome::Reported(mut agent) = hook_outcome("codex", &hook) else {
+                panic!()
+            };
+            agent.run_id = Some("run".into());
+            crate::screen::thread_main::apply_queued_agent_report(
+                &mut screen,
+                &AgentReport {
+                    report_id: "stop".into(),
+                    pane_id,
+                    state: AgentReportState::Set(agent),
+                    event: Some(AgentEvent::from_hook(
+                        "codex",
+                        terminal,
+                        &hook,
+                        serde_json::to_string(&hook).unwrap(),
+                    )),
+                    trace: false,
+                    process_id: ProcessId::new(42),
+                    kind: "codex".into(),
+                },
+                std::time::Instant::now(),
+            )
+            .unwrap();
+            let (sender, receiver) = channels::unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            let pane = screen
+                .get_active_tab_mut(ClientId::new(1))
+                .unwrap()
+                .get_active_pane_mut(ClientId::new(1))
+                .unwrap();
+            assert_eq!(pane.pid(), pane_id);
+            pane.handle_pty_bytes(bytes.into_bytes());
+            let notifications = pane.drain_desktop_notifications();
+            assert!(!notifications.is_empty());
+            // Repeated prompts still forward, but only the first changes Idle to Waiting.
+            screen.forward_desktop_notifications(notifications.clone(), terminal);
+            screen.forward_desktop_notifications(notifications, terminal);
+            let agent = screen.get_pane_info(pane_id).unwrap().agent.unwrap();
+            assert!(agent.is_waiting_on_a_person());
+            assert_eq!(agent.waiting_on.as_deref(), Some("approve the plan"));
+            assert_eq!(agent.session_id.as_deref(), Some("conversation"));
+            assert_eq!(agent.cwd.as_deref(), Some("/conversation/worktree"));
+            assert_eq!(agent.run_id.as_deref(), Some("run"));
+            let events = agent_events(&receiver);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].hook, "Elicitation");
+            let hook: HookEvent = serde_json::from_str(&events[0].raw).unwrap();
+            assert_eq!(hook.session_id, "conversation");
+            assert_eq!(hook.cwd, agent.cwd);
+            assert_eq!(hook.turn_id, None);
+            assert_eq!(hook.workflow_owner.as_deref(), owner);
+            assert!(collect_forwarded_notifications(&server_receiver).contains(PLAN_PROMPT));
+        }
+    }
+}
+
+#[test]
+fn codex_plan_notifications_ignore_unrelated_or_incomplete_text() {
+    for notification in [
+        PendingNotification::Osc9 {
+            body: "Implement this plan?".into(),
+        },
+        PendingNotification::Osc9 {
+            body: format!("prefix {PLAN_PROMPT}"),
+        },
+        PendingNotification::Osc777 {
+            title: "Plan mode prompt:".into(),
+            body: "Implement this plan?".into(),
+        },
+        PendingNotification::Osc99 {
+            payload: format!("i=plan:d=0;{PLAN_PROMPT}"),
+            terminator: "\x07".into(),
+            wants_report: false,
+            display: None,
+        },
+    ] {
+        let (mut screen, _) =
+            screen_with_a_client_for_notifications(HostNotificationProtocol::Osc9, BTreeMap::new());
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let HookOutcome::Reported(agent) = hook_outcome(
+            "codex",
+            &HookEvent {
+                hook_event_name: "Stop".into(),
+                session_id: "conversation".into(),
+                ..Default::default()
+            },
+        ) else {
+            panic!()
+        };
+        crate::screen::apply_pane_agent_report(&mut screen, pane, Some(agent.clone())).unwrap();
+        let (sender, receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.forward_desktop_notifications(vec![notification], TerminalId::new(1));
+        assert_eq!(screen.get_pane_info(pane).unwrap().agent, Some(agent));
+        assert!(agent_events(&receiver).is_empty());
+    }
+}
+
+#[test]
+fn codex_plan_notifications_require_an_idle_reported_conversation() {
+    for case in [
+        "busy",
+        "exited",
+        "waiting",
+        "missing-id",
+        "empty-id",
+        "claude",
+        "spawned",
+        "registered",
+        "no-agent",
+    ] {
+        let (mut screen, _) =
+            screen_with_a_client_for_notifications(HostNotificationProtocol::Osc9, BTreeMap::new());
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let HookOutcome::Reported(mut agent) = hook_outcome(
+            "codex",
+            &HookEvent {
+                hook_event_name: "Stop".into(),
+                session_id: "conversation".into(),
+                ..Default::default()
+            },
+        ) else {
+            panic!()
+        };
+        match case {
+            "busy" => agent.state = AgentState::Busy,
+            "exited" => agent.state = AgentState::Exited,
+            "waiting" => agent.state = AgentState::Waiting,
+            "missing-id" => agent.session_id = None,
+            "empty-id" => agent.session_id = Some(String::new()),
+            "claude" => agent.kind = "claude".into(),
+            "spawned" => agent.source = AgentSource::Spawned,
+            "registered" => agent.source = AgentSource::Registered,
+            _ => {},
+        }
+        let agent = (case != "no-agent").then_some(agent);
+        crate::screen::apply_pane_agent_report(&mut screen, pane, agent.clone()).unwrap();
+        let (sender, receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        screen.forward_desktop_notifications(
+            vec![PendingNotification::Osc9 {
+                body: PLAN_PROMPT.into(),
+            }],
+            TerminalId::new(1),
+        );
+        assert_eq!(screen.get_pane_info(pane).unwrap().agent, agent, "{case}");
+        assert!(agent_events(&receiver).is_empty(), "{case}");
+    }
 }
