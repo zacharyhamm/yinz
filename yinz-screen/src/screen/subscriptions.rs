@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use yinz_types::data::PaneContents;
 use {yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg};
-use {yinz_types::data::PaneContents, yinz_types::data::PaneRenderReport};
 
 use crate::{panes::PaneId, ClientId};
 
@@ -18,14 +18,6 @@ impl Screen {
         let mut previous_viewports = HashMap::new();
         let mut valid_pane_ids = HashSet::new();
 
-        // Get a regular client ID for plugin pane content queries
-        let regular_client_id = self
-            .connected_clients
-            .borrow()
-            .iter()
-            .find(|id| !self.watcher_clients.contains_key(id))
-            .copied();
-
         for pane_id in &pane_ids {
             let server_pane_id: PaneId = *pane_id;
             let mut found = false;
@@ -35,19 +27,10 @@ impl Screen {
                     let get_full_scrollback = scrollback.is_some();
                     let max_lines = scrollback.filter(|&n| n != 0);
 
-                    // For plugin panes, use a regular client_id; for terminal panes, None is fine
-                    let query_client_id = match server_pane_id {
-                        PaneId::Plugin(_) => regular_client_id,
-                        PaneId::Terminal(_) => None,
-                    };
                     let contents = if ansi {
-                        pane.pane_contents_with_ansi(
-                            query_client_id,
-                            get_full_scrollback,
-                            max_lines,
-                        )
+                        pane.pane_contents_with_ansi(None, get_full_scrollback, max_lines)
                     } else {
-                        pane.pane_contents(query_client_id, get_full_scrollback, max_lines)
+                        pane.pane_contents(None, get_full_scrollback, max_lines)
                     };
 
                     if let Some(os_input) = &self.bus.os_input {
@@ -97,14 +80,10 @@ impl Screen {
             );
         }
     }
-    pub(super) fn deliver_to_pane_subscribers_from_report(&mut self, report: &PaneRenderReport) {
-        let Some(pane_map) = report.all_pane_contents.values().next() else {
-            return;
-        };
-        let ansi_pane_map = report.all_pane_contents_with_ansi.values().next();
-        self.deliver_subscriber_updates_from_map(pane_map, ansi_pane_map);
-    }
     pub(super) fn deliver_to_pane_subscribers_directly(&mut self) {
+        if !self.pane_subscriber_snapshots_dirty || self.deferred_subscriber_renders {
+            return;
+        }
         // Collect unique pane IDs across all subscribers
         let all_subscribed_ids: HashSet<yinz_types::data::PaneId> = self
             .pane_render_subscribers
@@ -137,6 +116,7 @@ impl Screen {
             None
         };
         self.deliver_subscriber_updates_from_map(&pane_map, ansi_map_ref);
+        self.pane_subscriber_snapshots_dirty = false;
     }
     pub(super) fn deliver_subscriber_updates_from_map(
         &mut self,

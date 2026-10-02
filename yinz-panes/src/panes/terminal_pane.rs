@@ -110,6 +110,8 @@ pub struct TerminalPane {
     pub active_at: Instant,
     pub style: Style,
     vte_parser: vte::Parser,
+    #[cfg(test)]
+    vte_batches: usize,
     selection_scrolled_at: time::Instant,
     content_offset: Offset,
     subtitle: Option<String>,
@@ -182,12 +184,7 @@ pub struct TerminalPane {
     guest_choice_indicators: HashMap<ClientId, GuestChoiceIndicator>,
     guest_session_name: Option<SessionName>,
     guest_modal_shortcuts: GuestModalShortcuts,
-    /// PTY bytes that have not yet been fed to vte. Single source of
-    /// truth: `handle_pty_bytes` always appends here, and processing
-    /// pops one byte at a time and advances the vte parser. Processing
-    /// stops as soon as Grid produces a forward-bound query, leaving
-    /// remaining bytes in the queue to be drained after the host reply
-    /// has been written.
+    /// Unconsumed PTY bytes retained when a host query pauses parsing, replayed after its reply.
     pending_pty_input: VecDeque<u8>,
     kitty_interceptor: KittyApcInterceptor,
 }
@@ -234,57 +231,33 @@ impl Pane for TerminalPane {
         self.set_should_render(true);
     }
     fn handle_pty_bytes(&mut self, bytes: VteBytes) {
-        self.set_should_render(true);
+        self.grid.should_render = true;
         if self.forward_paused {
             // A host-forward initiated by this pane is outstanding.
             // Buffer the bytes; Tab drains them on resume.
             self.pending_pty_input.extend(bytes);
             return;
         }
-        // Without a Kitty APC start, and with no escape left open at the end, the interceptor
-        // would forward every byte unchanged and finish in ground state. Hand the read to the
-        // parser whole: the loop below flushes it to vte once per escape sequence, which costs
-        // SGR-heavy output like a full-screen TUI's dearly.
-        if self.kitty_interceptor.is_in_ground_state()
-            && bytes.last() != Some(&0x1b)
-            && memchr::memmem::find(&bytes, b"\x1b_").is_none()
-        {
-            let consumed = self
-                .vte_parser
-                .advance_until_terminated(&mut self.grid, &bytes);
-            if consumed < bytes.len() {
-                self.pending_pty_input.extend(&bytes[consumed..]);
-            }
-            return;
-        }
         let mut forwarded: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut index = 0;
-        let mut capture_started = false;
         while index < bytes.len() {
             if self.kitty_interceptor.is_capturing() {
                 let run = self.kitty_interceptor.capture_run(&bytes[index..]);
                 if run > 0 {
-                    // `forwarded` was flushed when the capture began, as `Swallow` does.
+                    // `CaptureStarted` already flushed the preceding terminal bytes.
                     index += run;
-                    capture_started = true;
                     continue;
                 }
             }
-            // Between sequences the interceptor forwards every non-escape byte unchanged and stays
-            // in the same state, so the whole run up to the next escape can be copied at once.
-            // Ordinary program output is almost entirely such runs, and driving them through the
-            // state machine one byte at a time - each one rebuilding a `ForwardBytes` and calling
-            // `extend_from_slice` on a single byte - was the second-largest cost in pty ingest.
+            // Ordinary escapes are forwarded unchanged too. Scan once to the next APC candidate,
+            // retaining a final ESC so a prefix split across reads still reaches the interceptor.
             if self.kitty_interceptor.is_in_ground_state() {
                 let rest = &bytes[index..];
-                let run_length = rest
-                    .iter()
-                    .position(|byte| *byte == 0x1b)
-                    .unwrap_or(rest.len());
+                let run_length = memchr::memmem::find(rest, b"\x1b_")
+                    .unwrap_or_else(|| rest.len() - usize::from(rest.last() == Some(&0x1b)));
                 if run_length > 0 {
                     forwarded.extend_from_slice(&rest[..run_length]);
                     index += run_length;
-                    capture_started = false;
                     continue;
                 }
             }
@@ -292,45 +265,32 @@ impl Pane for TerminalPane {
             index += 1;
             match self.kitty_interceptor.advance(byte) {
                 InterceptorResult::Forward(fwd) => {
-                    capture_started = false;
                     forwarded.extend_from_slice(fwd.as_slice());
                 },
-                InterceptorResult::Swallow => {
-                    if !capture_started {
-                        capture_started = true;
-                        // Drain everything before the sequence now, so a pause
-                        // in the middle of this flush can never strand a
-                        // capture that has already left the input buffer.
-                        if !forwarded.is_empty() {
-                            let consumed = self
-                                .vte_parser
-                                .advance_until_terminated(&mut self.grid, &forwarded);
-                            if consumed < forwarded.len() {
-                                self.pending_pty_input.extend(&forwarded[consumed..]);
-                                self.pending_pty_input.extend(&bytes[index - 1..]);
-                                self.kitty_interceptor.reset();
-                                return;
-                            }
-                            forwarded.clear();
-                        }
-                    }
-                },
-                InterceptorResult::Captured(cmd) => {
-                    capture_started = false;
+                InterceptorResult::Swallow => {},
+                InterceptorResult::CaptureStarted => {
+                    // Only an actual Kitty APC needs a flush. Ordinary escape sequences stay
+                    // batched together, even when the same read also contains image commands.
                     if !forwarded.is_empty() {
+                        #[cfg(test)]
+                        {
+                            self.vte_batches += 1;
+                        }
                         let consumed = self
                             .vte_parser
                             .advance_until_terminated(&mut self.grid, &forwarded);
-                        if consumed < forwarded.len() {
+                        if !self.grid.pending_forwarded_queries.is_empty() {
                             self.pending_pty_input.extend(&forwarded[consumed..]);
+                            // The prefix may have spanned reads, so reconstruct it explicitly.
                             self.pending_pty_input.extend(b"\x1b_G");
-                            self.pending_pty_input.extend(&cmd);
-                            self.pending_pty_input.extend(b"\x1b\\");
                             self.pending_pty_input.extend(&bytes[index..]);
+                            self.kitty_interceptor.reset();
                             return;
                         }
                         forwarded.clear();
                     }
+                },
+                InterceptorResult::Captured(cmd) => {
                     self.grid.handle_kitty_apc(&cmd);
                     if !self.grid.pending_forwarded_queries.is_empty() {
                         // Grid produced a forward. Stop feeding; queue the
@@ -342,11 +302,19 @@ impl Pane for TerminalPane {
                 },
             }
         }
-        let consumed = self
-            .vte_parser
-            .advance_until_terminated(&mut self.grid, &forwarded);
-        if consumed < forwarded.len() {
-            self.pending_pty_input.extend(&forwarded[consumed..]);
+        if !forwarded.is_empty() {
+            #[cfg(test)]
+            {
+                self.vte_batches += 1;
+            }
+            let consumed = self
+                .vte_parser
+                .advance_until_terminated(&mut self.grid, &forwarded);
+            if !self.grid.pending_forwarded_queries.is_empty() {
+                self.pending_pty_input.extend(&forwarded[consumed..]);
+                self.pending_pty_input
+                    .extend(self.kitty_interceptor.take_pending_prefix());
+            }
         }
     }
     fn cursor_coordinates(&self, client_id: Option<ClientId>) -> Option<(usize, usize, bool)> {
@@ -529,6 +497,26 @@ impl Pane for TerminalPane {
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
+    }
+    fn remove_client(&mut self, client_id: ClientId) {
+        self.frame.remove(&client_id);
+        self.guest_modal.remove(&client_id);
+        self.guest_choice_indicators.remove(&client_id);
+        self.pending_agent_escape_clients.remove(&client_id);
+        if self
+            .pane_frame_color_override
+            .as_ref()
+            .is_some_and(|color| color.client_id == Some(client_id))
+        {
+            self.pane_frame_color_override = None;
+        }
+    }
+    fn prepare_content_replay(&mut self, _client_id: ClientId) {
+        self.grid.should_render = true;
+        self.grid.render_full_viewport();
+    }
+    fn invalidate_frame(&mut self, client_id: ClientId) {
+        self.frame.remove(&client_id);
     }
     fn should_render(&self) -> bool {
         self.grid.should_render
@@ -1110,7 +1098,8 @@ impl Pane for TerminalPane {
     }
     fn load_pane_name(&mut self) {
         if self.pane_name != self.prev_pane_name {
-            self.pane_name = self.prev_pane_name.clone()
+            self.pane_name = self.prev_pane_name.clone();
+            self.set_should_render(true);
         }
     }
 
@@ -1268,29 +1257,37 @@ impl Pane for TerminalPane {
         self.grid.osc7_payload()
     }
     fn set_bell_notification(&mut self, val: bool) {
-        self.has_bell_notification = val;
+        if self.has_bell_notification != val {
+            self.has_bell_notification = val;
+            self.set_should_render(true);
+        }
     }
     fn get_bell_notification(&self) -> bool {
         self.has_bell_notification
     }
     fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
         // A command that failed is a fact about the pane, so every client sees it.
-        self.pane_frame_color_override = Some(FrameColorOverride::new(
-            self.style.colors.exit_code_error.base,
-            error_text,
-            None,
-        ));
+        let override_ =
+            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
+        if self.pane_frame_color_override.as_ref() != Some(&override_) {
+            self.pane_frame_color_override = Some(override_);
+            self.set_should_render(true);
+        }
     }
     fn add_highlight_pane_frame_color_override(
         &mut self,
         text: Option<String>,
         client_id: Option<ClientId>,
     ) {
-        self.pane_frame_color_override = Some(FrameColorOverride::new(
+        let override_ = FrameColorOverride::new(
             self.style.colors.frame_highlight.emphasis_0,
             text,
             client_id,
-        ));
+        );
+        if self.pane_frame_color_override.as_ref() != Some(&override_) {
+            self.pane_frame_color_override = Some(override_);
+            self.set_should_render(true);
+        }
     }
     fn frame_color_override_strength_is_settled(&self, now: Instant) -> bool {
         self.pane_frame_color_override
@@ -1307,9 +1304,10 @@ impl Pane for TerminalPane {
         if self
             .pane_frame_color_override
             .as_ref()
-            .is_none_or(|override_| override_.is_cleared_by(client_id))
+            .is_some_and(|override_| override_.is_cleared_by(client_id))
         {
             self.pane_frame_color_override = None;
+            self.set_should_render(true);
         }
     }
     fn frame_color_override(&self, client_id: ClientId) -> Option<PaletteColor> {
@@ -1356,7 +1354,10 @@ impl Pane for TerminalPane {
         self.notification_end = notification_end;
     }
     fn set_title(&mut self, title: String) {
-        self.pane_title = title;
+        if self.pane_title != title {
+            self.pane_title = title;
+            self.set_should_render(true);
+        }
     }
     fn current_title(&self) -> String {
         if self.pane_name.is_empty() {
@@ -1650,8 +1651,11 @@ impl Pane for TerminalPane {
         self.grid.update_sixel_host_support(supported);
     }
     fn update_rounded_corners(&mut self, rounded_corners: bool) {
-        self.style.rounded_corners = rounded_corners;
-        self.frame.clear();
+        if self.style.rounded_corners != rounded_corners {
+            self.style.rounded_corners = rounded_corners;
+            self.frame.clear();
+            self.set_should_render(true);
+        }
     }
     fn drain_fake_cursors(&mut self) -> Option<HashSet<(usize, usize)>> {
         if !self.fake_cursor_locations.is_empty() {
@@ -1668,10 +1672,13 @@ impl Pane for TerminalPane {
         }
     }
     fn toggle_pinned(&mut self) {
-        self.geom.is_pinned = !self.geom.is_pinned;
+        self.set_pinned(!self.geom.is_pinned);
     }
     fn set_pinned(&mut self, should_be_pinned: bool) {
-        self.geom.is_pinned = should_be_pinned;
+        if self.geom.is_pinned != should_be_pinned {
+            self.geom.is_pinned = should_be_pinned;
+            self.set_should_render(true);
+        }
     }
     fn intercept_mouse_event_on_frame(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.position_is_on_frame(&event.position) {
@@ -1929,6 +1936,8 @@ impl TerminalPane {
             geom: position_and_size,
             geom_override: None,
             vte_parser: vte::Parser::new(),
+            #[cfg(test)]
+            vte_batches: 0,
             active_at: Instant::now(),
             style,
             selection_scrolled_at: time::Instant::now(),

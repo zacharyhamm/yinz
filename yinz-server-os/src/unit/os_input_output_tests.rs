@@ -1064,6 +1064,162 @@ mod coalescing_send_queue {
     }
 
     #[test]
+    fn simultaneous_registration_and_drain_leave_no_unnotified_backlog() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Barrier,
+        };
+        for _ in 0..32 {
+            let queue = CoalescingSendQueue::new();
+            queue.push(render("frame"));
+            let ready = Arc::new(AtomicBool::new(false));
+            let barrier = Barrier::new(2);
+            let backlog = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    queue.pop();
+                });
+                barrier.wait();
+                let ready = ready.clone();
+                queue.render_backlog_and_notify(
+                    1,
+                    Some(Box::new(move || {
+                        ready.store(true, Ordering::SeqCst);
+                    })),
+                )
+            });
+            assert!(backlog.queued_renders == 0 || ready.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn render_readiness_registration_cannot_lose_a_drain_or_close() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for close in [false, true] {
+            for register_first in [false, true] {
+                let queue = Arc::new(CoalescingSendQueue::new());
+                queue.push(render("frame"));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let callback = {
+                    let queue = queue.clone();
+                    let calls = calls.clone();
+                    Box::new(move || {
+                        // Reentering proves the callback does not own the queue lock.
+                        assert_eq!(queue.render_backlog().queued_renders, 0);
+                        calls.fetch_add(1, Ordering::SeqCst);
+                    })
+                };
+                let drain = || {
+                    if close {
+                        queue.close();
+                    } else {
+                        queue.pop();
+                    }
+                };
+                if !register_first {
+                    drain();
+                }
+                let backlog = queue.render_backlog_and_notify(1, Some(callback));
+                assert_eq!(backlog.queued_renders, usize::from(register_first));
+                if register_first {
+                    drain();
+                }
+                queue.close();
+                queue.finish_send();
+                assert_eq!(calls.load(Ordering::SeqCst), usize::from(register_first));
+            }
+        }
+    }
+
+    #[test]
+    fn poisoned_sender_locks_recover_once_and_allow_teardown() {
+        use std::os::unix::net::UnixStream;
+
+        let server = make_server();
+        let client = ClientId::new(1);
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        server.client_senders.lock().unwrap().insert(
+            client,
+            ClientSender {
+                client_id: client,
+                queue: queue.clone(),
+                stream_fd: socket.into(),
+            },
+        );
+        let poisoned_queue = queue.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoned_queue.state.lock().unwrap();
+            panic!("poison writer queue");
+        })
+        .join()
+        .is_err());
+
+        assert_eq!(
+            server.client_render_backlog(client),
+            Some(RenderBacklog::default())
+        );
+        assert!(!queue.state.is_poisoned());
+        assert!(queue.state.lock().unwrap().closed);
+
+        let senders = server.client_senders.clone();
+        assert!(std::thread::spawn(move || {
+            let _guard = senders.lock().unwrap();
+            panic!("poison client sender registry");
+        })
+        .join()
+        .is_err());
+        assert_eq!(
+            server.client_render_backlog(client),
+            Some(RenderBacklog::default())
+        );
+        assert!(!server.client_senders.is_poisoned());
+        server.send_to_client(client, render("late")).unwrap();
+        server.flush_client_writers(Duration::ZERO);
+        let mut server = server;
+        server.remove_client(client).unwrap();
+        assert!(server.client_render_backlog(client).is_none());
+    }
+
+    #[test]
+    fn every_queue_operation_closes_poisoned_state() {
+        let operations: [fn(&CoalescingSendQueue); 5] = [
+            |queue| {
+                queue.push(render("late"));
+            },
+            |queue| {
+                assert!(queue.pop().is_none());
+            },
+            CoalescingSendQueue::finish_send,
+            CoalescingSendQueue::close,
+            |queue| {
+                assert_eq!(queue.render_backlog(), RenderBacklog::default());
+            },
+        ];
+        for operation in operations {
+            let queue = CoalescingSendQueue::new();
+            queue.push(render("queued"));
+            assert!(std::panic::catch_unwind(|| {
+                let mut state = queue.state.lock().unwrap();
+                state.render_bytes = usize::MAX;
+                panic!("interrupt queue accounting");
+            })
+            .is_err());
+
+            operation(&queue);
+
+            assert!(!queue.state.is_poisoned());
+            assert!(queue.state.lock().unwrap().closed);
+            assert_eq!(queue.len(), 0);
+            assert!(matches!(queue.push(render("later")), SendQueuePush::Queued));
+            assert!(queue.pop().is_none());
+            queue.finish_send();
+            assert_eq!(queue.render_backlog(), RenderBacklog::default());
+            queue.close();
+        }
+    }
+
+    #[test]
     fn incremental_renders_survive_backlog_and_precede_exit() {
         let queue = CoalescingSendQueue::new();
         // Independent cell changes and an OSC side effect all have to arrive.
@@ -1627,11 +1783,15 @@ mod coalescing_send_queue {
         fn depth_agrees_with_the_model(&self, _: hegel::TestCase) {
             assert_eq!(
                 self.real.render_backlog().queued_renders,
-                self.control
-                    .iter()
-                    .filter(|message| matches!(message, ServerToClientMsg::Render { .. }))
-                    .count()
-                    + self.pane_renders.len(),
+                if self.closed {
+                    0
+                } else {
+                    self.control
+                        .iter()
+                        .filter(|message| matches!(message, ServerToClientMsg::Render { .. }))
+                        .count()
+                        + self.pane_renders.len()
+                },
             );
             assert_eq!(
                 self.real.len(),

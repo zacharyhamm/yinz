@@ -325,6 +325,22 @@ pub(super) struct PendingEvents {
     pub(super) waiting_for_pane: HashMap<PaneId, Vec<ScreenInstruction>>,
 }
 
+impl PendingEvents {
+    pub(super) fn remove_client_plugin_output(&mut self, client_id: ClientId) {
+        self.waiting_for_pane.retain(|_, events| {
+            events.retain_mut(|event| match event {
+                ScreenInstruction::PluginBytes(assets) => {
+                    assets.retain(|asset| asset.client_id != client_id);
+                    !assets.is_empty()
+                },
+                ScreenInstruction::ShowPluginCursor(_, client, _) => *client != client_id,
+                _ => true,
+            });
+            !events.is_empty()
+        });
+    }
+}
+
 pub fn screen_thread_main(
     bus: Bus<ScreenInstruction>,
     max_panes: Option<usize>,
@@ -521,14 +537,20 @@ pub fn screen_thread_main(
                 ScreenInstruction::Render => {
                     screen.render()?;
                 },
+                ScreenInstruction::RenderWriterReady => {
+                    screen.resume_deferred_render();
+                },
+                ScreenInstruction::RenderDeadline(deadline) => {
+                    if screen.render_deadline == Some(deadline) {
+                        screen.resume_deferred_render();
+                    }
+                },
                 ScreenInstruction::RenderToClients => {
                     // render_blocker.can_render() returning true means that either all pending plugins
                     // (only those waiting for a new tab layout to be applied!) have been rendered or
                     // that a 100ms timeout has been reached (more info in the RenderBlocker comment)
                     let tracing_attach = !attach_traces_waiting_for_first_render.is_empty();
-                    if !tracing_attach && screen.defer_render_while_clients_are_behind() {
-                        // Retried by the debouncer; see `defer_render_while_clients_are_behind`.
-                    } else if screen.render_blocker.can_render() {
+                    if screen.render_blocker.can_render() {
                         let render_started_at = Instant::now();
                         if tracing_attach {
                             log::info!(
@@ -2149,6 +2171,7 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::RemoveClient(client_id) => {
+                    pending.remove_client_plugin_output(client_id);
                     screen.detach_agent_controls(client_id);
                     attach_traces_waiting_for_first_render.remove(&client_id);
                     // A connection that never attached — a session probe, a one-shot

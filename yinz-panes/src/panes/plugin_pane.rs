@@ -310,13 +310,15 @@ impl Pane for PluginPane {
             match interceptor.advance(byte) {
                 InterceptorResult::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
                 InterceptorResult::Swallow => {},
-                InterceptorResult::Captured(command) => {
+                InterceptorResult::CaptureStarted => {
                     // Everything before the command has to reach the grid first: a placement is
                     // positioned by where the cursor is when it arrives.
                     if !forwarded.is_empty() {
                         vte_parser.advance(grid, &forwarded);
                         forwarded.clear();
                     }
+                },
+                InterceptorResult::Captured(command) => {
                     grid.handle_kitty_apc(&command);
                     // A plugin has no pty to answer on, so a reply or a forwarded query has
                     // nowhere to go and would otherwise accumulate for the life of the pane.
@@ -463,6 +465,31 @@ impl Pane for PluginPane {
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
+    }
+    fn remove_client(&mut self, client_id: ClientId) {
+        self.grids.remove(&client_id);
+        self.vte_parsers.remove(&client_id);
+        self.kitty_interceptors.remove(&client_id);
+        self.should_render.remove(&client_id);
+        self.cursor_visibility.remove(&client_id);
+        self.frame.remove(&client_id);
+        self.pane_tabs_views.remove(&client_id);
+        if self
+            .pane_frame_color_override
+            .as_ref()
+            .is_some_and(|color| color.client_id == Some(client_id))
+        {
+            self.pane_frame_color_override = None;
+        }
+    }
+    fn prepare_content_replay(&mut self, client_id: ClientId) {
+        if let Some(grid) = self.grids.get_mut(&client_id) {
+            grid.render_full_viewport();
+            self.should_render.insert(client_id, true);
+        }
+    }
+    fn invalidate_frame(&mut self, client_id: ClientId) {
+        self.frame.remove(&client_id);
     }
     fn should_render(&self) -> bool {
         // set should_render for all clients
@@ -654,7 +681,6 @@ impl Pane for PluginPane {
         let frame_geom = frame_params
             .frame_geom_override
             .unwrap_or_else(|| self.current_geom());
-        let grid = get_or_create_grid!(self, client_id);
         let err_context = || format!("failed to render frame for client {client_id}");
         let frame_color_override = self
             .pane_frame_color_override
@@ -672,8 +698,9 @@ impl Pane for PluginPane {
         {
             String::from("Enter name...")
         } else if self.pane_name.is_empty() {
-            grid.title
-                .clone()
+            self.grids
+                .get(&client_id)
+                .and_then(|grid| grid.title.clone())
                 .unwrap_or_else(|| self.pane_title.clone())
         } else {
             self.pane_name.clone()
@@ -732,6 +759,7 @@ impl Pane for PluginPane {
                 self.pane_name.push_str(c);
             },
         }
+        self.set_should_render(true);
     }
     fn pid(&self) -> PaneId {
         PaneId::Plugin(self.pid)
@@ -1025,7 +1053,8 @@ impl Pane for PluginPane {
     }
     fn load_pane_name(&mut self) {
         if self.pane_name != self.prev_pane_name {
-            self.pane_name = self.prev_pane_name.clone()
+            self.pane_name = self.prev_pane_name.clone();
+            self.set_should_render(true);
         }
     }
 
@@ -1054,22 +1083,24 @@ impl Pane for PluginPane {
     }
     fn add_red_pane_frame_color_override(&mut self, error_text: Option<String>) {
         // A command that failed is a fact about the pane, so every client sees it.
-        self.pane_frame_color_override = Some(FrameColorOverride::new(
-            self.style.colors.exit_code_error.base,
-            error_text,
-            None,
-        ));
+        let override_ =
+            FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
+        if self.pane_frame_color_override.as_ref() != Some(&override_) {
+            self.pane_frame_color_override = Some(override_);
+            self.set_should_render(true);
+        }
     }
     fn add_highlight_pane_frame_color_override(
         &mut self,
         text: Option<String>,
         client_id: Option<ClientId>,
     ) {
-        self.pane_frame_color_override = Some(FrameColorOverride::new(
-            self.style.colors.frame_highlight.base,
-            text,
-            client_id,
-        ));
+        let override_ =
+            FrameColorOverride::new(self.style.colors.frame_highlight.base, text, client_id);
+        if self.pane_frame_color_override.as_ref() != Some(&override_) {
+            self.pane_frame_color_override = Some(override_);
+            self.set_should_render(true);
+        }
     }
     fn frame_color_override_strength_is_settled(&self, now: Instant) -> bool {
         self.pane_frame_color_override
@@ -1086,9 +1117,10 @@ impl Pane for PluginPane {
         if self
             .pane_frame_color_override
             .as_ref()
-            .is_none_or(|override_| override_.is_cleared_by(client_id))
+            .is_some_and(|override_| override_.is_cleared_by(client_id))
         {
             self.pane_frame_color_override = None;
+            self.set_should_render(true);
         }
     }
     fn frame_color_override(&self, client_id: ClientId) -> Option<PaletteColor> {
@@ -1107,7 +1139,10 @@ impl Pane for PluginPane {
         &self.invoked_with
     }
     fn set_title(&mut self, title: String) {
-        self.pane_title = title;
+        if self.pane_title != title {
+            self.pane_title = title;
+            self.set_should_render(true);
+        }
     }
     fn update_loading_indication(&mut self, loading_indication: LoadingIndication) {
         if self.loading_indication.ended && !loading_indication.is_error() {
@@ -1190,8 +1225,11 @@ impl Pane for PluginPane {
         self.set_should_render(true);
     }
     fn update_rounded_corners(&mut self, rounded_corners: bool) {
-        self.style.rounded_corners = rounded_corners;
-        self.frame.clear();
+        if self.style.rounded_corners != rounded_corners {
+            self.style.rounded_corners = rounded_corners;
+            self.frame.clear();
+            self.set_should_render(true);
+        }
     }
     fn set_should_be_suppressed(&mut self, should_be_suppressed: bool) {
         self.should_be_suppressed = should_be_suppressed;
@@ -1200,10 +1238,13 @@ impl Pane for PluginPane {
         self.should_be_suppressed
     }
     fn toggle_pinned(&mut self) {
-        self.geom.is_pinned = !self.geom.is_pinned;
+        self.set_pinned(!self.geom.is_pinned);
     }
     fn set_pinned(&mut self, should_be_pinned: bool) {
-        self.geom.is_pinned = should_be_pinned;
+        if self.geom.is_pinned != should_be_pinned {
+            self.geom.is_pinned = should_be_pinned;
+            self.set_should_render(true);
+        }
     }
     fn intercept_mouse_event_on_frame(&mut self, event: &MouseEvent, client_id: ClientId) -> bool {
         if self.position_is_on_frame(&event.position) {
@@ -1263,8 +1304,12 @@ impl Pane for PluginPane {
         get_full_scrollback: bool,
         max_scrollback_lines: Option<usize>,
     ) -> PaneContents {
+        // Inactive-tab subscriptions have no client but can still use a cached grid.
         client_id
-            .and_then(|c| self.grids.get(&c))
+            .map_or_else(
+                || self.grids.keys().min().and_then(|id| self.grids.get(id)),
+                |c| self.grids.get(&c),
+            )
             .map(|g| g.pane_contents(get_full_scrollback, max_scrollback_lines))
             .unwrap_or_default()
     }
@@ -1275,7 +1320,10 @@ impl Pane for PluginPane {
         max_scrollback_lines: Option<usize>,
     ) -> PaneContents {
         client_id
-            .and_then(|c| self.grids.get(&c))
+            .map_or_else(
+                || self.grids.keys().min().and_then(|id| self.grids.get(id)),
+                |c| self.grids.get(&c),
+            )
             .map(|g| g.pane_contents_with_ansi(get_full_scrollback, max_scrollback_lines))
             .unwrap_or_default()
     }

@@ -70,3 +70,7 @@ impl RenderBudget {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "unit/render_budget_tests.rs"]
+mod tests;

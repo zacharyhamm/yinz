@@ -422,6 +422,7 @@ pub enum BackgroundJob {
         u64,
     ),
     RenderToClients,
+    SetRenderDeadline(Option<Instant>),
     ClearHelpText {
         client_id: ClientId,
     },
@@ -446,6 +447,7 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::CancelWebRequest(..) | BackgroundJob::WebRequestStreamFinished(..) => {
                 BackgroundJobContext::WebRequest
             },
+            BackgroundJob::SetRenderDeadline(_) => BackgroundJobContext::RenderToClients,
             other => {
                 let name: &'static str = other.into();
                 BackgroundJobContext::from_str(name).unwrap_or_else(|_| {
@@ -528,6 +530,7 @@ pub fn background_jobs_main(
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
     let mut command_palette_sessions: Option<Arc<AtomicBool>> = None;
+    let mut render_deadline_task: Option<tokio::task::JoinHandle<()>> = None;
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -956,6 +959,18 @@ pub fn background_jobs_main(
                     Some(generation),
                     error,
                 );
+            },
+            BackgroundJob::SetRenderDeadline(deadline) => {
+                if let Some(task) = render_deadline_task.take() {
+                    task.abort();
+                }
+                if let Some(deadline) = deadline {
+                    let senders = bus.senders.clone();
+                    render_deadline_task = Some(runtime.spawn(async move {
+                        tokio::time::sleep_until(deadline.into()).await;
+                        let _ = senders.send_to_screen(ScreenInstruction::RenderDeadline(deadline));
+                    }));
+                }
             },
             BackgroundJob::RenderToClients => {
                 // last_render_request being Some() represents a render request that is pending

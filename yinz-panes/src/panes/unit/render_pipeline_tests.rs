@@ -231,10 +231,8 @@ fn pty_partitions_preserve_styled_state_and_replies(tc: hegel::TestCase) {
     );
 }
 
-/// A read with no Kitty APC start goes to the parser whole; one with an APC goes through the
-/// interceptor a byte at a time, flushing to the parser at each escape. Splitting a stream that
-/// mixes APCs, other escapes and doubled ESCs at random points sends each piece down whichever
-/// path it qualifies for, so the two paths must leave identical panes.
+/// Parser batches end at Kitty capture starts and read boundaries. Splitting a stream with APCs,
+/// other escapes and doubled ESCs changes those batches without changing the resulting pane.
 #[hegel::test]
 fn bulk_and_intercepted_ingest_leave_identical_panes(tc: hegel::TestCase) {
     let (cols, rows) = (number(&tc, 1, 16), number(&tc, 1, 6));

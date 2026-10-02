@@ -2826,6 +2826,7 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
         .dispatch_osc8(&[b"8", b"", b"https://second.example/0"]);
     let first_chunk = linked_chunk(&first_tab, "https://first.example");
     let second_chunk = linked_chunk(&second_tab, "https://second.example/1");
+    let rebuilt_first_chunk = CharacterChunk::new(first_chunk.terminal_characters.clone(), 0, 1);
 
     let mut output = create_test_output();
     let first_client = ClientId::new(1);
@@ -2844,20 +2845,24 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
     output
         .add_character_chunks_to_client(second_client, vec![second_chunk], None)
         .unwrap();
+    // Later overlays can rebuild chunks after another tab has installed its table.
+    output
+        .add_character_chunks_to_client(first_client, vec![rebuilt_first_chunk], None)
+        .unwrap();
 
     // Both fragments from middle clipping need their original table, including when a
     // watcher uses the size-limited serializer after another tab has rendered.
     for serialized in [
         output.clone().serialize().unwrap(),
         output
-            .serialize_with_size(Some(Size { rows: 1, cols: 5 }), None)
+            .serialize_with_size(Some(Size { rows: 2, cols: 5 }), None)
             .unwrap(),
     ] {
         let first = &serialized[&first_client];
         let second = &serialized[&second_client];
         assert_eq!(
             first.matches("\u{1b}]8;;https://first.example").count(),
-            2,
+            3,
             "{first:?}"
         );
         assert!(!first.contains("second.example"), "{first:?}");
@@ -2995,11 +3000,18 @@ mod shared_style_serialization {
         links: bool,
     ) -> String {
         let mut bytes = String::new();
+        let handler = Rc::new(RefCell::new(LinkHandler::new()));
+        handler
+            .borrow_mut()
+            .new_link_from_url("https://first.example".into());
+        handler
+            .borrow_mut()
+            .new_link_from_url("https://second.example".into());
         serialize_chunks(
             &mut bytes,
             vec![chunk],
             None,
-            None,
+            Some(&handler),
             None,
             underlines,
             links,
@@ -3040,19 +3052,11 @@ mod shared_style_serialization {
         let pane_default_bg = tc
             .draw(generators::booleans())
             .then_some(AnsiCode::ColorIndex(3));
-        let handler = Rc::new(RefCell::new(LinkHandler::new()));
-        handler
-            .borrow_mut()
-            .new_link_from_url("https://first.example".into());
-        handler
-            .borrow_mut()
-            .new_link_from_url("https://second.example".into());
         let chunk = |characters| {
             let mut chunk = CharacterChunk::new(characters, 0, 0);
             chunk.changed_colors = changed_colors;
             chunk.pane_default_fg = pane_default_fg;
             chunk.pane_default_bg = pane_default_bg;
-            chunk.link_handler = Some(handler.clone());
             chunk
         };
         let size = tc.draw(generators::booleans()).then(|| Size {

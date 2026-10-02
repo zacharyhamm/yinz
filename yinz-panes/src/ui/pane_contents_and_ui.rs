@@ -143,6 +143,17 @@ impl<'a> PaneContentsAndUi<'a> {
             self.pane.render(None).context(err_context)?
         {
             let clients: Vec<ClientId> = clients.collect();
+            if self
+                .output
+                .pane_change_client
+                .is_some_and(|client| clients.contains(&client))
+                && (!character_chunks.is_empty()
+                    || !sixel_image_chunks.is_empty()
+                    || !kitty_image_chunks.is_empty()
+                    || raw_vte_output.as_ref().is_some_and(|s| !s.is_empty()))
+            {
+                self.output.rendered_pane_contents.insert(self.pane.pid());
+            }
             self.output
                 .add_character_chunks_to_multiple_clients(
                     character_chunks,
@@ -185,6 +196,14 @@ impl<'a> PaneContentsAndUi<'a> {
                 .render(Some(client_id))
                 .with_context(err_context)?
         {
+            if self.output.pane_change_client == Some(client_id)
+                && (!character_chunks.is_empty()
+                    || !sixel_image_chunks.is_empty()
+                    || !kitty_image_chunks.is_empty()
+                    || raw_vte_output.as_ref().is_some_and(|s| !s.is_empty()))
+            {
+                self.output.rendered_pane_contents.insert(self.pane.pid());
+            }
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)
                 .with_context(err_context)?;
@@ -457,6 +476,12 @@ impl<'a> PaneContentsAndUi<'a> {
                     chunk.retain_by_width(outer.x + outer.cols.as_usize() - chunk.x);
                     true
                 });
+            }
+            if self.output.pane_change_client == Some(client_id)
+                && (!frame_terminal_characters.is_empty()
+                    || vte_output.as_ref().is_some_and(|s| !s.is_empty()))
+            {
+                self.output.rendered_pane_frames.insert(self.pane.pid());
             }
             if self.frame_is_dimmed_for_client(client_id) {
                 dim_character_chunks(&mut frame_terminal_characters);

@@ -269,6 +269,7 @@ type PluginReceiver = Receiver<(PluginInstruction, ErrorContext)>;
 type CapturedClientMessages = Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>;
 /// What the fake os api reports as each client's render backlog.
 type RenderBacklogs = Arc<Mutex<Vec<(ClientId, RenderBacklog)>>>;
+type RenderReadyCallbacks = Arc<Mutex<HashMap<ClientId, Box<dyn FnOnce() + Send>>>>;
 
 #[derive(Clone, Default)]
 struct FakeInputOutput {
@@ -276,6 +277,7 @@ struct FakeInputOutput {
     server_to_client_messages: CapturedClientMessages,
     tty_stdin_bytes: TtyStdinBytes,
     render_backlog: RenderBacklogs,
+    render_ready: RenderReadyCallbacks,
 }
 
 impl ServerOsApi for FakeInputOutput {
@@ -373,10 +375,22 @@ impl ServerOsApi for FakeInputOutput {
     fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
         self.render_backlog
             .lock()
-            .unwrap()
+            .ok()?
             .iter()
             .find(|(id, _)| *id == client_id)
             .map(|(_, backlog)| *backlog)
+    }
+    fn client_render_backlog_and_notify(
+        &self,
+        client_id: ClientId,
+        threshold: usize,
+        ready: Box<dyn FnOnce() + Send>,
+    ) -> Option<RenderBacklog> {
+        let backlog = self.client_render_backlog(client_id);
+        if backlog.is_some_and(|b| b.queued_renders >= threshold) {
+            self.render_ready.lock().unwrap().insert(client_id, ready);
+        }
+        backlog
     }
 }
 

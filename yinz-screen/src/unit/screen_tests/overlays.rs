@@ -7562,3 +7562,116 @@ fn pane_tabs_lazy_children_receive_only_owning_tab_input_and_one_mode_update() {
         .collect::<Vec<_>>();
     assert_eq!(targets.iter().filter(|target| **target == child).count(), 1);
 }
+
+#[test]
+fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_panes() {
+    use yinz_bus::plugins::PluginRenderAsset;
+    for ansi in [false, true] {
+        let low = ClientId::new(1);
+        let high = ClientId::new(2);
+        let subscriber = ClientId::new(3);
+        let (mut screen, _plugins) = screen_with_plugin_sender(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.add_client(high).unwrap();
+        for (id, suppressed) in [(70, false), (71, true)] {
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .new_pane(
+                    PaneId::Plugin(PluginId::new(id)),
+                    None,
+                    None,
+                    suppressed,
+                    false,
+                    NewPanePlacement::default(),
+                    Some(low),
+                    None,
+                )
+                .unwrap();
+        }
+        open_overlay_plugin(
+            &mut screen,
+            PluginId::new(72),
+            TabId::new(0),
+            popup_coordinates(),
+        );
+        let panes: Vec<_> = (70..73)
+            .map(|id| PaneId::Plugin(PluginId::new(id)))
+            .collect();
+        for client in [high, low] {
+            screen
+                .handle_plugin_render_assets(
+                    (70..73)
+                        .map(|id| {
+                            PluginRenderAsset::new(
+                                PluginId::new(id),
+                                client,
+                                if client == low {
+                                    b"\x1b[31mlow-grid".to_vec()
+                                } else {
+                                    b"high-grid".to_vec()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .unwrap();
+        }
+        new_tab(&mut screen, 2, TabId::new(1));
+        // The low grid survives a tab switch, even though high is still viewing tab zero.
+        let os = FakeInputOutput::default();
+        let messages = os.server_to_client_messages.clone();
+        screen.bus.os_input = Some(Box::new(os));
+        screen.subscribe_to_pane_renders(subscriber, panes.clone(), None, ansi);
+        assert!(messages.lock().unwrap()[&subscriber].iter().all(|msg| matches!(msg,
+            ServerToClientMsg::PaneRenderUpdate { viewport, .. } if viewport.concat().contains("low-grid"))));
+        messages.lock().unwrap().clear();
+        screen.remove_client(low).unwrap();
+        screen
+            .handle_plugin_render_assets(
+                (70..73)
+                    .map(|id| {
+                        PluginRenderAsset::new(
+                            PluginId::new(id),
+                            low,
+                            b"late-disconnected-output".to_vec(),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        screen.render_to_clients().unwrap();
+        assert_eq!(messages.lock().unwrap()[&subscriber].len(), 3);
+        assert!(messages.lock().unwrap()[&subscriber]
+            .iter()
+            .all(|msg| matches!(msg,
+            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+                if viewport.concat().contains("high-grid"))));
+        messages.lock().unwrap().clear();
+        screen.remove_client(high).unwrap();
+        screen.render_to_clients().unwrap();
+        assert_eq!(messages.lock().unwrap()[&subscriber].len(), 3);
+        assert!(messages.lock().unwrap()[&subscriber].iter().all(|msg| matches!(msg,
+            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. } if viewport.is_empty())));
+        screen.add_client(low).unwrap();
+        screen
+            .handle_plugin_render_assets(
+                (70..73)
+                    .map(|id| {
+                        PluginRenderAsset::new(PluginId::new(id), low, b"reused-client".to_vec())
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        for pane in panes {
+            assert!(screen.tabs[&TabId::new(0)]
+                .get_pane_with_id(pane)
+                .unwrap()
+                .pane_contents(None, false, None)
+                .viewport
+                .concat()
+                .contains("reused-client"));
+        }
+    }
+}

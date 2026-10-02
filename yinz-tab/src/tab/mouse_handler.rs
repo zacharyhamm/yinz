@@ -1546,7 +1546,6 @@ impl MouseHandler {
         position: Option<Position>,
         client_id: ClientId,
     ) -> Result<MouseEffect> {
-        let mut should_render = false;
         let previous_hover_pane_id = tab.mouse_hover_pane_id.get(&client_id).copied();
 
         if tab.mouse_hover_effects {
@@ -1593,17 +1592,15 @@ impl MouseHandler {
                         tab.mouse_hover_pane_id.remove(&client_id);
                     }
                     tab.mouse_last_pane_id.insert(client_id, pid);
-                    should_render = true;
                 }
             },
             None => {
                 tab.mouse_last_pane_id.remove(&client_id);
-                let removed = tab.mouse_hover_pane_id.remove(&client_id);
-                if removed.is_some() {
-                    should_render = true;
-                }
+                tab.mouse_hover_pane_id.remove(&client_id);
             },
         }
+        let mut should_render =
+            previous_hover_pane_id != tab.mouse_hover_pane_id.get(&client_id).copied();
 
         if let Some(prev_pane_id) = previous_hover_pane_id {
             if Some(prev_pane_id) != pane_id {

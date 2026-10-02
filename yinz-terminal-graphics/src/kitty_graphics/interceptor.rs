@@ -48,6 +48,8 @@ impl ForwardBytes {
 pub enum InterceptorResult {
     Forward(ForwardBytes),
     Swallow,
+    /// `ESC _ G` is complete: flush preceding terminal bytes before capturing the payload.
+    CaptureStarted,
     Captured(Vec<u8>),
 }
 
@@ -74,6 +76,17 @@ impl KittyApcInterceptor {
     /// Whether the interceptor is inside a graphics payload, where `capture_run` applies.
     pub fn is_capturing(&self) -> bool {
         self.state == State::Capturing
+    }
+    /// Return an undecided `ESC` / `ESC _` prefix to the input queue when a host query pauses
+    /// parsing before it. Replaying the prefix after the unconsumed bytes preserves stream order.
+    pub fn take_pending_prefix(&mut self) -> &'static [u8] {
+        let prefix: &[u8] = match self.state {
+            State::Esc => b"\x1b",
+            State::EscUnderscore => b"\x1b_",
+            _ => return b"",
+        };
+        self.state = State::Ground;
+        prefix
     }
     /// Capture payload bytes from the front of `bytes`, up to the first byte `advance` treats
     /// specially, and return how many were consumed. Equivalent to `advance` on each of them,
@@ -111,7 +124,7 @@ impl KittyApcInterceptor {
                     self.state = State::Capturing;
                     self.buffer.clear();
                     self.overflowed = false;
-                    InterceptorResult::Swallow
+                    InterceptorResult::CaptureStarted
                 },
                 0x1b => {
                     self.state = State::Esc;

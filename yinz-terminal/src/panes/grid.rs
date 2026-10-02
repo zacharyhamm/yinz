@@ -344,13 +344,12 @@ fn transfer_rows_from_viewport_to_lines_above(
             next_lines.append(&mut bottom_canonical_row_and_wraps_in_dst);
         }
         next_lines.push(next_line);
-        let mut line = Row::from_rows(next_lines);
-        // Viewport rows are allocated a screen width up front; a short line should not keep
-        // that room for as long as it sits in the scrollback.
-        if line.columns.len() < line.columns.capacity() / 2 {
-            line.columns.shrink_to_fit();
-        }
-        let dropped_line_width = bounded_push(lines_above, sixel_grid, kitty_grid, line);
+        let dropped_line_width = bounded_push(
+            lines_above,
+            sixel_grid,
+            kitty_grid,
+            Row::from_rows(next_lines),
+        );
         if let Some(width) = dropped_line_width {
             transferred_rows_count -=
                 calculate_row_display_height(width, max_viewport_width) as isize;
@@ -403,8 +402,12 @@ fn bounded_push(
     vec: &mut VecDeque<Row>,
     sixel_grid: &mut SixelGrid,
     kitty_grid: &mut KittyGrid,
-    value: Row,
+    mut value: Row,
 ) -> Option<usize> {
+    // Every path into scrollback releases spare viewport capacity, including manual scrolling.
+    if value.columns.len() < value.columns.capacity() / 2 {
+        value.columns.shrink_to_fit();
+    }
     let mut dropped_line_width = None;
     if vec.len() >= *SCROLL_BUFFER_SIZE.get().unwrap() {
         let line = vec.pop_front();
@@ -2671,9 +2674,7 @@ impl Grid {
                 return;
             }
             let scroll_bg = self.cursor.pending_styles.background;
-            let new_row = Row::with_capacity(self.width)
-                .canonical()
-                .with_bg_color(scroll_bg);
+            let new_row = Row::new().canonical().with_bg_color(scroll_bg);
             self.scroll_region_up_at_bottom(new_row, false);
             self.kitty_reanchor_all_from_pixels();
             return;

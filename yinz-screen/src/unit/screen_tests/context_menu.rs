@@ -1167,3 +1167,57 @@ fn a_watcher_menu_only_repaint_restores_the_cursor_after_the_menu() {
         assert_eq!(cursor, Some(expected), "{snapshot}");
     }
 }
+
+#[test]
+fn menu_selection_repaints_only_the_menu_for_a_healthy_watcher() {
+    let (mut screen, followed, _) = screen_with_open_menu((18, 5));
+    let watcher = ClientId::new(2);
+    screen
+        .get_active_tab_mut(followed)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"unchanged-pane-content".to_vec())
+        .unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, Size { cols: 80, rows: 20 });
+    screen.set_followed_client(followed).unwrap();
+    screen.render_to_clients().unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let fake_os = FakeInputOutput::default();
+    *fake_os.render_backlog.lock().unwrap() = vec![
+        (
+            followed,
+            RenderBacklog {
+                queued_renders: 1,
+                in_flight_for: None,
+            },
+        ),
+        (watcher, RenderBacklog::default()),
+    ];
+    screen.bus.os_input = Some(Box::new(fake_os));
+    assert!(
+        screen.deferred_tabs().is_empty(),
+        "the followed client's open menu can render for its healthy watcher"
+    );
+    assert!(screen.context_menu_handles_key(&Some(KeyWithModifier::new(BareKey::Down)), followed));
+    assert!(!screen.watcher_clients[&watcher].should_force_render());
+    assert!(
+        screen.deferred_tabs().is_empty(),
+        "selection changed without pane output"
+    );
+    screen.render_to_clients().unwrap();
+    let watcher_frame: String = receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::Render(Some(output)) => output.get(&watcher).cloned(),
+            _ => None,
+        })
+        .collect();
+    assert!(watcher_frame.contains("Copy"), "{watcher_frame:?}");
+    assert!(
+        !watcher_frame.contains("unchanged-pane-content"),
+        "menu selection must not repaint pane contents: {watcher_frame:?}"
+    );
+    assert!(screen.close_context_menu(followed));
+    screen.render_to_clients().unwrap();
+    assert!(screen.deferred_tabs().is_empty());
+}

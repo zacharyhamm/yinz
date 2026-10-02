@@ -220,13 +220,8 @@ fn serialize_chunks(
     // cells would land on a terminal that renders U+10EEEE as garbage, which is what a mosh
     // client sees. Blank them instead; the placeholder is width 1, so the row still lines up.
     let suppress_kitty_placeholders = kitty_input.is_none();
+    let link_handler = link_handler.map(|handler| handler.borrow());
     for character_chunk in character_chunks {
-        // A chunk's link anchors index the link table of the tab it was drawn in.
-        let link_handler = character_chunk
-            .link_handler
-            .as_ref()
-            .or(link_handler)
-            .map(|l_h| l_h.borrow());
         // Skip chunks that are completely outside the size bounds
         if let Some(size) = max_size {
             if character_chunk.y >= size.rows {
@@ -674,7 +669,7 @@ pub struct Output {
     client_rendered_kitty_panes: HashMap<ClientId, HashSet<PaneId>>,
     client_kitty_visible_panes: HashMap<ClientId, HashSet<PaneId>>,
     clients_with_cleared_host_display: HashSet<ClientId>,
-    link_handler: Option<Rc<RefCell<LinkHandler>>>,
+    client_link_handlers: HashMap<ClientId, Rc<RefCell<LinkHandler>>>,
     sixel_image_store: Rc<RefCell<SixelImageStore>>,
     kitty_image_store: Rc<RefCell<KittyImageStore>>,
     kitty_host_capabilities: Rc<RefCell<HashMap<ClientId, bool>>>,
@@ -685,6 +680,11 @@ pub struct Output {
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     pane_render_report: PaneRenderReport,
+    /// Record consumed output only for the client the watchers follow.
+    pub pane_change_client: Option<ClientId>,
+    pub rendered_pane_contents: HashSet<PaneId>,
+    pub rendered_pane_frames: HashSet<PaneId>,
+    pub rendered_pane_boundaries: bool,
     pub collect_ansi_pane_contents: bool,
     // per client: a smaller client (eg. a watcher) must be cropped against its own cursor, not
     // against whichever client happened to render last
@@ -745,9 +745,10 @@ impl Output {
         link_handler: Rc<RefCell<LinkHandler>>,
         floating_panes_stack: Option<FloatingPanesStack>,
     ) {
-        self.link_handler = Some(link_handler);
         self.floating_panes_stack = floating_panes_stack;
         for client_id in client_ids {
+            self.client_link_handlers
+                .insert(*client_id, link_handler.clone());
             self.client_character_chunks.insert(*client_id, vec![]);
         }
     }
@@ -860,25 +861,10 @@ impl Output {
             .is_some_and(|composition| composition.contains_layer(z_index.unwrap_or(0)))
     }
     /// Flush before screen menus and notifications contribute their opaque cells.
-    ///
-    /// Called within the tab that began the composition, so its link table is still current.
     pub fn finish_translucent_composition(&mut self) {
-        for (client, composition) in std::mem::take(&mut self.compositions) {
-            let mut composed = composition.finish();
-            self.pin_link_handler(&mut composed);
+        for (client, composition) in self.compositions.drain() {
             if let Some(chunks) = self.client_character_chunks.get_mut(&client) {
-                chunks.extend(composed);
-            }
-        }
-    }
-    /// `add_clients` replaces the handler for each tab, but the frame is serialized once,
-    /// after every tab: pin the current tab's handler to its chunks now.
-    fn pin_link_handler(&self, character_chunks: &mut [CharacterChunk]) {
-        if let Some(link_handler) = &self.link_handler {
-            for chunk in character_chunks {
-                if chunk.link_handler.is_none() {
-                    chunk.link_handler = Some(link_handler.clone());
-                }
+                chunks.extend(composition.finish());
             }
         }
     }
@@ -951,7 +937,6 @@ impl Output {
         mut character_chunks: Vec<CharacterChunk>,
         z_index: Option<usize>,
     ) -> Result<()> {
-        self.pin_link_handler(&mut character_chunks);
         if let Some(composition) = self.compositions.get_mut(&client_id) {
             composition.add(&character_chunks, z_index.unwrap_or(0));
             character_chunks =
@@ -1215,7 +1200,7 @@ impl Output {
                 &mut client_serialized_render_instructions,
                 client_character_chunks,
                 sixel_chunks_for_client,
-                self.link_handler.as_ref(),
+                self.client_link_handlers.get(&client_id),
                 Some(&mut self.sixel_image_store.borrow_mut()),
                 self.styled_underlines,
                 self.osc8_hyperlinks,
@@ -1294,7 +1279,7 @@ impl Output {
                 &mut client_serialized_render_instructions,
                 client_character_chunks,
                 sixel_chunks_for_client,
-                self.link_handler.as_ref(),
+                self.client_link_handlers.get(&client_id),
                 Some(&mut self.sixel_image_store.borrow_mut()),
                 self.styled_underlines,
                 self.osc8_hyperlinks,
@@ -1752,7 +1737,6 @@ impl FloatingPanesStack {
                 left_chunk.pane_default_fg = c_chunk.pane_default_fg;
                 left_chunk.pane_default_bg = c_chunk.pane_default_bg;
                 left_chunk.changed_colors = c_chunk.changed_colors;
-                left_chunk.link_handler = c_chunk.link_handler.clone();
                 if !c_chunk.selection_and_colors.is_empty() {
                     left_chunk.selection_and_colors = c_chunk.selection_and_colors.clone();
                 }
@@ -1961,9 +1945,6 @@ pub struct CharacterChunk {
     pub pane_default_fg: Option<AnsiCode>,
     pub pane_default_bg: Option<AnsiCode>,
     selection_and_colors: Vec<HighlightSelection>,
-    /// The link table this chunk's link anchors index. Set by
-    /// `Output::add_character_chunks_to_client`.
-    link_handler: Option<Rc<RefCell<LinkHandler>>>,
 }
 
 pub use crate::panes::kitty_graphics::grid_state::KittyImageChunk;

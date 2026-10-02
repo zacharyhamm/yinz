@@ -127,6 +127,15 @@ pub trait Pane {
     fn content_header_rows(&self) -> usize {
         self.subtitle_rows()
     }
+    /// Forget state only when a client leaves the session, not when it changes tabs.
+    fn remove_client(&mut self, _client_id: ClientId) {}
+    /// Replay consumed content for a watcher without invalidating frame caches.
+    fn prepare_content_replay(&mut self, _client_id: ClientId) {
+        self.set_should_render(true);
+        self.render_full_viewport();
+    }
+    /// Replay a frame without dirtying the pane's contents.
+    fn invalidate_frame(&mut self, _client_id: ClientId) {}
     fn reset_size_and_position_override(&mut self);
     fn set_geom(&mut self, position_and_size: PaneGeom);
     fn set_geom_override(&mut self, pane_geom: PaneGeom);

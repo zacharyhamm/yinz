@@ -23,7 +23,7 @@ pub fn feed_bytes(
             InterceptorResult::Forward(forwarded) => {
                 vte_parser.advance(grid, forwarded.as_slice());
             },
-            InterceptorResult::Swallow => {},
+            InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
             InterceptorResult::Captured(command) => {
                 grid.handle_kitty_apc(&command);
             },

@@ -7,12 +7,13 @@
 //! out. Keeping the sequences and the code that writes them together means
 //! the setup and teardown halves cannot drift apart.
 
-use crate::os_input_output::{StdioAccess, TtyControl};
+use crate::os_input_output::{StdioAccess, TtyControl, DISABLE_MOUSE_SUPPORT};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 use yinz_ipc::nested_session;
-use yinz_runtime::errors::FatalError;
+use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::SessionName;
 
 pub const ENTER_ALTERNATE_SCREEN: &str = "\u{1b}[?1049h";
@@ -61,6 +62,10 @@ pub const DISABLE_HOST_THEME_NOTIFY: &str = "\u{1b}[?2031l";
 /// stdin parser handles both uniformly.
 pub const QUERY_HOST_THEME: &str = "\u{1b}[?996n";
 pub const CLEAR_SCREEN: &str = "\u{1b}[2J";
+/// CSI reset is harmless on hosts without synchronized output.
+pub const END_SYNCHRONIZED_OUTPUT: &str = "\u{1b}[?2026l";
+// 0: closed, 1: CSI may be open, 2: DCS may be open. Stdout serializes writers.
+static OPEN_SYNC_OUTPUT: AtomicU8 = AtomicU8::new(0);
 
 /// Set by the first thread to tear the terminal down during startup, so a second one does not
 /// write a competing ribbon and message over it.
@@ -142,14 +147,69 @@ pub fn write_synchronised(
     sync: Option<SyncOutput>,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    if let Some(sync) = sync {
-        w.write_all(sync.start_seq())?;
+    write_synchronised_tracking(w, sync, bytes, &OPEN_SYNC_OUTPUT)
+}
+
+fn write_synchronised_tracking(
+    w: &mut dyn Write,
+    sync: Option<SyncOutput>,
+    bytes: &[u8],
+    open: &AtomicU8,
+) -> std::io::Result<()> {
+    let written = sync
+        .map_or(Ok(()), |sync| {
+            // Record the first accepted byte: even a partial introducer needs cleanup.
+            let mut start = sync.start_seq();
+            while !start.is_empty() {
+                match w.write(start) {
+                    Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                    Ok(n) => {
+                        open.store(
+                            match sync {
+                                SyncOutput::Csi => 1,
+                                SyncOutput::Dcs => 2,
+                            },
+                            Ordering::SeqCst,
+                        );
+                        start = &start[n..];
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        })
+        .and_then(|()| w.write_all(bytes));
+    let closed = sync
+        .filter(|_| open.load(Ordering::SeqCst) != 0)
+        .map_or(Ok(()), |sync| w.write_all(sync.end_seq()));
+    let flushed = w.flush();
+    if closed.is_ok() && flushed.is_ok() {
+        open.store(0, Ordering::SeqCst);
     }
-    w.write_all(bytes)?;
-    if let Some(sync) = sync {
-        w.write_all(sync.end_seq())?;
-    }
-    w.flush()
+    written.and(closed).and(flushed)
+}
+
+/// Set once the client starts quitting; from then on a stalled host terminal is given up on.
+static ABANDON_STALLED_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// How long a quitting client keeps waiting on a host terminal that has stopped taking output,
+/// for instance one paused with Ctrl-S. Long enough for a busy host to catch up.
+pub const STALLED_OUTPUT_LIMIT: Duration = Duration::from_secs(2);
+
+/// The longest pause between retries when the host keeps refusing output that readiness said
+/// it would take.
+const MAX_STALL_BACKOFF: Duration = Duration::from_millis(25);
+
+/// Stop waiting indefinitely on a stalled host terminal: every write that has made no
+/// progress for [`STALLED_OUTPUT_LIMIT`] now fails. Called when a quit signal arrives, so
+/// a paused terminal cannot keep the client from rendering its last frame and tearing down.
+pub fn abandon_stalled_output() {
+    ABANDON_STALLED_OUTPUT.store(true, Ordering::SeqCst);
+}
+
+fn stalled_output_abandoned() -> bool {
+    ABANDON_STALLED_OUTPUT.load(Ordering::SeqCst)
 }
 
 /// A writer to the host terminal that waits out a full terminal rather than failing.
@@ -157,42 +217,131 @@ pub fn write_synchronised(
 /// Stdout's file description is shared with whatever else runs on the host terminal,
 /// and any of them may have made it non-blocking; a large write then meets `EAGAIN`
 /// exactly when the host falls behind, and `write_all` would give up partway through
-/// an escape sequence. `wait` blocks until the host may take more.
+/// an escape sequence. `wait` pauses between attempts until the host may take more.
+///
+/// Temporary stalls have no deadline, just like writes to a blocking stdout, until
+/// [`abandon_stalled_output`] is called. Retries back off when the host keeps refusing
+/// output that `wait` said it would take, so a lying readiness check cannot spin.
 pub struct HostWriter<W> {
     inner: W,
-    wait: fn(&W),
+    wait: fn(&W) -> std::io::Result<()>,
+    abandoned: fn() -> bool,
+    stall_limit: Duration,
+    stall: Option<Stall>,
+}
+
+/// The current run of refused writes, cleared whenever the host takes output.
+struct Stall {
+    since: Instant,
+    retries: u32,
 }
 
 impl<W: Write> HostWriter<W> {
-    pub fn new(inner: W, wait: fn(&W)) -> Self {
-        HostWriter { inner, wait }
+    pub fn new(inner: W, wait: fn(&W) -> std::io::Result<()>) -> Self {
+        Self::with_stall_policy(inner, wait, stalled_output_abandoned, STALLED_OUTPUT_LIMIT)
+    }
+
+    /// `abandoned` says whether a stall longer than `stall_limit` should fail.
+    pub(crate) fn with_stall_policy(
+        inner: W,
+        wait: fn(&W) -> std::io::Result<()>,
+        abandoned: fn() -> bool,
+        stall_limit: Duration,
+    ) -> Self {
+        HostWriter {
+            inner,
+            wait,
+            abandoned,
+            stall_limit,
+            stall: None,
+        }
     }
 
     #[cfg(test)]
     pub fn get_ref(&self) -> &W {
         &self.inner
     }
-}
 
-impl<W: Write> Write for HostWriter<W> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+    fn retry<T>(&mut self, mut op: impl FnMut(&mut W) -> std::io::Result<T>) -> std::io::Result<T> {
         loop {
-            match self.inner.write(bytes) {
+            match op(&mut self.inner) {
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (self.wait)(&self.inner),
-                result => return result,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => self.wait_out_stall()?,
+                result => {
+                    self.stall = None;
+                    return result;
+                },
             }
         }
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        loop {
-            match self.inner.flush() {
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (self.wait)(&self.inner),
-                result => return result,
-            }
+    fn wait_out_stall(&mut self) -> std::io::Result<()> {
+        let now = Instant::now();
+        let stall = self.stall.get_or_insert(Stall {
+            since: now,
+            retries: 0,
+        });
+        if now.duration_since(stall.since) >= self.stall_limit && (self.abandoned)() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the host terminal stopped accepting output while the client was quitting",
+            ));
         }
+        if stall.retries > 0 {
+            // The last wait said the host was ready, yet it refused again.
+            let backoff = Duration::from_millis(1) * 2u32.saturating_pow(stall.retries - 1);
+            std::thread::sleep(backoff.min(MAX_STALL_BACKOFF));
+        }
+        stall.retries = stall.retries.saturating_add(1);
+        match (self.wait)(&self.inner) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+            result => result,
+        }
+    }
+}
+
+impl<W: Write> Write for HostWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.retry(|inner| inner.write(bytes))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.retry(|inner| inner.flush())
+    }
+}
+
+/// Writes host pixel-size queries from a thread of its own.
+///
+/// A resize is noticed on the signal thread, which must never block on the terminal: if it
+/// waited behind a paused host, it would never get to a quit signal. `request` only queues;
+/// one pending request covers any number of resizes, since the reply describes the host as
+/// it is when the query is read.
+pub(crate) struct PixelSizeQueries(std::sync::mpsc::SyncSender<()>);
+
+impl PixelSizeQueries {
+    pub fn spawn(stdout: impl Fn() -> Box<dyn Write> + Send + 'static) -> Result<Self> {
+        let (requests, pending) = std::sync::mpsc::sync_channel::<()>(1);
+        std::thread::Builder::new()
+            .name("pixel_size_queries".to_string())
+            .spawn(move || {
+                // Ends when the last sender is dropped.
+                for () in pending {
+                    let mut stdout = stdout();
+                    stdout
+                        .write_all(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes())
+                        .and_then(|()| stdout.flush())
+                        .context("failed to query the host terminal's pixel size")
+                        .non_fatal();
+                }
+            })
+            .context("failed to spawn the pixel-size query thread")?;
+        Ok(Self(requests))
+    }
+
+    /// Ask for a query without waiting for it to be written.
+    pub fn request(&self) {
+        // Full means a query is already waiting to be written, which answers this one too.
+        let _ = self.0.try_send(());
     }
 }
 
@@ -254,13 +403,20 @@ impl ClientTeardown {
     /// Safe to write even if the terminal was never fully claimed: popping an alternate screen
     /// that was never entered, and an empty kitty keyboard stack, are both no-ops.
     pub fn restore_sequences(&self) -> String {
+        self.restore_sequences_with_sync(OPEN_SYNC_OUTPUT.load(Ordering::SeqCst))
+    }
+
+    fn restore_sequences_with_sync(&self, open_sync: u8) -> String {
         let kitty_exit = if self.include_kitty_exit {
             EXIT_KITTY_KEYBOARD_MODE
         } else {
             ""
         };
         format!(
-            "{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}",
+            if open_sync == 2 { "\x1bP=2s\x1b\\" } else { "" },
+            END_SYNCHRONIZED_OUTPUT,
+            DISABLE_MOUSE_SUPPORT,
             kitty_exit,
             DISABLE_HOST_THEME_NOTIFY,
             DISABLE_FOCUS_REPORTING,
@@ -285,8 +441,8 @@ impl ClientTeardown {
     ///
     /// `teardown` is `None` when the terminal was never claimed (the detached
     /// server path), in which case there is nothing to restore and the
-    /// message goes to stderr. Writes straight to `io::stdout` rather than
-    /// through a `ClientOsApi`, since startup can fail before one exists.
+    /// message goes to stderr. Uses the shared stdout writer without a
+    /// `ClientOsApi`, since startup can fail before one exists.
     pub fn exit_after_startup_error(teardown: Option<Self>, message: String) -> ! {
         Self::exit_during_startup(teardown, message, 1)
     }
@@ -306,16 +462,9 @@ impl ClientTeardown {
             }
         }
         log::error!("{}", message);
-        // Raw mode is enabled before the server is spawned, so every failure from there on has to
-        // hand the terminal back or the shell inherits it. A no-op when raw mode was never
-        // enabled, which is the case on the paths that pass `None`.
-        let _ = crossterm::terminal::disable_raw_mode();
+        abandon_stalled_output();
         match teardown {
-            Some(teardown) => {
-                let mut stdout = std::io::stdout();
-                let _ = stdout.write_all(teardown.message(&message).as_bytes());
-                let _ = stdout.flush();
-            },
+            Some(teardown) => teardown.restore_startup(Some(&message)),
             None => eprintln!("{}", message),
         }
         std::process::exit(exit_status);
@@ -326,11 +475,54 @@ impl ClientTeardown {
     /// Used on the path that returns a `SessionConnection` to the caller, which
     /// needs the process to stay alive to reconnect.
     pub fn restore<O: TtyControl + StdioAccess + ?Sized>(&self, os_input: &O, message: &str) {
-        os_input.disable_mouse().non_fatal();
-        let _ = os_input.unset_raw_mode();
+        abandon_stalled_output();
         let mut stdout = os_input.get_stdout_writer();
-        let _ = stdout.write_all(self.message(message).as_bytes());
+        self.restore_with(
+            &mut *stdout,
+            || {
+                os_input
+                    .unset_raw_mode()
+                    .context("failed to restore terminal input mode")
+                    .non_fatal();
+            },
+            Some(message),
+        );
+    }
+
+    pub(crate) fn restore_startup(&self, message: Option<&str>) {
+        abandon_stalled_output();
+        let mut stdout = crate::os_input_output::stdout_writer();
+        self.restore_with(
+            &mut *stdout,
+            || {
+                let _ = crossterm::terminal::disable_raw_mode();
+            },
+            message,
+        );
+    }
+
+    pub(crate) fn restore_with(
+        &self,
+        stdout: &mut dyn Write,
+        restore_input: impl FnOnce(),
+        message: Option<&str>,
+    ) {
+        let _ = stdout.write_all(DISABLE_MOUSE_SUPPORT.as_bytes());
         let _ = stdout.flush();
+        // Always restore input, even after a permanent output failure.
+        restore_input();
+        let ribbon = message.map_or_else(|| self.restore_sequences(), |msg| self.message(msg));
+        let written = stdout.write_all(ribbon.as_bytes());
+        let flushed = stdout.flush();
+        if written.is_ok() && flushed.is_ok() {
+            OPEN_SYNC_OUTPUT.store(0, Ordering::SeqCst);
+        }
+        written
+            .context("failed to restore terminal output mode")
+            .non_fatal();
+        flushed
+            .context("failed to flush terminal restoration")
+            .non_fatal();
     }
 
     /// Restore the terminal, print `message`, and exit the process.
@@ -352,3 +544,7 @@ impl ClientTeardown {
         std::process::exit(exit_status);
     }
 }
+
+#[cfg(test)]
+#[path = "unit/frame_write_tests.rs"]
+mod frame_write_tests;
