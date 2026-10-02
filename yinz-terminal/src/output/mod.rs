@@ -699,6 +699,8 @@ pub struct Output {
     // session-wide like the toasts above, because a menu is drawn only for the client that opened
     // it - one client's menu must not blank another client's cursor
     context_menu_rects: HashMap<ClientId, Vec<CellRect>>,
+    // A native input overlay owns the cursor even outside its painted rectangle.
+    input_overlay_clients: HashSet<ClientId>,
 }
 
 impl Output {
@@ -836,12 +838,7 @@ impl Output {
         if overlays.is_empty() {
             return;
         }
-        let mut host_colors = [None; 256];
-        for (&index, value) in terminal_emulator_color_codes {
-            if let Some(color) = host_colors.get_mut(index) {
-                *color = crate::panes::alacritty_functions::xparse_color(value.as_bytes());
-            }
-        }
+        let host_colors = translucency::host_colors(terminal_emulator_color_codes);
         let composition =
             translucency::Composition::new(overlays, foreground, background, tint, host_colors);
         for client in clients {
@@ -860,6 +857,69 @@ impl Output {
                 chunks.extend(composition.finish());
             }
         }
+    }
+
+    /// Compose a screen overlay over this client's already-composed panes and notifications.
+    /// The caller repaints intersecting panes each frame so these chunks contain fresh backing cells.
+    pub fn add_translucent_overlay(
+        &mut self,
+        client_id: ClientId,
+        rect: CellRect,
+        opacity: u8,
+        overlay_chunks: Vec<CharacterChunk>,
+        palette: yinz_types::style::Palette,
+        tint: yinz_types::colors::PaletteColor,
+        terminal_emulator_color_codes: &HashMap<usize, String>,
+    ) -> Result<()> {
+        let Some(chunks) = self.client_character_chunks.get_mut(&client_id) else {
+            return Ok(());
+        };
+        let mut composition = translucency::Composition::new(
+            vec![(1, rect, opacity)],
+            palette.fg,
+            palette.bg,
+            tint,
+            translucency::host_colors(terminal_emulator_color_codes),
+        );
+        composition.add(chunks, 0);
+        composition.add(&overlay_chunks, 1);
+        let mut outside = vec![];
+        // Clip one at a time to preserve paint order where notifications overlap pane chunks.
+        for chunk in std::mem::take(chunks) {
+            outside.extend(
+                composition
+                    .outside_chunks(vec![chunk], 0)
+                    .context("failed to clip text under screen overlay")?,
+            );
+        }
+        outside.extend(composition.finish());
+        *chunks = outside;
+
+        let clip = FloatingPanesStack {
+            layers: vec![PaneGeom {
+                x: rect.x,
+                y: rect.y,
+                cols: yinz_types::pane_size::Dimension::fixed(rect.cols),
+                rows: yinz_types::pane_size::Dimension::fixed(rect.rows),
+                ..Default::default()
+            }],
+        };
+        if let Some(cell_size) = *self.character_cell_size.borrow() {
+            if let Some(chunks) = self.sixel_chunks.get_mut(&client_id) {
+                *chunks = clip.visible_sixel_image_chunks(std::mem::take(chunks), None, &cell_size);
+            }
+            if let Some(panes) = self.client_kitty_chunks.get_mut(&client_id) {
+                for chunks in panes.values_mut() {
+                    *chunks =
+                        clip.visible_kitty_image_chunks(std::mem::take(chunks), None, &cell_size);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_input_overlay_clients(&mut self, clients: impl Iterator<Item = ClientId>) {
+        self.input_overlay_clients = clients.collect();
     }
     pub fn add_character_chunks_to_client(
         &mut self,
@@ -1319,6 +1379,9 @@ impl Output {
         z_index: Option<usize>,
         client_id: ClientId,
     ) -> bool {
+        if self.input_overlay_clients.contains(&client_id) {
+            return false;
+        }
         if self
             .notification_rects
             .iter()

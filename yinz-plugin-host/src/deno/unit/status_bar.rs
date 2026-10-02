@@ -49,6 +49,39 @@ fn status_bar_wasm_deno_two_line_visual_parity() {
 }
 
 #[test]
+fn command_palette_hint_tracks_default_rebound_and_removed_bindings_in_both_bars() {
+    for (classic, rows) in [(false, 1), (true, 2)] {
+        let mut pair = Pair::new(classic);
+        let mut info = shipped(InputMode::Normal);
+        for expected in [Some("d"), Some("x"), None] {
+            if expected != Some("d") {
+                for (mode, binds) in &mut info.keybinds {
+                    if *mode == InputMode::Normal {
+                        binds.retain(|(_, actions)| !actions.contains(&Action::ToggleCommandPalette));
+                        if expected.is_some() {
+                            binds.push(("Ctrl x".parse().unwrap(), vec![Action::ToggleCommandPalette]));
+                        }
+                    }
+                }
+            }
+            pair.event(Event::ModeUpdate(info.clone()));
+            for cols in [80, 120] {
+                let text = pair.render(rows, cols);
+                assert!(!text.contains("QUIT"), "{text}");
+                if cols == 120 {
+                    assert!(text.contains("PANE") && text.contains("AGENT"), "{text}");
+                }
+                if let Some(key) = expected {
+                    assert!(text.contains(&format!("<{key}> Do")), "{text}");
+                } else {
+                    assert!(!text.contains("Do"), "{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn status_bar_wasm_deno_events_and_timing_parity() {
     let mut pair = Pair::new(false);
     pair.event(Event::InitialKeybinds(shipped(InputMode::Normal).keybinds));

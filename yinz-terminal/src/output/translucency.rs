@@ -17,6 +17,16 @@ struct Cell {
 // Rows stay ordered; columns use direct indexing instead of a tree lookup for every cell.
 type Cells = BTreeMap<usize, Vec<Option<Cell>>>;
 
+pub(super) fn host_colors(codes: &HashMap<usize, String>) -> [Option<AnsiCode>; 256] {
+    let mut colors = [None; 256];
+    for (&index, value) in codes {
+        if let Some(color) = colors.get_mut(index) {
+            *color = crate::panes::alacritty_functions::xparse_color(value.as_bytes());
+        }
+    }
+    colors
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Composition {
     overlays: Vec<(usize, CellRect, u8)>,

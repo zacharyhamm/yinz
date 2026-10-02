@@ -25,4 +25,4 @@ $                                                                               
                                                                                                       │
                                                                                                       │
                                                                                                       │
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT           Alt +  <n> New Pane  <←↓↑→> Change Focus  <+-> Resize  <f> Floating 
+ Ctrl + <g> LOCK  <d> Do  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS             Alt +  <n> New Pane  <←↓↑→> Change Focus  <+-> Resize  <f> Floating 

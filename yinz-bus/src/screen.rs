@@ -102,15 +102,16 @@ pub enum ScreenInstruction {
         tab_id: Option<TabId>,
         completion: Option<NotificationEnd>,
     },
-    /// A synchronous "does the open menu want this key" check, sent from `route.rs` before mode
-    /// keybindings are resolved - see the doc comment on `context_menu_handles_key` for why this
-    /// has to happen there rather than after `WriteCharacter` is dispatched. `completion`'s
+    /// Give an open palette or context menu first refusal before a resolved keybinding runs.
+    /// Ordinary writes are intercepted on the screen thread instead. `completion`'s
     /// `stdout_message` carries the answer back as `"true"`/`"false"`.
     ContextMenuHandleKeyIfOpen {
         key: Option<KeyWithModifier>,
+        toggle_command_palette: bool,
         client_id: ClientId,
         completion: Option<NotificationEnd>,
     },
+    PasteFromClient(String, ClientId, Option<NotificationEnd>),
     WriteCharacter(
         Option<KeyWithModifier>,
         Vec<u8>,
@@ -200,6 +201,7 @@ pub enum ScreenInstruction {
     ToggleActiveTerminalFullscreen(ClientId, Option<NotificationEnd>),
     ToggleActiveTerminalNoUiFullscreen(ClientId, Option<NotificationEnd>),
     TogglePaneFrames(Option<NotificationEnd>),
+    ToggleCommandPalette(ClientId, Option<NotificationEnd>),
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),
     ShowPluginCursor(PluginId, ClientId, Option<(usize, usize)>),

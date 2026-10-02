@@ -187,13 +187,8 @@ impl InputHandler {
                             );
                         },
                         InputEvent::Paste(pasted_text) => {
-                            self.dispatch_action(
-                                Action::Paste {
-                                    chars: pasted_text,
-                                    pane_id: None,
-                                },
-                                None,
-                            );
+                            self.os_input
+                                .send_to_server(ClientToServerMsg::Paste(pasted_text));
                         },
                         _ => {},
                     }

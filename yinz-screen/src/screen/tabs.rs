@@ -587,6 +587,7 @@ impl Screen {
             Some(old_active_index) => {
                 self.active_tab_ids.insert(client_id, new_tab_index);
                 if old_active_index != new_tab_index {
+                    self.close_command_palette(client_id);
                     self.repaint_after_leaving_tab(old_active_index, new_tab_index);
                 }
                 let client_tab_history = self.tab_history.entry(client_id).or_default();

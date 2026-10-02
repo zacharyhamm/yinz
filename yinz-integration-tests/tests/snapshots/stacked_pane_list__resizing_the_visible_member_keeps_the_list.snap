@@ -10,4 +10,4 @@ $
                                                      │ [1] Pane #2 │
                                                    > │ [2] Pane #3 │
 $ █
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
+ Ctrl + <g> LOCK  <d> Do  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS 

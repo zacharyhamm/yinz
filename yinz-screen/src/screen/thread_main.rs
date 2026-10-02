@@ -218,8 +218,7 @@ pub(super) fn replay_pending_pane_event(
 /// `REPORT_ALTERNATE_KEYS` can still leave one unresolved, and that must not be typed either.
 ///
 /// The bracketed-paste markers this used to name explicitly are covered by the same check: both
-/// begin with ESC. Real pastes never reach this path - they arrive as `TabNameInput`,
-/// `PaneNameInput` or `SearchInput` with the pasted text alone.
+/// begin with ESC. Real pastes use `PasteFromClient` and update names/search directly.
 pub(super) fn is_typable_text(raw_bytes: &[u8]) -> bool {
     !raw_bytes.starts_with(&[0x1b])
 }
@@ -650,19 +649,32 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::ContextMenuHandleKeyIfOpen {
                     key,
+                    toggle_command_palette,
                     client_id,
                     completion,
                 } => {
-                    let handled = screen.context_menu_handles_key(&key, client_id);
+                    let handled = screen.command_palette_handles_input(
+                        &key,
+                        &[],
+                        toggle_command_palette,
+                        client_id,
+                    ) || screen.context_menu_handles_key(&key, client_id);
                     if let Some(mut completion) = completion {
                         completion.set_stdout_message(handled.to_string());
                     }
+                },
+                ScreenInstruction::ToggleCommandPalette(client_id, _completion) => {
+                    screen.toggle_command_palette(client_id);
+                    screen.render()?;
                 },
                 ScreenInstruction::ResetAgentEscape(client_id) => {
                     for tab in screen.tabs.values_mut() {
                         tab.pending_agent_escapes
                             .retain(|(client, _), _| *client != client_id);
                     }
+                },
+                ScreenInstruction::PasteFromClient(text, client_id, completion) => {
+                    screen.paste_from_client(text, client_id, &keybind_intercepts, completion)?;
                 },
                 ScreenInstruction::WriteCharacter(
                     key_with_modifier,
@@ -1381,6 +1393,9 @@ pub fn screen_thread_main(
                     screen.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
                     screen.render()?;
                 },
+                // Writes captured by the palette must not scroll the underlying pane either.
+                ScreenInstruction::ClearScroll(client_id)
+                    if screen.command_palettes.contains_key(&client_id) => {},
                 ScreenInstruction::ClearScroll(client_id) => {
                     let was_scrolled = screen.active_pane_is_scrolled(client_id);
                     let mut scroll_was_cleared = was_scrolled;
@@ -3162,6 +3177,8 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::Paste(bytes, pane_id, client_id, _completion) => {
                     match pane_id {
+                        None if screen
+                            .command_palette_handles_input(&None, &bytes, false, client_id) => {},
                         Some(pane_id) => {
                             screen
                                 .paste_to_pane_id(bytes, pane_id, Some(client_id), _completion)

@@ -123,6 +123,7 @@ mod agent_placement;
 mod arrange_projects;
 mod break_panes;
 mod capabilities;
+mod command_palette;
 mod context_menu;
 mod host_query;
 mod input_modes;
@@ -668,6 +669,8 @@ pub(crate) struct Screen {
     /// `render_to_clients`, where tab-owned state would be invisible, and it has to be torn down
     /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
     context_menus: HashMap<ClientId, ContextMenuState>,
+    command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
+    command_palette_mouse_captures: HashSet<ClientId>,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
     next_context_menu_request_id: ContextMenuRequestId,
     /// The items a right-click menu offers before its hook plugin has had its say.
@@ -1317,6 +1320,8 @@ impl Screen {
             notifications: vec![],
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
+            command_palettes: HashMap::new(),
+            command_palette_mouse_captures: HashSet::new(),
             next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
@@ -2178,6 +2183,8 @@ impl Screen {
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);
+        self.command_palettes.remove(&client_id);
+        self.command_palette_mouse_captures.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices

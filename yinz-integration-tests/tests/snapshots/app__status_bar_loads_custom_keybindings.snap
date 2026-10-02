@@ -4,4 +4,4 @@ expression: normalized(&grid_snapshot)
 ---
  Yinz (test)  [0] Tab #1  + 
 $ █
- F1  LOCK  F2  PANE  F3  TAB  F4  SIZE  F5  MOVE  F6  SEARCH  Alt F7  SESS  Ctrl F8  QUIT 
+ F1  LOCK  F2  PANE  F3  TAB  F4  SIZE  F5  MOVE  F6  SEARCH  Alt F7  SESS 

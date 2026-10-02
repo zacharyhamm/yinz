@@ -17,13 +17,13 @@ pub struct KeyShortcut {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum KeyAction {
+    Do,
     Unlock,
     Lock,
     Pane,
     Tab,
     Resize,
     Search,
-    Quit,
     Session,
     Move,
     Tmux,
@@ -46,13 +46,13 @@ impl KeyShortcut {
 
     pub fn full_text(&self) -> String {
         match self.action {
+            KeyAction::Do => String::from("Do"),
             KeyAction::Lock => String::from("LOCK"),
             KeyAction::Unlock => String::from("UNLOCK"),
             KeyAction::Pane => String::from("PANE"),
             KeyAction::Tab => String::from("TAB"),
             KeyAction::Resize => String::from("SIZE"),
             KeyAction::Search => String::from("SEARCH"),
-            KeyAction::Quit => String::from("QUIT"),
             // "SESS" rather than "SESSION", and "SIZE" above rather than "RESIZE": the AGENT tile
             // pushes the full-label ribbon over budget at 120 columns, and the renderer's answer to
             // that is to drop every label and show bare key letters. These two abbreviations buy
@@ -107,13 +107,13 @@ impl KeyShortcut {
     }
     pub fn short_text(&self) -> String {
         match self.action {
+            KeyAction::Do => String::from("Do"),
             KeyAction::Lock => String::from("Lo"),
             KeyAction::Unlock => String::from("Un"),
             KeyAction::Pane => String::from("Pa"),
             KeyAction::Tab => String::from("Ta"),
             KeyAction::Resize => String::from("Re"),
             KeyAction::Search => String::from("Se"),
-            KeyAction::Quit => String::from("Qu"),
             KeyAction::Session => String::from("Se"),
             KeyAction::Move => String::from("Mo"),
             KeyAction::Tmux => String::from("Tm"),
@@ -271,6 +271,9 @@ fn short_mode_shortcut(
     common_modifiers: &[KeyModifier],
     first_tile: bool,
 ) -> LinePart {
+    if key.action == KeyAction::Do {
+        return long_mode_shortcut(key, palette, separator, common_modifiers, first_tile);
+    }
     let has_common_modifiers = !common_modifiers.is_empty();
     let key_binding = match (&key.mode, &key.key) {
         (KeyMode::Disabled, None) => "".to_string(),
@@ -449,10 +452,9 @@ fn swap_layout_status(
     }
 }
 
-/// Get the keybindings for switching `InputMode`s and `Quit` visible in status bar.
+/// Get the keybindings for mode switches and the command palette visible in the status bar.
 ///
-/// Return a Vector of `Key`s where each `Key` is a shortcut to switch to some `InputMode` or Quit
-/// yinz. Given the vast amount of things a user can configure in their yinz config, this
+/// Return the keys for the displayed shortcuts. Given the vast amount of things a user can configure in their yinz config, this
 /// function has some limitations to keep in mind:
 ///
 /// - The vector is not deduplicated: If switching to a certain `InputMode` is bound to multiple
@@ -507,10 +509,10 @@ pub fn mode_switch_keys(mode_info: &ModeInfo) -> Vec<KeyWithModifier> {
                         _ => None,
                     };
                 }
-                if let actions::Action::Quit = vac {
+                if matches!(vac, actions::Action::ToggleCommandPalette) {
                     return Some(key.clone());
                 }
-                // Not a `SwitchToMode` or `Quit` action, ignore
+                // Not a displayed shortcut.
                 None
             },
         })
@@ -694,12 +696,14 @@ pub fn first_line(
                 }],
             )),
         ),
-        KeyShortcut::new(
-            KeyMode::Unselected,
-            KeyAction::Quit,
-            to_char(action_key(binds, &[Action::Quit])),
-        ),
     ];
+
+    if let Some(key) = to_char(action_key(binds, &[Action::ToggleCommandPalette])) {
+        default_keys.insert(
+            1,
+            KeyShortcut::new(KeyMode::Unselected, KeyAction::Do, Some(key)),
+        );
+    }
 
     if let Some(key_shortcut) = get_key_shortcut_for_mode(&mut default_keys, &help.mode) {
         key_shortcut.mode = KeyMode::Selected;

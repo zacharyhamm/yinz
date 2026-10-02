@@ -15,6 +15,67 @@ use {
 };
 
 impl Screen {
+    pub(super) fn paste_from_client(
+        &mut self,
+        text: String,
+        client_id: ClientId,
+        keybind_intercepts: &HashMap<ClientId, PluginId>,
+        completion: Option<NotificationEnd>,
+    ) -> Result<()> {
+        let bytes = text.into_bytes();
+        if self.command_palette_handles_input(&None, &bytes, false, client_id) {
+            return Ok(());
+        }
+        match self.get_client_input_mode(client_id) {
+            Some(InputMode::Normal | InputMode::Locked) => {
+                let was_scrolled = self.active_pane_is_scrolled(client_id);
+                active_tab_and_connected_client_id!(
+                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
+                        tab.clear_active_terminal_scroll(client_id)
+                    }, ?
+                );
+                self.sync_scroll_mode_if_scroll_changed(client_id, was_scrolled)?;
+                self.write_character(
+                    None,
+                    b"\x1b[200~".to_vec(),
+                    false,
+                    client_id,
+                    keybind_intercepts,
+                    None,
+                )?;
+                self.write_character(None, bytes, false, client_id, keybind_intercepts, None)?;
+                self.write_character(
+                    None,
+                    b"\x1b[201~".to_vec(),
+                    false,
+                    client_id,
+                    keybind_intercepts,
+                    completion,
+                )?;
+            },
+            Some(InputMode::RenameTab) => self.update_active_tab_name(bytes, client_id)?,
+            Some(InputMode::RenamePane) => {
+                active_tab_and_connected_client_id!(
+                    self, client_id, |tab: &mut Tab, client_id: ClientId| {
+                        tab.update_active_pane_name(bytes, client_id)
+                    }, ?
+                );
+                self.log_and_report_session_state()?;
+            },
+            Some(InputMode::EnterSearch) => {
+                active_tab_and_connected_client_id!(
+                    self,
+                    client_id,
+                    |tab: &mut Tab, client_id: ClientId| {
+                        tab.update_search_term(bytes, client_id)
+                    }
+                );
+            },
+            _ => return Ok(()),
+        }
+        self.render()
+    }
+
     /// A key or text from a client: hands it to the plugin intercepting that client's keys, to an
     /// open context menu, to the tab or pane being renamed, to the search term, or to the active
     /// terminal(s), in that order of precedence.
@@ -30,6 +91,9 @@ impl Screen {
         keybind_intercepts: &HashMap<ClientId, PluginId>,
         completion: Option<NotificationEnd>,
     ) -> Result<bool> {
+        if self.command_palette_handles_input(&key_with_modifier, &raw_bytes, false, client_id) {
+            return Ok(false);
+        }
         if let Some(plugin_id) = keybind_intercepts.get(&client_id) {
             if let Some(key_with_modifier) = key_with_modifier {
                 let _ = self

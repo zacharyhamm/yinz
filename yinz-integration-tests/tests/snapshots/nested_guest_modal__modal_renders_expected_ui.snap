@@ -13,4 +13,4 @@ expression: normalized(&steady_modal)
                                     to this session. Ascend to the current session with
                                     <Ctrl u>
                                <↓↑> select  <Enter> confirm  <1-2> direct  <Esc> dismiss
- Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
+ Ctrl + <g> LOCK  <d> Do  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS 
