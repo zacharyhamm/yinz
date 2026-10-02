@@ -364,6 +364,10 @@ impl<'a> PaneContentsAndUi<'a> {
             label: self.pane.stack_list_entry_label(),
             is_selected: self.stack_list_entry_is_selected,
             stack_is_focused: self.stack_list_entry_stack_is_focused,
+            border_color: self
+                .pane
+                .waiting_pulse()
+                .and_then(|_| frame_color.map(|(color, _)| color)),
             is_emphasized: pane_is_in_group
                 || (self
                     .mouse_is_hovering_over_pane_for_clients
@@ -505,6 +509,7 @@ impl<'a> PaneContentsAndUi<'a> {
                     .pane
                     .frame_color_override(client_id)
                     .map(|color| (color, self.pane.frame_color_override_strength(client_id))),
+                waiting_pulse: self.pane.waiting_pulse(),
                 pane_is_focused: self.focused_clients.contains(&client_id),
                 pane_is_in_group: self
                     .current_pane_group
@@ -532,6 +537,8 @@ pub struct FrameColorState {
     /// place that knows what that colour is, and it differs per client with focus, group
     /// membership and hover.
     pub frame_color_override: Option<(PaletteColor, f32)>,
+    /// The sampled blend toward white and the host foreground for an inherited border color.
+    pub waiting_pulse: Option<(f32, PaletteColor)>,
     pub pane_is_focused: bool,
     pub pane_is_in_group: bool,
     /// This pane is kin of the focused one - see `Pane::has_related_highlight`. The gentlest
@@ -552,7 +559,7 @@ pub struct FrameColorState {
 ///
 /// Note which two colours are blended, and which one is not: `frame_unselected` is `None` in
 /// the default theme, and a frame with no colour is drawn in the *terminal's* own foreground -
-/// a colour this process does not know. Easing away from a stand-in for it would make a
+/// a colour independent of the theme. Easing away from a stand-in for it would make a
 /// related pane darker than an unrelated one on some terminals, turning the hint into a
 /// de-emphasis. Both ends here are defined in every theme.
 const RELATED_FADE: f32 = 0.55;
@@ -563,8 +570,10 @@ const RELATED_FADE: f32 = 0.55;
 /// A free function so a caller outside `PaneContentsAndUi` can arrive at the same answer for a
 /// pane it is drawing a boundary for.
 ///
-/// The precedences run `0` (nothing in particular) → `1` related → `2` hovered → `3` grouped →
-/// `4` focused → `5` overridden. Only their order matters, never the values: `combine_symbols`
+/// The base precedences run `0` (nothing in particular) → `2` related → `4` hovered → `6` grouped →
+/// `8` focused → `10` overridden. A positive waiting pulse adds `1`, beating an unpulsed neighbour
+/// of the same base state but losing to every higher base state. Overrides suppress the pulse.
+/// Only their order matters, never the values: `combine_symbols`
 /// settles a shared cell with `>=`, so the pane whose `add_rect` ran first wins a tie - which is
 /// stable but keyed on pane id, and so means nothing to whoever is looking at it. Two states that
 /// can apply to two neighbouring panes at once must therefore not share a number.
@@ -577,6 +586,7 @@ pub fn frame_color(
 ) -> Option<(PaletteColor, usize)> {
     let FrameColorState {
         frame_color_override,
+        waiting_pulse,
         pane_is_focused,
         pane_is_in_group,
         pane_is_related,
@@ -590,6 +600,7 @@ pub fn frame_color(
             style,
             FrameColorState {
                 frame_color_override: None,
+                waiting_pulse: None,
                 pane_is_focused,
                 pane_is_in_group,
                 pane_is_related,
@@ -604,26 +615,27 @@ pub fn frame_color(
             .map(|(color, _)| color)
             .or_else(|| style.colors.frame_unselected.map(|frame| frame.base))
             .unwrap_or(style.colors.frame_selected.base);
-        Some((blend(base, override_color, strength), 5))
-    } else if pane_is_in_group && !pane_is_focused {
-        Some((style.colors.frame_highlight.emphasis_0, 3))
+        return Some((blend(base, override_color, strength), 10));
+    }
+    let base = if pane_is_in_group && !pane_is_focused {
+        Some((style.colors.frame_highlight.emphasis_0, 6))
     } else if pane_is_in_group && pane_is_focused {
-        Some((style.colors.frame_highlight.emphasis_1, 4))
+        Some((style.colors.frame_highlight.emphasis_1, 8))
     } else if pane_is_focused {
         match mode {
             InputMode::Normal | InputMode::Locked => {
                 if session_is_mirrored || !multiple_users_exist_in_session {
-                    Some((style.colors.frame_selected.base, 4))
+                    Some((style.colors.frame_selected.base, 8))
                 } else {
                     let colors =
                         client_id_to_colors(client_id, style.colors.multiplayer_user_colors);
-                    colors.map(|colors| (colors.0, 4))
+                    colors.map(|colors| (colors.0, 8))
                 }
             },
-            _ => Some((style.colors.frame_highlight.base, 4)),
+            _ => Some((style.colors.frame_highlight.base, 8)),
         }
     } else if mouse_is_hovering_over_pane {
-        Some((style.colors.frame_highlight.base, 2))
+        Some((style.colors.frame_highlight.base, 4))
     } else if pane_is_related {
         // Kin of the focused pane, and drawn as such: the focused frame's own colour, faded
         // most of the way back to the background, so it reads as "these belong with that one"
@@ -634,10 +646,19 @@ pub fn frame_color(
                 style.colors.text_unselected.background,
                 RELATED_FADE,
             ),
-            1,
+            2,
         ))
     } else {
         style.colors.frame_unselected.map(|frame| (frame.base, 0))
+    };
+    if let Some((strength, foreground)) = waiting_pulse.filter(|(strength, _)| *strength > 0.0) {
+        let (color, precedence) = base.unwrap_or((foreground, 0));
+        Some((
+            blend(color, PaletteColor::Rgb((255, 255, 255)), strength),
+            precedence + 1,
+        ))
+    } else {
+        base
     }
 }
 
