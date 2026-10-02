@@ -149,11 +149,6 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
-                    KeyAction::Do,
-                    to_char(action_key(normal_binds, &[Action::ToggleCommandPalette])),
-                ),
-                KeyShortcut::new(
-                    KeyMode::UnselectedAlternate,
                     KeyAction::Agent,
                     to_char(action_key(
                         normal_binds,
@@ -221,6 +216,11 @@ fn base_mode_locked_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                             input_mode: InputMode::Session,
                         }],
                     )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Unselected,
+                    KeyAction::Quit,
+                    to_char(action_key(normal_binds, &[Action::Quit])),
                 ),
             ],
         ),
@@ -493,11 +493,6 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                 ),
                 KeyShortcut::new(
                     KeyMode::UnselectedAlternate,
-                    KeyAction::Do,
-                    to_char(action_key(normal_binds, &[Action::ToggleCommandPalette])),
-                ),
-                KeyShortcut::new(
-                    KeyMode::UnselectedAlternate,
                     KeyAction::Agent,
                     to_char(action_key(
                         normal_binds,
@@ -565,6 +560,11 @@ fn base_mode_normal_mode_indicators(help: &ModeInfo) -> HashMap<InputMode, Vec<K
                             input_mode: InputMode::Session,
                         }],
                     )),
+                ),
+                KeyShortcut::new(
+                    KeyMode::Unselected,
+                    KeyAction::Quit,
+                    to_char(action_key(normal_binds, &[Action::Quit])),
                 ),
             ],
         ),
@@ -805,15 +805,6 @@ fn shortened_inline_keys_modes_shortcut_list(
     let mut shortened_shortcut_list = LinePart::default();
     for key in keys_without_common_modifiers {
         let is_selected = key.is_selected();
-        if key.action == KeyAction::Do {
-            shortened_shortcut_list.append(&add_shortcut_with_inline_key(
-                help,
-                &key.full_text(),
-                key.key.iter().cloned().collect(),
-                is_selected,
-            ));
-            continue;
-        }
         let shortcut = add_shortcut_with_key_only(
             help,
             key.key
@@ -1937,10 +1928,7 @@ mod tests {
                 .iter()
                 .map(|shortcut| shortcut.action)
                 .collect();
-            assert_eq!(
-                actions[..4],
-                [lock, KeyAction::Do, KeyAction::Agent, KeyAction::Pane]
-            );
+            assert_eq!(actions[..3], [lock, KeyAction::Agent, KeyAction::Pane]);
         }
     }
 

@@ -49,32 +49,36 @@ fn status_bar_wasm_deno_two_line_visual_parity() {
 }
 
 #[test]
-fn command_palette_hint_tracks_default_rebound_and_removed_bindings_in_both_bars() {
-    for (classic, rows) in [(false, 1), (true, 2)] {
+fn quit_hint_tracks_configured_bindings_without_a_command_palette_hint_in_both_bars() {
+    for (classic, rows) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
         let mut pair = Pair::new(classic);
         let mut info = shipped(InputMode::Normal);
-        for expected in [Some("d"), Some("x"), None] {
-            if expected != Some("d") {
+        for expected in [Some("q"), Some("x"), None] {
+            if expected != Some("q") {
                 for (mode, binds) in &mut info.keybinds {
                     if *mode == InputMode::Normal {
-                        binds.retain(|(_, actions)| !actions.contains(&Action::ToggleCommandPalette));
+                        binds.retain(|(_, actions)| !actions.contains(&Action::Quit));
                         if expected.is_some() {
-                            binds.push(("Ctrl x".parse().unwrap(), vec![Action::ToggleCommandPalette]));
+                            binds.push(("Ctrl x".parse().unwrap(), vec![Action::Quit]));
                         }
                     }
                 }
             }
             pair.event(Event::ModeUpdate(info.clone()));
-            for cols in [80, 120] {
+            for cols in [40, 80, 120, 200] {
                 let text = pair.render(rows, cols);
-                assert!(!text.contains("QUIT"), "{text}");
-                if cols == 120 {
+                assert!(!text.contains("Do"), "{text}");
+                if cols >= 120 {
                     assert!(text.contains("PANE") && text.contains("AGENT"), "{text}");
-                }
-                if let Some(key) = expected {
-                    assert!(text.contains(&format!("<{key}> Do")), "{text}");
-                } else {
-                    assert!(!text.contains("Do"), "{text}");
+                    if let Some(key) = expected {
+                        assert!(text.contains(&format!("<{key}> QUIT")), "{text}");
+                        assert!(
+                            text.find("SESS").unwrap() < text.find("QUIT").unwrap(),
+                            "{text}"
+                        );
+                    } else {
+                        assert!(!text.contains("QUIT"), "{text}");
+                    }
                 }
             }
         }

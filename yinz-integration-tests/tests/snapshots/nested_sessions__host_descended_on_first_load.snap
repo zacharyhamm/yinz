@@ -6,5 +6,5 @@ expression: normalized(&host_descended_on_load)
  Yinz (test)  [0] Yinz:test-1  + 
  Yinz (test)  [0] Tab #1  + 
 █
- Ctrl + <g> LOCK  <d> Do  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS 
+ Ctrl + <g> LOCK  <e> AGENT  <p> PANE  <t> TAB  <n> SIZE  <h> MOVE  <s> SEARCH  <o> SESS  <q> QUIT 
  Ascend: Ctrl + <o> + <]>

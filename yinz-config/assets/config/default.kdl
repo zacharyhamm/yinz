@@ -1,7 +1,6 @@
 // If you'd like to override the default keybindings completely, be sure to change "keybinds" to "keybinds clear-defaults=true"
 keybinds {
     normal {
-        bind "Ctrl d" { ToggleCommandPalette; }
         // uncomment this and adjust key if using copy_on_select=false
         // bind "Alt c" { Copy; }
     }
@@ -300,6 +299,9 @@ keybinds {
         bind "d" { Detach; }
         bind "Space" { NextSwapLayout; }
         bind "x" { CloseFocus; SwitchToMode "Normal"; }
+    }
+    shared {
+        bind "Ctrl Alt p" { ToggleCommandPalette; }
     }
     shared_except "locked" "select" {
         bind "Ctrl g" { SwitchToMode "Locked"; }
