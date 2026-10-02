@@ -10,8 +10,9 @@ use yinz_types::agent::control::{
 };
 use yinz_types::agent::AgentSpawnSpec;
 
-pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
+pub(crate) fn run(mut command: Agent, opts: &CliArgs) -> Result<i32> {
     let json = command.json();
+    let submission_id = submission_id(&mut command);
     match run_inner(command, opts) {
         Ok(code) => Ok(code),
         Err(error) if json => {
@@ -20,14 +21,35 @@ pub(crate) fn run(command: Agent, opts: &CliArgs) -> Result<i32> {
                 Err(error) => (AgentOutcome::Rejected, error),
             };
             let mut response = AgentResponse::new(outcome);
+            if outcome == AgentOutcome::Failed {
+                response.submission_id = submission_id;
+            }
             response.message = Some(format!("{error:#}"));
             print_response(&response, true, &mut std::io::stdout().lock())?;
             Ok(1)
         },
         Err(error) => Err(match error.downcast::<RequestFailed>() {
-            Ok(RequestFailed(error)) => error,
+            Ok(RequestFailed(error)) => match submission_id {
+                Some(id) => error.context(format!(
+                    "submission {id}; outcome may be unknown, inspect the pane and retrieve this submission before retrying"
+                )),
+                None => error,
+            },
             Err(error) => error,
         }),
+    }
+}
+
+/// Establish an identity before any IPC so a lost response does not lose the submission.
+fn submission_id(command: &mut Agent) -> Option<String> {
+    match command {
+        Agent::Prompt { submission, .. } => Some(
+            submission
+                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone(),
+        ),
+        Agent::Wait { submission, .. } => submission.clone(),
+        _ => None,
     }
 }
 
@@ -66,7 +88,7 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     yinz_session::sessions::validate_session_name(&session).map_err(|error| anyhow!(error))?;
     let action = match &command {
         Agent::Archive(archive) => Some(archive.action().map_err(anyhow::Error::msg)?),
-        Agent::Register { pane_id, kind } => Some(yinz_cli::notes_todos::pipe_action(
+        Agent::Register { pane_id, kind, .. } => Some(yinz_cli::notes_todos::pipe_action(
             "agent_action",
             serde_json::json!({"op":"agent_register","args":{"pane_id":pane_id,"kind":kind},"structured_reply":true}),
         )),
@@ -96,7 +118,8 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     )
 }
 
-fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool, Duration)> {
+fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool, Duration)> {
+    submission_id(&mut command);
     let mut timeout = Duration::from_secs(30);
     let (request, json) = match command {
         Agent::List { project, json } => (AgentRequest::List { project }, json),
@@ -217,12 +240,17 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
             text,
             file,
             conversation,
+            submission,
             wait,
             timeout: requested,
             json,
         } => {
             timeout = requested.unwrap_or(Duration::from_secs(if wait { 600 } else { 30 }));
             let prompt = read_prompt(text, file.as_deref(), stdin)?;
+            if let Some(id) = &submission {
+                yinz_types::agent::control::validate_submission_id(id)
+                    .map_err(anyhow::Error::msg)?;
+            }
             (
                 AgentRequest::Prompt {
                     pane_id: target,
@@ -230,6 +258,7 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
                     wait,
                     timeout_ms: timeout_millis(timeout)?,
                     expected_session_id: conversation,
+                    submission_id: submission,
                 },
                 json,
             )
@@ -237,20 +266,31 @@ fn request(command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, bool,
         Agent::Wait {
             target,
             conversation,
+            submission,
             until,
             timeout: requested,
             json,
         } => {
             timeout = requested;
-            (
+            let timeout_ms = timeout_millis(timeout)?;
+            let request = if let Some(submission_id) = submission {
+                yinz_types::agent::control::validate_submission_id(&submission_id)
+                    .map_err(anyhow::Error::msg)?;
+                AgentRequest::WaitTurn {
+                    pane_id: target,
+                    expected_session_id: conversation,
+                    submission_id,
+                    timeout_ms,
+                }
+            } else {
                 AgentRequest::Wait {
                     pane_id: target,
                     until,
-                    timeout_ms: timeout_millis(timeout)?,
+                    timeout_ms,
                     expected_session_id: conversation,
-                },
-                json,
-            )
+                }
+            };
+            (request, json)
         },
         Agent::Read {
             target,
@@ -353,8 +393,8 @@ fn read_prompt(text: Option<String>, file: Option<&Path>, stdin: &mut impl Read)
 /// Codex's Linux sandbox blocks `connect()` on every socket, the session's included, unless
 /// the sandbox has network access. Neither writable roots nor a Unix socket allowlist lifts it.
 fn allow_sandboxed_yinz(spec: &mut AgentSpawnSpec) -> Result<()> {
-    if spec.kind.as_deref().map(str::trim) != Some("codex") {
-        bail!("--allow-yinz applies only to --kind codex");
+    if yinz_runtime::agent::launch::kind_for_spec(spec).as_deref() != Some("codex") {
+        bail!("--allow-yinz applies only to Codex launches (--kind codex or a Codex command)");
     }
     spec.args.extend([
         "-c".to_owned(),
@@ -471,6 +511,20 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
         )
         .context("cannot write spawned agent")?;
     }
+    if let Some(resources) = &response.launch_resources {
+        writeln!(
+            out,
+            "Launch resources: branch={} cwd={} reused={}",
+            resources.branch.as_deref().unwrap_or("unknown"),
+            resources
+                .cwd
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            resources.reused,
+        )
+        .context("cannot write partial launch resources")?;
+    }
     for status in &response.agents {
         writeln!(
             out,
@@ -515,6 +569,9 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             )
             .context("cannot write background tasks")?;
         }
+    }
+    if let Some(id) = &response.submission_id {
+        writeln!(out, "submission: {id}").context("cannot write submission identity")?;
     }
     if response.outcome != AgentOutcome::Ok {
         let outcome =

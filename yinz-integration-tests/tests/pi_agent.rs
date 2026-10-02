@@ -130,6 +130,7 @@ fn pi_launch_resolves_extension_and_correlates_a_prompt_end_to_end() {
     assert!(response.agents[0].ready, "{response:?}");
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+            submission_id: None,
             pane_id: pane,
             expected_session_id: Some("pi-session".into()),
             prompt: "review".into(),

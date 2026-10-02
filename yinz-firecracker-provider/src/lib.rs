@@ -10697,11 +10697,12 @@ mod tests {
         /// positional parameters; `settle_provisional_records` finds a VMM by argv.
         fn spawn_with_argv(extra: &[&str]) -> Self {
             // The pid echoed is the background job's, so the job is itself a `sh` carrying
-            // the extra argv after its script, where argv scanners can see it.
+            // the extra argv after its script, where argv scanners can see it. The trailing
+            // builtin keeps shells from replacing themselves with sleep and losing that argv.
             let output = Command::new("sh")
                 .args([
                     "-c",
-                    "sh -c 'sleep 60' \"$@\" </dev/null >/dev/null 2>&1 & echo $!",
+                    "sh -c 'sleep 60; :' \"$@\" </dev/null >/dev/null 2>&1 & echo $!",
                     "sh",
                 ])
                 .args(extra)

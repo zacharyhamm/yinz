@@ -13,6 +13,19 @@ use std::{
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_TIMEOUT_MS: u64 = 86_400_000;
 
+pub fn validate_submission_id(value: &str) -> Result<(), &'static str> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        Err("submission ID must be 1 to 128 ASCII letters, digits, '.', '_' or '-'")
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     List {
@@ -33,6 +46,9 @@ pub enum AgentRequest {
     Prompt {
         pane_id: PaneId,
         expected_session_id: Option<String>,
+        /// Caller-chosen retry identity, or a server-generated UUID when omitted.
+        #[serde(default)]
+        submission_id: Option<String>,
         prompt: String,
         wait: bool,
         timeout_ms: u64,
@@ -41,6 +57,12 @@ pub enum AgentRequest {
         pane_id: PaneId,
         expected_session_id: Option<String>,
         until: AgentState,
+        timeout_ms: u64,
+    },
+    WaitTurn {
+        pane_id: PaneId,
+        expected_session_id: Option<String>,
+        submission_id: String,
         timeout_ms: u64,
     },
     Read {
@@ -93,10 +115,15 @@ pub struct AgentResponse {
     pub outcome: AgentOutcome,
     pub agents: Vec<AgentStatus>,
     pub spawned: Option<SpawnedAgent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_resources: Option<super::AgentLaunchResources>,
     pub output: Option<String>,
     pub message: Option<String>,
     pub acknowledged: bool,
     pub turn_id: Option<String>,
+    /// Stable Yinz submission identity, including providers without a turn ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission_id: Option<String>,
     /// Claude background work the completed turn launched. Its final answer arrives in a later
     /// turn; `agent wait --until idle` returns it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -217,6 +244,19 @@ impl PromptObservation {
         self.turn_id.as_deref()
     }
 
+    /// A caller may submit literal notification XML as ordinary task text. A matching
+    /// fingerprint takes precedence over recognizing a provider-generated notification.
+    pub fn matches_submission(&self, hook: &HookEvent) -> bool {
+        hook.hook_event_name == "UserPromptSubmit"
+            && (self.conversation_id.is_empty() || hook.session_id == self.conversation_id)
+            && submit_matches(
+                hook,
+                &self.kind,
+                &self.prompt_sha256,
+                &self.claude_prompt_sha256,
+            )
+    }
+
     /// `Submitted` means a matching prompt hook arrived, never merely a successful PTY write.
     /// Completion is emitted at most once. Uncertainty keeps observing valid late hooks.
     /// An old completion cannot accept a prompt.
@@ -311,7 +351,7 @@ impl PromptObservation {
             // the conversation, and Claude repeats hooks once per hook registration.
             return self.acknowledged.then_some(AgentOutcome::TargetChanged);
         }
-        if is_claude_task_notification(&self.kind, hook) {
+        if is_claude_task_notification(&self.kind, hook) && !self.matches_submission(hook) {
             // Claude starts these turns itself when background work finishes, possibly before
             // this prompt's own submission or confirmation arrives. They carry no caller input.
             return None;

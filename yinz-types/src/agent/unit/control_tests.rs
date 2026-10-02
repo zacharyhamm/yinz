@@ -60,6 +60,48 @@ fn a_prompt_requires_acceptance_and_the_matching_provider_turn() {
     assert_eq!(observe(&mut observation, &completion), None);
 }
 
+#[test]
+fn literal_notification_text_acknowledges_the_callers_prompt() {
+    for text in [
+        "<task-notification>Explain this XML tag</task-notification>",
+        "<task-notification><task-id>example</task-id></task-notification>",
+    ] {
+        let mut observation = PromptObservation::new("claude", "conversation", text);
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("claude", "UserPromptSubmit", Some("caller"), Some(text))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("claude", "Stop", Some("caller"), None)
+            ),
+            Some(AgentOutcome::Completed)
+        );
+    }
+}
+
+#[test]
+fn submission_ids_are_bounded_and_safe_to_pass_as_one_argument() {
+    for value in ["request-7", "caller.task_1", &"x".repeat(128)] {
+        assert!(validate_submission_id(value).is_ok(), "{value}");
+    }
+    for value in [
+        "",
+        "two words",
+        "x/y",
+        "é",
+        "x\ny",
+        "$(touch-file)",
+        &"x".repeat(129),
+    ] {
+        assert!(validate_submission_id(value).is_err(), "{value}");
+    }
+}
+
 /// Muse correlates like Codex: the submitted prompt's turn id accepts the turn, and
 /// only that turn's end completes it. A submit without a turn id cannot be tied to
 /// this prompt, so the observation waits rather than guessing.

@@ -32,13 +32,16 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.
 
-- **Uncorrelated input needs `recover`.** Yinz cannot correlate human or raw input. Examples include a dialog answered by hand and `/clear` or `/new` typed through `send-keys`. After such input, the pane is not ready until `recover`. Instead, use `agent prompt PANE /clear` (Claude) or `agent prompt PANE /new` (Codex), and answer dialogs with `agent send-keys`.
+- **Uncorrelated input needs `recover`.** Yinz cannot correlate human or raw input. Examples include a dialog answered by hand and `/clear` or `/new` typed through `send-keys`. After such input, the pane is not ready until `recover`. Instead, use `agent prompt PANE /clear` (Claude) or `agent prompt PANE /new` (Codex or Pi), and answer dialogs with `agent send-keys`.
 - **Ghost suggestions can look like drafts.** Plain terminal output cannot confirm an empty composer. Inspect the composer and clear any draft before using `--confirm-empty`.
+- **Text-only orchestrators cannot verify recovery's empty-composer precondition.** When terminal UI inspection is unavailable, ask the user to verify the stopped agent and empty composer. The skill no longer presents `Esc` followed immediately by `recover` as a complete recovery procedure.
 - **A startup dialog is not reported as such.** A wait during a startup dialog reports `status_unavailable` with `not_ready_reason: prompt_unsupported`. If a fresh spawn stays `Spawned`, `read` the pane.
 - **`--allow-yinz` allows all network access.** It lets a sandboxed Codex reach the Yinz socket by enabling the sandbox's network access, which also allows the internet. For this reason it is opt-in.
 - **Hosts need current hooks and the current build on `PATH`.** Rerun `yinz hocus hooks install --agent claude`, or use `--project` / `--project-dir`, on each host with an existing install. Older scripts send duplicate reports. Inline hooks run `yinz` from `PATH`, so an older build there breaks background-task tracking (#31).
 - **`--reuse` warns but does not refuse.** Reusing an occupied worktree reports the other agents in `occupied_by` and proceeds.
 - **Background tasks hold the idle wait.** `wait --until idle` stays pending until every background notification turn finishes. A long-running background server therefore holds the wait until its timeout. The run archive records `<task-notification>` turns as `prompt` entries.
+- **Submission lookup is temporary.** `wait --submission ID` retains the original turn's outcome across timeout and `needs_input`, but only the last 32 submissions per pane/conversation are kept in memory. Target replacement or server restart discards them. An unknown result does not establish that the task never ran.
+- **A worker's Git baseline must be chosen explicitly when it differs from `main`.** New worktrees do not copy the caller's uncommitted changes. The skill shows `--base` and tells orchestrators to select the intended starting commit or branch.
 - **Most Codex model IDs are not validated.** Only Claude aliases (`haiku`, `sonnet`, `opus`, `opusplan`, case variants and the `[1m]` suffix) are rejected for Codex. The provider must validate other IDs.
 - **One Esc case is covered only by a screen test.** Claude 2.1.286 sometimes backgrounds a command when Esc interrupts its Bash call (#44). An unknown task notification leaves the pane ready. In later live runs, Esc killed the command instead.
 
@@ -67,7 +70,7 @@ The following behavior is intentional or not worth fixing. Callers and the skill
 | 20 | P2: Recovery advice was wrong for acknowledged and `/exit` cases. | Messages distinguish uncertain acceptance from an accepted turn. Closed, exited and replaced targets get no recovery advice. |
 | 21 | P2: `spawn --help` and the kind errors were undocumented. | Every option is documented. Kind errors list every kind and mention the JSON `command` alternative. |
 | 22 | P2: `send-keys` syntax and `--until` values were undocumented. | The help documents them, including the unsupported aliases (`Ctrl+u`, `Return`, …). |
-| 23 | P2: The skill hard-coded `--session main` and `--kind codex`. | The skill uses `YINZ_SESSION_NAME` or explicit discovery, and a labeled Claude example. |
+| 23 | P2: The skill hard-coded `--session main` and `--kind codex`. | The skill uses inherited pane context or explicit discovery, and a labeled Claude example. Explicit selection uses the root option `yinz --session NAME agent ...`; `YINZ_SESSION_NAME` alone is not a selector. |
 | 24 | P3: `agent read --lines N` counted only nonblank rows and could return more than N rows. | Internal blank rows count toward the limit. Blank padding at both ends is removed, and trailing blank rows do not consume the limit. |
 | 25 | P2: A shell-launched Codex was missing from `agent list`. | It is listed with source `detected` and `not_ready_reason: unmanaged`. Targeting it returns `not_agent` with a hint to relaunch it. |
 | 26 | P2: Pane ID formats were inconsistent. | Every pane argument accepts `terminal_7` or `7`. `plugin_N` is refused with a reason. |
@@ -91,3 +94,36 @@ The following behavior is intentional or not worth fixing. Callers and the skill
 | 47 | P3: Closed stdout caused action output to panic and agent output to print an error. | Action and agent output stop quietly when the reader closes the pipe. Other output errors still fail. |
 | 48 | P3: `agent runs` omitted session identity across sessions and servers. | Run replies include `session` and `host_id`. Older archive headers recover these fields from their stored row columns. |
 | 49 | P2: The skill had no teardown or project steps. | The skill covers `action close-pane --pane-id`, worktree cleanup, `--file -` heredocs, `action project-list`, the new spawn fields and JSON errors. |
+
+## Implemented after the 2026-10-02 review
+
+The following updates have automated controller, launch, archive, and CLI process
+regression coverage. Both skills passed format validation and an independent
+scenario review. No fresh live-provider verification was performed; the
+2026-10-01 live results above remain separate from these automated checks.
+
+| # | Was | Implemented change |
+|---|---|---|
+| 50 | P2: Skill provider support and first-run prerequisites drifted from the implementation. | The skill includes Pi and AGY, per-host hook setup, AGY completion API requirements, and Pi `/new`. It keeps unsupported or unverified prompting from silently falling back to raw input. |
+| 51 | P2: The skill prescribed redundant status/read calls in the successful flow. | Spawn, idle wait, and prompt use their returned checkout, readiness, identity, and answer fields. Extra reads are reserved for diagnostics; parallel workers can be submitted before waiting. |
+| 52 | P1: A later idle wait could hide the failure of the task an orchestrator originally submitted. | Prompt responses expose a submission ID. `wait --submission ID` resumes observation of that exact operation after timeout or dialog handling, including its failure outcome. State waits retain their separate readiness meaning. |
+| 53 | P2: Skill recovery examples could encourage asserting an empty composer after Esc alone. | The incomplete example is removed. The skill and guide require actual terminal inspection and direct text-only orchestrators to ask for human verification. |
+| 54 | P2: Archive continuation was described by tool-call-shaped strings. | Timeline replies use boolean `more` and numeric `next_revision`. The skill explains numeric list and timeline continuation and distinguishes server selection from archive ownership filters. |
+| 55 | P1: Explicit launch kinds replaced custom executable paths, and command-only launches missed provider behavior. | Provider identity is inferred separately from the executable. Custom paths are preserved, aliases share provider behavior, conflicting kinds are rejected, and unsupported interpreter/resume combinations explain how to use an executable shim. |
+| 56 | P1: A failed spawn could leave a checkout or pane without returning its identity. | Failures return known `spawned` or attempted `launch_resources`, and Pi reporting setup precedes Git changes. Guest-only VM launches report an unknown directory as `null`. |
+| 57 | P2: Registration rejected the common `--json` option. | Registration accepts `--json` for structured errors and documents its existing service acknowledgement format. |
+| 58 | P1: Caller text resembling a Claude task notification could lose prompt correlation. | A matching submitted prompt takes precedence over notification classification. |
+
+The full validation run also exposed two shell fixture assumptions and a restart
+fixture that could accept the previous exit panel's render. Those fixtures now
+preserve their shell process and wait for fresh rendered content, respectively.
+The Git-plugin fixture now waits for the intended client's subscriptions before
+sending a reload probe and reports full startup errors instead of a render timeout.
+A recording-compaction property test found an unrelated search checkpoint moving
+backward when compacted input had a higher event ID than remaining output; search
+now retains the highest ID across both sources, with a deterministic regression.
+
+Final validation: `cargo x ci check` passed with 16 test workers, including
+formatting, lint, doctests, all 9,665 workspace tests and all 478 whole-app
+integration tests. The Git-plugin fixture also passed ten consecutive isolated
+runs after its readiness fix. Both bundled skills passed `quick_validate.py`.

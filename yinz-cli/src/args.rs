@@ -552,8 +552,8 @@ impl Agent {
     pub fn json(&self) -> bool {
         match self {
             Agent::Archive(archive) => archive.json(),
-            Agent::Register { .. } => false,
-            Agent::List { json, .. }
+            Agent::Register { json, .. }
+            | Agent::List { json, .. }
             | Agent::Status { json, .. }
             | Agent::Spawn { json, .. }
             | Agent::Prompt { json, .. }
@@ -580,6 +580,11 @@ fn parse_agent_state(value: &str) -> Result<yinz_types::agent::AgentState, Strin
         .ok_or_else(|| "expected busy, waiting, idle or exited".to_owned())
 }
 
+fn parse_submission_id(value: &str) -> Result<String, String> {
+    yinz_types::agent::control::validate_submission_id(value).map_err(str::to_owned)?;
+    Ok(value.to_owned())
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
     #[clap(flatten)]
@@ -590,6 +595,10 @@ pub enum Agent {
         #[clap(value_parser = parse_terminal_pane_number)]
         pane_id: u32,
         kind: String,
+        /// Report errors as JSON too; successful registration always returns JSON.
+        #[clap(long)]
+        #[serde(default)]
+        json: bool,
     },
     /// List agents and their reported lifecycle state.
     List {
@@ -600,6 +609,7 @@ pub enum Agent {
     },
     /// Inspect an agent's identity, readiness and reporting source.
     Status {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         /// Require this agent conversation to still occupy the pane.
@@ -674,6 +684,7 @@ pub enum Agent {
     /// Submit to an idle, ready agent and wait for acknowledgement or the resulting turn.
     /// Claude delivery removes U+200B and U+202E; other characters and Codex text are preserved.
     Prompt {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         /// The prompt. Pass either TEXT or --file, not both.
@@ -681,8 +692,14 @@ pub enum Agent {
         /// Read the prompt from a UTF-8 file, or from standard input with '-'.
         #[clap(long)]
         file: Option<PathBuf>,
+        /// Require this provider conversation to still occupy the pane.
         #[clap(long)]
         conversation: Option<String>,
+        /// Identify this submission so its exact result can be retrieved with `wait --submission`.
+        /// Defaults to a generated UUID. Save an explicit ID before sending if the caller may
+        /// lose the response. After uncertainty, wait for this ID instead of resubmitting.
+        #[clap(long, value_parser = parse_submission_id)]
+        submission: Option<String>,
         /// Wait for this turn's outcome after the agent acknowledges the prompt. If Claude left
         /// background work running, the reply lists `background_tasks`; `agent wait --until idle`
         /// returns its final answer.
@@ -694,17 +711,25 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
-    /// Observe a reported state without sending input. A successful idle wait returns the final
+    /// Wait for a submission's exact outcome, or observe a reported state without sending input.
+    /// A successful idle state wait returns the final
     /// text of the last completed turn. For Claude, it also waits for background work (listed
     /// as `background_tasks`) to finish its notification turn.
     Wait {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
+        /// Require this provider conversation to still occupy the pane.
         #[clap(long)]
         conversation: Option<String>,
+        /// Retrieve the original submission's outcome, including failure, after a timeout or
+        /// needs_input. Uses the ID returned by prompt; results are retained in this live session.
+        #[clap(long, conflicts_with = "until", value_parser = parse_submission_id)]
+        submission: Option<String>,
         /// Reported state to wait for: busy, waiting, idle, or exited.
         #[clap(long, default_value = "idle", value_parser = parse_agent_state)]
         until: yinz_types::agent::AgentState,
+        /// Observation deadline; a timeout does not cancel the agent's work.
         #[clap(long, default_value = "30s", value_parser = parse_agent_timeout)]
         timeout: std::time::Duration,
         #[clap(long)]
@@ -713,8 +738,10 @@ pub enum Agent {
     /// Read the agent's terminal output. Plain text includes ghost suggestions and cannot
     /// establish whether the composer contains a draft. Do not infer a draft from suggestion text.
     Read {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
+        /// Require this provider conversation to still occupy the pane.
         #[clap(long)]
         conversation: Option<String>,
         /// Maximum terminal lines (1–100000), including internal blank rows. Remove blank
@@ -727,6 +754,7 @@ pub enum Agent {
     /// Restore readiness after inspecting the pane and clearing any draft. Plain terminal text
     /// includes ghost suggestions and cannot establish whether the composer contains a draft.
     Recover {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         /// Pin the expected conversation; pass an empty value when the pane reports
@@ -737,7 +765,7 @@ pub enum Agent {
         /// or treat suggestion text as a draft. Clear actual input through the terminal UI first.
         #[clap(long, required = true)]
         confirm_empty: bool,
-        /// Also reset a busy or waiting agent to idle. Use only after `agent read` shows the agent
+        /// Also reset a busy or waiting agent to idle. Verify in the terminal UI that the agent
         /// stopped its turn without reporting it, such as after an Esc interrupt.
         #[clap(long)]
         interrupted: bool,
@@ -746,6 +774,7 @@ pub enum Agent {
     },
     /// Deliberately send keys to an agent's terminal UI.
     SendKeys {
+        /// Terminal pane ID, such as terminal_7 or 7.
         #[clap(value_parser = parse_agent_target)]
         target: yinz_types::pane_id::PaneId,
         /// One key per argument. Quote modifiers, such as "Ctrl u". Named keys include Esc,
@@ -753,6 +782,7 @@ pub enum Agent {
         /// Escape, Return.
         #[clap(required = true, num_args = 1..=1024)]
         keys: Vec<String>,
+        /// Require this provider conversation to still occupy the pane.
         #[clap(long)]
         conversation: Option<String>,
         #[clap(long)]

@@ -241,6 +241,7 @@ fn test_client_messages() {
                 remote_host: None,
             },
             AgentRequest::Prompt {
+                submission_id: None,
                 pane_id,
                 expected_session_id: expected_session_id.clone(),
                 prompt: "Review this diff:\n+added line".into(),
@@ -251,6 +252,12 @@ fn test_client_messages() {
                 pane_id,
                 expected_session_id: expected_session_id.clone(),
                 until: AgentState::Idle,
+                timeout_ms: 30_000,
+            },
+            AgentRequest::WaitTurn {
+                pane_id,
+                expected_session_id: expected_session_id.clone(),
+                submission_id: "submission-7".into(),
                 timeout_ms: 30_000,
             },
             AgentRequest::Read {
@@ -4607,9 +4614,11 @@ fn test_server_messages() {
                 occupied_by: vec![pane_id],
             }),
             output: Some("Ready\n>".into()),
+            launch_resources: None,
             message: Some("approval required".into()),
             acknowledged: true,
             turn_id: Some("turn-7".into()),
+            submission_id: Some("submission-7".into()),
             background_tasks: vec!["bj30txqod".into()],
         }));
     }

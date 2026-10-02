@@ -146,6 +146,7 @@ fn report_state(screen: &mut Screen, kind: &str, hook: HookEvent, state: AgentRe
 
 fn prompt(wait: bool) -> AgentRequest {
     AgentRequest::Prompt {
+        submission_id: None,
         pane_id: PANE,
         expected_session_id: None,
         prompt: "review".into(),
@@ -2384,6 +2385,7 @@ fn recover() -> AgentRequest {
 
 fn clear_prompt() -> AgentRequest {
     AgentRequest::Prompt {
+        submission_id: None,
         pane_id: PANE,
         expected_session_id: None,
         prompt: "/clear".into(),
@@ -2482,6 +2484,7 @@ fn cli_codex_new_restores_readiness_like_claude_clear() {
         report_kind(&mut screen, "codex", hook("SessionStart"));
         screen.agent_control(
             AgentRequest::Prompt {
+                submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
                 prompt: "/new".into(),
@@ -2611,6 +2614,7 @@ fn failed_or_unsubmitted_clear_cannot_restore_readiness() {
         } else {
             let request = if reason == "not_exact" {
                 AgentRequest::Prompt {
+                    submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
                     prompt: "/clear extra".into(),
@@ -3511,6 +3515,7 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
         .join("\n");
     screen.agent_control(
         AgentRequest::Prompt {
+            submission_id: None,
             pane_id: PANE,
             expected_session_id: None,
             prompt: text.clone(),
@@ -3565,6 +3570,7 @@ fn prompt_delivery_normalizes_only_claude_format_controls() {
             report_kind(&mut screen, kind, hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
                     prompt: text.clone(),
@@ -3634,6 +3640,7 @@ fn commands_are_rejected_before_claiming_or_writing_input() {
             report_kind(&mut screen, kind, hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
                     prompt: command.into(),
@@ -3995,6 +4002,7 @@ fn claude_pastes_wait_for_settling_and_quiet_output_and_enter_only_once() {
             report_kind(&mut screen, "claude", hook("SessionStart"));
             screen.agent_control(
                 AgentRequest::Prompt {
+                    submission_id: None,
                     pane_id: PANE,
                     expected_session_id: None,
                     prompt: text.clone(),
@@ -5367,6 +5375,7 @@ fn cli_pi_new_restores_readiness() {
         report_kind(&mut screen, "pi", hook("SessionStart"));
         screen.agent_control(
             AgentRequest::Prompt {
+                submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
                 prompt: "/new".into(),
@@ -5437,6 +5446,7 @@ fn pi_normalized_prompt_completes_and_allows_another_prompt() {
     ] {
         screen.agent_control(
             AgentRequest::Prompt {
+                submission_id: None,
                 pane_id: PANE,
                 expected_session_id: Some("conversation".into()),
                 prompt: text.into(),
@@ -5486,6 +5496,7 @@ fn pi_rejects_commands_and_empty_text_after_trimming() {
     ] {
         screen.agent_control(
             AgentRequest::Prompt {
+                submission_id: None,
                 pane_id: PANE,
                 expected_session_id: None,
                 prompt: text.into(),
@@ -5811,4 +5822,400 @@ fn a_codex_plan_prompt_keeps_the_turn_complete_and_the_next_hook_clears_waiting(
     assert_eq!(agent.state, AgentState::Busy);
     assert_eq!(agent.waiting_on, None);
     assert!(replies(&messages, CLIENT).is_empty());
+}
+
+fn identified_prompt(id: &str, wait: bool) -> AgentRequest {
+    let mut request = prompt(wait);
+    if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+        *submission_id = Some(id.into());
+    }
+    request
+}
+
+fn wait_submission(id: &str) -> AgentRequest {
+    AgentRequest::WaitTurn {
+        pane_id: PANE,
+        expected_session_id: Some("conversation".into()),
+        submission_id: id.into(),
+        timeout_ms: 30_000,
+    }
+}
+
+#[test]
+fn submission_wait_preserves_failure_after_permission_and_later_turns() {
+    for kind in ["codex", "claude", "pi"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(identified_prompt("first", true), CLIENT);
+        finish_paste(&writes);
+        // Claude does not need a provider turn ID; the local receipt still identifies it.
+        let turn_id = (kind != "claude").then(|| "turn".to_owned());
+        report_kind(
+            &mut screen,
+            kind,
+            HookEvent {
+                turn_id: turn_id.clone(),
+                ..hook("UserPromptSubmit")
+            },
+        );
+        report_kind(&mut screen, kind, permission_wait(kind));
+        let waiting = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(waiting.outcome, AgentOutcome::NeedsInput);
+        assert_eq!(waiting.submission_id.as_deref(), Some("first"));
+        screen.agent_control(wait_submission("first"), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::NeedsInput
+        );
+        screen.agent_control(send_keys(vec![BareKey::Enter]), CLIENT);
+        replies(&messages, CLIENT);
+        assert_eq!(finish_paste(&writes), b"\r");
+        screen.agent_control(wait_submission("first"), CLIENT);
+        assert!(
+            replies(&messages, CLIENT).is_empty(),
+            "wait for the answered dialog to advance"
+        );
+        report_kind(
+            &mut screen,
+            kind,
+            HookEvent {
+                turn_id: turn_id.clone(),
+                last_assistant_message: Some("provider failed".into()),
+                ..hook("StopFailure")
+            },
+        );
+        let failed = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(failed.outcome, AgentOutcome::Failed, "{kind}");
+        assert_eq!(failed.submission_id.as_deref(), Some("first"));
+        assert_eq!(failed.turn_id, turn_id);
+        assert!(failed.acknowledged);
+        assert_eq!(failed.message.as_deref(), Some("provider failed"));
+        assert!(failed.agents[0].ready);
+
+        screen.agent_control(identified_prompt("second", true), CLIENT);
+        finish_paste(&writes);
+        for name in ["UserPromptSubmit", "Stop"] {
+            report_kind(
+                &mut screen,
+                kind,
+                HookEvent {
+                    prompt_id: Some("second-prompt".into()),
+                    turn_id: Some("second-turn".into()),
+                    last_assistant_message: Some("second succeeded".into()),
+                    ..hook(name)
+                },
+            );
+        }
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Completed
+        );
+        screen.agent_control(wait_submission("first"), CLIENT);
+        let historical = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(historical.outcome, AgentOutcome::Failed);
+        assert_eq!(historical.message, failed.message);
+        assert_eq!(historical.turn_id, failed.turn_id);
+
+        screen.agent_control(identified_prompt("first", true), CLIENT);
+        let duplicate = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(duplicate.outcome, AgentOutcome::Rejected);
+        assert!(duplicate.message.unwrap().contains("--submission first"));
+        assert!(
+            finish_paste(&writes).is_empty(),
+            "duplicate IDs must not send input"
+        );
+    }
+}
+
+#[test]
+fn submission_wait_survives_timeout_and_disconnect_without_resubmitting() {
+    for ending in ["before_ack", "after_ack", "disconnect", "manual_input"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(identified_prompt("receipt", true), CLIENT);
+        finish_paste(&writes);
+        screen.refresh_agent_controls();
+        if ending != "before_ack" {
+            report(&mut screen, hook("UserPromptSubmit"));
+        }
+        if ending == "disconnect" {
+            screen.detach_agent_controls(CLIENT);
+        } else if ending == "manual_input" {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .write_to_active_terminal(&None, b"draft".to_vec(), false, CLIENT, None)
+                .unwrap();
+            screen.refresh_agent_controls();
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::Interrupted
+            );
+        } else {
+            screen.agent_controls[0].deadline = Some(Instant::now());
+            screen.refresh_agent_controls();
+            let timed_out = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
+            assert_eq!(timed_out.submission_id.as_deref(), Some("receipt"));
+            assert_eq!(timed_out.acknowledged, ending == "after_ack");
+        }
+        finish_paste(&writes);
+        let observer = ClientId::new(2);
+        screen.agent_control(wait_submission("receipt"), observer);
+        assert!(replies(&messages, observer).is_empty(), "{ending}");
+        if ending == "before_ack" {
+            report(&mut screen, hook("UserPromptSubmit"));
+        }
+        report(
+            &mut screen,
+            HookEvent {
+                last_assistant_message: Some("late completion".into()),
+                ..hook("Stop")
+            },
+        );
+        let completed = replies(&messages, observer).pop().unwrap();
+        assert_eq!(completed.outcome, AgentOutcome::Completed, "{ending}");
+        assert_eq!(completed.submission_id.as_deref(), Some("receipt"));
+        assert!(completed.acknowledged);
+        assert_eq!(completed.turn_id.as_deref(), Some("turn"));
+        assert_eq!(completed.message.as_deref(), Some("late completion"));
+        assert!(
+            finish_paste(&writes).is_empty(),
+            "observing must not resubmit input"
+        );
+    }
+}
+
+#[test]
+fn submission_wait_returns_provider_interrupt_and_explicit_recovery() {
+    for provider_interrupt in [false, true] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(identified_prompt("receipt", true), CLIENT);
+        finish_paste(&writes);
+        if provider_interrupt {
+            report(&mut screen, hook("UserPromptSubmit"));
+            report(&mut screen, hook("Interrupt"));
+            replies(&messages, CLIENT);
+        } else {
+            screen.refresh_agent_controls();
+            screen.agent_controls[0].deadline = Some(Instant::now());
+            screen.refresh_agent_controls();
+            replies(&messages, CLIENT);
+            screen.agent_control(recover(), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        }
+        screen.agent_control(wait_submission("receipt"), CLIENT);
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Interrupted);
+        assert_eq!(result.acknowledged, provider_interrupt);
+        assert_eq!(result.submission_id.as_deref(), Some("receipt"));
+        if !provider_interrupt {
+            assert!(result.message.unwrap().contains("not verified"));
+        }
+    }
+}
+
+#[test]
+fn submission_history_is_bounded_and_closing_a_pane_releases_it() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let limit = crate::screen::agent_control::SUBMISSION_HISTORY_LIMIT;
+    for index in 0..=limit {
+        screen.agent_control(
+            identified_prompt(&format!("receipt-{index}"), false),
+            CLIENT,
+        );
+        finish_paste(&writes);
+        for name in ["UserPromptSubmit", "Stop"] {
+            report(
+                &mut screen,
+                HookEvent {
+                    turn_id: Some(format!("turn-{index}")),
+                    ..hook(name)
+                },
+            );
+        }
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Submitted
+        );
+    }
+    assert_eq!(screen.agent_submissions[&PANE].len(), limit);
+    screen.agent_control(wait_submission("receipt-0"), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+    screen.agent_control(wait_submission(&format!("receipt-{limit}")), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Completed
+    );
+    screen.agent_control(identified_prompt("pending", true), CLIENT);
+    finish_paste(&writes);
+    screen.agent_control(wait_submission("pending"), ClientId::new(2));
+    screen.close_pane_explicitly(PANE, None);
+    screen.refresh_agent_controls();
+    assert_eq!(
+        replies(&messages, ClientId::new(2))[0].outcome,
+        AgentOutcome::TargetClosed
+    );
+    assert!(!screen.agent_submissions.contains_key(&PANE));
+}
+
+#[test]
+fn submission_wait_checks_conversation_pins_and_unknown_ids() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(identified_prompt("receipt", false), CLIENT);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    replies(&messages, CLIENT);
+    for (id, conversation, outcome) in [
+        ("unknown", "conversation", AgentOutcome::Rejected),
+        ("receipt", "replacement", AgentOutcome::TargetChanged),
+    ] {
+        screen.agent_control(
+            AgentRequest::WaitTurn {
+                pane_id: PANE,
+                expected_session_id: Some(conversation.into()),
+                submission_id: id.into(),
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, outcome);
+    }
+    assert!(finish_paste(&writes).is_empty());
+    report(&mut screen, hook("Stop"));
+    report(
+        &mut screen,
+        HookEvent {
+            session_id: "replacement".into(),
+            ..hook("SessionStart")
+        },
+    );
+    assert!(!screen.agent_submissions.contains_key(&PANE));
+    screen.agent_control(
+        AgentRequest::WaitTurn {
+            pane_id: PANE,
+            expected_session_id: None,
+            submission_id: "receipt".into(),
+            timeout_ms: 30_000,
+        },
+        CLIENT,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+}
+
+#[test]
+fn submission_ids_are_validated_before_terminal_input() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    for id in ["", "two words", "with/slash", &"x".repeat(129)] {
+        screen.agent_control(identified_prompt(id, true), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Rejected
+        );
+    }
+    assert!(finish_paste(&writes).is_empty());
+    assert!(screen.agent_submissions.is_empty());
+}
+
+#[test]
+fn a_muse_submission_receipt_binds_with_the_first_conversation() {
+    let (mut screen, messages, writes) = setup("muse");
+    muse_output(&mut screen, &muse_composer_frame(""));
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    screen.agent_control(identified_prompt("first-muse", false), CLIENT);
+    finish_paste(&writes);
+    let observer = ClientId::new(2);
+    screen.agent_control(
+        AgentRequest::WaitTurn {
+            pane_id: PANE,
+            expected_session_id: None,
+            submission_id: "first-muse".into(),
+            timeout_ms: 30_000,
+        },
+        observer,
+    );
+    report_kind(&mut screen, "muse", hook("SessionStart"));
+    // The provider has named the conversation but has not accepted the prompt yet.
+    // A new observer can already use that conversation pin with the same receipt.
+    let pinned_observer = ClientId::new(3);
+    screen.agent_control(wait_submission("first-muse"), pinned_observer);
+    assert!(replies(&messages, pinned_observer).is_empty());
+    for name in ["UserPromptSubmit", "Stop"] {
+        report_kind(&mut screen, "muse", hook(name));
+    }
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Submitted
+    );
+    let result = replies(&messages, observer).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Completed);
+    assert!(result.acknowledged);
+    assert_eq!(result.submission_id.as_deref(), Some("first-muse"));
+    assert_eq!(replies(&messages, pinned_observer), vec![result]);
+    screen.agent_control(wait_submission("first-muse"), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Completed
+    );
+}
+
+#[test]
+fn literal_claude_notification_xml_is_a_caller_turn() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    let text = "<task-notification>Explain this XML tag</task-notification>";
+    let mut request = identified_prompt("literal", true);
+    if let AgentRequest::Prompt { prompt, .. } = &mut request {
+        *prompt = text.into();
+    }
+    screen.agent_control(request, CLIENT);
+    finish_paste(&writes);
+    report_kind(
+        &mut screen,
+        "claude",
+        HookEvent {
+            prompt: Some(text.into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    report_kind(
+        &mut screen,
+        "claude",
+        claude_stop("prompt", "It is XML.", &[]),
+    );
+    let completed = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(completed.outcome, AgentOutcome::Completed);
+    assert!(completed.acknowledged);
+    assert!(completed.agents[0].ready);
+    assert_eq!(completed.message.as_deref(), Some("It is XML."));
+    assert!(!screen.claude_background_pending_for_test());
+}
+
+#[test]
+fn unpinned_muse_recovery_advice_quotes_the_empty_conversation() {
+    let (mut screen, messages, writes) = setup("muse");
+    muse_output(&mut screen, &muse_composer_frame(""));
+    report_kind(&mut screen, "muse", muse_bootstrap(true));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    screen.refresh_agent_controls();
+    screen.agent_controls[0].deadline = Some(Instant::now());
+    screen.refresh_agent_controls();
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::TimedOut);
+    assert!(result.submission_id.is_some());
+    assert!(result
+        .message
+        .unwrap()
+        .contains("--conversation '' --confirm-empty"));
 }

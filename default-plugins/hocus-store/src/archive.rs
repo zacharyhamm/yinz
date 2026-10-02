@@ -97,9 +97,7 @@ pub fn query(backend: &impl Backend, op: &str, args: &Value) -> Result<String, S
                 reply["entry_count"] = json!(page.total);
                 reply["earlier"] = json!(page.earlier);
                 reply["next_revision"] = json!(page.next_revision);
-                reply["more"] = json!(page
-                    .next_revision
-                    .map(|next| format!("agent_run run_id={id} from_revision={next}")));
+                reply["more"] = json!(page.next_revision.is_some());
                 reply
             }
         },

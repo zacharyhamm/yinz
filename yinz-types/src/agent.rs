@@ -153,8 +153,9 @@ pub struct AgentSpawnSpec {
     /// or any other name the agent detection would recognise. Resolved to a program by
     /// `agent::launch::binary_for`.
     pub kind: Option<String>,
-    /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one
-    /// of the two is required.
+    /// A program to run instead of the kind's default executable. A recognized program
+    /// supplies the kind when it is omitted; an explicit conflicting kind is rejected.
+    /// One of the two is required.
     pub command: Option<String>,
     /// Arguments before the ones the planner adds.
     pub args: Vec<String>,
@@ -237,6 +238,18 @@ pub struct SpawnedAgent {
     /// for this folder, but two agents editing one checkout can overwrite each other.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub occupied_by: Vec<PaneId>,
+}
+
+/// Prepared or attempted checkout resources retained when launching an agent fails before
+/// its pane is known. Creation may be incomplete; inspect before retrying a failed spawn.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLaunchResources {
+    pub cwd: Option<PathBuf>,
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reused: bool,
 }
 
 mod hooks;

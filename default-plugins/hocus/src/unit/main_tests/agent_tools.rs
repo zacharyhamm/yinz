@@ -414,6 +414,39 @@ fn live_agent_tools_build_guarded_requests_and_reject_spawn_prompts() {
 }
 
 #[test]
+fn live_agent_tools_can_resume_observing_one_submission() {
+    use yinz_tile::agent::control::AgentRequest;
+    let state = idle_state();
+    let prompt = state
+        .agent_request(&agent_call(
+            "agent_prompt",
+            r#"{"pane_id":"terminal_7","text":"review","submission_id":"review-1"}"#,
+        ))
+        .unwrap();
+    assert!(
+        matches!(prompt, AgentRequest::Prompt { submission_id: Some(id), .. } if id == "review-1")
+    );
+    let wait = state
+        .agent_request(&agent_call(
+            "agent_wait",
+            r#"{"pane_id":"terminal_7","submission_id":"review-1","timeout_ms":120000}"#,
+        ))
+        .unwrap();
+    assert!(
+        matches!(wait, AgentRequest::WaitTurn { submission_id, timeout_ms: 120_000, .. } if submission_id == "review-1")
+    );
+    for arguments in [
+        r#"{"pane_id":7,"submission_id":"review-1","until":"idle"}"#,
+        r#"{"pane_id":7,"submission_id":""}"#,
+        r#"{"pane_id":7,"submission_id":"invalid id"}"#,
+    ] {
+        assert!(state
+            .agent_request(&agent_call("agent_wait", arguments))
+            .is_err());
+    }
+}
+
+#[test]
 fn live_agent_reply_requires_the_pending_correlation_id() {
     let mut state = idle_state();
     let call = agent_call("agent_status", r#"{"pane_id":7}"#);

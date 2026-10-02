@@ -124,6 +124,22 @@ pub fn binary_for(kind: &str) -> &str {
     }
 }
 
+/// The agent dialect, independently of the executable used to launch it.
+/// Explicit kinds and executable aliases share detection's canonical spelling.
+pub fn kind_for_spec(spec: &Spec) -> Option<String> {
+    trimmed(&spec.kind)
+        .map(|kind| {
+            yinz_types::agent::kind_of(kind)
+                .map(str::to_owned)
+                .unwrap_or_else(|| normalize_kind(&kind.to_lowercase()).to_owned())
+        })
+        .or_else(|| {
+            let command = trimmed(&spec.command)?;
+            yinz_types::agent::kind_from_program_and_args(std::path::Path::new(command), &spec.args)
+                .map(str::to_owned)
+        })
+}
+
 /// Route a Codex UI through the pane-aware launcher, retaining its original arguments.
 pub fn wrap_codex(program: String, args: Vec<String>) -> (String, Vec<String>) {
     wrap_hocus_launcher("codex", program, args)
@@ -547,14 +563,47 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         trimmed(&spec.firecracker_image),
         None,
     )?;
-    let kind = trimmed(&spec.kind)
-        .map(str::to_lowercase)
-        .map(|k| normalize_kind(&k).to_owned());
-    let program = match (kind.as_deref(), trimmed(&spec.command)) {
-        (Some(kind), _) => binary_for(kind).to_owned(),
-        (None, Some(command)) => command.to_owned(),
+    let kind = kind_for_spec(spec);
+    let executable = trimmed(&spec.command);
+    if let (Some(explicit), Some(executable)) = (trimmed(&spec.kind), executable) {
+        if let Some(detected) = yinz_types::agent::kind_from_program_and_args(
+            std::path::Path::new(executable),
+            &spec.args,
+        ) {
+            if kind.as_deref() != Some(detected) {
+                return Err(format!(
+                    "agent kind {explicit:?} conflicts with {detected} executable {executable:?}"
+                ));
+            }
+        }
+    }
+    let program = match (kind.as_deref(), executable) {
+        (_, Some(command)) => command.to_owned(),
+        (Some(kind), None) => match trimmed(&spec.kind) {
+            Some(name) if yinz_types::agent::kind_of(name).is_some() && name.contains('/') => {
+                name.to_owned()
+            },
+            Some(name)
+                if yinz_types::agent::kind_of(name).is_some() && name.contains(['.', '-']) =>
+            {
+                name.to_lowercase()
+            },
+            _ => binary_for(kind).to_owned(),
+        },
         (None, None) => return Err("an agent or a command is required".to_owned()),
     };
+    let indirect_agent = yinz_types::agent::kind_of(&program).is_none()
+        && yinz_types::agent::kind_from_program_and_args(
+            std::path::Path::new(&program),
+            &spec.args,
+        )
+        .is_some();
+    if matches!(kind.as_deref(), Some("codex" | "muse"))
+        && spec.hooks.unwrap_or(true)
+        && indirect_agent
+    {
+        return Err("managed Codex and Muse require a directly executable agent, not an interpreter command; point command at the agent's executable shim".to_owned());
+    }
 
     // `muse resume` takes no opening prompt - the parser rejects the combination -
     // so a spec asking for both is refused rather than planned into a command
@@ -569,6 +618,9 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         );
     }
     let (leading, flags) = shape_args(kind.as_deref(), spec)?;
+    if indirect_agent && !leading.is_empty() {
+        return Err("resume for an interpreter or wrapper command requires a directly executable agent shim; alternatively, put the complete resume invocation in args and omit resume".to_owned());
+    }
     let mut args = leading;
     args.extend(spec.args.iter().cloned());
     args.extend(flags);

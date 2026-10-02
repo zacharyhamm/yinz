@@ -4,11 +4,22 @@ use yinz_types::agent::control::{AgentOutcome, AgentRequest, AgentResponse, MAX_
 use yinz_types::plugin_data::DataValue;
 
 pub fn control_agent(
-    request: AgentRequest,
+    mut request: AgentRequest,
     client: crate::ClientId,
     senders: &ThreadSenders,
     data: &DataAccess,
 ) -> AgentResponse {
+    // Establish the retry identity before routing: the screen may accept the prompt even
+    // when its reply never arrives, so a caller must still be able to retrieve that turn.
+    let submission_id = match &mut request {
+        AgentRequest::Prompt { submission_id, .. } => Some(
+            submission_id
+                .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone(),
+        ),
+        AgentRequest::WaitTurn { submission_id, .. } => Some(submission_id.clone()),
+        _ => None,
+    };
     let result = (|| -> Result<AgentResponse, String> {
         if let AgentRequest::Spawn {
             spec,
@@ -18,7 +29,7 @@ pub fn control_agent(
             automatic_firecracker_vm,
         } = request
         {
-            let mut spawned = spawn_agent_for_cli(
+            let mut spawned = match spawn_agent_for_control(
                 spec,
                 cwd,
                 project,
@@ -27,7 +38,10 @@ pub fn control_agent(
                 client,
                 senders,
                 data,
-            )?;
+            ) {
+                Ok(spawned) => spawned,
+                Err(error) => return Ok(error.into_response()),
+            };
             if spawned.reused {
                 spawned.occupied_by = occupants(senders, &spawned);
             }
@@ -38,9 +52,9 @@ pub fn control_agent(
             return Ok(response);
         }
         let timeout = match &request {
-            AgentRequest::Prompt { timeout_ms, .. } | AgentRequest::Wait { timeout_ms, .. } => {
-                (*timeout_ms).min(MAX_TIMEOUT_MS)
-            },
+            AgentRequest::Prompt { timeout_ms, .. }
+            | AgentRequest::Wait { timeout_ms, .. }
+            | AgentRequest::WaitTurn { timeout_ms, .. } => (*timeout_ms).min(MAX_TIMEOUT_MS),
             _ => 30_000,
         };
         let project = match &request {
@@ -82,11 +96,15 @@ pub fn control_agent(
         }
         Ok(response)
     })();
-    result.unwrap_or_else(|error| {
+    let mut response = result.unwrap_or_else(|error| {
         let mut response = AgentResponse::new(AgentOutcome::Rejected);
         response.message = Some(error);
         response
-    })
+    });
+    if response.submission_id.is_none() {
+        response.submission_id = submission_id;
+    }
+    response
 }
 
 fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, String> {
@@ -218,7 +236,7 @@ pub(super) fn prepare_automation_agent(
     remote_host: Option<String>,
     automatic_firecracker_vm: bool,
     data: &DataAccess,
-) -> Result<PreparedAgent, String> {
+) -> Result<PreparedAgent, AgentSpawnError> {
     let guidance = || {
         format!("Use --kind with a recognized kind: {}. Alternatively, use --file PATH (or --file - for stdin) with a JSON object containing a recognized executable in command and optional args.", yinz_types::agent::KINDS.join(", "))
     };
@@ -226,17 +244,15 @@ pub(super) fn prepare_automation_agent(
         .iter()
         .all(|value| value.as_deref().is_none_or(|value| value.trim().is_empty()))
     {
-        return Err(format!(
-            "agent spawn requires a kind or command. {}",
-            guidance()
-        ));
+        return Err(format!("agent spawn requires a kind or command. {}", guidance()).into());
     }
     let (mut command, _) = yinz_runtime::agent::launch::plan(spec)?;
     if yinz_types::agent::kind_from_program_and_args(&command.path, &command.args).is_none() {
         return Err(format!(
             "agent spawn requires a recognized agent command. {}",
             guidance()
-        ));
+        )
+        .into());
     }
     spec.env
         .insert(yinz_types::agent::AGENT_PANE_ENV.into(), "1".into());
@@ -295,7 +311,7 @@ pub(super) fn prepare_automation_agent(
             .canonicalize()
             .map_err(|e| format!("cannot resolve project directory: {e}"))?;
         if !cwd.starts_with(root) {
-            return Err(format!("cwd must be inside project {}", project.name));
+            return Err(format!("cwd must be inside project {}", project.name).into());
         }
     }
     if spec.worktree_dir.is_none() && spec.branch.is_some() && spec.worktree != Some(false) {

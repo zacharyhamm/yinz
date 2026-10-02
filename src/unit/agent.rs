@@ -104,6 +104,7 @@ fn prompt_request_keeps_conversation_and_wait_deadline() {
             wait: true,
             timeout: None,
             conversation: Some("thread-7".into()),
+            submission: Some("review-7".into()),
             json: true,
         },
         &mut &b"review the diff"[..],
@@ -112,10 +113,50 @@ fn prompt_request_keeps_conversation_and_wait_deadline() {
     assert!(json);
     assert_eq!(timeout, Duration::from_secs(600));
     assert!(
-        matches!(request, AgentRequest::Prompt { prompt, wait: true, timeout_ms: 600_000, expected_session_id: Some(id), .. }
-        if prompt == "review the diff" && id == "thread-7")
+        matches!(request, AgentRequest::Prompt { prompt, wait: true, timeout_ms: 600_000, expected_session_id: Some(id), submission_id: Some(submission), .. }
+        if prompt == "review the diff" && id == "thread-7" && submission == "review-7")
     );
     assert!(timeout_millis(Duration::from_micros(1)).is_err());
+}
+
+#[test]
+fn submission_identity_survives_request_preparation_and_waits_select_the_exact_turn() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Agent,
+    }
+    let mut command = Cli::try_parse_from(["agent", "prompt", "7", "review the diff", "--json"])
+        .unwrap()
+        .command;
+    let id = submission_id(&mut command).unwrap();
+    assert!(uuid::Uuid::parse_str(&id).is_ok());
+    assert_eq!(submission_id(&mut command).as_deref(), Some(id.as_str()));
+    let (request, _, _) = request(command, &mut &b""[..]).unwrap();
+    assert!(
+        matches!(request, AgentRequest::Prompt { submission_id: Some(submitted), .. } if submitted == id)
+    );
+
+    let args = Cli::try_parse_from([
+        "agent",
+        "wait",
+        "7",
+        "--submission",
+        &id,
+        "--conversation",
+        "conversation-7",
+        "--timeout",
+        "2m",
+        "--json",
+    ])
+    .unwrap();
+    let (request, json, timeout) = super::request(args.command, &mut &b""[..]).unwrap();
+    assert!(json);
+    assert_eq!(timeout, Duration::from_secs(120));
+    assert!(matches!(request, AgentRequest::WaitTurn {
+        pane_id, submission_id, expected_session_id: Some(conversation), timeout_ms: 120_000,
+    } if pane_id.to_string() == "terminal_7" && submission_id == id && conversation == "conversation-7"));
 }
 
 #[test]
@@ -123,6 +164,7 @@ fn json_returns_copyable_spawn_target_and_preserves_operation_outcome() {
     let mut response = AgentResponse::new(AgentOutcome::NeedsInput);
     response.acknowledged = true;
     response.turn_id = Some("turn-1".into());
+    response.submission_id = Some("submission-1".into());
     response.spawned = Some(yinz_types::agent::SpawnedAgent {
         pane_id: "terminal_7".parse().unwrap(),
         branch: Some("review-2".into()),
@@ -136,6 +178,7 @@ fn json_returns_copyable_spawn_target_and_preserves_operation_outcome() {
     assert_eq!(value["outcome"], "needs_input");
     assert_eq!(value["acknowledged"], true);
     assert_eq!(value["turn_id"], "turn-1");
+    assert_eq!(value["submission_id"], "submission-1");
     assert_eq!(value["spawned"]["pane_id"], "terminal_7");
     assert_eq!(value["spawned"]["occupied_by"], json!(["terminal_3"]));
     assert_eq!(value["spawned"]["branch"], "review-2");
@@ -424,9 +467,21 @@ fn allowing_yinz_opens_only_a_codex_sandbox() {
         };
         assert_eq!(
             allow_sandboxed_yinz(&mut spec).unwrap_err().to_string(),
-            "--allow-yinz applies only to --kind codex"
+            "--allow-yinz applies only to Codex launches (--kind codex or a Codex command)"
         );
         assert!(spec.args.is_empty());
+    }
+    for (kind, command) in [(Some(" CODEX "), None), (None, Some("/opt/bin/codex"))] {
+        let mut spec = AgentSpawnSpec {
+            kind: kind.map(Into::into),
+            command: command.map(Into::into),
+            ..Default::default()
+        };
+        allow_sandboxed_yinz(&mut spec).unwrap();
+        assert_eq!(
+            spec.args,
+            ["-c", "sandbox_workspace_write.network_access=true"]
+        );
     }
 }
 
