@@ -155,7 +155,7 @@ impl Default for State {
             .select(
                 AGENT,
                 "Agent",
-                Select::new(launch::OFFERED.iter().copied().map(capitalized)),
+                Select::new(launch::offered().iter().map(|kind| capitalized(kind))),
             )
             .field(MODEL, "Model (optional)", TextInput::empty())
             .select(
@@ -240,6 +240,8 @@ register_plugin!(State);
 
 impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        yinz_tile::shim::init_agent_providers();
+        self.refresh_agent_options();
         self.source_directory = configuration
             .get("caller_cwd")
             .map(PathBuf::from)
@@ -302,6 +304,10 @@ impl YinzPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
+            Event::AgentProvidersChanged(_) => {
+                self.refresh_agent_options();
+                true
+            },
             Event::PaneClosed(pane) if self.workflow_reply.is_some() => {
                 if self.workflow_source == Some(pane) {
                     self.finish_picker(None);
@@ -463,7 +469,29 @@ impl YinzPlugin for State {
 /// see `the_help_line_fits_the_narrowest_modal` - which is why the button and the
 /// checkbox name `Tab` alone: `↓` moves on from them too, but the two keys and
 /// the rest of the line are two columns wider than the frame leaves.
-fn help_for(form: &Form) -> &'static str {
+fn help_for(form: &Form) -> String {
+    if form.focused_id() == Some(PERMISSION_MODE)
+        && form
+            .select_by_id(PERMISSION_MODE)
+            .is_some_and(|select| !select.is_open())
+    {
+        if let Some(description) = yinz_tile::agent::provider::provider(
+            &form.text(AGENT).to_lowercase(),
+        )
+        .and_then(|provider| {
+            provider
+                .launch
+                .permission_descriptions
+                .get(form.text(PERMISSION_MODE))
+                .cloned()
+        }) {
+            return description;
+        }
+    }
+    builtin_help_for(form).to_owned()
+}
+
+fn builtin_help_for(form: &Form) -> &'static str {
     let Some(field) = form.focused_id().and_then(|id| form.field_by_id(id)) else {
         // No field of that id: focus is on the button, or the form is empty.
         return "<Enter> create  <Tab> next  <Esc> back";
@@ -474,7 +502,6 @@ fn help_for(form: &Form) -> &'static str {
                 ("Codex", "skip") => "Bypasses approvals AND sandbox",
                 ("Claude", "skip" | "bypassPermissions") => "Bypasses all permission checks",
                 ("Cursor", "skip" | "force") => "Allows commands without approval",
-                ("Opencode", "auto" | "skip") => "Auto-approves; explicit denials stay",
                 ("Codex", "never") => "No prompts; keeps sandbox setting",
                 ("Codex", "full-auto") => "Automatic mode with workspace sandbox",
                 ("Codex", "untrusted") => "Asks before any untrusted command",
@@ -607,7 +634,7 @@ fn fork_dialog() -> Dialog {
         .select(
             AGENT,
             "Agent",
-            Select::new(launch::OFFERED.iter().copied().map(capitalized)),
+            Select::new(launch::offered().iter().map(|kind| capitalized(kind))),
         )
         .button("fork", Button::new("Fork agent"));
     let help = help_for(&form);
@@ -977,7 +1004,7 @@ fn duplicate_command(
     manual_kinds: &BTreeMap<u32, String>,
 ) -> Option<CommandToRun> {
     let (kind, _) = agents::classify(pane, manual_kinds)?;
-    command_in_context(pane, kind).ok()
+    command_in_context(pane, &kind).ok()
 }
 
 fn agent_cwd(pane: &AgentPane) -> Option<&str> {
@@ -1089,6 +1116,34 @@ impl State {
         }
     }
 
+    fn refresh_agent_options(&mut self) {
+        let selected = self.dialog.form().text(AGENT).to_owned();
+        if let Some(select) = self.dialog.form_mut().select_by_id_mut(AGENT) {
+            select.set_options(
+                launch::offered()
+                    .iter()
+                    .map(|kind| capitalized(kind))
+                    .collect(),
+            );
+        }
+        self.refresh_launch_options(self.dialog.form().text(AGENT) != selected);
+    }
+
+    fn refresh_launch_options(&mut self, reset: bool) {
+        let kind = self.dialog.form().text(AGENT).to_lowercase();
+        for (field, options) in [
+            (EFFORT, agent_options(launch::effort_options(&kind))),
+            (PERMISSION_MODE, agent_options(permission_modes(&kind))),
+        ] {
+            if let Some(select) = self.dialog.form_mut().select_by_id_mut(field) {
+                select.set_options(options);
+                if reset {
+                    select.select_index(0);
+                }
+            }
+        }
+    }
+
     fn changed(&mut self, id: &str) {
         self.error = None;
         // A fork with nothing to fork stays refused. The message is about the pane the
@@ -1109,16 +1164,10 @@ impl State {
             self.worktree_dir_edited = true;
         }
         if id == AGENT {
-            let kind = self.dialog.form().text(AGENT).to_lowercase();
-            if let Some(select) = self.dialog.form_mut().select_by_id_mut(EFFORT) {
-                select.set_options(agent_options(launch::effort_levels(Some(&kind))));
-            }
-            if let Some(select) = self.dialog.form_mut().select_by_id_mut(PERMISSION_MODE) {
-                select.set_options(agent_options(permission_modes(&kind)));
-                // Permission names shared by agents need not promise the same access.
-                select.select_index(0);
-            }
+            // Shared option names need not promise the same behavior across agents.
+            self.refresh_launch_options(true);
         }
+
         if id == PROJECT {
             self.fill_worktree_default();
             self.refresh_git_suggestions();
@@ -1428,25 +1477,13 @@ fn spec(form: &Form) -> launch::Spec {
     }
 }
 
-fn permission_modes(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "codex" => launch::CODEX_PERMISSION_MODES,
-        "claude" => launch::CLAUDE_PERMISSION_MODES,
-        "cursor" => launch::CURSOR_PERMISSION_MODES,
-        "opencode" => launch::OPENCODE_PERMISSION_MODES,
-        "muse" => launch::MUSE_PERMISSION_MODES,
-        "agy" => launch::AGY_PERMISSION_MODES,
-        // pi's permission gating is its extensions', not a flag; the select offers
-        // only the default, which is the truth of it.
-        "pi" => launch::PI_PERMISSION_MODES,
-        _ => &[],
-    }
+fn permission_modes(kind: &str) -> Vec<String> {
+    launch::permission_modes(kind)
 }
 
-fn agent_options(values: &[&str]) -> Vec<String> {
-    std::iter::once(AGENT_DEFAULT)
-        .chain(values.iter().copied())
-        .map(str::to_owned)
+fn agent_options(values: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    std::iter::once(AGENT_DEFAULT.to_owned())
+        .chain(values.into_iter().map(|value| value.as_ref().to_owned()))
         .collect()
 }
 
@@ -1485,6 +1522,10 @@ fn capitalized(kind: &str) -> String {
         None => String::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "unit/provider_refresh.rs"]
+mod provider_refresh;
 
 #[cfg(test)]
 mod tests {
@@ -1545,6 +1586,16 @@ mod tests {
             project("yinz", "/work/yinz"),
             project("dobbs", "/work/dobbs"),
         ])
+    }
+
+    fn register_opencode_fixture() {
+        yinz_tile::agent::provider::register(0, serde_json::from_value(serde_json::json!({
+            "kind":"opencode", "executable":"opencode", "launch": {
+                "model_args":["--model","{value}"], "prompt_args":["--prompt","{value}"],
+                "permissions":{"auto":["--auto"],"skip":["--auto"]},
+                "permission_descriptions":{"auto":"Auto-approves; explicit denials stay","skip":"Auto-approves; explicit denials stay"}
+            }
+        })).unwrap()).unwrap();
     }
 
     #[test]
@@ -1963,7 +2014,70 @@ mod tests {
     }
 
     #[test]
+    fn registered_agent_choices_refresh_and_use_provider_launch_options() {
+        use yinz_tile::agent::provider::{self, AgentProvider};
+        let owner = 901_611;
+        let mut state = State::default();
+        state.set_checked(CREATE_BRANCH, false);
+        let descriptor: AgentProvider = serde_json::from_value(serde_json::json!({
+            "kind":"fixture-chooser", "executable":"fixture-chooser-bin", "launch": {
+                "model_args":["--engine","{value}"], "prompt_args":["--ask","{value}"],
+                "permissions":{"ask":["--approval","ask"]},
+                "permission_descriptions":{"ask":"Ask before each tool"},
+                "efforts":{"deep":["--think","deep"]}
+            }
+        }))
+        .unwrap();
+        provider::register(owner, descriptor).unwrap();
+        assert!(state.update(Event::AgentProvidersChanged(provider::providers())));
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(AGENT)
+            .unwrap()
+            .select_option("Fixture-chooser");
+        state.changed(AGENT);
+        assert_eq!(
+            state.dialog.form().select_by_id(EFFORT).unwrap().options(),
+            agent_options(["deep"])
+        );
+        state
+            .dialog
+            .form_mut()
+            .select_by_id_mut(PERMISSION_MODE)
+            .unwrap()
+            .select_option("ask");
+        state.dialog.form_mut().focus_on(PERMISSION_MODE);
+        assert_eq!(help_for(state.dialog.form()), "Ask before each tool");
+        state.set_text(MODEL, "chosen");
+        state.set_text(PROMPT, "work here");
+        let (command, _) = launch::plan(&spec(state.dialog.form())).unwrap();
+        assert_eq!(command.path, PathBuf::from("fixture-chooser-bin"));
+        assert_eq!(
+            command.args,
+            [
+                "--engine",
+                "chosen",
+                "--approval",
+                "ask",
+                "--ask",
+                "work here"
+            ]
+        );
+        assert!(provider::unregister_owner(owner));
+        state.update(Event::AgentProvidersChanged(provider::providers()));
+        assert!(!state
+            .dialog
+            .form()
+            .select_by_id(AGENT)
+            .unwrap()
+            .options()
+            .contains(&"Fixture-chooser".to_owned()));
+    }
+
+    #[test]
     fn launch_options_follow_the_agent_and_default_to_its_configuration() {
+        register_opencode_fixture();
         let mut state = State::default();
         state.set_checked(CREATE_BRANCH, false);
         state.set_text(MODEL, "example");
@@ -1992,10 +2106,10 @@ mod tests {
                     .form_mut()
                     .select_by_id_mut(PERMISSION_MODE)
                     .unwrap()
-                    .select_option(mode);
+                    .select_option(&mode);
                 assert_eq!(
                     spec(state.dialog.form()).permission_mode.as_deref(),
-                    Some(*mode)
+                    Some(mode.as_str())
                 );
                 assert!(request(state.dialog.form()).is_ok(), "{kind}: {mode}");
             }
@@ -2199,6 +2313,7 @@ mod tests {
 
     #[test]
     fn approval_help_explains_bypasses_without_changing_the_dropdown_controls() {
+        register_opencode_fixture();
         let mut state = State::default();
         for (agent, mode, expected) in [
             ("Codex", "skip", "Bypasses approvals AND sandbox"),

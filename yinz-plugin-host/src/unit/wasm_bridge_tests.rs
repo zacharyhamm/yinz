@@ -941,6 +941,47 @@ fn cached_cli_pipe_after_instance_removal_completes_without_unloading() {
 }
 
 #[test]
+fn background_subscription_updates_preserve_other_events_and_remove_unsubscribed_events() {
+    let mut test = TestBridge::new();
+    let context = test.context(
+        1,
+        1,
+        "import z from 'yinz:plugin'; export default { load() {
+            z.subscribe(['PaneUpdate']);
+            z.subscribe(['TabUpdate']);
+            z.unsubscribe(['PaneUpdate']);
+            z.unsubscribe(['TabUpdate']);
+        } };",
+    );
+    test.load(context).unwrap();
+    let registrations = test
+        .receiver::<PluginInstruction>()
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::PluginSubscribedToEvents(_, _, requested, Some(current)) => {
+                Some((requested, current))
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let pane = HashSet::from([EventType::PaneUpdate]);
+    let tab = HashSet::from([EventType::TabUpdate]);
+    assert_eq!(
+        registrations,
+        [
+            (pane.clone(), pane),
+            (
+                tab.clone(),
+                HashSet::from([EventType::PaneUpdate, EventType::TabUpdate])
+            ),
+            (HashSet::new(), tab),
+            (HashSet::new(), HashSet::new()),
+        ]
+    );
+    test.bridge.unload_plugin(PluginId::new(1)).unwrap();
+}
+
+#[test]
 fn shared_background_subscriptions_follow_the_client_after_detach() {
     for reattach in [false, true] {
         let mut test = TestBridge::new();
@@ -964,7 +1005,7 @@ fn shared_background_subscriptions_follow_the_client_after_detach() {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
-                    PluginInstruction::PluginSubscribedToEvents(id, client, events, true)
+                    PluginInstruction::PluginSubscribedToEvents(id, client, _, Some(events))
                         if id == plugin =>
                     {
                         Some((client, events))

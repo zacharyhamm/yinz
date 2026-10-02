@@ -32,7 +32,7 @@ const EXAMPLE_WEATHER_EXTENSION: &str =
 /// Served in parts, cut at its own `// ---- section:` markers, so that none is more than a
 /// tool call should cost.
 const SDK: &str = include_str!("../../../yinz-plugin-host/src/deno/sdk.d.ts");
-const SDK_SECTIONS: [&str; 7] = [
+const SDK_SECTIONS: [&str; 8] = [
     "sdk_core",
     "sdk_commands",
     "sdk_replies",
@@ -40,6 +40,7 @@ const SDK_SECTIONS: [&str; 7] = [
     "sdk_types_data",
     "sdk_actions",
     "sdk_helpers",
+    "sdk_agents",
 ];
 
 fn sdk_marker(name: &str) -> String {
@@ -59,7 +60,7 @@ fn sdk_part(name: &str) -> Option<&'static str> {
 }
 
 /// The section names the schema advertises, and the only ones `section` accepts.
-pub const SECTIONS: [&str; 58] = [
+pub const SECTIONS: [&str; 59] = [
     "index",
     "quickstart",
     "overview",
@@ -102,6 +103,7 @@ pub const SECTIONS: [&str; 58] = [
     "sdk_types_data",
     "sdk_actions",
     "sdk_helpers",
+    "sdk_agents",
     "example_clock",
     "example_capabilities",
     "example_forms",
@@ -126,8 +128,10 @@ fn source_section(name: &str) -> Option<String> {
         | "restrictions" | "porting" | "modules" => "sdk_core",
         "commands" => "sdk_commands",
         "helpers" => "sdk_replies",
-        "files" | "rpc" | "agents" | "hocus_completions" | "hocus_extensions" | "ui"
-        | "async_panes" => "sdk_helpers",
+        "files" | "rpc" | "hocus_completions" | "hocus_extensions" | "ui" | "async_panes" => {
+            "sdk_helpers"
+        },
+        "agents" => "sdk_agents",
         "queues" | "hooks" | "hooks_context_menu" => "sdk_types_data",
         "overview" | "lifecycle" | "rendering" | "authoring" => return Some(fenced(EXAMPLE_CLOCK)),
         "builtins" => return Some(fenced(EXAMPLE_CAPABILITIES)),
@@ -252,7 +256,8 @@ fn index() -> String {
             "sdk_types" => "declarations: input, layout, pane/tab/mode/session",
             "sdk_types_data" => "declarations: style, menus, agents, hooks, queues, data",
             "sdk_actions" => "declarations: Action",
-            "sdk_helpers" => "declarations: fs, data, rpc, hocus, ui, agents, sequences",
+            "sdk_helpers" => "declarations: fs, data, rpc, hocus, ui, sequences",
+            "sdk_agents" => "declarations: agent providers, launch, control and hooks",
             "example_clock" => "example: the small one",
             "example_capabilities" => "example: most of what a plugin can do, in one pane",
             "example_forms" => "example: shared forms, confirmation and scrollable Markdown",
@@ -402,7 +407,7 @@ mod tests {
             ("events", "sdk_core"),
             ("commands", "sdk_commands"),
             ("helpers", "sdk_replies"),
-            ("agents", "sdk_helpers"),
+            ("agents", "sdk_agents"),
             ("hooks", "sdk_types_data"),
             ("testing", "sdk_testing"),
         ] {

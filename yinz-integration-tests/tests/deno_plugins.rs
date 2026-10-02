@@ -8,6 +8,64 @@ use yinz_cli::args::CliAction;
 use yinz_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 #[test]
+fn optional_providers_do_not_block_startup_and_can_register_later() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.ts");
+    let failed = directory.path().join("failed.ts");
+    let unregistered = directory.path().join("unregistered.ts");
+    let late = directory.path().join("late.ts");
+    fs::write(&failed, "throw Error('optional provider failed');").unwrap();
+    fs::write(&unregistered, "export default {};").unwrap();
+    fs::write(&late, r#"
+import z from 'yinz:plugin';
+let state = 'waiting for permission';
+export default {
+  async load() {
+    await z.waitForPermissions(['RunCommands']);
+    z.subscribe(['Key', 'AgentProvidersChanged']);
+    if (z.agent.providers().some(provider => provider.kind === 'late-fixture')) throw Error('unexpected provider at startup');
+    state = 'session ready before optional provider';
+    z.requestRender();
+  },
+  update(event) {
+    if (event.Key?.bare_key?.Char === 'r') z.agent.registerProvider({kind:'late-fixture', executable:'late-fixture'});
+    if (event.AgentProvidersChanged?.some(provider => provider.kind === 'late-fixture')) {
+      if (!z.agent.providers().some(provider => provider.kind === 'late-fixture')) throw Error('missing snapshot');
+      state = 'late provider available';
+      return true;
+    }
+  },
+  render() { return state; }
+};
+"#).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&format!(
+            "load_plugins clear-defaults=true {{ \"file:{}\"; \"file:{}\"; \"file:{}\"; }}",
+            missing.display(),
+            failed.display(),
+            unregistered.display(),
+        ))
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}",
+            late.display()
+        )))
+        .start();
+    yinz.wait_until("late provider permission prompt", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("session starts without provider registration", |grid| {
+        grid.contains("session ready before optional provider")
+    });
+    yinz.send_stdin(b"r");
+    yinz.wait_until("provider registration refreshes the consumer", |grid| {
+        grid.contains("late provider available")
+    });
+    yinz.quit();
+}
+
+#[test]
 fn deno_background_workers_await_real_commands_and_preserve_state() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("workers.ts");

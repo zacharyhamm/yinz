@@ -169,6 +169,66 @@ fn replayed_plugin_cursor_renders_without_session_reports() {
 }
 
 #[test]
+fn a_background_plugin_subscribing_after_layout_receives_current_panes_and_tabs() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 10 });
+    let plugin = crate::PluginId::new(99);
+    let client = mock.main_client_id;
+    let receiver = mock.plugin_receiver.take().unwrap();
+    let screen_thread = mock.run(None, vec![]);
+    // The reply follows all layout reports, so the subscription arrives in a quiet session.
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    mock.to_screen
+        .send(ScreenInstruction::GetPaneInfo {
+            pane_id: PaneId::Terminal(TerminalId::new(0)),
+            response_channel: tx,
+        })
+        .unwrap();
+    assert!(rx
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .is_some());
+    receiver.try_iter().for_each(drop);
+    let received = Watched::new(vec![]);
+    let plugin_thread = log_actions_in_thread!(received, PluginInstruction::Exit, receiver);
+    mock.to_screen
+        .send(ScreenInstruction::UpdateBackgroundPluginSubscriptions(
+            plugin,
+            client,
+            HashSet::from([EventType::PaneUpdate, EventType::TabUpdate]),
+        ))
+        .unwrap();
+    received.wait_until(
+        "late background subscriber receives current panes and tabs",
+        yinz_test_support::default_timeout(),
+        |instructions| {
+            let mut panes = false;
+            let mut tabs = false;
+            for instruction in instructions {
+                if let PluginInstruction::Update(updates) = instruction {
+                    for (target, owner, event) in updates {
+                        if *target != Some(plugin) || *owner != Some(client) {
+                            continue;
+                        }
+                        match event {
+                            Event::PaneUpdate(manifest) => {
+                                panes |=
+                                    manifest.panes.values().flatten().any(|pane| {
+                                        pane.id == PaneId::Terminal(TerminalId::new(0))
+                                    });
+                            },
+                            Event::TabUpdate(current) => tabs |= !current.is_empty(),
+                            _ => {},
+                        }
+                    }
+                }
+            }
+            (panes && tabs).then_some(())
+        },
+    );
+    mock.teardown(vec![screen_thread, plugin_thread]);
+}
+
+#[test]
 pub fn background_plugin_receives_broadcasts_regardless_of_active_tab() {
     // Tab 0: plugin pane 2 (from new_tab_with_plugins, queued before run)
     // Tab 1: plugin pane 3 (from new_tab_with_plugins, queued before run)

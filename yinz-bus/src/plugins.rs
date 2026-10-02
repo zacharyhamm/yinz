@@ -183,7 +183,13 @@ pub enum PluginInstruction {
         message: String,
         payload: String,
     },
-    PluginSubscribedToEvents(PluginId, ClientId, HashSet<EventType>, bool), // is_background
+    /// Newly requested events and, for background plugins, their complete current subscriptions.
+    PluginSubscribedToEvents(
+        PluginId,
+        ClientId,
+        HashSet<EventType>,
+        Option<HashSet<EventType>>,
+    ),
     /// A `yinz events` client asking for the session's state events, by name.
     SubscribeCliClientToEvents {
         client_id: ClientId,

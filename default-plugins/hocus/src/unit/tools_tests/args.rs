@@ -425,6 +425,18 @@ fn agent_spawn_arguments_become_the_spec_the_new_agent_modal_builds() {
 /// positional, because opencode's one positional is a project path.
 #[test]
 fn an_opencode_spawn_plans_the_argv_opencode_actually_takes() {
+    yinz_tile::agent::provider::register(
+        0,
+        serde_json::from_value(json!({
+            "kind":"opencode", "executable":"opencode", "launch": {
+                "model_args":["--model","{value}"], "prompt_args":["--prompt","{value}"],
+                "resume_args":["--session","{value}"], "resume_last_args":["--continue"],
+                "permissions":{"auto":["--auto"],"skip":["--auto"]}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let args = Args::parse(
         r#"{"agent":"opencode","model":"anthropic/claude-sonnet-4",
             "permission_mode":"auto","resume":"ses_1","prompt":"fix it"}"#,

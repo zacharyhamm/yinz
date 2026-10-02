@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(pane.command.as_deref(), Some("claude --model haiku"));
         assert_eq!(pane.title, "claude --model haiku");
         assert_eq!(
-            agents::kind_from_command(pane.command.as_deref().unwrap()),
+            agents::kind_from_command(pane.command.as_deref().unwrap()).as_deref(),
             Some("claude")
         );
         let titled = displayed(agent_pane(

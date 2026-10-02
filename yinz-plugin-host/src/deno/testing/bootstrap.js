@@ -140,6 +140,19 @@
     mouse(event) { call("session:mouse", event); },
     resize(rows, columns) { call("session:resize", {rows, columns}); },
     action(kdl) { call("session:action", kdl); },
+    async agent(request) {
+      const id = call("session:agent", request);
+      for (;;) {
+        const result = call("session:agent-poll", id);
+        if (result !== null) {
+          if (Object.hasOwn(result, "Err")) throw new Error(result.Err);
+          return result.Ok;
+        }
+        await ops.op_yinz_test_tick();
+        call("session:poll");
+      }
+    },
+    report(pane, kind, hook) { call("session:report", {pane, kind, hook}); },
     pipe(name, payload, options = {}) { return call("session:pipe", {name, payload, ...options}); },
     async rpc(plugin, name, payload = null, timeoutMs = 10000) {
       call("pending", `RPC ${plugin}/${name}`);

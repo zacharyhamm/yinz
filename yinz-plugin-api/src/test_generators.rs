@@ -2001,6 +2001,14 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             keys_to_unbind: keys_to_unbind(tc),
             write_config_to_disk: booleans(tc),
         },
+        CommandType::RegisterAgentProvider => {
+            PluginCommand::RegisterAgentProvider(yinz_types::agent::provider::AgentProvider {
+                kind: "fixture-agent".into(),
+                executable: "fixture-agent".into(),
+                ..Default::default()
+            })
+        },
+        CommandType::GetAgentProviders => PluginCommand::GetAgentProviders,
         CommandType::RegisterDefaultKeybindings => {
             PluginCommand::RegisterDefaultKeybindings(strings(tc))
         },

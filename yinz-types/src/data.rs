@@ -368,6 +368,8 @@ pub enum Event {
     /// `PaneUpdate`; this carries what the record cannot, the prompt and the agent's last
     /// message above all. Needs `ReadApplicationState`.
     AgentEvent(crate::agent::AgentEvent),
+    /// Complete provider registry snapshot, replayed to new subscribers.
+    AgentProvidersChanged(Vec<crate::agent::provider::AgentProvider>),
     /// Which modifier keys the client believes are held down right now, so a plugin can show
     /// something for as long as one is - the status bar swaps its `Alt + ...` hint in this way.
     ///
@@ -2844,11 +2846,12 @@ pub enum PluginCommand {
     OpenFileInPlace(FileToOpen, Context),
     OpenCommandPaneInPlace(CommandToRun, Context),
     SubscribePaneOutput(Option<BTreeMap<String, String>>),
-    /// Builtin-only managed Swamp request. Replies use correlated CustomMessage events.
+    /// Guarded agent control. Requires RunCommands; replies use correlated CustomMessage events.
     AgentControl {
         id: String,
         request: String,
     },
+    /// Builtin-only managed Swamp request.
     SwampRequest {
         directory: PathBuf,
         id: String,
@@ -3035,6 +3038,10 @@ pub enum PluginCommand {
         write_config_to_disk: bool,
     },
     RegisterDefaultKeybindings(String),
+    /// Register a provider for this plugin instance. Requires RunCommands.
+    RegisterAgentProvider(crate::agent::provider::AgentProvider),
+    /// Read all registered agent provider definitions. Requires RunCommands.
+    GetAgentProviders,
     ListClients,
     ChangeHostFolder(PathBuf),
     SetFloatingPanePinned(PaneId, bool), // bool -> should be pinned

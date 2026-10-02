@@ -41,7 +41,19 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
-pub const OFFERED: &[&str] = &["codex", "claude", "pi", "cursor", "opencode", "muse", "agy"];
+pub const OFFERED: &[&str] = &["codex", "claude", "pi", "cursor", "muse", "agy"];
+
+pub fn offered() -> Vec<String> {
+    OFFERED
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .chain(
+            yinz_types::agent::provider::providers()
+                .into_iter()
+                .map(|provider| provider.kind),
+        )
+        .collect()
+}
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
@@ -68,10 +80,6 @@ pub const CODEX_PERMISSION_MODES: &[&str] = &[
 
 /// `cursor-agent` has one switch: `--force`, which `skip` and `force` both name.
 pub const CURSOR_PERMISSION_MODES: &[&str] = &["skip", "force"];
-
-/// opencode has no bypass; `--auto` auto-approves what is not explicitly denied. Both
-/// `auto`, its own word, and `skip`, the spelling every other kind shares, name it.
-pub const OPENCODE_PERMISSION_MODES: &[&str] = &["auto", "skip"];
 
 /// The approval modes `muse --approval-mode` accepts, plus `skip` for `--yolo`,
 /// which disables approval and sandboxing and trusts the workspace - the closest
@@ -111,13 +119,49 @@ pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
     }
 }
 
+/// Current effort choices, including plugin registrations.
+pub fn effort_options(kind: &str) -> Vec<String> {
+    if let Some(provider) = yinz_types::agent::provider::provider(kind) {
+        return provider.launch.efforts.keys().cloned().collect();
+    }
+    effort_levels(Some(kind))
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect()
+}
+
+pub fn permission_modes(kind: &str) -> Vec<String> {
+    if let Some(provider) = yinz_types::agent::provider::provider(kind) {
+        return provider.launch.permissions.keys().cloned().collect();
+    }
+    let modes = match normalize_kind(kind) {
+        "codex" => CODEX_PERMISSION_MODES,
+        "claude" => CLAUDE_PERMISSION_MODES,
+        "cursor" => CURSOR_PERMISSION_MODES,
+        "muse" => MUSE_PERMISSION_MODES,
+        "agy" => AGY_PERMISSION_MODES,
+        // pi's permission gating is its extensions', not a flag; the select offers
+        // only the default, which is the truth of it.
+        "pi" => PI_PERMISSION_MODES,
+        _ => &[],
+    };
+    modes.iter().map(|value| (*value).to_owned()).collect()
+}
+
 /// The program a kind runs.
 ///
 /// Identity for all but one: `cursor` ships its agent as `cursor-agent`, and the bare
 /// `cursor` on the path is the editor. The mapping is here rather than at each call
 /// site because there used to be two copies of it and they were one release apart from
 /// disagreeing.
-pub fn binary_for(kind: &str) -> &str {
+pub fn binary_for(kind: &str) -> String {
+    if let Some(provider) = yinz_types::agent::provider::provider(kind) {
+        return provider.executable.clone();
+    }
+    builtin_binary_for(kind).to_owned()
+}
+
+fn builtin_binary_for(kind: &str) -> &str {
     match normalize_kind(kind) {
         "cursor" => "cursor-agent",
         other => other,
@@ -130,13 +174,11 @@ pub fn kind_for_spec(spec: &Spec) -> Option<String> {
     trimmed(&spec.kind)
         .map(|kind| {
             yinz_types::agent::kind_of(kind)
-                .map(str::to_owned)
                 .unwrap_or_else(|| normalize_kind(&kind.to_lowercase()).to_owned())
         })
         .or_else(|| {
             let command = trimmed(&spec.command)?;
             yinz_types::agent::kind_from_program_and_args(std::path::Path::new(command), &spec.args)
-                .map(str::to_owned)
         })
 }
 
@@ -193,6 +235,16 @@ pub fn worktree_path_in(dir: Option<&str>, branch: &str) -> String {
 /// off and got an agent that asks would not find out until it stalled.
 pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<String>), String> {
     let kind = kind.map(normalize_kind);
+    if let Some(provider) = kind.and_then(yinz_types::agent::provider::provider) {
+        return provider_args(&provider, spec);
+    }
+    builtin_shape_args(kind, spec)
+}
+
+fn builtin_shape_args(
+    kind: Option<&str>,
+    spec: &Spec,
+) -> Result<(Vec<String>, Vec<String>), String> {
     let mut leading = Vec::new();
     let mut flags = Vec::new();
     let mut model = trimmed(&spec.model).map(str::to_owned);
@@ -351,28 +403,6 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 Some(id) => leading.extend(["resume".to_owned(), id.to_owned()]),
             }
         },
-        Some("opencode") => {
-            // No hooks are handed over here: opencode's wiring is a plugin file it loads
-            // from `~/.config/opencode/plugin/`, so a spawned pane reports itself only when
-            // `yinz hocus hooks install` has run - the same shape Codex has, for the same
-            // reason (a plugin file cannot be carried on the command line the way Claude
-            // Code's `--settings` can).
-            match mode {
-                None => {},
-                Some("auto" | "skip") => flags.push("--auto".to_owned()),
-                Some(mode) => return unknown_mode(OPENCODE_PERMISSION_MODES, mode),
-            }
-            // Both are flags, unlike Codex's `resume` subcommand. Its `--prompt` is a flag
-            // too, added by `plan`; its positional is a project path, never a prompt.
-            match resume {
-                None => {},
-                Some("last") => flags.push("--continue".to_owned()),
-                Some(id) => {
-                    flags.push("--session".to_owned());
-                    flags.push(id.to_owned());
-                },
-            }
-        },
         Some("agy") => {
             match mode {
                 None => {},
@@ -439,6 +469,62 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 ));
             }
         },
+    }
+    Ok((leading, flags))
+}
+
+fn provider_args(
+    provider: &yinz_types::agent::provider::AgentProvider,
+    spec: &Spec,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    use yinz_types::agent::provider::expand_args;
+    let mut leading = provider.launch.args.clone();
+    let mut flags = Vec::new();
+    if let Some(model) = trimmed(&spec.model) {
+        if provider.launch.model_args.is_empty() {
+            return Err(format!(
+                "{} does not support selecting a model",
+                provider.kind
+            ));
+        }
+        flags.extend(expand_args(&provider.launch.model_args, model));
+    }
+    for (label, value, options) in [
+        ("effort", trimmed(&spec.effort), &provider.launch.efforts),
+        (
+            "permission mode",
+            trimmed(&spec.permission_mode),
+            &provider.launch.permissions,
+        ),
+    ] {
+        if let Some(value) = value {
+            let args = options.get(value).ok_or_else(|| {
+                format!(
+                    "{} does not support {label} {value:?}; accepted: {}",
+                    provider.kind,
+                    options.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            })?;
+            flags.extend(expand_args(args, value));
+        }
+    }
+    if let Some(resume) = trimmed(&spec.resume) {
+        let template = if resume == "last" {
+            &provider.launch.resume_last_args
+        } else {
+            &provider.launch.resume_args
+        };
+        if template.is_empty() {
+            return Err(format!(
+                "{} does not support resuming {resume:?}",
+                provider.kind
+            ));
+        }
+        if provider.launch.resume_before_args {
+            leading.extend(expand_args(template, resume));
+        } else {
+            flags.extend(expand_args(template, resume));
+        }
     }
     Ok((leading, flags))
 }
@@ -564,22 +650,26 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
         None,
     )?;
     let kind = kind_for_spec(spec);
+    let provider = kind
+        .as_deref()
+        .and_then(yinz_types::agent::provider::provider);
     let executable = trimmed(&spec.command);
     if let (Some(explicit), Some(executable)) = (trimmed(&spec.kind), executable) {
         if let Some(detected) = yinz_types::agent::kind_from_program_and_args(
             std::path::Path::new(executable),
             &spec.args,
         ) {
-            if kind.as_deref() != Some(detected) {
+            if kind.as_deref() != Some(detected.as_str()) {
                 return Err(format!(
                     "agent kind {explicit:?} conflicts with {detected} executable {executable:?}"
                 ));
             }
         }
     }
-    let program = match (kind.as_deref(), executable) {
-        (_, Some(command)) => command.to_owned(),
-        (Some(kind), None) => match trimmed(&spec.kind) {
+    let program = match (kind.as_deref(), executable, &provider) {
+        (_, Some(command), _) => command.to_owned(),
+        (Some(_), None, Some(provider)) => provider.executable.clone(),
+        (Some(kind), None, None) => match trimmed(&spec.kind) {
             Some(name) if yinz_types::agent::kind_of(name).is_some() && name.contains('/') => {
                 name.to_owned()
             },
@@ -588,9 +678,9 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
             {
                 name.to_lowercase()
             },
-            _ => binary_for(kind).to_owned(),
+            _ => builtin_binary_for(kind).to_owned(),
         },
-        (None, None) => return Err("an agent or a command is required".to_owned()),
+        (None, None, _) => return Err("an agent or a command is required".to_owned()),
     };
     let indirect_agent = yinz_types::agent::kind_of(&program).is_none()
         && yinz_types::agent::kind_from_program_and_args(
@@ -617,7 +707,10 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
             "a muse resume takes no opening prompt; prompt the pane after it starts".to_owned(),
         );
     }
-    let (leading, flags) = shape_args(kind.as_deref(), spec)?;
+    let (leading, flags) = match &provider {
+        Some(provider) => provider_args(provider, spec)?,
+        None => builtin_shape_args(kind.as_deref(), spec)?,
+    };
     if indirect_agent && !leading.is_empty() {
         return Err("resume for an interpreter or wrapper command requires a directly executable agent shim; alternatively, put the complete resume invocation in args and omit resume".to_owned());
     }
@@ -628,16 +721,25 @@ pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     // like a flag is still a prompt, and what the agent was asked to do says nothing about
     // how it was asked to run.
     let env = launch_environment(spec, kind.as_deref(), &args);
-    // Last, and after every flag: a positional argument that came before a flag would
-    // be read by some of these programs as the flag's value. opencode is the exception -
-    // its one positional is a project *path*, so its prompt is handed over as `--prompt`.
+    // Prompt placement belongs to the provider; argv templates preserve it as one argument.
     if let Some(prompt) = trimmed(&spec.prompt) {
-        if kind.as_deref() == Some("opencode") {
-            args.push("--prompt".to_owned());
-        } else if kind.as_deref() == Some("agy") {
-            args.push("--prompt-interactive".to_owned());
+        if let Some(provider) = &provider {
+            if provider.launch.prompt_args.is_empty() {
+                return Err(format!(
+                    "{} does not support an opening prompt",
+                    provider.kind
+                ));
+            }
+            args.extend(yinz_types::agent::provider::expand_args(
+                &provider.launch.prompt_args,
+                prompt,
+            ));
+        } else {
+            if kind.as_deref() == Some("agy") {
+                args.push("--prompt-interactive".to_owned());
+            }
+            args.push(prompt.to_owned());
         }
-        args.push(prompt.to_owned());
     }
 
     // An environment is an `env(1)` wrapper: assignments first, then the program and its
@@ -810,6 +912,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn spec(kind: &str) -> Spec {
+        if kind == "opencode" {
+            crate::agent::provider_fixture::register_opencode();
+        }
         Spec {
             kind: Some(kind.to_owned()),
             ..Default::default()

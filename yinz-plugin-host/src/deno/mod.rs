@@ -1,5 +1,7 @@
 //! A Send plugin handle with its V8 isolate confined to the pinned executor thread.
+mod agent_provider;
 mod analysis;
+pub use agent_provider::inspect_agent_provider;
 mod authoring;
 pub(crate) mod background_worker;
 mod checker;
@@ -677,6 +679,7 @@ impl DenoPlugin {
                     .forget(self.generation);
             }
         }
+        self.env().clear_agent_providers();
         self.wake.stopped.store(true, Ordering::Release);
         self.terminate.terminate_execution();
         self.env().clear_deno_watches(self.generation);

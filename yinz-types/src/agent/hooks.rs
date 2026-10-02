@@ -305,6 +305,11 @@ pub fn unwrapped_program_and_args<'a>(
 /// through an `env(1)` wrapper - `env K=V claude …` is `claude`, because `env` execs it and the
 /// pane is running the agent, not the wrapper. `None` when there is no program to name.
 pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
+    if let Some(kind) = kind_from_program_and_args(program, args) {
+        if super::provider::provider(&kind).is_some() {
+            return Some(kind);
+        }
+    }
     unwrapped_program_and_args(program, args)
         .and_then(|(program, _)| program.file_name())
         .map(|name| name.to_string_lossy().to_string())
@@ -321,15 +326,20 @@ pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
 /// "detected" kind from its command, and the server, which decides where a spawned agent
 /// pane goes before the process has said anything. Two lists would be two answers.
 pub const KINDS: &[&str] = &[
-    "muse", "codex", "claude", "cursor", "qwen", "gemini", "aider", "cline", "opencode", "pi",
-    "agy",
+    "muse", "codex", "claude", "cursor", "qwen", "gemini", "aider", "cline", "pi", "agy",
 ];
 
 /// Programs that run another program named in their own arguments. Half the table
 /// above ships as a `#!/usr/bin/env node` shim, so the real argv is
 /// `["node", "/opt/bin/gemini"]` and the first word names no agent at all.
-const INTERPRETERS: &[&str] = &[
+pub(super) const INTERPRETERS: &[&str] = &[
     "node", "bun", "deno", "npx", "python", "python3", "ruby", "perl", "uv", "uvx",
+];
+
+/// Programs whose foreground command means that the pane is at a shell prompt.
+pub const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "xonsh", "elvish", "pwsh",
+    "ash", "busybox",
 ];
 
 /// The program a command-line word names: the file name of its path.
@@ -346,7 +356,7 @@ pub fn program(word: &str) -> &str {
 /// Each step strips decoration a packager added and the user never typed — `claude.js`
 /// from a shim, `-0.1.0-R708.1` from a versioned binary, `-cli` from a published name.
 /// The segment is still a whole one, so `pipenv` is not `pi`.
-pub fn kind_of(word: &str) -> Option<&'static str> {
+pub fn kind_of(word: &str) -> Option<String> {
     let name = program(word).to_lowercase();
     let stem = name.split('.').next().unwrap_or_default();
     [
@@ -357,9 +367,15 @@ pub fn kind_of(word: &str) -> Option<&'static str> {
     .iter()
     .find_map(|candidate| {
         if *candidate == "antigravity" {
-            Some("agy")
+            Some("agy".to_owned())
         } else {
-            KINDS.iter().find(|kind| *kind == candidate).copied()
+            KINDS
+                .iter()
+                .find(|kind| *kind == candidate)
+                .map(|kind| (*kind).to_owned())
+                .or_else(|| {
+                    super::provider::provider(candidate).map(|provider| provider.kind.clone())
+                })
         }
     })
 }
@@ -372,14 +388,14 @@ pub fn kind_of(word: &str) -> Option<&'static str> {
 /// This is the half of detection that can be *trusted over time*: a pane that is
 /// running an agent right now is one, whatever it is called. `hocus-agentd` latches
 /// on this and nothing else.
-pub fn kind_from_command(command: &str) -> Option<&'static str> {
+pub fn kind_from_command(command: &str) -> Option<String> {
     let mut words = command.split_whitespace();
     let first = words.next().unwrap_or_default();
     if program(first) == "yinz" && words.next() == Some("hocus") {
         // The launchers only: `yinz hocus hooks install` is maintenance, not an agent.
         match words.next() {
-            Some("codex") => return Some("codex"),
-            Some("muse") => return Some("muse"),
+            Some("codex") => return Some("codex".to_owned()),
+            Some("muse") => return Some("muse".to_owned()),
             _ => {},
         }
     }
@@ -409,7 +425,7 @@ pub fn kind_from_command(command: &str) -> Option<&'static str> {
 /// `env` is looked through the way [`agent_kind_of`] does, because that is how a plugin hands
 /// an agent its environment, and `env` is not an interpreter in the sense above: its program
 /// is not among its own arguments' interpreters but after its assignments.
-pub fn kind_from_program_and_args(program_path: &Path, args: &[String]) -> Option<&'static str> {
+pub fn kind_from_program_and_args(program_path: &Path, args: &[String]) -> Option<String> {
     let (program_path, args) = unwrapped_program_and_args(program_path, args)?;
     let name = program_path.file_name()?.to_string_lossy();
     if let Some(kind) = kind_of(&name) {
@@ -1536,7 +1552,11 @@ mod tests {
             ("yinz hocus codex --command codex -- resume --last", "codex"),
             ("yinz hocus muse --command muse -- resume --last", "muse"),
         ] {
-            assert_eq!(kind_from_command(command), Some(kind), "{command}");
+            assert_eq!(
+                kind_from_command(command).as_deref(),
+                Some(kind),
+                "{command}"
+            );
         }
         for command in [
             "zsh",
@@ -1553,18 +1573,21 @@ mod tests {
     fn a_program_and_its_arguments_name_an_agent_through_env_and_an_interpreter() {
         let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
         assert_eq!(
-            kind_from_program_and_args(Path::new("/usr/bin/claude"), &args(&["--model", "opus"])),
+            kind_from_program_and_args(Path::new("/usr/bin/claude"), &args(&["--model", "opus"]))
+                .as_deref(),
             Some("claude")
         );
         assert_eq!(
-            kind_from_program_and_args(Path::new("env"), &args(&["FOO=1", "codex", "--resume"])),
+            kind_from_program_and_args(Path::new("env"), &args(&["FOO=1", "codex", "--resume"]))
+                .as_deref(),
             Some("codex")
         );
         assert_eq!(
             kind_from_program_and_args(
                 Path::new("/usr/bin/env"),
                 &args(&["node", "/opt/bin/gemini"])
-            ),
+            )
+            .as_deref(),
             Some("gemini")
         );
         for (list, kind) in [
@@ -1580,7 +1603,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                kind_from_program_and_args(Path::new("env"), &args(list)),
+                kind_from_program_and_args(Path::new("env"), &args(list)).as_deref(),
                 Some(kind),
                 "env {list:?}"
             );

@@ -780,16 +780,26 @@ pub fn plugin_thread_main(
                 plugin_id,
                 client_id,
                 events,
-                is_background,
+                background_subscriptions,
             ) => {
-                if is_background {
+                if let Some(subscriptions) = background_subscriptions {
                     let _ = bus.senders.send_to_screen(
                         ScreenInstruction::UpdateBackgroundPluginSubscriptions(
                             plugin_id,
                             client_id,
-                            events.clone(),
+                            subscriptions,
                         ),
                     );
+                }
+                if events.contains(&EventType::AgentProvidersChanged) {
+                    wasm_bridge.update_plugins(
+                        vec![(
+                            Some(plugin_id),
+                            Some(client_id),
+                            Event::AgentProvidersChanged(yinz_types::agent::provider::providers()),
+                        )],
+                        shutdown_send.clone(),
+                    )?;
                 }
                 if events.contains(&EventType::InitialKeybinds) {
                     wasm_bridge.send_initial_keybinds_to_plugin(plugin_id, client_id);

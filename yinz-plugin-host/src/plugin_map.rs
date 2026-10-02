@@ -554,7 +554,10 @@ impl PluginMap {
                             plugin_env
                                 .senders
                                 .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
-                                    plugin_id, client_id, events, true,
+                                    plugin_id,
+                                    client_id,
+                                    events.clone(),
+                                    Some(events),
                                 ))
                                 .context("failed to move background plugin subscriptions")
                                 .non_fatal();
@@ -784,6 +787,15 @@ impl<T: Write + Send + 'static> std::io::Write for WriteOutputStream<T> {
 }
 
 impl PluginEnv {
+    pub(crate) fn clear_agent_providers(&self) {
+        if self
+            .deno_generation
+            .is_some_and(yinz_types::agent::provider::unregister_owner)
+        {
+            crate::yinz_exports::broadcast_agent_providers(&self.senders);
+        }
+    }
+
     pub fn originating_plugin(
         &self,
         context: BTreeMap<String, String>,

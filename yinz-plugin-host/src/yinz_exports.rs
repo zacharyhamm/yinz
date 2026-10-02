@@ -401,6 +401,42 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     match check_command_permission(env, &command) {
         (PermissionStatus::Granted, _) => match command {
+            PluginCommand::RegisterAgentProvider(provider) => {
+                let typescript = env.plugin_config.is_builtin_deno()
+                    || matches!(
+                        env.resolved_source_path
+                            .as_deref()
+                            .unwrap_or(&env.plugin_config.path)
+                            .extension()
+                            .and_then(|extension| extension.to_str()),
+                        Some("ts" | "mts")
+                    );
+                let result = match env.deno_generation.filter(|_| typescript) {
+                    _ if env.unavailable.load(atomic::Ordering::Acquire)
+                        || env.cancel.load(atomic::Ordering::Acquire) =>
+                    {
+                        Err("agent provider plugin is no longer available".to_owned())
+                    },
+                    None => {
+                        Err("agent providers require a TypeScript (.ts or .mts) plugin".to_owned())
+                    },
+                    Some(_) if !env.plugin_config.is_shared() => Err(
+                        "agent provider plugins require shared true in their configuration"
+                            .to_owned(),
+                    ),
+                    Some(generation) => yinz_types::agent::provider::register(generation, provider),
+                };
+                if result.is_ok() {
+                    broadcast_agent_providers(&env.senders);
+                }
+                write_agent_providers_response(
+                    env,
+                    result.map(|()| yinz_types::agent::provider::providers()),
+                )?;
+            },
+            PluginCommand::GetAgentProviders => {
+                write_agent_providers_response(env, Ok(yinz_types::agent::provider::providers()))?;
+            },
             PluginCommand::AgentControl { id, request } => {
                 let mut request: yinz_types::agent::control::AgentRequest =
                     serde_json::from_str(&request).context("decode agent request")?;
@@ -1203,6 +1239,15 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             ),
         },
         (PermissionStatus::Denied, permission) => {
+            if matches!(
+                command,
+                PluginCommand::RegisterAgentProvider(_) | PluginCommand::GetAgentProviders
+            ) {
+                return write_agent_providers_response(
+                    env,
+                    Err(format!("Permission denied: {permission:?}")),
+                );
+            }
             if matches!(command, PluginCommand::PaneTabs(_)) {
                 let result: yinz_types::pane_tabs::PaneTabsResponse =
                     Err(format!("Permission denied: {permission:?}"));
@@ -1262,11 +1307,33 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     Ok(())
 }
 
+fn write_agent_providers_response(
+    env: &mut PluginEnv,
+    result: Result<Vec<yinz_types::agent::provider::AgentProvider>, String>,
+) -> Result<()> {
+    let response = yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse {
+        json: serde_json::to_string(&result).context("serialize agent provider response")?,
+    };
+    wasi_write_object(env, &response.encode_to_vec())
+}
+
+pub(crate) fn broadcast_agent_providers(senders: &ThreadSenders) {
+    senders
+        .send_to_plugin(PluginInstruction::Update(vec![(
+            None,
+            None,
+            Event::AgentProvidersChanged(yinz_types::agent::provider::providers()),
+        )]))
+        .context("broadcast agent providers")
+        .non_fatal();
+}
+
 fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {
-    env.subscriptions
-        .lock()
-        .to_anyhow()?
-        .extend(event_list.clone());
+    let background_subscriptions = {
+        let mut subscriptions = env.subscriptions.lock().to_anyhow()?;
+        subscriptions.extend(event_list.clone());
+        env.tab_index.is_none().then(|| subscriptions.clone())
+    };
     env.senders
         .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
             env.plugin_id,
@@ -1274,7 +1341,7 @@ fn subscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {
             event_list,
             // The plugin thread must not lock this guest to inspect its metadata:
             // the guest may already be waiting for a synchronous reply from it.
-            env.tab_index.is_none(),
+            background_subscriptions,
         ))
 }
 
@@ -1315,10 +1382,20 @@ fn message_to_plugin(env: &PluginEnv, mut message_to_plugin: MessageToPlugin) ->
 }
 
 fn unsubscribe(env: &PluginEnv, event_list: HashSet<EventType>) -> Result<()> {
-    env.subscriptions
-        .lock()
-        .to_anyhow()?
-        .retain(|k| !event_list.contains(k));
+    let background_subscriptions = {
+        let mut subscriptions = env.subscriptions.lock().to_anyhow()?;
+        subscriptions.retain(|k| !event_list.contains(k));
+        env.tab_index.is_none().then(|| subscriptions.clone())
+    };
+    if background_subscriptions.is_some() {
+        env.senders
+            .send_to_plugin(PluginInstruction::PluginSubscribedToEvents(
+                env.plugin_id,
+                env.client_id,
+                HashSet::new(),
+                background_subscriptions,
+            ))?;
+    }
     Ok(())
 }
 
@@ -8684,10 +8761,8 @@ pub(crate) fn check_command_permission(
     plugin_env: &PluginEnv,
     command: &PluginCommand,
 ) -> (PermissionStatus, Option<PermissionType>) {
-    if matches!(
-        command,
-        PluginCommand::SwampRequest { .. } | PluginCommand::AgentControl { .. }
-    ) && !plugin_env.plugin_config.is_builtin()
+    if matches!(command, PluginCommand::SwampRequest { .. })
+        && !plugin_env.plugin_config.is_builtin()
     {
         return (PermissionStatus::Denied, Some(PermissionType::RunCommands));
     }
@@ -8815,6 +8890,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::OpenCommandPaneInPlaceOfPaneId
         | CommandType::RunCommand
         | CommandType::AgentControl
+        | CommandType::RegisterAgentProvider
+        | CommandType::GetAgentProviders
         | CommandType::SwampRequest
         | CommandType::RunCommandInPane
         | CommandType::SpawnAgent

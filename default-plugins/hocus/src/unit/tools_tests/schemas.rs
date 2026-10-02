@@ -347,7 +347,7 @@ fn agent_spawn_offers_exactly_the_agents_the_new_agent_modal_does() {
         .unwrap();
     assert_eq!(
         spawn["function"]["parameters"]["properties"]["agent"]["enum"],
-        json!(launch::OFFERED),
+        json!(launch::offered()),
     );
 }
 

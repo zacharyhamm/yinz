@@ -153,7 +153,7 @@ fn consumer(runtime: &mut JsRuntime, name: &str) {
       return body ? yinz.decodeUtf8(new Uint8Array(body.split(',').map(Number))) : '';
     }});"#));
     let tail = if name == "workflow-view" { "globalThis.M = view;" } else { "" };
-    run(runtime, &format!("globalThis.reloadConsumer = () => {{ (function(z, definePlugin) {{ {source}\n{tail}\n}})(mock, p => p); }}; reloadConsumer();"));
+    run(runtime, &format!("globalThis.reloadConsumer = () => {{ globalThis.handlers = {{}}; (function(z, definePlugin) {{ {source}\n{tail}\n}})(mock, p => p); }}; reloadConsumer();"));
 }
 
 #[test]

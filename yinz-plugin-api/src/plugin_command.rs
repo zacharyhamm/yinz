@@ -1,4 +1,5 @@
 use super::generated_api::api::plugin_command as generated;
+pub use super::generated_api::api::plugin_command::AgentProvidersResponse as ProtobufAgentProvidersResponse;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
 pub use super::generated_api::api::{
@@ -3579,6 +3580,13 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for FinishQueueJob"),
             },
+            Some(CommandName::RegisterAgentProvider) => match protobuf_plugin_command.payload {
+                Some(Payload::RegisterAgentProviderPayload(json)) => serde_json::from_str(&json)
+                    .map(PluginCommand::RegisterAgentProvider)
+                    .map_err(|_| "Malformed agent provider"),
+                _ => Err("Mismatched payload for RegisterAgentProvider"),
+            },
+            Some(CommandName::GetAgentProviders) => Ok(PluginCommand::GetAgentProviders),
             Some(CommandName::RegisterDefaultKeybindings) => {
                 match protobuf_plugin_command.payload {
                     Some(Payload::RegisterDefaultKeybindingsPayload(keybindings)) => {
@@ -6007,6 +6015,17 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     payload,
                 })),
             }),
+            PluginCommand::RegisterAgentProvider(provider) => Ok(ProtobufPluginCommand {
+                name: CommandName::RegisterAgentProvider as i32,
+                payload: Some(Payload::RegisterAgentProviderPayload(
+                    serde_json::to_string(&provider)
+                        .map_err(|_| "Cannot serialize agent provider")?,
+                )),
+            }),
+            PluginCommand::GetAgentProviders => Ok(ProtobufPluginCommand {
+                name: CommandName::GetAgentProviders as i32,
+                payload: None,
+            }),
             PluginCommand::RegisterDefaultKeybindings(keybindings) => Ok(ProtobufPluginCommand {
                 name: CommandName::RegisterDefaultKeybindings as i32,
                 payload: Some(Payload::RegisterDefaultKeybindingsPayload(keybindings)),
@@ -8135,6 +8154,8 @@ mod tests {
                 | PluginCommand::ReloadPlugin(_)
                 | PluginCommand::LoadNewPlugin { .. }
                 | PluginCommand::RegisterDefaultKeybindings(_)
+                | PluginCommand::RegisterAgentProvider(_)
+                | PluginCommand::GetAgentProviders
                 | PluginCommand::ListClients
                 | PluginCommand::ChangeHostFolder(_)
                 | PluginCommand::SetFloatingPanePinned(..)

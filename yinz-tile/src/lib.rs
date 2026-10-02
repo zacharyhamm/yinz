@@ -170,6 +170,7 @@ macro_rules! register_plugin {
                 let protobuf_event: ProtobufEvent =
                     ProtobufEvent::decode(protobuf_bytes.as_slice()).unwrap();
                 let event = protobuf_event.try_into().unwrap();
+                $crate::shim::update_agent_providers(&event);
                 state.borrow_mut().update(event)
             })
         }

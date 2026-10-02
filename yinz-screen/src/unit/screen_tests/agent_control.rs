@@ -838,12 +838,24 @@ fn agent_read_returns_the_latest_lines_even_when_scrolled_up() {
 }
 
 #[test]
-fn opencode_idle_waits_observe_lifecycle_without_prompt_support() {
+fn status_only_provider_idle_waits_observe_lifecycle_without_prompt_support() {
+    use yinz_types::agent::provider::{register, unregister_owner, AgentProvider};
+    let kind = "screen-status-only-test";
+    let owner = 70104;
+    register(
+        owner,
+        AgentProvider {
+            kind: kind.into(),
+            executable: kind.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     for initially_busy in [false, true] {
-        let (mut screen, messages, writes) = setup("opencode");
+        let (mut screen, messages, writes) = setup(kind);
         report_kind(
             &mut screen,
-            "opencode",
+            kind,
             hook(if initially_busy {
                 "UserPromptSubmit"
             } else {
@@ -853,7 +865,7 @@ fn opencode_idle_waits_observe_lifecycle_without_prompt_support() {
         screen.agent_control(wait(AgentState::Idle), CLIENT);
         if initially_busy {
             assert!(replies(&messages, CLIENT).is_empty());
-            report_kind(&mut screen, "opencode", hook("Stop"));
+            report_kind(&mut screen, kind, hook("Stop"));
         }
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, AgentOutcome::Ok);
@@ -869,17 +881,30 @@ fn opencode_idle_waits_observe_lifecycle_without_prompt_support() {
             .try_iter()
             .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
     }
+    unregister_owner(owner);
 }
 
 #[test]
-fn opencode_idle_wait_requires_matching_lifecycle_evidence() {
+fn status_only_provider_idle_wait_requires_matching_lifecycle_evidence() {
+    use yinz_types::agent::provider::{register, unregister_owner, AgentProvider};
+    let kind = "screen-lifecycle-evidence-test";
+    let owner = 70105;
+    register(
+        owner,
+        AgentProvider {
+            kind: kind.into(),
+            executable: kind.into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     for evidence in ["missing", "state-only", "wrong-kind", "wrong-conversation"] {
-        let (mut screen, messages, _writes) = setup("opencode");
+        let (mut screen, messages, _writes) = setup(kind);
         if evidence.starts_with("wrong-") {
             let kind = if evidence == "wrong-kind" {
                 "codex"
             } else {
-                "opencode"
+                kind
             };
             report_kind(&mut screen, kind, hook("SessionStart"));
         }
@@ -888,7 +913,7 @@ fn opencode_idle_wait_requires_matching_lifecycle_evidence() {
             if evidence == "wrong-conversation" {
                 startup.session_id = "other".into();
             }
-            let HookOutcome::Reported(agent) = hook_outcome("opencode", &startup) else {
+            let HookOutcome::Reported(agent) = hook_outcome(kind, &startup) else {
                 panic!("startup reports an idle agent");
             };
             crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(agent)).unwrap();
@@ -903,6 +928,7 @@ fn opencode_idle_wait_requires_matching_lifecycle_evidence() {
             "{evidence}"
         );
     }
+    unregister_owner(owner);
 }
 
 #[test]
@@ -6218,4 +6244,200 @@ fn unpinned_muse_recovery_advice_quotes_the_empty_conversation() {
         .message
         .unwrap()
         .contains("--conversation '' --confirm-empty"));
+}
+
+#[test]
+fn plugin_agent_input_uses_declared_bytes_delay_and_correlated_hooks() {
+    use yinz_types::agent::provider::{register, unregister_owner, AgentInput, AgentProvider};
+    let kind = "screen-input-test";
+    let owner = 70_101;
+    let mut provider = AgentProvider {
+        kind: kind.into(),
+        executable: kind.into(),
+        input: Some(AgentInput {
+            submit_key: "Ctrl j".into(),
+            submit_delay_ms: 375,
+            paste_prefix: "Instructions: ".into(),
+            newline: "\r".into(),
+            command_prefixes: vec![":".into()],
+        }),
+        ..Default::default()
+    };
+    register(owner, provider.clone()).unwrap();
+    let (mut screen, messages, writes) = setup(kind);
+    report_kind(&mut screen, kind, hook("SessionStart"));
+    screen.agent_control(
+        AgentRequest::Prompt {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            prompt: "review\ncode".into(),
+            submission_id: None,
+            wait: true,
+            timeout_ms: 30_000,
+        },
+        CLIENT,
+    );
+    let now = Instant::now();
+    screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+    assert_eq!(
+        finish_paste(&writes),
+        b"Instructions: \x1b[200~review\rcode\x1b[201~"
+    );
+    screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+    // Replacing a descriptor cannot change input which is already in flight.
+    provider.input.as_mut().unwrap().submit_key = "Enter".into();
+    provider.input.as_mut().unwrap().submit_delay_ms = 0;
+    provider.input.as_mut().unwrap().paste_prefix = "Changed: ".into();
+    provider.input.as_mut().unwrap().newline = "\n".into();
+    register(owner, provider).unwrap();
+    screen.refresh_agent_controls_at(now + Duration::from_millis(1374));
+    assert!(finish_paste(&writes).is_empty());
+    screen.refresh_agent_controls_at(now + Duration::from_millis(1375));
+    assert_eq!(finish_paste(&writes), b"\n");
+    screen.refresh_agent_controls_at(now + Duration::from_secs(2));
+    assert!(finish_paste(&writes).is_empty());
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(
+        &mut screen,
+        kind,
+        HookEvent {
+            prompt: Some("Instructions: review\rcode".into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    report_kind(
+        &mut screen,
+        kind,
+        HookEvent {
+            turn_id: Some("old".into()),
+            ..hook("Stop")
+        },
+    );
+    assert!(replies(&messages, CLIENT).is_empty());
+    report_kind(&mut screen, kind, hook("Stop"));
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Completed);
+    assert!(response.acknowledged);
+    assert_eq!(response.turn_id.as_deref(), Some("turn"));
+    assert!(response.agents[0].ready);
+    unregister_owner(owner);
+}
+
+#[test]
+fn plugin_agent_capability_and_command_prefixes_refuse_unsafe_prompt_input() {
+    use yinz_types::agent::provider::{register, unregister_owner, AgentInput, AgentProvider};
+    let kind = "screen-capability-test";
+    let owner = 70_102;
+    for input in [
+        None,
+        Some(AgentInput {
+            command_prefixes: vec![":".into()],
+            ..Default::default()
+        }),
+    ] {
+        let unsupported = input.is_none();
+        register(
+            owner,
+            AgentProvider {
+                kind: kind.into(),
+                executable: kind.into(),
+                input,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(
+            AgentRequest::Prompt {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+                prompt: ":reset".into(),
+                submission_id: None,
+                wait: true,
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(
+            response.outcome,
+            if unsupported {
+                AgentOutcome::StatusUnavailable
+            } else {
+                AgentOutcome::Rejected
+            }
+        );
+        assert!(finish_paste(&writes).is_empty());
+        assert!(screen.agent_controls.is_empty());
+    }
+    unregister_owner(owner);
+}
+
+#[test]
+fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
+    use yinz_types::agent::provider::{register, unregister_owner, AgentInput, AgentProvider};
+    let kind = "screen-input-guards-test";
+    let owner = 70_103;
+    for reason in [
+        "input",
+        "failure",
+        "ack",
+        "replacement",
+        "closed",
+        "timeout",
+        "unload",
+    ] {
+        register(
+            owner,
+            AgentProvider {
+                kind: kind.into(),
+                executable: kind.into(),
+                input: Some(AgentInput::default()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        let mut completion = writes
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PtyWriteInstruction::Write(_, _, Some(completion)) => Some(completion),
+                _ => None,
+            })
+            .unwrap();
+        match reason {
+            "input" => screen.agent_write_for_test(),
+            "failure" => completion.set_error_message("partial write failed".into()),
+            "ack" => report_kind(&mut screen, kind, hook("UserPromptSubmit")),
+            "replacement" => screen.run_command_in_pane_with_id(
+                TerminalId::new(7),
+                RunCommand {
+                    command: "bash".into(),
+                    ..Default::default()
+                },
+                false,
+            ),
+            "closed" => screen.close_pane_explicitly(PANE, None),
+            "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
+            "unload" => {
+                unregister_owner(owner);
+            },
+            _ => unreachable!(),
+        }
+        finish_paste(&writes);
+        drop(completion);
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(101));
+        assert!(finish_paste(&writes).is_empty(), "{reason}");
+        if reason == "ack" {
+            assert!(replies(&messages, CLIENT).is_empty());
+        } else {
+            assert_eq!(replies(&messages, CLIENT).len(), 1, "{reason}");
+        }
+    }
+    unregister_owner(owner);
 }

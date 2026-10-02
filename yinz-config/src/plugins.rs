@@ -82,7 +82,7 @@ impl PluginConfig {
     pub fn is_shared(&self) -> bool {
         // Delivery and view attachment survive the short-lived CLI client that loads them.
         // Agent launchers must create one pane per action, not one per attached client.
-        if matches!(&self.location, RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "swamp-bridge" | "swamp-workflow" | "hocus-new-agent"))
+        if matches!(&self.location, RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "swamp-bridge" | "swamp-workflow" | "hocus-new-agent" | "agent-opencode"))
         {
             return true;
         }

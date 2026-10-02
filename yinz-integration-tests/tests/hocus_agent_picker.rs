@@ -1344,7 +1344,11 @@ fn the_four_panel_plugins_keep_their_identity_drafts_and_active_focus() {
     });
     yinz.send_stdin(&keys::ctrl('b'));
     yinz.wait_until("chat is ready to hide the panel", |grid| {
+        // The Todo editor also has a cursor; wait until Esc will reach the chat.
         grid.cursor.is_some()
+            && panel_members(&yinz)
+                .iter()
+                .any(|pane| pane["plugin_url"] == "hocus" && pane["is_focused"] == true)
     });
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("the whole panel is hidden", |grid| {

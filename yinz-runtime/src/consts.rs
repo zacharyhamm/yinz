@@ -39,6 +39,7 @@ pub const BUILTIN_DENO_PLUGIN_NAMES: &[&str] = &[
     "status-bar",
     "context-menu",
     "agent-policy",
+    "agent-opencode",
     "swamp-bridge",
     "swamp-workflow",
     "agent-exit",

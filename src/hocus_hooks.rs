@@ -17,6 +17,7 @@
 //! settings block, which the JSON agents share.
 
 use anyhow::{anyhow, Context, Result};
+use clap::ValueEnum;
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
 use std::io::Write;
@@ -60,7 +61,8 @@ const SCRIPT_VERSION: u32 = 12;
 
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
-const OPENCODE_PLUGIN_VERSION: u32 = 4;
+#[cfg(test)]
+const OPENCODE_PLUGIN_VERSION: u32 = 5;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///
@@ -70,7 +72,100 @@ const MARKER: &str = "hocus-hook.sh";
 
 /// The opencode plugin's file name and the string that marks the file as ours.
 const OPENCODE_PLUGIN_FILE: &str = "hocus.js";
-const OPENCODE_MARKER: &str = "hocus-opencode-plugin";
+
+fn legacy_agent(name: Option<&str>) -> Result<Option<HocusHookAgent>> {
+    name.map(|name| HocusHookAgent::from_str(name, true).map_err(|error| anyhow!(error)))
+        .transpose()
+}
+
+/// Provider metadata is evaluated from TypeScript in a worker with no host authority.
+/// The CLI, after explicit install/uninstall, performs only the declared file operations.
+fn provider_command(command: &HocusHooks) -> Result<bool> {
+    let (agent, project) = match command {
+        HocusHooks::Install {
+            agent,
+            project,
+            project_dir,
+            ..
+        }
+        | HocusHooks::Uninstall {
+            agent,
+            project,
+            project_dir,
+        } => (agent.as_deref(), *project || project_dir.is_some()),
+        HocusHooks::Status { agent } => (agent.as_deref(), false),
+    };
+    let Some(agent) = agent else {
+        return Ok(false);
+    };
+    if legacy_agent(Some(agent)).is_ok() && agent != "opencode" {
+        return Ok(false);
+    }
+    if project {
+        return Err(anyhow!(
+            "TypeScript provider hook files are installed at their declared home or config paths"
+        ));
+    }
+    let location = if agent == "opencode" {
+        "yinz:agent-opencode"
+    } else {
+        agent
+    };
+    let provider = yinz_server::inspect_agent_provider(location)?;
+    if provider.hooks.is_empty() {
+        return Err(anyhow!("{} declares no hook files", provider.kind));
+    }
+    let home = home()?;
+    let config =
+        non_empty(std::env::var_os("XDG_CONFIG_HOME")).unwrap_or_else(|| home.join(".config"));
+    let binary = std::env::current_exe().context("find this yinz binary")?;
+    for hook in &provider.hooks {
+        use yinz_runtime::agent::hook_files;
+        let path = hook_files::path(hook, &home, &config);
+        match command {
+            HocusHooks::Install { dry_run, .. } => {
+                let content = hook_files::render(
+                    hook,
+                    &binary,
+                    yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+                )?;
+                hook_files::read_owned(&path, &hook.marker)?;
+                if *dry_run {
+                    println!("would write {}:\n{content}", path.display());
+                } else {
+                    hook_files::install(&path, hook, &content)?;
+                    println!("wrote {}", path.display());
+                }
+            },
+            HocusHooks::Uninstall { .. } => {
+                hook_files::uninstall(&path, hook)?;
+                println!("removed {}", path.display());
+            },
+            HocusHooks::Status { .. } => provider_status(&path, hook, &binary)?,
+        }
+    }
+    Ok(true)
+}
+
+fn provider_status(
+    path: &Path,
+    hook: &yinz_types::agent::provider::AgentHookArtifact,
+    binary: &Path,
+) -> Result<()> {
+    use yinz_runtime::agent::hook_files;
+    let expected = hook_files::render(
+        hook,
+        binary,
+        yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+    )?;
+    let status = match hook_files::read_owned(path, &hook.marker)? {
+        Some(text) if text == expected => "current",
+        Some(_) => "outdated; run install again",
+        None => "missing",
+    };
+    println!("hook: {} ({status})", path.display());
+    Ok(())
+}
 
 pub(crate) fn hocus(command: Hocus) -> Result<()> {
     let hooks = match command {
@@ -88,6 +183,16 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
         },
         Hocus::Hooks(hooks) => hooks,
     };
+    if provider_command(&hooks)? {
+        return Ok(());
+    }
+    // The default/all commands use the same provider-owned paths as an explicit install.
+    let mut opencode_hooks = hooks.clone();
+    match &mut opencode_hooks {
+        HocusHooks::Install { agent, .. }
+        | HocusHooks::Uninstall { agent, .. }
+        | HocusHooks::Status { agent } => *agent = Some("opencode".to_owned()),
+    }
     match hooks {
         HocusHooks::Install {
             agent,
@@ -97,8 +202,14 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
         } => {
             let yinz = std::env::current_exe().context("cannot find this yinz binary")?;
             for_each_agent(
-                selected_agents(agent, project || project_dir.is_some())?,
+                selected_agents(
+                    legacy_agent(agent.as_deref())?,
+                    project || project_dir.is_some(),
+                )?,
                 |agent| {
+                    if agent == HocusHookAgent::Opencode {
+                        return provider_command(&opencode_hooks).map(|_| ());
+                    }
                     install(
                         &Files::resolve(agent, project, project_dir.clone())?,
                         &yinz,
@@ -112,25 +223,39 @@ pub(crate) fn hocus(command: Hocus) -> Result<()> {
             project,
             project_dir,
         } => for_each_agent(
-            selected_agents(agent, project || project_dir.is_some())?,
-            |agent| uninstall(&Files::resolve(agent, project, project_dir.clone())?),
+            selected_agents(
+                legacy_agent(agent.as_deref())?,
+                project || project_dir.is_some(),
+            )?,
+            |agent| {
+                if agent == HocusHookAgent::Opencode {
+                    return provider_command(&opencode_hooks).map(|_| ());
+                }
+                uninstall(&Files::resolve(agent, project, project_dir.clone())?)
+            },
         ),
         HocusHooks::Status { agent } => {
             let mut first = true;
-            let reported = for_each_agent(selected_agents(agent, false)?, |agent| {
-                // Two reports run together otherwise, and the second agent's heading reads
-                // as another line of the first one's.
-                if !std::mem::take(&mut first) {
-                    println!();
-                }
-                let files = if matches!(agent, HocusHookAgent::Claude | HocusHookAgent::Agy) {
-                    Files::resolve(agent, true, None)
-                        .or_else(|_| Files::resolve(agent, false, None))?
-                } else {
-                    Files::resolve(agent, false, None)?
-                };
-                status(&files)
-            });
+            let reported = for_each_agent(
+                selected_agents(legacy_agent(agent.as_deref())?, false)?,
+                |agent| {
+                    // Two reports run together otherwise, and the second agent's heading reads
+                    // as another line of the first one's.
+                    if !std::mem::take(&mut first) {
+                        println!();
+                    }
+                    if agent == HocusHookAgent::Opencode {
+                        return provider_command(&opencode_hooks).map(|_| ());
+                    }
+                    let files = if matches!(agent, HocusHookAgent::Claude | HocusHookAgent::Agy) {
+                        Files::resolve(agent, true, None)
+                            .or_else(|_| Files::resolve(agent, false, None))?
+                    } else {
+                        Files::resolve(agent, false, None)?
+                    };
+                    status(&files)
+                },
+            );
             // A fact about this shell rather than about either agent: said once, and said
             // even when a settings file could not be read.
             pane_line();
@@ -391,235 +516,21 @@ exit 0
     )
 }
 
-/// The opencode plugin `install` writes, with this binary's own path baked in.
-///
-/// opencode is extended with a JS module rather than a shell hook, so this is the one
-/// agent whose wiring is a file it loads instead of an entry it runs. The plugin is a
-/// thin transport: it forwards opencode's own events and interception hooks, and the
-/// reading of them is `yinz_types::agent::opencode`, in the session, so opencode and
-/// the other two agents cannot disagree about what an event meant.
-///
-/// The path is baked for the same reason the shell script's is: the server inherits the
-/// environment the pane's shell was started with, which is not always one where `yinz`
-/// is on the path. There is no fallback to a `yinz` from PATH because opencode gives
-/// the plugin no shell; a moved binary is an `install` away from being rewritten, and
-/// `status` is what says the path has stopped existing.
+// OpenCode is a TypeScript provider; the compatibility CLI spelling resolves its module.
+fn opencode_provider() -> Result<yinz_types::agent::provider::AgentProvider> {
+    yinz_server::inspect_agent_provider("yinz:agent-opencode")
+}
+
+#[cfg(test)]
 fn opencode_plugin(yinz: &Path) -> String {
-    let yinz = serde_json::to_string(&yinz.display().to_string()).expect("a path serializes");
-    // Spelled from the constant the broker reads, so the two halves of the remote route
-    // cannot drift apart: a variable name that does not match is silently no route at all.
-    let token_env = serde_json::to_string(yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV)
-        .expect("a name serializes");
-    OPENCODE_PLUGIN_TEMPLATE
-        .replace("__YINZ_BIN__", &yinz)
-        .replace("__TOKEN_ENV__", &token_env)
-        .replace("__VERSION__", &OPENCODE_PLUGIN_VERSION.to_string())
+    let provider = opencode_provider().expect("builtin TypeScript provider evaluates");
+    yinz_runtime::agent::hook_files::render(
+        &provider.hooks[0],
+        yinz,
+        yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+    )
+    .expect("hook template renders")
 }
-
-/// [`opencode_plugin`]'s body, with the three substitutions left to be filled in.
-///
-/// A template rather than a `format!` because the body is JavaScript, whose braces would
-/// all have to be doubled; and because a missed substitution has to fail a test rather
-/// than write a plugin opencode cannot parse.
-const OPENCODE_PLUGIN_TEMPLATE: &str = r#"// hocus-opencode-plugin v__VERSION__ - generated by `yinz hocus hooks install`.
-// Do not edit; `yinz hocus hooks install` rewrites this file, and `--uninstall`
-// removes it.
-//
-// opencode loads this plugin from `~/.config/opencode/plugin/hocus.js`. It forwards
-// opencode's own event stream - and the interception hooks that are not events - to
-// whoever owns the pane: `yinz action agent-report --hook-json --kind opencode` for a
-// local pane, `yinz --pty-broker report opencode` for a remote one. The session reads
-// the events (`yinz-types/src/agent/opencode.rs`) and carries what they mean on the
-// pane, so the pane reports its own busy/waiting/idle state instead of being guessed at
-// from its screen.
-//
-// Two rules this file keeps, both of which matter:
-//   - it never throws. A report that fails must not interfere with the agent it is only
-//     reporting on.
-//   - callbacks never wait. Reports queue in order, starting after the prior child closes.
-
-import { spawn } from "node:child_process"
-
-const YINZ_BIN = __YINZ_BIN__
-const PANE_TOKEN_ENV = __TOKEN_ENV__
-const PANE_TOKEN = process.env[PANE_TOKEN_ENV]
-const PANE_REF = process.env.YINZ_PANE_REF
-
-let reports = Promise.resolve()
-
-function report(payload, isParent) {
-  // The remote token is tested first, and that order is the whole point: a remote pane
-  // carries a token *and* a pane id, and the pane id it carries is the asking session's,
-  // on a machine that has no such session. Neither set: not a yinz pane at all, and
-  // nothing to report to.
-  if (!PANE_TOKEN && !PANE_REF) return
-  const args = PANE_TOKEN
-    ? ["--pty-broker", "report", "opencode"]
-    : ["action", "agent-report", "--hook-json", "--kind", "opencode"]
-  let serialized
-  try {
-    serialized = JSON.stringify(payload)
-  } catch {
-    return
-  }
-  reports = reports.then(async () => {
-    if (!await isParent()) return
-    return new Promise((resolve) => {
-      let child
-      try {
-        child = spawn(YINZ_BIN, args, { stdio: ["pipe", "ignore", "ignore"] })
-      } catch {
-        resolve()
-        return
-      }
-      // Node emits close after error, including when spawning fails.
-      child.on("error", () => {})
-      child.on("close", resolve)
-      child.stdin.on("error", () => {})
-      try {
-        child.stdin.end(serialized)
-      } catch {
-        child.kill()
-      }
-    })
-  }).catch(() => {})
-}
-
-export const Hocus = async ({ directory, client }) => {
-  // The folder the server is working in. Stamped on every event because an opencode
-  // record is complete every time it is set, and an event that omitted the folder
-  // would clear one an earlier event had set.
-  const cwd = directory
-  // Cache whether each session is a parent, including sessions resumed after restart.
-  // Classify in report order so metadata lookups cannot reorder pane state changes.
-  const sessions = new Map()
-  const textParts = new Map()
-  const lastAssistant = new Map()
-
-  const send = (type, properties, info) => {
-    const sessionID = properties.sessionID
-    const parent = info ? !info.parentID : undefined
-    report({ type, properties: { cwd, ...properties } }, async () => {
-      if (!sessionID) return false
-      if (parent !== undefined && !sessions.has(sessionID)) sessions.set(sessionID, parent)
-      if (!sessions.has(sessionID)) {
-        const { data, error } = await client.session.get({ path: { id: sessionID } })
-        // Failed lookups suppress this report, but the next event can retry.
-        if (error || data?.id !== sessionID) return false
-        sessions.set(sessionID, !data.parentID)
-      }
-      const isParent = sessions.get(sessionID)
-      if (type === "session.deleted") sessions.delete(sessionID)
-      return isParent
-    })
-  }
-
-  const forget = (sessionID) => {
-    textParts.delete(sessionID)
-    lastAssistant.delete(sessionID)
-  }
-
-  return {
-    event: async ({ event }) => {
-      const p = event.properties ?? {}
-      switch (event.type) {
-        case "session.created":
-        case "session.deleted":
-          send(event.type, { sessionID: p.info?.id }, p.info)
-          if (event.type === "session.deleted") forget(p.info?.id)
-          return
-        case "session.idle": {
-          const last = lastAssistant.get(p.sessionID)
-          send("session.idle", {
-            sessionID: p.sessionID,
-            lastAssistantMessage: last?.text,
-            turnID: last?.messageID,
-          })
-          return
-        }
-        case "session.error": {
-          const last = lastAssistant.get(p.sessionID)
-          send("session.error", {
-            sessionID: p.sessionID,
-            lastAssistantMessage: last?.text,
-            turnID: last?.messageID,
-          })
-          return
-        }
-        case "session.compacted":
-          send("session.compacted", { sessionID: p.sessionID })
-          return
-        case "message.part.updated": {
-          const part = p.part
-          if (part?.type !== "text" || part.synthetic || part.ignored) return
-          const messages = textParts.get(part.sessionID) ?? new Map()
-          const parts = messages.get(part.messageID) ?? new Map()
-          parts.set(part.id, part.text ?? "")
-          messages.set(part.messageID, parts)
-          textParts.set(part.sessionID, messages)
-          return
-        }
-        case "message.updated": {
-          const info = p.info
-          if (info?.role !== "assistant" || !info.time?.completed) return
-          const parts = textParts.get(info.sessionID)?.get(info.id)
-          const text = parts ? [...parts.values()].join("") : ""
-          // Once consumed, the parts are dropped: the message's text lives on in
-          // `lastAssistant` until the next turn replaces it.
-          textParts.get(info.sessionID)?.delete(info.id)
-          if (!text) return
-          lastAssistant.set(info.sessionID, { messageID: info.id, text })
-          send("assistant.message", {
-            sessionID: info.sessionID,
-            messageID: info.id,
-            text,
-          })
-          return
-        }
-        case "permission.asked":
-        case "permission.updated":
-          send(event.type, { ...p })
-          return
-        case "permission.replied":
-          send("permission.replied", { sessionID: p.sessionID })
-          return
-        default:
-          return
-      }
-    },
-    "chat.message": async (input, output) => {
-      lastAssistant.delete(input.sessionID)
-      textParts.delete(input.sessionID)
-      const text = (output.parts ?? [])
-        .filter((part) => part.type === "text" && !part.synthetic && !part.ignored)
-        .map((part) => part.text ?? "")
-        .join(" ")
-        .trim()
-      send("chat.message", {
-        sessionID: input.sessionID,
-        messageID: output.message?.id,
-        prompt: text || undefined,
-      })
-    },
-    "tool.execute.before": async (input, output) => {
-      send("tool.execute.before", {
-        sessionID: input.sessionID,
-        callID: input.callID,
-        tool: input.tool,
-        args: output.args,
-      })
-    },
-    "tool.execute.after": async (input) => {
-      send("tool.execute.after", {
-        sessionID: input.sessionID,
-        callID: input.callID,
-        tool: input.tool,
-        args: input.args,
-      })
-    },
-  }
-}
-"#;
 
 /// One handler entry, as both agents' settings spell it.
 fn handler(command: &str, timeout: u64) -> Value {
@@ -1158,34 +1069,27 @@ fn write_generated(path: &Path, text: &str) -> Result<bool> {
 /// opencode's install: one plugin file, and no settings merge, because the file *is* the
 /// wiring.
 fn install_opencode(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
-    let plugin = opencode_plugin(yinz);
-    if let Some(existing) = read_generated(&files.script)? {
-        if !existing.contains(OPENCODE_MARKER) {
-            return Err(anyhow!(
-                "{} exists and was not written by yinz; move it aside first",
-                files.script.display()
-            ));
-        }
-    }
+    let provider = opencode_provider()?;
+    let hook = provider
+        .hooks
+        .first()
+        .context("provider has no hook artifact")?;
+    let content = yinz_runtime::agent::hook_files::render(
+        hook,
+        yinz,
+        yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV,
+    )?;
+    yinz_runtime::agent::hook_files::read_owned(&files.script, &hook.marker)?;
     if dry_run {
-        println!("would write {}:\n", files.script.display());
-        println!("{plugin}");
-        return Ok(());
-    }
-    let backed_up = write_generated(&files.script, &plugin)?;
-    println!("wrote {}", files.script.display());
-    println!(
-        "wired {} events through the opencode plugin",
-        files.events().len()
-    );
-    if backed_up {
+        println!("would write {}:\n{content}", files.script.display());
+    } else {
+        yinz_runtime::agent::hook_files::install(&files.script, hook, &content)?;
         println!(
-            "kept the previous plugin as {}",
-            files.script.with_extension("js.bak").display()
+            "wrote {}; restart {} to load the hook",
+            files.script.display(),
+            provider.kind
         );
     }
-    println!("restart opencode so it loads the plugin");
-    println!("run `yinz hocus hooks status` to check");
     Ok(())
 }
 
@@ -1392,11 +1296,17 @@ pub(crate) fn uninstall(files: &Files) -> Result<()> {
 /// Remove the one generated file of a one-file agent - the opencode plugin or the pi
 /// extension - if it is one we wrote.
 fn uninstall_opencode(files: &Files) -> Result<()> {
-    let marker = match files.agent {
-        HocusHookAgent::Opencode => OPENCODE_MARKER,
-        HocusHookAgent::Pi => yinz_runtime::agent::pi::PI_EXTENSION_MARKER,
-        _ => unreachable!("the dispatch above sends only the one-file agents"),
-    };
+    if files.agent == HocusHookAgent::Opencode {
+        let provider = opencode_provider()?;
+        let hook = provider
+            .hooks
+            .first()
+            .context("provider has no hook artifact")?;
+        yinz_runtime::agent::hook_files::uninstall(&files.script, hook)?;
+        println!("removed {}", files.script.display());
+        return Ok(());
+    }
+    let marker = yinz_runtime::agent::pi::PI_EXTENSION_MARKER;
     match read_generated(&files.script)? {
         Some(text) if text.contains(marker) => {
             std::fs::remove_file(&files.script)
@@ -1416,34 +1326,32 @@ fn uninstall_opencode(files: &Files) -> Result<()> {
 
 /// What is wired, and the things that would quietly stop it working.
 fn status(files: &Files) -> Result<()> {
-    if files.is_one_file() {
-        let (label, marker, version) = match files.agent {
-            HocusHookAgent::Opencode => (
-                "plugin",
-                OPENCODE_MARKER,
-                OPENCODE_PLUGIN_VERSION.to_string(),
-            ),
-            HocusHookAgent::Pi => (
-                "extension",
-                yinz_runtime::agent::pi::PI_EXTENSION_MARKER,
-                yinz_runtime::agent::pi::PI_EXTENSION_VERSION.to_string(),
-            ),
-            _ => unreachable!("the dispatch above sends only the one-file agents"),
-        };
+    if files.agent == HocusHookAgent::Opencode {
+        let provider = opencode_provider()?;
+        let hook = provider
+            .hooks
+            .first()
+            .context("provider has no hook artifact")?;
+        let binary = std::env::current_exe().context("find this yinz binary")?;
+        return provider_status(&files.script, hook, &binary);
+    }
+    if files.agent == HocusHookAgent::Pi {
+        let marker = yinz_runtime::agent::pi::PI_EXTENSION_MARKER;
+        let version = yinz_runtime::agent::pi::PI_EXTENSION_VERSION;
         println!("{}:", files.name());
         match read_generated(&files.script)? {
             Some(text) if text.contains(&format!("{marker} v{version}")) => {
-                println!("{label}:  {} (current)", files.script.display());
+                println!("extension:  {} (current)", files.script.display());
             },
             Some(text) if !text.contains(marker) => println!(
-                "{label}:  {} (foreign file - move it aside before install)",
+                "extension:  {} (foreign file - move it aside before install)",
                 files.script.display()
             ),
             Some(_) => println!(
-                "{label}:  {} (older than this yinz - run `install` again)",
+                "extension:  {} (older than this yinz - run `install` again)",
                 files.script.display()
             ),
-            None => println!("{label}:  {} (missing)", files.script.display()),
+            None => println!("extension:  {} (missing)", files.script.display()),
         }
         return Ok(());
     }

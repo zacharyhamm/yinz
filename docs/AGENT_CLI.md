@@ -65,6 +65,7 @@ Use `--kind claude` for these aliases. Other model IDs are validated by the conf
 `agent spawn --help` describes every launch option. Recognized kinds are
 `muse`, `codex`, `claude`, `cursor`, `qwen`, `gemini`, `aider`, `cline`,
 `opencode`, `pi` and `agy`. Recognition does not imply prompt support.
+Loaded TypeScript agent plugins add their own kinds and executable aliases.
 Kind names ignore case. Recognized executable aliases, such as `cursor-agent`,
 remain valid.
 
@@ -517,3 +518,116 @@ Keep the original filters when continuing. `history-search` instead exposes
 The root `--session NAME` selects the server handling the query, not the archived
 records' owner. Use both `--host-id HOST` and `--run-session SESSION` on `runs` or
 `history-search` to scope records to one server.
+
+## TypeScript agent plugins
+
+Agent plugins are TypeScript modules in the existing Deno plugin runtime.
+They register data with `yinz.agent.registerProvider()`. The host validates the
+data and uses it for detection, launch, restart, and guarded terminal input.
+The agent chooser and plugin APIs receive the same provider definitions.
+
+Load an agent plugin with `shared true`. Registration requires `RunCommands`.
+Each registration belongs to that plugin instance. Reload and unload remove its
+registrations. Another plugin cannot replace an existing provider's kind or aliases.
+
+```kdl
+load_plugins {
+    "file:/absolute/path/my-agent.ts" {
+        shared true
+    }
+}
+```
+
+Export `agentProvider` when the plugin supplies installable hook files.
+The hook installer evaluates this export in a bounded subprocess. It does not
+run `load()` or permit host operations during module initialization.
+
+```ts
+import yinz, { definePlugin, type AgentProvider } from "yinz:plugin";
+
+export const agentProvider: AgentProvider = {
+  kind: "my-agent",
+  executable: "my-agent",
+  aliases: ["my-agent-cli"],
+  launch: {
+    model_args: ["--model", "{value}"],
+    prompt_args: ["--prompt", "{value}"],
+    resume_args: ["--session", "{value}"],
+    resume_last_args: ["--continue"],
+    permissions: { manual: ["--approval", "manual"] },
+  },
+};
+
+export default definePlugin({
+  async load() {
+    await yinz.waitForPermissions(["RunCommands"]);
+    yinz.agent.registerProvider(agentProvider);
+  },
+});
+```
+
+Argument templates contain individual arguments. Substitution of `{value}` never
+splits the value or invokes a shell. Omitted templates reject unsupported options.
+Use `restart` to declare option arities, conversation selectors, and commands that
+must not restart. Unknown restart arguments fail without changing the pane.
+
+Only declare `input` after the agent's hooks can acknowledge and complete specific
+submitted turns. Input settings include `submit_key`, `submit_delay_ms`,
+`paste_prefix`, `newline`, and `command_prefixes`. The host retains process,
+conversation, readiness, input ownership, and bracketed-paste checks.
+Provider prompt acknowledgements and completions must carry a nonempty `turn_id`.
+Completion must match the acknowledged turn. A paste write alone is not acceptance.
+Use `yinz.agent.control()` for guarded requests. Existing `send()` and `prompt()`
+also use guarded delivery for provider agents. Await `send()` to observe submission
+failures from these providers.
+
+Hook adapters emit the existing `HookEvent` format through
+`yinz action agent-report --hook-json --kind KIND`. Events include `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `Stop`, and `SessionEnd`.
+Include the same `session_id` in every event. For prompt acknowledgement, include
+the submitted `prompt` or its `prompt_sha256` and the provider's `turn_id`.
+For completion, include that `turn_id` and optional `last_assistant_message`.
+Hook adapters must use the remote broker route when `YINZ_REMOTE_PANE_TOKEN` is set.
+
+Each `hooks` entry declares a relative `path`, `base` (`config` or `home`),
+ownership `marker`, `content`, and optional `executable` flag. The installer refuses
+to overwrite a file without that marker. Template placeholders are `__YINZ_BIN__`
+for a JSON-quoted binary path, `__YINZ_SHELL__` for a shell-quoted path, and
+`__TOKEN_ENV__` for the JSON-quoted remote token variable name.
+
+```sh
+yinz hocus hooks install --agent ./my-agent.ts --dry-run
+yinz hocus hooks install --agent ./my-agent.ts
+yinz hocus hooks status --agent ./my-agent.ts
+yinz hocus hooks uninstall --agent ./my-agent.ts
+```
+
+OpenCode uses the bundled [TypeScript provider](../yinz-deno-builtins/assets/plugins/agent-opencode.ts).
+Yinz loads it before other background plugins. Its hook adapter owns event
+translation, parent-session filtering, and ordered reporting. Existing
+`yinz hocus hooks install --agent opencode` commands still work. Older installed
+hook files remain accepted until reinstallation. OpenCode supports launch,
+detection, restart, and lifecycle waits. It does not advertise reliable prompt
+submission yet.
+
+## Test an agent plugin
+
+Use the existing `yinz:testing` API and `yinz plugins test` runner.
+Place unit checks in `.test.ts` files and real-session checks in
+`.integration.test.ts` files beside the plugin.
+
+- Use `loadPlugin()` to inspect registration commands and test plugin callbacks.
+- Use `session.fixture()` to create fake agent executables in an isolated workspace.
+- Start the session with `backgroundPlugins: [{path: "./my-agent.ts", configuration: {shared: "true"}}]`.
+- Use asynchronous `session.agent()` requests to exercise real agent control.
+- Use `session.report()` to deliver canonical hooks through the normal report path.
+- Observe actual terminal output with `session.waitForText()` or `session.waitFor()`.
+- Inject stale, missing, and mismatched hooks while a prompt request is pending.
+
+Session agent controls require the test's `RunCommands` grant. Fixtures do not need
+an installed agent, credentials, a model service, or network access.
+The [provider integration tests](../yinz-deno-builtins/assets/plugins/agent-opencode.integration.test.ts)
+exercise registration, aliases, launch arguments, input bytes, custom Enter timing,
+turn correlation, and status-only capabilities. Host unit tests also cover
+validation, conflicting registrations, unload, restart refusal, input interruption,
+timeouts, and hook-file ownership.

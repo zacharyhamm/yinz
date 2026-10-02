@@ -375,9 +375,9 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         codex.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(yinz_cli::args::HocusHookAgent::Codex),
+            agent: Some(agent),
             ..
-        })))
+        }))) if agent == "codex"
     ));
 
     let opencode = try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "opencode"])
@@ -385,9 +385,9 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         opencode.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(yinz_cli::args::HocusHookAgent::Opencode),
+            agent: Some(agent),
             ..
-        })))
+        }))) if agent == "opencode"
     ));
 
     let muse =
@@ -395,9 +395,9 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
     assert!(matches!(
         muse.command,
         Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            agent: Some(yinz_cli::args::HocusHookAgent::Muse),
+            agent: Some(agent),
             ..
-        })))
+        }))) if agent == "muse"
     ));
 
     assert!(

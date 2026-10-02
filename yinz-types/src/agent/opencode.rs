@@ -1,17 +1,8 @@
-//! Reading opencode's own event stream as the hook shape the rest of yinz reads.
+//! Compatibility reader for OpenCode hook files installed before agent plugins.
 //!
-//! opencode is extended with JS/TS plugins, not a settings file of shell hooks, so
-//! `yinz hocus hooks install` writes a small plugin into
-//! `~/.config/opencode/plugin/` (or `$XDG_CONFIG_HOME/opencode/plugin/`). That plugin
-//! forwards each event and each interception hook here unchanged, and this module is
-//! the one reading of it: [`to_hook_event`] turns one forwarded event into a
-//! [`HookEvent`], so the record ([`super::hook_outcome`]), the broadcast
-//! ([`super::AgentEvent`]) and the run history all read opencode exactly as they read
-//! Claude Code and Codex.
-//!
-//! The translated event, not the native one, is what the session keeps as `raw`: the
-//! broker validates `raw` as a [`HookEvent`] and `hocus-agentd` re-parses it, so a
-//! native shape would have to be understood in two more places.
+//! The current TypeScript provider owns event translation and emits [`HookEvent`] directly.
+//! This reader accepts the native payloads from older installed hook files until users run
+//! `yinz hocus hooks install --agent opencode` again. New providers need no Rust adapter.
 
 use super::HookEvent;
 use serde_json::Value;

@@ -1563,7 +1563,7 @@ pub fn specs() -> Value {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "enum": launch::OFFERED,
+                        "enum": launch::offered(),
                         "description": "The agent to run. Either this or command.",
                     },
                     "command": { "type": "string", "description": "Recognized agent executable. Use new_pane for arbitrary programs." },
@@ -1571,7 +1571,7 @@ pub fn specs() -> Value {
                     "model": { "type": "string" },
                     "effort": {
                         "type": "string",
-                        "description": "Reasoning effort. Cursor requires model; opencode takes none.",
+                        "description": "Reasoning effort accepted by this agent. Cursor requires model.",
                     },
                     "cwd": {
                         "type": "string",
@@ -1613,11 +1613,8 @@ pub fn specs() -> Value {
                     "permission_mode": {
                         "type": "string",
                         "description": format!(
-                            "skip = no permission checks; or the agent's own: claude {}; codex {}; opencode {}; muse {}.",
-                            launch::CLAUDE_PERMISSION_MODES[..6].join("/"),
-                            launch::CODEX_PERMISSION_MODES[..5].join("/"),
-                            launch::OPENCODE_PERMISSION_MODES.join("/"),
-                            launch::MUSE_PERMISSION_MODES[..3].join("/"),
+                            "Use the agent's permission mode; available modes: {}.",
+                            launch::offered().iter().map(|kind| format!("{kind}: {}", launch::permission_modes(kind).join("/"))).collect::<Vec<_>>().join("; "),
                         ),
                     },
                     "resume": {

@@ -638,6 +638,7 @@ register_plugin!(State);
 
 impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        init_agent_providers();
         subscribe(&[
             EventType::Key,
             EventType::Mouse,

@@ -4,6 +4,7 @@ import childProcess from "node:child_process"
 import { EventEmitter } from "node:events"
 import { syncBuiltinESMExports } from "node:module"
 import { pathToFileURL } from "node:url"
+import { readFileSync } from "node:fs"
 
 // Run against the generated module, replacing only its child-process transport.
 const children = []
@@ -32,7 +33,12 @@ childProcess.spawn = (binary, args, options) => {
   return child
 }
 syncBuiltinESMExports()
-const { Hocus } = await import(pathToFileURL(process.argv[2]))
+const exports = await import(pathToFileURL(process.argv[2]))
+assert.deepEqual(Object.keys(exports), ["Hocus"], "only the plugin initializer is public")
+const { Hocus } = exports
+// Expose the pure adapter only in the test module, never to OpenCode's plugin loader.
+const instrumented = readFileSync(process.argv[2], "utf8") + "\nexport { toHookEvent };"
+const { toHookEvent } = await import(`data:text/javascript;base64,${Buffer.from(instrumented).toString("base64")}`)
 const lookups = []
 let lookupFailure
 let releaseLookup
@@ -69,9 +75,9 @@ await flush()
 assert.equal(children.length, 1, "callbacks return while the first report remains open")
 await close(children[0])
 assert.equal(children.length, 2)
-assert.equal(children[1].payload.properties.args.command, "original", "snapshot at enqueue")
+assert.equal(children[1].payload.tool_input.command, "original", "snapshot at enqueue")
 await close(children[1])
-assert.equal(children[2].payload.type, "permission.updated")
+assert.equal(children[2].payload.hook_event_name, "PermissionRequest")
 await close(children[2])
 
 // Serialization, synchronous spawn/stdin, asynchronous child/stdin and exit failures
@@ -94,7 +100,7 @@ for (const mode of ["spawn", "stdin", "child-error", "stdin-error", "exit"]) {
     await close(child, 1)
   }
   const next = children.at(-1)
-  assert.equal(next.payload.properties.sessionID, `after-${mode}`)
+  assert.equal(next.payload.session_id, `after-${mode}`)
   await close(next)
 }
 
@@ -123,7 +129,7 @@ await completed("one", "message") // consumed parts cannot report twice
 await completed("two", "message")
 await completed("one", "other")
 await drain()
-assert.deepEqual(children.slice(baseline).map(c => c.payload.properties.text),
+assert.deepEqual(children.slice(baseline).map(c => c.payload.delta),
   ["Hello world", "Other session", "Other message"])
 
 for (const ending of ["session.error", "session.idle"]) {
@@ -132,22 +138,22 @@ for (const ending of ["session.error", "session.idle"]) {
     await completed("one", "success")
     await event("session.idle", { sessionID: "one" })
     await drain()
-    assert.equal(children.at(-1).payload.properties.lastAssistantMessage, "Successful answer")
+    assert.equal(children.at(-1).payload.last_assistant_message, "Successful answer")
     await part("one", "pending", "a", "Stale pending text")
     const beforePrompt = children.length
     await prompt("one", parts)
     await drain()
     assert.equal(children.length, beforePrompt + 1)
-    assert.equal(children.at(-1).payload.type, "chat.message")
-    assert.equal(children.at(-1).payload.properties.prompt,
+    assert.equal(children.at(-1).payload.hook_event_name, "UserPromptSubmit")
+    assert.equal(children.at(-1).payload.prompt,
       parts[0].type === "text" ? "next turn" : undefined)
-    assert.equal(Object.hasOwn(children.at(-1).payload.properties, "prompt"), parts[0].type === "text")
+    assert.equal(Object.hasOwn(children.at(-1).payload, "prompt"), parts[0].type === "text")
     await completed("one", "pending")
     await event(ending, { sessionID: "one" })
     await drain()
-    assert.equal(children.at(-1).payload.type, ending)
-    assert.equal(children.at(-1).payload.properties.lastAssistantMessage, undefined)
-    assert.equal(children.at(-1).payload.properties.turnID, undefined)
+    assert.equal(children.at(-1).payload.hook_event_name, ending === "session.idle" ? "Stop" : "StopFailure")
+    assert.equal(children.at(-1).payload.last_assistant_message, undefined)
+    assert.equal(children.at(-1).payload.turn_id, undefined)
   }
 }
 const beforeChild = children.length
@@ -189,7 +195,7 @@ for (const mode of ["throw", "error"]) {
   await prompt(id, [])
   await event("session.idle", { sessionID: id })
   await drain()
-  assert.deepEqual(children.slice(count).map(c => c.payload.type), ["chat.message", "session.idle"])
+  assert.deepEqual(children.slice(count).map(c => c.payload.hook_event_name), ["UserPromptSubmit", "Stop"])
   assert.equal(lookups.filter(value => value === id).length, 2)
 }
 
@@ -202,6 +208,38 @@ await flush()
 assert.equal(children.length, beforeDelayed, "callbacks return without waiting for metadata")
 releaseLookup()
 await drain()
-assert.deepEqual(children.slice(beforeDelayed).map(c => c.payload.type), ["tool.execute.before", "session.idle"])
-assert.equal(children[beforeDelayed].payload.properties.args.command, "original")
+assert.deepEqual(children.slice(beforeDelayed).map(c => c.payload.hook_event_name), ["PreToolUse", "Stop"])
+assert.equal(children[beforeDelayed].payload.tool_input.command, "original")
 console.log("OpenCode plugin regressions passed")
+
+// The provider's native adapter emits the same contract as any other agent plugin.
+for (const [type, expected] of Object.entries({
+  "session.created": "SessionStart", "session.deleted": "SessionEnd",
+  "session.idle": "Stop", "session.error": "StopFailure", "session.compacted": "PostCompact",
+  "chat.message": "UserPromptSubmit", "tool.execute.before": "PreToolUse",
+  "tool.execute.after": "PostToolUse", "permission.replied": "PostToolUse",
+  "assistant.message": "MessageDisplay", "future.event": "future.event",
+})) {
+  const hook = toHookEvent({ type, properties: { sessionID: "session", cwd: "/work" },
+    _yinz_workflow_owner: "owner" })
+  assert.equal(hook.hook_event_name, expected)
+  assert.equal(hook.session_id, "session")
+  assert.equal(hook.cwd, "/work")
+  assert.equal(hook._yinz_workflow_owner, "owner")
+}
+for (const [permission, metadata, patterns, expected] of [
+  ["bash", { command: "cargo test", extra: true }, ["ignored"], { command: "cargo test", extra: true }],
+  ["edit", { filePath: "/work/main.rs" }, ["ignored"], { file_path: "/work/main.rs" }],
+  ["bash", {}, ["git status", "git diff"], { command: "git status git diff" }],
+  ["read", { unrelated: true }, ["/work/main.rs"], { file_path: "/work/main.rs" }],
+]) {
+  const hook = toHookEvent({ type: "permission.asked", properties: {
+    permission, metadata, patterns, tool: { callID: "call" }, sessionID: "one",
+  } })
+  assert.equal(hook.hook_event_name, "PermissionRequest")
+  assert.equal(hook.tool_use_id, "call")
+  assert.deepEqual(hook.tool_input, expected)
+}
+assert.equal(toHookEvent({ type: "tool.execute.before", properties: { tool: "question" } }).tool_name,
+  "AskUserQuestion")
+assert.equal(toHookEvent({ type: "assistant.message", properties: { text: "answer" } }).final_batch, true)

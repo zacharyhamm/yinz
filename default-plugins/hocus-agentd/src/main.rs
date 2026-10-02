@@ -483,6 +483,7 @@ register_plugin!(State);
 
 impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
+        init_agent_providers();
         subscribe(&[
             EventType::AgentEvent,
             EventType::PaneUpdate,
@@ -1676,7 +1677,7 @@ impl State {
         };
         let body = agents::run_summary_request_body(
             &endpoint.model,
-            kind,
+            &kind,
             cwd.as_deref(),
             branch.as_deref(),
             prompt.as_deref(),
@@ -3028,7 +3029,7 @@ impl State {
         let tail = agents::tail(text, agents::SUMMARY_LINES, agents::SUMMARY_CHARS);
         let body = agents::summary_request_body(
             &endpoint.model,
-            kind,
+            &kind,
             pane.cwd.as_deref(),
             branch.as_deref(),
             &tail,
@@ -3427,7 +3428,7 @@ impl State {
     /// `None` for a pane that has closed or stopped looking like an agent between the
     /// request going out and its answer landing, which is why `finish_summary_with` asks it
     /// before storing anything: there is no session left for the answer to be about.
-    fn agent_kind(&self, pane_id: u32) -> Option<&str> {
+    fn agent_kind(&self, pane_id: u32) -> Option<String> {
         let pane = self
             .panes
             .iter()
@@ -3445,7 +3446,7 @@ impl State {
     fn toast_kind(&self, pane_id: u32) -> Option<String> {
         let kind = self.agent_kind(pane_id)?;
         Some(agents::kind_cell(
-            kind,
+            &kind,
             None,
             self.hooks.contains_key(&pane_id),
         ))
@@ -5683,7 +5684,7 @@ mod tests {
         state
     }
 
-    fn kind_of(state: &State, pane_id: u32) -> Option<&str> {
+    fn kind_of(state: &State, pane_id: u32) -> Option<String> {
         let pane = state
             .panes
             .as_ref()?
@@ -5700,7 +5701,7 @@ mod tests {
 
         state.on_command(7, vec!["git".to_owned(), "status".to_owned()], true);
 
-        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert_eq!(kind_of(&state, 7).as_deref(), Some("codex"));
         assert!(
             state.pending_release.is_empty(),
             "something in the foreground is the agent working, not the agent leaving",
@@ -5731,12 +5732,20 @@ mod tests {
 
         state.on_command(7, vec!["zsh".to_owned()], false);
         assert!(state.pending_release.contains(&7), "proposed");
-        assert_eq!(kind_of(&state, 7), Some("codex"), "but not yet acted on");
+        assert_eq!(
+            kind_of(&state, 7).as_deref(),
+            Some("codex"),
+            "but not yet acted on"
+        );
 
         state.repair_commands_with(|_| Some("zsh".to_owned()));
 
         assert!(state.pending_release.is_empty());
-        assert_eq!(kind_of(&state, 7), None, "confirmed, so the latch goes");
+        assert_eq!(
+            kind_of(&state, 7).as_deref(),
+            None,
+            "confirmed, so the latch goes"
+        );
     }
 
     /// The reason the confirmation exists: one bad read must not cost an agent
@@ -5749,7 +5758,7 @@ mod tests {
         state.repair_commands_with(|_| Some("codex".to_owned()));
 
         assert!(state.pending_release.is_empty());
-        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert_eq!(kind_of(&state, 7).as_deref(), Some("codex"));
     }
 
     /// A host that answered nothing has said nothing, and must not settle the
@@ -5762,7 +5771,7 @@ mod tests {
         state.repair_commands_with(|_| None);
 
         assert!(state.pending_release.contains(&7));
-        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert_eq!(kind_of(&state, 7).as_deref(), Some("codex"));
     }
 
     /// A pane launched *as* a command is its own foreground process, so the host
@@ -5777,7 +5786,7 @@ mod tests {
 
         state.on_command(7, vec!["codex".to_owned()], false);
 
-        assert_eq!(kind_of(&state, 7), Some("codex"));
+        assert_eq!(kind_of(&state, 7).as_deref(), Some("codex"));
         assert!(state.pending_release.is_empty());
     }
 
@@ -5965,19 +5974,27 @@ mod tests {
         state.manifest = manifest(0);
         state.rebuild_panes();
         state.on_command(0, vec!["claude".to_owned()], true);
-        assert_eq!(kind_of(&state, 0), Some("claude"));
-
-        state.manifest = manifest(0);
-        state.rebuild_panes();
-        assert_eq!(kind_of(&state, 0), Some("claude"), "after a pane update");
-
-        state.on_command(0, vec!["git".to_owned(), "status".to_owned()], true);
-        assert_eq!(kind_of(&state, 0), Some("claude"), "after shelling out");
+        assert_eq!(kind_of(&state, 0).as_deref(), Some("claude"));
 
         state.manifest = manifest(0);
         state.rebuild_panes();
         assert_eq!(
-            kind_of(&state, 0),
+            kind_of(&state, 0).as_deref(),
+            Some("claude"),
+            "after a pane update"
+        );
+
+        state.on_command(0, vec!["git".to_owned(), "status".to_owned()], true);
+        assert_eq!(
+            kind_of(&state, 0).as_deref(),
+            Some("claude"),
+            "after shelling out"
+        );
+
+        state.manifest = manifest(0);
+        state.rebuild_panes();
+        assert_eq!(
+            kind_of(&state, 0).as_deref(),
             Some("claude"),
             "and after the pane update that follows it",
         );
@@ -6006,7 +6023,7 @@ mod tests {
         assert_eq!(state.commands[&7], "codex --resume");
         assert_eq!(
             agents::classify(&state.panes.as_ref().unwrap()[0], &state.manual_kinds),
-            Some(("codex", "auto")),
+            Some(("codex".to_owned(), "auto")),
         );
     }
 

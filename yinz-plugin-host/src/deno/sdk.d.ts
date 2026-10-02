@@ -35,6 +35,7 @@ export interface EventPayloads {
   ActivePaneScroll: [Integer, Integer] | null; PluginDataChanged: {watch_id: Integer; rows: DataRows; truncated: boolean};
   QueueJobStarted: {queue: string; job_id: Integer; plugin_id: number; context: StringMap};
   QueueJobFinished: {queue: string; job_id: Integer; outcome: QueueJobOutcome; payload: string | null; context: StringMap};
+  AgentProvidersChanged: AgentProvider[];
   QueueChanged: QueueSnapshot; Hook: {point: HookPoint; payload: HookPayload}; AgentEvent: AgentEvent;
   ModifiersHeld: {modifiers: KeyModifier[]; is_live: boolean};
 }
@@ -292,6 +293,7 @@ export interface CommandArgs {
   ArrangeProjectPanes: ProjectPaneGroup[]; SetTabProjects: Record<string, string>; BreakPanesToTabWithId: [PaneId[], number, boolean];
   ReloadPlugin: number; LoadNewPlugin: {url: string; config: StringMap; load_in_background: boolean; skip_plugin_cache: boolean};
   RebindKeys: {keys_to_rebind: [InputMode, KeyWithModifier, Action[]][]; keys_to_unbind: [InputMode, KeyWithModifier][]; write_config_to_disk: boolean};
+  RegisterAgentProvider: AgentProvider; GetAgentProviders: undefined;
   RegisterDefaultKeybindings: string; ListClients: undefined; ChangeHostFolder: string;
   SetFloatingPanePinned: [PaneId, boolean]; StackPanes: PaneId[]; ChangeFloatingPanesCoordinates: [PaneId, FloatingPaneCoordinates][];
   PaneTabs: PaneTabsCommand;
@@ -387,6 +389,7 @@ export interface CommandReplies {
   CreateMultipane: MultipaneInfo; UpdateMultipane: MultipaneInfo; ReplaceMultipaneChild: MultipaneInfo;
   OpenCommandPaneNearPlugin: PaneId | null; OpenCommandPaneOverlay: PaneId | null; OpenCommandPaneFloatingNearPlugin: PaneId | null;
   OpenCommandPaneInPlaceOfPlugin: PaneId | null; OpenCommandPaneInPlaceOfPaneId: PaneId | null; OpenPluginPaneFloating: PaneId | null;
+  RegisterAgentProvider: AgentProvider[]; GetAgentProviders: AgentProvider[];
   OpenCommandPaneInGitCheckoutNearPlugin: PaneId | null; SpawnAgent: SpawnedAgent;
   OpenCommandPaneInNewTab: PaneInNewTab; OpenPluginPaneInNewTab: PaneInNewTab; OpenEditorPaneInNewTab: PaneInNewTab;
   ReadPluginLog: string; ProjectConfigRead: ProjectConfigSnapshot; ProjectConfigWrite: ProjectConfigSnapshot;
@@ -879,27 +882,6 @@ export interface TerminalText {
   sanitizeBytes(bytes: Bytes | string): string;
 }
 
-export type AgentPane = number | {Terminal: number};
-export type AgentStateFilter = AgentState | Lowercase<AgentState>;
-export interface AgentSpawnOptions extends AgentSpawnSpec {
-  sourceDirectory?: string; cwd?: string; name?: string; context?: StringMap;
-  automaticFirecrackerVm?: boolean; startSuppressed?: boolean;
-}
-export interface AgentTurnOptions {fallback?: 'idle';}
-export interface AgentTurn {message: string | null; hook: string | null; state: AgentState | null; sessionId: string | null;}
-export interface Agents {
-  spawnDetails(options: AgentSpawnOptions): SpawnedAgent;
-  spawn(options: AgentSpawnOptions): PaneId;
-  info(pane: AgentPane): AgentInfo | null;
-  all(): Record<number, AgentInfo>;
-  on(handler: (event: AgentEvent) => boolean | void | Promise<boolean | void>): () => void;
-  send(pane: AgentPane, text: string, options?: {enter?: boolean}): void;
-  /** Resolves on a future PaneUpdate; after requires a preceding matching update. */
-  waitForState(pane: AgentPane, states: AgentStateFilter | AgentStateFilter[], options?: {after?: AgentStateFilter | AgentStateFilter[]}): CancellablePromise<PaneInfo>;
-  waitForEvent(pane: AgentPane, hooks?: string | string[]): CancellablePromise<AgentEvent>;
-  waitForTurn(pane: AgentPane, options?: AgentTurnOptions): CancellablePromise<AgentTurn>;
-  prompt(pane: AgentPane, text: string, options?: AgentTurnOptions & {enter?: boolean}): CancellablePromise<AgentTurn>;
-}
 /** Nested fields retain the completion wire spelling for transcript round trips. */
 export interface CompletionToolCall {id: string; name: string; arguments: string;}
 export type CompletionMessage = {
@@ -933,3 +915,67 @@ export interface PaneSequence {
 export interface PluginTestOptions {kind?: "unit" | "integration" | "all"; filter?: string; timeout_ms?: number}
 export interface PluginTestResult {name: string; kind: "unit" | "integration" | "all"; status: "passed" | "failed"; duration_ms: number; error: string | null; output: string}
 export interface PluginTestReport {tests: PluginTestResult[]}
+
+// ---- section: sdk_agents
+export type AgentPane = number | {Terminal: number};
+export type AgentStateFilter = AgentState | Lowercase<AgentState>;
+export interface AgentSpawnOptions extends AgentSpawnSpec {
+  sourceDirectory?: string; cwd?: string; name?: string; context?: StringMap;
+  automaticFirecrackerVm?: boolean; startSuppressed?: boolean;
+}
+export interface AgentTurnOptions {fallback?: 'idle';}
+export interface AgentTurn {message: string | null; hook: string | null; state: AgentState | null; sessionId: string | null;}
+export interface AgentProvider {
+  kind: string; executable: string; aliases?: string[]; launch?: AgentLaunch; restart?: AgentRestart | null;
+  input?: AgentInput | null; hooks?: AgentHookArtifact[];
+}
+export interface AgentLaunch {
+  args?: string[]; model_args?: string[]; prompt_args?: string[]; resume_args?: string[];
+  resume_last_args?: string[]; resume_before_args?: boolean; permissions?: Record<string,string[]>; permission_descriptions?: Record<string,string>; efforts?: Record<string,string[]>;
+}
+export interface AgentRestart {
+  values?: string[]; switches?: string[]; inline_values?: string[]; forbidden_commands?: string[];
+  remove_values?: string[]; remove_switches?: string[]; remove_optional_values?: string[]; keep_positionals?: boolean; max_positionals?: number;
+}
+export interface AgentInput {
+  submit_key?: string; submit_delay_ms?: number; paste_prefix?: string; command_prefixes?: string[]; newline?: "\n" | "\r" | "\r\n";
+}
+export interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}
+export type AgentRequest =
+  | {List: {project?: string | null}}
+  | {Status: {pane_id: PaneId; expected_session_id?: string | null}}
+  | {Spawn: {spec: AgentSpawnSpec; cwd?: string | null; project?: string | null; remote_host?: string | null; automatic_firecracker_vm?: boolean}}
+  | {Prompt: {pane_id: PaneId; expected_session_id?: string | null; prompt: string; wait: boolean; timeout_ms: number}}
+  | {Wait: {pane_id: PaneId; expected_session_id?: string | null; until: AgentState; timeout_ms: number}}
+  | {Read: {pane_id: PaneId; expected_session_id?: string | null; lines: number}}
+  | {Recover: {pane_id: PaneId; expected_session_id: string; confirm_empty: boolean; interrupted?: boolean}}
+  | {SendKeys: {pane_id: PaneId; expected_session_id?: string | null; keys: KeyWithModifier[]}};
+export type AgentOutcome = "ok" | "submitted" | "completed" | "needs_input" | "failed" | "interrupted" | "timed_out" | "target_changed" | "target_closed" | "status_unavailable" | "rejected" | "target_not_found" | "not_agent" | "target_exited";
+export interface AgentStatus {
+  pane_id: string; session: string; host_id: string; tab_id: Integer | null; target: PaneTarget; agent: AgentInfo;
+  cwd: string | null; branch: string | null; ready: boolean; not_ready_reason?: string | null; status_available: boolean;
+  prompt_supported: boolean; background_tasks?: string[];
+}
+export interface AgentResponse {
+  outcome: AgentOutcome; agents: AgentStatus[]; spawned: (Omit<SpawnedAgent,"pane_id"> & {pane_id:string}) | null;
+  output: string | null; message: string | null; acknowledged: boolean; turn_id: string | null; background_tasks?: string[];
+}
+export interface Agents {
+  /** Requires RunCommands and a shared TypeScript plugin. Removed when this instance unloads. */
+  registerProvider(definition: AgentProvider): void;
+  providers(): AgentProvider[];
+  /** Uses the same lifecycle, input-ownership and completion checks as the agent CLI. */
+  control(request: AgentRequest): CancellablePromise<AgentResponse>;
+  spawnDetails(options: AgentSpawnOptions): SpawnedAgent;
+  spawn(options: AgentSpawnOptions): PaneId;
+  info(pane: AgentPane): AgentInfo | null;
+  all(): Record<number, AgentInfo>;
+  on(handler: (event: AgentEvent) => boolean | void | Promise<boolean | void>): () => void;
+  /** Writes bracketed paste followed by Enter unless enter:false. */
+  send(pane: AgentPane, text: string, options?: {enter?: boolean}): void;
+  /** Resolves on a future PaneUpdate; after requires a preceding matching update. */
+  waitForState(pane: AgentPane, states: AgentStateFilter | AgentStateFilter[], options?: {after?: AgentStateFilter | AgentStateFilter[]}): CancellablePromise<PaneInfo>;
+  waitForEvent(pane: AgentPane, hooks?: string | string[]): CancellablePromise<AgentEvent>;
+  waitForTurn(pane: AgentPane, options?: AgentTurnOptions): CancellablePromise<AgentTurn>;
+  prompt(pane: AgentPane, text: string, options?: AgentTurnOptions & {enter?: boolean}): CancellablePromise<AgentTurn>;
+}
