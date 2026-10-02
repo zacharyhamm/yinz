@@ -165,3 +165,152 @@ fn shown(command: yinz_types::command::CommandToRun) -> String {
     })
     .to_string()
 }
+
+#[test]
+fn pi_launches_use_host_resolved_reporting_and_keep_user_extensions() {
+    use crate::agent::pi::{self, EXTENSION_ARGUMENT};
+    for hooks in [None, Some(false), Some(true)] {
+        for remote in [false, true] {
+            let (mut command, _) = plan(&Spec {
+                kind: Some("pi".into()),
+                hooks,
+                model: Some("provider/model".into()),
+                effort: Some("none".into()),
+                resume: Some("archived-session".into()),
+                prompt: Some("review".into()),
+                args: vec!["--extension".into(), "/user/report.ts".into()],
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--thinking", "off"]));
+            assert!(command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--session", "archived-session"]));
+            assert!(command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--model", "provider/model"]));
+            assert_eq!(command.args.last().map(String::as_str), Some("review"));
+            assert_eq!(
+                command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT),
+                hooks != Some(false)
+            );
+            if remote {
+                command.target = yinz_types::command::PaneTarget::ssh("test-host").unwrap();
+                pi::prepare_command(&mut command).unwrap();
+                assert!(!command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT));
+            }
+            assert!(command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--extension", "/user/report.ts"]));
+        }
+    }
+    for resume in ["last", "session"] {
+        let (command, _) = plan(&Spec {
+            kind: Some("pi".into()),
+            resume: Some(resume.into()),
+            firecracker: Some("vm".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!command.args.iter().any(|arg| arg == EXTENSION_ARGUMENT));
+        assert!(command.args.iter().any(|arg| arg
+            == if resume == "last" {
+                "--continue"
+            } else {
+                "--session"
+            }));
+    }
+    assert!(plan(&Spec {
+        kind: Some("pi".into()),
+        permission_mode: Some("skip".into()),
+        ..Default::default()
+    })
+    .unwrap_err()
+    .contains("pi has no permission mode"));
+}
+
+#[test]
+fn pi_display_and_remote_filtering_match_only_the_generated_argument() {
+    use crate::agent::pi::{self, EXTENSION_ARGUMENT};
+    let generated = format!(
+        "/data with spaces/yinz/pi/{EXTENSION_ARGUMENT}/{}",
+        pi::PI_EXTENSION_FILE
+    );
+    for extension in [EXTENSION_ARGUMENT, generated.as_str()] {
+        let args: Vec<String> = [
+            "--extension",
+            "/user/first.ts",
+            "--extension",
+            extension,
+            "--extension",
+            "/user/last.ts",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            super::display_args(&args),
+            [
+                "--extension",
+                "/user/first.ts",
+                "--extension",
+                "/user/last.ts"
+            ]
+        );
+        let command = yinz_types::input::command::RunCommand {
+            command: "pi".into(),
+            args,
+            ..Default::default()
+        };
+        assert_eq!(
+            display_command(&command.to_string()),
+            "pi --extension /user/first.ts --extension /user/last.ts"
+        );
+        let similar = format!("pi --extension {extension}.backup");
+        assert_eq!(display_command(&similar), similar);
+        let user_args = yinz_types::input::command::RunCommand {
+            command: "pi".into(),
+            args: vec![
+                "--extension".into(),
+                "/user/first.ts".into(),
+                format!("explain --extension {extension}"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            display_command(&user_args.to_string()),
+            format!("pi --extension /user/first.ts explain --extension {extension}")
+        );
+    }
+    let mut args = vec![
+        "--extension".into(),
+        "/user/first.ts".into(),
+        "--extension".into(),
+        EXTENSION_ARGUMENT.into(),
+    ];
+    pi::strip_extension(&mut args);
+    assert_eq!(args, ["--extension", "/user/first.ts"]);
+}
+
+#[test]
+fn pi_archive_resumes_use_the_host_extension_path_and_remote_installations() {
+    use crate::agent::pi;
+    for host in [None, Some("remote-host")] {
+        let mut command = super::resume_command("pi", "archived", Some("/work"), host).unwrap();
+        assert!(command
+            .args
+            .windows(2)
+            .any(|args| args == ["--session", "archived"]));
+        assert!(command.args.iter().any(|arg| arg == pi::EXTENSION_ARGUMENT));
+        if host.is_some() {
+            pi::prepare_command(&mut command).unwrap();
+            assert!(!command.args.iter().any(|arg| arg == pi::EXTENSION_ARGUMENT));
+        }
+    }
+}

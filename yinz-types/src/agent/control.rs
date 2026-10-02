@@ -178,6 +178,7 @@ pub struct PromptObservation {
     claude_prompt_sha256: Option<String>,
     prompt_id: Option<String>,
     acknowledged: bool,
+    waiting_before_submit: bool,
     turn_id: Option<String>,
     finished: bool,
 }
@@ -187,11 +188,17 @@ impl PromptObservation {
         Self {
             kind: kind.to_owned(),
             conversation_id: conversation_id.to_owned(),
-            prompt_sha256: prompt_sha256(prompt),
+            prompt_sha256: if kind == "pi" {
+                // Pi's editor replaces each pasted tab with four spaces.
+                prompt_sha256(&pi_prompt_text(prompt).replace('\t', "    "))
+            } else {
+                prompt_sha256(prompt)
+            },
             claude_prompt_sha256: (kind == "claude")
                 .then(|| prompt_sha256(&claude_prompt_text(prompt))),
             prompt_id: None,
             acknowledged: false,
+            waiting_before_submit: false,
             turn_id: None,
             finished: false,
         }
@@ -199,6 +206,11 @@ impl PromptObservation {
 
     pub fn acknowledged(&self) -> bool {
         self.acknowledged
+    }
+
+    /// A verified Pi dialog shown before its submit handler has assigned a turn ID.
+    pub fn waiting_before_submit(&self) -> bool {
+        self.waiting_before_submit
     }
 
     pub fn turn_id(&self) -> Option<&str> {
@@ -213,6 +225,7 @@ impl PromptObservation {
         event: &AgentEvent,
         hook: Option<&HookEvent>,
     ) -> Option<AgentOutcome> {
+        self.waiting_before_submit = false;
         if self.finished {
             return None;
         }
@@ -314,7 +327,7 @@ impl PromptObservation {
             }
             let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
             let prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
-            if (matches!(self.kind.as_str(), "codex" | "muse") && turn_id.is_none())
+            if (matches!(self.kind.as_str(), "codex" | "muse" | "pi") && turn_id.is_none())
                 || (matches!(self.kind.as_str(), "claude" | "agy") && prompt_id.is_none())
             {
                 return Some(AgentOutcome::StatusUnavailable);
@@ -329,6 +342,14 @@ impl PromptObservation {
             return Some(AgentOutcome::Submitted);
         }
         if !self.acknowledged {
+            self.waiting_before_submit = self.kind == "pi"
+                && hook.hook_event_name == "Elicitation"
+                && hook.turn_id.is_none();
+            return self
+                .waiting_before_submit
+                .then_some(AgentOutcome::NeedsInput);
+        }
+        if self.kind == "pi" && hook.turn_id != self.turn_id {
             return None;
         }
         // A human wait in this conversation ends the wait even without turn
@@ -417,10 +438,18 @@ pub fn claude_prompt_text(text: &str) -> Cow<'_, str> {
     }
 }
 
+/// Pi submits JavaScript-trimmed text: unlike Rust, it trims BOM but not NEXT LINE.
+pub fn pi_prompt_text(text: &str) -> &str {
+    text.trim_matches(|c: char| c == '\u{feff}' || (c.is_whitespace() && c != '\u{0085}'))
+}
+
 /// Whether `prompt` is exactly the command that starts a new conversation in place: Claude's
 /// `/clear` or Codex's `/new`. Its lifecycle carries the submission to the new conversation.
 pub fn is_conversation_reset(kind: &str, prompt: &str) -> bool {
-    matches!((kind, prompt), ("claude", "/clear") | ("codex", "/new"))
+    matches!(
+        (kind, prompt),
+        ("claude", "/clear") | ("codex" | "pi", "/new")
+    )
 }
 
 /// Commands do not produce the lifecycle acknowledgement required by prompt submission.
@@ -433,8 +462,12 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     } else {
         Cow::Borrowed(prompt)
     };
-    let text = text.trim_start();
-    text.starts_with('/') || (kind == "claude" && text.starts_with('!'))
+    let text = if kind == "pi" {
+        pi_prompt_text(&text)
+    } else {
+        text.trim_start()
+    };
+    text.starts_with('/') || (matches!(kind, "claude" | "pi") && text.starts_with('!'))
 }
 
 const TASK_NOTIFICATION_OPEN: &str = "<task-notification>";

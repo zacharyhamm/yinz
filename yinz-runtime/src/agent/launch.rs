@@ -41,7 +41,7 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
-pub const OFFERED: &[&str] = &["codex", "claude", "cursor", "opencode", "muse", "agy"];
+pub const OFFERED: &[&str] = &["codex", "claude", "pi", "cursor", "opencode", "muse", "agy"];
 
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
@@ -82,6 +82,11 @@ pub const MUSE_PERMISSION_MODES: &[&str] = &["untrusted", "on-request", "never",
 /// Antigravity modes: `accept-edits`, `plan`, and `skip` for `--dangerously-skip-permissions`.
 pub const AGY_PERMISSION_MODES: &[&str] = &["accept-edits", "plan", "skip"];
 
+/// pi has no permission modes of its own: permission gating is done by pi extensions
+/// the user installs, which a command line cannot speak for. The empty table is what
+/// `unknown_mode` names when a caller asks for one anyway - there is no mode to accept.
+pub const PI_PERMISSION_MODES: &[&str] = &[];
+
 /// Canonicalize an agent kind alias (e.g. "antigravity" -> "agy").
 pub fn normalize_kind(kind: &str) -> &str {
     match kind {
@@ -99,6 +104,9 @@ pub fn effort_levels(kind: Option<&str>) -> &'static [&'static str] {
             "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ],
         Some("agy") => &["low", "medium", "high", "max"],
+        // pi's own spellings, plus the two the other kinds share: `none` for what pi
+        // calls `off`, and `max`, which pi accepts and codex does not.
+        Some("pi") => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
         _ => &[],
     }
 }
@@ -199,6 +207,16 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
             ]),
             Some("claude" | "agy") => flags.extend(["--effort".to_owned(), effort.to_owned()]),
             Some("muse") => flags.extend(["--reasoning-effort".to_owned(), effort.to_owned()]),
+            // pi spells the levels the same way, except the one the other kinds call
+            // `none`: pi's own word for it is `off`.
+            Some("pi") => flags.extend([
+                "--thinking".to_owned(),
+                if effort == "none" {
+                    "off".to_owned()
+                } else {
+                    effort.to_owned()
+                },
+            ]),
             Some("cursor") => {
                 let value = model
                     .as_mut()
@@ -362,6 +380,36 @@ pub fn shape_args(kind: Option<&str>, spec: &Spec) -> Result<(Vec<String>, Vec<S
                 },
             }
         },
+        Some("pi") => {
+            // No permission mode is spelled: pi's permission gating is its extensions',
+            // not the command line's, and a caller who asked for one needs to hear that
+            // rather than get an agent that asks about everything. Named rather than the
+            // empty `unknown_mode` table, which would say "it accepts: " and nothing else.
+            if let Some(mode) = mode {
+                return Err(format!(
+                    "pi has no permission mode {mode:?}; permissions are set by pi \
+                     extensions, not the command line"
+                ));
+            }
+            match resume {
+                None => {},
+                Some("last") => flags.push("--continue".to_owned()),
+                Some(id) => {
+                    flags.push("--session".to_owned());
+                    flags.push(id.to_owned());
+                },
+            }
+            if hooks {
+                // The reporting extension, handed over the way a spawned claude's hook
+                // settings are: the pane loads the file, and the extension is what
+                // reports. A Firecracker pane is excluded above, for the same reason
+                // claude's are - the guest's image has its own wiring - and an SSH pane
+                // is stripped by the host, which knows the target when this cannot.
+                // See `agent::pi`.
+                flags.push("--extension".to_owned());
+                flags.push(super::pi::EXTENSION_ARGUMENT.to_owned());
+            }
+        },
         _ => {
             // A kind nothing here knows, or a bare command: `--model` is the one flag every
             // agent spells the same, and nothing else can be guessed at.
@@ -386,14 +434,20 @@ pub fn claude_hook_settings_argument() -> String {
 }
 
 /// The planned arguments without the `--settings <hook json>` pair this planner adds for
-/// claude: a few kilobytes of hook wiring that say nothing about the launch. Only the
-/// planner's own pair is dropped; any other `--settings` is kept.
+/// claude, and the `--extension <path>` pair it adds for pi: a few kilobytes of hook
+/// wiring and a data-dir path that say nothing about the launch. Only the planner's own
+/// pairs are dropped; any other `--settings` or `--extension` is kept.
 pub fn display_args(args: &[String]) -> Vec<String> {
     let hooks = claude_hook_settings_argument();
     let mut shown = Vec::with_capacity(args.len());
     let mut index = 0;
     while index < args.len() {
-        if args[index] == "--settings" && args.get(index + 1) == Some(&hooks) {
+        if args[index] == "--settings" && args.get(index + 1) == Some(&hooks)
+            || args[index] == "--extension"
+                && args
+                    .get(index + 1)
+                    .is_some_and(|arg| super::pi::is_extension_argument(arg))
+        {
             index += 2;
             continue;
         }
@@ -404,11 +458,13 @@ pub fn display_args(args: &[String]) -> Vec<String> {
 }
 
 /// A pane's stringified command (`RunCommand`'s space-joined form) without the planner's
-/// hook wiring: the `--settings <hook json>` pair, the `YINZ_CLAUDE_INLINE_HOOKS` and
-/// agent-pane markers, and the `env` wrapper when the markers were all it carried.
+/// hook wiring: the `--settings <hook json>` pair, the `YINZ_CLAUDE_INLINE_HOOKS`
+/// and agent-pane markers, and the
+/// `env` wrapper when the markers were all it carried.
 ///
 /// The settings are matched as JSON, not text: a plugin and the server can order the same
-/// object's keys differently. For display only. Classification reads the full command.
+/// object's keys differently. Pi's generated extension is filtered by `RunCommand`
+/// before its arguments are joined. For display only. Classification reads the full command.
 pub fn display_command(command: &str) -> String {
     const FLAG: &str = " --settings ";
     let mut command = command.to_owned();

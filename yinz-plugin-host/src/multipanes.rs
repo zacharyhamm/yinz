@@ -63,7 +63,8 @@ fn launch(env: &PluginEnv, slot: PaneId, child: MultipaneChild, reserved: bool) 
             if reserved {
                 run_command_in_pane(env, slot, command, BTreeMap::new(), false);
             } else {
-                let run = run_command_action(env, command, true, BTreeMap::new());
+                let run = run_command_action(env, command, true, BTreeMap::new())
+                    .context("cannot prepare multipane command")?;
                 let (send, receive) = oneshot::channel();
                 env.senders
                     .send_to_pty(PtyInstruction::SpawnInPlaceTerminal(

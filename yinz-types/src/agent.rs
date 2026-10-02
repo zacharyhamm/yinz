@@ -9,6 +9,21 @@ use strum_macros::{Display, EnumString};
 /// Launch marker for direct agent panes, whose command has no originating plugin.
 pub const AGENT_PANE_ENV: &str = "YINZ_AGENT_PANE";
 
+/// Internal argument resolved by the host before launching Pi.
+pub const PI_EXTENSION_ARGUMENT: &str = "yinz-internal:pi-agent-report";
+pub const PI_EXTENSION_FILE: &str = "yinz-agent-report.ts";
+
+/// Recognize the entire reserved generated argument without the host environment.
+pub fn is_pi_extension_argument(arg: &str) -> bool {
+    arg == PI_EXTENSION_ARGUMENT
+        || (std::path::Path::new(arg).is_absolute()
+            && std::path::Path::new(arg).ends_with(
+                std::path::Path::new("pi")
+                    .join(PI_EXTENSION_ARGUMENT)
+                    .join(PI_EXTENSION_FILE),
+            ))
+}
+
 /// What the agent in a pane is doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Display, EnumString)]
 pub enum AgentState {
@@ -134,8 +149,8 @@ impl AgentSource {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSpawnSpec {
-    /// The agent to run, by kind: `claude`, `codex`, `cursor`, `muse`, `opencode`, or
-    /// any other name the agent detection would recognise. Resolved to a program by
+    /// The agent to run, by kind: `claude`, `codex`, `pi`, `cursor`, `muse`, `opencode`,
+    /// or any other name the agent detection would recognise. Resolved to a program by
     /// `agent::launch::binary_for`.
     pub kind: Option<String>,
     /// A program to run instead, for whatever no kind names. Ignored when `kind` is set; one

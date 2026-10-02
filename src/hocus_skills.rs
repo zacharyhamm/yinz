@@ -101,6 +101,7 @@ pub(crate) fn run(command: yinz_cli::args::Skills) -> Result<()> {
                         agent_root(
                             agent,
                             std::env::var_os("CODEX_HOME"),
+                            std::env::var_os("PI_CODING_AGENT_DIR"),
                             std::env::var_os("XDG_CONFIG_HOME"),
                             home,
                         )

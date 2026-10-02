@@ -59,6 +59,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         // is still a muse pane, the way `kind_of` reads it.
         Some(name) if name.starts_with("muse-bin-") => "muse",
         Some("agy" | "antigravity") => "agy",
+        Some("pi") => "pi",
         _ => return Err("unsupported agent command for restart".into()),
     };
     // Only fixed-arity options are accepted. Variadic options must use an inline value;
@@ -389,6 +390,66 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "update",
             ],
         ),
+        "pi" => (
+            &[
+                "--model",
+                "--models",
+                "--provider",
+                "--thinking",
+                "--mode",
+                "-t",
+                "--tools",
+                "-xt",
+                "--exclude-tools",
+                "-e",
+                "--extension",
+                "--skill",
+                "--prompt-template",
+                "--theme",
+                "--use-theme",
+                "--session-dir",
+                "--system-prompt",
+                "--append-system-prompt",
+                "--api-key",
+                "-n",
+                "--name",
+                "--tui-mode",
+            ],
+            &[
+                "-ne",
+                "--no-extensions",
+                "-ns",
+                "--no-skills",
+                "-np",
+                "--no-prompt-templates",
+                "--no-themes",
+                "-nc",
+                "--no-context-files",
+                "--no-session",
+                "-nt",
+                "--no-tools",
+                "-nbt",
+                "--no-builtin-tools",
+                "--verbose",
+                "-a",
+                "--approve",
+                "-na",
+                "--no-approve",
+                "--offline",
+            ],
+            &[],
+            &[
+                "install",
+                "remove",
+                "uninstall",
+                "update",
+                "list",
+                "config",
+                "auth",
+                "mcp",
+                "help",
+            ],
+        ),
         _ => unreachable!(),
     };
     let mut cleaned = Vec::new();
@@ -409,12 +470,23 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             let (flag, inline) = arg
                 .split_once('=')
                 .map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
+            if kind == "pi"
+                && (inline.is_some()
+                    || (flag == "--mode" && args.get(index).map(String::as_str) != Some("text")))
+            {
+                return Err(format!(
+                    "unsupported or ambiguous Pi option {arg} for restart"
+                ));
+            }
             let remove_value = matches!(
                 (kind, flag),
                 ("claude", "--session-id" | "--resume-session-at")
                     | ("opencode", "--prompt" | "-s" | "--session")
                     | ("muse", "--session-id" | "--prompt-file")
                     | ("agy", "--conversation" | "--prompt-interactive" | "-i")
+                    // pi opens by path, partial id, or exact id: all three name the
+                    // conversation the old turn lived in.
+                    | ("pi", "--session" | "--session-id" | "--fork")
             );
             let remove_optional = matches!(
                 (kind, flag),
@@ -428,6 +500,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                         | ("opencode", "-c" | "--continue" | "--fork")
                         | ("muse", "--last")
                         | ("agy", "-c" | "--continue")
+                        | ("pi", "-c" | "--continue" | "-r" | "--resume")
                 ) || (kind == "codex" && resume && matches!(flag, "--last" | "--all"));
             if remove_optional {
                 if inline.is_none() && args.get(index).is_some_and(|next| !next.starts_with('-')) {
@@ -441,6 +514,9 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                     let value = args
                         .get(index)
                         .ok_or_else(|| format!("missing value for {flag}"))?;
+                    if kind == "pi" && (value.is_empty() || value.starts_with('-')) {
+                        return Err(format!("missing or ambiguous value for {flag}"));
+                    }
                     if !remove_value {
                         cleaned.push(value.clone());
                     }
@@ -480,7 +556,7 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             if kind == "opencode" {
                 cleaned.push(arg.clone());
             }
-            let limit = if kind == "cursor" {
+            let limit = if matches!(kind, "cursor" | "pi") {
                 usize::MAX
             } else if kind == "codex" && resume {
                 2
@@ -499,6 +575,64 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
 mod tests {
     use super::*;
     use crate::agent::launch::{plan, Spec};
+
+    #[test]
+    fn pi_restart_removes_prompts_and_session_selectors_with_exact_arity() {
+        let args = strings(&[
+            "--model",
+            "sonnet",
+            "-r",
+            "--session",
+            "old",
+            "--fork",
+            "forked",
+            "--session-id",
+            "id",
+            "--continue",
+            "-e",
+            "user.ts",
+            "--models",
+            "a,b",
+            "-t",
+            "read",
+            "-xt",
+            "bash",
+            "-n",
+            "name",
+            "--mode",
+            "text",
+            "-ne",
+            "--",
+            "hello",
+            "world",
+            "@file",
+        ]);
+        assert_eq!(
+            restart_args(Path::new("pi"), &args).unwrap(),
+            strings(&[
+                "--model", "sonnet", "-e", "user.ts", "--models", "a,b", "-t", "read", "-xt",
+                "bash", "-n", "name", "--mode", "text", "-ne"
+            ])
+        );
+        for args in [
+            vec!["--print", "prompt"],
+            vec!["-p"],
+            vec!["--mode", "json"],
+            vec!["--mode", "rpc"],
+            vec!["--model"],
+            vec!["--session", "--model", "sonnet"],
+            vec!["--model=sonnet"],
+            vec!["--unknown", "value"],
+            vec!["--export", "session"],
+            vec!["--list-models"],
+            vec!["install", "package"],
+        ] {
+            assert!(
+                restart_args(Path::new("pi"), &strings(&args)).is_err(),
+                "{args:?}"
+            );
+        }
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_owned()).collect()

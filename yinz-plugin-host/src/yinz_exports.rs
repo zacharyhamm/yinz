@@ -297,10 +297,15 @@ fn translate_plugin_path(env: &PluginEnv, path: PathBuf) -> PathBuf {
 /// suspended on start.
 fn run_command_action(
     env: &PluginEnv,
-    command_to_run: CommandToRun,
+    mut command_to_run: CommandToRun,
     default_to_plugin_cwd: bool,
     context: BTreeMap<String, String>,
-) -> RunCommandAction {
+) -> Option<RunCommandAction> {
+    if let Err(error) = yinz_runtime::agent::pi::prepare_command(&mut command_to_run) {
+        log::error!("cannot prepare agent reporting: {error}");
+        notify(env, error, None, None);
+        return None;
+    }
     let cwd = if env.plugin_config.is_builtin()
         && (context.contains_key("swamp_owner")
             || context
@@ -311,7 +316,7 @@ fn run_command_action(
     } else {
         command_cwd(env, &command_to_run, default_to_plugin_cwd)
     };
-    RunCommandAction {
+    Some(RunCommandAction {
         command: command_to_run.path,
         args: command_to_run.args,
         cwd,
@@ -322,7 +327,7 @@ fn run_command_action(
         use_terminal_title: false,
         target: command_to_run.target,
         remote_default_shell: command_to_run.remote_default_shell,
-    }
+    })
 }
 
 /// Where a plugin's command starts. Locally the plugin mounts are translated
@@ -1604,7 +1609,9 @@ fn open_command_pane_in_new_tab(
     command_to_run: CommandToRun,
     context: BTreeMap<String, String>,
 ) {
-    let run_command_action = run_command_action(env, command_to_run, true, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, true, context) else {
+        return;
+    };
     let initial_panes = Some(vec![CommandOrPlugin::Command(run_command_action)]);
     let action = Action::NewTab {
         layout_source: None,
@@ -2565,7 +2572,9 @@ fn open_command_pane_in_place_of_plugin(
     context: BTreeMap<String, String>,
 ) {
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -2645,7 +2654,9 @@ fn open_command_pane_in_place_of_pane_id(
     context: BTreeMap<String, String>,
 ) {
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -2719,7 +2730,9 @@ fn open_command_pane(
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let direction: Option<Direction> = None;
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let action = Action::NewTiledPane {
         direction,
         command: Some(run_command_action),
@@ -2763,7 +2776,7 @@ fn spawn_command_pane_near_plugin(
 ) -> OpenCommandPaneNearPluginResponse {
     let preserve_cwd = cwd_already_resolved && !command_to_run.target.is_remote();
     let resolved_cwd = preserve_cwd.then(|| command_to_run.cwd.take());
-    let mut run_command_action = run_command_action(env, command_to_run, false, context);
+    let mut run_command_action = run_command_action(env, command_to_run, false, context)?;
     // Checkout launchers already resolved host paths, including names like /tmp and /host.
     if let Some(cwd) = resolved_cwd {
         run_command_action.cwd = cwd;
@@ -2979,6 +2992,7 @@ fn prepare_agent(
         automatic_firecracker_vm,
         checkout_made || mirror_project,
     )?;
+    yinz_runtime::agent::pi::prepare_command(&mut command)?;
     let requested_branch = requested_branch.filter(|requested| branch.as_ref() != Some(requested));
     Ok(PreparedAgent {
         command,
@@ -3766,7 +3780,9 @@ fn open_command_pane_floating(
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
         pane_name: name,
@@ -3799,7 +3815,9 @@ fn open_command_pane_overlay(
     context: BTreeMap<String, String>,
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let action = Action::NewFloatingPane {
         command: Some(run_command_action),
         pane_name: None,
@@ -3824,7 +3842,9 @@ fn open_command_pane_floating_near_plugin(
     context: BTreeMap<String, String>,
 ) {
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -3863,7 +3883,9 @@ fn open_command_pane_in_place(
 ) {
     let error_msg = || format!("failed to open command in plugin {}", env.name());
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, false, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, false, context) else {
+        return;
+    };
     let action = Action::NewInPlacePane {
         command: Some(run_command_action),
         pane_name: name,
@@ -3892,7 +3914,9 @@ fn open_command_pane_background(
 ) {
     let start_suppressed = true;
     let name: Option<String> = None;
-    let run_command_action = run_command_action(env, command_to_run, true, context);
+    let Some(run_command_action) = run_command_action(env, command_to_run, true, context) else {
+        return;
+    };
     let run_cmd = TerminalAction::RunCommand(run_command_action.into());
 
     // Create completion channel
@@ -3939,7 +3963,10 @@ fn run_command_in_pane(
         log::error!("cannot run a command in a plugin pane");
         return;
     };
-    let run_command: RunCommand = run_command_action(env, command_to_run, true, context).into();
+    let Some(command) = run_command_action(env, command_to_run, true, context) else {
+        return;
+    };
+    let run_command: RunCommand = command.into();
     let _ = env
         .senders
         .send_to_screen(ScreenInstruction::RunCommandInPane(

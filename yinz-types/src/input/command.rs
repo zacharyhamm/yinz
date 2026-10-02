@@ -116,7 +116,18 @@ impl std::fmt::Display for RunCommand {
             .as_os_str()
             .to_string_lossy()
             .to_string();
-        for arg in &self.args {
+        let mut args = self.args.iter().peekable();
+        while let Some(arg) = args.next() {
+            // Filter before joining: data-directory paths can contain spaces, and
+            // a stringified command no longer has reliable argument boundaries.
+            if arg == "--extension"
+                && args
+                    .peek()
+                    .is_some_and(|value| crate::agent::is_pi_extension_argument(value))
+            {
+                args.next();
+                continue;
+            }
             command.push(' ');
             command.push_str(arg);
         }
