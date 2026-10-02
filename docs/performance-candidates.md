@@ -62,13 +62,16 @@ If `fearless_simd` is adopted later, note the following, checked against the 1.0
 ## Implemented
 
 Measured in October 2026 with `cargo bench -p yinz-server --bench multi_pane_render` against the
-previous commit, on the same shared machine (re-running outliers; single runs swung up to ±40%).
+previous commit (the last three rows against the branch's `head` baseline, on a quiet machine), on the same shared machine (re-running outliers; single runs swung up to ±40%).
 
 | Change | Where | Measured |
 | --- | --- | --- |
 | Candidate 1, partly: skip the style diff for a cell whose styles `Rc` is the previous cell's, when the chunk has no selection; and return early from `update_and_return_diff` for an unchanged style even with `changed_colors` (an OSC 4 palette re-sent a reset on every reset cell) | `serialize_chunks`, `RcCharacterStyles::ptr_eq`, `update_and_return_diff` | Landed with the commit before the baseline, so not in these numbers |
 | Candidate 2, option A: a read with no `ESC _` and no trailing ESC, in ground state, goes to `advance_until_terminated` whole | `TerminalPane::handle_pty_bytes` | `ingest/sgr_churn` −9 to −14%, `frame/sgr_churn` −3 to −15%, `ingest/cursor_moves` −3 to −15% |
 | Kitty `capture_run` with `memchr3` + `memchr`, matching `push_capture_byte`'s overflow | `interceptor.rs`, called from `TerminalPane::handle_pty_bytes` | `kitty_graphics/ingest` −70%, `kitty_graphics/frame` −64% |
+| Resolve and blend translucent cells once per run of equal styles, instead of allocating a styles `Rc` per covered cell twice | `Composition::add` and `finish` in `yinz-terminal/src/output/translucency.rs` | `panel/opacity_75/1` −40%, `panel/opacity_75/16` −13%, `panel_text` −45 to −55% |
+| `base64-simd` for Kitty payloads both ways (decode checked against the `base64` crate by property test); share the cached encoding as `Rc<String>`; write transmissions straight into the frame with their size reserved; fill RGB→RGBA from an opaque buffer | `store.rs`, `parser.rs`, `emit_kitty_transmit` and `serialize_kitty_frame` | `kitty_graphics/ingest` −66%, `frame` −68%, `render_only` −73% |
+| Give rows created by a scrolling newline or wrap the pane width as capacity; shrink short lines entering the scrollback | `add_canonical_line`, `line_wrap`, `transfer_rows_from_viewport_to_lines_above` in `grid.rs` | `ingest/plain_text` −5 to −16%, `sgr_churn` −6 to −8%, `unicode_wide` −2 to −12% |
 
 Both ingest changes have property tests comparing them with the byte-at-a-time path:
 `bulk_and_intercepted_ingest_leave_identical_panes` in `yinz-panes` and
