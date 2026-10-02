@@ -328,10 +328,14 @@ fn serialize_chunks(
         vte_output.push_str(restore_cursor_position);
     }
     if let Some(kitty_input) = kitty_input {
-        let kitty_vte = serialize_kitty_frame(kitty_input).with_context(err_context)?;
-        if !kitty_vte.is_empty() {
-            vte_output.push_str("\u{1b}[s");
-            vte_output.push_str(&kitty_vte);
+        // Written in place, since a transmission is megabytes; withdrawn if there was nothing.
+        let before = vte_output.len();
+        vte_output.push_str("\u{1b}[s");
+        let commands_start = vte_output.len();
+        serialize_kitty_frame(kitty_input, vte_output).with_context(err_context)?;
+        if vte_output.len() == commands_start {
+            vte_output.truncate(before);
+        } else {
             vte_output.push_str("\u{1b}[u");
         }
     }
@@ -452,43 +456,35 @@ fn emit_kitty_transmit(
     b64: &str,
 ) -> Result<()> {
     let err_context = "failed to serialize kitty transmit";
-    let mut parts: Vec<&str> = vec![];
-    let mut index = 0;
-    while index < b64.len() {
-        let end = std::cmp::min(index + 4096, b64.len());
-        parts.push(&b64[index..end]);
-        index = end;
-    }
-    if parts.is_empty() {
-        parts.push("");
-    }
-    let last = parts.len() - 1;
-    for (part_index, part) in parts.iter().enumerate() {
+    // An image is megabytes of base64: size the buffer once and copy the payload in directly,
+    // rather than growing it chunk by chunk through the formatter.
+    const CHUNK: usize = 4096;
+    const CHUNK_OVERHEAD: usize = 64;
+    let chunk_count = b64.len().div_ceil(CHUNK).max(1);
+    out.reserve(b64.len() + chunk_count * CHUNK_OVERHEAD);
+    let last = chunk_count - 1;
+    for part_index in 0..chunk_count {
+        let start = part_index * CHUNK;
+        let part = &b64[start..b64.len().min(start + CHUNK)];
+        let more = if part_index == last { 0 } else { 1 };
         if part_index == 0 {
             write!(
                 out,
-                "\u{1b}_Ga=t,q=2,f=32,t=d,i={},s={},v={},m={};{}\u{1b}\\",
-                host_image_id,
-                width,
-                height,
-                if last == 0 { 0 } else { 1 },
-                part
+                "\u{1b}_Ga=t,q=2,f=32,t=d,i={},s={},v={},m={};",
+                host_image_id, width, height, more
             )
             .context(err_context)?;
         } else {
-            write!(
-                out,
-                "\u{1b}_Gq=2,m={};{}\u{1b}\\",
-                if part_index == last { 0 } else { 1 },
-                part
-            )
-            .context(err_context)?;
+            write!(out, "\u{1b}_Gq=2,m={};", more).context(err_context)?;
         }
+        out.push_str(part);
+        out.push_str("\u{1b}\\");
     }
     Ok(())
 }
 
-fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
+/// Appends the frame's Kitty commands to `out`.
+fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Result<()> {
     let err_context = "failed to serialize kitty frame";
     let KittyFrameInput {
         mut chunks_by_pane,
@@ -498,7 +494,6 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
         host_state,
         host_display_cleared,
     } = kitty_input;
-    let mut out = String::new();
     if host_display_cleared {
         host_state.live_placements.clear();
         host_state.transmitted.clear();
@@ -606,7 +601,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
                     };
                     let host_image_id = host_state.next_host_image_id;
                     host_state.next_host_image_id += 1;
-                    emit_kitty_transmit(&mut out, host_image_id, width, height, &b64)?;
+                    emit_kitty_transmit(out, host_image_id, width, height, &b64)?;
                     host_state.transmitted.insert(image_key, host_image_id);
                     host_image_id
                 },
@@ -631,7 +626,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
                     host_placement_id
                 },
             };
-            vte_goto_instruction(chunk.cell_x, chunk.cell_y, &mut out).context(err_context)?;
+            vte_goto_instruction(chunk.cell_x, chunk.cell_y, out).context(err_context)?;
             write!(
                 out,
                 "\u{1b}_Ga=p,q=2,i={},p={},x={},y={},w={},h={},X={},Y={},z={},C=1\u{1b}\\",
@@ -657,7 +652,7 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput) -> Result<String> {
             );
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Shared by `Output::serialize_with_size`, which acts on the answer, and

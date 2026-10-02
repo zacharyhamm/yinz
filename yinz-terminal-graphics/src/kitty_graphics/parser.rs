@@ -1,12 +1,3 @@
-use base64::alphabet::STANDARD as BASE64_STANDARD_ALPHABET;
-use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
-use base64::engine::{DecodePaddingMode, Engine as _};
-
-const BASE64_DECODER: GeneralPurpose = GeneralPurpose::new(
-    &BASE64_STANDARD_ALPHABET,
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
-
 use std::io::{Read, Seek};
 use std::path::Path;
 
@@ -746,6 +737,12 @@ fn read_shared_memory_object(
     ))
 }
 
+/// Decodes base64 whose padding has already been trimmed. Like the `base64` crate's strict
+/// decoding, it rejects whitespace, stray padding and non-zero trailing bits.
+pub(crate) fn decode_base64(unpadded: &[u8]) -> Result<Vec<u8>, base64_simd::Error> {
+    base64_simd::STANDARD_NO_PAD.decode_to_vec(unpadded)
+}
+
 fn run_payload_pipeline(
     mut command: KittyCommand,
     payload_b64: &[u8],
@@ -756,8 +753,7 @@ fn run_payload_pipeline(
         .rposition(|b| *b != b'=')
         .map(|pos| pos + 1)
         .unwrap_or(0);
-    let decoded = BASE64_DECODER
-        .decode(&payload_b64[..trimmed_len])
+    let decoded = decode_base64(&payload_b64[..trimmed_len])
         .map_err(|_| echo.error(KittyErrorCode::Einval, "invalid base64 payload"))?;
     let data = match command.medium {
         KittyMedium::Direct => decoded,
