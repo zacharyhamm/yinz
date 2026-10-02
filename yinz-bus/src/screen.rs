@@ -73,6 +73,8 @@ pub enum ScreenInstruction {
     PluginBytes(Vec<PluginRenderAsset>),
     Render,
     RenderToClients,
+    RenderWriterReady,
+    RenderDeadline(Instant),
     NewPane(
         PaneId,
         Option<InitialTitle>,
@@ -960,6 +962,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             | ScreenInstruction::UnsubscribePaneOutput(..)
             | ScreenInstruction::PtyBytes(..)
             | ScreenInstruction::RemotePaneReady(..) => ScreenContext::HandlePtyBytes,
+            ScreenInstruction::RenderWriterReady | ScreenInstruction::RenderDeadline(_) => {
+                ScreenContext::RenderToClients
+            },
             ScreenInstruction::ClearAllPluginHighlights(..) => ScreenContext::ClearPluginHighlights,
             other => {
                 let name: &'static str = other.into();

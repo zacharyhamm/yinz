@@ -363,10 +363,7 @@ impl StdioAccess for ClientOsInputOutput {
         }
     }
     fn get_stdout_writer(&self) -> Box<dyn io::Write> {
-        Box::new(crate::terminal_escapes::HostWriter::new(
-            ::std::io::stdout(),
-            wait_until_stdout_is_writable,
-        ))
+        stdout_writer()
     }
 
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
@@ -516,153 +513,39 @@ pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> 
 
 pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 
-/// Block until the host terminal can take more output. Bounded, so a terminal that
-/// will never drain is retried, and its error reported, rather than waited on forever.
+/// A serialized stdout writer that waits out transient terminal backpressure.
+pub(crate) fn stdout_writer() -> Box<dyn io::Write> {
+    // Hold the lock for the writer's whole life, including its waits on a full
+    // terminal, so another thread cannot write into the middle of a frame.
+    Box::new(crate::terminal_escapes::HostWriter::new(
+        ::std::io::stdout().lock(),
+        wait_until_stdout_is_writable,
+    ))
+}
+
+/// Pause while the terminal is full, then let HostWriter retry. A timeout is temporary
+/// backpressure, not an error.
+///
+/// `select`, not `poll`: macOS `poll` does not support ttys and answers `POLLNVAL`, which
+/// would turn ordinary backpressure into a failed write. tmux waits on ttys the same way.
+/// A closed terminal still reports ready, and the retried write then returns its error.
 #[cfg(unix)]
-fn wait_until_stdout_is_writable(stdout: &io::Stdout) {
-    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-    use std::os::fd::AsFd;
-    let mut fds = [PollFd::new(stdout.as_fd(), PollFlags::POLLOUT)];
-    let _ = poll(&mut fds, PollTimeout::from(100u16));
+fn wait_until_stdout_is_writable(stdout: &impl std::os::fd::AsFd) -> io::Result<()> {
+    use nix::sys::select::{select, FdSet};
+    use nix::sys::time::{TimeVal, TimeValLike};
+    let mut writable = FdSet::new();
+    writable.insert(stdout.as_fd());
+    let mut timeout = TimeVal::milliseconds(100);
+    select(None, None, Some(&mut writable), None, Some(&mut timeout)).map_err(io::Error::from)?;
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn wait_until_stdout_is_writable(_stdout: &io::Stdout) {
-    std::thread::sleep(std::time::Duration::from_millis(1));
+fn wait_until_stdout_is_writable(_stdout: &io::StdoutLock<'static>) -> io::Result<()> {
+    std::thread::sleep(time::Duration::from_millis(1));
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn original_termios_survives_startup_raw_mode_and_cloning() {
-        use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg, SpecialCharacterIndices};
-        use yinz_runtime::termios::WireTermios;
-        const CHILD: &str = "YINZ_TEST_CLIENT_TERMIOS";
-        if std::env::var_os(CHILD).is_some() {
-            let original = termios::tcgetattr(io::stdin()).unwrap();
-            let mut client = get_client_os_input().unwrap();
-            client.set_raw_mode_keeping_signals();
-            let raw = termios::tcgetattr(io::stdin()).unwrap();
-            assert!(!raw.input_flags.contains(InputFlags::ICRNL));
-            assert!(raw.local_flags.contains(LocalFlags::ISIG));
-            let cloned = client.clone();
-            let command =
-                crate::server_command(Path::new("test.sock"), false, Some(&cloned.orig_termios))
-                    .unwrap();
-            let args: Vec<_> = command.get_args().collect();
-            let json = args[args
-                .iter()
-                .position(|arg| *arg == "--server-termios")
-                .unwrap()
-                + 1];
-            let snapshot: Option<WireTermios> =
-                serde_json::from_str(json.to_str().unwrap()).unwrap();
-            assert_eq!(snapshot, Some(WireTermios::from_termios(&original)));
-            client.unset_raw_mode().unwrap();
-            // Field by field rather than as a whole: XNU sets PENDIN when canonical mode comes
-            // back, so that pending input is retyped. It is kernel status, not part of what the
-            // restore wrote.
-            let restored = termios::tcgetattr(io::stdin()).unwrap();
-            assert_eq!(restored.input_flags, original.input_flags);
-            assert_eq!(restored.output_flags, original.output_flags);
-            assert_eq!(restored.control_flags, original.control_flags);
-            assert_eq!(
-                restored.local_flags - LocalFlags::PENDIN,
-                original.local_flags - LocalFlags::PENDIN,
-            );
-            assert_eq!(restored.control_chars, original.control_chars);
-            return;
-        }
-        // Raw mode and stdin are process-global: isolate them from the test runner.
-        let pty = nix::pty::openpty(None, None).unwrap();
-        let mut cooked = termios::tcgetattr(&pty.slave).unwrap();
-        cooked.input_flags.insert(InputFlags::ICRNL);
-        cooked.control_chars[SpecialCharacterIndices::VERASE as usize] = 8;
-        termios::tcsetattr(&pty.slave, SetArg::TCSANOW, &cooked).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "os_input_output::tests::original_termios_survives_startup_raw_mode_and_cloning",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .stdin(std::process::Stdio::from(pty.slave))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-    }
-
-    /// The branch nothing else exercises: a socket that never appears. The
-    /// error must name the socket and carry the connect failure, and the wait
-    /// must be bounded by the timeout, not by the retry loop's patience.
-    #[test]
-    fn connect_with_deadline_gives_up_at_the_deadline_with_a_named_socket() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("never-bound.sock");
-        let timeout = std::time::Duration::from_millis(50);
-
-        let started_at = std::time::Instant::now();
-        let Err(err) = connect_with_deadline(&path, timeout, std::time::Duration::from_millis(5))
-        else {
-            panic!("a socket that does not exist must not connect");
-        };
-        let waited = started_at.elapsed();
-
-        assert!(
-            waited >= timeout,
-            "gave up after {waited:?}, before the {timeout:?} deadline"
-        );
-        assert!(
-            waited < std::time::Duration::from_secs(1),
-            "kept retrying for {waited:?} past a {timeout:?} deadline"
-        );
-        assert_eq!(err.last_error().kind(), io::ErrorKind::NotFound);
-        let message = err.to_string();
-        assert!(
-            message.contains(&path.display().to_string()),
-            "the message should name the socket: {message}"
-        );
-    }
-
-    #[test]
-    fn get_terminal_size_returns_nonzero_or_fallback() {
-        let size = get_terminal_size();
-        // In CI or when not attached to a terminal, crossterm may return an error
-        // and we fall back to 80x24. Either way, size should be valid.
-        assert!(size.rows > 0, "rows should be positive");
-        assert!(size.cols > 0, "cols should be positive");
-    }
-
-    #[test]
-    fn get_terminal_size_fallback_values() {
-        // Verify the fallback constants are what we expect
-        let fallback = Size { rows: 24, cols: 80 };
-        // When crossterm::terminal::size() fails (no terminal), we should get 80x24
-        // This is implicitly tested by get_terminal_size_returns_nonzero_or_fallback
-        // but we verify the constants here
-        assert_eq!(fallback.rows, 24);
-        assert_eq!(fallback.cols, 80);
-    }
-
-    #[test]
-    fn client_os_input_output_can_be_constructed() {
-        let os_input = get_client_os_input().expect("should construct ClientOsInputOutput");
-        let size = os_input.get_terminal_size();
-        assert!(size.rows > 0, "rows should be positive");
-        assert!(size.cols > 0, "cols should be positive");
-    }
-
-    #[test]
-    fn cli_client_os_input_can_be_constructed() {
-        let os_input = get_cli_client_os_input().expect("should construct CLI ClientOsInputOutput");
-        let size = os_input.get_terminal_size();
-        assert!(size.rows > 0, "rows should be positive");
-        assert!(size.cols > 0, "cols should be positive");
-    }
-}
+#[path = "unit/os_input_output_tests.rs"]
+mod tests;

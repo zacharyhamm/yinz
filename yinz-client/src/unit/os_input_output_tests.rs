@@ -1,0 +1,259 @@
+use super::*;
+
+/// The host terminal is a tty, which is what macOS `poll` cannot wait on. A full one is
+/// backpressure, a drained one is ready, and a closed one fails the write, not the wait.
+#[test]
+fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
+    use crate::terminal_escapes::HostWriter;
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let flags = OFlag::from_bits_truncate(fcntl(&pty.slave, FcntlArg::F_GETFL).unwrap());
+    fcntl(&pty.slave, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+    let mut slave = std::fs::File::from(pty.slave);
+    let mut master = std::fs::File::from(pty.master);
+    let deadline = time::Instant::now() + time::Duration::from_secs(5);
+    loop {
+        match slave.write(&[b'x'; 4096]) {
+            Ok(_) => {},
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let started = time::Instant::now();
+                wait_until_stdout_is_writable(&slave).unwrap();
+                if started.elapsed() >= time::Duration::from_millis(50) {
+                    break;
+                }
+                // The kernel can move bytes between the tty's internal queues
+                // without a master read. Refill until both sides have backed up.
+                assert!(time::Instant::now() < deadline, "tty never stayed full");
+            },
+            Err(error) => panic!("failed to fill the tty: {error}"),
+        }
+    }
+
+    // Drain the host side; the tty takes output again.
+    let mut drained = [0; 65536];
+    let _ = master.read(&mut drained).unwrap();
+    wait_until_stdout_is_writable(&slave).unwrap();
+
+    // Close the host side; the retried write reports it instead of waiting forever.
+    drop(master);
+    let mut writer = HostWriter::new(&slave, wait_until_stdout_is_writable);
+    let error = loop {
+        if let Err(error) = writer.write_all(&[b'x'; 4096]) {
+            break error;
+        }
+    };
+    assert_ne!(error.kind(), io::ErrorKind::WouldBlock);
+}
+
+/// Frames from different threads reach the terminal whole, even when each one has to wait
+/// out a full terminal partway through.
+#[test]
+fn concurrent_writers_never_interleave_frames_on_a_full_terminal() {
+    use std::io::Read;
+    const CHILD: &str = "YINZ_TEST_CLIENT_ATOMIC_FRAMES";
+    const FRAME: usize = 256 * 1024;
+    const FRAMES_PER_THREAD: usize = 8;
+    if std::env::var_os(CHILD).is_some() {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        let stdout = io::stdout();
+        let flags = OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL).unwrap());
+        fcntl(&stdout, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        let client = get_client_os_input().unwrap();
+        let writers: Vec<_> = b"ABC"
+            .iter()
+            .map(|&fill| {
+                let client = client.clone();
+                std::thread::spawn(move || {
+                    let mut frame = vec![fill; FRAME];
+                    frame[0] = b'<';
+                    frame[FRAME - 1] = b'>';
+                    for _ in 0..FRAMES_PER_THREAD {
+                        let mut stdout = client.get_stdout_writer();
+                        stdout.write_all(&frame).unwrap();
+                        stdout.flush().unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        // The harness reports the result on this stdout, and does not retry `EAGAIN`.
+        fcntl(&stdout, FcntlArg::F_SETFL(flags)).unwrap();
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "os_input_output::tests::concurrent_writers_never_interleave_frames_on_a_full_terminal",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Read slowly, so the pipe fills and writers have to wait mid-frame.
+    let mut pipe = child.stdout.take().unwrap();
+    let mut output = Vec::new();
+    let mut chunk = [0; 16 * 1024];
+    loop {
+        let read = pipe.read(&mut chunk).unwrap();
+        if read == 0 {
+            break;
+        }
+        output.extend_from_slice(&chunk[..read]);
+        std::thread::sleep(time::Duration::from_micros(200));
+    }
+    assert!(child.wait().unwrap().success());
+
+    // The test harness prints around the frames; each frame is `<`, one letter, `>`.
+    let first = output.iter().position(|&b| b == b'<').unwrap();
+    let last = output.iter().rposition(|&b| b == b'>').unwrap();
+    let frames = output[first..=last].chunks(FRAME);
+    assert_eq!(
+        frames.len(),
+        3 * FRAMES_PER_THREAD,
+        "frames were lost or split"
+    );
+    for (index, frame) in frames.enumerate() {
+        let fill = frame[1];
+        assert!(
+            frame[0] == b'<'
+                && frame[FRAME - 1] == b'>'
+                && frame[1..FRAME - 1].iter().all(|&b| b == fill),
+            "frame {index} was interleaved with another thread's output"
+        );
+    }
+}
+
+#[test]
+fn original_termios_survives_startup_raw_mode_and_cloning() {
+    use nix::sys::termios::{self, InputFlags, LocalFlags, SetArg, SpecialCharacterIndices};
+    use yinz_runtime::termios::WireTermios;
+    const CHILD: &str = "YINZ_TEST_CLIENT_TERMIOS";
+    if std::env::var_os(CHILD).is_some() {
+        let original = termios::tcgetattr(io::stdin()).unwrap();
+        let mut client = get_client_os_input().unwrap();
+        client.set_raw_mode_keeping_signals();
+        let raw = termios::tcgetattr(io::stdin()).unwrap();
+        assert!(!raw.input_flags.contains(InputFlags::ICRNL));
+        assert!(raw.local_flags.contains(LocalFlags::ISIG));
+        let cloned = client.clone();
+        let command =
+            crate::server_command(Path::new("test.sock"), false, Some(&cloned.orig_termios))
+                .unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        let json = args[args
+            .iter()
+            .position(|arg| *arg == "--server-termios")
+            .unwrap()
+            + 1];
+        let snapshot: Option<WireTermios> = serde_json::from_str(json.to_str().unwrap()).unwrap();
+        assert_eq!(snapshot, Some(WireTermios::from_termios(&original)));
+        client.unset_raw_mode().unwrap();
+        // Field by field rather than as a whole: XNU sets PENDIN when canonical mode comes
+        // back, so that pending input is retyped. It is kernel status, not part of what the
+        // restore wrote.
+        let restored = termios::tcgetattr(io::stdin()).unwrap();
+        assert_eq!(restored.input_flags, original.input_flags);
+        assert_eq!(restored.output_flags, original.output_flags);
+        assert_eq!(restored.control_flags, original.control_flags);
+        assert_eq!(
+            restored.local_flags - LocalFlags::PENDIN,
+            original.local_flags - LocalFlags::PENDIN,
+        );
+        assert_eq!(restored.control_chars, original.control_chars);
+        return;
+    }
+    // Raw mode and stdin are process-global: isolate them from the test runner.
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let mut cooked = termios::tcgetattr(&pty.slave).unwrap();
+    cooked.input_flags.insert(InputFlags::ICRNL);
+    cooked.control_chars[SpecialCharacterIndices::VERASE as usize] = 8;
+    termios::tcsetattr(&pty.slave, SetArg::TCSANOW, &cooked).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "os_input_output::tests::original_termios_survives_startup_raw_mode_and_cloning",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::from(pty.slave))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// The branch nothing else exercises: a socket that never appears. The
+/// error must name the socket and carry the connect failure, and the wait
+/// must be bounded by the timeout, not by the retry loop's patience.
+#[test]
+fn connect_with_deadline_gives_up_at_the_deadline_with_a_named_socket() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("never-bound.sock");
+    let timeout = std::time::Duration::from_millis(50);
+
+    let started_at = std::time::Instant::now();
+    let Err(err) = connect_with_deadline(&path, timeout, std::time::Duration::from_millis(5))
+    else {
+        panic!("a socket that does not exist must not connect");
+    };
+    let waited = started_at.elapsed();
+
+    assert!(
+        waited >= timeout,
+        "gave up after {waited:?}, before the {timeout:?} deadline"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(1),
+        "kept retrying for {waited:?} past a {timeout:?} deadline"
+    );
+    assert_eq!(err.last_error().kind(), io::ErrorKind::NotFound);
+    let message = err.to_string();
+    assert!(
+        message.contains(&path.display().to_string()),
+        "the message should name the socket: {message}"
+    );
+}
+
+#[test]
+fn get_terminal_size_returns_nonzero_or_fallback() {
+    let size = get_terminal_size();
+    // In CI or when not attached to a terminal, crossterm may return an error
+    // and we fall back to 80x24. Either way, size should be valid.
+    assert!(size.rows > 0, "rows should be positive");
+    assert!(size.cols > 0, "cols should be positive");
+}
+
+#[test]
+fn get_terminal_size_fallback_values() {
+    // Verify the fallback constants are what we expect
+    let fallback = Size { rows: 24, cols: 80 };
+    // When crossterm::terminal::size() fails (no terminal), we should get 80x24
+    // This is implicitly tested by get_terminal_size_returns_nonzero_or_fallback
+    // but we verify the constants here
+    assert_eq!(fallback.rows, 24);
+    assert_eq!(fallback.cols, 80);
+}
+
+#[test]
+fn client_os_input_output_can_be_constructed() {
+    let os_input = get_client_os_input().expect("should construct ClientOsInputOutput");
+    let size = os_input.get_terminal_size();
+    assert!(size.rows > 0, "rows should be positive");
+    assert!(size.cols > 0, "cols should be positive");
+}
+
+#[test]
+fn cli_client_os_input_can_be_constructed() {
+    let os_input = get_cli_client_os_input().expect("should construct CLI ClientOsInputOutput");
+    let size = os_input.get_terminal_size();
+    assert!(size.rows > 0, "rows should be positive");
+    assert!(size.cols > 0, "cols should be positive");
+}

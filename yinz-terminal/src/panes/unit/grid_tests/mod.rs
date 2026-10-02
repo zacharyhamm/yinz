@@ -124,8 +124,10 @@ fn short_scrolled_rows_release_capacity_without_losing_content_or_metadata() {
             &mut grid,
             format!("\x1b]133;A\x07\x1b]8;;https://example.com\x07{text}\x1b]8;;\x07").as_bytes(),
         );
-        let row = grid.viewport.back().unwrap();
-        assert!(row.columns.capacity() >= 80);
+        let row = grid.viewport.back_mut().unwrap();
+        assert!(row.columns.capacity() < 40);
+        // Rows can retain capacity after erasing longer content or shrinking the terminal.
+        row.columns.reserve(80);
         let expected = row.clone();
         feed_bytes(&mut grid, b"\r\n\r\n");
 
@@ -144,6 +146,30 @@ fn short_scrolled_rows_release_capacity_without_losing_content_or_metadata() {
         grid.change_size(2, 80);
         assert_eq!(grid.dump_screen_with_ansi(true), dump);
     }
+}
+
+#[test]
+fn scrolling_blank_lines_does_not_allocate_cells() {
+    let grid = create_grid_with_size_and_raw(2, 300, &b"\r\n".repeat(100));
+    assert!(grid
+        .viewport
+        .iter()
+        .chain(&grid.lines_above)
+        .all(|row| { row.columns.is_empty() && row.columns.capacity() == 0 }));
+}
+
+#[test]
+fn manual_scrolling_releases_spare_row_capacity() {
+    let mut grid = create_grid_with_size_and_raw(2, 300, b"first\r\nsecond\r\nthird");
+    grid.scroll_up_one_line();
+    let row = grid.viewport.front_mut().unwrap();
+    row.columns.reserve(300);
+    assert_eq!(row_text(row), "first");
+    grid.scroll_down_one_line();
+    let row = grid.lines_above.back().unwrap();
+    assert_eq!(row_text(row), "first");
+    assert!(row.columns.capacity() < 150);
+    assert_eq!(grid.dump_screen(true), "first\nsecond\nthird");
 }
 
 #[test]
@@ -784,7 +810,7 @@ fn feed_kitty_bytes(
             InterceptorResult::Forward(fwd) => {
                 vte_parser.advance(grid, fwd.as_slice());
             },
-            InterceptorResult::Swallow => {},
+            InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
             InterceptorResult::Captured(cmd) => {
                 grid.handle_kitty_apc(&cmd);
             },

@@ -42,6 +42,7 @@ impl StartupSignalGuard {
                 let mut signals = signals;
                 // Ends without exiting when `disarm` closes the handle, which is the ordinary case.
                 if signals.forever().next().is_some() {
+                    crate::terminal_escapes::abandon_stalled_output();
                     ClientTeardown::exit_during_startup(
                         Some(teardown),
                         "Interrupted while starting up".to_owned(),

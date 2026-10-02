@@ -465,6 +465,7 @@ impl Screen {
         vte_bytes: VteBytes,
         pending: &mut PendingEvents,
     ) -> Result<()> {
+        self.pane_subscriber_snapshots_dirty = true;
         self.pane_output_activity
             .insert(PaneId::Terminal(pid), Instant::now());
         let mut vte_bytes = Some(vte_bytes);

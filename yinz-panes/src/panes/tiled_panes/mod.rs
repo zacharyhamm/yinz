@@ -1553,6 +1553,9 @@ impl TiledPanes {
                 .render(self.client_id_to_boundaries.get(&client_id))
                 .with_context(err_context)?;
             self.client_id_to_boundaries.insert(client_id, boundaries);
+            if output.pane_change_client == Some(client_id) && !boundaries_to_render.is_empty() {
+                output.rendered_pane_boundaries = true;
+            }
             if self.dimmed_clients.contains(&client_id) {
                 crate::ui::pane_contents_and_ui::dim_character_chunks(&mut boundaries_to_render);
             }
@@ -3072,6 +3075,9 @@ impl TiledPanes {
             self.active_panes.remove(&client_id, &self.panes);
             self.active_panes.insert(client_id, to_pane_id, &self.panes);
         }
+    }
+    pub fn invalidate_boundaries(&mut self, client_id: ClientId) {
+        self.client_id_to_boundaries.remove(&client_id);
     }
     fn reset_boundaries(&mut self) {
         self.client_id_to_boundaries.clear();

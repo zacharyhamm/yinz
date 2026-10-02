@@ -4205,6 +4205,20 @@ impl Tab {
             false
         }
     }
+    pub fn remove_client_pane_state(&mut self, client_id: ClientId) {
+        self.mouse_hover_pane_id.remove(&client_id);
+        self.plugin_hover_pane_id.remove(&client_id);
+        self.keyboard_text_selection.remove(&client_id);
+        self.last_hint_text.remove(&client_id);
+        self.last_active_pane_scroll.remove(&client_id);
+        self.pending_agent_escapes
+            .retain(|(client, _), _| *client != client_id);
+        for pane_id in self.get_all_pane_ids() {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                pane.remove_client(client_id);
+            }
+        }
+    }
     pub fn clear_guest_modal_for_client_on_all_panes(&mut self, client_id: ClientId) {
         for pane_id in self.get_all_pane_ids() {
             self.clear_guest_modal_on_pane(pane_id, client_id);
@@ -5104,6 +5118,9 @@ impl Tab {
             return;
         }
         self.tiled_panes.switch_last_pane_fullscreen(client_id);
+    }
+    pub fn invalidate_boundaries(&mut self, client_id: ClientId) {
+        self.tiled_panes.invalidate_boundaries(client_id);
     }
     pub fn set_force_render(&mut self) {
         self.tiled_panes.set_force_render();

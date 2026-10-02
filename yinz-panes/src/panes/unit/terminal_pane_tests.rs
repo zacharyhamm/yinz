@@ -1545,6 +1545,33 @@ pub fn pty_ingest_handles_escapes_at_the_edges_of_a_read() {
 }
 
 #[test]
+fn ordinary_escape_runs_preserve_every_read_split() {
+    for prefix in [b"\x1b".as_slice(), b"\x1b_"] {
+        let mut stream = INGEST_CORPUS.to_vec();
+        // Repeated ESCs before both ordinary controls and APC candidates, including non-Kitty APCs.
+        stream.extend_from_slice(b"\x1b\x1b\x1b[31ma\x1b[m\x1b\x1b_other\x1b\\b\x1b_\x1b[32mc");
+        stream.extend_from_slice(prefix);
+        let completion = &b"\x1b_Gq=2,a=d,d=A\x1b\\after"[prefix.len()..];
+        let expected = ingest(&[stream.as_slice(), completion].concat(), 1);
+        for split in 0..=stream.len() {
+            let mut pane = make_pane_for_ingest();
+            for read in [&stream[..split], &stream[split..], completion] {
+                pane.handle_pty_bytes(read.to_vec());
+            }
+            assert_eq!(
+                (
+                    pane.grid.dump_screen(false),
+                    pane.grid.kitty_commands_handled(),
+                    pane.drain_pending_pty_input(),
+                ),
+                expected,
+                "prefix {prefix:?}, split {split}"
+            );
+        }
+    }
+}
+
+#[test]
 pub fn a_kitty_sequence_split_across_two_reads_is_still_captured() {
     // the interceptor is mid-sequence when the second read arrives, so that read must not be
     // batched as a run of ordinary bytes
@@ -1578,10 +1605,8 @@ pub fn a_kitty_sequence_split_across_two_reads_is_still_captured() {
 
 #[test]
 pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_escape() {
-    // The batch loop advances the index by a whole run at once, and the interceptor's swallow
-    // branch then re-queues from `index - 1` - the escape it just consumed. This is the input
-    // that puts a batched run between the two: an OSC that has to be forwarded to the host, a run
-    // of ordinary bytes, and then a kitty sequence whose opening escape triggers the flush.
+    // An OSC that needs the host, ordinary bytes, then a Kitty capture that triggers the flush.
+    // Pausing must retain both the unconsumed text and the entire Kitty prefix for replay.
     let mut pane = make_pane_for_ingest();
     pane.handle_pty_bytes(Vec::from(
         &b"\x1b]10;?\x07plain\x1b_Gq=2,a=d,d=A\x1b\\tail"[..],
@@ -1608,9 +1633,11 @@ pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_es
 #[test]
 fn host_query_pause_and_replay_preserve_every_input_split() {
     for terminator in ["\x07", "\x1b\\"] {
-        for tail in [
-            "after\x1b[31mred\x1b[m\x1b[6n",
-            "after\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n",
+        for (tail, expected_screen) in [
+            ("after\x1b[31mred\x1b[m\x1b[6n", "beforeafterred"),
+            ("after\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n", "beforeafterred"),
+            // The query fills the whole parser batch before the capture starts.
+            ("\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n", "beforered"),
         ] {
             let stream = format!("before\x1b]10;?{terminator}{tail}");
             // vte dispatches an OSC on the ESC of ST, leaving its backslash to replay.
@@ -1635,16 +1662,63 @@ fn host_query_pause_and_replay_preserve_every_input_split() {
                 assert_eq!(pending, expected_pending.as_bytes(), "split {split}");
                 assert!(pane.clear_forward_pause());
                 pane.handle_pty_bytes(pending);
-                assert_eq!(pane.grid.dump_screen(false).trim_end(), "beforeafterred");
+                assert_eq!(pane.grid.dump_screen(false).trim_end(), expected_screen);
                 assert_eq!(
                     pane.grid.kitty_commands_handled(),
                     u64::from(tail.contains("\x1b_G"))
                 );
-                assert_eq!(pane.drain_messages_to_pty(), vec![b"\x1b[1;15R".to_vec()]);
+                assert_eq!(
+                    pane.drain_messages_to_pty(),
+                    vec![format!("\x1b[1;{}R", expected_screen.len() + 1).into_bytes()]
+                );
                 assert!(pane.drain_forwarded_queries().is_empty());
                 assert!(pane.drain_pending_pty_input().is_empty());
             }
         }
+    }
+}
+
+#[test]
+fn mixed_sgr_and_kitty_output_flushes_only_at_capture_boundaries() {
+    let mut pane = make_pane_for_ingest();
+    let mut stream = b"\x1b[31ma\x1b[m\x1b[2;3H".to_vec();
+    stream.extend(apc_b64("a=T,f=32,s=1,v=1,i=1,C=1,q=2", &[255; 4]));
+    stream.extend_from_slice(b"\x1b[32mB\x1b[m\x1b[1mC\x1b[m");
+    pane.handle_pty_bytes(stream);
+
+    assert_eq!(
+        pane.vte_batches, 2,
+        "one batch on each side of the Kitty APC"
+    );
+    let placement = &pane.grid.kitty_placements()[0];
+    assert_eq!(
+        (placement.display_rect.x, placement.display_rect.y),
+        (16, 21)
+    );
+    let screen = pane.grid.dump_screen(false);
+    let lines: Vec<_> = screen.lines().collect();
+    assert_eq!(lines[0].trim_end(), "a");
+    assert_eq!(lines[1].trim_end(), "  BC");
+}
+
+#[test]
+fn host_query_pause_replays_held_prefix_before_a_later_read() {
+    for prefix in ["\x1b", "\x1b_"] {
+        let mut pane = make_pane_for_ingest();
+        pane.handle_pty_bytes(format!("before\x1b]10;?\x07plain{prefix}").into_bytes());
+        assert_eq!(pane.drain_forwarded_queries().len(), 1);
+        pane.arm_forward_pause();
+        let pending = pane.drain_pending_pty_input();
+        assert_eq!(pending, format!("plain{prefix}").as_bytes());
+        pane.clear_forward_pause();
+        pane.handle_pty_bytes(pending);
+        assert_eq!(pane.grid.dump_screen(false).trim_end(), "beforeplain");
+
+        let command = b"\x1b_Gq=2,a=d,d=A\x1b\\after";
+        pane.handle_pty_bytes(command[prefix.len()..].to_vec());
+        assert_eq!(pane.grid.kitty_commands_handled(), 1);
+        assert_eq!(pane.grid.dump_screen(false).trim_end(), "beforeplainafter");
+        assert!(pane.drain_pending_pty_input().is_empty());
     }
 }
 

@@ -88,9 +88,14 @@ impl Rng {
 enum Workload {
     /// Plain ASCII that wraps and scrolls: `Grid::print`, scroll handling, whole-line dirtying.
     PlainText,
+    /// Sparse output must not allocate a full screen row for each line.
+    BlankLines,
+    ShortLines,
     /// Text with dense SGR changes: `csi_dispatch`, per-character styling, and the SGR emission
     /// half of `serialize_chunks`.
     SgrChurn,
+    /// A Kitty upload in the same pty read as dense text styling.
+    MixedKittySgr,
     /// Absolute cursor positioning plus short in-place rewrites, the shape a `top`-like TUI has.
     /// Confined to every fourth row, so most of the viewport stays clean between frames - the
     /// best case for the per-line diff, and the one workload where it can pay off.
@@ -106,7 +111,10 @@ enum Workload {
 impl Workload {
     const ALL: &'static [Workload] = &[
         Workload::PlainText,
+        Workload::BlankLines,
+        Workload::ShortLines,
         Workload::SgrChurn,
+        Workload::MixedKittySgr,
         Workload::CursorMoves,
         Workload::AltScreenRedraw,
         Workload::UnicodeWide,
@@ -115,7 +123,10 @@ impl Workload {
     fn name(&self) -> &'static str {
         match self {
             Workload::PlainText => "plain_text",
+            Workload::BlankLines => "blank_lines",
+            Workload::ShortLines => "short_lines",
             Workload::SgrChurn => "sgr_churn",
+            Workload::MixedKittySgr => "mixed_kitty_sgr",
             Workload::CursorMoves => "cursor_moves",
             Workload::AltScreenRedraw => "alt_screen_redraw",
             Workload::UnicodeWide => "unicode_wide",
@@ -142,7 +153,18 @@ impl Workload {
                     out.extend_from_slice(b"\r\n");
                 }
             },
-            Workload::SgrChurn => {
+            Workload::BlankLines | Workload::ShortLines => {
+                while out.len() < target {
+                    if *self == Workload::ShortLines {
+                        out.extend_from_slice(b"short log");
+                    }
+                    out.extend_from_slice(b"\r\n");
+                }
+            },
+            Workload::SgrChurn | Workload::MixedKittySgr => {
+                if *self == Workload::MixedKittySgr {
+                    out.extend_from_slice(b"\x1b_Ga=t,f=32,s=1,v=1,i=1,q=2;AAAA/w==\x1b\\");
+                }
                 while out.len() < target {
                     let width = cols * 9 / 10;
                     let mut written = 0;

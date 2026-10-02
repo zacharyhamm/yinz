@@ -169,6 +169,7 @@ fn recorder_pane_metadata() {
 fn plugin_bytes_with_no_pane_are_cached_without_pipe_acknowledgements() {
     let size = Size { cols: 60, rows: 10 };
     let mut screen = create_non_mirrored_screen(size);
+    new_tab(&mut screen, 1, TabId::new(0));
     let unhandled = screen
         .handle_plugin_render_assets(vec![PluginRenderAsset::new(
             PluginId::new(99),
@@ -178,4 +179,33 @@ fn plugin_bytes_with_no_pane_are_cached_without_pipe_acknowledgements() {
         .unwrap();
     assert_eq!(unhandled.len(), 1);
     assert_eq!(unhandled[0].bytes, b"ORPHAN_BYTES");
+}
+
+#[test]
+fn disconnect_discards_plugin_output_waiting_for_a_pane_before_client_id_reuse() {
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let plugin = PluginId::new(99);
+    let mut pending = super::super::thread_main::PendingEvents::default();
+    pending.waiting_for_pane.insert(
+        PaneId::Plugin(plugin),
+        vec![
+            ScreenInstruction::PluginBytes(vec![
+                PluginRenderAsset::new(plugin, client, b"departed".to_vec()),
+                PluginRenderAsset::new(plugin, other, b"remaining".to_vec()),
+            ]),
+            ScreenInstruction::ShowPluginCursor(plugin, client, Some((1, 1))),
+            ScreenInstruction::ShowPluginCursor(plugin, other, Some((2, 2))),
+        ],
+    );
+    pending.remove_client_plugin_output(client);
+    let remaining = &pending.waiting_for_pane[&PaneId::Plugin(plugin)];
+    assert_eq!(remaining.len(), 2);
+    assert!(
+        matches!(&remaining[0], ScreenInstruction::PluginBytes(assets)
+        if assets.len() == 1 && assets[0].client_id == other && assets[0].bytes == b"remaining")
+    );
+    assert!(matches!(&remaining[1], ScreenInstruction::ShowPluginCursor(_, id, _) if *id == other));
+    pending.remove_client_plugin_output(other);
+    assert!(pending.waiting_for_pane.is_empty());
 }

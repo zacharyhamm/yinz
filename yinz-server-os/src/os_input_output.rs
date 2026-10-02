@@ -37,7 +37,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Condvar, Mutex, RwLock,
+        Arc, Condvar, LockResult, Mutex, MutexGuard, RwLock,
     },
     time::{Duration, Instant},
 };
@@ -189,6 +189,7 @@ struct SendQueueState {
     render_bytes: usize,
     /// `Render`s in `control`.
     queued_renders: usize,
+    render_ready: Option<(usize, Box<dyn FnOnce() + Send>)>,
     pending_pane_renders: BTreeMap<yinz_types::data::PaneId, ServerToClientMsg>,
     in_flight: Option<InFlightSend>,
     closed: bool,
@@ -282,10 +283,32 @@ impl CoalescingSendQueue {
             message_available: Condvar::new(),
         }
     }
+    fn recover_state<'a>(
+        &self,
+        locked: LockResult<MutexGuard<'a, SendQueueState>>,
+    ) -> MutexGuard<'a, SendQueueState> {
+        locked.unwrap_or_else(|poisoned| {
+            let mut state = poisoned.into_inner();
+            // A panic may interrupt queue accounting or lose a render delta.
+            // Disconnect instead of resuming with inconsistent terminal contents.
+            let render_ready = state.render_ready.take();
+            *state = SendQueueState {
+                closed: true,
+                render_ready,
+                ..Default::default()
+            };
+            self.state.clear_poison();
+            self.message_available.notify_all();
+            log::warn!("closed poisoned client send queue");
+            state
+        })
+    }
     fn push(&self, msg: ServerToClientMsg) -> SendQueuePush {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.recover_state(self.state.lock());
         if state.closed {
             // the writer is gone; pretend-queue so late senders don't error
+            drop(state);
+            self.notify_render_ready();
             return SendQueuePush::Queued;
         }
         let outcome = match slot_for(&msg) {
@@ -323,11 +346,13 @@ impl CoalescingSendQueue {
             },
         };
         self.message_available.notify_one();
+        drop(state);
+        self.notify_render_ready();
         outcome
     }
     /// Blocks until a message is available; `None` once closed and drained.
     fn pop(&self) -> Option<ServerToClientMsg> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.recover_state(self.state.lock());
         loop {
             if let Some(msg) = state.control.pop_front() {
                 if let ServerToClientMsg::Render { content } = &msg {
@@ -340,6 +365,8 @@ impl CoalescingSendQueue {
                     render_bytes,
                     started: Instant::now(),
                 });
+                drop(state);
+                self.notify_render_ready();
                 return Some(msg);
             }
             if let Some((_, msg)) = state.pending_pane_renders.pop_first() {
@@ -349,31 +376,71 @@ impl CoalescingSendQueue {
                     render_bytes,
                     started: Instant::now(),
                 });
+                drop(state);
+                self.notify_render_ready();
                 return Some(msg);
             }
             if state.closed {
+                drop(state);
+                self.notify_render_ready();
                 return None;
             }
-            state = self.message_available.wait(state).unwrap();
+            state = self.recover_state(self.message_available.wait(state));
         }
     }
     fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        self.recover_state(self.state.lock()).closed = true;
         self.message_available.notify_all();
+        self.notify_render_ready();
     }
     fn finish_send(&self) {
-        self.state.lock().unwrap().in_flight = None;
+        self.recover_state(self.state.lock()).in_flight = None;
+        self.notify_render_ready();
+    }
+    fn notify_render_ready(&self) {
+        let ready = {
+            let mut state = self.recover_state(self.state.lock());
+            if state.render_ready.as_ref().is_some_and(|(threshold, _)| {
+                state.closed || state.queued_renders + state.pending_pane_renders.len() < *threshold
+            }) {
+                state.render_ready.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, ready)) = ready {
+            ready();
+        }
     }
     fn render_backlog(&self) -> RenderBacklog {
-        let state = self.state.lock().unwrap();
-        RenderBacklog {
-            queued_renders: state.queued_renders + state.pending_pane_renders.len(),
-            in_flight_for: state.in_flight.map(|send| send.started.elapsed()),
+        self.render_backlog_and_notify(usize::MAX, None)
+    }
+    fn render_backlog_and_notify(
+        &self,
+        threshold: usize,
+        ready: Option<Box<dyn FnOnce() + Send>>,
+    ) -> RenderBacklog {
+        let mut state = self.recover_state(self.state.lock());
+        let backlog = if state.closed {
+            RenderBacklog::default()
+        } else {
+            RenderBacklog {
+                queued_renders: state.queued_renders + state.pending_pane_renders.len(),
+                in_flight_for: state.in_flight.map(|send| send.started.elapsed()),
+            }
+        };
+        if backlog.queued_renders >= threshold {
+            if let Some(ready) = ready {
+                state.render_ready = Some((threshold, ready));
+            }
         }
+        drop(state);
+        self.notify_render_ready();
+        backlog
     }
     #[cfg(test)]
     fn len(&self) -> usize {
-        let state = self.state.lock().unwrap();
+        let state = self.recover_state(self.state.lock());
         state.control.len() + state.pending_pane_renders.len()
     }
 }
@@ -753,6 +820,16 @@ pub struct ServerOsInputOutput {
 
 #[cfg(not(windows))]
 impl ServerOsInputOutput {
+    fn lock_client_senders(&self) -> MutexGuard<'_, HashMap<ClientId, ClientSender>> {
+        self.client_senders.lock().unwrap_or_else(|poisoned| {
+            // HashMap remains valid after an interrupted operation. Each sender
+            // recovers its own queue before using its possibly interrupted state.
+            let senders = poisoned.into_inner();
+            self.client_senders.clear_poison();
+            log::warn!("recovered poisoned client sender registry");
+            senders
+        })
+    }
     /// Resolve where a command runs: this binary for a local Codex wrapper, the ssh host for an
     /// ssh one, and for a Firecracker one the endpoint the provider hands back once
     /// the VM is up. The returned command is the one to send there (a Firecracker
@@ -1248,13 +1325,7 @@ impl ServerOsApi for ServerOsInputOutput {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");
 
-        if let Some(sender) = self
-            .client_senders
-            .lock()
-            .to_anyhow()
-            .with_context(err_context)?
-            .get_mut(&client_id)
-        {
+        if let Some(sender) = self.lock_client_senders().get_mut(&client_id) {
             sender.send_or_buffer(msg).with_context(err_context)
         } else {
             Ok(())
@@ -1285,20 +1356,12 @@ impl ServerOsApi for ServerOsInputOutput {
             stream_fd,
         )
         .context("failed to start client writer")?;
-        self.client_senders
-            .lock()
-            .to_anyhow()
-            .with_context(|| format!("failed to create new client {client_id}"))?
-            .insert(client_id, sender);
+        self.lock_client_senders().insert(client_id, sender);
         Ok(receiver)
     }
 
     fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
-        let mut client_senders = self
-            .client_senders
-            .lock()
-            .to_anyhow()
-            .with_context(|| format!("failed to remove client {client_id}"))?;
+        let mut client_senders = self.lock_client_senders();
         if let Some(sender) = client_senders.remove(&client_id) {
             // Order matters: dropping `sender` closes the queue so the writer
             // thread drains and sends its final `Exit`, and `shutdown_reads`
@@ -1311,11 +1374,24 @@ impl ServerOsApi for ServerOsInputOutput {
     }
 
     fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
-        self.client_senders
-            .lock()
-            .ok()?
+        let queue = self
+            .lock_client_senders()
             .get(&client_id)
-            .map(|sender| sender.queue.render_backlog())
+            .map(|sender| sender.queue.clone());
+        queue.map(|queue| queue.render_backlog())
+    }
+
+    fn client_render_backlog_and_notify(
+        &self,
+        client_id: ClientId,
+        threshold: usize,
+        ready: Box<dyn FnOnce() + Send>,
+    ) -> Option<RenderBacklog> {
+        let queue = self
+            .lock_client_senders()
+            .get(&client_id)
+            .map(|sender| sender.queue.clone());
+        queue.map(|queue| queue.render_backlog_and_notify(threshold, Some(ready)))
     }
 
     fn load_palette(&self) -> Palette {
@@ -1580,7 +1656,7 @@ impl ServerOsApi for ServerOsInputOutput {
     fn flush_client_writers(&self, deadline: Duration) {
         // Closing each queue is what lets a writer thread finish: `pop` returns
         // `None` once the queue is closed and drained.
-        for sender in self.client_senders.lock().unwrap().values() {
+        for sender in self.lock_client_senders().values() {
             sender.close();
         }
         if !self.live_writers.wait_until_drained(deadline) {

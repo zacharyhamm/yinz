@@ -7,12 +7,12 @@ use crate::output::Output;
 use crate::panes::PaneId;
 use crate::plugins::PluginInstruction;
 use crate::{ClientId, ServerInstruction};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use yinz_types::pane_size::Viewport;
 
-/// Frames a client may have queued behind its in-flight write before it counts as
-/// behind. See `Screen::every_client_is_behind_on_renders`.
+/// At least this many queued frames makes a client count as behind.
+/// Readiness notifications re-enter the render debouncer.
 const MAX_QUEUED_RENDERS: usize = 1;
 /// One write can legitimately block for seconds: the client reads the next frame only
 /// once its terminal has taken several megabytes of the last. Only a client that has
@@ -32,6 +32,7 @@ impl Screen {
     }
 
     pub fn render(&mut self) -> Result<()> {
+        self.pane_subscriber_snapshots_dirty = true;
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
         //
@@ -49,60 +50,109 @@ impl Screen {
         Ok(())
     }
 
-    /// Whether every client still has a frame queued behind the one it is writing.
-    ///
-    /// Rendering then would only queue diffs nobody can drain, until the send
-    /// queues overflow and the server disconnects them. Skipping the frame loses
-    /// nothing: pane dirty state accumulates, and the next frame carries it all.
-    ///
-    /// Only when *every* client is behind: frames are rendered once for all of them,
-    /// so waiting for one slow client would freeze the healthy ones. A slow client
-    /// among healthy ones keeps receiving diffs, and the send queue's caps disconnect
-    /// it if it cannot keep up. A client whose write has been blocked for
-    /// `STALLED_CLIENT_WRITE` has stopped reading, and does not hold frames back either.
-    pub fn every_client_is_behind_on_renders(&self) -> bool {
-        let Some(os_input) = self.bus.os_input.as_ref() else {
-            return false;
-        };
-        let clients = self.connected_clients.borrow();
-        // Watchers and pane subscribers consume this same render pass, but are not
-        // in connected_clients. A slow terminal must not freeze their updates.
-        let mut render_clients = clients
-            .iter()
-            .chain(self.watcher_clients.keys())
-            .chain(self.pane_render_subscribers.keys())
-            .peekable();
-        render_clients.peek().is_some()
-            && render_clients.all(|client_id| {
-                os_input
-                    .client_render_backlog(*client_id)
-                    .is_some_and(|backlog| {
-                        backlog.queued_renders >= MAX_QUEUED_RENDERS
-                            && backlog
-                                .in_flight_for
-                                .is_none_or(|blocked| blocked < STALLED_CLIENT_WRITE)
-                    })
+    fn client_render_is_blocked(&self, client: ClientId, deadline: &mut Instant) -> bool {
+        let to_screen = self.bus.senders.to_screen.clone();
+        self.bus
+            .os_input
+            .as_ref()
+            .and_then(|os| {
+                os.client_render_backlog_and_notify(
+                    client,
+                    MAX_QUEUED_RENDERS,
+                    Box::new(move || {
+                        if let Some(to_screen) = to_screen {
+                            let _ =
+                                to_screen.send(crate::screen::ScreenInstruction::RenderWriterReady);
+                        }
+                    }),
+                )
+            })
+            .is_some_and(|backlog| {
+                let elapsed = backlog.in_flight_for.unwrap_or_default();
+                let blocked =
+                    backlog.queued_renders >= MAX_QUEUED_RENDERS && elapsed < STALLED_CLIENT_WRITE;
+                if blocked {
+                    *deadline = (*deadline).min(Instant::now() + (STALLED_CLIENT_WRITE - elapsed));
+                }
+                blocked
             })
     }
 
-    /// Skip this frame if every client is behind, asking the debouncer to try again;
-    /// see `every_client_is_behind_on_renders`. Returns whether it skipped. Polls
-    /// every debounce interval until a client drains.
-    pub fn defer_render_while_clients_are_behind(&self) -> bool {
-        let behind = self.every_client_is_behind_on_renders();
-        if behind {
-            self.retry_render_later();
+    /// Check and arm each queue before deciding which tabs can consume dirty state.
+    pub(super) fn deferred_tabs(&mut self) -> HashSet<TabId> {
+        let followed_tab = self.followed_client_id.map(|client| {
+            self.active_tab_ids
+                .get(&client)
+                .copied()
+                .unwrap_or(TabId::new(0))
+        });
+        let mut next_deadline = Instant::now() + STALLED_CLIENT_WRITE;
+        let mut blocked = HashSet::new();
+        for (tab_id, tab) in &self.tabs {
+            let mut tab_deadline = Instant::now() + STALLED_CLIENT_WRITE;
+            let recipients: Vec<_> = self
+                .connected_clients
+                .borrow()
+                .iter()
+                .filter(|client| {
+                    tab.has_connected_client(client) && !self.watcher_clients.contains_key(client)
+                })
+                .copied()
+                .chain(
+                    self.watcher_clients
+                        .keys()
+                        .copied()
+                        .filter(|_| followed_tab == Some(*tab_id)),
+                )
+                .collect();
+            if !recipients.is_empty()
+                && recipients
+                    .into_iter()
+                    .all(|client| self.client_render_is_blocked(client, &mut tab_deadline))
+            {
+                next_deadline = next_deadline.min(tab_deadline);
+                blocked.insert(*tab_id);
+            }
         }
-        behind
+        let mut subscriber_deadline = Instant::now() + STALLED_CLIENT_WRITE;
+        self.deferred_subscriber_renders = self.pane_subscriber_snapshots_dirty
+            && !self.pane_render_subscribers.is_empty()
+            && self
+                .pane_render_subscribers
+                .keys()
+                .all(|client| self.client_render_is_blocked(*client, &mut subscriber_deadline));
+        if self.deferred_subscriber_renders {
+            next_deadline = next_deadline.min(subscriber_deadline);
+        }
+        self.deferred_render_tabs = blocked.clone();
+        if blocked.is_empty() && !self.deferred_subscriber_renders {
+            if self.render_deadline.take().is_some() {
+                let _ = self
+                    .bus
+                    .senders
+                    .send_to_background_jobs(BackgroundJob::SetRenderDeadline(None));
+            }
+        } else if self
+            .render_deadline
+            .is_none_or(|deadline| deadline <= Instant::now() || next_deadline < deadline)
+        {
+            let deadline = next_deadline;
+            self.render_deadline = Some(deadline);
+            let _ = self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::SetRenderDeadline(Some(deadline)));
+        }
+        blocked
     }
 
-    /// Ask the debouncer for another frame, as `render` does, without the bookkeeping
-    /// `render` repeats for each new frame request.
-    pub fn retry_render_later(&self) {
-        let _ = self
-            .bus
-            .senders
-            .send_to_background_jobs(BackgroundJob::RenderToClients);
+    pub(super) fn resume_deferred_render(&self) {
+        if !self.deferred_render_tabs.is_empty() || self.deferred_subscriber_renders {
+            let _ = self
+                .bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::RenderToClients);
+        }
     }
 
     pub fn render_to_clients(&mut self) -> Result<()> {
@@ -118,6 +168,7 @@ impl Screen {
             log::info!("attach trace: render frame setup begin");
         }
 
+        let deferred_tabs = self.deferred_tabs();
         // One instant for the whole frame. Every animation is *sampled* here rather than advanced
         // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
@@ -172,8 +223,10 @@ impl Screen {
             .any(|id| !self.watcher_clients.contains_key(id));
         let has_watchers = !self.watcher_clients.is_empty(); // No change needed
 
-        // Track whether non-watcher output was dirty for conditional watcher rendering
-        let non_watcher_output_was_dirty;
+        // Track pane output consumed by regular clients for conditional watcher rendering.
+        let mut replay_contents = HashSet::new();
+        let mut replay_frames = HashSet::new();
+        let mut replay_boundaries = false;
 
         // === PHASE 1: Render for regular clients ===
         if has_regular_clients {
@@ -194,8 +247,7 @@ impl Screen {
 
             self.prepare_command_palette_render(&mut output);
 
-            output.collect_ansi_pane_contents =
-                self.pane_render_subscribers.values().any(|s| s.ansi);
+            output.pane_change_client = self.followed_client_id.filter(|_| has_watchers);
 
             // Before any pane renders: work out which cells this frame's toasts have stopped
             // covering and ask the panes under them to repaint. A pane only emits chunks for rows
@@ -257,12 +309,19 @@ impl Screen {
             // is to see.
             let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
-                if tab.should_retain_tab() || !tab.is_pending() {
+                if !deferred_tabs.contains(tab_index)
+                    && (tab.should_retain_tab() || !tab.is_pending())
+                {
                     // Pass None for normal client rendering
                     tab.render_panes(&mut output, None).context(err_context)?;
                     tabs_that_rendered.push(*tab_index);
                 }
             }
+            // Watchers need pane contents consumed by the regular-client pass, but menus and
+            // notifications paint independently and must not force a full pane repaint.
+            replay_contents = std::mem::take(&mut output.rendered_pane_contents);
+            replay_frames = std::mem::take(&mut output.rendered_pane_frames);
+            replay_boundaries = output.rendered_pane_boundaries;
             if trace_attach {
                 log::info!(
                     "attach trace: render regular-client panes complete after {:?}",
@@ -300,15 +359,13 @@ impl Screen {
 
             // Subscriber delivery — gated behind is_empty() for zero overhead
             if !self.pane_render_subscribers.is_empty() {
-                self.deliver_to_pane_subscribers_from_report(&pane_render_report);
+                self.deliver_to_pane_subscribers_directly();
             }
 
             let _ = self
                 .bus
                 .senders
                 .send_to_plugin(PluginInstruction::PaneRenderReport(pane_render_report));
-
-            non_watcher_output_was_dirty = output.is_dirty();
 
             let mut bell_state_changed = false;
             let mut has_bell = false;
@@ -392,7 +449,7 @@ impl Screen {
                 }
             }
 
-            if non_watcher_output_was_dirty || has_bell || has_osc7_update {
+            if output.is_dirty() || has_bell || has_osc7_update {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
@@ -428,9 +485,6 @@ impl Screen {
                 self.log_and_report_session_state()?;
             }
         } else {
-            // No regular clients, output is not dirty
-            non_watcher_output_was_dirty = false;
-
             // No regular clients but subscribers exist — query panes directly
             if !self.pane_render_subscribers.is_empty() {
                 self.deliver_to_pane_subscribers_directly();
@@ -440,7 +494,7 @@ impl Screen {
         self.report_pane_tabs()?;
 
         // === PHASE 2: Render for watchers ===
-        if has_watchers {
+        if has_watchers && watched_tab_id.is_some_and(|tab_id| !deferred_tabs.contains(&tab_id)) {
             if let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
                 (self.followed_client_id, watched_tab_id)
             {
@@ -474,17 +528,10 @@ impl Screen {
                 let followed_content_size =
                     self.followed_frame_size(focused_tab_index_of_followed_client_id);
 
-                // Only force render if:
-                // 1. Non-watcher output was dirty, OR
-                // 2. Any watcher needs a forced render (first render or after resize), OR
-                // 3. No non-watcher clients are connected
                 let any_watcher_needs_force_render = self
                     .watcher_clients
                     .values()
                     .any(|state| state.should_force_render());
-                let should_force_render = non_watcher_output_was_dirty
-                    || any_watcher_needs_force_render
-                    || !has_regular_clients;
 
                 // A watcher is watching a particular client's screen, so it sees that client's
                 // menu too - otherwise the watcher would see a pane the followed user is plainly
@@ -505,7 +552,7 @@ impl Screen {
                     .get_mut(&focused_tab_index_of_followed_client_id)
                     .as_mut()
                 {
-                    if should_force_render {
+                    if any_watcher_needs_force_render {
                         tab.set_force_render();
                         // A forced pane repaint cannot erase overlays outside the panes.
                         watcher_output.add_pre_vte_instruction_to_client(
@@ -513,6 +560,20 @@ impl Screen {
                             "\u{1b}[m\u{1b}[2J",
                         );
                         watcher_output.mark_host_display_cleared_for_client(followed_client_id);
+                    } else {
+                        if replay_boundaries {
+                            tab.invalidate_boundaries(followed_client_id);
+                        }
+                        for pane_id in &replay_contents {
+                            if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
+                                pane.prepare_content_replay(followed_client_id);
+                            }
+                        }
+                        for pane_id in &replay_frames {
+                            if let Some(pane) = tab.get_pane_with_id_mut(*pane_id) {
+                                pane.invalidate_frame(followed_client_id);
+                            }
+                        }
                     }
                     if any_watcher_needs_force_render {
                         // A watcher about to be repainted whole has not necessarily seen this

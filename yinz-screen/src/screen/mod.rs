@@ -793,6 +793,11 @@ pub(crate) struct Screen {
     cached_layouts: Vec<LayoutInfo>,
     cached_layout_errors: Vec<LayoutWithError>,
     pane_render_subscribers: HashMap<ClientId, PaneRenderSubscription>,
+    /// Direct snapshots follow new render requests, not retries of a deferred frame.
+    pane_subscriber_snapshots_dirty: bool,
+    deferred_render_tabs: HashSet<TabId>,
+    deferred_subscriber_renders: bool,
+    render_deadline: Option<Instant>,
     /// What each plugin wants said, and decided, when the session is about to end.
     ///
     /// Keyed by plugin id and dropped when that plugin's pane closes, so a plugin that goes away
@@ -1409,6 +1414,10 @@ impl Screen {
             cached_layouts: vec![],
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
+            pane_subscriber_snapshots_dirty: true,
+            deferred_render_tabs: HashSet::new(),
+            deferred_subscriber_renders: false,
+            render_deadline: None,
             quit_notices: BTreeMap::new(),
             replacement_tab: None,
             replacement_pending: false,
@@ -2260,6 +2269,7 @@ impl Screen {
         }
 
         for tab in self.tabs.values_mut() {
+            tab.remove_client_pane_state(client_id);
             tab.remove_client(client_id);
             if tab.has_no_connected_clients() {
                 tab.visible(false).with_context(err_context)?;
@@ -2333,6 +2343,8 @@ impl Screen {
         // reports once, through `resize_to_clients`, and only for a client that
         // was actually attached — reporting here as well made every departing
         // connection cost the session two extra full-manifest broadcasts.
+        self.pane_subscriber_snapshots_dirty = true;
+        self.resume_deferred_render();
         Ok(())
     }
 
@@ -2360,6 +2372,7 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
+        self.resume_deferred_render();
         // A watcher reports its own synchronised-output support like any other client, and ids
         // are recycled - so its answer goes with it, as `remove_client` does for a regular one.
         self.synchronized_output_capabilities
@@ -4661,6 +4674,9 @@ impl Screen {
         for mut plugin_render_asset in plugin_render_assets {
             let plugin_id = plugin_render_asset.plugin_id;
             let client_id = plugin_render_asset.client_id;
+            if !self.connected_clients.borrow().contains(&client_id) {
+                continue;
+            }
             let mut vte_bytes = Some(std::mem::take(&mut plugin_render_asset.bytes));
             let mut found_plugin = false;
 
@@ -4693,6 +4709,9 @@ impl Screen {
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) -> bool {
+        if !self.connected_clients.borrow().contains(&client_id) {
+            return true;
+        }
         for tab in self.tabs.values_mut() {
             if tab.has_plugin(plugin_id) {
                 tab.show_plugin_cursor(plugin_id, client_id, cursor_position);

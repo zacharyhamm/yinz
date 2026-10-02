@@ -87,6 +87,79 @@ fn subscriber_receives_initial_delivery() {
 }
 
 #[test]
+fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
+    let client = ClientId::new(1);
+    let subscriber = ClientId::new(100);
+    let plugin = crate::PluginId::new(20);
+    let plugin_tab = TabId::new(0);
+    for (ansi, keep_cached_client_attached) in
+        [(false, true), (true, true), (false, false), (true, false)]
+    {
+        let (mut screen, messages) =
+            create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, plugin_tab);
+        let (plugin_sender, _plugin_receiver) = channels::unbounded();
+        let tab = screen.tabs.get_mut(&plugin_tab).unwrap();
+        tab.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+        tab.new_pane(
+            PaneId::Plugin(plugin),
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        tab.handle_plugin_bytes(plugin, client, b"cached-plugin-content".to_vec())
+            .unwrap();
+
+        new_tab(&mut screen, 2, TabId::new(1));
+        // These clients never visited the plugin, so neither has a cached grid.
+        screen.add_client(ClientId::new(2)).unwrap();
+        screen.add_client(ClientId::new(3)).unwrap();
+        if !keep_cached_client_attached {
+            screen.remove_client(client).unwrap();
+        }
+        assert!(screen.tabs[&plugin_tab].has_no_connected_clients());
+        assert!(screen.tabs[&plugin_tab]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap()
+            .pane_contents(Some(ClientId::new(2)), false, None)
+            .viewport
+            .is_empty());
+        screen.subscribe_to_pane_renders(subscriber, vec![PaneId::Plugin(plugin)], None, ansi);
+        assert!(matches!(
+            &messages.lock().unwrap()[&subscriber][0],
+            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: true, .. }
+                if if keep_cached_client_attached {
+                    viewport.iter().any(|line| line.contains("cached-plugin-content"))
+                } else { viewport.is_empty() }
+        ));
+        messages.lock().unwrap().clear();
+
+        screen
+            .handle_plugin_render_assets(vec![crate::plugins::PluginRenderAsset::new(
+                plugin,
+                client,
+                b"updated-plugin-content".to_vec(),
+            )])
+            .unwrap();
+        screen.deliver_to_pane_subscribers_directly();
+        if keep_cached_client_attached {
+            assert!(matches!(
+                &messages.lock().unwrap()[&subscriber][0],
+                ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+                    if viewport.iter().any(|line| line.contains("updated-plugin-content"))
+            ));
+        } else {
+            assert!(messages.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
 fn subscriber_receives_initial_with_scrollback() {
     let size = Size { cols: 80, rows: 20 };
     let (mut screen, messages) = create_new_screen_with_message_capture(size);

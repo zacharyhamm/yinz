@@ -1,6 +1,7 @@
 use crate::terminal_escapes::{
-    ClientTeardown, DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, ENTER_KITTY_KEYBOARD_MODE,
-    ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS, EXIT_ALTERNATE_SCREEN, EXIT_KITTY_KEYBOARD_MODE,
+    ClientTeardown, DISABLE_FOCUS_REPORTING, ENABLE_FOCUS_REPORTING, END_SYNCHRONIZED_OUTPUT,
+    ENTER_KITTY_KEYBOARD_MODE, ENTER_KITTY_KEYBOARD_MODE_WITH_MODIFIERS, EXIT_ALTERNATE_SCREEN,
+    EXIT_KITTY_KEYBOARD_MODE,
 };
 
 #[test]
@@ -8,6 +9,8 @@ fn the_restore_sequences_unwind_everything_the_client_pushed() {
     let sequences = ClientTeardown::at_startup(true).restore_sequences();
     for expected in [
         EXIT_KITTY_KEYBOARD_MODE,
+        END_SYNCHRONIZED_OUTPUT,
+        crate::os_input_output::DISABLE_MOUSE_SUPPORT,
         DISABLE_FOCUS_REPORTING,
         EXIT_ALTERNATE_SCREEN,
     ] {
@@ -18,6 +21,20 @@ fn the_restore_sequences_unwind_everything_the_client_pushed() {
             expected,
             sequences
         );
+    }
+}
+
+#[test]
+fn startup_and_ordinary_teardown_do_not_emit_dcs() {
+    for teardown in [
+        ClientTeardown::new(24, false),
+        ClientTeardown::at_startup(true),
+    ] {
+        let sequences = teardown.restore_sequences();
+        assert!(
+            sequences.find("\x1b[?2026l").unwrap() < sequences.find(EXIT_ALTERNATE_SCREEN).unwrap()
+        );
+        assert!(!sequences.contains("\x1bP"));
     }
 }
 
@@ -100,8 +117,8 @@ fn the_focus_reporting_sequences_are_the_decset_1004_pair() {
 }
 
 mod claiming_the_terminal {
-    use crate::os_input_output::{StdioAccess, TtyControl};
-    use crate::terminal_escapes::{claim_terminal, QUERY_HOST_THEME};
+    use crate::os_input_output::{StdioAccess, TtyControl, DISABLE_MOUSE_SUPPORT};
+    use crate::terminal_escapes::{claim_terminal, ClientTeardown, QUERY_HOST_THEME};
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use yinz_types::pane_size::Size;
@@ -114,6 +131,7 @@ mod claiming_the_terminal {
         RawModeOn,
         RawModeOnKeepingSignals,
         Wrote(String),
+        Flushed,
     }
 
     #[derive(Clone, Default)]
@@ -136,6 +154,7 @@ mod claiming_the_terminal {
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
+            self.0.lock().unwrap().push(Event::Flushed);
             Ok(())
         }
     }
@@ -161,7 +180,7 @@ mod claiming_the_terminal {
             Ok(())
         }
         fn disable_mouse(&self) -> anyhow::Result<()> {
-            Ok(())
+            crate::os_input_output_unix::disable_mouse_support(&mut *self.get_stdout_writer())
         }
     }
 
@@ -175,6 +194,21 @@ mod claiming_the_terminal {
         fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
             Ok(Vec::new())
         }
+    }
+
+    #[test]
+    fn mouse_reporting_is_disabled_and_flushed_before_raw_mode_is_unset() {
+        let terminal = RecordingTerminal::default();
+        ClientTeardown::new(24, true).restore(&terminal, "bye");
+        let events = terminal.events();
+        assert_eq!(
+            &events[..3],
+            &[
+                Event::Wrote(DISABLE_MOUSE_SUPPORT.to_owned()),
+                Event::Flushed,
+                Event::RawModeOff,
+            ],
+        );
     }
 
     #[test]

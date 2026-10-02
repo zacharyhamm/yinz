@@ -80,7 +80,7 @@ fn feed(
                     parser.advance(performer, std::slice::from_ref(b));
                 }
             },
-            InterceptorResult::Swallow => {},
+            InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
             InterceptorResult::Captured(cmd) => captured.push(cmd),
         }
     }
@@ -101,7 +101,7 @@ fn feed_byte_at_a_time(
                     parser.advance(performer, std::slice::from_ref(b));
                 }
             },
-            InterceptorResult::Swallow => {},
+            InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
             InterceptorResult::Captured(cmd) => captured.push(cmd),
         }
     }
@@ -233,6 +233,49 @@ fn is_in_ground_state_tracks_the_state_machine() {
 }
 
 #[test]
+fn capture_started_distinguishes_kitty_from_ordinary_escapes() {
+    let mut interceptor = KittyApcInterceptor::new();
+    for &byte in b"\x1b[31mred\x1b[m\x1b_not-kitty\x1b\\\x1b\x1b_" {
+        assert!(!matches!(
+            interceptor.advance(byte),
+            InterceptorResult::CaptureStarted
+        ));
+    }
+    assert!(matches!(
+        interceptor.advance(b'G'),
+        InterceptorResult::CaptureStarted
+    ));
+    assert!(interceptor.is_capturing());
+    for &byte in b"payload\x1b" {
+        assert!(matches!(
+            interceptor.advance(byte),
+            InterceptorResult::Swallow
+        ));
+    }
+    assert!(matches!(
+        interceptor.advance(b'\\'),
+        InterceptorResult::Captured(payload) if payload == b"payload"
+    ));
+}
+
+#[test]
+fn taking_an_undecided_prefix_resets_it_for_replay() {
+    for prefix in [b"".as_slice(), b"\x1b", b"\x1b_"] {
+        let mut interceptor = KittyApcInterceptor::new();
+        for &byte in prefix {
+            interceptor.advance(byte);
+        }
+        assert_eq!(interceptor.take_pending_prefix(), prefix);
+        assert!(interceptor.is_in_ground_state());
+        assert!(interceptor.take_pending_prefix().is_empty());
+        assert!(matches!(
+            interceptor.advance(b'G'),
+            InterceptorResult::Forward(bytes) if bytes.as_slice() == b"G"
+        ));
+    }
+}
+
+#[test]
 fn an_interceptor_mid_sequence_does_not_batch_the_next_call() {
     // state persists across calls, so a buffer that arrives while a sequence is open must not be
     // treated as a run of ordinary bytes
@@ -361,7 +404,7 @@ impl Driven {
     fn record(&mut self, result: InterceptorResult) {
         match result {
             InterceptorResult::Forward(bytes) => self.forwarded.extend_from_slice(bytes.as_slice()),
-            InterceptorResult::Swallow => {},
+            InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
             InterceptorResult::Captured(payload) => self.captured.push(payload),
         }
     }

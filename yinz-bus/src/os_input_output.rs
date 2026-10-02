@@ -168,9 +168,20 @@ pub trait ServerOsApi: Send + Sync {
     /// A connected client's render backlog. The screen skips a frame while every
     /// client is behind, so dirty state accumulates into one later frame instead
     /// of queueing diffs the clients cannot drain. A default of none: test fakes
-    /// have no writers to fall behind.
+    /// have no writers to fall behind. Implementations must also return none after
+    /// logging a failed backlog query; writer failure must not panic the screen.
     fn client_render_backlog(&self, _client_id: ClientId) -> Option<RenderBacklog> {
         None
+    }
+    /// Atomically inspect the queue and arm a one-shot callback if it is at or above
+    /// `threshold`. Invoke the callback after draining below it or closing, outside locks.
+    fn client_render_backlog_and_notify(
+        &self,
+        client_id: ClientId,
+        _threshold: usize,
+        _ready: Box<dyn FnOnce() + Send>,
+    ) -> Option<RenderBacklog> {
+        self.client_render_backlog(client_id)
     }
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid

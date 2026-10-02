@@ -39,7 +39,7 @@ mod terminal_escapes;
 use log::info;
 use std::collections::BTreeSet;
 use std::env::current_exe;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -64,6 +64,7 @@ use yinz_key_codec::vendored::termwiz::input::InputEvent;
 use yinz_runtime::channels;
 use yinz_runtime::channels::ChannelWithContext;
 use yinz_runtime::channels::SenderWithContext;
+use yinz_runtime::channels::Shutdown;
 use yinz_runtime::envs;
 use yinz_runtime::errors::ErrorInstruction;
 use yinz_types::diagnostics::ClientContext;
@@ -187,10 +188,7 @@ impl ErrorInstruction for ClientInstruction {
 fn install_early_terminal_panic_guard(teardown: ClientTeardown) {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let mut stdout = io::stdout();
-        let _ = stdout.write_all(teardown.restore_sequences().as_bytes());
-        let _ = stdout.flush();
+        teardown.restore_startup(None);
         previous_hook(info);
     }));
 }
@@ -548,7 +546,10 @@ pub fn start_client(
     let (send_client_instructions, receive_client_instructions): ChannelWithContext<
         ClientInstruction,
     > = channels::bounded(50);
-    let send_client_instructions = SenderWithContext::new(send_client_instructions);
+    // Begun just before the receiver is dropped, so late sends from the router and input
+    // threads are not reported as errors.
+    let client_shutdown = Shutdown::default();
+    let send_client_instructions = client_shutdown.sender(send_client_instructions);
 
     let (send_input_instructions, receive_input_instructions): ChannelWithContext<
         InputInstruction,
@@ -631,6 +632,12 @@ pub fn start_client(
     if let Some(guard) = startup_signal_guard.take() {
         guard.disarm();
     }
+    let pixel_size_queries = crate::terminal_escapes::PixelSizeQueries::spawn({
+        let os_api = os_input.clone();
+        move || os_api.get_stdout_writer()
+    })
+    .inspect_err(|e| log::error!("{e:#}"))
+    .ok();
     let _signal_thread = thread::Builder::new()
         .name("signal_listener".to_string())
         .spawn({
@@ -643,20 +650,17 @@ pub fn start_client(
                             os_api.send_to_server(ClientToServerMsg::TerminalResize {
                                 new_size: os_api.get_terminal_size(),
                             });
-                            // Same reason as the startup query: no newline in it, so a bare
-                            // `write` on the line-buffered stdout would not reach the terminal
-                            // until something else flushed. Errors are swallowed rather than
-                            // fatal - this runs on the signal thread, where a lost resize query
-                            // is not worth taking the client down for.
-                            let mut stdout = os_api.get_stdout_writer();
-                            let _ = stdout
-                                .write_all(crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes())
-                                .and_then(|_| stdout.flush());
+                            // Written elsewhere: this thread must not wait on the terminal.
+                            if let Some(queries) = &pixel_size_queries {
+                                queries.request();
+                            }
                         }
                     }),
                     Box::new({
                         let os_api = os_input.clone();
                         move || {
+                            // A paused terminal must not keep the client from quitting.
+                            crate::terminal_escapes::abandon_stalled_output();
                             os_api.send_to_server(ClientToServerMsg::Action {
                                 action: on_force_close.into(),
                                 terminal_id: None,
@@ -708,6 +712,7 @@ pub fn start_client(
     // or for room in a channel nobody will now read. Dropping the receiver fails
     // its next send, so it stops instead of holding up the join below.
     render_budget.close().non_fatal();
+    client_shutdown.begin();
     drop(receive_client_instructions);
     let exit_msg = outcome.exit_msg;
     let reconnect_to_session = outcome.reconnect_to_session;

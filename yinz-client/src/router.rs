@@ -148,10 +148,19 @@ pub(crate) fn route(
                 if let ServerToClientMsg::Render { content } = &instruction {
                     // Stop reading while the terminal is behind; see `RenderBudget`.
                     let waiting_since = Instant::now();
-                    let reserved = render_budget.reserve(content.len());
-                    if reserved.is_err() {
-                        // Only a client loop that panicked mid-frame poisons the budget.
-                        reserved.non_fatal();
+                    if let Err(error) = render_budget.reserve(content.len()) {
+                        // Other producers still own client-channel senders, so returning
+                        // alone would leave the client loop waiting for another instruction.
+                        send_client_instructions
+                            .send(ClientInstruction::Error(format!(
+                                "Could not reserve terminal render capacity: {error:#}"
+                            )))
+                            .to_anyhow()
+                            .context("failed to report a render-budget failure")
+                            .non_fatal();
+                        Err::<(), _>(error)
+                            .context("router stopped after a render-budget failure")
+                            .non_fatal();
                         break;
                     }
                     let waited = waiting_since.elapsed();
@@ -200,9 +209,11 @@ pub(crate) fn route(
                 // once and leave, rather than spinning until a counter runs out
                 // and then blaming an empty message.
                 log::error!("The server closed the connection without sending Exit");
-                // The loop may already be gone, and then there is nobody left to tell.
-                let _ = send_client_instructions
-                    .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()));
+                send_client_instructions
+                    .send(ClientInstruction::Error(SERVER_HUNG_UP.to_string()))
+                    .to_anyhow()
+                    .context("failed to report that the server hung up")
+                    .non_fatal();
                 break;
             },
             IpcRecv::Malformed => {
@@ -223,9 +234,13 @@ pub(crate) fn route(
                         "Received {} unreadable messages in a row from the server, giving up",
                         consecutive_malformed_messages_received
                     );
-                    let _ = send_client_instructions.send(ClientInstruction::Error(
-                        "The connection to the yinz server desynchronised.".to_string(),
-                    ));
+                    send_client_instructions
+                        .send(ClientInstruction::Error(
+                            "The connection to the yinz server desynchronised.".to_string(),
+                        ))
+                        .to_anyhow()
+                        .context("failed to report a desynchronised server connection")
+                        .non_fatal();
                     break;
                 }
                 thread::sleep(MALFORMED_MESSAGE_BACKOFF);
@@ -251,6 +266,7 @@ fn forward(
 ) -> bool {
     yinz_runtime::errors::update_thread_ctx(&err_ctx);
     let is_exit = matches!(instruction, ServerToClientMsg::Exit { .. });
+    // A disconnected receiver is the normal way shutdown stops the router.
     send_client_instructions.send(instruction.into()).is_err() || is_exit
 }
 
