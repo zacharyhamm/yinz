@@ -436,17 +436,16 @@ fn notifications_mode_browses_dismissed_toasts_in_place() {
 
     yinz.send_stdin(&keys::ctrl('o'));
     yinz.send_stdin(&keys::key('n'));
-    let list = yinz.wait_until("the browser reopens", |grid_snapshot| {
-        grid_snapshot.contains("newest")
-    });
-    assert!(
-        !list.contains("browse older"),
-        "an activated notification is consumed"
+    yinz.wait_until(
+        "the browser reopens with activated history",
+        |grid_snapshot| grid_snapshot.contains("newest") && grid_snapshot.contains("browse older"),
     );
 
     yinz.send_stdin(&keys::ESC);
     yinz.wait_until("Esc leaves the mode", |grid_snapshot| {
-        !grid_snapshot.contains("newest") && grid_snapshot.status_bar_appears()
+        !grid_snapshot.contains("newest")
+            && !grid_snapshot.contains("browse older")
+            && grid_snapshot.status_bar_appears()
     });
 
     yinz.quit();

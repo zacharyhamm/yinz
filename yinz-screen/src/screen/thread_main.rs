@@ -3064,7 +3064,6 @@ pub fn screen_thread_main(
                         },
                         pane_id,
                         on_click: on_click.clone(),
-                        consumed: false,
                     });
                     screen.notification_browsers_saw_arrival();
                     // the survivors are about to be pushed away from the corner - bracketing the
