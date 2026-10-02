@@ -169,8 +169,9 @@ const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 1024;
 /// replaceable snapshots; those keep one pending update per pane.
 ///
 /// The screen paces itself against `render_backlog`, skipping frames while
-/// renders are queued, so a slow client normally sees fewer, larger frames.
-/// The caps below are the last resort for a client that stops reading: ordered
+/// every client has renders queued, so a slow client on its own sees fewer,
+/// larger frames. A slow client among healthy ones is not waited for. The caps
+/// below are the last resort for it, and for a client that stops reading: ordered
 /// messages are bounded by `SEND_QUEUE_CONTROL_CAPACITY`, and queued render
 /// allocations by `SEND_QUEUE_RENDER_BYTE_CAPACITY`. A client that hits them is
 /// disconnected so it can reattach with a complete repaint.
@@ -1309,16 +1310,12 @@ impl ServerOsApi for ServerOsInputOutput {
         Ok(())
     }
 
-    fn clients_render_backlog(&self) -> Vec<(ClientId, RenderBacklog)> {
+    fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
         self.client_senders
             .lock()
-            .map(|senders| {
-                senders
-                    .iter()
-                    .map(|(client_id, sender)| (*client_id, sender.queue.render_backlog()))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .ok()?
+            .get(&client_id)
+            .map(|sender| sender.queue.render_backlog())
     }
 
     fn load_palette(&self) -> Palette {

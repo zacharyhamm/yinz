@@ -370,8 +370,13 @@ impl ServerOsApi for FakeInputOutput {
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn clients_render_backlog(&self) -> Vec<(ClientId, RenderBacklog)> {
-        self.render_backlog.lock().unwrap().clone()
+    fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
+        self.render_backlog
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| *id == client_id)
+            .map(|(_, backlog)| *backlog)
     }
 }
 

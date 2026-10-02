@@ -526,10 +526,8 @@ pub fn screen_thread_main(
                     // (only those waiting for a new tab layout to be applied!) have been rendered or
                     // that a 100ms timeout has been reached (more info in the RenderBlocker comment)
                     let tracing_attach = !attach_traces_waiting_for_first_render.is_empty();
-                    if !tracing_attach && screen.a_client_is_behind_on_renders() {
-                        // Polls every debounce interval until the client drains; see
-                        // `a_client_is_behind_on_renders`.
-                        screen.retry_render_later();
+                    if !tracing_attach && screen.defer_render_while_clients_are_behind() {
+                        // Retried by the debouncer; see `defer_render_while_clients_are_behind`.
                     } else if screen.render_blocker.can_render() {
                         let render_started_at = Instant::now();
                         if tracing_attach {
