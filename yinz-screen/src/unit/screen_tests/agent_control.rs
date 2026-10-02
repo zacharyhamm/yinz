@@ -5773,3 +5773,42 @@ fn pi_needs_hooks_and_restores_idle_after_an_idle_dialog_or_compaction() {
         assert!(result.agents[0].ready);
     }
 }
+
+#[test]
+fn a_codex_plan_prompt_keeps_the_turn_complete_and_the_next_hook_clears_waiting() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Stop"));
+    let completed = replies(&messages, CLIENT);
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].outcome, AgentOutcome::Completed);
+    assert_eq!(completed[0].turn_id.as_deref(), Some("turn"));
+    screen.forward_desktop_notifications(
+        vec![crate::panes::grid::PendingNotification::Osc9 {
+            body: "Plan mode prompt: Implement this plan?".into(),
+        }],
+        TerminalId::new(7),
+    );
+    assert!(screen
+        .get_pane_info(PANE)
+        .unwrap()
+        .agent
+        .unwrap()
+        .is_waiting_on_a_person());
+    assert!(replies(&messages, CLIENT).is_empty());
+    assert!(screen.agent_controls.is_empty());
+    report(
+        &mut screen,
+        HookEvent {
+            turn_id: Some("next".into()),
+            ..hook("UserPromptSubmit")
+        },
+    );
+    let agent = screen.get_pane_info(PANE).unwrap().agent.unwrap();
+    assert_eq!(agent.state, AgentState::Busy);
+    assert_eq!(agent.waiting_on, None);
+    assert!(replies(&messages, CLIENT).is_empty());
+}

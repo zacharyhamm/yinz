@@ -4847,6 +4847,11 @@ impl Screen {
         notifications: Vec<PendingNotification>,
         pane_id: TerminalId,
     ) {
+        for notification in &notifications {
+            self.report_codex_plan_prompt(notification, pane_id)
+                .context("failed to report a Codex plan prompt")
+                .non_fatal();
+        }
         let all_clients: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
         if all_clients.is_empty() || notifications.is_empty() {
             return;
@@ -4917,6 +4922,69 @@ impl Screen {
                     .non_fatal();
             },
         }
+    }
+
+    fn report_codex_plan_prompt(
+        &mut self,
+        notification: &PendingNotification,
+        terminal_id: TerminalId,
+    ) -> Result<()> {
+        use yinz_types::agent::report::{AgentReport, AgentReportState};
+        use yinz_types::agent::{hook_outcome, AgentEvent, AgentSource, HookEvent, HookOutcome};
+
+        // Codex supplies no structured plan-prompt event. This exact TUI notification text
+        // must follow upstream changes; disabled Codex notifications produce no wait here.
+        let (title, body) = notification.title_and_body();
+        if title != "Plan mode prompt: Implement this plan?"
+            && body != "Plan mode prompt: Implement this plan?"
+        {
+            return Ok(());
+        }
+        let pane_id = PaneId::Terminal(terminal_id);
+        let Some(agent) = self
+            .get_pane_info(pane_id)
+            .and_then(|info| info.agent)
+            .filter(|agent| {
+                agent.kind == "codex"
+                    && agent.source == AgentSource::Reported
+                    && agent.state == AgentState::Idle
+            })
+        else {
+            return Ok(());
+        };
+        let Some(session_id) = agent.session_id.filter(|id| !id.is_empty()) else {
+            return Ok(());
+        };
+        // ponytail: local dismissal has no signal; the next native hook clears this wait.
+        let hook = HookEvent {
+            hook_event_name: "Elicitation".into(),
+            session_id,
+            cwd: agent.cwd,
+            message: Some("approve the plan".into()),
+            workflow_owner: self
+                .tab_containing_pane(pane_id)
+                .and_then(|tab| tab.pane_run_command(pane_id))
+                .and_then(|command| command.workflow_owner().map(str::to_owned)),
+            ..Default::default()
+        };
+        let HookOutcome::Reported(agent) = hook_outcome("codex", &hook) else {
+            return Ok(());
+        };
+        let raw = serde_json::to_string(&hook).context("serialize a Codex plan prompt")?;
+        thread_main::apply_queued_agent_report(
+            self,
+            &AgentReport {
+                report_id: uuid::Uuid::new_v4().to_string(),
+                pane_id,
+                state: AgentReportState::Set(agent),
+                event: Some(AgentEvent::from_hook("codex", terminal_id, &hook, raw)),
+                trace: false,
+                process_id: yinz_types::internal_ids::ProcessId::new(std::process::id()),
+                kind: "codex".into(),
+            },
+            Instant::now(),
+        )?;
+        Ok(())
     }
 
     fn get_pane_info(&self, pane_id: PaneId) -> Option<PaneInfo> {
