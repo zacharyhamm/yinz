@@ -160,13 +160,12 @@ use {
     yinz_config::config::ConfigWriteError, yinz_ipc::ipc::ClientAttributes,
     yinz_ipc::ipc::ExitReason, yinz_ipc::ipc::ServerToClientMsg,
     yinz_runtime::consts::DEFAULT_SCROLL_BUFFER_SIZE, yinz_runtime::consts::SCROLL_BUFFER_SIZE,
-    yinz_types::data::InputMode, yinz_types::data::LayoutInfo, yinz_types::data::LayoutWithError,
-    yinz_types::input::actions::Action, yinz_types::input::command::RunCommand,
-    yinz_types::input::command::TerminalAction, yinz_types::input::keybinds::Keybinds,
-    yinz_types::input::layout::FloatingPaneLayout, yinz_types::input::layout::Layout,
-    yinz_types::input::layout::PluginAlias, yinz_types::input::layout::Run,
-    yinz_types::input::layout::RunPluginOrAlias, yinz_types::input::options::Options,
-    yinz_types::input::plugins::PluginAliases,
+    yinz_types::data::InputMode, yinz_types::input::actions::Action,
+    yinz_types::input::command::RunCommand, yinz_types::input::command::TerminalAction,
+    yinz_types::input::keybinds::Keybinds, yinz_types::input::layout::FloatingPaneLayout,
+    yinz_types::input::layout::Layout, yinz_types::input::layout::PluginAlias,
+    yinz_types::input::layout::Run, yinz_types::input::layout::RunPluginOrAlias,
+    yinz_types::input::options::Options, yinz_types::input::plugins::PluginAliases,
 };
 
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
@@ -2391,7 +2390,14 @@ fn init_session(
         }
     }
 
-    let (available_layouts, available_layout_errors) = get_available_layouts(&config_options);
+    let default_layout_name = config_options
+        .default_layout
+        .as_ref()
+        .map(|layout| layout.display().to_string());
+    let (available_layouts, available_layout_errors) = yinz_config::layout::list_available_layouts(
+        config_options.layout_dir.clone(),
+        &default_layout_name,
+    );
 
     let plugin_thread = thread::Builder::new()
         .name("wasm".to_string())
@@ -2716,19 +2722,6 @@ fn cli_pipe_reply(pipe_name: String, output: String) -> ServerToClientMsg {
         .unwrap_or_else(|error| ServerToClientMsg::LogError {
             lines: vec![format!("{error:#}")],
         })
-}
-
-// TODO: move elsewhere
-fn get_available_layouts(config_options: &Options) -> (Vec<LayoutInfo>, Vec<LayoutWithError>) {
-    let layout_dir = config_options
-        .layout_dir
-        .clone()
-        .or_else(default_layout_dir);
-    let default_layout_name = config_options
-        .default_layout
-        .as_ref()
-        .map(|l| format!("{}", l.display()));
-    yinz_config::layout::list_available_layouts(layout_dir, &default_layout_name)
 }
 
 #[cfg(test)]

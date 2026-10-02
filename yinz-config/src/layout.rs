@@ -342,9 +342,7 @@ pub fn stringified_from_path(layout_path: &Path) -> Result<StringifiedLayout, Co
     ))
 }
 pub fn stringified_from_default_assets(path: &Path) -> Result<StringifiedLayout, ConfigError> {
-    // TODO: ideally these should not be hard-coded
-    // we should load layouts by name from the config
-    // and load them from a hashmap or some such
+    // These names identify compiled-in assets. User layouts are loaded from the layout directory.
     match path.to_str() {
         Some("default") => Ok((
             "Default layout".into(),

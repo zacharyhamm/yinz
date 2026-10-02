@@ -14,6 +14,8 @@ pub struct PluginIds {
     pub hostname: ::prost::alloc::string::String,
     #[prost(string, tag="6")]
     pub host_id: ::prost::alloc::string::String,
+    #[prost(uint32, optional, tag="7")]
+    pub max_session_name_bytes: ::core::option::Option<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

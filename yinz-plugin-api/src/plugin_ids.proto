@@ -9,6 +9,7 @@ message PluginIds {
   uint32 client_id = 4;
   string hostname = 5;
   string host_id = 6;
+  optional uint32 max_session_name_bytes = 7;
 }
 
 message YinzVersion {

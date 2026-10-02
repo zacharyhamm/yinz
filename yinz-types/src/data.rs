@@ -1832,6 +1832,10 @@ pub struct PluginIds {
     ///
     /// See `yinz_runtime::host_identity`.
     pub host_id: HostId,
+    /// Maximum session-name bytes after reserving the host's socket directory and terminator.
+    /// Absent when the host predates this field.
+    #[serde(default)]
+    pub max_session_name_bytes: Option<usize>,
 }
 
 /// Tag used to identify the plugin in layout and config kdl files

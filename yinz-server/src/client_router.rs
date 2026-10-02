@@ -10,11 +10,15 @@ use crate::{
 use std::thread;
 use std::time::{Duration, Instant};
 use yinz_runtime::{channels::SenderWithContext, errors::prelude::*};
-use yinz_types::keys::{BareKey, KeyModifier};
+use yinz_types::keys::{BareKey, KeyModifier, KeyWithModifier};
 use {
-    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason,
-    yinz_ipc::ipc::IpcReceiverWithContext, yinz_ipc::ipc::IpcRecv,
-    yinz_ipc::ipc::ServerToClientMsg, yinz_types::data::Event, yinz_types::input::actions::Action,
+    yinz_ipc::ipc::ClientToServerMsg,
+    yinz_ipc::ipc::ExitReason,
+    yinz_ipc::ipc::IpcReceiverWithContext,
+    yinz_ipc::ipc::IpcRecv,
+    yinz_ipc::ipc::ServerToClientMsg,
+    yinz_types::data::{Event, InputMode},
+    yinz_types::input::actions::Action,
 };
 
 use crate::route::{
@@ -128,6 +132,83 @@ fn should_report_inferred_modifiers(
         *last = Some((modifiers.clone(), now));
     }
     is_news
+}
+
+fn legacy_lf_key(session: &SessionMetaData, client_id: ClientId) -> KeyWithModifier {
+    let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
+    let mode = session
+        .current_input_modes
+        .get(&client_id)
+        .copied()
+        .unwrap_or_else(|| {
+            session
+                .session_configuration
+                .get_client_default_input_mode(&client_id)
+        });
+    let bound = session
+        .session_configuration
+        .get_client_keybinds(&client_id)
+        .get_actions_for_key_in_mode(&mode, &ctrl_j)
+        .is_some_and(|actions| !actions.is_empty());
+    if bound {
+        ctrl_j
+    } else {
+        KeyWithModifier::new(BareKey::Enter)
+    }
+}
+
+fn resolve_client_paste(
+    action: Action,
+    is_cli_client: bool,
+    session: &SessionMetaData,
+    client_id: ClientId,
+) -> Vec<Action> {
+    let Action::Paste {
+        chars,
+        pane_id: None,
+    } = action
+    else {
+        return vec![action];
+    };
+    if is_cli_client {
+        return vec![Action::Paste {
+            chars,
+            pane_id: None,
+        }];
+    }
+    let mode = if session.key_passthrough_clients.contains_key(&client_id) {
+        InputMode::Normal
+    } else {
+        session
+            .current_input_modes
+            .get(&client_id)
+            .copied()
+            .unwrap_or_else(|| {
+                session
+                    .session_configuration
+                    .get_client_default_input_mode(&client_id)
+            })
+    };
+    let input = chars.into_bytes();
+    match mode {
+        InputMode::Normal | InputMode::Locked => {
+            // Keep the markers separate: panes drop them when bracketed paste is disabled,
+            // and plugin panes use them to collect one paste event. Write also preserves
+            // synchronized input and the client-input completion barrier.
+            [b"\x1b[200~".to_vec(), input, b"\x1b[201~".to_vec()]
+                .into_iter()
+                .map(|bytes| Action::Write {
+                    key_with_modifier: None,
+                    bytes,
+                    is_kitty_keyboard_protocol: false,
+                })
+                .collect()
+        },
+        InputMode::EnterSearch => vec![Action::SearchInput { input }],
+        InputMode::RenameTab => vec![Action::TabNameInput { input }],
+        InputMode::RenamePane => vec![Action::PaneNameInput { input }],
+        _ => vec![],
+    }
 }
 
 pub(crate) fn route_thread_main(
@@ -304,6 +385,15 @@ pub(crate) fn route_thread_main(
                             raw_bytes,
                             is_kitty_keyboard_protocol,
                         } => {
+                            // Legacy LF is Enter unless Ctrl-J is bound in the current mode.
+                            // Resolve its identity before menus, modifiers and passthrough see it.
+                            let key = if raw_bytes == [10] && !is_kitty_keyboard_protocol {
+                                session_data.read().unwrap().as_ref()
+                                    .map(|session| legacy_lf_key(session, client_id))
+                                    .unwrap_or(key)
+                            } else {
+                                key
+                            };
                             // Cloned before `key` is moved into the passthrough branch below, so
                             // it survives to ask an open menu about a key that resolves to
                             // something other than a write - see the `actions_dismiss_context_menu`
@@ -478,20 +568,6 @@ pub(crate) fn route_thread_main(
                                 maybe_client_id.unwrap_or(client_id)
                             };
 
-                            // Send user input to plugin thread for logging
-                            if let Some(ref senders) = senders {
-                                let _ = senders.send_to_plugin(PluginInstruction::UserInput {
-                                    client_id,
-                                    action: action.clone(),
-                                    terminal_id: maybe_pane_id,
-                                    cli_client_id: if is_cli_client {
-                                        Some(cli_client_id)
-                                    } else {
-                                        None
-                                    },
-                                });
-                            }
-
                             // A CLI copy is one action rather than a key's batch, so its own
                             // `InputReceived` would precede the copy rather than clear it - but
                             // the rule is about the request that copies, not about how it arrived.
@@ -507,32 +583,41 @@ pub(crate) fn route_thread_main(
                                         s.default_shell.clone(),
                                         s.session_configuration
                                             .get_client_default_input_mode(&client_id),
+                                        resolve_client_paste(action, is_cli_client, s, client_id),
                                     )
                                 });
-                            if let Some((senders, default_shell, client_input_mode)) =
+                            if let Some((senders, default_shell, client_input_mode, actions)) =
                                 session_data_assets
                             {
-                                match route_action(
-                                    action,
-                                    client_id,
-                                    Some(cli_client_id),
-                                    maybe_pane_id.map(PaneId::Terminal),
-                                    senders,
-                                    default_shell,
-                                    Some(&mut seen_cli_pipes),
-                                    client_input_mode,
-                                    Some(os_input.clone()),
-                                    action_leaves_clipboard_message,
-                                    true, // is_client_input
-                                ) {
-                                    Ok(route_action_should_break) => {
-                                        if route_action_should_break.0 {
-                                            should_break = true;
-                                        }
-                                    },
-                                    Err(e) => {
-                                        log::error!("{}", e);
-                                    },
+                                for action in actions {
+                                    let _ = senders.send_to_plugin(PluginInstruction::UserInput {
+                                        client_id,
+                                        action: action.clone(),
+                                        terminal_id: maybe_pane_id,
+                                        cli_client_id: is_cli_client.then_some(cli_client_id),
+                                    });
+                                    match route_action(
+                                        action,
+                                        client_id,
+                                        Some(cli_client_id),
+                                        maybe_pane_id.map(PaneId::Terminal),
+                                        senders.clone(),
+                                        default_shell.clone(),
+                                        Some(&mut seen_cli_pipes),
+                                        client_input_mode,
+                                        Some(os_input.clone()),
+                                        action_leaves_clipboard_message,
+                                        true, // is_client_input
+                                    ) {
+                                        Ok(route_action_should_break) => {
+                                            if route_action_should_break.0 {
+                                                should_break = true;
+                                            }
+                                        },
+                                        Err(e) => {
+                                            log::error!("{}", e);
+                                        },
+                                    }
                                 }
                             }
                         },

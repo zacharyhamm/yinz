@@ -1200,10 +1200,9 @@ fn start_session(
     let pty = match openpty(winsize.as_ref(), &termios) {
         Ok(pty) => pty,
         Err(e) => {
-            // Preserves the existing (odd) semantics: `failover_cmd` is consulted
-            // when *openpty* fails, not when the command does. Fixing that is a
-            // behavior change and does not belong in a plumbing move.
-            // TODO: wire failover to exec failure instead, deliberately.
+            // Match the in-process backend's single retry of PTY allocation.
+            // The editor fallback only drops +line; an editor rejecting that
+            // argument has already exec'd, so retrying exec errors would not help.
             if let Some(failover_cmd) = failover_cmd {
                 return start_session(
                     failover_cmd,

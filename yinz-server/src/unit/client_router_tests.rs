@@ -209,6 +209,120 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
 }
 
 #[test]
+fn legacy_lf_identity_follows_live_mode_and_keybindings() {
+    let (mut session, _threads) = paused_session();
+    let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
+    let enter = KeyWithModifier::new(BareKey::Enter);
+    let mut config = yinz_config::config::Config::default();
+    config.options.default_mode = Some(InputMode::Normal);
+    config
+        .keybinds
+        .get_input_mode_mut(&InputMode::Pane)
+        .insert(ctrl_j.clone(), vec![Action::NoOp]);
+    session
+        .session_configuration
+        .set_client_runtime_configuration(CLIENT_1, config.clone());
+    assert_eq!(legacy_lf_key(&session, CLIENT_1), enter);
+    session
+        .change_input_mode(CLIENT_1, InputMode::Pane, None)
+        .unwrap();
+    assert_eq!(legacy_lf_key(&session, CLIENT_1), ctrl_j);
+    session
+        .key_passthrough_clients
+        .insert(CLIENT_1, PaneId::Terminal(TerminalId::new(9)));
+    assert_eq!(legacy_lf_key(&session, CLIENT_1), ctrl_j);
+    config
+        .keybinds
+        .get_input_mode_mut(&InputMode::Pane)
+        .insert(ctrl_j.clone(), vec![]);
+    session
+        .session_configuration
+        .set_client_runtime_configuration(CLIENT_1, config);
+    assert_eq!(legacy_lf_key(&session, CLIENT_1), enter);
+}
+
+#[test]
+fn interactive_paste_follows_live_mode_without_changing_cli_or_targeted_paste() {
+    let (mut session, _threads) = paused_session();
+    let mut config = yinz_config::config::Config::default();
+    config.options.default_mode = Some(InputMode::Normal);
+    session
+        .session_configuration
+        .set_saved_configuration(config);
+    let paste = Action::Paste {
+        chars: "pasted text\nλ".into(),
+        pane_id: None,
+    };
+    let input = "pasted text\nλ".as_bytes().to_vec();
+    let writes = [b"\x1b[200~".to_vec(), input.clone(), b"\x1b[201~".to_vec()]
+        .into_iter()
+        .map(|bytes| Action::Write {
+            key_with_modifier: None,
+            bytes,
+            is_kitty_keyboard_protocol: false,
+        })
+        .collect::<Vec<_>>();
+    // The initial/default mode stays Normal while the same client changes mode at runtime.
+    assert_eq!(
+        resolve_client_paste(paste.clone(), false, &session, CLIENT_1),
+        writes
+    );
+    for (mode, expected) in [
+        (
+            InputMode::EnterSearch,
+            vec![Action::SearchInput {
+                input: input.clone(),
+            }],
+        ),
+        (
+            InputMode::RenamePane,
+            vec![Action::PaneNameInput {
+                input: input.clone(),
+            }],
+        ),
+        (
+            InputMode::RenameTab,
+            vec![Action::TabNameInput {
+                input: input.clone(),
+            }],
+        ),
+        (InputMode::Pane, vec![]),
+        (InputMode::Locked, writes.clone()),
+        (InputMode::Normal, writes.clone()),
+    ] {
+        session.change_input_mode(CLIENT_1, mode, None).unwrap();
+        assert_eq!(
+            resolve_client_paste(paste.clone(), false, &session, CLIENT_1),
+            expected,
+            "interactive paste in {mode:?}",
+        );
+        assert_eq!(
+            resolve_client_paste(paste.clone(), true, &session, CLIENT_1),
+            vec![paste.clone()],
+            "CLI paste must not depend on {mode:?}",
+        );
+        let targeted = Action::Paste {
+            chars: "targeted".into(),
+            pane_id: Some(PaneId::Terminal(TerminalId::new(9))),
+        };
+        assert_eq!(
+            resolve_client_paste(targeted.clone(), false, &session, CLIENT_1),
+            vec![targeted],
+        );
+    }
+    session
+        .change_input_mode(CLIENT_1, InputMode::EnterSearch, None)
+        .unwrap();
+    session
+        .key_passthrough_clients
+        .insert(CLIENT_1, PaneId::Terminal(TerminalId::new(9)));
+    assert_eq!(
+        resolve_client_paste(paste, false, &session, CLIENT_1),
+        writes
+    );
+}
+
+#[test]
 fn report_router_acknowledges_with_screen_and_plugins_paused_and_no_active_client() {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use yinz_ipc::ipc::IpcSenderWithContext;

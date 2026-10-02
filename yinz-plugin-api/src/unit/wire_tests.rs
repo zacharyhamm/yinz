@@ -9,6 +9,26 @@ use crate::{
 };
 
 #[test]
+fn session_name_byte_limit_round_trips_and_is_optional_for_older_hosts() {
+    use crate::plugin_ids::ProtobufPluginIds;
+    use yinz_types::data::PluginIds;
+
+    for max_session_name_bytes in [None, Some(0), Some(80)] {
+        let wire = ProtobufPluginIds {
+            max_session_name_bytes,
+            ..Default::default()
+        };
+        let decoded = ProtobufPluginIds::decode(wire.encode_to_vec().as_slice()).unwrap();
+        let ids = PluginIds::try_from(decoded).unwrap();
+        assert_eq!(
+            ids.max_session_name_bytes,
+            max_session_name_bytes.map(|n| n as usize)
+        );
+        assert_eq!(ProtobufPluginIds::try_from(ids).unwrap(), wire);
+    }
+}
+
+#[test]
 fn keybind_pipe_preserves_fields_in_actions_and_rebound_keys() {
     for args in [
         None,

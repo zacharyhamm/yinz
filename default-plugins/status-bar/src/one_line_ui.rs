@@ -1573,8 +1573,7 @@ fn add_shortcut(
         return ret;
     }
 
-    ret.append(&style_key_with_modifier(keys, key_color_index, dimmed)); // TODO: alternate
-                                                                         //
+    ret.append(&style_key_with_modifier(keys, key_color_index, dimmed));
     let ribbon = if dimmed {
         serialize_ribbon(&Text::new(text.to_string()).disabled())
     } else if selected {

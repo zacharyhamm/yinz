@@ -10,6 +10,9 @@ mod agent_spawn_tests;
 #[cfg(test)]
 #[path = "unit/layout_cwd_tests.rs"]
 mod layout_cwd_tests;
+#[cfg(test)]
+#[path = "unit/plugin_ids_tests.rs"]
+mod plugin_ids_tests;
 
 use super::PluginInstruction;
 use crate::plugin_map::{PluginEnv, ResponseSink};
@@ -1423,6 +1426,7 @@ fn get_plugin_ids(env: &mut PluginEnv) {
         client_id: env.client_id,
         hostname: yinz_runtime::host_identity::host_display_name(),
         host_id: yinz_runtime::host_identity::host_id(),
+        max_session_name_bytes: Some(max_session_name_bytes(&YINZ_SOCK_DIR)),
     };
     ProtobufPluginIds::try_from(ids)
         .map_err(|e| anyhow!("Failed to serialized plugin ids: {}", e))
@@ -1437,6 +1441,12 @@ fn get_plugin_ids(env: &mut PluginEnv) {
             )
         })
         .non_fatal();
+}
+
+fn max_session_name_bytes(socket_dir: &Path) -> usize {
+    // Joining a one-byte name accounts for both the separator and the terminating NUL.
+    yinz_runtime::consts::YINZ_SOCK_MAX_LENGTH
+        .saturating_sub(socket_dir.join("x").as_os_str().len())
 }
 
 fn get_yinz_version(env: &mut PluginEnv) {

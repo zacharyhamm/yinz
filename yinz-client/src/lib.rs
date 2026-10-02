@@ -613,16 +613,13 @@ pub fn start_client(
             let send_client_instructions = send_client_instructions.clone();
             let command_is_executing = command_is_executing.clone();
             let os_input = os_input.clone();
-            let default_mode = config_options.default_mode.unwrap_or_default();
             let nested_reannounce = nested_reannounce.clone();
             move || {
                 input_loop(
                     os_input,
-                    config,
                     config_options,
                     command_is_executing,
                     send_client_instructions,
-                    default_mode,
                     receive_input_instructions,
                     nested_reannounce,
                 )

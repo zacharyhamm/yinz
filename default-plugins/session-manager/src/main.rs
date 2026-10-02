@@ -43,6 +43,7 @@ enum ActiveScreen {
 #[derive(Default)]
 pub(crate) struct State {
     session_name: Option<SessionName>,
+    max_session_name_bytes: Option<usize>,
     pub(crate) sessions: SessionList,
     pub(crate) resurrectable_sessions: ResurrectableSessions,
     pub(crate) recordings: Recordings,
@@ -93,7 +94,9 @@ impl YinzPlugin for State {
             EventType::Timer,
             EventType::Visible,
         ]);
-        rename_plugin_pane(get_plugin_ids().plugin_id, "Session Manager");
+        let plugin_ids = get_plugin_ids();
+        self.max_session_name_bytes = plugin_ids.max_session_name_bytes;
+        rename_plugin_pane(plugin_ids.plugin_id, "Session Manager");
         self.refresh_session_list();
         if !self.is_welcome_screen {
             self.arm_refresh_timer();
@@ -1137,15 +1140,8 @@ impl State {
             ActiveScreen::Recordings => {},
             ActiveScreen::Notifications => {},
             ActiveScreen::NewSession => {
-                if self.new_session_info.name().len() >= 108 {
-                    // this is due to socket path limitations
-                    // TODO: get this from Yinz (for reference: this is part of the interprocess
-                    // package, we should get if from there if possible because it's configurable
-                    // through the package)
-                    self.show_error("Session name must be shorter than 108 bytes");
-                    return;
-                } else if self.new_session_info.name().contains('/') {
-                    self.show_error("Session name cannot contain '/'");
+                if let Some(error) = self.session_name_error(self.new_session_info.name()) {
+                    self.show_error(&error);
                     return;
                 }
                 self.new_session_info.handle_selection(&self.session_name);
@@ -1170,8 +1166,8 @@ impl State {
                         self.show_error("A resurrectable session by this name already exists.");
                         return; // s that we don't hide self
                     } else {
-                        if renaming_session_name.contains('/') {
-                            self.show_error("Session names cannot contain '/'");
+                        if let Some(error) = self.session_name_error(renaming_session_name) {
+                            self.show_error(&error);
                             return;
                         }
                         self.update_current_session_name_in_ui(renaming_session_name);
@@ -1249,8 +1245,8 @@ impl State {
                         self.show_error("A resurrectable session by this name already exists.");
                         return;
                     } else {
-                        if renaming_session_name.contains('/') {
-                            self.show_error("Session names cannot contain '/'");
+                        if let Some(error) = self.session_name_error(renaming_session_name) {
+                            self.show_error(&error);
                             return;
                         }
                         self.update_current_session_name_in_ui(renaming_session_name);
@@ -1298,13 +1294,8 @@ impl State {
                             // No navigation - use typed name
                             let typed_name = self.single_screen_state.search_term.clone();
 
-                            // Validate name
-                            if typed_name.len() >= 108 {
-                                self.show_error("Session name must be shorter than 108 bytes");
-                                return;
-                            }
-                            if typed_name.contains('/') {
-                                self.show_error("Session name cannot contain '/'");
+                            if let Some(error) = self.session_name_error(&typed_name) {
+                                self.show_error(&error);
                                 return;
                             }
                             // Check exact match against active sessions
@@ -1342,6 +1333,12 @@ impl State {
                         }
                     },
                     SingleScreenMode::SelectingLayout => {
+                        if let Some(error) =
+                            self.session_name_error(&self.single_screen_state.search_term)
+                        {
+                            self.show_error(&error);
+                            return;
+                        }
                         let new_session_name = if self.single_screen_state.search_term.is_empty() {
                             None
                         } else {
@@ -1395,6 +1392,17 @@ impl State {
             ActiveScreen::Notifications => ActiveScreen::NewSession,
             ActiveScreen::SingleScreen => ActiveScreen::SingleScreen, // no-op
         };
+    }
+    fn session_name_error(&self, name: &str) -> Option<String> {
+        // Preserve the previous limit when connected to a host predating this field.
+        let max_bytes = self.max_session_name_bytes.unwrap_or(107);
+        if name.len() > max_bytes {
+            Some(format!("Session name must be at most {max_bytes} bytes"))
+        } else if name.contains('/') {
+            Some("Session name cannot contain '/'".to_owned())
+        } else {
+            None
+        }
     }
     fn show_error(&mut self, error_text: &str) {
         self.error = Some(error_text.to_owned());
@@ -1573,6 +1581,10 @@ impl State {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/session_name_tests.rs"]
+mod session_name_tests;
 
 #[cfg(test)]
 mod tests {

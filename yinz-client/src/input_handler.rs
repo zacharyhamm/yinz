@@ -19,19 +19,14 @@ use yinz_types::keys::KeyWithModifier;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::position::Position;
 use {
-    yinz_config::config::Config, yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason,
-    yinz_ipc::nested_session, yinz_ipc::nested_session::NestedSessionMessage,
-    yinz_types::data::InputMode, yinz_types::input::actions::Action,
+    yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::ExitReason, yinz_ipc::nested_session,
+    yinz_ipc::nested_session::NestedSessionMessage, yinz_types::input::actions::Action,
     yinz_types::input::options::Options,
 };
 
-/// Handles the dispatching of [`Action`]s according to the current
-/// [`InputMode`], and keep tracks of the current [`InputMode`].
+/// Forwards terminal input to the server, which owns the current mode and keybindings.
 struct InputHandler {
-    /// The current input mode
-    mode: InputMode,
     os_input: Box<dyn ClientOsApi>,
-    config: Config,
     options: Options,
     command_is_executing: CommandIsExecuting,
     send_client_instructions: SenderWithContext<ClientInstruction>,
@@ -132,22 +127,16 @@ pub fn from_termwiz(old_event: &mut MouseEvent, event: TermwizMouseEvent) -> Mou
 
 impl InputHandler {
     /// Returns a new [`InputHandler`] with the attributes specified as arguments.
-    #[allow(clippy::too_many_arguments)]
     fn new(
         os_input: Box<dyn ClientOsApi>,
         command_is_executing: CommandIsExecuting,
-        config: Config,
         options: Options,
         send_client_instructions: SenderWithContext<ClientInstruction>,
-        mode: InputMode, // TODO: we can probably get rid of this now that we're tracking it on the
-        // server instead
         receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
         nested_reannounce: NestedReannounce,
     ) -> Self {
         InputHandler {
-            mode,
             os_input,
-            config,
             options,
             command_is_executing,
             send_client_instructions,
@@ -159,13 +148,10 @@ impl InputHandler {
         }
     }
 
-    /// Main input event loop. Interprets the terminal Event
-    /// as [`Action`]s according to the current [`InputMode`], and dispatches those actions.
+    /// Main input event loop. Forwards terminal events and dispatches client actions.
     fn handle_input(&mut self) {
         let mut err_ctx = OPENCALLS.with(|ctx| *ctx.borrow());
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::StdinHandler);
-        let bracketed_paste_start = vec![27, 91, 50, 48, 48, 126]; // \u{1b}[200~
-        let bracketed_paste_end = vec![27, 91, 50, 48, 49, 126]; // \u{1b}[201~
         if self.options.mouse_mode.unwrap_or(true) {
             self.os_input.enable_mouse().non_fatal();
             self.mouse_mode_active = true;
@@ -178,12 +164,8 @@ impl InputHandler {
                 Ok((InputInstruction::KeyEvent(input_event, raw_bytes), _error_context)) => {
                     match input_event {
                         InputEvent::Key(key_event) => {
-                            let key = cast_termwiz_key(key_event, &raw_bytes, |key| {
-                                self.config
-                                    .keybinds
-                                    .get_actions_for_key_in_mode(&self.mode, key)
-                                    .is_some_and(|actions| !actions.is_empty())
-                            });
+                            // The server disambiguates legacy Ctrl-J using its current bindings.
+                            let key = cast_termwiz_key(key_event, &raw_bytes, |_| false);
                             // A key yinz has no name for (a media key, a bare modifier)
                             // is neither bound nor forwarded.
                             if let Some(key) = key {
@@ -205,56 +187,13 @@ impl InputHandler {
                             );
                         },
                         InputEvent::Paste(pasted_text) => {
-                            if self.mode == InputMode::Normal || self.mode == InputMode::Locked {
-                                self.dispatch_action(
-                                    Action::Write {
-                                        key_with_modifier: None,
-                                        bytes: bracketed_paste_start.clone(),
-                                        is_kitty_keyboard_protocol: false,
-                                    },
-                                    None,
-                                );
-                                self.dispatch_action(
-                                    Action::Write {
-                                        key_with_modifier: None,
-                                        bytes: pasted_text.as_bytes().to_vec(),
-                                        is_kitty_keyboard_protocol: false,
-                                    },
-                                    None,
-                                );
-                                self.dispatch_action(
-                                    Action::Write {
-                                        key_with_modifier: None,
-                                        bytes: bracketed_paste_end.clone(),
-                                        is_kitty_keyboard_protocol: false,
-                                    },
-                                    None,
-                                );
-                            }
-                            if self.mode == InputMode::EnterSearch {
-                                self.dispatch_action(
-                                    Action::SearchInput {
-                                        input: pasted_text.as_bytes().to_vec(),
-                                    },
-                                    None,
-                                );
-                            }
-                            if self.mode == InputMode::RenameTab {
-                                self.dispatch_action(
-                                    Action::TabNameInput {
-                                        input: pasted_text.as_bytes().to_vec(),
-                                    },
-                                    None,
-                                );
-                            }
-                            if self.mode == InputMode::RenamePane {
-                                self.dispatch_action(
-                                    Action::PaneNameInput {
-                                        input: pasted_text.as_bytes().to_vec(),
-                                    },
-                                    None,
-                                );
-                            }
+                            self.dispatch_action(
+                                Action::Paste {
+                                    chars: pasted_text,
+                                    pane_id: None,
+                                },
+                                None,
+                            );
                         },
                         _ => {},
                     }
@@ -508,24 +447,19 @@ impl InputHandler {
 
 /// Entry point to the module. Instantiates an [`InputHandler`] and starts
 /// its [`InputHandler::handle_input()`] loop.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn input_loop(
     os_input: Box<dyn ClientOsApi>,
-    config: Config,
     options: Options,
     command_is_executing: CommandIsExecuting,
     send_client_instructions: SenderWithContext<ClientInstruction>,
-    default_mode: InputMode,
     receive_input_instructions: Receiver<(InputInstruction, ErrorContext)>,
     nested_reannounce: NestedReannounce,
 ) {
     InputHandler::new(
         os_input,
         command_is_executing,
-        config,
         options,
         send_client_instructions,
-        default_mode,
         receive_input_instructions,
         nested_reannounce,
     )

@@ -654,7 +654,8 @@ pub(crate) struct Screen {
     tab_history: BTreeMap<ClientId, Vec<TabId>>,
     pane_history: BTreeMap<ClientId, Vec<PaneId>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
-    default_mode_info: ModeInfo, // TODO: restructure ModeInfo to prevent this duplication
+    // Defaults for new clients and readers without a per-client mode entry.
+    default_mode_info: ModeInfo,
     style: Style,
     pane_frame_style: PaneFrameStyle,
     /// Live toast notifications, newest first (index 0 sits in the configured corner).
