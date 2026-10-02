@@ -2268,8 +2268,12 @@ impl Screen {
             }
         }
 
+        // Watchers still following this client keep seeing its pane state.
+        let still_followed = self.followed_client_id == Some(client_id);
         for tab in self.tabs.values_mut() {
-            tab.remove_client_pane_state(client_id);
+            if !still_followed {
+                tab.remove_client_pane_state(client_id);
+            }
             tab.remove_client(client_id);
             if tab.has_no_connected_clients() {
                 tab.visible(false).with_context(err_context)?;
