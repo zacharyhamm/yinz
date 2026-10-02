@@ -1015,6 +1015,8 @@ impl AgentRun {
         AgentRunHeader {
             id: self.id.clone(),
             pane_id: self.pane_id,
+            yinz_session_name: self.yinz_session_name.clone(),
+            host_id: self.host_id.clone(),
             origin_run_id: self.origin_run_id.clone(),
             previous_run_id: self.previous_run_id.clone(),
             session_id: self.session_id.clone(),
@@ -1038,6 +1040,10 @@ impl AgentRun {
 pub struct AgentRunHeader {
     pub id: String,
     pub pane_id: u32,
+    #[serde(default)]
+    pub yinz_session_name: SessionName,
+    #[serde(default)]
+    pub host_id: HostId,
     #[serde(default)]
     pub session_id: String,
     /// Original and immediately preceding runs of an observed context clear.
@@ -1965,27 +1971,19 @@ pub mod rows {
             .collect()
     }
 
-    /// The headers, each with the machine its *row* names.
-    ///
-    /// The header is JSON written when the run was recorded and carries no machine — a run
-    /// stored before the column existed could not have one. The column is on every row and was
-    /// backfilled, so it is the only honest answer to "where did this happen", and a reader
-    /// narrowing to a project on this machine needs it. See `run_history::matches_root`.
-    pub fn run_headers_with_hosts(rows: &DataRows) -> Vec<(AgentRunHeader, HostId)> {
-        rows.rows
-            .iter()
-            .filter_map(|row| {
-                header_at(rows, row)
-                    .map(|header| (header, HostId::new(text_at(rows, row, "host_id"))))
-            })
-            .collect()
-    }
-
     fn header_at(rows: &DataRows, row: &[DataValue]) -> Option<AgentRunHeader> {
-        match rows.get(row, "header") {
-            Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
-            _ => None,
+        let Some(DataValue::Text(value)) = rows.get(row, "header") else {
+            return None;
+        };
+        let mut header: AgentRunHeader = serde_json::from_str(value).ok()?;
+        // Older stored headers omit ownership; the row columns are authoritative when fetched.
+        if let Some(DataValue::Text(session)) = rows.get(row, "yinz_session_name") {
+            header.yinz_session_name = session.clone().into();
         }
+        if let Some(DataValue::Text(host_id)) = rows.get(row, "host_id") {
+            header.host_id = host_id.clone().into();
+        }
+        Some(header)
     }
 }
 
@@ -3937,6 +3935,8 @@ mod tests {
         let run = |cwd: Option<&str>, host: Option<&str>, worktree: Option<&str>| AgentRunHeader {
             id: "claude:session-1".to_owned(),
             pane_id: 7,
+            yinz_session_name: "main".into(),
+            host_id: HostId::new(HOST),
             session_id: "session-1".to_owned(),
             origin_run_id: None,
             previous_run_id: None,

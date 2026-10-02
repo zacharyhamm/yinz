@@ -38,6 +38,8 @@ pub fn header_reply(
         "kind": header.kind,
         "title": header.title,
         "pane_id": header.pane_id,
+        "session": header.yinz_session_name,
+        "host_id": header.host_id,
         "cwd": header.cwd,
         // A Firecracker run's `cwd` is a guest path, so its project is the one that
         // owns the host worktree its VM mirrored — the rule `agents::checkout_location`
@@ -203,15 +205,12 @@ impl Filter {
         self.root.is_some()
     }
 
-    /// `host_id` is the run row's, not the header's: the header is JSON written when the run
-    /// was recorded and rows older than the column have none, while the column is on every row
-    /// and is what the migration backfilled.
-    fn keeps(&self, header: &AgentRunHeader, host_id: &HostId) -> bool {
+    fn keeps(&self, header: &AgentRunHeader) -> bool {
         match &self.root {
             Some(scope) => matches_root(
                 header.cwd.as_deref(),
                 header.host.as_deref(),
-                host_id,
+                &header.host_id,
                 header.worktree.as_deref(),
                 scope,
             ),
@@ -347,9 +346,8 @@ pub fn list_runs(
         // A tiebreak, so two runs that began in the same millisecond page deterministically
         // rather than swapping places between one fetch and the next.
         .sort_by("uid", SortDir::Asc)
-        // `host_id` beside the header because the header does not carry one — see
-        // [`Filter::keeps`].
-        .select(["header", "host_id"])
+        // Older headers omit ownership, so recover it from the row columns.
+        .select(["header", "host_id", "yinz_session_name"])
         .limit(want as u32)
         .offset(offset as u32);
     if let Some(pred) = filter.pred() {
@@ -363,11 +361,11 @@ pub fn list_runs(
     let mut headers: Vec<AgentRunHeader> = Vec::new();
     let mut scanned = raw;
     let mut overflowed = false;
-    for (index, (header, host_id)) in rows::run_headers_with_hosts(&fetched)
+    for (index, header) in rows::run_headers_from_rows(&fetched)
         .into_iter()
         .enumerate()
     {
-        if !filter.keeps(&header, &host_id) {
+        if !filter.keeps(&header) {
             continue;
         }
         if headers.len() == limit {

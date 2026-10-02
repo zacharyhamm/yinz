@@ -123,6 +123,18 @@ pub(super) struct Pending {
     enter_at: Option<Instant>,
 }
 
+impl Pending {
+    fn not_ready_reason(&self) -> Option<NotReadyReason> {
+        self.prompt.as_ref().map(|prompt| {
+            if prompt.acknowledged() {
+                NotReadyReason::UnresolvedTurn
+            } else {
+                NotReadyReason::PendingSubmission
+            }
+        })
+    }
+}
+
 impl Screen {
     pub(super) fn has_agent_lifecycle(&self, pane: PaneId, kind: &str, conversation: &str) -> bool {
         self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
@@ -311,7 +323,7 @@ impl Screen {
     pub(crate) fn agent_status_for_test(&self) -> AgentStatus {
         self.agent_status(
             PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
-            false,
+            None,
         )
         .expect("the test pane has an agent")
     }
@@ -368,7 +380,7 @@ impl Screen {
                         AgentOutcome::TargetChanged
                     },
                     None,
-                    false,
+                    None,
                 );
             } else {
                 keep.push(pending);
@@ -569,7 +581,11 @@ impl Screen {
             )]))
     }
 
-    fn agent_status(&self, pane_id: PaneId, pending_submission: bool) -> Option<AgentStatus> {
+    fn agent_status(
+        &self,
+        pane_id: PaneId,
+        pending_claim: Option<NotReadyReason>,
+    ) -> Option<AgentStatus> {
         let info = self.get_pane_info(pane_id)?;
         let agent = info.agent?;
         // The Muse bootstrap proves hook capability before the provider speaks.
@@ -605,13 +621,13 @@ impl Screen {
             Some(NotReadyReason::PromptUnsupported)
         } else if agent.state != AgentState::Idle {
             Some(NotReadyReason::NotIdle)
-        } else if pending_submission
-            || self
-                .agent_controls
+        } else if let Some(reason) = pending_claim.or_else(|| {
+            self.agent_controls
                 .iter()
-                .any(|pending| pending.pane == pane_id && pending.prompt.is_some())
-        {
-            Some(NotReadyReason::PendingSubmission)
+                .filter(|pending| pending.pane == pane_id)
+                .find_map(Pending::not_ready_reason)
+        }) {
+            Some(reason)
         } else if (provisional_muse && !self.muse_composer(pane_id, true))
             || !(self.agent_lifecycle.get(&pane_id).is_some_and(|lifecycle| {
                 lifecycle.input_revision == Some(self.agent_input_revision(pane_id))
@@ -790,7 +806,7 @@ impl Screen {
         message: Option<String>,
     ) -> AgentResponse {
         let mut response = AgentResponse::new(outcome);
-        response.agents.extend(self.agent_status(pane, false));
+        response.agents.extend(self.agent_status(pane, None));
         response.message = message;
         response
     }
@@ -813,7 +829,7 @@ impl Screen {
                     .values()
                     .flat_map(|tab| tab.get_all_pane_ids())
                     .filter_map(|id| {
-                        self.agent_status(id, false)
+                        self.agent_status(id, None)
                             .or_else(|| self.detected_agent_status(id))
                     })
                     .filter(|status| status.agent.state != AgentState::Exited)
@@ -872,7 +888,7 @@ impl Screen {
             );
             return;
         }
-        let Some(status) = self.agent_status(pane, false) else {
+        let Some(status) = self.agent_status(pane, None) else {
             // Between a submitted `/clear` or `/new` ending the old conversation and the new
             // one starting there is no record. An unpinned wait then waits for the new one.
             if let (
@@ -1060,20 +1076,16 @@ impl Screen {
                     .and_then(|tab| tab.get_dump_terminal_screen(pane, true))
                     .unwrap_or_default();
                 let all_lines: Vec<_> = output.lines().collect();
-                let mut nonblank = all_lines
+                let end = all_lines
                     .iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, line)| !line.trim().is_empty())
-                    .take(lines)
-                    .map(|(index, _)| index);
-                let output = nonblank
-                    .next()
-                    .map(|end| {
-                        let start = nonblank.last().unwrap_or(end);
-                        all_lines[start..=end].join("\n")
-                    })
-                    .unwrap_or_default();
+                    .rposition(|line| !line.trim().is_empty())
+                    .map_or(0, |index| index + 1);
+                let output = all_lines[end.saturating_sub(lines)..end]
+                    .iter()
+                    .skip_while(|line| line.trim().is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let mut response = self.agent_result(pane, AgentOutcome::Ok, None);
                 response.output = Some(output);
                 self.agent_reply(&client, response);
@@ -1191,6 +1203,7 @@ impl Screen {
                             "prompt requires lifecycle hooks and a live supported agent command pane with bracketed paste enabled"),
                         NotReadyReason::NotIdle => (AgentOutcome::Rejected, "agent is not idle"),
                         NotReadyReason::PendingSubmission => (AgentOutcome::Rejected, "agent has an unresolved pending submission"),
+                        NotReadyReason::UnresolvedTurn => (AgentOutcome::Rejected, "agent has an unresolved accepted turn; inspect the pane and recover only after it has stopped and its draft is empty"),
                         NotReadyReason::UnconsumedInput => (AgentOutcome::Rejected, "agent has unconsumed terminal input; inspect the pane before submitting"),
                         // Unreachable: a detected agent has no record, so the lookup above refuses it.
                         NotReadyReason::Unmanaged => (AgentOutcome::NotAgent, "target runs an agent that Yinz did not launch; relaunch it with agent spawn to control it"),
@@ -1318,7 +1331,7 @@ impl Screen {
                         &pending,
                         AgentOutcome::Failed,
                         Some(error.to_string()),
-                        true,
+                        pending.not_ready_reason(),
                     );
                     pending.abandoned = true;
                     pending.client = None;
@@ -1371,13 +1384,13 @@ impl Screen {
         pending: &Pending,
         outcome: AgentOutcome,
         message: Option<String>,
-        pending_submission: bool,
+        pending_claim: Option<NotReadyReason>,
     ) {
         if let Some(client) = &pending.client {
             let mut response = AgentResponse::new(outcome);
             response
                 .agents
-                .extend(self.agent_status(pending.pane, pending_submission));
+                .extend(self.agent_status(pending.pane, pending_claim));
             response.message = message;
             if matches!(outcome, AgentOutcome::Completed | AgentOutcome::Ok) {
                 response.background_tasks = response
@@ -1416,7 +1429,7 @@ impl Screen {
                         status.prompt_supported
                             && status.agent.kind == pending.kind
                             && status.agent.session_id == pending.conversation
-                            && (pending_submission
+                            && (pending_claim.is_some()
                                 || status.not_ready_reason == Some(NotReadyReason::UnconsumedInput))
                     });
                     if unresolved {
@@ -1445,11 +1458,14 @@ impl Screen {
             return;
         }
         let mut keep = Vec::new();
-        let claimed: std::collections::HashSet<_> = self
+        let claimed: std::collections::HashMap<_, _> = self
             .agent_controls
             .iter()
-            .filter(|pending| pending.prompt.is_some())
-            .map(|pending| pending.pane)
+            .filter_map(|pending| {
+                pending
+                    .not_ready_reason()
+                    .map(|reason| (pending.pane, reason))
+            })
             .collect();
         for mut pending in std::mem::take(&mut self.agent_controls) {
             if pending.abandoned && pending.delivery.is_none() {
@@ -1492,7 +1508,7 @@ impl Screen {
                 keep.push(pending);
                 continue;
             }
-            let status = self.agent_status(pending.pane, claimed.contains(&pending.pane));
+            let status = self.agent_status(pending.pane, claimed.get(&pending.pane).copied());
             let mut outcome = match &status {
                 _ if delivery_error.is_some() => Some(AgentOutcome::Failed),
                 None if self.tab_containing_pane(pending.pane).is_none() => {
@@ -1648,7 +1664,13 @@ impl Screen {
                     &pending,
                     outcome,
                     delivery_error,
-                    retain_claim || (pending.prompt.is_none() && claimed.contains(&pending.pane)),
+                    if retain_claim {
+                        pending.not_ready_reason()
+                    } else if pending.prompt.is_none() {
+                        claimed.get(&pending.pane).copied()
+                    } else {
+                        None
+                    },
                 );
                 if retain_claim {
                     // Ending the wait cannot recall input already sent to the agent, including
@@ -1663,7 +1685,7 @@ impl Screen {
             } else {
                 if pending.conversation.is_none() {
                     pending.conversation = self
-                        .agent_status(pending.pane, false)
+                        .agent_status(pending.pane, None)
                         .and_then(|s| s.agent.session_id);
                 }
                 keep.push(pending);
@@ -1850,7 +1872,12 @@ impl Screen {
                 Some(AgentOutcome::Submitted) => {
                     pending.enter_at = None;
                     if !pending.wait {
-                        self.finish_agent_control(&pending, AgentOutcome::Submitted, None, true);
+                        self.finish_agent_control(
+                            &pending,
+                            AgentOutcome::Submitted,
+                            None,
+                            pending.not_ready_reason(),
+                        );
                         pending.client = None;
                     }
                     keep.push(pending);
@@ -1878,7 +1905,12 @@ impl Screen {
                         } else {
                             event.last_message.clone()
                         };
-                    self.finish_agent_control(&pending, outcome, message, retain_claim);
+                    self.finish_agent_control(
+                        &pending,
+                        outcome,
+                        message,
+                        retain_claim.then(|| pending.not_ready_reason()).flatten(),
+                    );
                     if matches!(
                         outcome,
                         AgentOutcome::Interrupted
