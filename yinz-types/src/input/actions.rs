@@ -258,6 +258,8 @@ pub enum Action {
     ToggleFocusNoUiFullscreen,
     /// Toggle frames around panes in the UI
     TogglePaneFrames,
+    /// Toggle the client-local command palette prototype.
+    ToggleCommandPalette,
     SetPaneFrameStyle(PaneFrameStyle),
     /// Toggle between sending text commands to all panes on the current tab and normal mode.
     ToggleActiveSyncTab,

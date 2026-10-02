@@ -31,6 +31,167 @@ fn compose(opacity: u8, under: CharacterChunk, over: CharacterChunk) -> Vec<Char
     composition.finish()
 }
 
+#[test]
+fn screen_overlay_composes_fresh_content_and_notifications_in_paint_order() {
+    let client = ClientId::new(1);
+    for content in ["abcdefgh", "12345678"] {
+        let mut output = Output::default();
+        output.add_clients(
+            &HashSet::from([client]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        // A composed pane, then an opaque toast partially intersecting the palette.
+        output
+            .add_character_chunks_to_client(
+                client,
+                vec![chunk(content, 0), chunk("TOAST", 3)],
+                None,
+            )
+            .unwrap();
+        output
+            .add_translucent_overlay(
+                client,
+                rect(0, 5),
+                75,
+                vec![chunk("  X  ", 0)],
+                yinz_types::style::Palette {
+                    fg: FG,
+                    bg: BG,
+                    ..Default::default()
+                },
+                TINT,
+                &HashMap::new(),
+            )
+            .unwrap();
+        let chunks = output.client_character_chunks.remove(&client).unwrap();
+        let cells = serialize_and_parse_row(chunks, 8);
+        let visible: String = cells.iter().map(|c| c.character).collect();
+        assert_eq!(visible, format!("{}XTOAST", &content[..2]));
+        assert_eq!(
+            cells[0].styles.foreground,
+            Some(AnsiCode::RgbCode((125, 115, 105)))
+        );
+        assert_eq!(
+            cells[0].styles.background,
+            Some(AnsiCode::RgbCode((80, 85, 90)))
+        );
+        assert_eq!(cells[2].styles.background, Some(TINT.into()));
+    }
+}
+
+#[test]
+fn input_overlay_suppresses_all_underlying_cursors_for_its_client_only() {
+    let mut output = Output::default();
+    output.set_input_overlay_clients([ClientId::new(1)].into_iter());
+    assert!(!output.cursor_is_visible(0, 0, None, ClientId::new(1)));
+    assert!(output.cursor_is_visible(0, 0, None, ClientId::new(2)));
+}
+
+#[test]
+fn screen_overlay_clips_both_graphics_protocols_and_composes_over_a_translucent_pane() {
+    let client = ClientId::new(1);
+    let mut output = Output::default();
+    *output.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 10,
+        height: 20,
+    });
+    output.add_clients(
+        &HashSet::from([client]),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    output.begin_translucent_composition(
+        &HashSet::from([client]),
+        vec![(1, rect(0, 5), 50)],
+        FG,
+        BG,
+        TINT,
+        &HashMap::new(),
+    );
+    output
+        .add_character_chunks_to_client(client, vec![chunk("abcde", 0)], None)
+        .unwrap();
+    output
+        .add_character_chunks_to_client(client, vec![chunk("     ", 0)], Some(1))
+        .unwrap();
+    output.finish_translucent_composition();
+    output.add_sixel_image_chunks_to_client(
+        client,
+        vec![SixelImageChunk {
+            cell_x: 0,
+            cell_y: 0,
+            sixel_image_pixel_x: 0,
+            sixel_image_pixel_y: 0,
+            sixel_image_pixel_width: 50,
+            sixel_image_pixel_height: 20,
+            sixel_image_id: 1,
+        }],
+        None,
+    );
+    let pane = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1));
+    output.add_kitty_image_chunks_to_client(
+        client,
+        pane,
+        vec![KittyImageChunk {
+            cell_x: 0,
+            cell_y: 0,
+            internal_image_id: 1,
+            source_px_x: 0,
+            source_px_y: 0,
+            source_px_width: 50,
+            source_px_height: 20,
+            cell_offset_x: 0,
+            cell_offset_y: 0,
+            z_index: 0,
+            dest_cells: (5, 1),
+            variant_key: (5, 1),
+            scaled_px: None,
+            placement_uid: 1,
+        }],
+        None,
+    );
+    output
+        .add_translucent_overlay(
+            client,
+            rect(1, 3),
+            75,
+            vec![chunk("   ", 1)],
+            yinz_types::style::Palette {
+                fg: FG,
+                bg: BG,
+                ..Default::default()
+            },
+            TINT,
+            &HashMap::new(),
+        )
+        .unwrap();
+    let cells = serialize_and_parse_row(output.client_character_chunks.remove(&client).unwrap(), 5);
+    assert_eq!(
+        cells.iter().map(|c| c.character).collect::<String>(),
+        "abcde"
+    );
+    assert_eq!(
+        cells[1].styles.foreground,
+        Some(AnsiCode::RgbCode((113, 108, 103)))
+    );
+    // The Sixel clipper also retains empty top/bottom crops; they paint no pixels.
+    let visible_sixel: Vec<_> = output.sixel_chunks[&client]
+        .iter()
+        .filter(|chunk| chunk.sixel_image_pixel_width > 0 && chunk.sixel_image_pixel_height > 0)
+        .collect();
+    for chunk in &visible_sixel {
+        assert!(chunk.cell_x == 0 || chunk.cell_x >= 4);
+        assert!(chunk.sixel_image_pixel_width <= 10);
+    }
+    assert_eq!(visible_sixel.len(), 2);
+    for chunk in &output.client_kitty_chunks[&client][&pane] {
+        assert!(chunk.cell_x == 0 || chunk.cell_x >= 4);
+        assert!(chunk.source_px_width <= 10);
+    }
+    assert_eq!(output.client_kitty_chunks[&client][&pane].len(), 2);
+}
+
 fn serialize_and_parse_row(
     chunks: Vec<CharacterChunk>,
     cols: usize,

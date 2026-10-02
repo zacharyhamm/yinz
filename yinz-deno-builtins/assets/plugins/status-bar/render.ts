@@ -74,13 +74,13 @@ interface Tile {
   key: Key | undefined;
 }
 const labels = {
+  Do: ["Do", "Do"],
   Lock: ["LOCK", "Lo"],
   Unlock: ["UNLOCK", "Un"],
   Pane: ["PANE", "Pa"],
   Tab: ["TAB", "Ta"],
   Resize: ["SIZE", "Re"],
   Search: ["SEARCH", "Se"],
-  Quit: ["QUIT", "Qu"],
   Session: ["SESS", "Se"],
   Move: ["MOVE", "Mo"],
   Tmux: ["TMUX", "Tm"],
@@ -88,7 +88,7 @@ const labels = {
   Notifications: ["NOTIFY", "No"],
 } as const;
 type TileAction = keyof typeof labels;
-const modeTiles: [InputMode | "Quit", TileAction][] = [
+const modeTiles: [InputMode, TileAction][] = [
   ["Locked", "Lock"],
   ["Agent", "Agent"],
   ["Pane", "Pane"],
@@ -97,7 +97,6 @@ const modeTiles: [InputMode | "Quit", TileAction][] = [
   ["Move", "Move"],
   ["Scroll", "Search"],
   ["Session", "Session"],
-  ["Quit", "Quit"],
 ];
 const selectedAction: Partial<Record<InputMode, TileAction>> = {
   Locked: "Lock",
@@ -114,8 +113,14 @@ const selectedAction: Partial<Record<InputMode, TileAction>> = {
   Session: "Session",
   Agent: "Agent",
 };
-const bound = (mi: ModeInfo, mode: InputMode, target: InputMode | "Quit"): Key | undefined =>
-  toChar(actionKeys(modeKeymap(mi, mode), [target === "Quit" ? "Quit" : switchMode(target)]));
+const bound = (mi: ModeInfo, mode: InputMode, target: InputMode): Key | undefined =>
+  toChar(actionKeys(modeKeymap(mi, mode), [switchMode(target)]));
+function withPalette(mi: ModeInfo, mode: InputMode, tiles: readonly Readonly<Tile>[]): Tile[] {
+  const key = toChar(actionKeys(modeKeymap(mi, mode), ["ToggleCommandPalette"]));
+  const result = [...tiles];
+  if (key) result.splice(1, 0, { mode: "unselected", action: "Do", key });
+  return result;
+}
 const noRanges = (l: Readonly<Line>): RibbonLine => ({ line: l, newPane: null, floating: null });
 const shift = (r: Readonly<Range>, n: number): Range => r && [r[0] + n, r[1] + n];
 
@@ -137,7 +142,7 @@ function classicTile(
   const start = common.length === 0 && first ? "" : arrow(mi);
   const end = arrow(mi);
   const body =
-    form === 2
+    form === 2 && tile.action !== "Do"
       ? c.key(` ${key} `)
       : c.bracket(" <") + c.key(key) + c.bracket("> ") + c.text(`${name} `);
   return line(c.prefix(start) + body + c.suffix(end));
@@ -145,11 +150,15 @@ function classicTile(
 // oxlint-disable-next-line eslint/max-lines-per-function -- Keep the classic tile fitting and swap-layout alignment in their rendering order.
 function firstLine(mi: ModeInfo, tab: TabInfo | undefined, maxCols: number): Line {
   const max = Math.min(maxCols, 10_000);
-  const tiles: Tile[] = modeTiles.map(([target, action], i) => ({
-    mode: i % 2 ? "alternate" : "unselected",
-    action,
-    key: bound(mi, mi.mode, target),
-  }));
+  const tiles = withPalette(
+    mi,
+    mi.mode,
+    modeTiles.map(([target, action], i) => ({
+      mode: i % 2 ? "alternate" : "unselected",
+      action,
+      key: bound(mi, mi.mode, target),
+    })),
+  );
   const selected = tiles.find((t) => t.action === selectedAction[mi.mode]);
   if (selected) {
     selected.mode = "selected";
@@ -162,7 +171,7 @@ function firstLine(mi: ModeInfo, tab: TabInfo | undefined, maxCols: number): Lin
     .filter(
       ([k, aa]) =>
         !genericKey(k) &&
-        (aa[0] === "Quit" ||
+        (aa[0] === "ToggleCommandPalette" ||
           (aa[0] !== undefined &&
             typeof aa[0] !== "string" &&
             "SwitchToMode" in aa[0] &&
@@ -239,16 +248,20 @@ function modeIndicators(mi: ModeInfo, max: number): Line | undefined {
     ],
     [
       "Normal",
-      modeTiles.map(([target, action]) => ({
-        mode:
-          target === "Locked" && locked
-            ? "selected"
-            : ["Agent", "Pane", "Resize", "Scroll"].includes(target)
-              ? "alternate"
-              : "unselected",
-        action: target === "Locked" && locked ? "Unlock" : action,
-        key: bound(mi, "Normal", target),
-      })),
+      withPalette(
+        mi,
+        "Normal",
+        modeTiles.map(([target, action]) => ({
+          mode:
+            target === "Locked" && locked
+              ? "selected"
+              : ["Agent", "Pane", "Resize", "Scroll"].includes(target)
+                ? "alternate"
+                : "unselected",
+          action: target === "Locked" && locked ? "Unlock" : action,
+          key: bound(mi, "Normal", target),
+        })),
+      ),
     ],
   ]);
   for (const [mode, action] of [
@@ -290,7 +303,7 @@ function modeIndicators(mi: ModeInfo, max: number): Line | undefined {
             3,
             common.length > 0,
             false,
-            common.length > 0 && short,
+            common.length > 0 && short && t.action !== "Do",
           ),
         ),
       );

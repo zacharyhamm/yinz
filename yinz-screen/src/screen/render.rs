@@ -18,6 +18,7 @@ impl Screen {
         // when this job decides to render, it sends back the ScreenInstruction::RenderToClients
         // message, triggering our render_to_clients method which does the actual rendering
 
+        self.dismiss_stale_command_palettes();
         self.sync_nested_guest_fullscreen_state();
         self.report_pane_tabs()?;
 
@@ -53,6 +54,7 @@ impl Screen {
         // cannot restore stale geometry.
         self.remember_surface_size();
         let surface = self.surface_size();
+        self.dismiss_stale_command_palettes();
         for tab_id in self.tabs.keys().copied().collect::<Vec<_>>() {
             // With no contributing client, fall back to the last known shared surface.
             let tab_size = self.tab_surface_size(tab_id).unwrap_or(surface);
@@ -104,6 +106,8 @@ impl Screen {
                 self.sixel_host_capabilities.clone(),
                 self.synchronized_output_capabilities.clone(),
             );
+
+            self.prepare_command_palette_render(&mut output);
 
             output.collect_ansi_pane_contents =
                 self.pane_render_subscribers.values().any(|s| s.ansi);
@@ -203,6 +207,9 @@ impl Screen {
                     tab.render_cursor_last(&mut output, None);
                 }
             }
+
+            self.render_command_palettes(&mut output, self.command_palettes.keys().copied())
+                .context(err_context)?;
 
             let pane_render_report = output.drain_pane_render_report();
 
@@ -409,6 +416,7 @@ impl Screen {
                         self.context_menu_cell_rects(&[followed_client_id], watcher_surface),
                     );
                 }
+                watcher_output.set_input_overlay_clients(self.command_palettes.keys().copied());
                 if let Some(tab) = self
                     .tabs
                     .get_mut(&focused_tab_index_of_followed_client_id)
@@ -416,6 +424,12 @@ impl Screen {
                 {
                     if should_force_render {
                         tab.set_force_render();
+                        // A forced pane repaint cannot erase overlays outside the panes.
+                        watcher_output.add_pre_vte_instruction_to_client(
+                            followed_client_id,
+                            "\u{1b}[m\u{1b}[2J",
+                        );
+                        watcher_output.mark_host_display_cleared_for_client(followed_client_id);
                     }
                     if any_watcher_needs_force_render {
                         // A watcher about to be repainted whole has not necessarily seen this
@@ -463,6 +477,11 @@ impl Screen {
                     watcher_output
                         .set_kitty_visible_panes(followed_client_id, tab.kitty_visible_pane_ids());
                 }
+                self.render_command_palettes(
+                    &mut watcher_output,
+                    std::iter::once(followed_client_id),
+                )
+                .context(err_context)?;
 
                 // Send the rendered output to all watcher clients
                 if watcher_output.is_dirty() {

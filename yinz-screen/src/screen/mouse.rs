@@ -35,6 +35,9 @@ impl Screen {
             }
             return;
         }
+        if self.command_palette_handles_mouse(&event, client_id) {
+            return;
+        }
         let is_bare_motion = event.event_type == MouseEventType::Motion
             && !event.left
             && !event.right

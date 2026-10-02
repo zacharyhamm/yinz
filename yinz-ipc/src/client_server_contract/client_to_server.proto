@@ -18,6 +18,7 @@ message ClientToServerMsg {
     AttachClientMsg attach_client = 8;
     ActionMsg action = 9;
     KeyMsg key = 10;
+    string paste = 35;
     ClientExitedMsg client_exited = 11;
     KillSessionMsg kill_session = 12;
     KillSessionMsg kill_session_with_completion = 32;

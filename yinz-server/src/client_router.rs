@@ -380,6 +380,26 @@ pub(crate) fn route_thread_main(
                             os_input.send_to_client(client_id, ServerToClientMsg::DataResponse { request_id, result }).context("reply to CLI data request")?;
                         },
                         ClientToServerMsg::AgentReport(_) => unreachable!("handled before action dispatch"),
+                        ClientToServerMsg::Paste(text) => {
+                            if let Some(senders) = &senders {
+                                senders.send_to_screen(ScreenInstruction::ResetAgentEscape(client_id))
+                                    .with_context(err_context)?;
+                                senders.send_to_plugin(PluginInstruction::UserInput {
+                                    client_id,
+                                    action: Action::Paste { chars: text.clone(), pane_id: None },
+                                    terminal_id: None,
+                                    cli_client_id: None,
+                                }).with_context(err_context)?;
+                                senders.send_to_plugin(PluginInstruction::Update(vec![(
+                                    None, Some(client_id), Event::InputReceived,
+                                )])).with_context(err_context)?;
+                                let (completion_tx, completion_rx) = oneshot::channel();
+                                senders.send_to_screen(ScreenInstruction::PasteFromClient(
+                                    text, client_id, Some(NotificationEnd::new_client_input(completion_tx)),
+                                )).with_context(err_context)?;
+                                wait_for_action_completion(completion_rx, "PasteFromClient", false);
+                            }
+                        },
                         ClientToServerMsg::Key {
                             key,
                             raw_bytes,
@@ -394,11 +414,8 @@ pub(crate) fn route_thread_main(
                             } else {
                                 key
                             };
-                            // Cloned before `key` is moved into the passthrough branch below, so
-                            // it survives to ask an open menu about a key that resolves to
-                            // something other than a write - see the `actions_dismiss_context_menu`
-                            // use further down for why only that case needs it.
-                            let key_for_menu_check = key.clone();
+                            // Keep the original key for overlays when bindings replace it.
+                            let key_for_overlay_check = key.clone();
 
                             // A chord is the only evidence of a held modifier most terminals
                             // ever give us: `Alt+n` says Alt was down when it was pressed, and
@@ -471,26 +488,25 @@ pub(crate) fn route_thread_main(
                             if let Some((senders, default_shell, client_input_mode, actions)) =
                                 dispatch_inputs
                             {
-                                // A key that resolves to a write is handled by
-                                // `ScreenInstruction::WriteCharacter`, which already gives an open
-                                // menu first refusal on the keys it uses. Anything else - a key
-                                // bound to its own action by the current mode, e.g. Down/Enter/Esc
-                                // in Pane or Resize mode - never reaches that path, so the menu
-                                // would never get a say. Ask it here, before the mode's own
-                                // binding fires, rather than only dismissing it after the fact.
-                                let mut menu_handled_key = false;
-                                if actions_dismiss_context_menu(&actions) {
+                                // Only a single write retaining the original key can go straight
+                                // to WriteCharacter. Other bindings may replace the key or run
+                                // more actions after an overlay consumes it, so ask first.
+                                let mut overlay_handled_key = false;
+                                if !matches!(actions.as_slice(), [Action::Write {
+                                    key_with_modifier: Some(write_key), ..
+                                }] if write_key == &key_for_overlay_check) {
                                     senders.send_to_screen(ScreenInstruction::ResetAgentEscape(client_id)).non_fatal();
                                     let (completion_tx, completion_rx) = oneshot::channel();
                                     let sent = senders.send_to_screen(
                                         ScreenInstruction::ContextMenuHandleKeyIfOpen {
-                                            key: Some(key_for_menu_check),
+                                            key: Some(key_for_overlay_check),
+                                            toggle_command_palette: actions.contains(&Action::ToggleCommandPalette),
                                             client_id,
                                             completion: Some(NotificationEnd::new(completion_tx)),
                                         },
                                     );
                                     if sent.is_ok() {
-                                        menu_handled_key = wait_for_action_completion(
+                                        overlay_handled_key = wait_for_action_completion(
                                             completion_rx,
                                             "ContextMenuHandleKeyIfOpen",
                                             false,
@@ -499,13 +515,13 @@ pub(crate) fn route_thread_main(
                                         .as_deref()
                                             == Some("true");
                                     }
-                                    if !menu_handled_key {
+                                    if !overlay_handled_key && actions_dismiss_context_menu(&actions) {
                                         let _ = senders.send_to_screen(
                                             ScreenInstruction::CloseContextMenu(client_id),
                                         );
                                     }
                                 }
-                                if !menu_handled_key {
+                                if !overlay_handled_key {
                                     let leaves_clipboard_message =
                                         actions_leave_clipboard_message(&actions);
                                     for action in actions {

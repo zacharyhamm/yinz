@@ -167,6 +167,7 @@ mod props {
                 },
             ),
             ("TogglePaneFrames;", Action::TogglePaneFrames),
+            ("ToggleCommandPalette;", Action::ToggleCommandPalette),
             ("ToggleFocusFullscreen;", Action::ToggleFocusFullscreen),
             (
                 "MoveFocusOrTab \"Left\";",

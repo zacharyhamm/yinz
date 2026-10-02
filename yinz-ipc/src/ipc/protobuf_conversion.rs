@@ -172,6 +172,7 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 client_id: client_id.map(|id| u32::from(id.get())),
                 is_cli_client,
             }),
+            ClientToServerMsg::Paste(text) => client_to_server_msg::Message::Paste(text),
             ClientToServerMsg::Key {
                 key,
                 raw_bytes,
@@ -393,6 +394,7 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
                 client_id: action.client_id.map(ClientId::try_from).transpose()?,
                 is_cli_client: action.is_cli_client,
             }),
+            Some(client_to_server_msg::Message::Paste(text)) => Ok(ClientToServerMsg::Paste(text)),
             Some(client_to_server_msg::Message::Key(key)) => Ok(ClientToServerMsg::Key {
                 key: key.key.ok_or_else(|| anyhow!("Missing key"))?.try_into()?,
                 raw_bytes: key.raw_bytes.into_iter().map(|b| b as u8).collect(),
@@ -1656,6 +1658,7 @@ impl TryFrom<yinz_types::input::actions::Action>
             TabNameInputAction,
             ToggleActiveSyncTabAction,
             ToggleActiveSyncTabByTabIdAction,
+            ToggleCommandPaletteAction,
             ToggleFloatingPanesAction,
             ToggleFloatingPanesByTabIdAction,
             ToggleFocusFullscreenAction,
@@ -1878,6 +1881,9 @@ impl TryFrom<yinz_types::input::actions::Action>
             },
             yinz_types::input::actions::Action::ToggleFocusNoUiFullscreen => {
                 ActionType::ToggleFocusNoUiFullscreen(ToggleFocusNoUiFullscreenAction {})
+            },
+            yinz_types::input::actions::Action::ToggleCommandPalette => {
+                ActionType::ToggleCommandPalette(ToggleCommandPaletteAction {})
             },
             yinz_types::input::actions::Action::TogglePaneFrames => {
                 ActionType::TogglePaneFrames(TogglePaneFramesAction {})
@@ -2952,6 +2958,9 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             },
             ActionType::ToggleFocusNoUiFullscreen(_) => {
                 Ok(yinz_types::input::actions::Action::ToggleFocusNoUiFullscreen)
+            },
+            ActionType::ToggleCommandPalette(_) => {
+                Ok(yinz_types::input::actions::Action::ToggleCommandPalette)
             },
             ActionType::TogglePaneFrames(_) => {
                 Ok(yinz_types::input::actions::Action::TogglePaneFrames)

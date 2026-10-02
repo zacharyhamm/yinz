@@ -1729,6 +1729,12 @@ fn test_client_messages() {
         is_cli_client: true,
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
+        action: Action::ToggleCommandPalette,
+        terminal_id: None,
+        client_id: Some(ClientId::new(100)),
+        is_cli_client: false,
+    });
+    test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::TogglePaneFrames,
         terminal_id: Some(yinz_types::internal_ids::TerminalId::new(1)),
         client_id: Some(ClientId::new(100)),
@@ -3845,6 +3851,8 @@ fn test_client_messages() {
         client_id: Some(ClientId::new(100)),
         is_cli_client: true,
     });
+    test_client_roundtrip!(ClientToServerMsg::Paste("café\n東京\t🦀".into()));
+    test_client_roundtrip!(ClientToServerMsg::Paste(String::new()));
     test_client_roundtrip!(ClientToServerMsg::Key {
         key: KeyWithModifier {
             bare_key: BareKey::PageDown,

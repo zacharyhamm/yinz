@@ -168,6 +168,7 @@ pub enum ClientToServerMsg {
         raw_bytes: Vec<u8>,
         is_kitty_keyboard_protocol: bool,
     },
+    Paste(String),
     ClientExited,
     KillSession,
     KillSessionWithCompletion,

@@ -99,6 +99,7 @@ impl Screen {
         mut context: ContextMenuContext,
         client_id: ClientId,
     ) -> ContextMenuRequestId {
+        self.close_command_palette(client_id);
         let request_id = self.next_context_menu_request_id;
         self.next_context_menu_request_id =
             ContextMenuRequestId::new(self.next_context_menu_request_id.get() + 1);
