@@ -559,7 +559,7 @@ pub struct Pty {
     terminal_cwds: HashMap<TerminalId, PathBuf>, // terminal_id -> cwd
     pane_activity_flags: HashMap<TerminalId, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     terminal_cmds: HashMap<TerminalId, Vec<String>>,
-    terminal_foreground_cmds: HashMap<TerminalId, Vec<String>>,
+    terminal_reported_commands: HashMap<TerminalId, (Vec<String>, Vec<String>)>,
     /// Terminals adopted for a tab that is about to be built, waiting for the
     /// `NewTab` that will place them, keyed by the tab they belong to.
     ///
@@ -602,24 +602,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 set_blocking,
             ) => {
                 let (run_command, pane_title, open_file_payload) = match &terminal_action {
-                    Some(TerminalAction::RunCommand(run_command)) => (
-                        Some(run_command.clone()),
-                        if name.is_some() {
-                            // User explicitly provided a name — use it regardless
-                            // of use_terminal_title
-                            name
-                        } else if run_command.is_remote_default_shell() {
-                            // The host, until the remote shell sets a title
-                            // of its own — which it will, exactly as a local
-                            // shell does.
-                            run_command.display_host()
-                        } else if run_command.use_terminal_title {
-                            None
-                        } else {
-                            Some(run_command.to_string())
-                        },
-                        None,
-                    ),
+                    Some(TerminalAction::RunCommand(run_command)) => {
+                        (Some(run_command.clone()), name, None)
+                    },
                     Some(TerminalAction::OpenFile(open_file_payload)) => {
                         (None, name, Some(open_file_payload.clone()))
                     },
@@ -669,22 +654,9 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 completion_tx,
             ) => {
                 let (run_command, pane_title, open_file_payload) = match &terminal_action {
-                    Some(TerminalAction::RunCommand(run_command)) => (
-                        Some(run_command.clone()),
-                        if run_command.is_remote_default_shell() {
-                            // See the sibling site above: the host stands in
-                            // until the remote shell titles the pane itself.
-                            Some(
-                                name.or_else(|| run_command.display_host())
-                                    .unwrap_or_else(|| run_command.to_string()),
-                            )
-                        } else if run_command.use_terminal_title {
-                            None
-                        } else {
-                            Some(name.unwrap_or_else(|| run_command.to_string()))
-                        },
-                        None,
-                    ),
+                    Some(TerminalAction::RunCommand(run_command)) => {
+                        (Some(run_command.clone()), name, None)
+                    },
                     Some(TerminalAction::OpenFile(open_file_payload)) => {
                         (None, name, Some(open_file_payload.clone()))
                     },
@@ -1303,7 +1275,7 @@ impl Pty {
             terminal_cwds: HashMap::new(),
             pane_activity_flags: HashMap::new(),
             terminal_cmds: HashMap::new(),
-            terminal_foreground_cmds: HashMap::new(),
+            terminal_reported_commands: HashMap::new(),
             adopted_tabs: HashMap::new(),
             spawn_workers: vec![],
             pending_remote_spawns: HashSet::new(),
@@ -3538,9 +3510,9 @@ impl Pty {
 
     fn forget_terminal_foreground(&mut self, terminal_id: TerminalId) {
         if self
-            .terminal_foreground_cmds
+            .terminal_reported_commands
             .remove(&terminal_id)
-            .is_some_and(|command| !command.is_empty())
+            .is_some()
         {
             let _ =
                 self.bus
@@ -3548,6 +3520,7 @@ impl Pty {
                     .send_to_screen(ScreenInstruction::UpdatePaneForegroundCommand(
                         terminal_id,
                         Vec::new(),
+                        None,
                     ));
         }
     }
@@ -3692,7 +3665,18 @@ impl Pty {
                 .cloned()
                 .unwrap_or_default();
 
-            if self.terminal_foreground_cmds.get(terminal_id) != Some(&foreground_cmd) {
+            let (command, is_foreground) = if foreground_cmd.is_empty() {
+                let shell_cmd = self
+                    .terminal_cmds
+                    .get(terminal_id)
+                    .cloned()
+                    .unwrap_or_default();
+                (shell_cmd, false)
+            } else {
+                (foreground_cmd.clone(), true)
+            };
+            let reported = (foreground_cmd.clone(), command.clone());
+            if self.terminal_reported_commands.get(terminal_id) != Some(&reported) {
                 let pane_id = PaneId::Terminal(*terminal_id);
                 let focused_client_ids: Vec<ClientId> = self
                     .active_panes
@@ -3700,16 +3684,6 @@ impl Pty {
                     .filter(|(_, active_pane)| *active_pane == &pane_id)
                     .map(|(client_id, _)| *client_id)
                     .collect();
-                let (command, is_foreground) = if foreground_cmd.is_empty() {
-                    let shell_cmd = self
-                        .terminal_cmds
-                        .get(terminal_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    (shell_cmd, false)
-                } else {
-                    (foreground_cmd.clone(), true)
-                };
                 let _ = self
                     .bus
                     .senders
@@ -3718,7 +3692,7 @@ impl Pty {
                         None,
                         Event::CommandChanged(
                             pane_id,
-                            command,
+                            command.clone(),
                             is_foreground,
                             focused_client_ids.into_iter().collect(),
                         ),
@@ -3726,11 +3700,12 @@ impl Pty {
                 let _ = self.bus.senders.send_to_screen(
                     ScreenInstruction::UpdatePaneForegroundCommand(
                         *terminal_id,
-                        foreground_cmd.clone(),
+                        foreground_cmd,
+                        command.first().cloned(),
                     ),
                 );
-                self.terminal_foreground_cmds
-                    .insert(*terminal_id, foreground_cmd);
+                self.terminal_reported_commands
+                    .insert(*terminal_id, reported);
             }
         }
     }

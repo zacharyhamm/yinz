@@ -495,7 +495,7 @@ fn test_left_click_on_inactive_tiled_pane_changes_focus() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
@@ -640,7 +640,7 @@ fn test_ctrl_click_on_tiled_pane_edge_starts_resize() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -673,7 +673,7 @@ fn test_ctrl_drag_resizes_tiled_pane_horizontally() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(
@@ -742,7 +742,7 @@ fn test_ctrl_drag_resizes_tiled_pane_vertically() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.horizontal_split(new_pane_id, None, client_id, None, None)
+    tab.horizontal_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Top pane".as_bytes()))
@@ -808,7 +808,7 @@ fn test_ctrl_drag_resizes_unfocused_tiled_pane_vertically() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.horizontal_split(new_pane_id, None, client_id, None, None)
+    tab.horizontal_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Top pane".as_bytes()))
@@ -883,7 +883,7 @@ fn test_ctrl_click_on_pane_body_does_nothing() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -1521,7 +1521,7 @@ fn test_alt_left_click_toggles_pane_group() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -1558,9 +1558,9 @@ fn test_alt_left_drag_adds_panes_to_group() {
     let _output = Output::default();
 
     // Create two vertical splits (3 panes)
-    tab.vertical_split(new_pane_id_2, None, client_id, None, None)
+    tab.vertical_split(new_pane_id_2, None, None, client_id, None, None)
         .unwrap();
-    tab.vertical_split(new_pane_id_3, None, client_id, None, None)
+    tab.vertical_split(new_pane_id_3, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Pane 1".as_bytes()))
@@ -1614,7 +1614,7 @@ fn test_right_alt_click_ungroups_panes() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -2030,7 +2030,7 @@ fn test_scroll_on_inactive_pane_scrolls_that_pane() {
     let mut output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Fill both panes with scrollable content
@@ -2155,7 +2155,7 @@ fn test_hover_over_inactive_pane_sets_hover_state() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -2194,7 +2194,7 @@ fn test_hover_over_active_pane_unsets_hover() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -2241,7 +2241,7 @@ fn test_resize_tiled_then_move_floating_sequence() {
     let _output = Output::default();
 
     // Create tiled split
-    tab.vertical_split(tiled_pane_id, None, client_id, None, None)
+    tab.vertical_split(tiled_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(
@@ -2388,7 +2388,7 @@ fn test_left_click_on_tiled_frame_edge_starts_resize() {
     let _output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left".as_bytes()))
@@ -2489,7 +2489,7 @@ fn test_ctrl_scroll_up_on_active_tiled_pane_increases_pane_size() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
@@ -2542,7 +2542,7 @@ fn test_ctrl_scroll_down_on_active_tiled_pane_decreases_pane_size() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
@@ -2595,7 +2595,7 @@ fn test_ctrl_scroll_up_on_inactive_tiled_pane_increases_active_tiled_pane_size()
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
@@ -2648,7 +2648,7 @@ fn test_ctrl_scroll_down_on_inactive_tiled_pane_decreases_active_tiled_pane_size
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut output = Output::default();
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("Left pane".as_bytes()))
@@ -2984,7 +2984,7 @@ fn test_ctrl_scroll_up_does_not_resize_pane_when_mouse_scroll_resize_disabled() 
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
     tab.update_mouse_scroll_resize(false);
 
@@ -3014,7 +3014,7 @@ fn test_ctrl_scroll_down_does_not_resize_pane_when_mouse_scroll_resize_disabled(
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
     tab.update_mouse_scroll_resize(false);
 
@@ -3248,6 +3248,7 @@ fn resize_hint_text_tracks_mouse_scroll_resize_updates() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -3283,6 +3284,7 @@ fn a_focused_modal_is_not_told_how_to_resize_itself() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
         None,
         client_id,
         None,
@@ -3338,6 +3340,7 @@ fn a_suspended_pane_says_how_to_resume_itself() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
         None,
         client_id,
         None,

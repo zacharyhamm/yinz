@@ -777,6 +777,45 @@ pub fn bell_notification_state_set_and_cleared() {
 }
 
 #[test]
+fn automatic_program_titles_follow_manual_then_osc_precedence() {
+    let mut pane = make_terminal_pane_for_bell();
+    let raw_title = pane.current_title();
+    pane.set_title_prefix(Some("yinz:topic".to_owned()));
+    assert!(pane.can_lend_title());
+    pane.set_running_program(Some("/bin/-zsh".to_owned()));
+    assert_eq!(pane.display_title(), "yinz:topic: zsh");
+    assert_eq!(pane.current_title(), raw_title);
+    assert!(!pane.has_explicit_title());
+    pane.set_should_render(false);
+    pane.set_running_program(Some("/usr/bin/vim".to_owned()));
+    assert!(pane.should_render());
+    assert_eq!(pane.display_title(), "yinz:topic: vim");
+    pane.set_should_render(false);
+    pane.set_running_program(Some("/usr/bin/vim".to_owned()));
+    assert!(!pane.should_render());
+    pane.handle_pty_bytes(b"\x1b]2;editing main.rs\x07".to_vec());
+    assert_eq!(pane.display_title(), "yinz:topic: editing main.rs");
+    pane.rename(b"manual".to_vec());
+    pane.set_running_program(Some("-zsh".to_owned()));
+    assert_eq!(pane.display_title(), "yinz:topic: manual");
+    pane.rename(vec![]);
+    assert_eq!(pane.display_title(), "yinz:topic: editing main.rs");
+    pane.grid.title = None;
+    pane.set_remote_host(Some("build-box".to_owned()));
+    assert_eq!(pane.display_title(), "build-box yinz:topic: zsh");
+    for unknown in [None, Some("".to_owned()), Some("/".to_owned())] {
+        pane.set_running_program(unknown);
+        assert_eq!(pane.display_title(), "build-box yinz:topic");
+    }
+    pane.set_title_prefix(None);
+    pane.set_remote_host(None);
+    assert!(!pane.can_lend_title());
+    pane.set_running_program(Some("/opt/my editor".to_owned()));
+    assert_eq!(pane.display_title(), "my editor");
+    assert!(pane.can_lend_title());
+}
+
+#[test]
 pub fn display_title_is_unaffected_for_a_non_remote_pane() {
     let terminal_pane = make_terminal_pane_for_bell();
     assert_eq!(terminal_pane.display_title(), terminal_pane.current_title());

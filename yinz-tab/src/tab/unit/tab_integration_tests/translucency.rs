@@ -268,7 +268,7 @@ fn translucent_overlay_beyond_original_fullscreen_bounds_retains_idle_text() {
             .unwrap();
             second
         } else {
-            tab.vertical_split(second, None, ClientId::new(1), None, None)
+            tab.vertical_split(second, None, None, ClientId::new(1), None, None)
                 .unwrap();
             PaneId::Terminal(TerminalId::new(1))
         };

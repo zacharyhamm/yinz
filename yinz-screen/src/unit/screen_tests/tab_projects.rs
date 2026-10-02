@@ -15,6 +15,51 @@ fn name_of(screen: &Screen, tab_id: TabId) -> String {
 }
 
 #[test]
+fn program_and_checkout_updates_wait_for_pane_creation_in_order() {
+    let size = Size {
+        cols: 100,
+        rows: 24,
+    };
+    let mut mock = MockScreen::new(size);
+    let screen_thread = mock.run(None, vec![]);
+    let renders = Watched::new(vec![]);
+    let receiver = mock.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(renders, ServerInstruction::KillSession, receiver);
+    let id = TerminalId::new(9);
+    let pane_id = PaneId::Terminal(id);
+    for instruction in [
+        ScreenInstruction::SetPaneTitlePrefix(pane_id, Some("yinz:topic".to_owned())),
+        ScreenInstruction::UpdatePaneForegroundCommand(id, vec![], Some("/bin/zsh".to_owned())),
+        ScreenInstruction::NewPane(
+            pane_id,
+            None,
+            None,
+            None,
+            NewPanePlacement::default(),
+            false,
+            ClientTabIndexOrPaneId::ClientId(mock.main_client_id),
+            None,
+            false,
+        ),
+        ScreenInstruction::UpdatePaneForegroundCommand(
+            id,
+            vec!["/usr/bin/vim".to_owned()],
+            Some("/usr/bin/vim".to_owned()),
+        ),
+        ScreenInstruction::PtyBytes(id, b"created".to_vec()),
+    ] {
+        mock.to_screen.send(instruction).unwrap();
+    }
+    wait_for_settled_render(
+        &renders,
+        size,
+        "queued title reaches the new pane",
+        |frame| frame.contains("yinz:topic: vim") && frame.contains("created"),
+    );
+    mock.teardown(vec![server_thread, screen_thread]);
+}
+
+#[test]
 fn opening_a_scrollback_editor_by_pane_id_publishes_its_membership() {
     let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
     let screen_thread = mock.run(None, vec![]);
@@ -416,6 +461,47 @@ fn a_lone_pane_title_outranks_the_project() {
     assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
     set_projects(&mut screen, &[]);
     assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
+}
+
+#[test]
+fn automatic_pane_titles_are_lent_without_becoming_explicit() {
+    let mut screen = create_new_screen(
+        Size {
+            cols: 100,
+            rows: 20,
+        },
+        true,
+        true,
+    );
+    let tab_id = TabId::new(0);
+    let pane_id = PaneId::Terminal(TerminalId::new(1));
+    new_tab(&mut screen, 1, tab_id);
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .set_pane_frames(PaneFrameStyle::Titles);
+    screen.with_pane(pane_id, |pane| {
+        pane.set_title_prefix(Some("yinz:topic".to_owned()));
+        assert!(!pane.has_explicit_title());
+    });
+    assert_eq!(name_of(&screen, tab_id), "[1] yinz:topic");
+    screen.with_pane(pane_id, |pane| {
+        pane.set_running_program(Some("/bin/zsh".to_owned()))
+    });
+    assert_eq!(name_of(&screen, tab_id), "[1] yinz:topic: zsh");
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .rename_by_user("my tab".to_owned());
+    screen.with_pane(pane_id, |pane| {
+        pane.set_running_program(Some("/usr/bin/vim".to_owned()))
+    });
+    assert_eq!(name_of(&screen, tab_id), "[1] my tab");
+    screen
+        .get_tab_by_id_mut(tab_id)
+        .unwrap()
+        .rename_by_user(String::new());
+    assert_eq!(name_of(&screen, tab_id), "[1] yinz:topic: vim");
 }
 
 #[test]

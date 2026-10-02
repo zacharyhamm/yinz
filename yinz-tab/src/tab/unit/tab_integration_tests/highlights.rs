@@ -208,7 +208,7 @@ fn hover_on_unfocused_pane_no_highlight() {
     let mut output = Output::default();
 
     // Create a vertical split
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     tab.handle_pty_bytes(crate::TerminalId::new(1), Vec::from("link_text".as_bytes()))
@@ -338,7 +338,7 @@ fn set_and_clear_highlights_across_tiled_and_floating() {
     let pane3 = PaneId::Terminal(crate::TerminalId::new(3));
 
     // Create a second tiled pane
-    tab.vertical_split(pane2, None, client_id, None, None)
+    tab.vertical_split(pane2, None, None, client_id, None, None)
         .unwrap();
 
     // Create a floating pane

@@ -1,6 +1,75 @@
 use super::*;
 
 #[test]
+fn layout_reapplication_preserves_user_pane_names() {
+    let mut tab = create_new_tab(
+        Size {
+            cols: 120,
+            rows: 40,
+        },
+        ModeInfo::default(),
+    );
+    tab.tiled_panes.drain();
+    let tiled_layout = TiledPaneLayout {
+        name: Some("layout tiled".into()),
+        ..Default::default()
+    };
+    let floating_layout = vec![FloatingPaneLayout {
+        name: Some("layout floating".into()),
+        ..Default::default()
+    }];
+    tab.apply_layout(
+        tiled_layout.clone(),
+        floating_layout.clone(),
+        vec![(TerminalId::new(1), None)],
+        vec![(TerminalId::new(2), None)],
+        HashMap::new(),
+        ClientId::new(1),
+        None,
+    )
+    .unwrap();
+    let names = [(1, "tiled"), (2, "floating")];
+    for (id, name) in names {
+        let pane_id = PaneId::Terminal(TerminalId::new(id));
+        assert_eq!(
+            tab.get_pane_with_id(pane_id).unwrap().current_title(),
+            format!("layout {name}")
+        );
+        tab.rename_pane(format!("user {name}").into_bytes(), pane_id)
+            .unwrap();
+    }
+
+    tab.layout_applier(None)
+        .apply_tiled_panes_layout_to_existing_panes(&tiled_layout)
+        .unwrap();
+    tab.layout_applier(None)
+        .apply_floating_panes_layout_to_existing_panes(&floating_layout)
+        .unwrap();
+    for (id, name) in names {
+        assert_eq!(
+            tab.get_pane_with_id(PaneId::Terminal(TerminalId::new(id)))
+                .unwrap()
+                .current_title(),
+            format!("user {name}")
+        );
+    }
+
+    tab.resize_whole_tab(Size {
+        cols: 140,
+        rows: 50,
+    })
+    .unwrap();
+    for (id, name) in names {
+        assert_eq!(
+            tab.get_pane_with_id(PaneId::Terminal(TerminalId::new(id)))
+                .unwrap()
+                .current_title(),
+            format!("user {name}")
+        );
+    }
+}
+
+#[test]
 fn tab_with_basic_layout() {
     let layout = r#"
         layout {
@@ -509,9 +578,9 @@ fn a_resize_tells_only_the_panes_whose_size_changed() {
     );
     let client_id = crate::ClientId::new(1);
     let pane = |n: u32| PaneId::Terminal(crate::TerminalId::new(n));
-    tab.vertical_split(pane(2), None, client_id, None, None)
+    tab.vertical_split(pane(2), None, None, client_id, None, None)
         .unwrap();
-    tab.vertical_split(pane(3), None, client_id, None, None)
+    tab.vertical_split(pane(3), None, None, client_id, None, None)
         .unwrap();
     tab.move_focus_left(client_id).unwrap();
     assert_eq!(

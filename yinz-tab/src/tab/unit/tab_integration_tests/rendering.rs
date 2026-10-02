@@ -82,6 +82,7 @@ fn increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -90,6 +91,7 @@ fn increase_tiled_pane_sizes_with_stacked_resizes_into_uneven_panes() {
     tab.move_focus_right(client_id).unwrap();
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(5)),
+        None,
         None,
         client_id,
         None,
@@ -159,6 +161,7 @@ fn split_stack_vertically() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -205,6 +208,7 @@ fn split_stack_horizontally() {
         .unwrap();
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         client_id,
         None,
@@ -254,6 +258,7 @@ fn render_stacks_without_pane_frames() {
         .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         client_id,
         None,

@@ -13,7 +13,7 @@ pub fn a_keyboard_selection_is_finished_on_the_pane_it_started_on() {
     let mut tab = create_new_tab(size, true);
     let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let second_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.horizontal_split(second_pane_id, None, client_id, None, None)
+    tab.horizontal_split(second_pane_id, None, None, client_id, None, None)
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
 

@@ -10,6 +10,7 @@ fn replace_pane_in_place_with_held_command(
     yinz: &TestSession,
     pane_id: &str,
     command: &str,
+    name: Option<&str>,
 ) -> FakePtyHandle {
     yinz.run_cli_action(CliAction::NewPane {
         direction: None,
@@ -24,7 +25,7 @@ fn replace_pane_in_place_with_held_command(
         in_place: true,
         close_replaced_pane: true,
         pane_id: Some(pane_id.to_string()),
-        name: None,
+        name: name.map(str::to_owned),
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
@@ -69,7 +70,7 @@ fn lone_pane_title_becomes_the_tab_name() {
 }
 
 #[test]
-fn lone_default_pane_keeps_the_default_tab_name() {
+fn lone_pane_with_unknown_program_keeps_the_default_tab_name() {
     let mut yinz = start_yinz();
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
@@ -121,7 +122,7 @@ fn lone_held_pane_tab_name_shows_exit_status() {
 
     let command_pane_id = format!("terminal_{}", shell_terminal.terminal_id());
     let command_terminal =
-        replace_pane_in_place_with_held_command(&yinz, &command_pane_id, "held-command");
+        replace_pane_in_place_with_held_command(&yinz, &command_pane_id, "held-command", None);
     yinz.wait_until("command pane took over the lone tab", |grid_snapshot| {
         grid_snapshot.status_bar_appears() && grid_snapshot.tab_bar_appears()
     });
@@ -132,4 +133,51 @@ fn lone_held_pane_tab_name_shows_exit_status() {
     });
 
     yinz.quit();
+}
+
+#[test]
+fn launch_captions_yield_to_program_and_osc_but_explicit_names_do_not() {
+    for name in [None, Some("explicit launch name")] {
+        let mut yinz = start_yinz();
+        let shell = claim_first_terminal_and_wait_for_prompt(&yinz);
+        let command = replace_pane_in_place_with_held_command(
+            &yinz,
+            &shell.terminal_id().to_string(),
+            "/opt/launch-command",
+            name,
+        );
+        command.run_foreground(&["/usr/bin/vim", "main.rs"]);
+        yinz.wait_until(
+            "the single pane lends its program or explicit launch name",
+            |screen| {
+                screen.lines().first().is_some_and(|bar| {
+                    bar.contains(name.unwrap_or("vim")) && !bar.contains("main.rs")
+                })
+            },
+        );
+        command.output(b"\x1b]2;editing main.rs\x07");
+        yinz.wait_until(
+            "OSC overrides a generated caption but not an explicit name",
+            |screen| {
+                screen
+                    .lines()
+                    .first()
+                    .is_some_and(|bar| bar.contains(name.unwrap_or("editing main.rs")))
+            },
+        );
+        assert_eq!(
+            yinz.run_cli_action(CliAction::RenamePane {
+                name: String::new(),
+                pane_id: Some(command.terminal_id().to_string()),
+            }),
+            0
+        );
+        yinz.wait_until("clearing the name restores the OSC title", |screen| {
+            screen
+                .lines()
+                .first()
+                .is_some_and(|bar| bar.contains("editing main.rs"))
+        });
+        yinz.quit();
+    }
 }

@@ -126,6 +126,7 @@ pub struct TerminalPane {
     /// checkout is a fact about the pane rather than a name for it, and the
     /// remote host beside this field is the same kind of fact.
     title_prefix: Option<String>,
+    running_program: Option<String>,
     /// The agent running here, if the session knows of one. Starts as what the spawn path
     /// said; replaced whole by every report, and moved to `Exited`/`Busy` by hold and re-run.
     agent: Option<AgentInfo>,
@@ -1439,15 +1440,15 @@ impl Pane for TerminalPane {
             .chain(self.title_prefix.iter())
             .map(String::as_str)
             .collect();
-        if lead.is_empty() {
-            self.current_title()
-        } else if self.has_explicit_title() {
-            format!("{}: {}", lead.join(" "), self.current_title())
+        let title = if self.has_explicit_title() {
+            Some(self.current_title())
         } else {
-            // No explicit title means the title is "Pane #3" or the command the
-            // pane was launched with, which says less than the address does — so
-            // the address stands alone rather than introducing a placeholder.
-            lead.join(" ")
+            self.running_program.clone()
+        };
+        match (lead.is_empty(), title) {
+            (true, title) => title.unwrap_or_else(|| self.current_title()),
+            (false, Some(title)) => format!("{}: {}", lead.join(" "), title),
+            (false, None) => lead.join(" "),
         }
     }
     fn stack_list_entry_label(&self) -> String {
@@ -1459,6 +1460,21 @@ impl Pane for TerminalPane {
         } else {
             Some(self.pane_name.clone())
         }
+    }
+    fn set_running_program(&mut self, program: Option<String>) {
+        let program = program
+            .as_deref()
+            .and_then(|program| std::path::Path::new(program).file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name.trim_start_matches('-').to_owned())
+            .filter(|name| !name.is_empty());
+        if self.running_program != program {
+            self.running_program = program;
+            self.set_should_render(true);
+        }
+    }
+    fn can_lend_title(&self) -> bool {
+        self.has_explicit_title() || self.title_prefix.is_some() || self.running_program.is_some()
     }
     fn has_explicit_title(&self) -> bool {
         !self.pane_name.is_empty() || self.grid.title.is_some()
@@ -1851,8 +1867,10 @@ impl TerminalPane {
         explicitly_disable_keyboard_protocol: bool,
         mut notification_end: Option<NotificationEnd>,
     ) -> TerminalPane {
-        let initial_pane_title =
-            initial_pane_title.unwrap_or_else(|| format!("Pane #{}", pane_index));
+        let initial_pane_title = initial_pane_title.unwrap_or_else(|| match &invoked_with {
+            Some(Run::Command(command)) => command.to_string(),
+            _ => format!("Pane #{}", pane_index),
+        });
         let agent = agent_from_run(invoked_with.as_ref());
         let grid = Grid::new(
             position_and_size.rows.as_usize(),
@@ -1893,6 +1911,7 @@ impl TerminalPane {
             prev_pane_name: pane_name,
             remote_host: None,
             title_prefix: None,
+            running_program: None,
             was_an_agent: agent.is_some(),
             last_agent_kind: agent.as_ref().map(|agent| agent.kind.clone()),
             last_agent_cwd: agent.as_ref().and_then(|agent| agent.cwd.clone()),

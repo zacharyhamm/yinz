@@ -18,7 +18,7 @@ pub fn resize_down_with_pane_above() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -126,7 +126,7 @@ pub fn resize_down_with_pane_below() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
@@ -241,10 +241,24 @@ pub fn resize_down_with_panes_above_and_below() {
     let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -397,11 +411,25 @@ pub fn resize_down_with_multiple_panes_above() {
     let first_pane_id = PaneId::Terminal(crate::TerminalId::new(1));
     let new_pane_id_1 = PaneId::Terminal(crate::TerminalId::new(2));
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -555,12 +583,26 @@ pub fn resize_down_with_panes_above_aligned_left_with_current_pane() {
     let pane_to_the_left = PaneId::Terminal(crate::TerminalId::new(2));
     let focused_pane = PaneId::Terminal(crate::TerminalId::new(3));
     let pane_above = PaneId::Terminal(crate::TerminalId::new(4));
-    tab.horizontal_split(pane_to_the_left, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(focused_pane, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        pane_to_the_left,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        focused_pane,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(pane_above, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(pane_above, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
@@ -762,16 +804,24 @@ pub fn resize_down_with_panes_below_aligned_left_with_current_pane() {
     tab.horizontal_split(
         pane_below_and_left,
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
     )
     .unwrap();
-    tab.vertical_split(pane_below, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(pane_below, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(focused_pane, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        focused_pane,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
     assert_eq!(
@@ -968,13 +1018,28 @@ pub fn resize_down_with_panes_above_aligned_right_with_current_pane() {
     let focused_pane = PaneId::Terminal(crate::TerminalId::new(2));
     let pane_to_the_right = PaneId::Terminal(crate::TerminalId::new(3));
     let pane_above_and_right = PaneId::Terminal(crate::TerminalId::new(4));
-    tab.horizontal_split(focused_pane, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(pane_to_the_right, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        focused_pane,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        pane_to_the_right,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.vertical_split(
         pane_above_and_right,
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -1179,10 +1244,11 @@ pub fn resize_down_with_panes_below_aligned_right_with_current_pane() {
     let pane_below = PaneId::Terminal(crate::TerminalId::new(2));
     let pane_below_and_right = PaneId::Terminal(crate::TerminalId::new(3));
     let pane_to_the_right = PaneId::Terminal(crate::TerminalId::new(4));
-    tab.horizontal_split(pane_below, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(pane_below, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.vertical_split(
         pane_below_and_right,
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -1190,8 +1256,15 @@ pub fn resize_down_with_panes_below_aligned_right_with_current_pane() {
     )
     .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(pane_to_the_right, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        pane_to_the_right,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab_resize_down(&mut tab, crate::ClientId::new(1));
 
@@ -1388,6 +1461,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1396,6 +1470,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1403,6 +1478,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -1413,6 +1489,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(5)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1420,6 +1497,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_current_pane() {
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -1709,6 +1787,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1717,6 +1796,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1724,6 +1804,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -1734,6 +1815,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(5)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -1741,6 +1823,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_current_pane() {
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2029,6 +2112,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2038,6 +2122,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2045,6 +2130,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2055,6 +2141,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(5)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2062,6 +2149,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2072,6 +2160,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(7)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2079,6 +2168,7 @@ pub fn resize_down_with_panes_above_aligned_left_and_right_with_panes_to_the_lef
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(8)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2453,6 +2543,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2462,6 +2553,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2469,6 +2561,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(4)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2479,6 +2572,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(5)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2486,6 +2580,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(6)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2496,6 +2591,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(7)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -2503,6 +2599,7 @@ pub fn resize_down_with_panes_below_aligned_left_and_right_with_to_the_left_and_
     .unwrap();
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(8)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -2876,6 +2973,7 @@ pub fn cannot_resize_down_when_pane_below_is_at_minimum_height() {
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
         None,
         crate::ClientId::new(1),
         None,

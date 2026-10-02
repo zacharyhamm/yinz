@@ -234,7 +234,7 @@ pub enum ScreenInstruction {
     ///
     /// Held here so `agent list` can name an agent someone started by hand in a shell,
     /// which has no agent record until it reports.
-    UpdatePaneForegroundCommand(TerminalId, Vec<String>),
+    UpdatePaneForegroundCommand(TerminalId, Vec<String>, Option<String>),
     /// The machine a pane's process runs on, for panes that are not local.
     /// Sent once when the pane is created and once when it closes.
     UpdatePaneHost(TerminalId, Option<String>, Option<PathBuf>),

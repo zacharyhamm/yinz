@@ -711,6 +711,10 @@ pub trait Pane {
         self.display_title()
     }
     fn custom_title(&self) -> Option<String>;
+    fn set_running_program(&mut self, _program: Option<String>) {}
+    fn can_lend_title(&self) -> bool {
+        self.has_explicit_title()
+    }
     fn has_explicit_title(&self) -> bool {
         false
     }

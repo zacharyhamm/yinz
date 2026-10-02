@@ -202,7 +202,7 @@ struct State {
     /// see `VmCheckout` and `rebuild_panes`.
     firecracker_worktrees: BTreeMap<u32, VmCheckout>,
     activity: agents::Activity,
-    /// The checkout each agent pane's frame is currently decorated with.
+    /// The checkout each terminal pane's frame is currently decorated with.
     ///
     /// A record of what the server has been *told*, not of what is true, so a
     /// steady session makes no host calls at all: the wanted set is recomputed
@@ -3577,8 +3577,7 @@ impl State {
         true
     }
 
-    /// Put each agent pane's checkout on its frame, and take it off the panes
-    /// that are no longer agents.
+    /// Put each terminal pane's checkout on its frame, following directory changes.
     ///
     /// Deliberately not a rename. `set_pane_title_prefix` composes in front of
     /// whatever title a pane has, so this never competes with the four writers
@@ -3606,7 +3605,7 @@ impl State {
             .panes
             .iter()
             .flatten()
-            .filter(|pane| agents::classify(pane, &self.manual_kinds).is_some())
+            .chain(&self.suppressed_panes)
             .filter_map(|pane| {
                 let location = self.pane_location(pane)?;
                 Some((
@@ -3619,13 +3618,12 @@ impl State {
             .panes
             .iter()
             .flatten()
+            .chain(&self.suppressed_panes)
             .map(|pane| pane.pane_id)
             .collect();
         for pane_id in self.title_prefixes.keys().copied().collect::<Vec<_>>() {
-            // A pane that has left the snapshot is closed or suppressed, and
-            // terminal ids are recycled — clearing one would be aimed at
-            // whatever holds the id now. Forgetting it is enough: if the pane
-            // comes back it is re-decorated from scratch.
+            // Closed panes' ids may be recycled. Hidden panes are still live
+            // and must follow directory changes before they are restored.
             if !wanted.contains_key(&pane_id) && live.contains(&pane_id) {
                 set(pane_id, None);
             }
@@ -4169,14 +4167,16 @@ mod tests {
         assert_eq!(related(&mut state), Some(vec![]));
     }
 
-    /// The point of the feature: the agent's frame says which checkout it is in,
-    /// and the shell in the same folder is left alone.
+    /// Agents and ordinary shells share the same checkout decoration.
     #[test]
-    fn an_agent_in_a_checkout_is_decorated_with_it() {
+    fn every_terminal_in_a_checkout_is_decorated_with_it() {
         let mut state = worktree_agent();
         assert_eq!(
             prefixes(&mut state),
-            vec![(7, Some("hocus:topic".to_owned()))]
+            vec![
+                (7, Some("hocus:topic".to_owned())),
+                (8, Some("hocus:topic".to_owned()))
+            ]
         );
     }
 
@@ -4201,22 +4201,21 @@ mod tests {
         assert!(prefixes(&mut state).is_empty());
     }
 
-    /// A pane that stops looking like an agent has its decoration taken off: the
-    /// checkout was said *about the agent*, and there is no longer one there.
+    /// Returning to the shell does not change the checkout.
     #[test]
-    fn a_pane_that_stops_being_an_agent_is_cleared() {
+    fn a_pane_that_stops_being_an_agent_keeps_its_checkout() {
         let mut state = worktree_agent();
         prefixes(&mut state);
         state.panes = Some(vec![
             pane(7, "zsh", "/work/hocus/.worktrees/topic"),
             pane(8, "zsh", "/work/hocus/.worktrees/topic"),
         ]);
-        assert_eq!(prefixes(&mut state), vec![(7, None)]);
-        assert!(state.title_prefixes.is_empty());
+        assert!(prefixes(&mut state).is_empty());
+        assert_eq!(state.title_prefixes.len(), 2);
     }
 
-    /// A pane that has left the snapshot is closed or suppressed. Terminal ids are
-    /// recycled, so a clear aimed at one would land on whatever holds the id now —
+    /// A closed pane's terminal id can be recycled, so a clear aimed at it
+    /// would land on whatever holds the id now —
     /// the entry is simply forgotten instead.
     #[test]
     fn a_closed_pane_is_forgotten_rather_than_cleared() {
@@ -4224,7 +4223,10 @@ mod tests {
         prefixes(&mut state);
         state.panes = Some(vec![pane(8, "zsh", "/work/hocus/.worktrees/topic")]);
         assert!(prefixes(&mut state).is_empty());
-        assert!(state.title_prefixes.is_empty());
+        assert_eq!(
+            state.title_prefixes.keys().copied().collect::<Vec<_>>(),
+            vec![8]
+        );
     }
 
     /// A checkout inside the worktree changes the branch and nothing but a fresh
@@ -4239,8 +4241,36 @@ mod tests {
         );
         assert_eq!(
             prefixes(&mut state),
-            vec![(7, Some("hocus:other".to_owned()))]
+            vec![
+                (7, Some("hocus:other".to_owned())),
+                (8, Some("hocus:other".to_owned()))
+            ]
         );
+    }
+
+    #[test]
+    fn a_shell_changing_directories_updates_or_clears_its_checkout() {
+        for hidden in [false, true] {
+            let mut state = worktree_agent();
+            prefixes(&mut state);
+            if hidden {
+                state
+                    .suppressed_panes
+                    .push(state.panes.as_mut().unwrap().remove(1));
+                assert!(prefixes(&mut state).is_empty());
+            }
+            state.cwds.insert(8, "/work/other".to_owned());
+            state.repositories.insert(
+                Location::local("/work/other"),
+                checkout("/work/other", "/work/other/.git", "main"),
+            );
+            assert_eq!(
+                prefixes(&mut state),
+                vec![(8, Some("other:main".to_owned()))]
+            );
+            state.cwds.insert(8, "/tmp".to_owned());
+            assert_eq!(prefixes(&mut state), vec![(8, None)]);
+        }
     }
 
     /// A pane the user registered by hand is an agent however it looks, so it is

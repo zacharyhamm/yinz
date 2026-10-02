@@ -104,6 +104,7 @@ fn agent_double_escape_sync_preserves_ordinary_delivery_and_attention() {
     tab.vertical_split(
         PaneId::Terminal(TerminalId::new(2)),
         None,
+        None,
         client,
         None,
         None,

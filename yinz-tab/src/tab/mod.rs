@@ -2072,14 +2072,8 @@ impl Tab {
         self.user_named = self.prev_user_named;
         changed
     }
-    /// What a lone pane is lending its tab, or `None` when it is lending nothing.
-    ///
-    /// Nothing is the common case: a pane that has set no title of its own has
-    /// only "Pane #1" or its command to offer, and neither says more than the
-    /// tab already does. Distinguishing that from a real loan is the whole point
-    /// of returning an `Option` — a caller that has a *better* name in hand (a
-    /// project, say) needs to know whether this one is actually a name or just
-    /// the tab's own read back to it.
+    /// What a lone pane is lending its automatically named tab, or `None` when
+    /// it has no explicit title, checkout, or known running program.
     ///
     /// The exit marker is not part of the loan. It describes the pane's fate
     /// rather than its identity, so it belongs to whichever name ends up on the
@@ -2089,7 +2083,7 @@ impl Tab {
             return None;
         }
         let (_, pane) = self.get_selectable_tiled_content_panes().next()?;
-        if !pane.has_explicit_title() {
+        if !pane.can_lend_title() {
             return None;
         }
         // Whole, however long it runs. The cut happens once in `Screen::plugin_tab_names`,
@@ -2604,6 +2598,7 @@ impl Tab {
                             self.vertical_split(
                                 pid,
                                 initial_pane_title,
+                                invoked_with,
                                 client_id,
                                 blocking_notification,
                                 borderless,
@@ -2612,6 +2607,7 @@ impl Tab {
                             self.horizontal_split(
                                 pid,
                                 initial_pane_title,
+                                invoked_with,
                                 client_id,
                                 blocking_notification,
                                 borderless,
@@ -3541,6 +3537,7 @@ impl Tab {
         &mut self,
         pid: PaneId,
         initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
         borderless: Option<bool>,
@@ -3564,7 +3561,7 @@ impl Tab {
                     PaneGeom::default(), // the initial size will be set later
                     self.style,
                     next_terminal_position,
-                    String::new(),
+                    initial_pane_title.clone().unwrap_or_default(),
                     self.link_handler.clone(),
                     self.character_cell_size.clone(),
                     self.sixel_image_store.clone(),
@@ -3572,7 +3569,7 @@ impl Tab {
                     self.terminal_emulator_colors.clone(),
                     self.terminal_emulator_color_codes.clone(),
                     initial_pane_title,
-                    None,
+                    invoked_with,
                     self.debug,
                     self.arrow_fonts,
                     self.styled_underlines,
@@ -3616,6 +3613,7 @@ impl Tab {
         &mut self,
         pid: PaneId,
         initial_pane_title: Option<String>,
+        invoked_with: Option<Run>,
         client_id: ClientId,
         completion_tx: Option<NotificationEnd>,
         borderless: Option<bool>,
@@ -3639,7 +3637,7 @@ impl Tab {
                     PaneGeom::default(), // the initial size will be set later
                     self.style,
                     next_terminal_position,
-                    String::new(),
+                    initial_pane_title.clone().unwrap_or_default(),
                     self.link_handler.clone(),
                     self.character_cell_size.clone(),
                     self.sixel_image_store.clone(),
@@ -3647,7 +3645,7 @@ impl Tab {
                     self.terminal_emulator_colors.clone(),
                     self.terminal_emulator_color_codes.clone(),
                     initial_pane_title,
-                    None,
+                    invoked_with,
                     self.debug,
                     self.arrow_fonts,
                     self.styled_underlines,
@@ -3772,7 +3770,7 @@ impl Tab {
                 PaneGeom::default(),
                 self.style,
                 next_terminal_position,
-                String::new(),
+                initial_pane_title.clone().unwrap_or_default(),
                 self.link_handler.clone(),
                 self.character_cell_size.clone(),
                 self.sixel_image_store.clone(),
