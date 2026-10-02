@@ -175,6 +175,44 @@ fn base64_is_returned_uncached_when_only_live_pixels_fit() {
 }
 
 #[test]
+fn shared_base64_handles_survive_variant_frame_and_image_replacement() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let mut store = KittyImageStore::default();
+    let id = store.store_image(rgba_image(1, 1)).unwrap();
+    let root = store.base64_for(id, None).unwrap();
+    assert!(Rc::ptr_eq(&root, &store.base64_for(id, None).unwrap()));
+
+    assert!(store.add_scaled_variant(id, (1, 1), vec![1; 4]));
+    let scaled = store.base64_for(id, Some((1, 1))).unwrap();
+    assert!(store.add_scaled_variant(id, (1, 1), vec![2; 4]));
+    let replacement = store.base64_for(id, Some((1, 1))).unwrap();
+    assert_eq!(STANDARD.decode(scaled.as_bytes()).unwrap(), [1; 4]);
+    assert_eq!(STANDARD.decode(replacement.as_bytes()).unwrap(), [2; 4]);
+
+    store.write_frame(id, None, vec![3; 4], 40).unwrap();
+    store.set_current_frame(id, 2).unwrap();
+    assert!(store.base64_for(id, Some((1, 1))).is_none());
+    assert_eq!(store.total_bytes(), 8);
+    let frame = store.base64_for(id, None).unwrap();
+    assert_eq!(STANDARD.decode(frame.as_bytes()).unwrap(), [3; 4]);
+    store.write_frame(id, Some(2), vec![4; 4], 40).unwrap();
+    let edited = store.base64_for(id, None).unwrap();
+    assert_eq!(STANDARD.decode(edited.as_bytes()).unwrap(), [4; 4]);
+
+    let next_id = store.replace_image(id, rgba_image(1, 1)).unwrap();
+    assert!(store.base64_for(id, None).is_none());
+    assert_eq!(store.total_bytes(), 4);
+    assert_eq!(*store.base64_for(next_id, None).unwrap(), *root);
+    // A render holding an old encoding keeps those pixels after cache invalidation or deletion.
+    assert_eq!(STANDARD.decode(root.as_bytes()).unwrap(), [0; 4]);
+    assert_eq!(STANDARD.decode(scaled.as_bytes()).unwrap(), [1; 4]);
+    assert_eq!(STANDARD.decode(replacement.as_bytes()).unwrap(), [2; 4]);
+    assert_eq!(STANDARD.decode(frame.as_bytes()).unwrap(), [3; 4]);
+    assert_eq!(STANDARD.decode(edited.as_bytes()).unwrap(), [4; 4]);
+}
+
+#[test]
 fn scaled_variant_overflow_does_not_replace_the_previous_variant() {
     let mut store = KittyImageStore::with_quota(120);
     let id = store.store_image(rgba_image(4, 4)).unwrap();

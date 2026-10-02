@@ -367,7 +367,7 @@ impl CoalescingSendQueue {
     fn render_backlog(&self) -> RenderBacklog {
         let state = self.state.lock().unwrap();
         RenderBacklog {
-            queued_renders: state.queued_renders,
+            queued_renders: state.queued_renders + state.pending_pane_renders.len(),
             in_flight_for: state.in_flight.map(|send| send.started.elapsed()),
         }
     }

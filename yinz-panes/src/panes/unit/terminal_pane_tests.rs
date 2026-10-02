@@ -1605,6 +1605,49 @@ pub fn a_forward_interrupting_the_flush_after_a_batched_run_requeues_from_the_es
     );
 }
 
+#[test]
+fn host_query_pause_and_replay_preserve_every_input_split() {
+    for terminator in ["\x07", "\x1b\\"] {
+        for tail in [
+            "after\x1b[31mred\x1b[m\x1b[6n",
+            "after\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n",
+        ] {
+            let stream = format!("before\x1b]10;?{terminator}{tail}");
+            // vte dispatches an OSC on the ESC of ST, leaving its backslash to replay.
+            let expected_pending =
+                format!("{}{tail}", if terminator == "\x1b\\" { "\\" } else { "" });
+            for split in 0..=stream.len() {
+                let mut pane = make_pane_for_ingest();
+                let mut forwarded = 0;
+                for read in [&stream.as_bytes()[..split], &stream.as_bytes()[split..]] {
+                    pane.handle_pty_bytes(read.to_vec());
+                    let queries = pane.drain_forwarded_queries();
+                    forwarded += queries.len();
+                    if !queries.is_empty() {
+                        // The same pause that Tab arms after draining a host query.
+                        pane.arm_forward_pause();
+                    }
+                }
+                assert_eq!(forwarded, 1, "split {split}: {stream:?}");
+                assert_eq!(pane.grid.dump_screen(false).trim_end(), "before");
+                assert!(pane.drain_messages_to_pty().is_empty());
+                let pending = pane.drain_pending_pty_input();
+                assert_eq!(pending, expected_pending.as_bytes(), "split {split}");
+                assert!(pane.clear_forward_pause());
+                pane.handle_pty_bytes(pending);
+                assert_eq!(pane.grid.dump_screen(false).trim_end(), "beforeafterred");
+                assert_eq!(
+                    pane.grid.kitty_commands_handled(),
+                    u64::from(tail.contains("\x1b_G"))
+                );
+                assert_eq!(pane.drain_messages_to_pty(), vec![b"\x1b[1;15R".to_vec()]);
+                assert!(pane.drain_forwarded_queries().is_empty());
+                assert!(pane.drain_pending_pty_input().is_empty());
+            }
+        }
+    }
+}
+
 fn suspended_pane() -> TerminalPane {
     let mut pane = create_guest_modal_pane();
     pane.set_suspended(true);

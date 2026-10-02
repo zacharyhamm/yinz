@@ -456,3 +456,27 @@ fn bulk_capture_overflows_on_the_same_byte_as_per_byte_capture() {
         );
     }
 }
+
+#[test]
+fn bulk_capture_recovers_from_overflow_on_every_terminator() {
+    for terminator in [b"\x1b\\".as_slice(), b"\x9c", b"\x18", b"\x1a"] {
+        let mut stream = b"\x1b_G".to_vec();
+        stream.extend(std::iter::repeat_n(b'A', MAX_CAPTURE_LEN));
+        // The buffered ESC is the byte that overflows, on the next call to advance.
+        stream.extend_from_slice(b"\x1bB");
+        let split = stream.len() - 1;
+        stream.extend_from_slice(terminator);
+        stream.extend_from_slice(b"after\x1b_Gnext\x1b\\tail");
+        let reads = [&stream[..split], &stream[split..]];
+        let (bulk, ground) = drive_in_runs(&reads);
+        assert!(ground);
+        assert_eq!(bulk, drive_per_byte(&reads).0);
+        assert_eq!(bulk.captured, vec![b"next".to_vec()]);
+        let mut expected = vec![];
+        if matches!(terminator, [0x18] | [0x1a]) {
+            expected.extend_from_slice(terminator);
+        }
+        expected.extend_from_slice(b"aftertail");
+        assert_eq!(bulk.forwarded, expected);
+    }
+}

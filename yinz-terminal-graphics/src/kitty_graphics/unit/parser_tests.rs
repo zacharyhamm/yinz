@@ -465,6 +465,32 @@ mod decode_base64_props {
         &payload[..end]
     }
 
+    #[test]
+    fn decoder_validates_every_byte_at_simd_and_chunk_boundaries() {
+        for len in [0, 1, 2, 23, 24, 25, 47, 48, 49, 3071, 3072, 3073] {
+            let bytes: Vec<_> = (0..len).map(|i| i as u8).collect();
+            let encoded = BASE64_ENCODER.encode(&bytes);
+            let mut input = trimmed(encoded.as_bytes()).to_vec();
+            assert_eq!(decode_base64(&input).unwrap(), bytes);
+            // Probe both the vector body and scalar tail, including non-zero trailing bits.
+            let input_len = input.len();
+            let positions = [0, 1, 31, 32, 63, 64, 4095, input_len.saturating_sub(1)];
+            for at in positions.into_iter().filter(|at| *at < input_len) {
+                let original = input[at];
+                for byte in 0..=u8::MAX {
+                    input[at] = byte;
+                    let unpadded = trimmed(&input);
+                    assert_eq!(
+                        decode_base64(unpadded).ok(),
+                        ORACLE.decode(unpadded).ok(),
+                        "decoded length {len}, position {at}, byte {byte}"
+                    );
+                }
+                input[at] = original;
+            }
+        }
+    }
+
     #[hegel::test]
     fn decode_base64_matches_the_base64_crate(tc: hegel::TestCase) {
         let mut payload = if tc.draw(generators::booleans()) {

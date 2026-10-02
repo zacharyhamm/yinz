@@ -13,12 +13,14 @@ struct PacedScreen {
     to_server: ServerReceiver,
     to_background_jobs: Receiver<(BackgroundJob, ErrorContext)>,
     backlog: RenderBacklogs,
+    client_messages: CapturedClientMessages,
 }
 
 fn screen_with_backlog() -> PacedScreen {
     let (mut screen, _, to_server) = create_new_screen_with_capture(SIZE, true, true, true, false);
     let fake_os_input = FakeInputOutput::default();
     let backlog = fake_os_input.render_backlog.clone();
+    let client_messages = fake_os_input.server_to_client_messages.clone();
     screen.bus.os_input = Some(Box::new(fake_os_input));
     let (to_background_jobs, background_jobs_receiver) = channels::unbounded();
     screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(to_background_jobs));
@@ -28,6 +30,7 @@ fn screen_with_backlog() -> PacedScreen {
         to_server,
         to_background_jobs: background_jobs_receiver,
         backlog,
+        client_messages,
     }
 }
 
@@ -99,6 +102,125 @@ fn one_slow_client_does_not_hold_back_the_others() {
 
     *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
     assert!(paced.screen.defer_render_while_clients_are_behind());
+}
+
+#[test]
+fn a_slow_regular_client_does_not_hold_back_a_healthy_watcher() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+    paced.screen.set_followed_client(CLIENT).unwrap();
+    paced.screen.render_to_clients().unwrap();
+    let _ = rendered_bytes(&paced.to_server);
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"watcher-still-updates".to_vec())
+        .unwrap();
+    paced_render(&mut paced.screen);
+    let watcher_frame: String = paced
+        .to_server
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::Render(Some(output)) => output.get(&OTHER_CLIENT).cloned(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        watcher_frame.contains("watcher-still-updates"),
+        "{watcher_frame:?}"
+    );
+
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
+    assert!(paced.screen.defer_render_while_clients_are_behind());
+}
+
+#[test]
+fn watcher_only_sessions_pace_until_the_watcher_drains_or_detaches() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+    paced.screen.remove_client(CLIENT).unwrap();
+    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
+    assert!(paced.screen.defer_render_while_clients_are_behind());
+
+    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, backlog(0, None))];
+    assert!(!paced.screen.defer_render_while_clients_are_behind());
+    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
+    paced.screen.remove_watcher_client(OTHER_CLIENT);
+    assert!(!paced.screen.defer_render_while_clients_are_behind());
+}
+
+#[test]
+fn a_slow_terminal_does_not_hold_back_a_pane_subscriber() {
+    let mut paced = screen_with_backlog();
+    paced.screen.subscribe_to_pane_renders(
+        OTHER_CLIENT,
+        vec![PaneId::Terminal(TerminalId::new(1))],
+        None,
+        false,
+    );
+    paced.screen.render_to_clients().unwrap();
+    paced.client_messages.lock().unwrap().clear();
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"subscriber-still-updates".to_vec())
+        .unwrap();
+
+    paced_render(&mut paced.screen);
+    let messages = paced.client_messages.lock().unwrap();
+    assert!(
+        messages.get(&OTHER_CLIENT).is_some_and(|messages| {
+            messages.iter().any(|message| {
+        matches!(message, ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+            if viewport.iter().any(|line| line.contains("subscriber-still-updates")))
+    })
+        }),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn slow_terminal_and_subscriber_defer_until_the_subscriber_drains() {
+    let mut paced = screen_with_backlog();
+    paced.screen.subscribe_to_pane_renders(
+        OTHER_CLIENT,
+        vec![PaneId::Terminal(TerminalId::new(1))],
+        None,
+        false,
+    );
+    paced.screen.render_to_clients().unwrap();
+    paced.client_messages.lock().unwrap().clear();
+    let _ = rendered_bytes(&paced.to_server);
+    let _ = render_retries_requested(&paced.to_background_jobs);
+    // The subscriber's backlog is a coalesced PaneRenderUpdate, not a Render.
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"deferred-subscriber-update".to_vec())
+        .unwrap();
+
+    paced_render(&mut paced.screen);
+    assert!(paced.client_messages.lock().unwrap().is_empty());
+    assert_eq!(rendered_bytes(&paced.to_server), "");
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
+
+    // The attached terminal is still slow, but the subscriber is ready again.
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    paced_render(&mut paced.screen);
+    let messages = paced.client_messages.lock().unwrap();
+    let subscriber_messages = messages.get(&OTHER_CLIENT).expect("subscriber update");
+    assert!(subscriber_messages.iter().any(|message| {
+        matches!(message, ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+            if viewport.iter().any(|line| line.contains("deferred-subscriber-update")))
+    }), "{subscriber_messages:?}");
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
 }
 
 #[test]

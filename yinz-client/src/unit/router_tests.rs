@@ -147,3 +147,126 @@ fn a_router_blocked_on_a_full_channel_stops_once_the_main_loop_is_gone() {
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("the router should stop once nobody reads its channel");
 }
+
+#[test]
+fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
+    use crate::client_loop::ClientLoop;
+    use crate::command_is_executing::CommandIsExecuting;
+    use crate::nested_reannounce::NestedReannounce;
+    use crate::stdin_ansi_parser::StdinAnsiParser;
+    use crate::terminal_escapes::ClientTeardown;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::Duration;
+    use yinz_ipc::ipc::ClientToServerMsg;
+    use yinz_types::internal_ids::SessionName;
+
+    for broken_terminal in [false, true] {
+        let mut os_input = FakeClientOsApi::default().capturing_stdout();
+        if broken_terminal {
+            os_input = os_input.with_stdout_error(std::io::ErrorKind::BrokenPipe);
+        }
+        for content in ["first", "second"] {
+            os_input.queue_from_server(ServerToClientMsg::Render {
+                content: content.into(),
+            });
+        }
+        os_input.queue_from_server(ServerToClientMsg::Exit {
+            exit_reason: ExitReason::Normal,
+        });
+        let observed = os_input.clone();
+        let (finished, completion) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let (sender, receiver) = channels::bounded(1);
+            // The second frame must wait until the first is delivered; it is also
+            // larger than the budget, exercising the oversized-frame escape hatch.
+            let budget = Arc::new(RenderBudget::new(5));
+            let router = crate::router::spawn(
+                Box::new(os_input.clone()),
+                SenderWithContext::new(sender),
+                budget.clone(),
+            );
+            let nested_reannounce = NestedReannounce::spawn(
+                Box::new(FakeClientOsApi::default()),
+                SessionName::from("render-pressure-test"),
+            );
+            nested_reannounce.stop();
+            let (input_sender, _input_receiver) = channels::unbounded();
+            let outcome = ClientLoop {
+                os_input: &os_input,
+                command_is_executing: &mut CommandIsExecuting::new(),
+                stdin_ansi_parser: &Arc::new(Mutex::new(StdinAnsiParser::new())),
+                send_input_instructions: &SenderWithContext::new(input_sender),
+                nested_reannounce: &nested_reannounce,
+                teardown: ClientTeardown::new(24, false),
+                synchronised_output: None,
+                render_budget: &budget,
+            }
+            .run(&receiver);
+            // Mirror start_client's shutdown: neither a reservation nor a send may
+            // keep its router alive once the terminal loop has left.
+            budget.close().unwrap();
+            drop(receiver);
+            router.join().unwrap();
+            finished.send(outcome.exit_msg).unwrap();
+        });
+        let exit_msg = completion
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the terminal loop and router must both finish");
+        worker.join().unwrap();
+        assert!(observed
+            .sent_messages()
+            .iter()
+            .any(|message| matches!(message, ClientToServerMsg::ClientExited)));
+        if broken_terminal {
+            assert!(
+                exit_msg.contains("Could not write to the terminal"),
+                "{exit_msg}"
+            );
+            assert!(observed.stdout_bytes().is_empty());
+        } else {
+            assert_eq!(observed.stdout_bytes(), b"firstsecond");
+        }
+    }
+}
+
+#[test]
+fn late_terminal_replies_do_not_panic_after_the_client_loop_exits() {
+    use crate::command_is_executing::CommandIsExecuting;
+    use crate::input_handler::input_loop;
+    use crate::nested_reannounce::NestedReannounce;
+    use crate::stdin_ansi_parser::{AnsiStdinInstruction, SyncOutput};
+    use crate::InputInstruction;
+    use yinz_ipc::nested_session::{encode_payload, NestedSessionMessage};
+    use yinz_types::internal_ids::SessionName;
+
+    for late_reply in [
+        InputInstruction::AnsiStdinInstructions(vec![AnsiStdinInstruction::SynchronizedOutput(
+            Some(SyncOutput::Csi),
+        )]),
+        InputInstruction::NestedSessionFrameFromHost(encode_payload(&NestedSessionMessage::Ping)),
+    ] {
+        let (client_sender, client_receiver) = channels::unbounded();
+        // start_client drops this before telling the input thread to exit. Host
+        // replies already queued for the input thread can still arrive first.
+        drop(client_receiver);
+        let (input_sender, input_receiver) = channels::unbounded();
+        let input_sender = SenderWithContext::new(input_sender);
+        input_sender.send(late_reply).unwrap();
+        input_sender.send(InputInstruction::Exit).unwrap();
+        let nested_reannounce = NestedReannounce::spawn(
+            Box::new(FakeClientOsApi::default()),
+            SessionName::from("late-terminal-reply"),
+        );
+        nested_reannounce.stop();
+        input_loop(
+            Box::new(FakeClientOsApi::default()),
+            Default::default(),
+            Default::default(),
+            CommandIsExecuting::new(),
+            SenderWithContext::new(client_sender),
+            Default::default(),
+            input_receiver,
+            nested_reannounce,
+        );
+    }
+}
