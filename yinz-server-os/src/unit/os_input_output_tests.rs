@@ -1152,7 +1152,7 @@ mod coalescing_send_queue {
     }
 
     #[test]
-    fn render_backlog_counts_only_queued_renders_and_the_blocked_write() {
+    fn render_backlog_counts_frames_and_coalesced_pane_snapshots() {
         let queue = CoalescingSendQueue::new();
         assert_eq!(queue.render_backlog(), RenderBacklog::default());
         for message in [
@@ -1163,17 +1163,34 @@ mod coalescing_send_queue {
         ] {
             assert!(matches!(queue.push(message), SendQueuePush::Queued));
         }
-        assert_eq!(queue.render_backlog().queued_renders, 2);
+        assert_eq!(queue.render_backlog().queued_renders, 3);
         assert_eq!(queue.render_backlog().in_flight_for, None);
+        assert!(matches!(
+            queue.push(pane_render(
+                DataPaneId::Terminal(TerminalId::new(1)),
+                "newer pane"
+            )),
+            SendQueuePush::CoalescedRender
+        ));
+        assert_eq!(queue.render_backlog().queued_renders, 3);
         assert_eq!(queue.pop(), Some(render("first")));
         let backlog = queue.render_backlog();
-        assert_eq!(backlog.queued_renders, 1);
+        assert_eq!(backlog.queued_renders, 2);
         assert!(backlog.in_flight_for.is_some());
         queue.finish_send();
         assert_eq!(queue.pop(), Some(control("notice")));
+        assert_eq!(queue.render_backlog().queued_renders, 2);
         assert_eq!(queue.pop(), Some(render("second")));
+        assert_eq!(queue.render_backlog().queued_renders, 1);
+        assert_eq!(
+            queue.pop(),
+            Some(pane_render(
+                DataPaneId::Terminal(TerminalId::new(1)),
+                "newer pane"
+            ))
+        );
         queue.finish_send();
-        assert_eq!(queue.render_backlog().queued_renders, 0);
+        assert_eq!(queue.render_backlog(), RenderBacklog::default());
     }
 
     #[test]
@@ -1608,6 +1625,14 @@ mod coalescing_send_queue {
 
         #[invariant]
         fn depth_agrees_with_the_model(&self, _: hegel::TestCase) {
+            assert_eq!(
+                self.real.render_backlog().queued_renders,
+                self.control
+                    .iter()
+                    .filter(|message| matches!(message, ServerToClientMsg::Render { .. }))
+                    .count()
+                    + self.pane_renders.len(),
+            );
             assert_eq!(
                 self.real.len(),
                 self.control.len() + self.pane_renders.len(),

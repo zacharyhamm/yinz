@@ -249,6 +249,170 @@ fn serialization_preserves_all_bold_and_dim_transitions() {
 }
 
 #[test]
+fn shared_styles_keep_selection_boundaries_after_wide_and_combining_characters() {
+    use crate::panes::terminal_character::RESET_STYLES;
+    use yinz_types::position::Position;
+
+    let pen: RcCharacterStyles = RESET_STYLES.foreground(Some(FG.into())).into();
+    let mut under = CharacterChunk::new(
+        "a界b\u{301}cd"
+            .chars()
+            .map(|c| TerminalCharacter::new_styled(c, pen.clone()))
+            .collect(),
+        0,
+        0,
+    );
+    let mut selection = Selection::default();
+    selection.set_start_and_end_positions(Position::new(0, 3), Position::new(0, 5));
+    under.add_selection_and_colors(
+        HighlightSelection {
+            selection,
+            fg: Some(TINT.into()),
+            bg: Some(BG.into()),
+            bold: true,
+            italic: true,
+            underline: true,
+            layer: HighlightLayer::Hint,
+        },
+        0,
+        0,
+    );
+    let mut composition =
+        translucency::Composition::new(vec![(1, rect(0, 6), 0)], FG, BG, TINT, [None; 256]);
+    composition.add(&[under.clone()], 0);
+    composition.add(&[chunk("      ", 0)], 1);
+    for chunks in [vec![under], composition.finish()] {
+        let cells = serialize_and_parse_row(chunks, 6);
+        assert_eq!(
+            cells.iter().map(|c| c.character).collect::<String>(),
+            "a界bcd"
+        );
+        for cell in cells {
+            let selected = matches!(cell.character, 'b' | 'c');
+            assert_eq!(
+                cell.styles.foreground,
+                Some(if selected { TINT } else { FG }.into())
+            );
+            let attribute = Some(if selected {
+                AnsiCode::On
+            } else {
+                AnsiCode::Reset
+            });
+            assert_eq!(cell.styles.bold, attribute);
+            assert_eq!(cell.styles.italic, attribute);
+            assert_eq!(
+                cell.styles.underline,
+                Some(if selected {
+                    AnsiCode::Underline(None)
+                } else {
+                    AnsiCode::Reset
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_style_runs_use_each_chunks_palette_and_pane_defaults() {
+    let pen: RcCharacterStyles = DEFAULT_STYLES
+        .foreground(Some(AnsiCode::ColorIndex(1)))
+        .underline_color(Some(AnsiCode::ColorIndex(1)))
+        .into();
+    let mut composition =
+        translucency::Composition::new(vec![(1, rect(0, 6), 50)], FG, BG, TINT, [None; 256]);
+    for (x, foreground, background) in [(0, FG, BG), (3, BG, FG)] {
+        let mut under = CharacterChunk::new(
+            vec![TerminalCharacter::new_styled('x', pen.clone()); 3],
+            x,
+            0,
+        );
+        let mut changed = [None; 256];
+        changed[1] = Some(foreground.into());
+        under.changed_colors = Some(changed);
+        under.pane_default_bg = Some(background.into());
+        // Separate additions also exercise retaining cells from earlier chunks in this layer.
+        composition.add(&[under], 0);
+    }
+    composition.add(&[chunk("      ", 0)], 1);
+    let composed = composition.finish();
+    assert_eq!(text(&composed), "xxxxxx");
+    for (index, cell) in composed[0].terminal_characters.iter().enumerate() {
+        let (fg, bg) = if index < 3 { (FG, BG) } else { (BG, FG) };
+        let blended = |color| Some(yinz_types::animation::blend(color, TINT, 0.5).into());
+        assert_eq!(cell.styles.foreground, blended(fg));
+        assert_eq!(cell.styles.underline_color, blended(fg));
+        assert_eq!(cell.styles.background, blended(bg));
+    }
+}
+
+#[test]
+fn blended_style_runs_preserve_links_and_underline_colors_across_opacity_layers() {
+    use crate::panes::terminal_character::{AnsiStyledUnderline, LinkAnchor, RESET_STYLES};
+    use yinz_types::animation::blend;
+
+    let base = RESET_STYLES
+        .foreground(Some(FG.into()))
+        .background(Some(BG.into()))
+        .underline(Some(AnsiCode::Underline(Some(
+            AnsiStyledUnderline::Undercurl,
+        ))));
+    let mut composition = translucency::Composition::new(
+        vec![(1, rect(0, 6), 50), (2, rect(2, 2), 75)],
+        FG,
+        BG,
+        TINT,
+        [None; 256],
+    );
+    let source: Vec<_> = (0..6)
+        .map(|index| {
+            let link = if index < 2 {
+                LinkAnchor::Start(0)
+            } else {
+                LinkAnchor::End
+            };
+            let underline = if index < 4 { FG } else { BG };
+            TerminalCharacter::new_styled(
+                'x',
+                base.link_anchor(Some(link))
+                    .underline_color(Some(underline.into()))
+                    .into(),
+            )
+        })
+        .collect();
+    composition.add(&[CharacterChunk::new(source.clone(), 0, 0)], 0);
+    composition.add(&[chunk("      ", 0)], 1);
+    composition.add(&[chunk("  ", 2)], 2);
+    let composed = composition.finish();
+    assert_eq!(text(&composed), "xxxxxx");
+    for (index, (cell, original)) in composed[0]
+        .terminal_characters
+        .iter()
+        .zip(source)
+        .enumerate()
+    {
+        let tint = |color| {
+            let color = blend(color, TINT, 0.5);
+            Some(
+                if (2..4).contains(&index) {
+                    blend(color, TINT, 0.75)
+                } else {
+                    color
+                }
+                .into(),
+            )
+        };
+        assert_eq!(cell.styles.foreground, tint(FG));
+        assert_eq!(cell.styles.background, tint(BG));
+        assert_eq!(
+            cell.styles.underline_color,
+            tint(if index < 4 { FG } else { BG })
+        );
+        assert_eq!(cell.styles.underline, original.styles.underline);
+        assert_eq!(cell.styles.link_anchor, original.styles.link_anchor);
+    }
+}
+
+#[test]
 fn translucent_lettering_preserves_bold_dim_and_foreground_after_serialization() {
     use crate::panes::terminal_character::RESET_STYLES;
 

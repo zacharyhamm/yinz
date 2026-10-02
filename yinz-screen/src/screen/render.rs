@@ -65,8 +65,15 @@ impl Screen {
             return false;
         };
         let clients = self.connected_clients.borrow();
-        !clients.is_empty()
-            && clients.iter().all(|client_id| {
+        // Watchers and pane subscribers consume this same render pass, but are not
+        // in connected_clients. A slow terminal must not freeze their updates.
+        let mut render_clients = clients
+            .iter()
+            .chain(self.watcher_clients.keys())
+            .chain(self.pane_render_subscribers.keys())
+            .peekable();
+        render_clients.peek().is_some()
+            && render_clients.all(|client_id| {
                 os_input
                     .client_render_backlog(*client_id)
                     .is_some_and(|backlog| {

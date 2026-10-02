@@ -290,9 +290,10 @@ impl InputHandler {
                 // The server is told about this by the client loop rather than from here: it is
                 // the one that owns the flavour, and two threads telling the server about the
                 // same decision can leave it holding the opposite of what the client does.
-                self.send_client_instructions
-                    .send(ClientInstruction::SetSynchronizedOutput(enabled))
-                    .unwrap();
+                // Terminal replies can outlive the client loop during teardown.
+                let _ = self
+                    .send_client_instructions
+                    .send(ClientInstruction::SetSynchronizedOutput(enabled));
             },
             AnsiStdinInstruction::HostTerminalThemeChanged(mode) => {
                 self.os_input
@@ -312,11 +313,11 @@ impl InputHandler {
         self.nested_reannounce.note_host_contact();
         match nested_session::decode_payload(&payload_bytes) {
             Some(NestedSessionMessage::Ping) => {
-                self.send_client_instructions
-                    .send(ClientInstruction::EmitNestedSessionFrame(
-                        nested_session::encode_payload(&NestedSessionMessage::Pong),
-                    ))
-                    .unwrap();
+                let _ =
+                    self.send_client_instructions
+                        .send(ClientInstruction::EmitNestedSessionFrame(
+                            nested_session::encode_payload(&NestedSessionMessage::Pong),
+                        ));
             },
             Some(_) => {
                 self.os_input
@@ -434,9 +435,9 @@ impl InputHandler {
     /// Routine to be called when the input handler exits (at the moment this is the
     /// same as quitting Yinz).
     fn exit(&mut self, reason: ExitReason) {
-        self.send_client_instructions
-            .send(ClientInstruction::Exit(reason))
-            .unwrap();
+        let _ = self
+            .send_client_instructions
+            .send(ClientInstruction::Exit(reason));
     }
 }
 

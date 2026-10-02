@@ -1852,7 +1852,35 @@ fn kitty_transmit_only_once_across_frames() {
     let frame_b = run_kitty_frame(&parts, vec![kitty_chunk(internal, 1, 0, 0)], None);
     let combined = format!("{}{}", frame_a, frame_b);
     assert_eq!(combined.matches("\u{1b}_Ga=t").count(), 1);
-    assert!(!frame_b.contains("\u{1b}_G"));
+    assert!(
+        frame_b.is_empty(),
+        "an unchanged image must not emit cursor save/restore: {frame_b:?}"
+    );
+}
+
+#[test]
+fn kitty_transmission_preserves_payload_at_chunk_boundaries() {
+    for length in [0, 4, 4092, 4096, 4100, 8188, 8192, 8196] {
+        let payload = "QUJD".repeat(length / 4);
+        let mut bytes = String::from("existing text 界");
+        super::super::emit_kitty_transmit(&mut bytes, 42, 30, 40, &payload).unwrap();
+        assert!(bytes.starts_with("existing text 界"));
+        let commands = extract_kitty_commands(&bytes);
+        assert_eq!(commands.len(), length.div_ceil(4096).max(1));
+        let mut reassembled = vec![];
+        for (index, command) in commands.iter().enumerate() {
+            let separator = command.iter().position(|byte| *byte == b';').unwrap();
+            let more = u8::from(index + 1 < commands.len());
+            let control = if index == 0 {
+                format!("a=t,q=2,f=32,t=d,i=42,s=30,v=40,m={more}")
+            } else {
+                format!("q=2,m={more}")
+            };
+            assert_eq!(&command[..separator], control.as_bytes());
+            reassembled.extend_from_slice(&command[separator + 1..]);
+        }
+        assert_eq!(reassembled, payload.as_bytes(), "payload length {length}");
+    }
 }
 
 #[test]
@@ -2784,10 +2812,7 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
             .borrow_mut()
             .dispatch_osc8(&[b"8", b"", uri.as_bytes()]);
         CharacterChunk::new(
-            vec![TerminalCharacter::new_styled(
-                'x',
-                DEFAULT_STYLES.link_anchor(anchor).into(),
-            )],
+            vec![TerminalCharacter::new_styled('x', DEFAULT_STYLES.link_anchor(anchor).into(),); 5],
             0,
             0,
         )
@@ -2805,7 +2830,13 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
     let mut output = create_test_output();
     let first_client = ClientId::new(1);
     let second_client = ClientId::new(2);
-    output.add_clients(&HashSet::from([first_client]), first_tab, None);
+    output.add_clients(
+        &HashSet::from([first_client]),
+        first_tab,
+        Some(FloatingPanesStack {
+            layers: vec![create_pane_geom(2, 0, 1, 1)],
+        }),
+    );
     output
         .add_character_chunks_to_client(first_client, vec![first_chunk], None)
         .unwrap();
@@ -2814,18 +2845,27 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
         .add_character_chunks_to_client(second_client, vec![second_chunk], None)
         .unwrap();
 
-    let serialized = output.serialize().unwrap();
-    let first = &serialized[&first_client];
-    let second = &serialized[&second_client];
-    assert!(
-        first.contains("\u{1b}]8;;https://first.example"),
-        "{first:?}"
-    );
-    assert!(!first.contains("second.example"), "{first:?}");
-    assert!(
-        second.contains("\u{1b}]8;;https://second.example/1"),
-        "{second:?}"
-    );
+    // Both fragments from middle clipping need their original table, including when a
+    // watcher uses the size-limited serializer after another tab has rendered.
+    for serialized in [
+        output.clone().serialize().unwrap(),
+        output
+            .serialize_with_size(Some(Size { rows: 1, cols: 5 }), None)
+            .unwrap(),
+    ] {
+        let first = &serialized[&first_client];
+        let second = &serialized[&second_client];
+        assert_eq!(
+            first.matches("\u{1b}]8;;https://first.example").count(),
+            2,
+            "{first:?}"
+        );
+        assert!(!first.contains("second.example"), "{first:?}");
+        assert!(
+            second.contains("\u{1b}]8;;https://second.example/1"),
+            "{second:?}"
+        );
+    }
 }
 
 #[test]
@@ -2897,7 +2937,9 @@ fn translucently_composed_links_resolve_against_their_tabs_link_table() {
 mod shared_style_serialization {
     use super::super::super::serialize_chunks;
     use super::*;
-    use crate::panes::terminal_character::{CharacterStyles, RcCharacterStyles, DEFAULT_STYLES};
+    use crate::panes::terminal_character::{
+        AnsiStyledUnderline, CharacterStyles, LinkAnchor, RcCharacterStyles, DEFAULT_STYLES,
+    };
     use hegel::generators;
 
     fn style(tc: &hegel::TestCase) -> CharacterStyles {
@@ -2914,16 +2956,44 @@ mod shared_style_serialization {
                 0,
             ))),
         };
-        let on = |tc: &hegel::TestCase| tc.draw(generators::booleans()).then_some(AnsiCode::On);
+        let on = |tc: &hegel::TestCase| match tc.draw(generators::integers::<u8>().max_value(2)) {
+            0 => None,
+            1 => Some(AnsiCode::Reset),
+            _ => Some(AnsiCode::On),
+        };
+        let underline = match tc.draw(generators::integers::<u8>().max_value(3)) {
+            0 => None,
+            1 => Some(AnsiCode::Reset),
+            2 => Some(AnsiCode::Underline(None)),
+            _ => Some(AnsiCode::Underline(Some(AnsiStyledUnderline::Undercurl))),
+        };
+        let link = match tc.draw(generators::integers::<u8>().max_value(3)) {
+            0 => None,
+            1 => Some(LinkAnchor::End),
+            index => Some(LinkAnchor::Start(u32::from(index - 2))),
+        };
         DEFAULT_STYLES
             .foreground(color(tc))
             .background(color(tc))
+            .underline_color(color(tc))
             .bold(on(tc))
             .dim(on(tc))
             .italic(on(tc))
+            .reverse(on(tc))
+            .strike(on(tc))
+            .hidden(on(tc))
+            .blink_slow(on(tc))
+            .blink_fast(on(tc))
+            .underline(underline)
+            .link_anchor(link)
     }
 
-    fn serialize(chunk: CharacterChunk) -> String {
+    fn serialize(
+        chunk: CharacterChunk,
+        size: Option<Size>,
+        underlines: bool,
+        links: bool,
+    ) -> String {
         let mut bytes = String::new();
         serialize_chunks(
             &mut bytes,
@@ -2931,9 +3001,9 @@ mod shared_style_serialization {
             None,
             None,
             None,
-            true,
-            true,
-            None,
+            underlines,
+            links,
+            size,
             None,
         )
         .unwrap();
@@ -2950,10 +3020,11 @@ mod shared_style_serialization {
         for _ in 0..runs {
             let styles = style(&tc);
             let pen: RcCharacterStyles = styles.into();
-            for _ in 0..tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) {
-                shared.push(TerminalCharacter::new_styled('x', pen.clone()));
+            for index in 0..tc.draw(generators::integers::<usize>().min_value(1).max_value(4)) {
+                let character = ['x', '\u{301}', '界'][index % 3];
+                shared.push(TerminalCharacter::new_styled(character, pen.clone()));
                 separate.push(TerminalCharacter::new_styled(
-                    'x',
+                    character,
                     RcCharacterStyles::Rc(Rc::new(styles)),
                 ));
             }
@@ -2966,13 +3037,34 @@ mod shared_style_serialization {
         let pane_default_fg = tc
             .draw(generators::booleans())
             .then_some(AnsiCode::ColorIndex(2));
+        let pane_default_bg = tc
+            .draw(generators::booleans())
+            .then_some(AnsiCode::ColorIndex(3));
+        let handler = Rc::new(RefCell::new(LinkHandler::new()));
+        handler
+            .borrow_mut()
+            .new_link_from_url("https://first.example".into());
+        handler
+            .borrow_mut()
+            .new_link_from_url("https://second.example".into());
         let chunk = |characters| {
             let mut chunk = CharacterChunk::new(characters, 0, 0);
             chunk.changed_colors = changed_colors;
             chunk.pane_default_fg = pane_default_fg;
+            chunk.pane_default_bg = pane_default_bg;
+            chunk.link_handler = Some(handler.clone());
             chunk
         };
-        assert_eq!(serialize(chunk(shared)), serialize(chunk(separate)));
+        let size = tc.draw(generators::booleans()).then(|| Size {
+            rows: 1,
+            cols: tc.draw(generators::integers::<usize>().max_value(12)),
+        });
+        let underlines = tc.draw(generators::booleans());
+        let links = tc.draw(generators::booleans());
+        assert_eq!(
+            serialize(chunk(shared), size, underlines, links),
+            serialize(chunk(separate), size, underlines, links)
+        );
     }
 
     #[test]
@@ -2991,7 +3083,7 @@ mod shared_style_serialization {
         let mut colors = [None; 256];
         colors[1] = Some(AnsiCode::RgbCode((1, 2, 3)));
         chunk.changed_colors = Some(colors);
-        let bytes = serialize(chunk);
+        let bytes = serialize(chunk, None, true, true);
         // One from the chunk's goto, one for the first cell; none for the cells after it.
         assert_eq!(bytes.matches("\u{1b}[m").count(), 2, "{bytes:?}");
         assert!(bytes.ends_with("xxx"), "{bytes:?}");

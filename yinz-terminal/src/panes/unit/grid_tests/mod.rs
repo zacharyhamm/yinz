@@ -117,6 +117,36 @@ fn full_dumps_join_wrapped_rows_across_both_viewport_boundaries() {
 }
 
 #[test]
+fn short_scrolled_rows_release_capacity_without_losing_content_or_metadata() {
+    for text in ["", "x", "界e\u{0301}"] {
+        let mut grid = create_grid_with_size_and_raw(2, 80, b"\x1b[44m\r\n\r\n");
+        feed_bytes(
+            &mut grid,
+            format!("\x1b]133;A\x07\x1b]8;;https://example.com\x07{text}\x1b]8;;\x07").as_bytes(),
+        );
+        let row = grid.viewport.back().unwrap();
+        assert!(row.columns.capacity() >= 80);
+        let expected = row.clone();
+        feed_bytes(&mut grid, b"\r\n\r\n");
+
+        let scrolled = grid.lines_above.back().unwrap();
+        assert!(scrolled.columns.capacity() < 40);
+        assert_eq!(scrolled.columns, expected.columns);
+        assert_eq!(scrolled.bg_color, expected.bg_color);
+        assert_eq!(scrolled.is_canonical, expected.is_canonical);
+        assert_eq!(scrolled.osc133_markers, expected.osc133_markers);
+        assert_eq!(scrolled.width(), expected.width());
+
+        let dump = grid.dump_screen_with_ansi(true);
+        grid.move_viewport_up(2);
+        grid.reset_viewport();
+        grid.change_size(4, 40);
+        grid.change_size(2, 80);
+        assert_eq!(grid.dump_screen_with_ansi(true), dump);
+    }
+}
+
+#[test]
 fn a_non_scrolling_newline_does_not_paint_or_materialize_padding() {
     let mut grid = create_grid_with_content("\u{1b}[1;31;44m\r\n");
     let row = &grid.viewport[1];
