@@ -608,6 +608,48 @@ fn collect_command_changed_events(rx: &PluginReceiver) -> Vec<(PaneId, Vec<Strin
 }
 
 #[test]
+fn screen_gets_effective_program_changes_even_without_foreground_argv() {
+    let mock = MockOsApi::new();
+    let child_pid = ProcessId::new(100);
+    let terminal_id = TerminalId::new(1);
+    let (mut pty, plugins, screen) = make_pty_with_screen_receiver(mock.clone());
+    for (shell, foreground, expected) in [
+        (vec![], vec![], None),
+        (vec!["/bin/zsh"], vec![], Some("/bin/zsh")),
+        (vec!["-bash"], vec![], Some("-bash")),
+        (
+            vec!["-bash"],
+            vec!["/usr/bin/vim", "main.rs"],
+            Some("/usr/bin/vim"),
+        ),
+        (vec!["-bash"], vec![], Some("-bash")),
+    ] {
+        mock.set_cmd(child_pid, shell.into_iter().map(str::to_owned).collect());
+        let foreground: Vec<String> = foreground.into_iter().map(str::to_owned).collect();
+        mock.set_foreground_cmd(child_pid, foreground.clone());
+        set_active_terminal(&mut pty, terminal_id, child_pid);
+        pty.update_and_report_cwds();
+        let updates: Vec<_> = screen
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ScreenInstruction::UpdatePaneForegroundCommand(id, argv, program) => {
+                    Some((id, argv, program))
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            updates,
+            vec![(terminal_id, foreground, expected.map(str::to_owned))]
+        );
+        assert_eq!(collect_command_changed_events(&plugins).len(), 1);
+    }
+    pty.forget_terminal_foreground(terminal_id);
+    assert!(matches!(screen.recv().unwrap().0,
+        ScreenInstruction::UpdatePaneForegroundCommand(_, argv, None) if argv.is_empty()));
+}
+
+#[test]
 fn foreground_command_emitted_with_is_foreground_true() {
     let mock = MockOsApi::new();
     let child_pid = ProcessId::new(100);

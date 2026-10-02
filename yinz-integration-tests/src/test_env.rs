@@ -253,7 +253,11 @@ pub fn acquire_concurrency_slot() -> ConcurrencySlot {
     }
 }
 
+// The fake default shell has unknown argv. Tests of process discovery supply an
+// explicit command, so unrelated snapshots do not depend on the host's SHELL or
+// on whether the command-discovery tick ran before the snapshot.
 pub const DEFAULT_TEST_CONFIG: &str = r#"
+default_shell ""
 session_serialization false
 disable_session_metadata true
 visual_bell false

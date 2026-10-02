@@ -189,6 +189,7 @@ fn accept_extracted_pane_takes_a_tiled_pane_in() {
         .vertical_split(
             PaneId::Terminal(crate::TerminalId::new(2)),
             None,
+            None,
             crate::ClientId::new(1),
             None,
             None,
@@ -297,6 +298,7 @@ fn accept_extracted_pane_hands_the_pane_back_when_the_tab_is_full() {
         .vertical_split(
             PaneId::Terminal(crate::TerminalId::new(2)),
             None,
+            None,
             crate::ClientId::new(1),
             None,
             None,
@@ -313,7 +315,7 @@ fn accept_extracted_pane_hands_the_pane_back_when_the_tab_is_full() {
             destination.get_all_pane_ids().len() as u32 + 100,
         ));
         destination
-            .vertical_split(next, None, crate::ClientId::new(1), None, None)
+            .vertical_split(next, None, None, crate::ClientId::new(1), None, None)
             .unwrap();
     }
 

@@ -11,7 +11,7 @@ fn focus_follows_mouse_focuses_tiled_pane_on_hover() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     // Create a vertical split: pane 1 (left), pane 2 (right)
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right) after split
@@ -49,7 +49,7 @@ fn focus_follows_mouse_disabled_does_not_change_focus() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right) after split
@@ -158,7 +158,7 @@ fn focus_follows_mouse_skips_unselectable_panes() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Mark pane 1 (left) as unselectable
@@ -199,6 +199,7 @@ fn context_menu_skips_unselectable_panes() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -231,7 +232,7 @@ fn focus_follows_mouse_no_op_on_active_pane() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right)
@@ -268,7 +269,7 @@ fn focus_follows_mouse_respects_live_toggle() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right)
@@ -316,7 +317,7 @@ fn focus_follows_mouse_repeated_hover_same_pane() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     assert_eq!(
@@ -360,7 +361,7 @@ fn focus_follows_mouse_ignores_tiled_pane_when_floating_visible() {
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
     // Create a vertical split so there are two tiled panes
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Open floating layer with a floating pane
@@ -605,7 +606,7 @@ fn mouse_click_through_sends_click_to_newly_focused_tiled_pane() {
     pty_instruction_bus.start();
 
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Active pane is pane 2 (right) after split
@@ -670,7 +671,7 @@ fn mouse_click_through_disabled_does_not_send_click_to_focused_pane() {
     pty_instruction_bus.start();
 
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Enable SGR mouse mode on pane 1 (inactive)
@@ -812,7 +813,7 @@ fn mouse_click_through_does_not_apply_when_focus_follows_mouse_is_enabled() {
     pty_instruction_bus.start();
 
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
@@ -869,7 +870,7 @@ fn mouse_click_through_starts_selection_on_non_mouse_mode_pane() {
     let mut tab = create_new_tab(size, ModeInfo::default());
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
     assert_eq!(
         tab.get_active_pane_id(client_id),
@@ -919,7 +920,7 @@ fn mouse_click_through_respects_live_toggle() {
     pty_instruction_bus.start();
 
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.vertical_split(new_pane_id, None, client_id, None, None)
+    tab.vertical_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
 
     // Enable SGR mouse mode on pane 1

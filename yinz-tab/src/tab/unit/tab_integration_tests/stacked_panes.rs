@@ -671,6 +671,7 @@ fn move_focus_right_into_stacked_panes() {
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(16)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -750,6 +751,7 @@ fn move_focus_left_into_stacked_panes() {
     let _ = tab.move_focus_right(client_id);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(1)),
+        None,
         None,
         client_id,
         None,
@@ -836,6 +838,7 @@ fn move_focus_up_into_stacked_panes() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(7)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -916,6 +919,7 @@ fn move_focus_down_into_stacked_panes() {
     let _ = tab.move_focus_up(client_id);
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(7)),
+        None,
         None,
         client_id,
         None,
@@ -3562,7 +3566,7 @@ fn the_member_a_stack_collapses_is_reframed_before_its_pty_hears_the_new_size() 
     let beside = PaneId::Terminal(crate::TerminalId::new(2));
     let member = PaneId::Terminal(crate::TerminalId::new(3));
     tab.set_pane_frames(PaneFrameStyle::Titles);
-    tab.vertical_split(beside, None, client_id, None, None)
+    tab.vertical_split(beside, None, None, client_id, None, None)
         .unwrap();
     tab.tiled_panes.focus_pane(root, client_id);
     let _ = rx.try_iter().count();
@@ -3630,7 +3634,7 @@ fn stacking_several_panes_resizes_each_stack_member_once() {
     // Split sideways so the root keeps all 40 rows: `make_room_for_new_pane_in_stack`
     // needs the flexible pane above `MIN_TERMINAL_HEIGHT` before each of the inserts.
     for id in &loose {
-        tab.vertical_split(*id, None, client_id, None, None)
+        tab.vertical_split(*id, None, None, client_id, None, None)
             .unwrap();
     }
     tab.tiled_panes.focus_pane(root, client_id);

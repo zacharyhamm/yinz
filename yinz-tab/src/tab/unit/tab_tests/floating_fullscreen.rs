@@ -678,7 +678,7 @@ pub fn resize_by_id_of_a_tiled_pane_while_floating_fullscreen_resizes_it() {
     let client_id = crate::ClientId::new(1);
     let tiled_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
     let mut tab = create_new_tab(size, false);
-    tab.horizontal_split(tiled_pane_id, None, client_id, None, None)
+    tab.horizontal_split(tiled_pane_id, None, None, client_id, None, None)
         .unwrap();
     for id in [3, 4] {
         tab.new_floating_pane(

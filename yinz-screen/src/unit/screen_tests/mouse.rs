@@ -449,7 +449,7 @@ fn mouse_focus_clears_bell_on_focused_pane() {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
         // Split horizontally: pane 1 on top, pane 2 on bottom; focus moves to pane 2
         active_tab
-            .horizontal_split(new_pane_id, None, client_id, None, None)
+            .horizontal_split(new_pane_id, None, None, client_id, None, None)
             .unwrap();
         // Move focus back up to pane 1 so pane 2 is unfocused
         active_tab.move_focus_up(client_id).unwrap();
@@ -509,7 +509,7 @@ fn nested_guest_fullscreen_moves_from_one_pane_to_another() {
     {
         let active_tab = screen.get_active_tab_mut(client_id).unwrap();
         active_tab
-            .horizontal_split(pane_two, None, client_id, None, None)
+            .horizontal_split(pane_two, None, None, client_id, None, None)
             .unwrap();
     }
 

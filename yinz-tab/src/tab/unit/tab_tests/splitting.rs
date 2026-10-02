@@ -11,6 +11,7 @@ fn write_to_suppressed_pane() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -51,7 +52,7 @@ fn split_panes_vertically() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2, "The tab has two panes");
     assert_eq!(
@@ -149,7 +150,7 @@ fn split_panes_horizontally() {
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     assert_eq!(tab.tiled_panes.panes.len(), 2, "The tab has two panes");
 
@@ -445,6 +446,7 @@ pub fn cannot_split_panes_vertically_when_active_pane_is_too_small() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -464,6 +466,7 @@ pub fn cannot_split_panes_horizontally_when_active_pane_is_too_small() {
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
         None,
         crate::ClientId::new(1),
         None,
@@ -516,6 +519,7 @@ pub fn cannot_split_panes_vertically_when_active_pane_has_fixed_columns() {
     tab.vertical_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
         None,
+        None,
         crate::ClientId::new(1),
         None,
         None,
@@ -539,6 +543,7 @@ pub fn cannot_split_panes_horizontally_when_active_pane_has_fixed_rows() {
     let mut tab = create_new_tab_with_layout(size, initial_layout);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(3)),
+        None,
         None,
         crate::ClientId::new(1),
         None,

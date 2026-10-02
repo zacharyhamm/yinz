@@ -3,6 +3,56 @@ use yinz_types::input::layout::Run;
 use yinz_types::pane_size::Offset;
 
 #[test]
+fn focused_directional_splits_preserve_launch_command_and_title() {
+    for direction in [Direction::Right, Direction::Down] {
+        for hold_on_start in [false, true] {
+            for title in [None, Some("user title".to_owned())] {
+                let mut tab = create_new_tab(
+                    Size {
+                        cols: 120,
+                        rows: 40,
+                    },
+                    ModeInfo::default(),
+                );
+                let pane_id = PaneId::Terminal(TerminalId::new(2));
+                let command = RunCommand {
+                    command: PathBuf::from("sleep"),
+                    args: vec!["60".into()],
+                    hold_on_start,
+                    ..Default::default()
+                };
+                let invoked_with = Some(Run::Command(command.clone()));
+                tab.new_pane(
+                    pane_id,
+                    title.clone(),
+                    invoked_with.clone(),
+                    false,
+                    true,
+                    NewPanePlacement::Tiled {
+                        direction: Some(direction),
+                        borderless: None,
+                    },
+                    Some(ClientId::new(1)),
+                    None,
+                )
+                .unwrap();
+                if hold_on_start {
+                    tab.hold_pane(pane_id, None, true, command.clone());
+                }
+                let pane = tab.get_active_pane(ClientId::new(1)).unwrap();
+                assert_eq!(pane.pid(), pane_id);
+                assert_eq!(
+                    pane.current_title(),
+                    title.clone().unwrap_or_else(|| command.to_string())
+                );
+                assert_eq!(pane.invoked_with(), &invoked_with);
+                assert_eq!(pane.custom_title(), title);
+            }
+        }
+    }
+}
+
+#[test]
 fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
     let client = ClientId::new(1);
     let first = PaneId::Terminal(TerminalId::new(1));
@@ -19,6 +69,7 @@ fn tiled_resize_only_notifies_panes_whose_content_size_changed() {
         for id in [2, 3] {
             tab.vertical_split(
                 PaneId::Terminal(TerminalId::new(id)),
+                None,
                 None,
                 client,
                 None,

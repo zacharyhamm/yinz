@@ -10,7 +10,7 @@ pub fn move_focus_down() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
@@ -34,12 +34,33 @@ pub fn move_focus_down_to_the_most_recently_used_pane() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
 
@@ -65,7 +86,7 @@ pub fn move_focus_up() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
 
@@ -88,13 +109,34 @@ pub fn move_focus_up_to_the_most_recently_used_pane() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
 
@@ -120,7 +162,7 @@ pub fn move_focus_left() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
 
@@ -143,13 +185,34 @@ pub fn move_focus_left_to_the_most_recently_used_pane() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.vertical_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_right(crate::ClientId::new(1)).unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
 
@@ -175,7 +238,7 @@ pub fn move_focus_right() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab.move_focus_right(crate::ClientId::new(1)).unwrap();
@@ -199,12 +262,33 @@ pub fn move_focus_right_to_the_most_recently_used_pane() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.vertical_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab.move_focus_right(crate::ClientId::new(1)).unwrap();
 
@@ -251,7 +335,7 @@ pub fn moving_a_pane_after_the_pty_writer_exited_swaps_it_without_panicking() {
     };
     let mut tab = create_new_tab_with_senders(size, stacked_resize, senders);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
-    tab.horizontal_split(new_pane_id, None, client_id, None, None)
+    tab.horizontal_split(new_pane_id, None, None, client_id, None, None)
         .unwrap();
     tab.move_focus_up(client_id).unwrap();
     drop(pty_writer_receiver);
@@ -280,7 +364,7 @@ pub fn move_active_pane_down() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_down(crate::ClientId::new(1));
@@ -309,12 +393,33 @@ pub fn move_active_pane_down_to_the_most_recently_used_position() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_down(crate::ClientId::new(1));
 
@@ -345,7 +450,7 @@ pub fn move_active_pane_up() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.horizontal_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.horizontal_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_active_pane_up(crate::ClientId::new(1));
 
@@ -373,13 +478,34 @@ pub fn move_active_pane_up_to_the_most_recently_used_position() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.horizontal_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_up(crate::ClientId::new(1)).unwrap();
-    tab.vertical_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.vertical_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.vertical_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_down(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_up(crate::ClientId::new(1));
 
@@ -411,7 +537,7 @@ pub fn move_active_pane_left() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_active_pane_left(crate::ClientId::new(1));
 
@@ -439,13 +565,34 @@ pub fn move_active_pane_left_to_the_most_recently_used_position() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.vertical_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.horizontal_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_right(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_left(crate::ClientId::new(1));
 
@@ -477,7 +624,7 @@ pub fn move_active_pane_right() {
     let mut tab = create_new_tab(size, stacked_resize);
     let new_pane_id = PaneId::Terminal(crate::TerminalId::new(2));
 
-    tab.vertical_split(new_pane_id, None, crate::ClientId::new(1), None, None)
+    tab.vertical_split(new_pane_id, None, None, crate::ClientId::new(1), None, None)
         .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_right(crate::ClientId::new(1));
@@ -506,12 +653,33 @@ pub fn move_active_pane_right_to_the_most_recently_used_position() {
     let new_pane_id_2 = PaneId::Terminal(crate::TerminalId::new(3));
     let new_pane_id_3 = PaneId::Terminal(crate::TerminalId::new(4));
 
-    tab.vertical_split(new_pane_id_1, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_2, None, crate::ClientId::new(1), None, None)
-        .unwrap();
-    tab.horizontal_split(new_pane_id_3, None, crate::ClientId::new(1), None, None)
-        .unwrap();
+    tab.vertical_split(
+        new_pane_id_1,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_2,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
+    tab.horizontal_split(
+        new_pane_id_3,
+        None,
+        None,
+        crate::ClientId::new(1),
+        None,
+        None,
+    )
+    .unwrap();
     tab.move_focus_left(crate::ClientId::new(1)).unwrap();
     tab.move_active_pane_right(crate::ClientId::new(1));
 
@@ -599,6 +767,7 @@ pub fn a_floating_pane_moves_to_its_next_slot_while_a_tiled_pane_is_fullscreen()
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
         None,
+        None,
         client_id,
         None,
         None,
@@ -647,6 +816,7 @@ pub fn moving_the_active_pane_of_an_unknown_client_is_a_no_op() {
     let mut tab = create_new_tab(size, false);
     tab.horizontal_split(
         PaneId::Terminal(crate::TerminalId::new(2)),
+        None,
         None,
         crate::ClientId::new(1),
         None,

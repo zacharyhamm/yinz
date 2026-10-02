@@ -14,6 +14,7 @@ fn screen_with_two_panes() -> (Screen, ServerReceiver) {
     tab.horizontal_split(
         PaneId::Terminal(TerminalId::new(2)),
         None,
+        None,
         CLIENT,
         None,
         None,

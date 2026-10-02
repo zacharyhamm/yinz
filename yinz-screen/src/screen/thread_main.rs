@@ -14,7 +14,7 @@ use crate::plugins::PluginInstruction;
 use crate::pty::{ClientTabIndexOrPaneId, PtyInstruction};
 use crate::tab::Tab;
 use crate::thread_bus::Bus;
-use crate::{ClientId, ServerInstruction};
+use crate::{ClientId, ServerInstruction, TerminalId};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -183,6 +183,24 @@ pub(super) fn apply_queued_agent_report(
     Ok(true)
 }
 
+fn apply_pane_foreground_command(
+    screen: &mut Screen,
+    terminal_id: TerminalId,
+    command: Vec<String>,
+    program: Option<String>,
+) -> bool {
+    if command.is_empty() {
+        screen.terminal_foreground_cmds.remove(&terminal_id);
+    } else {
+        screen.terminal_foreground_cmds.insert(terminal_id, command);
+    }
+    screen
+        .with_pane(PaneId::Terminal(terminal_id), |pane| {
+            pane.set_running_program(program)
+        })
+        .is_some()
+}
+
 // Reports and output waiting for creation are applied before newer instructions already in
 // the queue. Re-enqueuing them at the tail would invert state and byte arrival order.
 pub(super) fn replay_pending_pane_event(
@@ -193,6 +211,12 @@ pub(super) fn replay_pending_pane_event(
     match event {
         ScreenInstruction::AgentReport(report, accepted_at) => {
             apply_queued_agent_report(screen, &report, accepted_at)?;
+        },
+        ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
+            apply_pane_foreground_command(screen, terminal_id, command, program);
+        },
+        ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix) => {
+            screen.with_pane(pane_id, |pane| pane.set_title_prefix(prefix));
         },
         ScreenInstruction::PtyBytes(pid, bytes) => {
             screen
@@ -1570,11 +1594,23 @@ pub fn screen_thread_main(
                 ScreenInstruction::UpdatePaneHost(terminal_id, host, worktree) => {
                     screen.set_pane_host(terminal_id, host, worktree)?;
                 },
-                ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command) => {
-                    if command.is_empty() {
-                        screen.terminal_foreground_cmds.remove(&terminal_id);
+                ScreenInstruction::UpdatePaneForegroundCommand(terminal_id, command, program) => {
+                    let pane_id = PaneId::Terminal(terminal_id);
+                    if apply_pane_foreground_command(
+                        &mut screen,
+                        terminal_id,
+                        command.clone(),
+                        program.clone(),
+                    ) {
+                        screen.render()?;
                     } else {
-                        screen.terminal_foreground_cmds.insert(terminal_id, command);
+                        pending.waiting_for_pane.entry(pane_id).or_default().push(
+                            ScreenInstruction::UpdatePaneForegroundCommand(
+                                terminal_id,
+                                command,
+                                program,
+                            ),
+                        );
                     }
                 },
                 ScreenInstruction::UpdatePaneCwd(terminal_id, cwd) => {
@@ -1608,10 +1644,16 @@ pub fn screen_thread_main(
                     // can see has changed — and the plugin that sets this is reading
                     // that very manifest to decide what to set.
                     if screen
-                        .with_pane(pane_id, |pane| pane.set_title_prefix(prefix))
+                        .with_pane(pane_id, |pane| pane.set_title_prefix(prefix.clone()))
                         .is_some()
                     {
                         screen.render()?;
+                    } else {
+                        pending
+                            .waiting_for_pane
+                            .entry(pane_id)
+                            .or_default()
+                            .push(ScreenInstruction::SetPaneTitlePrefix(pane_id, prefix));
                     }
                 },
                 ScreenInstruction::SetPaneCaption(pane_id, caption) => {

@@ -200,7 +200,7 @@ fn host_focus_changes_of_clients_on_different_panes_are_independent() {
     {
         let active_tab = screen.get_active_tab_mut(first_client_id).unwrap();
         active_tab
-            .horizontal_split(second_pane_id, None, first_client_id, None, None)
+            .horizontal_split(second_pane_id, None, None, first_client_id, None, None)
             .unwrap();
         active_tab.move_focus_up(first_client_id).unwrap();
     }

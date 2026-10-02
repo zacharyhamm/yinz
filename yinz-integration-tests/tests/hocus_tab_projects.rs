@@ -59,6 +59,99 @@ fn wait_for_tab(yinz: &TestSession, name: &str, absent: &[&str]) {
 }
 
 #[test]
+fn ordinary_checkout_panes_follow_program_osc_and_manual_titles() {
+    let repository = write_git_repository("titles", "topic");
+    let layout = format!(
+        r#"layout {{
+        pane size=1 borderless=true {{ plugin location="yinz:tab-bar"; }}
+        pane command="/bin/zsh" cwd="{}"
+        pane
+    }}"#,
+        repository.display()
+    );
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(HOCUS_PROJECT_CONFIG)
+        .with_layout(LayoutInfo::Stringified(layout))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    let second = yinz.expect_pty_spawn();
+    shell.output(b"$ ");
+    yinz.wait_until("shell checkout and program reach its frame", |screen| {
+        screen
+            .lines()
+            .iter()
+            .skip(1)
+            .any(|line| line.contains("titles:topic: zsh"))
+    });
+    shell.run_foreground(&["/usr/bin/vim", "main.rs"]);
+    yinz.wait_until(
+        "foreground executable reaches the frame without arguments",
+        |screen| {
+            screen
+                .lines()
+                .iter()
+                .skip(1)
+                .any(|line| line.contains("titles:topic: vim") && !line.contains("main.rs"))
+        },
+    );
+    shell.return_to_shell();
+    yinz.wait_until("shell fallback returns to the frame", |screen| {
+        screen
+            .lines()
+            .iter()
+            .skip(1)
+            .any(|line| line.contains("titles:topic: zsh"))
+    });
+    shell.output(b"\x1b]2;editing main.rs\x07");
+    yinz.wait_until("OSC title reaches the frame", |screen| {
+        screen
+            .lines()
+            .iter()
+            .skip(1)
+            .any(|line| line.contains("titles:topic: editing main.rs"))
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::RenamePane {
+            name: "manual".into(),
+            pane_id: Some(shell.terminal_id().to_string()),
+        }),
+        0
+    );
+    yinz.wait_until("manual title reaches the frame", |screen| {
+        screen
+            .lines()
+            .iter()
+            .skip(1)
+            .any(|line| line.contains("titles:topic: manual"))
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::ClosePane {
+            pane_id: Some(second.terminal_id().to_string()),
+        }),
+        0
+    );
+    wait_for_tab(&yinz, "titles:topic: manual", &[]);
+    shell.run_foreground(&["/usr/bin/vim", "other.rs"]);
+    assert_eq!(
+        yinz.run_cli_action(CliAction::RenamePane {
+            name: String::new(),
+            pane_id: Some(shell.terminal_id().to_string()),
+        }),
+        0
+    );
+    wait_for_tab(&yinz, "titles:topic: editing main.rs", &["manual"]);
+    assert_eq!(
+        yinz.run_cli_action(CliAction::RenameTab {
+            name: "my tab".into(),
+            tab_id: None
+        }),
+        0
+    );
+    shell.output(b"\x1b]2;changed OSC\x07");
+    wait_for_tab(&yinz, "my tab", &["changed OSC"]);
+}
+
+#[test]
 fn a_tab_is_named_after_the_project_its_agent_is_in() {
     let repository = write_git_repository("tab-project", "trunk");
     // The tab bar has to be in the layout: `clear-defaults` above took it away
@@ -307,7 +400,7 @@ fn hidden_panes_keep_naming_the_tab_and_follow_cwd_changes() {
         &[],
     );
     editor.output(format!("\x1b]7;file://localhost{}\x07", b.display()).as_bytes());
-    wait_for_tab(&yinz, "editor-beta + hidden-alpha", &[]);
+    wait_for_tab(&yinz, "editor-beta:main", &["hidden-alpha"]);
     shell.output(format!("\x1b]7;file://localhost{}\x07", unknown.path().display()).as_bytes());
     wait_for_tab(&yinz, "editor-beta", &["hidden-alpha"]);
     editor.exit(Some(0));

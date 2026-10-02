@@ -2671,6 +2671,7 @@ fn a_resize_keystroke_on_an_overlay_leaves_the_pane_behind_it_alone() {
         .vertical_split(
             PaneId::Terminal(crate::TerminalId::new(2)),
             None,
+            None,
             crate::ClientId::new(1),
             None,
             None,
@@ -3205,6 +3206,7 @@ fn a_ctrl_scroll_on_an_overlay_leaves_the_panes_behind_it_alone() {
         .vertical_split(
             PaneId::Terminal(crate::TerminalId::new(2)),
             None,
+            None,
             crate::ClientId::new(1),
             None,
             None,
@@ -3551,6 +3553,7 @@ fn a_modal_broken_out_to_its_own_new_tab_arrives_as_a_modal() {
         .unwrap()
         .vertical_split(
             PaneId::Terminal(crate::TerminalId::new(2)),
+            None,
             None,
             crate::ClientId::new(1),
             None,
@@ -4515,7 +4518,7 @@ fn a_focus_move_or_tab_past_the_panel_edge_moves_to_the_tiled_pane_beyond_the_co
     screen
         .get_active_tab_mut(CLIENT_1)
         .expect("TEST")
-        .vertical_split(right, None, CLIENT_1, None, None)
+        .vertical_split(right, None, None, CLIENT_1, None, None)
         .expect("TEST");
     assert_eq!(
         screen.active_pane_id(CLIENT_1),
