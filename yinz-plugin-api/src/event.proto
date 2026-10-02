@@ -92,6 +92,7 @@ enum EventType {
     RunCommandOutput = 60;
     PaneOutput = 61;
     PaneTabsUpdate = 62;
+    AgentProvidersChanged = 63;
 }
 
 message EventNameList {
@@ -103,6 +104,7 @@ message Event {
   EventType name = 1;
   oneof payload {
     string pane_tabs_update_payload = 59;
+    string agent_providers_changed_payload = 60;
     ModeUpdatePayload mode_update_payload = 2;
     TabUpdatePayload tab_update_payload = 3;
     PaneUpdatePayload pane_update_payload = 4;

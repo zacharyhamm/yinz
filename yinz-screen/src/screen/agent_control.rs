@@ -7,9 +7,9 @@ use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
-    is_command_prompt, needs_paste_lead_in, pi_prompt_text, validate_submission_id, AgentOutcome,
-    AgentRequest, AgentResponse, AgentStatus, NotReadyReason, PromptObservation, MAX_PROMPT_BYTES,
-    MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    is_command_prompt, needs_paste_lead_in, pi_prompt_text, supports_prompt,
+    validate_submission_id, AgentOutcome, AgentRequest, AgentResponse, AgentStatus, NotReadyReason,
+    PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -142,6 +142,8 @@ pub(super) struct Pending {
     resolved: bool,
     delivery: Option<tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>>,
     enter_at: Option<Instant>,
+    submit_key: KeyWithModifier,
+    submit_delay: Duration,
 }
 
 impl Pending {
@@ -677,10 +679,7 @@ impl Screen {
             && !info.exited
             && agent.state != AgentState::Exited
             && self.agent_input_enabled(pane_id);
-        let supported = matches!(
-            agent.kind.as_str(),
-            "claude" | "codex" | "muse" | "agy" | "pi"
-        );
+        let supported = supports_prompt(&agent.kind);
         let prompt_supported = supported
             && status_available
             && live
@@ -1005,6 +1004,8 @@ impl Screen {
                         resolved: false,
                         delivery: None,
                         enter_at: None,
+                        submit_key: KeyWithModifier::new(BareKey::Enter),
+                        submit_delay: Duration::ZERO,
                     });
                     return;
                 }
@@ -1193,10 +1194,8 @@ impl Screen {
                 let provisional = status.agent.kind == "muse"
                     && status.agent.session_id.is_none()
                     && self.has_provisional_muse_lifecycle(pane);
-                let startup = matches!(
-                    status.agent.kind.as_str(),
-                    "claude" | "codex" | "muse" | "agy" | "pi"
-                ) && (status.agent.source == AgentSource::Spawned || provisional);
+                let startup = supports_prompt(&status.agent.kind)
+                    && (status.agent.source == AgentSource::Spawned || provisional);
                 if !(status.status_available || startup)
                     || !self.agent_process_matches(pane, &status.agent.kind)
                 {
@@ -1355,15 +1354,55 @@ impl Screen {
                     );
                     return;
                 };
-                if is_command_prompt(&status.agent.kind, &prompt) {
+                let provider = yinz_types::agent::provider::provider(&status.agent.kind);
+                let input = provider
+                    .as_ref()
+                    .and_then(|provider| provider.input.as_ref());
+                if input.map_or_else(
+                    || is_command_prompt(&status.agent.kind, &prompt),
+                    |input| input.is_command_prompt(&prompt),
+                ) {
                     reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text, exact Claude /clear, and exact Codex/Pi /new");
                     return;
                 }
-                let observation = PromptObservation::new(
+                let submit_key = match input
+                    .map_or("Enter", |input| input.submit_key.as_str())
+                    .parse()
+                {
+                    Ok(key) => key,
+                    Err(_) => {
+                        reject(
+                            self,
+                            AgentOutcome::StatusUnavailable,
+                            "agent provider has an invalid submit key",
+                        );
+                        return;
+                    },
+                };
+                let submit_delay = Duration::from_millis(input.map_or_else(
+                    || {
+                        if status.agent.kind == "claude" {
+                            500
+                        } else {
+                            100
+                        }
+                    },
+                    |input| input.submit_delay_ms,
+                ));
+                let observation = PromptObservation::with_input(
                     &status.agent.kind,
                     status.agent.session_id.as_deref().unwrap_or_default(),
                     &prompt,
+                    input,
                 );
+                if !observation.supported() {
+                    reject(
+                        self,
+                        AgentOutcome::StatusUnavailable,
+                        "agent provider no longer supports prompt input",
+                    );
+                    return;
+                }
                 let prompt = if status.agent.kind == "claude" {
                     claude_prompt_text(&prompt).into_owned()
                 } else {
@@ -1411,11 +1450,18 @@ impl Screen {
                     resolved: false,
                     delivery: Some(rx),
                     enter_at: None,
+                    submit_key,
+                    submit_delay,
                 });
                 // Expose Claude's slash command before its arguments can collapse into a chip,
                 // and type Codex's `/new`: a pasted command is draft text, not a command.
                 // Keep whitespace in the paste: typing a newline or tab would send a key.
-                let (prefix, paste) = if needs_paste_lead_in(&status.agent.kind, &prompt) {
+                let (prefix, paste) = if let Some(input) = input {
+                    (
+                        input.paste_prefix.as_bytes().to_vec(),
+                        prompt.replace('\n', &input.newline).into_bytes(),
+                    )
+                } else if needs_paste_lead_in(&status.agent.kind, &prompt) {
                     (
                         format!("{PASTE_LEAD_IN} ").into_bytes(),
                         prompt.into_bytes(),
@@ -1528,6 +1574,8 @@ impl Screen {
                     resolved: false,
                     delivery: None,
                     enter_at: None,
+                    submit_key: KeyWithModifier::new(BareKey::Enter),
+                    submit_delay: Duration::ZERO,
                 });
                 self.refresh_agent_controls();
             },
@@ -1559,6 +1607,8 @@ impl Screen {
                     resolved: false,
                     delivery: None,
                     enter_at: None,
+                    submit_key: KeyWithModifier::new(BareKey::Enter),
+                    submit_delay: Duration::ZERO,
                 });
                 self.refresh_agent_controls();
             },
@@ -1716,13 +1766,7 @@ impl Screen {
                                 .as_ref()
                                 .is_some_and(|prompt| !prompt.acknowledged())
                         {
-                            pending.enter_at = Some(
-                                now + Duration::from_millis(if pending.kind == "claude" {
-                                    500
-                                } else {
-                                    100
-                                }),
-                            );
+                            pending.enter_at = Some(now + pending.submit_delay);
                         }
                     },
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {},
@@ -1795,10 +1839,7 @@ impl Screen {
                         && status.status_available
                         && status.agent.state == pending.until
                         && (pending.until != AgentState::Idle
-                            || !matches!(
-                                status.agent.kind.as_str(),
-                                "claude" | "codex" | "muse" | "agy" | "pi"
-                            )
+                            || !supports_prompt(&status.agent.kind)
                             || (status.ready && !self.claude_background_pending(pending.pane))) =>
                 {
                     // The reply's message is the final text of the turn that made it idle.
@@ -1858,7 +1899,7 @@ impl Screen {
                     {
                         outcome = Some(AgentOutcome::Interrupted);
                     } else if let Err(error) =
-                        self.agent_write_key(pending.pane, KeyWithModifier::new(BareKey::Enter))
+                        self.agent_write_key(pending.pane, pending.submit_key.clone())
                     {
                         delivery_error = Some(error.to_string());
                         outcome = Some(AgentOutcome::Failed);

@@ -1070,6 +1070,13 @@ fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
       const info: AgentInfo | null = yinz.agent.info(7);
       yinz.agent.info({{Terminal:7}});
       yinz.agent.on(e => {{const hook:string=e.hook;}})();
+      const sent: void = yinz.agent.send(7,'draft',{{enter:false}});
+      // @ts-expect-error paste helpers do not set a timeout
+      yinz.agent.send(7,'go',{{timeoutMs:30}});
+      // @ts-expect-error turn waits do not set a timeout
+      yinz.agent.prompt(7,'go',{{timeoutMs:30}});
+      // @ts-expect-error turn waits do not set a timeout
+      yinz.agent.waitForTurn(7,{{timeoutMs:30}});
       yinz.agent.waitForState(7,['idle','Busy'],{{after:'Waiting'}}).then(p => p.agent?.session_id);
       yinz.agent.prompt(7,'go',{{fallback:'idle',enter:false}}).then(t => {{const message:string|null=t.message;}});
       // @ts-expect-error plugin IDs are not agents

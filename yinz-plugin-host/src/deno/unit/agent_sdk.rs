@@ -42,6 +42,7 @@ fn agent_cache_states_turns_and_cancellation() {
 #[test]
 fn agent_validation_prompt_ordering_and_dispatch_cleanup() {
     let mut runtime = sdk();
+    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = json!({"agent":{"kind":"codex"}});
     run(&mut runtime, r#"
       globalThis.errors=[];
       bind({load() {
@@ -85,6 +86,44 @@ fn agent_validation_prompt_ordering_and_dispatch_cleanup() {
 }
 
 #[test]
+fn all_agent_identities_use_paste_and_unbounded_event_waits() {
+    for kind in [None, Some(""), Some("opencode"), Some("fixture-agent"), Some("claude"), Some("codex"), Some("cursor-agent"), Some("claude-code"), Some("codex-cli"), Some("muse-bin-1.4.2"), Some("antigravity"), Some("/opt/bin/Gemini.js")] {
+        let mut runtime = sdk();
+        runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = kind.map_or(json!({}), |kind| json!({"agent":{"kind":kind}}));
+        run(&mut runtime, r#"
+          globalThis.completed = false;
+          globalThis.cancelled = false;
+          globalThis.now = 0;
+          Date.now = () => now;
+          bind({load() {
+            const pane = {Terminal:7};
+            check(yinz.agent.send(pane,'draft',{enter:false}) === undefined);
+            yinz.agent.send(pane,'submit');
+            yinz.agent.prompt(pane,'prompt').then(result => {completed = result.message === 'done';});
+            const pending = yinz.agent.prompt(8,'cancel',{enter:false});
+            pending.catch(error => {cancelled = error.name === 'AbortError';});
+            pending.cancel();
+          }}); bridge('load',{},2);
+          now = 60000;
+          bridge('update',{Timer:60},9);
+          check(!completed);
+          bridge('update',{AgentEvent:{pane_id:8,hook:'Stop',last_message:'late',state:'Idle',session_id:null}},9);
+          bridge('update',{AgentEvent:{pane_id:7,hook:'Stop',last_message:'done',state:'Idle',session_id:null}},9);
+        "#);
+        capture_commands(&mut runtime);
+        run(&mut runtime, r#"
+          check(completed && cancelled);
+          // No read or RunCommands authority: only subscription and pane writes.
+          check(sent.every(([c]) => c.Subscribe || c.Unsubscribe || c.WriteToPaneId));
+          const writes = sent.filter(([c]) => c.WriteToPaneId).map(([c]) => c.WriteToPaneId);
+          check(writes.slice(0,5).every(([,pane]) => pane.Terminal === 7) && writes[5][1].Terminal === 8);
+          check(JSON.stringify(writes.map(([bytes]) => yinz.decodeUtf8(new Uint8Array(bytes)))) ===
+            JSON.stringify(['\x1b[200~draft\x1b[201~','\x1b[200~submit\x1b[201~','\r','\x1b[200~prompt\x1b[201~','\r','\x1b[200~cancel\x1b[201~']));
+        "#);
+    }
+}
+
+#[test]
 fn agent_spawn_preserves_spec_and_host_defaults() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
@@ -99,6 +138,35 @@ fn agent_spawn_preserves_spec_and_host_defaults() {
       check(commands[0].spec.kind === 'codex' && Object.keys(commands[0].spec).length === 1 && commands[0].source_directory === null && commands[0].start_suppressed === false);
       check(commands[1].spec.permission_mode === 'plan' && commands[1].source_directory === '/host/project' && commands[1].automatic_firecracker_vm && commands[1].start_suppressed && commands[1].context.key === 'value');
     "#);
+    for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
+        serde_json::from_value::<yinz_types::data::PluginCommand>(command.clone()).unwrap();
+    }
+}
+
+#[test]
+fn provider_registration_and_explicit_control_do_not_write_raw_input() {
+    let mut runtime = sdk();
+    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().pane_info = json!({"agent":{"kind":"fixture-agent"}});
+    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().replies.insert("GetAgentProviders".into(), json!([{ "kind":"fixture-agent", "executable":"fixture-agent" }]));
+    run(&mut runtime, r#"
+      globalThis.answers = [];
+      bind({load() {
+        yinz.agent.registerProvider({kind:'fixture-agent', executable:'fixture-agent', input:{submit_key:'Ctrl j'}});
+        check(yinz.agent.providers()[0].kind === 'fixture-agent');
+        yinz.agent.control({Prompt:{pane_id:{Terminal:7},prompt:'work',wait:false,timeout_ms:30000}}).then(value => answers.push(value.outcome));
+        yinz.agent.control({Prompt:{pane_id:{Terminal:7},prompt:'next',wait:true,timeout_ms:30000}}).then(value => answers.push(value.message));
+      }}); bridge('load',{},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(!sent.some(([c]) => c.WriteToPaneId));
+      const requests = sent.filter(([c]) => c.AgentControl).map(([c]) => c.AgentControl);
+      check(requests.length === 2);
+      check(JSON.parse(requests[0].request).Prompt.wait === false);
+      check(JSON.parse(requests[1].request).Prompt.wait === true);
+      for (const [i,request] of requests.entries()) bridge('update', {CustomMessage:['agent-response',JSON.stringify({id:request.id,response:{outcome:i === 0 ? 'submitted':'completed',message:'done',agents:[]}})]},2);
+    "#);
+    run(&mut runtime, "check(JSON.stringify(answers) === '[\"submitted\",\"done\"]')");
     for (command, _) in &runtime.op_state().borrow().borrow::<TestHost>().commands {
         serde_json::from_value::<yinz_types::data::PluginCommand>(command.clone()).unwrap();
     }

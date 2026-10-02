@@ -477,7 +477,7 @@ load_plugins clear-defaults=true {{ "yinz:hocus-agentd"; }}
         assert_eq!(command.command, std::path::PathBuf::from(kind));
     }
     assert_eq!(
-        yinz_types::agent::kind_from_program_and_args(&command.command, &command.args),
+        yinz_types::agent::kind_from_program_and_args(&command.command, &command.args).as_deref(),
         Some(kind)
     );
     assert_eq!(

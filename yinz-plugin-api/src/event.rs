@@ -780,6 +780,14 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for Hook Event"),
             },
+            Ok(ProtobufEventType::AgentProvidersChanged) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::AgentProvidersChangedPayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::AgentProvidersChanged)
+                        .map_err(|_| "Malformed agent provider snapshot")
+                },
+                _ => Err("Malformed payload for AgentProvidersChanged Event"),
+            },
             Ok(ProtobufEventType::AgentEvent) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::AgentEventPayload(p)) => {
                     Ok(Event::AgentEvent(yinz_types::agent::AgentEvent {
@@ -1580,6 +1588,13 @@ impl TryFrom<Event> for ProtobufEvent {
                     })),
                 })
             },
+            Event::AgentProvidersChanged(providers) => Ok(ProtobufEvent {
+                name: ProtobufEventType::AgentProvidersChanged as i32,
+                payload: Some(event::Payload::AgentProvidersChangedPayload(
+                    serde_json::to_string(&providers)
+                        .map_err(|_| "Cannot serialize agent providers")?,
+                )),
+            }),
             Event::AgentEvent(agent_event) => Ok(ProtobufEvent {
                 name: ProtobufEventType::AgentEvent as i32,
                 payload: Some(event::Payload::AgentEventPayload(
@@ -2778,6 +2793,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
             ProtobufEventType::Hook => EventType::Hook,
             ProtobufEventType::AgentEvent => EventType::AgentEvent,
+            ProtobufEventType::AgentProvidersChanged => EventType::AgentProvidersChanged,
             ProtobufEventType::ModifiersHeld => EventType::ModifiersHeld,
         })
     }
@@ -2844,6 +2860,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
             EventType::Hook => ProtobufEventType::Hook,
             EventType::AgentEvent => ProtobufEventType::AgentEvent,
+            EventType::AgentProvidersChanged => ProtobufEventType::AgentProvidersChanged,
             EventType::ModifiersHeld => ProtobufEventType::ModifiersHeld,
         })
     }

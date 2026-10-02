@@ -74,17 +74,6 @@ const UNCHECKED_AGENT_FLAGS: [&str; 4] = [
     "--disable-approval",
     "--disable-sandbox",
 ];
-/// Programs whose appearance makes the flags after them an agent's. Muse's
-/// versioned binary (`muse-bin-1.4.2-R4684.1`) matches by prefix below.
-const AGENT_PROGRAMS: [&str; 7] = [
-    "claude",
-    "claude-code",
-    "codex",
-    "cursor",
-    "cursor-agent",
-    "opencode",
-    "muse",
-];
 /// Codex config overrides that turn its checks off, compared with quotes and
 /// spaces removed (`-c approval_policy="never"`).
 const UNCHECKED_CONFIG: [&str; 2] = ["approval_policy=never", "sandbox_mode=danger-full-access"];
@@ -357,11 +346,8 @@ pub(crate) fn prepare(
 /// Shapes no reviewer should wave through: standing or unchecked authority is
 /// granted by a person, never scored.
 ///
-/// A launch is checked twice over: its `permission_mode`, which `launch::plan`
-/// turns into flags, and the words the caller wrote itself - `command` and
-/// `args` - which reach the program as they are. The planner's own output is not
-/// scanned, because it ends in the prompt, and a prompt that reads like a flag
-/// is still a prompt.
+/// Check mode names, caller arguments, and generated launch flags. Exclude the prompt
+/// and automatic hook settings, which do not grant unchecked authority.
 fn always_by_hand(call: &ToolCall, args: &tools::Args) -> Result<(), String> {
     let caller_words = || -> Vec<String> {
         match call.name.as_str() {
@@ -375,12 +361,24 @@ fn always_by_hand(call: &ToolCall, args: &tools::Args) -> Result<(), String> {
                 .unwrap_or_default(),
         }
     };
+    let generated_unchecked = || -> Result<bool, String> {
+        if call.name != "agent_spawn" {
+            return Ok(false);
+        }
+        let mut spec = args.launch_spec();
+        spec.hooks = Some(false);
+        let kind = spec.kind.as_deref().map(|kind| kind.trim().to_lowercase());
+        let (mut leading, flags) = launch::shape_args(kind.as_deref(), &spec)?;
+        leading.extend(flags);
+        Ok(runs_unchecked(&leading, true))
+    };
     let refused = match call.name.as_str() {
         "agent_spawn" if tools::permission_checks_off(args.permission_mode.as_deref()) => {
             "a launch with permission checks off"
         },
         "agent_spawn" | "new_pane" | "new_remote_pane"
-            if runs_unchecked(&caller_words(), call.name == "agent_spawn") =>
+            if runs_unchecked(&caller_words(), call.name == "agent_spawn")
+                || generated_unchecked()? =>
         {
             "a launch with permission checks off"
         },
@@ -415,7 +413,7 @@ fn runs_unchecked(words: &[String], agent: bool) -> bool {
         .collect();
     let is_agent_program = |token: &str| {
         let file = token.rsplit('/').next().unwrap_or(token);
-        AGENT_PROGRAMS.contains(&file) || file.starts_with("muse-bin-")
+        yinz_tile::agent::kind_of(file).is_some()
     };
     let turns_checks_off = |name: &str, value: Option<&str>, agent: bool| -> bool {
         let value = value.map(unquoted);
@@ -1091,6 +1089,15 @@ mod tests {
 
     #[test]
     fn every_spelling_of_checks_off_is_refused_for_agents_and_panes() {
+        yinz_tile::agent::provider::register(
+            0,
+            yinz_tile::agent::provider::AgentProvider {
+                kind: "opencode".into(),
+                executable: "opencode".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let state = State {
             messages: vec![Message::user("Start an agent on the parser")],
             ..State::default()
@@ -1156,6 +1163,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn provider_launch_flags_are_reviewed_without_prompt_or_automatic_hooks() {
+        use yinz_tile::agent::provider::{self, AgentProvider};
+        let descriptor: AgentProvider = serde_json::from_value(json!({
+            "kind":"approval-fixture", "executable":"approval-fixture",
+            "launch":{"prompt_args":["--prompt", "{value}"],"permissions":{
+                "yolo":["--dangerously-skip-permissions"],
+                "safe":["--ask-for-approval", "on-request"]
+            }}
+        }))
+        .unwrap();
+        provider::register(901_613, descriptor).unwrap();
+        let state = State {
+            messages: vec![Message::user("Start an agent")],
+            ..State::default()
+        };
+        for (mode, error) in [
+            ("yolo", Some("permission checks off")),
+            ("safe", None),
+            ("missing", Some("does not support")),
+        ] {
+            let call = ToolCall {
+                id: "launch-provider".into(),
+                name: "agent_spawn".into(),
+                arguments: json!({"agent":"approval-fixture", "cwd":"/work/hocus",
+                    "permission_mode":mode, "prompt":"--dangerously-skip-permissions"})
+                .to_string(),
+            };
+            let result = prepare(&state, &call, &endpoint());
+            match error {
+                Some(error) => assert!(result.unwrap_err().contains(error)),
+                None => assert!(result.is_ok(), "{result:?}"),
+            }
+        }
+        assert!(provider::unregister_owner(901_613));
     }
 
     #[test]

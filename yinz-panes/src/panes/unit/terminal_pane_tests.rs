@@ -1712,6 +1712,15 @@ pub fn waiting_agent_bell_persists_until_the_reported_wait_ends() {
 /// hocus-agents read.
 #[test]
 pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
+    yinz_types::agent::provider::register(
+        0,
+        yinz_types::agent::provider::AgentProvider {
+            kind: "opencode".into(),
+            executable: "opencode".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     use yinz_types::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
     let run = |marker: &str, program: &str| {
         super::Run::Command(RunCommand {

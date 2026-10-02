@@ -27,6 +27,7 @@ use yinz_types::style::default_palette;
 pub use yinz_bus::background_jobs;
 pub(crate) use yinz_bus::global_async_runtime;
 pub(crate) use yinz_plugin_host as plugins;
+pub use yinz_plugin_host::deno::inspect_agent_provider;
 pub use yinz_plugin_host::deno::testing as plugin_testing;
 use yinz_plugin_host::get_engine;
 #[doc(hidden)]
@@ -2431,7 +2432,16 @@ fn init_session(
                 cli_assets.config_dir.clone(),
             );
             let builtin_plugins_dir = config_options.builtin_plugins_dir.clone();
-            let background_plugins = config.background_plugins.clone();
+            let mut background_plugins = config.background_plugins.clone();
+            // Agent support is a shared TypeScript plugin even when users replace UI defaults.
+            background_plugins.insert(yinz_types::input::layout::RunPluginOrAlias::RunPlugin(
+                yinz_types::input::layout::RunPlugin {
+                    location: yinz_types::input::layout::RunPluginLocation::Yinz(
+                        yinz_types::data::PluginTag::new("agent-opencode"),
+                    ),
+                    ..Default::default()
+                },
+            ));
             let hooks = config.hooks.clone();
             let context_menu = config.context_menu.clone();
             let session_env_vars = session_env_vars.clone();

@@ -8,6 +8,7 @@ import z, {
   type PaneTarget,
   type AgentSpawnOptions,
   type AgentEvent,
+  type AgentResponse,
   type MessageToPlugin,
   type RpcCall,
 } from "yinz:plugin";
@@ -1166,8 +1167,8 @@ async function owned(
     assert(!agent.processExited && current.child_exit_status == null, "Agent process exited");
   return { ...agent, pane: current.terminal_id };
 }
-// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
-function dispatchPrompt(agent: Delivery): void {
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- Keep submission, acceptance and listener cleanup together with their shared mutable delivery state.
+async function dispatchPrompt(agent: Delivery): Promise<void> {
   if (closed(agent.owner?.work)) return;
   if (!agent.ready || !agent.outstanding) return;
   const [operation, row] = read(agent.outstanding);
@@ -1176,7 +1177,64 @@ function dispatchPrompt(agent: Delivery): void {
   operation.dispatched = true;
   // A crash after this point is an uncertain send.
   put(agent.outstanding, operation, row);
-  z.agent.send(terminal(agent.pane), string(parsedObject(operation.request)["prompt"]));
+  const completions: AgentEvent[] = [];
+  const stopCollecting = z.on("AgentEvent", (event) => {
+    if (event.pane_id === agent.pane && ["Stop", "StopFailure", "Interrupt"].includes(event.hook))
+      completions.push(event);
+  });
+  try {
+    const pane = terminal(agent.pane);
+    const kind = z.command("GetPaneInfo", pane)?.agent?.kind.split("/").pop()?.toLowerCase();
+    const provider = z.agent
+      .providers()
+      .find((candidate) =>
+        [candidate.kind, candidate.executable.split("/").pop(), ...(candidate.aliases ?? [])].some(
+          (name) => name?.toLowerCase() === kind,
+        ),
+      );
+    const prompt = string(parsedObject(operation.request)["prompt"]);
+    let response: AgentResponse | undefined;
+    if (provider?.input) {
+      response = await z.agent.control({
+        Prompt: { pane_id: pane, prompt, wait: false, timeout_ms: 30000 },
+      });
+    } else {
+      z.agent.send(pane, prompt);
+    }
+    if (response && response.outcome !== "submitted") {
+      const error = response.message ?? `Agent prompt: ${response.outcome}`;
+      const refused = ["rejected", "not_agent", "target_not_found", "target_exited"].includes(
+        response.outcome,
+      );
+      saveEvent(agent.outstanding, refused ? "failed" : "unknown", { error });
+      if (refused && agent.owner) {
+        const uid = scope(agent.owner.work, agent.owner.agent),
+          [current, currentRow] = read(uid);
+        if (current?.outstanding === agent.outstanding) {
+          delete current.outstanding;
+          put(uid, current, currentRow);
+        }
+      }
+      throw new Error(error);
+    }
+    const session = response?.agents[0]?.agent.session_id;
+    if (response?.acknowledged && session && response.turn_id) {
+      // Hooks may have updated or finished this operation while submission was pending.
+      const [current, currentRow] = read(agent.outstanding);
+      if (current && ["pending", "unknown"].includes(current.outcome)) {
+        current.accepted = true;
+        current.agentSession = session;
+        current.turn = response.turn_id;
+        put(agent.outstanding, current, currentRow);
+        for (const event of completions) onAgentEvent(event);
+      }
+    }
+  } catch (error) {
+    saveEvent(agent.outstanding, "unknown", { error: String(error) });
+    throw error;
+  } finally {
+    stopCollecting();
+  }
 }
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function claim(args: Partial<Request>): [string, Delivery | undefined] {
@@ -2130,7 +2188,7 @@ async function handle(
       placement.queue.push(required(uid));
       present(args.work);
     }
-    dispatchPrompt(agent);
+    await dispatchPrompt(agent);
   } else if (args.method === "command") {
     assert(
       Array.isArray(args.argv) &&
@@ -3334,8 +3392,8 @@ z.on("PaneClosed", (pane) => {
   }
   for (const work of affected) closeLifecycle(work);
 });
-// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep this existing event or protocol decision tree together for review. This lifecycle handler keeps its ordered protocol transitions together.
-z.on("AgentEvent", (event) => {
+// oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function, typescript/prefer-readonly-parameter-types -- This lifecycle handler keeps its ordered protocol transitions together and shares SDK wire types with its callers.
+function onAgentEvent(event: AgentEvent): void {
   let raw: { _yinz_workflow_owner?: string; prompt_sha256?: string; turn_id?: string };
   try {
     // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
@@ -3393,7 +3451,8 @@ z.on("AgentEvent", (event) => {
     }
   }
   finishAgent(owner, event, raw);
-});
+}
+z.on("AgentEvent", onAgentEvent);
 // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- This helper shares mutable plugin state and SDK wire types with its callers.
 function finishAgent(owner: Owner, event: AgentEvent, raw: { turn_id?: string }): void {
   const uid = scope(owner.work, owner.agent),

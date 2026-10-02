@@ -31,6 +31,7 @@ pub enum Operation {
     Transpile,
     Analyze,
     Check(PluginCheckMode),
+    AgentProvider,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,9 +51,22 @@ pub enum Output {
         source_map: Option<String>,
     },
     Analysis(PluginCheckReport),
+    AgentProvider(yinz_types::agent::provider::AgentProvider),
 }
 
 pub type Response = std::result::Result<Output, String>;
+
+/// Evaluate a TypeScript plugin's exported provider in the confined, bounded worker.
+/// Module initialization cannot invoke host commands; its load callback is never run.
+pub fn agent_provider(
+    path: &Path,
+    source: &str,
+) -> Result<yinz_types::agent::provider::AgentProvider> {
+    match request(path, source, false, Operation::AgentProvider, None)? {
+        Output::AgentProvider(provider) => Ok(provider),
+        _ => bail!("agent provider worker returned the wrong operation"),
+    }
+}
 
 /// The emitted JavaScript and its separate source map.
 pub fn transpile(

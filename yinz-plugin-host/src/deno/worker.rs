@@ -60,6 +60,11 @@ pub fn run_compilation_worker() {
                 &request.path,
                 &request.source,
             ))),
+            Operation::AgentProvider => {
+                super::agent_provider::inspect(&request.path, &request.source)
+                    .map(Output::AgentProvider)
+                    .map_err(|error| format!("{error:#}"))
+            },
         };
         // All native ASTs have been destroyed before serialization and process exit.
         let output = serde_json::to_vec(&response).context("encode response")?;

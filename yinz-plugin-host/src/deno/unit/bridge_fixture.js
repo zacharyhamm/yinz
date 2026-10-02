@@ -3,7 +3,13 @@ globalThis.spawned=0; globalThis.sent=0; globalThis.opened=0; globalThis.nextPan
 globalThis.handler=null; globalThis.conflictNext=false; globalThis.failure=null;
 const clone=v=>JSON.parse(JSON.stringify(v));
 globalThis.mock={...yinz, serverSession:'session',serverIncarnation:'incarnation',serverBinary:'yinz',instanceId:'instance',
-  subscribe(){}, getPluginIds:()=>({host_id:'host',plugin_id:1}), on(name,callback){handlers[name]=callback;},
+  subscribe(){}, getPluginIds:()=>({host_id:'host',plugin_id:1}),
+  on(name,callback){
+    const callbacks=handlers[name]?.callbacks??new Set();
+    callbacks.add(callback);
+    handlers[name]=Object.assign((...args)=>{for(const cb of [...callbacks])cb(...args);},{callbacks});
+    return ()=>callbacks.delete(callback);
+  },
   workflowRemotePanes:()=>[], sleep:()=>new Promise(()=>{}),
   data:{...yinz.data,
     define(){}, eq:(_column,uid)=>uid,
@@ -30,6 +36,7 @@ globalThis.mock={...yinz, serverSession:'session',serverIncarnation:'incarnation
     return {exitCode:0,stdout:yinz.encodeUtf8(JSON.stringify(Object.keys(panes).map(p=>({terminal_id:Number(p),host_id:'supervisor-'+p,child_pid:100+Number(p),session_name:'session',attached:true})))),stderr:new Uint8Array()};
   },
   agent:{
+    providers(){return []},
     spawnDetails(opts){spawned++;const pane=++nextPane;owners[pane]=opts.context.swamp_owner;panes[pane]=true;event(pane,'SessionStart');return {pane_id:{Terminal:pane},branch:'topic',cwd:'/work/topic'}},
     send(pane,prompt){sent++;if(prompt==='fast'){event(pane.Terminal,'UserPromptSubmit',prompt);event(pane.Terminal,'Stop')}}
   }

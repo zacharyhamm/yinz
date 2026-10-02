@@ -1,7 +1,12 @@
 pub use yinz_types::agent::*;
+pub mod hook_files;
 pub mod hooks;
 pub mod launch;
 pub mod pi;
 pub mod report;
 mod restart;
 pub use restart::restart_args;
+
+#[cfg(test)]
+#[path = "unit/agent_provider_fixture.rs"]
+pub(crate) mod provider_fixture;

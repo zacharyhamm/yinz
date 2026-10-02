@@ -1,5 +1,6 @@
 import real, {definePlugin} from 'yinz:plugin';
-let handler: any, token: string, worker: number, agentHandler: any;
+let handler: any, token: string, worker: number;
+const agentHandlers = new Set<any>();
 let status = 'running', step = 'prepare', refreshFailed = false;
 const owners: Record<number, string> = {}, hosts: any[] = [];
 const z: any = {...real,
@@ -12,7 +13,11 @@ const z: any = {...real,
   projectConfig: {read: () => ({root: '/host', config: {workflow: 'fixture'}})},
   workflowRemotePanes: () => [],
   rpc: {handle(_name: string, callback: any) {handler = callback;}, call(request: any) {return call(request.payload);}},
-  on(name: any, callback: any) {if(name === 'AgentEvent') agentHandler = callback; return real.on(name, callback);},
+  on(name: any, callback: any) {
+    if(name === 'AgentEvent') agentHandlers.add(callback);
+    const off = real.on(name, callback);
+    return () => {agentHandlers.delete(callback); off();};
+  },
   agent: {...real.agent, spawnDetails(opts: any) {
     const agent = real.agent.spawnDetails(opts), id = (agent.pane_id as {Terminal: number}).Terminal;
     owners[id] = opts.context.swamp_owner;
@@ -53,4 +58,4 @@ const z: any = {...real,
   },
 };
 function call(args: any) {return handler(args, {source: {Plugin: real.getPluginIds().plugin_id}});}
-function emit(hook: string, prompt?: string) {agentHandler({pane_id: worker, hook, prompt, session_id: 'agent-session', raw: JSON.stringify({_yinz_workflow_owner: owners[worker], turn_id: 'turn'})});}
+function emit(hook: string, prompt?: string) {for (const callback of [...agentHandlers]) callback({pane_id: worker, hook, prompt, session_id: 'agent-session', raw: JSON.stringify({_yinz_workflow_owner: owners[worker], turn_id: 'turn'})});}

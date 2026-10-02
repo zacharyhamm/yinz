@@ -49,11 +49,21 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         cleaned.extend(restart_args(Path::new(program), &args[index + 1..])?);
         return Ok(cleaned);
     }
+    if let Some(provider) = name
+        .and_then(crate::agent::kind_of)
+        .as_deref()
+        .and_then(crate::agent::provider::provider)
+    {
+        let grammar = provider
+            .restart
+            .as_ref()
+            .ok_or_else(|| format!("{} does not support restart", provider.kind))?;
+        return provider_restart_args(&provider.kind, grammar, args);
+    }
     let kind = match name {
         Some("claude") => "claude",
         Some("codex") => "codex",
         Some("cursor-agent") => "cursor",
-        Some("opencode") => "opencode",
         Some("muse") => "muse",
         // The launcher execs a versioned binary (`muse-bin-1.4.2-R4684.1`); the pane
         // is still a muse pane, the way `kind_of` reads it.
@@ -306,53 +316,6 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 "help",
             ],
         ),
-        "opencode" => (
-            &[
-                "-m",
-                "--model",
-                "--agent",
-                "--log-level",
-                "--port",
-                "--hostname",
-                "--mdns-domain",
-                "--replay-limit",
-            ],
-            &[
-                "--auto",
-                "--print-logs",
-                "--pure",
-                "--mdns",
-                "--mini",
-                "--no-replay",
-            ],
-            &["--cors"],
-            &[
-                "completion",
-                "acp",
-                "mcp",
-                "attach",
-                "run",
-                "debug",
-                "providers",
-                "auth",
-                "agent",
-                "upgrade",
-                "uninstall",
-                "serve",
-                "web",
-                "models",
-                "stats",
-                "export",
-                "import",
-                "github",
-                "pr",
-                "session",
-                "plugin",
-                "plug",
-                "db",
-                "help",
-            ],
-        ),
         "agy" => (
             &[
                 "--model",
@@ -461,9 +424,6 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
         index += 1;
         if arg == "--" && !after_separator {
             after_separator = true;
-            if kind == "opencode" {
-                cleaned.push(arg.clone());
-            }
             continue;
         }
         if !after_separator && arg.starts_with('-') {
@@ -481,7 +441,6 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             let remove_value = matches!(
                 (kind, flag),
                 ("claude", "--session-id" | "--resume-session-at")
-                    | ("opencode", "--prompt" | "-s" | "--session")
                     | ("muse", "--session-id" | "--prompt-file")
                     | ("agy", "--conversation" | "--prompt-interactive" | "-i")
                     // pi opens by path, partial id, or exact id: all three name the
@@ -497,7 +456,6 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                     (kind, flag),
                     ("claude", "-c" | "--continue" | "--fork-session")
                         | ("cursor", "--continue")
-                        | ("opencode", "-c" | "--continue" | "--fork")
                         | ("muse", "--last")
                         | ("agy", "-c" | "--continue")
                         | ("pi", "-c" | "--continue" | "-r" | "--resume")
@@ -553,9 +511,6 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
                 }
             }
             positionals += 1;
-            if kind == "opencode" {
-                cleaned.push(arg.clone());
-            }
             let limit = if matches!(kind, "cursor" | "pi") {
                 usize::MAX
             } else if kind == "codex" && resume {
@@ -565,6 +520,75 @@ pub fn restart_args(program: &Path, args: &[String]) -> Result<Vec<String>, Stri
             };
             if positionals > limit {
                 return Err(format!("ambiguous {kind} positional arguments for restart"));
+            }
+        }
+    }
+    Ok(cleaned)
+}
+
+fn provider_restart_args(
+    kind: &str,
+    grammar: &crate::agent::provider::AgentRestart,
+    args: &[String],
+) -> Result<Vec<String>, String> {
+    let mut cleaned = Vec::new();
+    let mut index = 0;
+    let mut positionals = 0;
+    let mut after_separator = false;
+    while let Some(arg) = args.get(index) {
+        index += 1;
+        if arg == "--" && !after_separator {
+            after_separator = true;
+            if grammar.keep_positionals {
+                cleaned.push(arg.clone());
+            }
+            continue;
+        }
+        if !after_separator && arg.starts_with('-') {
+            let (flag, inline) = arg
+                .split_once('=')
+                .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
+            let has = |flags: &[String]| flags.iter().any(|item| item == flag);
+            if has(&grammar.remove_optional_values) {
+                if inline.is_none() && args.get(index).is_some_and(|next| !next.starts_with('-')) {
+                    index += 1;
+                }
+            } else if has(&grammar.values) || has(&grammar.remove_values) {
+                let keep = has(&grammar.values);
+                if keep {
+                    cleaned.push(arg.clone());
+                }
+                if inline.is_none() {
+                    let value = args
+                        .get(index)
+                        .ok_or_else(|| format!("missing value for {flag}"))?;
+                    if keep {
+                        cleaned.push(value.clone());
+                    }
+                    index += 1;
+                }
+            } else if inline.is_none() && (has(&grammar.switches) || has(&grammar.remove_switches))
+            {
+                if has(&grammar.switches) {
+                    cleaned.push(arg.clone());
+                }
+            } else if inline.is_some() && has(&grammar.inline_values) {
+                cleaned.push(arg.clone());
+            } else {
+                return Err(format!(
+                    "unsupported or ambiguous {kind} option {flag} for restart"
+                ));
+            }
+        } else {
+            if positionals == 0 && !after_separator && grammar.forbidden_commands.contains(arg) {
+                return Err(format!("unsupported {kind} subcommand for restart"));
+            }
+            positionals += 1;
+            if positionals > grammar.max_positionals {
+                return Err(format!("ambiguous {kind} positional arguments for restart"));
+            }
+            if grammar.keep_positionals {
+                cleaned.push(arg.clone());
             }
         }
     }
@@ -640,6 +664,7 @@ mod tests {
 
     #[test]
     fn restart_preserves_planned_options_and_environment_without_prompt_or_resume() {
+        crate::agent::provider_fixture::register_opencode();
         for (kind, mode) in [
             ("claude", "skip"),
             ("codex", "full-auto"),
@@ -679,6 +704,7 @@ mod tests {
 
     #[test]
     fn restart_obeys_agent_argument_arity() {
+        crate::agent::provider_fixture::register_opencode();
         for (program, input, expected) in [
             (
                 "claude",
@@ -979,6 +1005,7 @@ mod tests {
 
     #[test]
     fn restart_refuses_unknown_or_ambiguous_commands() {
+        crate::agent::provider_fixture::register_opencode();
         for (program, input) in [
             ("gemini", vec!["work"]),
             ("sh", vec!["-c", "claude work"]),

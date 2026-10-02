@@ -1182,6 +1182,7 @@ impl Default for State {
 
 impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        init_agent_providers();
         self.kdl = configuration;
         let ids = get_plugin_ids();
         self.own_plugin_id = ids.plugin_id;

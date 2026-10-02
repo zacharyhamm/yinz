@@ -1,6 +1,9 @@
 //! Direct CLI control contracts and correlation of one submitted prompt with its hooks.
 
-use super::{AgentEvent, AgentInfo, AgentSpawnSpec, AgentState, HookEvent, SpawnedAgent};
+use super::{
+    provider::AgentInput, AgentEvent, AgentInfo, AgentSpawnSpec, AgentState, HookEvent,
+    SpawnedAgent,
+};
 use crate::{keys::KeyWithModifier, pane_id::PaneId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -203,6 +206,8 @@ pub struct PromptObservation {
     conversation_id: String,
     prompt_sha256: String,
     claude_prompt_sha256: Option<String>,
+    provider_prompt_sha256: Option<String>,
+    supported: bool,
     prompt_id: Option<String>,
     acknowledged: bool,
     waiting_before_submit: bool,
@@ -212,6 +217,20 @@ pub struct PromptObservation {
 
 impl PromptObservation {
     pub fn new(kind: &str, conversation_id: &str, prompt: &str) -> Self {
+        let provider = super::provider::provider(kind);
+        let input = provider
+            .as_ref()
+            .and_then(|provider| provider.input.as_ref());
+        Self::with_input(kind, conversation_id, prompt, input)
+    }
+
+    /// Observe using the same provider snapshot that prepared the terminal input.
+    pub fn with_input(
+        kind: &str,
+        conversation_id: &str,
+        prompt: &str,
+        input: Option<&AgentInput>,
+    ) -> Self {
         Self {
             kind: kind.to_owned(),
             conversation_id: conversation_id.to_owned(),
@@ -223,12 +242,24 @@ impl PromptObservation {
             },
             claude_prompt_sha256: (kind == "claude")
                 .then(|| prompt_sha256(&claude_prompt_text(prompt))),
+            provider_prompt_sha256: input.map(|input| {
+                prompt_sha256(&format!(
+                    "{}{}",
+                    input.paste_prefix,
+                    prompt.replace('\n', &input.newline),
+                ))
+            }),
+            supported: builtin_prompt_supported(kind) || input.is_some(),
             prompt_id: None,
             acknowledged: false,
             waiting_before_submit: false,
             turn_id: None,
             finished: false,
         }
+    }
+
+    pub fn supported(&self) -> bool {
+        self.supported
     }
 
     pub fn acknowledged(&self) -> bool {
@@ -254,6 +285,7 @@ impl PromptObservation {
                 &self.kind,
                 &self.prompt_sha256,
                 &self.claude_prompt_sha256,
+                &self.provider_prompt_sha256,
             )
     }
 
@@ -286,6 +318,9 @@ impl PromptObservation {
         event: &AgentEvent,
         hook: Option<&HookEvent>,
     ) -> Option<AgentOutcome> {
+        if !self.supported {
+            return Some(AgentOutcome::StatusUnavailable);
+        }
         let Some(hook) = hook else {
             return Some(AgentOutcome::StatusUnavailable);
         };
@@ -329,6 +364,7 @@ impl PromptObservation {
                     self.kind.as_str(),
                     &self.prompt_sha256,
                     &self.claude_prompt_sha256,
+                    &self.provider_prompt_sha256,
                 ) {
                     return Some(AgentOutcome::Interrupted);
                 }
@@ -362,12 +398,13 @@ impl PromptObservation {
                 self.kind.as_str(),
                 &self.prompt_sha256,
                 &self.claude_prompt_sha256,
+                &self.provider_prompt_sha256,
             ) {
                 return Some(AgentOutcome::Interrupted);
             }
             let turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
             let prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
-            if (matches!(self.kind.as_str(), "codex" | "muse" | "pi") && turn_id.is_none())
+            if (!matches!(self.kind.as_str(), "claude" | "agy") && turn_id.is_none())
                 || (matches!(self.kind.as_str(), "claude" | "agy") && prompt_id.is_none())
             {
                 return Some(AgentOutcome::StatusUnavailable);
@@ -450,6 +487,7 @@ fn submit_matches(
     kind: &str,
     expected: &str,
     claude_expected: &Option<String>,
+    provider_expected: &Option<String>,
 ) -> bool {
     let fingerprint = hook
         .prompt_sha256
@@ -457,6 +495,7 @@ fn submit_matches(
         .or_else(|| hook.prompt.as_deref().map(prompt_sha256));
     fingerprint.as_deref() == Some(expected)
         || (kind == "claude" && fingerprint == *claude_expected)
+        || (provider_expected.is_some() && fingerprint == *provider_expected)
 }
 
 /// Fingerprint of a prompt as the agent received it: CRLF normalized, then
@@ -492,6 +531,16 @@ pub fn is_conversation_reset(kind: &str, prompt: &str) -> bool {
     )
 }
 
+/// Whether the provider declares the input and hook correlation needed for safe prompting.
+pub fn supports_prompt(kind: &str) -> bool {
+    builtin_prompt_supported(kind)
+        || super::provider::provider(kind).is_some_and(|provider| provider.input.is_some())
+}
+
+fn builtin_prompt_supported(kind: &str) -> bool {
+    matches!(kind, "claude" | "codex" | "muse" | "agy" | "pi")
+}
+
 /// Commands do not produce the lifecycle acknowledgement required by prompt submission.
 pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     if is_conversation_reset(kind, prompt) {
@@ -507,6 +556,11 @@ pub fn is_command_prompt(kind: &str, prompt: &str) -> bool {
     } else {
         text.trim_start()
     };
+    if let Some(provider) = super::provider::provider(kind) {
+        if let Some(input) = &provider.input {
+            return input.is_command_prompt(text);
+        }
+    }
     text.starts_with('/') || (matches!(kind, "claude" | "pi") && text.starts_with('!'))
 }
 

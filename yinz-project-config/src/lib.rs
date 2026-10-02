@@ -77,13 +77,14 @@ pub fn parse(source: &str) -> Result<ProjectConfig, String> {
                     ..Default::default()
                 };
                 if let Some(kind) = spec.kind.as_deref() {
-                    if !yinz_runtime::agent::launch::OFFERED.contains(&kind) {
-                        return Err(format!(
-                            "{name} kind {kind:?}: use {}",
-                            yinz_runtime::agent::launch::OFFERED.join(", ")
-                        ));
+                    if !(1..=32).contains(&kind.len()) || !kind.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')) {
+                        return Err(format!("{name} kind {kind:?}: use a lowercase agent name"));
                     }
-                    yinz_runtime::agent::launch::plan(&spec)?;
+                    // A standalone CLI can read project settings before its agent plugins load.
+                    // Validate provider-specific choices when that provider is available.
+                    if yinz_runtime::agent::launch::offered().iter().any(|offered| offered == kind) {
+                        yinz_runtime::agent::launch::plan(&spec)?;
+                    }
                 } else if spec.effort.is_some() {
                     return Err(format!("{name} effort requires kind"));
                 }
@@ -367,7 +368,7 @@ mod tests {
             assert!(config[role]["effort"].is_null());
             assert_eq!(config["agent"]["model"], "shared");
             for settings in [
-                "kind=\"unknown\"",
+                "kind=\"invalid/path\"",
                 "effort=\"medium\"",
                 "kind=\"claude\" effort=\"none\"",
                 "model=\" \"",
@@ -445,7 +446,7 @@ mod tests {
             "agent_exit { agent kind=\"cursor\" effort=\"high\"; }",
             "agent_exit { default_branch \"HEAD\"; }",
             "agent_exit { default_branch \"--bad\"; }",
-            "agent_exit { agent kind=\"unknown\"; }",
+            "agent_exit { agent kind=\"invalid/path\"; }",
             "agent_exit { ci \"x\"; ci \"y\"; }",
         ] {
             assert!(parse(source).is_err(), "{source}");

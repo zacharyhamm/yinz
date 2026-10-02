@@ -8,7 +8,10 @@ use std::{
 };
 use yinz_ipc::{
     consts::ipc_connect,
-    ipc::{ClientToServerMsg as ClientMsg, IpcSenderWithContext, ServerToClientMsg as ServerMsg},
+    ipc::{
+        ClientToServerMsg as ClientMsg, IpcRecv, IpcSenderWithContext,
+        ServerToClientMsg as ServerMsg,
+    },
 };
 use yinz_terminal::panes::grid::Grid;
 use yinz_types::{
@@ -172,6 +175,8 @@ pub(super) struct Controller {
     events: Vec<Value>,
     size: Size,
     rendered: bool,
+    agent_requests: BTreeMap<u64, mpsc::Receiver<std::result::Result<Value, String>>>,
+    next_agent_request: u64,
 }
 impl Controller {
     pub fn new(root: PathBuf, grants: Vec<PermissionType>) -> Self {
@@ -200,6 +205,8 @@ impl Controller {
             events: vec![],
             size: Size { rows: 24, cols: 80 },
             rendered: false,
+            agent_requests: BTreeMap::new(),
+            next_agent_request: 0,
         }
     }
     fn send(&mut self, message: ClientMsg) -> Result<()> {
@@ -440,10 +447,22 @@ impl Controller {
                         .as_array()
                         .context("backgroundPlugins must be an array")?
                     {
-                        let location = self
-                            .location(path.as_str().context("background plugin path")?, loader)?;
+                        let location = self.location(
+                            path.as_str()
+                                .or_else(|| path["path"].as_str())
+                                .context("background plugin path")?,
+                            loader,
+                        )?;
                         self.grant(&location)?;
-                        config.push_str(&format!("{};", quote(&location)));
+                        let configuration: BTreeMap<String, String> = serde_json::from_value(
+                            path.get("configuration").cloned().unwrap_or(json!({})),
+                        )
+                        .context("background plugin configuration")?;
+                        let configuration = configuration
+                            .iter()
+                            .map(|(key, value)| format!("{} {};", quote(key), quote(value)))
+                            .collect::<String>();
+                        config.push_str(&format!("{} {{ {} }};", quote(&location), configuration));
                     }
                 }
                 config.push_str(" }\n");
@@ -575,6 +594,130 @@ impl Controller {
                 self.send(ClientMsg::TerminalResize {
                     new_size: self.size,
                 })?;
+            },
+            "agent" => {
+                use yinz_types::agent::control::AgentRequest;
+                self.sender.as_ref().context("call session.start() first")?;
+                if !self.grants.contains(&PermissionType::RunCommands) {
+                    bail!("session.agent requires the declared RunCommands grant");
+                }
+                if self.agent_requests.len() >= 32 {
+                    bail!("at most 32 test agent requests may be pending");
+                }
+                let request: AgentRequest =
+                    serde_json::from_value(arg).context("test agent request")?;
+                if let AgentRequest::Spawn {
+                    spec,
+                    remote_host,
+                    automatic_firecracker_vm,
+                    ..
+                } = &request
+                {
+                    if remote_host.is_some()
+                        || *automatic_firecracker_vm
+                        || spec.firecracker.is_some()
+                        || spec.firecracker_image.is_some()
+                    {
+                        bail!("test agent spawning is limited to the owned local session");
+                    }
+                }
+                let timeout = match &request {
+                    AgentRequest::Prompt { timeout_ms, .. }
+                    | AgentRequest::Wait { timeout_ms, .. } => {
+                        Duration::from_millis((*timeout_ms).min(3_600_000) + 2000)
+                    },
+                    _ => Duration::from_secs(30),
+                };
+                let socket = self.root.join("session");
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let response = exchange(
+                        &socket,
+                        ClientMsg::AgentControl(request),
+                        timeout,
+                        |message| match message {
+                            ServerMsg::AgentControl(response) => Some(
+                                serde_json::to_value(response)
+                                    .context("encode test agent response"),
+                            ),
+                            _ => None,
+                        },
+                    );
+                    let _ = sender.send(response.map_err(|error| format!("{error:#}")));
+                });
+                let id = self.next_agent_request;
+                self.next_agent_request += 1;
+                self.agent_requests.insert(id, receiver);
+                return Ok(json!(id));
+            },
+            "agent-poll" => {
+                let id = arg.as_u64().context("test agent request id")?;
+                let result = match self
+                    .agent_requests
+                    .get(&id)
+                    .context("unknown test agent request")?
+                    .try_recv()
+                {
+                    Ok(result) => result,
+                    Err(mpsc::TryRecvError::Empty) => return Ok(Value::Null),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err("test agent request disconnected".into())
+                    },
+                };
+                self.agent_requests.remove(&id);
+                return serde_json::to_value(result).context("encode test agent request result");
+            },
+            "report" => {
+                use yinz_types::agent::{
+                    hook_outcome,
+                    report::{AgentReport, AgentReportState},
+                    AgentEvent, HookEvent, HookOutcome,
+                };
+                use yinz_types::{internal_ids::ProcessId, pane_id::PaneId};
+                self.sender.as_ref().context("call session.start() first")?;
+                if !self.grants.contains(&PermissionType::RunCommands) {
+                    bail!("session.report requires the declared RunCommands grant");
+                }
+                let pane: PaneId =
+                    serde_json::from_value(arg["pane"].clone()).context("test report pane")?;
+                let PaneId::Terminal(terminal) = pane else {
+                    bail!("agent hooks require a terminal pane");
+                };
+                let kind = arg["kind"].as_str().context("test report agent kind")?;
+                let hook: HookEvent =
+                    serde_json::from_value(arg["hook"].clone()).context("test report hook")?;
+                let state = match hook_outcome(kind, &hook) {
+                    HookOutcome::Ended => AgentReportState::Clear,
+                    HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+                    HookOutcome::Nothing => AgentReportState::Unchanged,
+                };
+                let report_id = uuid::Uuid::new_v4().to_string();
+                let report = AgentReport {
+                    report_id: report_id.clone(),
+                    pane_id: pane,
+                    state,
+                    event: Some(AgentEvent::from_hook(
+                        kind,
+                        terminal,
+                        &hook,
+                        serde_json::to_string(&hook).context("encode test hook")?,
+                    )),
+                    trace: false,
+                    process_id: ProcessId::new(std::process::id()),
+                    kind: kind.into(),
+                };
+                yinz_runtime::agent::report::validate_report(&report)?;
+                return exchange(
+                    &self.root.join("session"),
+                    ClientMsg::AgentReport(report),
+                    Duration::from_secs(5),
+                    |message| match message {
+                        ServerMsg::AgentReportAccepted {
+                            report_id: received,
+                        } if received == report_id => Some(Ok(Value::Null)),
+                        _ => None,
+                    },
+                );
             },
             "action" => self.actions(arg.as_str().context("action must be KDL text")?)?,
             "screen" => {
@@ -734,6 +877,54 @@ impl Controller {
         Ok(json!(output))
     }
 }
+/// Use the real control/report IPC routes; replies never bypass screen ownership checks.
+fn exchange(
+    socket: &Path,
+    message: ClientMsg,
+    timeout: Duration,
+    reply: impl Fn(ServerMsg) -> Option<Result<Value>>,
+) -> Result<Value> {
+    let stream = ipc_connect(socket).context("connect test agent client")?;
+    let mut sender = IpcSenderWithContext::<ClientMsg>::new(stream);
+    let mut receiver = sender
+        .get_receiver::<ServerMsg>()
+        .context("set up test agent reply")?;
+    sender
+        .send_client_msg(message)
+        .context("send test agent request")?;
+    let deadline = Instant::now() + timeout;
+    let result = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break Err(anyhow!("test agent request timed out"));
+        }
+        receiver
+            .set_recv_timeout(Some(remaining))
+            .context("bound test agent reply")?;
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerMsg::LogError { lines }, _) => {
+                break Err(anyhow!("{}", lines.join("\n")))
+            },
+            IpcRecv::Msg(ServerMsg::Exit { exit_reason }, _) => {
+                break Err(anyhow!("test agent session exited: {exit_reason}"))
+            },
+            IpcRecv::Msg(message, _) => {
+                if let Some(result) = reply(message) {
+                    break result;
+                }
+            },
+            IpcRecv::Eof | IpcRecv::Idle | IpcRecv::Malformed => {
+                break Err(anyhow!("test agent request ended without a reply"))
+            },
+        }
+    };
+    sender
+        .send_client_msg(ClientMsg::ClientExited)
+        .context("disconnect test agent client")
+        .non_fatal();
+    result
+}
+
 fn quote(text: &str) -> String {
     serde_json::to_string(text).expect("quote KDL string")
 }

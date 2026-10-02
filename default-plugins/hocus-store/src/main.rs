@@ -68,6 +68,7 @@ register_plugin!(State);
 
 impl YinzPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
+        yinz_tile::shim::init_agent_providers();
         self.host_id = get_plugin_ids().host_id;
         // Builtins already have data-store access; see hocus-agentd.
         let backend = Host::shared();
@@ -99,6 +100,9 @@ impl YinzPlugin for State {
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if let Event::AgentProvidersChanged(_) = event {
+            self.providers_changed(&Host::shared());
+        }
         if let Event::Timer(_) = event {
             self.retry_snapshot(&Host::shared());
             set_timeout(yinz_tile::prelude::FractionalSeconds::new(RETRY_SECONDS));
@@ -201,6 +205,11 @@ impl State {
             return;
         }
         self.latest_snapshot = Some(reply);
+        self.retry_snapshot = true;
+        self.retry_snapshot(backend);
+    }
+
+    fn providers_changed(&mut self, backend: &impl Backend) {
         self.retry_snapshot = true;
         self.retry_snapshot(backend);
     }
@@ -834,6 +843,43 @@ mod tests {
             "the-workspace",
             "a failed fetch is not an empty registry"
         );
+    }
+
+    #[test]
+    fn unhooked_opencode_is_discovered_even_when_registration_arrives_late() {
+        use yinz_tile::agent::provider::{self, AgentProvider};
+        let backend = backend();
+        let payload = snapshot(
+            pane_in(3, "opencode", Some("/opt/bin/opencode"), "/work/hocus"),
+            BTreeMap::new(),
+        );
+        let mut state = apply(&backend, &payload);
+        assert!(project_names(&backend).is_empty());
+        assert!(!state.retry_snapshot);
+        provider::register(
+            901_614,
+            AgentProvider {
+                kind: "opencode".into(),
+                executable: "opencode".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        state.providers_changed(&Unreachable);
+        assert!(state.retry_snapshot);
+        state.retry_snapshot(&backend);
+        assert_eq!(project_names(&backend), vec!["hocus"]);
+        assert!(!state.retry_snapshot);
+        // Registration before the first snapshot works too.
+        apply(
+            &backend,
+            &snapshot(
+                pane_in(4, "opencode", Some("opencode"), "/work/second"),
+                BTreeMap::new(),
+            ),
+        );
+        assert_eq!(project_names(&backend), vec!["hocus", "second"]);
+        assert!(provider::unregister_owner(901_614));
     }
 
     #[test]

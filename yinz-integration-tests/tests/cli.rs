@@ -144,11 +144,10 @@ fn eof_does_not_replace_a_self_closing_pipe_recipient() {
             assert_eq!(status, 0, "{panes}");
             let panes: serde_json::Value = serde_json::from_str(&panes).unwrap();
             assert!(
-                panes
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|pane| pane["is_plugin"] == false),
+                panes.as_array().unwrap().iter().all(|pane| {
+                    pane["plugin_url"] != "recipient"
+                        && pane["plugin_url"].as_str() != Some(url.as_str())
+                }),
                 "{panes}"
             );
         }

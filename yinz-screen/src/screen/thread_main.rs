@@ -34,9 +34,9 @@ use yinz_types::{
     geometry::Direction,
 };
 use {
-    yinz_types::data::GetFocusedPaneInfoResponse, yinz_types::data::InputMode,
-    yinz_types::data::NotificationInfo, yinz_types::data::PaneScrollbackResponse,
-    yinz_types::data::PluginCapabilities,
+    yinz_types::data::EventType, yinz_types::data::GetFocusedPaneInfoResponse,
+    yinz_types::data::InputMode, yinz_types::data::NotificationInfo,
+    yinz_types::data::PaneScrollbackResponse, yinz_types::data::PluginCapabilities,
 };
 
 pub(super) fn apply_queued_agent_report(
@@ -3855,6 +3855,16 @@ pub fn screen_thread_main(
                     client_id,
                     subscriptions,
                 ) => {
+                    let previous = screen
+                        .background_plugin_subscriptions
+                        .get(&(plugin_id, client_id));
+                    let needs_state =
+                        [EventType::PaneUpdate, EventType::TabUpdate]
+                            .iter()
+                            .any(|event| {
+                                subscriptions.contains(event)
+                                    && previous.is_none_or(|previous| !previous.contains(event))
+                            });
                     if subscriptions.is_empty() {
                         screen
                             .background_plugin_subscriptions
@@ -3863,6 +3873,11 @@ pub fn screen_thread_main(
                         screen
                             .background_plugin_subscriptions
                             .insert((plugin_id, client_id), subscriptions);
+                    }
+                    // The plugin may subscribe after startup's last layout report. Give it
+                    // the current panes and tabs even when the session is otherwise quiet.
+                    if needs_state {
+                        screen.log_and_report_session_state()?;
                     }
                 },
                 ScreenInstruction::ClearHintTextCache => {

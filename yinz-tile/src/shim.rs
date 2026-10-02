@@ -3185,8 +3185,34 @@ pub fn reload_plugin_by_url(url: &str) {
     send(PluginCommand::ReloadPluginByUrl(url.to_owned()));
 }
 
-/// Set what agent runs in `pane_id` and what it is doing, or clear the record with `None`. The
-/// record replaces the pane's whole one; every reader of the manifest sees it next report.
+/// Read metadata supplied by loaded TypeScript agent plugins. Requires RunCommands.
+pub fn get_agent_providers() -> Result<Vec<yinz_types::agent::provider::AgentProvider>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufAgentProvidersResponse =
+        call(PluginCommand::GetAgentProviders)?;
+    serde_json::from_str(&response.json)
+        .map_err(|error| format!("Malformed agent provider reply: {error}"))?
+}
+
+/// Load provider metadata and keep the portable registry current through plugin events.
+/// Call during `load` before using agent detection or launch metadata. Requires RunCommands.
+pub fn init_agent_providers() {
+    subscribe(&[EventType::AgentProvidersChanged]);
+    if let Ok(providers) = get_agent_providers() {
+        update_agent_providers(&Event::AgentProvidersChanged(providers));
+    }
+}
+
+/// Refresh the portable registry before a Wasm plugin handles a provider update.
+pub fn update_agent_providers(event: &Event) {
+    if let Event::AgentProvidersChanged(providers) = event {
+        if let Err(error) = yinz_types::agent::provider::replace_snapshot(providers.clone()) {
+            eprintln!("yinz-tile: invalid agent provider snapshot: {error}");
+        }
+    }
+}
+
+/// Set what agent runs in `pane_id` and what it is doing, or clear the record with `None`.
+/// The record replaces the pane's whole one; every manifest reader sees it next report.
 pub fn set_pane_agent(pane_id: PaneId, agent: Option<AgentInfo>) {
     send(PluginCommand::SetPaneAgent { pane_id, agent });
 }

@@ -3805,6 +3805,7 @@ pub(crate) fn check_event_permission(
         // What an agent said and was asked is session state, and more of it than the manifest
         // carries: a plugin that may read the panes may read this.
         EventType::AgentEvent => PermissionType::ReadApplicationState,
+        EventType::AgentProvidersChanged => PermissionType::RunCommands,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
         EventType::QueueChanged => PermissionType::ReadApplicationState,
@@ -3932,6 +3933,11 @@ pub fn apply_events_to_plugin(
         match check_event_permission(running_plugin.env(), event) {
             (PermissionStatus::Granted, _) => {
                 let mut event = event.clone();
+                // Registrations can change on different executor threads after a broadcast
+                // queues. Mirror the current registry, never an older queued snapshot.
+                if let Event::AgentProvidersChanged(providers) = &mut event {
+                    *providers = yinz_types::agent::provider::providers();
+                }
                 if let Event::ModeUpdate(mode_info) = &mut event {
                     // A ModeUpdate that already names its base mode (Screen::change_mode sets it
                     // when a keybinding preset switches) must keep it: the plugin's env is updated

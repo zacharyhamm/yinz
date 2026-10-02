@@ -361,8 +361,8 @@ pub enum HocusHooks {
         /// Install for one agent. User-level installs default to every agent; a project
         /// install defaults to Claude because only Claude Code has a machine-local
         /// project file.
-        #[clap(long, value_enum)]
-        agent: Option<HocusHookAgent>,
+        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        agent: Option<String>,
         /// Install into this project's `.claude/settings.local.json` (not committed)
         /// instead of `~/.claude/settings.json`.
         ///
@@ -383,8 +383,8 @@ pub enum HocusHooks {
     Uninstall {
         /// Uninstall for one agent. User-level uninstalls default to every agent; a project
         /// uninstall defaults to Claude.
-        #[clap(long, value_enum)]
-        agent: Option<HocusHookAgent>,
+        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        agent: Option<String>,
         /// Uninstall from this project's `.claude/settings.local.json` (and its
         /// committed `settings.json`, if an older install is still in it).
         #[clap(long)]
@@ -397,8 +397,8 @@ pub enum HocusHooks {
     /// Say what is wired up, and what would stop it working.
     Status {
         /// Show one agent instead of every one.
-        #[clap(long, value_enum)]
-        agent: Option<HocusHookAgent>,
+        #[clap(long, value_name = "AGENT_OR_TYPESCRIPT_PLUGIN")]
+        agent: Option<String>,
     },
 }
 
@@ -622,7 +622,7 @@ pub enum Agent {
     /// Preserve keyboard focus, including when the worker needs another tab.
     /// Refresh existing Claude hooks with `yinz hocus hooks install --agent claude` to prevent duplicate reports.
     Spawn {
-        #[clap(long, help = format!("Agent kind (recognized: {}). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
+        #[clap(long, help = format!("Agent kind (native: {}; loaded TypeScript plugins add more). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
         /// Read a JSON launch object from a file, or '-' for stdin. Flags override JSON fields.
         /// JSON also accepts command, args, env and hooks; opening prompts are not allowed.

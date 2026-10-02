@@ -1506,3 +1506,79 @@ fn pi_requires_matching_prompt_conversation_and_turn() {
         "\u{0085}review\u{0085}"
     );
 }
+
+#[test]
+fn plugin_prompt_observation_requires_the_acknowledged_turn_and_matches_input_quirks() {
+    use crate::agent::provider::{register, unregister_owner, AgentInput, AgentProvider};
+    let kind = "control-observation-test";
+    let owner = 70_001;
+    register(
+        owner,
+        AgentProvider {
+            kind: kind.into(),
+            executable: kind.into(),
+            input: Some(AgentInput {
+                paste_prefix: "Instructions: ".into(),
+                newline: "\r".into(),
+                command_prefixes: vec![":".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(supports_prompt(kind));
+    assert!(is_command_prompt(kind, " :reset"));
+    assert!(!is_command_prompt(kind, "/a/path"));
+    for prompt in ["review\ncode", "Instructions: review\rcode"] {
+        let mut observation = PromptObservation::new(kind, "conversation", "review\ncode");
+        assert_eq!(
+            observe(&mut observation, &event(kind, "Stop", Some("old"), None)),
+            None
+        );
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event(kind, "UserPromptSubmit", None, Some(prompt))
+            ),
+            Some(AgentOutcome::StatusUnavailable)
+        );
+        assert!(!observation.acknowledged());
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event(kind, "UserPromptSubmit", Some("new"), Some(prompt))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+        for stale in [None, Some("old")] {
+            assert_eq!(
+                observe(&mut observation, &event(kind, "Stop", stale, None)),
+                None
+            );
+            assert_eq!(
+                observe(&mut observation, &event(kind, "StopFailure", stale, None)),
+                None
+            );
+        }
+        assert_eq!(
+            observe(&mut observation, &event(kind, "Stop", Some("new"), None)),
+            Some(AgentOutcome::Completed)
+        );
+        assert_eq!(
+            observe(&mut observation, &event(kind, "Stop", Some("new"), None)),
+            None
+        );
+    }
+    unregister_owner(owner);
+    assert!(!supports_prompt(kind));
+    let mut unsupported = PromptObservation::new(kind, "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut unsupported,
+            &event(kind, "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::StatusUnavailable)
+    );
+    assert!(!unsupported.acknowledged());
+}

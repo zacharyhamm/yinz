@@ -258,5 +258,6 @@ pub mod agy;
 pub use agy::{AGY_HOOK_EVENTS, AGY_HOOK_TIMEOUT_SECONDS};
 pub mod control;
 pub mod opencode;
+pub mod provider;
 pub use opencode::*;
 pub mod report;

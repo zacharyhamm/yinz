@@ -24,6 +24,249 @@ test("swamp-bridge rejects unauthenticated callers before dispatch", async () =>
 });
 import { assertEquals } from "yinz:testing";
 import { storeReplies } from "./testing-fixtures/store.ts";
+import type { AgentEvent } from "yinz:plugin";
+
+async function promptFixture(
+  legacy = false,
+  prompt_sha256?: string,
+  kind = legacy ? "claude" : "fixture",
+) {
+  const f = await cleanupFixture();
+  const owner = { ...f.identity, work: "work", agent: "agent" };
+  f.seed("work", "agent", {
+    request: JSON.stringify({ method: "agent_spawn" }),
+    owner,
+    pane: 9,
+    supervisor: "supervisor",
+    process: 42,
+    ready: true,
+    outcome: "completed",
+  });
+  f.p.stub("GetPaneInfo", (pane: { Terminal?: number }) =>
+    pane.Terminal == null ? { plugin_url: "yinz:agent-exit" } : { agent: { kind } },
+  );
+  f.p.stub("GetAgentProviders", [
+    { kind: "fixture", executable: "/opt/bin/fixture-cli", aliases: ["fixture-alias"], input: {} },
+    { kind: "opencode", executable: "opencode" },
+    { kind: "no-input", executable: "no-input" },
+  ]);
+  f.p.stub("AgentControl", null);
+  f.p.stub("WriteToPaneId", null);
+  const payload = {
+    method: "agent_prompt",
+    work: "work",
+    agent: "agent",
+    key: "prompt",
+    prompt: "first\nsecond",
+    ...(prompt_sha256 ? { prompt_sha256 } : {}),
+  };
+  const pending = await f.request(payload);
+  await f.hostReply([
+    {
+      terminal_id: 9,
+      host_id: "supervisor",
+      child_pid: 42,
+      attached: true,
+      session_name: f.identity.session,
+    },
+  ]);
+  function saved(key = "prompt") {
+    return JSON.parse(
+      f.store.rows.get(JSON.stringify([f.identity.host_id, f.identity.session, "work", key]))!
+        .value,
+    );
+  }
+  async function hook(hook: string, fields: Partial<AgentEvent> = {}, raw = {}) {
+    await f.p.event({
+      AgentEvent: {
+        pane_id: 9,
+        kind: "fixture",
+        hook,
+        session_id: "agent-session",
+        state: "Idle",
+        detail: null,
+        prompt: payload.prompt,
+        last_message: "done",
+        tool_name: null,
+        cwd: null,
+        raw: JSON.stringify({
+          _yinz_workflow_owner: JSON.stringify(owner),
+          turn_id: "turn",
+          ...raw,
+        }),
+        ...fields,
+      },
+    });
+  }
+  async function response(fields = {}) {
+    const command = (f.p.commands as { AgentControl?: { id: string } }[]).find(
+      (entry) => entry.AgentControl,
+    )!.AgentControl!;
+    await f.p.event({
+      CustomMessage: [
+        "agent-response",
+        JSON.stringify({
+          id: command.id,
+          response: {
+            outcome: "submitted",
+            acknowledged: true,
+            agents: [{ agent: { session_id: "agent-session" } }],
+            turn_id: "turn",
+            ...fields,
+          },
+        }),
+      ],
+    });
+  }
+  return { ...f, owner, payload, pending, saved, hook, response };
+}
+
+for (const kind of [
+  "fixture",
+  "/opt/bin/FIXTURE-CLI",
+  "FIXTURE-ALIAS",
+  "opencode",
+  "no-input",
+  "claude",
+  "unknown",
+]) {
+  test(`prompt input follows registered capabilities: ${kind}`, async () => {
+    const f = await promptFixture(false, undefined, kind);
+    const guarded = kind.toLowerCase().includes("fixture");
+    const controls = (f.p.commands as { AgentControl?: { request: string } }[]).filter(
+      (entry) => entry.AgentControl,
+    );
+    assertEquals(controls.length, guarded ? 1 : 0);
+    const writes = (f.p.commands as { WriteToPaneId?: [number[], unknown] }[]).filter(
+      (entry) => entry.WriteToPaneId,
+    );
+    if (guarded) {
+      assertEquals(JSON.parse(controls[0]!.AgentControl!.request).Prompt.wait, false);
+      assertEquals(writes.length, 0);
+      await f.response();
+    } else {
+      assertEquals(
+        writes.map((entry) => String.fromCharCode(...entry.WriteToPaneId![0])),
+        ["\x1b[200~first\nsecond\x1b[201~", "\r"],
+      );
+    }
+    await f.hook("UserPromptSubmit");
+    await f.hook("Stop");
+    assertEquals(f.saved().outcome, "completed");
+  });
+}
+
+for (const prompt of ["provider prefix: first\nsecond", "first\r\nsecond"]) {
+  for (const hashed of [false, true]) {
+    test(`guarded prompt completes after transformation: ${JSON.stringify(prompt)}, hashes: ${hashed}`, async () => {
+      const f = await promptFixture(false, hashed ? "request-hash" : undefined);
+      await f.hook("UserPromptSubmit", { prompt }, hashed ? { prompt_sha256: "hook-hash" } : {});
+      assert(!f.saved().accepted);
+      await f.response();
+      assertEquals(f.saved().agentSession, "agent-session");
+      assertEquals(f.saved().turn, "turn");
+      await f.hook("Stop");
+      assertEquals(f.saved().outcome, "completed");
+      assertEquals(f.saved("agent").outstanding, undefined);
+    });
+  }
+}
+
+for (const earlyCompletion of [false, true]) {
+  test(`guarded prompt replays only matching completion hooks, early completion: ${earlyCompletion}`, async () => {
+    const f = await promptFixture();
+    await f.hook("Stop", { session_id: "unrelated" });
+    await f.hook("Stop", {}, { turn_id: "unrelated" });
+    await f.hook("Stop", { pane_id: 10 });
+    await f.hook(
+      "Stop",
+      {},
+      {
+        _yinz_workflow_owner: JSON.stringify({ ...f.owner, incarnation: "unrelated" }),
+      },
+    );
+    if (earlyCompletion) await f.hook("Stop");
+    await f.response();
+    assertEquals(f.saved().outcome, earlyCompletion ? "completed" : "pending");
+    if (!earlyCompletion) {
+      await f.hook("Stop", { session_id: "unrelated" });
+      await f.hook("Stop", {}, { turn_id: "unrelated" });
+      assertEquals(f.saved().outcome, "pending");
+      await f.hook("Stop");
+    }
+    assertEquals(f.saved().outcome, "completed");
+    assertEquals(f.saved("agent").outstanding, undefined);
+  });
+}
+
+for (const missingAcknowledgement of [false, true]) {
+  test(`status unavailable reserves the prompt slot, missing acknowledgement: ${missingAcknowledgement}`, async () => {
+    const f = await promptFixture();
+    await f.hook("UserPromptSubmit", { prompt: "provider prefix" });
+    await f.response({
+      outcome: "status_unavailable",
+      ...(missingAcknowledgement
+        ? { acknowledged: undefined, agents: [], turn_id: undefined }
+        : {}),
+    });
+    assertEquals(f.saved().outcome, "unknown");
+    assert(f.saved().dispatched);
+    assert(f.saved("agent").outstanding);
+    assert(f.pending.reply().error.includes("status_unavailable"));
+    assertEquals((await f.request(f.payload)).reply().result.outcome, "unknown");
+    await f.hook("SessionStart");
+    await f.hostReply([
+      {
+        terminal_id: 9,
+        host_id: "supervisor",
+        child_pid: 42,
+        attached: true,
+        session_name: f.identity.session,
+      },
+    ]);
+    assertEquals(
+      (f.p.commands as { AgentControl?: unknown }[]).filter((entry) => entry.AgentControl).length,
+      1,
+    );
+    assertEquals(f.saved().outcome, "unknown");
+    assert(f.saved("agent").outstanding);
+  });
+}
+
+test("explicit prompt rejection fails and releases the slot", async () => {
+  const f = await promptFixture();
+  await f.response({ outcome: "rejected", acknowledged: false, agents: [], turn_id: null });
+  assertEquals(f.saved().outcome, "failed");
+  assertEquals(f.saved("agent").outstanding, undefined);
+});
+
+for (const hashed of [false, true]) {
+  test(`legacy prompt completes through matching hooks, hashes: ${hashed}`, async () => {
+    const f = await promptFixture(true, hashed ? "same-hash" : undefined);
+    await f.hook("UserPromptSubmit", { prompt: "unrelated" }, { prompt_sha256: "wrong-hash" });
+    await f.hook("Stop");
+    assertEquals(f.saved().outcome, "pending");
+    await f.hook(
+      "UserPromptSubmit",
+      hashed ? { prompt: "transformed" } : {},
+      hashed ? { prompt_sha256: "same-hash" } : {},
+    );
+    await f.hook("Stop");
+    assertEquals(f.saved().outcome, "completed");
+    assertEquals(f.saved("agent").outstanding, undefined);
+  });
+}
+
+test("late submission response preserves a terminal prompt outcome", async () => {
+  const f = await promptFixture();
+  await f.hook("UserPromptSubmit");
+  await f.hook("StopFailure");
+  const saved = f.saved();
+  await f.response();
+  assertEquals(f.saved(), saved);
+  assertEquals(f.saved().outcome, "failed");
+});
+
 test("CLI workflow operations use the shared validator and correlated one-shot replies", async () => {
   const f = await cleanupFixture();
   f.p.stub("BlockCliPipeInput", null);

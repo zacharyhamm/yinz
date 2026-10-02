@@ -25,6 +25,36 @@ fn load_builtin(name: &str, source: &str, mut env: PluginEnv) -> Result<DenoPlug
 /// a syntax error, a bad field name or a broken filter would otherwise go unnoticed until somebody
 /// right-clicked.
 #[test]
+fn agent_paste_helpers_require_only_write_to_stdin_permission() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut env = test_env();
+    env.permissions = Arc::new(Mutex::new(Some(HashSet::from([
+        PermissionType::WriteToStdin,
+    ]))));
+    let mut plugin = DenoPlugin::new(
+        r#"
+        import z from 'yinz:plugin';
+        let state = 'starting';
+        export default {
+            load() {
+                z.agent.send(7, 'draft', {enter:false});
+                z.agent.prompt(7, 'go').catch(error => { state = String(error); });
+                state = 'waiting for completion';
+            },
+            render() { return state; }
+        };
+    "#,
+        &directory.path().join("paste.ts"),
+        env,
+        Arc::default(),
+    )
+    .unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    plugin.tick().unwrap();
+    assert_eq!(frame(&mut plugin, 10, 80), "waiting for completion");
+}
+
+#[test]
 fn the_shipped_context_menu_hook_filters_the_items_it_is_given() {
     use yinz_bus::screen::ScreenInstruction;
     use yinz_runtime::channels::SenderWithContext;

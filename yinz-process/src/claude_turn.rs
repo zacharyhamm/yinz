@@ -180,7 +180,7 @@ fn agent_ancestor(kind: &str) -> Option<(u32, u64)> {
                             .is_some_and(|name| {
                                 name == "agy"
                                     || name == "antigravity"
-                                    || yinz_types::agent::kind_of(name) == Some("agy")
+                                    || yinz_types::agent::kind_of(name).as_deref() == Some("agy")
                             })
                     })
             },

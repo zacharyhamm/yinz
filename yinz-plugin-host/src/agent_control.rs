@@ -238,7 +238,16 @@ pub(super) fn prepare_automation_agent(
     data: &DataAccess,
 ) -> Result<PreparedAgent, AgentSpawnError> {
     let guidance = || {
-        format!("Use --kind with a recognized kind: {}. Alternatively, use --file PATH (or --file - for stdin) with a JSON object containing a recognized executable in command and optional args.", yinz_types::agent::KINDS.join(", "))
+        let kinds = yinz_types::agent::KINDS
+            .iter()
+            .map(|kind| (*kind).to_owned())
+            .chain(
+                yinz_types::agent::provider::providers()
+                    .into_iter()
+                    .map(|provider| provider.kind),
+            )
+            .collect::<Vec<_>>();
+        format!("Use --kind with a recognized kind: {}. Alternatively, use --file PATH (or --file - for stdin) with a JSON object containing a recognized executable in command and optional args.", kinds.join(", "))
     };
     if [&spec.kind, &spec.command]
         .iter()
