@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 use yinz_types::pane_size::Viewport;
 
-/// Frames a client may have queued behind its in-flight write before the screen
-/// stops rendering. See `Screen::a_client_is_behind_on_renders`.
+/// Frames a client may have queued behind its in-flight write before it counts as
+/// behind. See `Screen::every_client_is_behind_on_renders`.
 const MAX_QUEUED_RENDERS: usize = 1;
 /// One write can legitimately block for seconds: the client reads the next frame only
 /// once its terminal has taken several megabytes of the last. Only a client that has
@@ -49,27 +49,44 @@ impl Screen {
         Ok(())
     }
 
-    /// Whether a client still has a frame queued behind the one it is writing.
+    /// Whether every client still has a frame queued behind the one it is writing.
     ///
-    /// Rendering then would only queue another diff it cannot drain, until its send
-    /// queue overflows and the server disconnects it. Skipping the frame loses
+    /// Rendering then would only queue diffs nobody can drain, until the send
+    /// queues overflow and the server disconnects them. Skipping the frame loses
     /// nothing: pane dirty state accumulates, and the next frame carries it all.
-    /// A client whose write has been blocked for `STALLED_CLIENT_WRITE` no longer
-    /// holds frames back, so a wedged client cannot freeze the others; the send
-    /// queue's caps disconnect it instead.
-    pub fn a_client_is_behind_on_renders(&self) -> bool {
+    ///
+    /// Only when *every* client is behind: frames are rendered once for all of them,
+    /// so waiting for one slow client would freeze the healthy ones. A slow client
+    /// among healthy ones keeps receiving diffs, and the send queue's caps disconnect
+    /// it if it cannot keep up. A client whose write has been blocked for
+    /// `STALLED_CLIENT_WRITE` has stopped reading, and does not hold frames back either.
+    pub fn every_client_is_behind_on_renders(&self) -> bool {
         let Some(os_input) = self.bus.os_input.as_ref() else {
             return false;
         };
-        os_input
-            .clients_render_backlog()
-            .iter()
-            .any(|(_, backlog)| {
-                backlog.queued_renders >= MAX_QUEUED_RENDERS
-                    && backlog
-                        .in_flight_for
-                        .is_none_or(|blocked| blocked < STALLED_CLIENT_WRITE)
+        let clients = self.connected_clients.borrow();
+        !clients.is_empty()
+            && clients.iter().all(|client_id| {
+                os_input
+                    .client_render_backlog(*client_id)
+                    .is_some_and(|backlog| {
+                        backlog.queued_renders >= MAX_QUEUED_RENDERS
+                            && backlog
+                                .in_flight_for
+                                .is_none_or(|blocked| blocked < STALLED_CLIENT_WRITE)
+                    })
             })
+    }
+
+    /// Skip this frame if every client is behind, asking the debouncer to try again;
+    /// see `every_client_is_behind_on_renders`. Returns whether it skipped. Polls
+    /// every debounce interval until a client drains.
+    pub fn defer_render_while_clients_are_behind(&self) -> bool {
+        let behind = self.every_client_is_behind_on_renders();
+        if behind {
+            self.retry_render_later();
+        }
+        behind
     }
 
     /// Ask the debouncer for another frame, as `render` does, without the bookkeeping

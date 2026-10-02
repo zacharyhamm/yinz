@@ -33,7 +33,7 @@ use std::{
 pub use async_trait::async_trait;
 
 /// How far behind a client's writer is: what the screen consults before rendering
-/// another frame for it. See `ServerOsApi::clients_render_backlog`.
+/// another frame for it. See `ServerOsApi::client_render_backlog`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderBacklog {
     /// `Render` messages queued behind the one being written, if any.
@@ -164,12 +164,12 @@ pub trait ServerOsApi: Send + Sync {
         stream: LocalSocketStream,
     ) -> Result<IpcReceiverWithContext<ClientToServerMsg>>;
     fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
-    /// Each connected client's render backlog. The screen skips a frame while a
+    /// A connected client's render backlog. The screen skips a frame while every
     /// client is behind, so dirty state accumulates into one later frame instead
-    /// of queueing diffs the client cannot drain. A default of no clients: test
-    /// fakes have no writers to fall behind.
-    fn clients_render_backlog(&self) -> Vec<(ClientId, RenderBacklog)> {
-        Vec::new()
+    /// of queueing diffs the clients cannot drain. A default of none: test fakes
+    /// have no writers to fall behind.
+    fn client_render_backlog(&self, _client_id: ClientId) -> Option<RenderBacklog> {
+        None
     }
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid
