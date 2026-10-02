@@ -119,6 +119,8 @@ pub enum NotReadyReason {
     PromptUnsupported,
     NotIdle,
     PendingSubmission,
+    /// An acknowledged turn still owns the input until completion or explicit recovery.
+    UnresolvedTurn,
     UnconsumedInput,
     /// An agent detected in the pane's foreground that Yinz did not launch. It cannot be
     /// prompted; relaunch it with `agent spawn`.

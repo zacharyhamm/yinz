@@ -185,14 +185,15 @@ fn pipe_client(
                             .write_all(output.as_bytes())
                             .and_then(|_| stdout.flush())
                         {
-                            eprintln!("Failed to write pipe output: {error}");
-                            return Some(2);
+                            return Some(output_error_status(error));
                         }
                     }
                 },
                 IpcRecv::Msg(ServerToClientMsg::Log { lines: log_lines }, _) => {
-                    log_lines.iter().for_each(|line| println!("{line}"));
-                    return Some(0);
+                    return Some(
+                        write_log_lines(&mut os_input.get_stdout_writer(), &log_lines)
+                            .map_or_else(output_error_status, |()| 0),
+                    );
                 },
                 IpcRecv::Msg(ServerToClientMsg::LogError { lines: log_lines }, _) => {
                     log_lines.iter().for_each(|line| eprintln!("{line}"));
@@ -253,7 +254,9 @@ fn individual_messages_client(
                 return None;
             },
             IpcRecv::Msg(ServerToClientMsg::Log { lines: log_lines }, _) => {
-                log_lines.iter().for_each(|line| println!("{line}"));
+                if let Err(error) = write_log_lines(&mut os_input.get_stdout_writer(), &log_lines) {
+                    return Some(output_error_status(error));
+                }
                 // A blocking pane's ids arrive ahead of its exit status; the status is the
                 // answer, so keep reading for it.
                 if !is_blocking {
@@ -283,6 +286,21 @@ fn individual_messages_client(
             _ => {},
         }
     }
+}
+
+fn write_log_lines(stdout: &mut impl Write, lines: &[String]) -> io::Result<()> {
+    for line in lines {
+        writeln!(stdout, "{line}")?;
+    }
+    stdout.flush()
+}
+
+fn output_error_status(error: io::Error) -> i32 {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        return 0;
+    }
+    eprintln!("Failed to write output: {error}");
+    2
 }
 
 pub fn start_subscribe_client(

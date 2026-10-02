@@ -158,6 +158,8 @@ fn completed_runs_are_nested_under_the_archive_and_page_on_demand() {
     state.archived_runs.push(agents::AgentRunHeader {
         id: "claude:session-1".to_owned(),
         pane_id: 3,
+        yinz_session_name: "main".into(),
+        host_id: HostId::new("test-host"),
         origin_run_id: None,
         previous_run_id: None,
         session_id: "session-1".to_owned(),
@@ -196,6 +198,8 @@ fn header(session_id: &str, host: Option<&str>) -> agents::AgentRunHeader {
     agents::AgentRunHeader {
         id: agents::run_id("claude", 3, session_id, 10, &HostId::new("test-host")),
         pane_id: 3,
+        yinz_session_name: "main".into(),
+        host_id: HostId::new("test-host"),
         origin_run_id: None,
         previous_run_id: None,
         session_id: session_id.to_owned(),
@@ -496,6 +500,8 @@ fn a_selected_agent_picks_up_its_run_when_the_first_header_arrives() {
     let mut run = agents::AgentRunHeader {
         id: "claude:session-1".to_owned(),
         pane_id: 3,
+        yinz_session_name: "main".into(),
+        host_id: HostId::new("test-host"),
         origin_run_id: None,
         previous_run_id: None,
         session_id: "session-1".to_owned(),
@@ -524,6 +530,8 @@ fn archive_offset_moves_only_for_completions_before_the_loaded_page() {
     let completed = |id: &str, started_at_ms: i64| agents::AgentRunHeader {
         id: id.to_owned(),
         pane_id: 3,
+        yinz_session_name: "main".into(),
+        host_id: HostId::new("test-host"),
         origin_run_id: None,
         previous_run_id: None,
         session_id: id.to_owned(),

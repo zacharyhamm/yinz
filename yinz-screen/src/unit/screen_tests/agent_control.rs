@@ -745,7 +745,7 @@ fn respawn_restores_readiness_without_consuming_a_new_draft() {
 }
 
 #[test]
-fn agent_read_counts_nonblank_lines_and_preserves_internal_spacing() {
+fn agent_read_limits_physical_lines_and_preserves_internal_spacing() {
     // v2-05-read-claude captured 26 blank rows before these four UI rows.
     let captured = "────\n❯\u{a0}Try \"refactor <filepath>\"\n────\n  ⏸ manual mode on · ? for shortcuts · ← for agents";
     let leading_blanks = format!("{}{captured}", "\n".repeat(26));
@@ -754,10 +754,12 @@ fn agent_read_counts_nonblank_lines_and_preserves_internal_spacing() {
         (leading_blanks.as_str(), 30, captured),
         ("first\n\nsecond\n \t \n\u{2003}\n", 80, "first\n\nsecond"),
         (paragraphs, 1, "third\u{a0}"),
-        (paragraphs, 2, "  second\n\nthird\u{a0}"),
+        (paragraphs, 2, "third\u{a0}"),
+        (paragraphs, 3, "  second\n\nthird\u{a0}"),
+        (paragraphs, 4, "  second\n\nthird\u{a0}"),
         (
             paragraphs,
-            3,
+            6,
             "  first\n\u{2003}\n\n  second\n\nthird\u{a0}",
         ),
         (
@@ -784,6 +786,7 @@ fn agent_read_counts_nonblank_lines_and_preserves_internal_spacing() {
         );
         let result = replies(&messages, CLIENT).pop().unwrap();
         assert_eq!(result.outcome, AgentOutcome::Ok);
+        assert!(result.output.as_ref().unwrap().lines().count() <= lines);
         assert_eq!(
             result.output.as_deref(),
             Some(expected),
@@ -1793,7 +1796,7 @@ fn fast_turn_hooks_preserve_completion_failure_and_interruption() {
                 .contains("The turn was interrupted."));
             assert_eq!(
                 result.agents[0].not_ready_reason,
-                Some(NotReadyReason::PendingSubmission)
+                Some(NotReadyReason::UnresolvedTurn)
             );
         }
         assert!(result.acknowledged);
@@ -3896,6 +3899,63 @@ fn hooks_from_an_interrupted_codex_turn_leave_the_agent_idle() {
     let done = replies(&messages, CLIENT);
     assert_eq!(done[0].outcome, AgentOutcome::Completed);
     assert!(done[0].agents[0].ready);
+}
+
+#[test]
+fn interrupted_accepted_turn_reports_unresolved_until_recovery() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&writes);
+    report(&mut screen, hook("UserPromptSubmit"));
+    report(&mut screen, hook("Interrupt"));
+    let interrupted = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(interrupted.outcome, AgentOutcome::Interrupted);
+    assert!(interrupted.acknowledged);
+    assert_eq!(
+        interrupted.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnresolvedTurn)
+    );
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(41));
+    assert_eq!(screen.agent_controls.len(), 1);
+    for request in [
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        AgentRequest::List { project: None },
+        prompt(true),
+    ] {
+        screen.agent_control(request, CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert!(!response.agents[0].ready);
+        assert_eq!(
+            response.agents[0].not_ready_reason,
+            Some(NotReadyReason::UnresolvedTurn)
+        );
+        if response.outcome == AgentOutcome::Rejected {
+            assert!(response
+                .message
+                .unwrap()
+                .contains("unresolved accepted turn"));
+        }
+    }
+    screen.agent_control(wait(AgentState::Idle), CLIENT);
+    assert!(replies(&messages, CLIENT).is_empty());
+    screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(41));
+    let timed_out = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(timed_out.outcome, AgentOutcome::TimedOut);
+    assert_eq!(
+        timed_out.agents[0].not_ready_reason,
+        Some(NotReadyReason::UnresolvedTurn)
+    );
+    assert_eq!(screen.agent_controls.len(), 1);
+    screen.agent_control(recover(), CLIENT);
+    let recovered = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(recovered.outcome, AgentOutcome::Ok);
+    assert!(recovered.agents[0].ready);
+    assert_eq!(recovered.agents[0].not_ready_reason, None);
+    assert!(screen.agent_controls.is_empty());
 }
 
 /// A blocking Stop hook continues the same turn, and a hook without a turn id cannot be

@@ -75,7 +75,9 @@ fn run_inner(command: Agent, opts: &CliArgs) -> Result<i32> {
     if let Some(action) = action {
         let reply = yinz_client::store_client::request(&session.into(), action, caller)
             .map_err(|error| anyhow!(RequestFailed(error)))?;
-        println!("{reply}");
+        allow_closed_stdout(
+            writeln!(std::io::stdout().lock(), "{reply}").context("cannot write agent reply"),
+        )?;
         return Ok(0);
     }
     let (request, json, timeout) = request(command, &mut std::io::stdin())?;
@@ -410,6 +412,26 @@ fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<A
 }
 
 fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) -> Result<()> {
+    allow_closed_stdout(
+        write_response(response, json, out)
+            .and_then(|()| out.flush().context("cannot flush agent response")),
+    )
+}
+
+fn allow_closed_stdout(result: Result<()>) -> Result<()> {
+    match result {
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe) =>
+        {
+            Ok(())
+        },
+        result => result,
+    }
+}
+
+fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
         let mut value = serde_json::to_value(response).context("cannot encode agent response")?;
         if let Some(spawned) = &response.spawned {
@@ -423,8 +445,7 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
                     .into();
             }
         }
-        serde_json::to_writer(&mut *out, &value).context("cannot write agent response")?;
-        writeln!(out).context("cannot finish agent response")?;
+        writeln!(out, "{value}").context("cannot write agent response")?;
         return Ok(());
     }
     if let Some(output) = &response.output {

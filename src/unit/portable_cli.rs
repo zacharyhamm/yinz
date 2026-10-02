@@ -899,13 +899,20 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
         command(dir.path())
             .args(["skills", "install", "--dest"])
             .arg(&dest)
+            .env("CODEX_HOME", dir.path().join(".codex"))
             .args(args)
             .output()
             .unwrap()
     };
-    assert!(install(&["--dry-run"]).status.success());
+    assert!(install(&["--agent", "codex", "--dry-run"]).status.success());
     assert!(!dest.exists());
-    assert!(install(&[]).status.success());
+    assert!(install(&["--agent", "codex"]).status.success());
+    for root in [".claude", ".codex", "opencode", "muse", ".gemini"] {
+        assert!(
+            !dir.path().join(root).exists(),
+            "unexpected install: {root}"
+        );
+    }
     let names = success(
         command(dir.path())
             .args(["skills", "list"])

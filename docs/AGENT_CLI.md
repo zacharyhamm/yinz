@@ -15,7 +15,7 @@ Use `yinz --session development agent ...` to select a session. Without
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
 | `agent prompt TARGET --file PATH --wait` | Outcome of the submitted turn |
 | `agent wait TARGET --until idle` | Observation of the requested state |
-| `agent read TARGET --lines 80` | Last 80 nonblank lines of terminal output, with internal spacing |
+| `agent read TARGET --lines 80` | Last 80 terminal lines, including internal blank rows |
 | `agent recover TARGET --conversation ID --confirm-empty [--interrupted]` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
@@ -185,7 +185,8 @@ When several conditions block readiness, the first matching reason applies:
 | --- | --- |
 | `prompt_unsupported` | Lifecycle, process or terminal evidence does not permit prompt submission |
 | `not_idle` | The agent is busy, waiting or exited |
-| `pending_submission` | An earlier submission still owns the input, including an unresolved claim after a timeout |
+| `pending_submission` | An earlier submission still owns the input and has not been acknowledged |
+| `unresolved_turn` | An accepted turn still owns the input after an interruption or an unconfirmed outcome; inspect the pane and recover only after it has stopped and its draft is empty |
 | `unconsumed_input` | Terminal input is newer than the last confirmed consumed input revision |
 
 A ready agent has no reason (`null` in JSON). Older responses without the field
@@ -350,11 +351,11 @@ return `1`. CLI syntax errors return `2`. With `--json`, inspect `outcome`,
 `acknowledged`, `turn_id` and `message`. Connection and local input errors go to
 standard error and return `1`.
 
-`agent read --lines N` returns the last N nonblank terminal lines, including output
-below a scrolled viewport. Whitespace-only rows count as blank. Blank rows at both
-ends are removed. Blank rows between selected content remain, so output can contain
-more than N physical rows. Nonblank lines are preserved verbatim. An entirely blank
-terminal returns an empty string. The default is 80, and the accepted range is
+`agent read --lines N` returns at most N terminal lines, including output below a
+scrolled viewport. Whitespace-only rows count as blank. Trailing blank rows do not
+count toward the limit. Internal blank rows count and remain in the output.
+Leading blank rows in the selected output are removed. Nonblank lines are preserved
+verbatim. An entirely blank terminal returns an empty string. The default is 80, and the accepted range is
 1–100000. Text and JSON responses contain the same retained content.
 Reading does not change the viewport or selection. Ghost suggestions remain visible
 and cannot prove that the composer contains a draft or is empty.

@@ -6,6 +6,10 @@ use hocus_proto::{
 use serde_json::{json, Value};
 use yinz_tile::prelude::{FetchRequest, HostId, SessionName};
 
+#[cfg(test)]
+#[path = "unit/archive.rs"]
+mod tests;
+
 pub fn query(backend: &impl Backend, op: &str, args: &Value) -> Result<String, String> {
     let text = |key| {
         args.get(key)

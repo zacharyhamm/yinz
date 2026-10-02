@@ -786,6 +786,7 @@ fn readiness_reason_is_additive_and_uses_snake_case() {
         (NotReadyReason::PromptUnsupported, "prompt_unsupported"),
         (NotReadyReason::NotIdle, "not_idle"),
         (NotReadyReason::PendingSubmission, "pending_submission"),
+        (NotReadyReason::UnresolvedTurn, "unresolved_turn"),
         (NotReadyReason::UnconsumedInput, "unconsumed_input"),
     ] {
         let status = AgentStatus {

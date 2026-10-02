@@ -62,7 +62,8 @@ Run `yinz agent wait terminal_3 --until idle --timeout 10m --json` for the final
 To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex).
 The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` leaves the pane needing `recover`.
 
-`agent read --lines N` selects the last N nonblank lines, preserves internal blank rows, and removes blank rows at both ends.
+`agent read --lines N` returns at most N terminal lines, including internal blank rows.
+Trailing blank rows do not count toward the limit. Blank rows at both ends are removed.
 Whitespace-only rows count as blank. Text and JSON retain the same content, including ghost suggestions.
 Plain terminal text cannot establish whether the composer contains a draft. Do not infer a draft from suggestion text or strip suggestions heuristically.
 If a submission is uncertain, inspect the composer in the terminal UI and clear any actual draft deliberately.

@@ -84,24 +84,60 @@ fn invalid_pipe_input_is_an_error_not_end_of_input() {
 }
 
 #[test]
-fn a_pipe_output_failure_does_not_report_success() {
-    let os = FakeClientOsApi::default().with_stdout_error(std::io::ErrorKind::BrokenPipe);
-    os.queue_from_server(ServerToClientMsg::CliPipeOutput {
-        pipe_name: "pipe".into(),
-        output: "result".into(),
-    });
-    os.queue_from_server(ServerToClientMsg::UnblockCliPipeInput {
-        pipe_name: "pipe".into(),
-    });
-    assert_eq!(
-        start_cli_client(
-            Box::new(os),
-            &"test".into(),
-            vec![pipe_action(Some("input".into()))],
-            None,
-        ),
-        2,
-    );
+fn pipe_output_accepts_closed_stdout_but_reports_other_write_errors() {
+    for (error, expected) in [
+        (std::io::ErrorKind::BrokenPipe, 0),
+        (std::io::ErrorKind::PermissionDenied, 2),
+    ] {
+        let os = FakeClientOsApi::default().with_stdout_error(error);
+        os.queue_from_server(ServerToClientMsg::CliPipeOutput {
+            pipe_name: "pipe".into(),
+            output: "result".into(),
+        });
+        os.queue_from_server(ServerToClientMsg::UnblockCliPipeInput {
+            pipe_name: "pipe".into(),
+        });
+        assert_eq!(
+            start_cli_client(
+                Box::new(os),
+                &"test".into(),
+                vec![pipe_action(Some("input".into()))],
+                None,
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn action_and_pipe_logs_accept_closed_stdout_but_report_other_write_errors() {
+    for action in [Action::NoOp, pipe_action(Some("input".into()))] {
+        for (error, expected) in [
+            (None, 0),
+            (Some(std::io::ErrorKind::BrokenPipe), 0),
+            (Some(std::io::ErrorKind::PermissionDenied), 2),
+        ] {
+            let mut os = FakeClientOsApi::default().capturing_stdout();
+            if let Some(error) = error {
+                os = os.with_stdout_error(error);
+            }
+            os.queue_from_server(ServerToClientMsg::Log {
+                lines: vec!["first".into(), "second".into()],
+            });
+            assert_eq!(
+                start_cli_client(
+                    Box::new(os.clone()),
+                    &"test".into(),
+                    vec![action.clone()],
+                    None
+                ),
+                expected,
+            );
+            if error.is_none() {
+                assert_eq!(os.stdout_bytes(), b"first\nsecond\n");
+            }
+        }
+    }
 }
 
 /// The server answers a plugin reply too large for one frame with an error, and the plugin's

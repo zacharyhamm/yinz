@@ -3,6 +3,54 @@ use serde_json::json;
 use yinz_types::pane_id::PaneId;
 
 #[test]
+fn agent_output_accepts_closed_stdout_but_reports_other_write_errors() {
+    struct FailingOutput {
+        remaining: usize,
+        error: std::io::ErrorKind,
+    }
+    impl Write for FailingOutput {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(self.error.into());
+            }
+            let written = bytes.len().min(self.remaining);
+            self.remaining -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(self.error.into())
+        }
+    }
+    let mut response = AgentResponse::new(AgentOutcome::Ok);
+    response.message = Some("the response".into());
+    for json in [false, true] {
+        // Fail before writing, during writing, or only when flushing.
+        for remaining in [0, 5, usize::MAX] {
+            for error in [
+                std::io::ErrorKind::BrokenPipe,
+                std::io::ErrorKind::PermissionDenied,
+            ] {
+                let result =
+                    print_response(&response, json, &mut FailingOutput { remaining, error });
+                if error == std::io::ErrorKind::BrokenPipe {
+                    result.unwrap();
+                } else {
+                    assert_eq!(
+                        result
+                            .unwrap_err()
+                            .downcast::<std::io::Error>()
+                            .unwrap()
+                            .kind(),
+                        error
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn prompt_inputs_normalize_newlines_and_require_safe_nonempty_content() {
     let prompt = "Review this diff:\n\t+added line";
     assert_eq!(

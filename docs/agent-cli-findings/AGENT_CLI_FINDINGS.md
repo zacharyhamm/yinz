@@ -19,12 +19,7 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 | # | Sev | Issue |
 |---|---|---|
 | 17 | P1 | **A Codex auto-update during launch has not been retested live.** Codex 0.158 updated itself to 0.159 and restarted at launch, so the first wait returned `target_changed`. The launcher now survives backend connection failures before and after a conversation is selected. A launcher subprocess test against a mock backend covers this. |
-| 24 | P3 | **`agent read` treats a run of blank rows inside the output as zero lines.** As a result, `--lines 15` on a sparse Claude screen can return 43 rows. Claude's ghost suggestions are documented but still look like drafts, so callers must confirm the composer is empty before using `--confirm-empty`. |
-| 29 | P2 | **`skills install --agent` cannot be combined with `--dest`.** A bare `install` writes to every agent, including opencode. |
 | 38 | P3 | **clap parse errors ignore `--json`.** A bad pane ID or an unknown flag still prints plain stderr. Errors found after parsing return a JSON `AgentResponse`. |
-| 46 | P3 | **An interrupted Codex turn reports the wrong reason.** After an accepted turn is interrupted, status reports `not_ready_reason: pending_submission` for as long as the claim is kept (40s or more). The prompt was acknowledged, so this reason sends callers after the wrong cause. |
-| 47 | P3 | **CLI output fails when stdout is closed.** `yinz action context \| head` panics with "failed printing to stdout: Broken pipe". `agent list \| head` prints "Error: cannot write agent details". |
-| 48 | P3 | **`agent runs` has no session field.** It covers all sessions, so the same `pane_id` can identify runs from different sessions or servers. |
 | P3 | P3 | **Codex UI registrations leak.** The `ui-*` directories under the hard-coded `/tmp/yinz-<uid>/codex/` are not removed when a pane closes, because the launcher is killed before `TempDir` drops. The lease check makes them harmless, but they accumulate. |
 | P3 | P3 | **The shared log is hard to correlate.** `$TMPDIR/yinz-<uid>/yinz-log/yinz.log` mixes lines from live sessions and test runs, and hook-trace lines have no timestamps. |
 | P3 | P3 | **Spawn placement has no options.** Spawn keeps the caller's focus but has no `--tab` or `--floating` option. |
@@ -38,6 +33,7 @@ Each one found its session from the environment, then ran spawn, wait, prompt,
 The following behavior is intentional or not worth fixing. Callers and the skill should account for it.
 
 - **Uncorrelated input needs `recover`.** Yinz cannot correlate human or raw input. Examples include a dialog answered by hand and `/clear` or `/new` typed through `send-keys`. After such input, the pane is not ready until `recover`. Instead, use `agent prompt PANE /clear` (Claude) or `agent prompt PANE /new` (Codex), and answer dialogs with `agent send-keys`.
+- **Ghost suggestions can look like drafts.** Plain terminal output cannot confirm an empty composer. Inspect the composer and clear any draft before using `--confirm-empty`.
 - **A startup dialog is not reported as such.** A wait during a startup dialog reports `status_unavailable` with `not_ready_reason: prompt_unsupported`. If a fresh spawn stays `Spawned`, `read` the pane.
 - **`--allow-yinz` allows all network access.** It lets a sandboxed Codex reach the Yinz socket by enabling the sandbox's network access, which also allows the internet. For this reason it is opt-in.
 - **Hosts need current hooks and the current build on `PATH`.** Rerun `yinz hocus hooks install --agent claude`, or use `--project` / `--project-dir`, on each host with an existing install. Older scripts send duplicate reports. Inline hooks run `yinz` from `PATH`, so an older build there breaks background-task tracking (#31).
@@ -72,10 +68,12 @@ The following behavior is intentional or not worth fixing. Callers and the skill
 | 21 | P2: `spawn --help` and the kind errors were undocumented. | Every option is documented. Kind errors list every kind and mention the JSON `command` alternative. |
 | 22 | P2: `send-keys` syntax and `--until` values were undocumented. | The help documents them, including the unsupported aliases (`Ctrl+u`, `Return`, …). |
 | 23 | P2: The skill hard-coded `--session main` and `--kind codex`. | The skill uses `YINZ_SESSION_NAME` or explicit discovery, and a labeled Claude example. |
+| 24 | P3: `agent read --lines N` counted only nonblank rows and could return more than N rows. | Internal blank rows count toward the limit. Blank padding at both ends is removed, and trailing blank rows do not consume the limit. |
 | 25 | P2: A shell-launched Codex was missing from `agent list`. | It is listed with source `detected` and `not_ready_reason: unmanaged`. Targeting it returns `not_agent` with a hint to relaunch it. |
 | 26 | P2: Pane ID formats were inconsistent. | Every pane argument accepts `terminal_7` or `7`. `plugin_N` is refused with a reason. |
 | 27 | P2: `agent runs --json` was rejected. | Archive commands accept `--json`. |
 | 28 | P2: Branch collisions were renamed silently. | The response includes `requested_branch` and a message. `/.worktrees/` is added to `info/exclude`. |
+| 29 | P2: `skills install --agent` could not be combined with `--dest`. | The flags can be combined. `--dest` selects the exact skills directory. Help explains that a bare install writes to every supported agent. |
 | 30 | P2: `list-sessions` offered to kill the pty broker. | Sweeps skip `pty-broker-v<N>.sock`, and `kill-session` and `delete-session` refuse it. |
 | 31 | P1: Claude background work ended the turn early and left the pane stranded. | The prompt reply lists `background_tasks`. `wait --until idle` returns the notification turn's final text. Notification turns never consume input. |
 | 32 | P1: A failed Codex turn left the pane Busy. | The bridge maps a failed `turn/completed` to `StopFailure`. The prompt returns `failed` with the provider's message and `ready:true`. |
@@ -89,4 +87,7 @@ The following behavior is intentional or not worth fixing. Callers and the skill
 | 43 | P2: Panes adopted across a server restart kept the old session's environment. | `yinz` asks the supervisor named by `YINZ_PANE_REF` for the current session and pane. An explicit `--session` still wins. |
 | 44 | P2: Esc made Claude background a command, and the pane was left stranded. | An unknown task notification leaves the pane ready (screen test only). |
 | 45 | P2: No command returned the final answer after `needs_input`. | A successful idle wait returns the last completed turn's text. |
+| 46 | P3: An interrupted, acknowledged Codex turn reported `pending_submission`. | Accepted claims report `unresolved_turn` until completion or recovery. Unacknowledged claims still report `pending_submission`. |
+| 47 | P3: Closed stdout caused action output to panic and agent output to print an error. | Action and agent output stop quietly when the reader closes the pipe. Other output errors still fail. |
+| 48 | P3: `agent runs` omitted session identity across sessions and servers. | Run replies include `session` and `host_id`. Older archive headers recover these fields from their stored row columns. |
 | 49 | P2: The skill had no teardown or project steps. | The skill covers `action close-pane --pane-id`, worktree cleanup, `--file -` heredocs, `action project-list`, the new spawn fields and JSON errors. |

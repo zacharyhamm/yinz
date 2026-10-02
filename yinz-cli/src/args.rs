@@ -298,8 +298,10 @@ pub enum Skills {
     },
     Install {
         names: Vec<String>,
-        #[clap(long, value_enum, conflicts_with = "dest")]
+        /// Install for one agent (default: all agents). --dest overrides its skills directory.
+        #[clap(long, value_enum)]
         agent: Option<HocusHookAgent>,
+        /// Install directly into this skills directory instead of agent defaults.
         #[clap(long)]
         dest: Option<PathBuf>,
         #[clap(long)]
@@ -714,8 +716,8 @@ pub enum Agent {
         target: yinz_types::pane_id::PaneId,
         #[clap(long)]
         conversation: Option<String>,
-        /// Maximum nonblank lines (1–100000). Preserve internal blank rows and remove blank rows
-        /// at both ends. Output can contain more physical rows than this limit.
+        /// Maximum terminal lines (1–100000), including internal blank rows. Remove blank
+        /// padding at both ends. Trailing blank rows do not count toward the limit.
         #[clap(long, default_value_t = 80, value_parser = clap::value_parser!(u32).range(1..=100_000))]
         lines: u32,
         #[clap(long)]
