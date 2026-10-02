@@ -21,6 +21,9 @@ impl TryFrom<ProtobufPluginIds> for PluginIds {
                 .map_err(|_| "client_id is outside u16 range")?,
             hostname: protobuf_plugin_ids.hostname,
             host_id: HostId::new(protobuf_plugin_ids.host_id),
+            max_session_name_bytes: protobuf_plugin_ids
+                .max_session_name_bytes
+                .map(|n| n as usize),
         })
     }
 }
@@ -35,6 +38,11 @@ impl TryFrom<PluginIds> for ProtobufPluginIds {
             client_id: u32::from(plugin_ids.client_id.get()),
             hostname: plugin_ids.hostname,
             host_id: plugin_ids.host_id.into_string(),
+            max_session_name_bytes: plugin_ids
+                .max_session_name_bytes
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| "max_session_name_bytes is outside u32 range")?,
         })
     }
 }

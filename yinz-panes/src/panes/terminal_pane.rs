@@ -572,7 +572,6 @@ impl Pane for TerminalPane {
         let err_context = || format!("failed to render frame for client {client_id}");
         frame_params.omit_title = frame_params.omit_title
             && !(input_mode == InputMode::RenamePane && frame_params.is_main_client);
-        // TODO: remove the cursor stuff from here
         let normal_title = if self.pane_name.is_empty()
             && input_mode == InputMode::RenamePane
             && frame_params.is_main_client

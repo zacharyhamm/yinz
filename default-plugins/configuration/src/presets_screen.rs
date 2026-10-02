@@ -211,9 +211,9 @@ impl PresetsScreen {
         self.notification = notification;
     }
     fn reconfigure(&self, selected: usize, write_to_disk: bool) {
+        // Both commands use the server's ordered instruction channel, so the mode switch
+        // sees the preset's updated configuration.
         if selected == 0 {
-            // TODO: these should be part of a "transaction" when they are
-            // implemented
             reconfigure(
                 default_keybinds(
                     self.primary_modifier
@@ -231,8 +231,6 @@ impl PresetsScreen {
             );
             switch_to_input_mode(&InputMode::Normal);
         } else if selected == 1 {
-            // TODO: these should be part of a "transaction" when they are
-            // implemented
             reconfigure(
                 unlock_first_keybinds(
                     self.primary_modifier

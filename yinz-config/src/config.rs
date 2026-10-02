@@ -188,11 +188,11 @@ impl std::error::Error for ConfigWriteError {}
 
 #[derive(Error, Debug, Diagnostic)]
 pub enum ConfigError {
-    // Deserialization error
+    // Raw parser errors retain their kind until the caller can attach source context.
     #[error("Deserialization error: {0}")]
     KdlDeserializationError(#[from] kdl::KdlError),
     #[error("KdlDeserialization error: {0}")]
-    KdlError(KdlError), // TODO: consolidate these
+    KdlError(KdlError),
     #[error("Config error: {0}")]
     Std(#[from] Box<dyn std::error::Error>),
     // Io error with path context
@@ -1210,9 +1210,7 @@ pub fn load_layout_and_config(
         .or_else(|| home::get_layout_dir(home::find_default_config_dir()))
         // Try to get an absolute path, else let the resolution code figure this out.
         .map(|d| d.canonicalize().unwrap_or(d));
-    // the chosen layout can either be a path relative to the layout_dir or a name of one
-    // of our assets, this distinction is made when parsing the layout - TODO: ideally, this
-    // logic should not be split up and all the decisions should happen here
+    // Choose the layout source here; the shared layout loader resolves files and builtins.
     let (layout_info, chosen_layout) = if let Some(ref layout_string) = layout_string {
         (
             Some(yinz_types::data::LayoutInfo::Stringified(

@@ -185,12 +185,13 @@ pub trait Pane {
     /// Clients whose next Esc confirms input to this pane; only their frame shows the hint.
     fn set_pending_agent_escape_clients(&mut self, _clients: HashSet<ClientId>) {}
 
+    /// Return frame character chunks and optional raw terminal output, or `None` when unchanged.
     fn render_frame(
         &mut self,
         client_id: ClientId,
         frame_params: FrameParams,
         input_mode: InputMode,
-    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>>; // TODO: better
+    ) -> Result<Option<(Vec<CharacterChunk>, Option<String>)>>;
     fn render_fake_cursor(
         &mut self,
         cursor_color: PaletteColor,
@@ -368,9 +369,8 @@ pub trait Pane {
     fn min_height(&self) -> usize {
         MIN_TERMINAL_HEIGHT
     }
+    /// Drain terminal replies through the shared pane interface; plugins have none.
     fn drain_messages_to_pty(&mut self) -> Vec<Vec<u8>> {
-        // TODO: this is only relevant to terminal panes
-        // we should probably refactor away from this trait at some point
         vec![]
     }
     fn drain_forwarded_queries(&mut self) -> Vec<crate::host_query::HostQuery> {

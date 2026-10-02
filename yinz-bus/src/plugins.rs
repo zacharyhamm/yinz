@@ -406,7 +406,6 @@ impl Default for PluginInstanceId {
 
 #[derive(Debug, Clone)]
 pub struct PluginRenderAsset {
-    // TODO: naming
     pub client_id: ClientId,
     pub plugin_id: PluginId,
     pub bytes: Vec<u8>,

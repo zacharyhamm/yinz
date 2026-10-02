@@ -261,7 +261,6 @@ fn col_in_range(range: Option<(usize, usize)>, col: usize) -> bool {
 
 impl YinzPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
-        // TODO: Should be able to choose whether to use the cache through config.
         self.tip_name = get_cached_tip_name();
         self.classic_ui = configuration
             .get("classic")
@@ -458,7 +457,6 @@ impl YinzPlugin for State {
         self.new_pane_ribbon_range = None;
         self.floating_ribbon_range = None;
 
-        //TODO: Switch to UI components here
         let active_tab = self.tabs.iter().find(|t| t.active);
         let first_line = first_line(&self.mode_info, active_tab, cols, separator);
         let second_line = self.second_line(cols);

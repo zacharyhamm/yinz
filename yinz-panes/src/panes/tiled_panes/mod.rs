@@ -2597,8 +2597,6 @@ impl TiledPanes {
         if let Some(active_pane_id) = self.first_active_pane_id() {
             if let PaneId::Plugin(_) = active_pane_id {
                 // we do not implicitly change the location of plugin panes
-                // TODO: we might want to make this configurable through a layout property or a
-                // plugin API
                 return;
             }
             self.swap_pane_geoms(active_pane_id, pane_id).non_fatal();

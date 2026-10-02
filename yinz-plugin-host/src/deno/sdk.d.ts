@@ -71,6 +71,8 @@ export type DecodedEvent = {[K in EventType]: DecodedEventOf<K>}[EventType];
 export interface PluginIds {
   plugin_id: number; yinz_pid: number; initial_cwd: string; client_id: number;
   hostname: string; host_id: string;
+  /** Maximum session-name bytes for the host's socket directory; absent on older hosts. */
+  max_session_name_bytes?: number | null;
 }
 export interface PipeMessage {
   source: PipeSource;

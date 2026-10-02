@@ -35,8 +35,10 @@ pub fn get_random_tip_name() -> String {
 
 pub fn get_cached_tip_name() -> String {
     let mut local_cache = match LocalCache::new(PathBuf::from(DEFAULT_CACHE_FILE_PATH)) {
-        // TODO: it might be a good to leave an log with warn later, if possible.
-        Err(_) => return String::from("quicknav"),
+        Err(error) => {
+            eprintln!("Failed to load status-bar tip cache; using quicknav: {error}");
+            return String::from("quicknav");
+        },
         Ok(cache) => cache,
     };
 
