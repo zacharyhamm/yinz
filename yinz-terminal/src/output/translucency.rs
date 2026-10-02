@@ -60,6 +60,11 @@ fn color(
     }
 }
 
+/// Whether two cells' styles are equal, checking the shared-allocation case first.
+fn same_styles(a: &RcCharacterStyles, b: &RcCharacterStyles) -> bool {
+    a.ptr_eq(b) || **a == **b
+}
+
 impl Composition {
     pub(super) fn contains_layer(&self, layer: usize) -> bool {
         self.overlays.iter().any(|(z, _, _)| *z == layer)
@@ -110,8 +115,67 @@ impl Composition {
             .context("failed to clip composed rectangles")
     }
 
+    /// A covered cell's styles with every color made concrete, and whether its background
+    /// is the default one the panel tints.
+    fn resolve_styles(
+        &self,
+        chunk: &CharacterChunk,
+        character: &TerminalCharacter,
+        x: usize,
+        layer: usize,
+    ) -> (bool, RcCharacterStyles) {
+        let styles = adjust_styles_for_possible_selection(
+            chunk.selection_and_colors(),
+            *character.styles,
+            chunk.y,
+            x,
+        );
+        let default_background = matches!(styles.background, None | Some(AnsiCode::Reset))
+            && styles.reverse != Some(AnsiCode::On)
+            && chunk.pane_default_bg.is_none();
+        let mut styles =
+            adjust_styles_for_custom_bg_fg(styles, chunk.pane_default_fg, chunk.pane_default_bg);
+        let mut fg = color(
+            styles.foreground,
+            self.fg,
+            chunk.changed_colors.as_ref(),
+            &self.host_colors,
+        );
+        let mut bg = color(
+            styles.background,
+            self.bg,
+            chunk.changed_colors.as_ref(),
+            &self.host_colors,
+        );
+        if styles.reverse == Some(AnsiCode::On) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        styles.reverse = Some(AnsiCode::Reset);
+        styles.foreground = Some(fg.into());
+        // Default panel backgrounds (including under its lettering) are the tint.
+        if default_background && self.overlays.iter().any(|(z, _, _)| *z == layer) {
+            bg = self.tint;
+        }
+        styles.background = Some(bg.into());
+        if let Some(underline) = styles.underline_color {
+            if !matches!(underline, AnsiCode::Reset) {
+                styles.underline_color = Some(
+                    color(
+                        Some(underline),
+                        fg,
+                        chunk.changed_colors.as_ref(),
+                        &self.host_colors,
+                    )
+                    .into(),
+                );
+            }
+        }
+        (default_background, styles.into())
+    }
+
     pub(super) fn add(&mut self, chunks: &[CharacterChunk], layer: usize) {
-        let cells = self.layers.entry(layer).or_default();
+        // Out of `layers` while it is filled, so cells can be resolved through `self`.
+        let mut cells = self.layers.remove(&layer).unwrap_or_default();
         for chunk in chunks {
             if !self.overlays.iter().any(|(_, rect, _)| {
                 chunk.y >= rect.y
@@ -122,6 +186,10 @@ impl Composition {
                 continue;
             }
             let row = cells.entry(chunk.y).or_default();
+            // Without selections a cell's resolved styles depend only on its own styles and on
+            // this chunk, so a run printed with one pen resolves once and shares the result.
+            let has_selections = !chunk.selection_and_colors().is_empty();
+            let mut resolved_run: Option<(RcCharacterStyles, bool, RcCharacterStyles)> = None;
             let mut x = chunk.x;
             let mut characters = chunk.terminal_characters.iter().peekable();
             while let Some(character) = characters.next() {
@@ -141,60 +209,31 @@ impl Composition {
                     })
                     .peekable();
                 if covered.peek().is_some() {
-                    let styles = adjust_styles_for_possible_selection(
-                        chunk.selection_and_colors(),
-                        *character.styles,
-                        chunk.y,
-                        x,
-                    );
-                    let default_background =
-                        matches!(styles.background, None | Some(AnsiCode::Reset))
-                            && styles.reverse != Some(AnsiCode::On)
-                            && chunk.pane_default_bg.is_none();
+                    let reused = resolved_run
+                        .as_ref()
+                        .filter(|(source, _, _)| {
+                            !has_selections && same_styles(source, &character.styles)
+                        })
+                        .map(|(_, default_background, resolved)| {
+                            (*default_background, resolved.clone())
+                        });
+                    let (default_background, resolved_styles) = match reused {
+                        Some(reused) => reused,
+                        None => {
+                            let (default_background, resolved_styles) =
+                                self.resolve_styles(chunk, character, x, layer);
+                            resolved_run = Some((
+                                character.styles.clone(),
+                                default_background,
+                                resolved_styles.clone(),
+                            ));
+                            (default_background, resolved_styles)
+                        },
+                    };
                     let transparent =
                         character.character == ' ' && combining.is_empty() && default_background;
-                    let mut styles = adjust_styles_for_custom_bg_fg(
-                        styles,
-                        chunk.pane_default_fg,
-                        chunk.pane_default_bg,
-                    );
-                    let mut fg = color(
-                        styles.foreground,
-                        self.fg,
-                        chunk.changed_colors.as_ref(),
-                        &self.host_colors,
-                    );
-                    let mut bg = color(
-                        styles.background,
-                        self.bg,
-                        chunk.changed_colors.as_ref(),
-                        &self.host_colors,
-                    );
-                    if styles.reverse == Some(AnsiCode::On) {
-                        std::mem::swap(&mut fg, &mut bg);
-                    }
-                    styles.reverse = Some(AnsiCode::Reset);
-                    styles.foreground = Some(fg.into());
-                    // Default panel backgrounds (including under its lettering) are the tint.
-                    if default_background && self.overlays.iter().any(|(z, _, _)| *z == layer) {
-                        bg = self.tint;
-                    }
-                    styles.background = Some(bg.into());
-                    if let Some(underline) = styles.underline_color {
-                        if !matches!(underline, AnsiCode::Reset) {
-                            styles.underline_color = Some(
-                                color(
-                                    Some(underline),
-                                    fg,
-                                    chunk.changed_colors.as_ref(),
-                                    &self.host_colors,
-                                )
-                                .into(),
-                            );
-                        }
-                    }
                     let mut resolved = character.clone();
-                    resolved.styles = styles.into();
+                    resolved.styles = resolved_styles;
                     for column in covered {
                         let index = column - self.left;
                         if row.len() <= index {
@@ -212,16 +251,57 @@ impl Composition {
                 x += width;
             }
         }
+        self.layers.insert(layer, cells);
     }
 
-    pub(super) fn finish(self) -> Vec<CharacterChunk> {
+    /// Styles seen through a panel of `opacity`: every color pulled toward the tint.
+    fn blend_styles(&self, mut styles: CharacterStyles, opacity: u8) -> RcCharacterStyles {
+        let amount = f32::from(opacity) / 100.0;
+        styles.foreground = Some(
+            blend(
+                color(styles.foreground, self.fg, None, &self.host_colors),
+                self.tint,
+                amount,
+            )
+            .into(),
+        );
+        styles.background = Some(
+            blend(
+                color(styles.background, self.bg, None, &self.host_colors),
+                self.tint,
+                amount,
+            )
+            .into(),
+        );
+        if let Some(underline) = styles.underline_color.filter(|c| *c != AnsiCode::Reset) {
+            styles.underline_color = Some(
+                blend(
+                    color(Some(underline), self.fg, None, &self.host_colors),
+                    self.tint,
+                    amount,
+                )
+                .into(),
+            );
+        }
+        styles.into()
+    }
+
+    pub(super) fn finish(mut self) -> Vec<CharacterChunk> {
         let mut composed = Cells::new();
-        for (layer, cells) in self.layers {
+        // Shared by every bare cell, so the blend below can reuse one result for all of them.
+        let bare_styles: RcCharacterStyles = DEFAULT_STYLES
+            .foreground(Some(self.fg.into()))
+            .background(Some(self.bg.into()))
+            .into();
+        for (layer, cells) in std::mem::take(&mut self.layers) {
             let opacity = self
                 .overlays
                 .iter()
                 .find(|(z, _, _)| *z == layer)
                 .map(|(_, _, opacity)| *opacity);
+            // The blend depends only on the styles beneath and this layer's opacity, and
+            // neighbouring cells usually share their styles.
+            let mut blended_run: Option<(RcCharacterStyles, RcCharacterStyles)> = None;
             for (y, cells) in cells {
                 let row = composed.entry(y).or_default();
                 row.resize_with(row.len().max(cells.len()), || None);
@@ -229,13 +309,7 @@ impl Composition {
                     let Some(mut cell) = cell else { continue };
                     if let Some(opacity) = opacity.filter(|_| cell.transparent) {
                         cell = row[index].take().unwrap_or_else(|| Cell {
-                            character: TerminalCharacter::new_styled(
-                                ' ',
-                                DEFAULT_STYLES
-                                    .foreground(Some(self.fg.into()))
-                                    .background(Some(self.bg.into()))
-                                    .into(),
-                            ),
+                            character: TerminalCharacter::new_styled(' ', bare_styles.clone()),
                             combining: vec![],
                             start: index + self.left,
                             layer: 0,
@@ -246,36 +320,20 @@ impl Composition {
                             cell.character = EMPTY_TERMINAL_CHARACTER;
                             cell.combining.clear();
                         }
-                        let mut styles = *cell.character.styles;
-                        styles.foreground = Some(
-                            blend(
-                                color(styles.foreground, self.fg, None, &self.host_colors),
-                                self.tint,
-                                f32::from(opacity) / 100.0,
-                            )
-                            .into(),
-                        );
-                        styles.background = Some(
-                            blend(
-                                color(styles.background, self.bg, None, &self.host_colors),
-                                self.tint,
-                                f32::from(opacity) / 100.0,
-                            )
-                            .into(),
-                        );
-                        if let Some(underline) =
-                            styles.underline_color.filter(|c| *c != AnsiCode::Reset)
-                        {
-                            styles.underline_color = Some(
-                                blend(
-                                    color(Some(underline), self.fg, None, &self.host_colors),
-                                    self.tint,
-                                    f32::from(opacity) / 100.0,
-                                )
-                                .into(),
-                            );
-                        }
-                        cell.character.styles = styles.into();
+                        let blended = match &blended_run {
+                            Some((source, blended))
+                                if same_styles(source, &cell.character.styles) =>
+                            {
+                                blended.clone()
+                            },
+                            _ => {
+                                let blended = self.blend_styles(*cell.character.styles, opacity);
+                                blended_run =
+                                    Some((cell.character.styles.clone(), blended.clone()));
+                                blended
+                            },
+                        };
+                        cell.character.styles = blended;
                     }
                     row[index] = Some(cell);
                 }
