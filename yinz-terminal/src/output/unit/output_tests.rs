@@ -100,6 +100,33 @@ fn test_output_new() {
 }
 
 #[test]
+fn vte_only_clients_are_serialized_without_pane_registration() {
+    for sized in [false, true] {
+        let mut output = create_test_output();
+        let client = ClientId::new(1);
+        let other = ClientId::new(2);
+        output.add_pre_vte_instruction_to_client(client, "before");
+        output.add_post_vte_instruction_to_client(client, "after");
+        output.add_pre_vte_instruction_to_multiple_clients([other].into_iter(), "before");
+        output.add_post_vte_instruction_to_multiple_clients([other].into_iter(), "after");
+        assert!(output.is_dirty());
+        assert!(!output.has_rendered_assets());
+        let serialized = if sized {
+            output.serialize_with_size(None, None).unwrap()
+        } else {
+            output.serialize().unwrap()
+        };
+        for id in [client, other] {
+            let bytes = &serialized[&id];
+            assert!(bytes.starts_with("before"), "{bytes:?}");
+            assert!(bytes.ends_with("after"), "{bytes:?}");
+        }
+        assert!(!output.is_dirty());
+        assert!(output.serialize().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn test_add_clients() {
     let mut output = create_test_output();
     let client_ids = create_test_clients(3);

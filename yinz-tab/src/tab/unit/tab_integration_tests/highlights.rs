@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn leaving_a_hover_highlight_for_a_nonselectable_pane_requests_a_render() {
+    let client = ClientId::new(1);
+    let source = PaneId::Terminal(crate::TerminalId::new(1));
+    let destination = PaneId::Terminal(crate::TerminalId::new(2));
+    let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, ModeInfo::default());
+    tab.vertical_split(destination, None, client, None, None)
+        .unwrap();
+    tab.get_pane_with_id_mut(destination)
+        .unwrap()
+        .set_selectable(false);
+    tab.advanced_mouse_actions = false;
+    tab.handle_pty_bytes(crate::TerminalId::new(1), b"link".to_vec())
+        .unwrap();
+    tab.set_plugin_regex_highlights_for_pane(
+        source,
+        crate::PluginId::new(1),
+        vec![RegexHighlight {
+            pattern: "link".into(),
+            style: HighlightStyle::None,
+            layer: HighlightLayer::Hint,
+            context: BTreeMap::new(),
+            on_hover: true,
+            bold: false,
+            italic: false,
+            underline: true,
+            tooltip_text: None,
+        }],
+        &Style::default(),
+    );
+    assert!(tab
+        .get_pane_with_id_mut(source)
+        .unwrap()
+        .set_hover_position(Some(Position::new(0, 1))));
+    tab.mouse_hover_pane_id.insert(client, source);
+    tab.render(&mut Output::default(), None).unwrap();
+    let effect = tab
+        .handle_mouse_event(
+            &MouseEvent::new_buttonless_motion(Position::new(5, 70)),
+            client,
+        )
+        .unwrap();
+    assert!(
+        effect.state_changed,
+        "clearing the underline must schedule its repaint"
+    );
+    assert!(!tab
+        .get_pane_with_id_mut(source)
+        .unwrap()
+        .set_hover_position(None));
+}
+
+#[test]
 fn click_on_plugin_highlight_sends_highlight_clicked() {
     let size = Size {
         cols: 121,

@@ -162,7 +162,6 @@ impl PluginPane {
         styled_underlines: bool,
     ) -> Self {
         let loading_indication = LoadingIndication::new(title.clone()).with_colors(style.colors);
-        let initial_loading_message = loading_indication.to_string();
         let mut plugin = PluginPane {
             pid,
             pane_tabs: None,
@@ -209,7 +208,7 @@ impl PluginPane {
             supports_mouse_selection: false,
         };
         for client_id in currently_connected_clients {
-            plugin.handle_plugin_bytes(client_id, initial_loading_message.as_bytes().to_vec());
+            plugin.add_client(client_id);
         }
         plugin
     }
@@ -465,6 +464,17 @@ impl Pane for PluginPane {
     }
     fn geom_override(&self) -> Option<PaneGeom> {
         self.geom_override
+    }
+    fn add_client(&mut self, client_id: ClientId) {
+        if !self.grids.contains_key(&client_id) {
+            let bytes = if !self.loading_indication.ended || self.loading_indication.is_error() {
+                self.loading_indication.to_string().into_bytes()
+            } else {
+                vec![]
+            };
+            // The normal byte handler also draws any pending permission prompt.
+            self.handle_plugin_bytes(client_id, bytes);
+        }
     }
     fn remove_client(&mut self, client_id: ClientId) {
         self.grids.remove(&client_id);
@@ -1304,12 +1314,9 @@ impl Pane for PluginPane {
         get_full_scrollback: bool,
         max_scrollback_lines: Option<usize>,
     ) -> PaneContents {
-        // Inactive-tab subscriptions have no client but can still use a cached grid.
+        // The caller chooses a client: cached grids can belong to watchers or departed clients.
         client_id
-            .map_or_else(
-                || self.grids.keys().min().and_then(|id| self.grids.get(id)),
-                |c| self.grids.get(&c),
-            )
+            .and_then(|c| self.grids.get(&c))
             .map(|g| g.pane_contents(get_full_scrollback, max_scrollback_lines))
             .unwrap_or_default()
     }
@@ -1320,10 +1327,7 @@ impl Pane for PluginPane {
         max_scrollback_lines: Option<usize>,
     ) -> PaneContents {
         client_id
-            .map_or_else(
-                || self.grids.keys().min().and_then(|id| self.grids.get(id)),
-                |c| self.grids.get(&c),
-            )
+            .and_then(|c| self.grids.get(&c))
             .map(|g| g.pane_contents_with_ansi(get_full_scrollback, max_scrollback_lines))
             .unwrap_or_default()
     }

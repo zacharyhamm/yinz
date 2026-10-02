@@ -2137,9 +2137,18 @@ impl Screen {
         };
         log::info!("attach trace: Screen::add_client client_id={client_id} state setup begin");
 
-        // Set followed_client_id to the first regular client if not already set
-        if self.followed_client_id.is_none() && !self.watcher_clients.contains_key(&client_id) {
-            self.followed_client_id = Some(client_id);
+        if !self.watcher_clients.contains_key(&client_id)
+            && self
+                .followed_client_id
+                .is_none_or(|id| !self.connected_clients.borrow().contains(&id))
+        {
+            // A departed client's state only serves watchers until a live client returns.
+            // Clear it before attaching, including when this connection reuses the same id.
+            if self.followed_client_id == Some(client_id) {
+                self.clear_disconnected_followed_client_state();
+            }
+            self.set_followed_client(client_id)
+                .context("failed to follow the attaching client")?;
         }
 
         let mut tab_history = vec![];
@@ -2254,7 +2263,7 @@ impl Screen {
         // If the followed client disconnected, find the next regular client
         if Some(client_id) == self.followed_client_id {
             // Try to find another regular (non-watcher) client
-            self.followed_client_id = self
+            let next_client = self
                 .connected_clients
                 .borrow()
                 .iter()
@@ -2263,8 +2272,11 @@ impl Screen {
 
             // If no regular client remains but we have watchers, keep the old followed_client_id
             // for terminal rendering (plugins will use their last state)
-            if self.followed_client_id.is_none() && !self.watcher_clients.is_empty() {
-                self.followed_client_id = Some(client_id); // Keep the disconnected client's ID
+            if let Some(next_client) = next_client {
+                self.set_followed_client(next_client)
+                    .with_context(err_context)?;
+            } else if self.watcher_clients.is_empty() {
+                self.followed_client_id = None;
             }
         }
 
@@ -2376,6 +2388,9 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
+        if self.watcher_clients.is_empty() {
+            self.clear_disconnected_followed_client_state();
+        }
         self.resume_deferred_render();
         // A watcher reports its own synchronised-output support like any other client, and ids
         // are recycled - so its answer goes with it, as `remove_client` does for a regular one.
@@ -2385,13 +2400,31 @@ impl Screen {
     }
 
     pub fn set_followed_client(&mut self, client_id: ClientId) -> Result<()> {
+        if self.followed_client_id != Some(client_id) {
+            self.clear_disconnected_followed_client_state();
+        }
         self.followed_client_id = Some(client_id);
         for watcher in self.watcher_clients.values_mut() {
             watcher.set_force_render();
         }
         // Trigger re-render with new followed client
-        self.render()?;
+        if !self.watcher_clients.is_empty() {
+            self.render()?;
+        }
         Ok(())
+    }
+
+    fn clear_disconnected_followed_client_state(&mut self) {
+        if let Some(client_id) = self
+            .followed_client_id
+            .filter(|id| !self.connected_clients.borrow().contains(id))
+        {
+            for tab in self.tabs.values_mut() {
+                tab.remove_client_pane_state(client_id);
+            }
+            // Keep the render source for a later watcher, without keeping its cached state.
+            self.pane_subscriber_snapshots_dirty = true;
+        }
     }
 
     pub fn set_watcher_size(&mut self, client_id: ClientId, size: Size) {

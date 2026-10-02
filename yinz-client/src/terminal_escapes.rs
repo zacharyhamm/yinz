@@ -64,7 +64,7 @@ pub const QUERY_HOST_THEME: &str = "\u{1b}[?996n";
 pub const CLEAR_SCREEN: &str = "\u{1b}[2J";
 /// CSI reset is harmless on hosts without synchronized output.
 pub const END_SYNCHRONIZED_OUTPUT: &str = "\u{1b}[?2026l";
-// 0: closed, 1: CSI may be open, 2: DCS may be open. Stdout serializes writers.
+// Bits: 1 = CSI may be open, 2 = DCS may be open. Stdout serializes writers.
 static OPEN_SYNC_OUTPUT: AtomicU8 = AtomicU8::new(0);
 
 /// Set by the first thread to tear the terminal down during startup, so a second one does not
@@ -156,6 +156,11 @@ fn write_synchronised_tracking(
     bytes: &[u8],
     open: &AtomicU8,
 ) -> std::io::Result<()> {
+    let sync_bit = match sync {
+        Some(SyncOutput::Csi) => 1,
+        Some(SyncOutput::Dcs) => 2,
+        None => 0,
+    };
     let written = sync
         .map_or(Ok(()), |sync| {
             // Record the first accepted byte: even a partial introducer needs cleanup.
@@ -164,13 +169,7 @@ fn write_synchronised_tracking(
                 match w.write(start) {
                     Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
                     Ok(n) => {
-                        open.store(
-                            match sync {
-                                SyncOutput::Csi => 1,
-                                SyncOutput::Dcs => 2,
-                            },
-                            Ordering::SeqCst,
-                        );
+                        open.fetch_or(sync_bit, Ordering::SeqCst);
                         start = &start[n..];
                     },
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
@@ -181,11 +180,11 @@ fn write_synchronised_tracking(
         })
         .and_then(|()| w.write_all(bytes));
     let closed = sync
-        .filter(|_| open.load(Ordering::SeqCst) != 0)
+        .filter(|_| open.load(Ordering::SeqCst) & sync_bit != 0)
         .map_or(Ok(()), |sync| w.write_all(sync.end_seq()));
     let flushed = w.flush();
     if closed.is_ok() && flushed.is_ok() {
-        open.store(0, Ordering::SeqCst);
+        open.fetch_and(!sync_bit, Ordering::SeqCst);
     }
     written.and(closed).and(flushed)
 }
@@ -414,7 +413,11 @@ impl ClientTeardown {
         };
         format!(
             "{}{}{}{}{}{}{}{}{}",
-            if open_sync == 2 { "\x1bP=2s\x1b\\" } else { "" },
+            if open_sync & 2 != 0 {
+                "\x1bP=2s\x1b\\"
+            } else {
+                ""
+            },
             END_SYNCHRONIZED_OUTPUT,
             DISABLE_MOUSE_SUPPORT,
             kitty_exit,
@@ -495,7 +498,9 @@ impl ClientTeardown {
         self.restore_with(
             &mut *stdout,
             || {
-                let _ = crossterm::terminal::disable_raw_mode();
+                crossterm::terminal::disable_raw_mode()
+                    .context("failed to restore terminal input mode during startup")
+                    .non_fatal();
             },
             message,
         );
@@ -507,8 +512,14 @@ impl ClientTeardown {
         restore_input: impl FnOnce(),
         message: Option<&str>,
     ) {
-        let _ = stdout.write_all(DISABLE_MOUSE_SUPPORT.as_bytes());
-        let _ = stdout.flush();
+        stdout
+            .write_all(DISABLE_MOUSE_SUPPORT.as_bytes())
+            .context("failed to disable mouse support during terminal restoration")
+            .non_fatal();
+        stdout
+            .flush()
+            .context("failed to flush mouse support reset during terminal restoration")
+            .non_fatal();
         // Always restore input, even after a permanent output failure.
         restore_input();
         let ribbon = message.map_or_else(|| self.restore_sequences(), |msg| self.message(msg));

@@ -5,6 +5,111 @@ use super::*;
 use yinz_types::internal_ids::TabId;
 
 #[test]
+fn watchers_resume_incremental_output_when_a_regular_client_returns() {
+    let size = Size { cols: 80, rows: 24 };
+    let first = ClientId::new(1);
+    let followed = ClientId::new(2);
+    let watcher = ClientId::new(3);
+    for returning in [first, followed] {
+        let mut screen = create_new_screen(size, true, true);
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.add_client(followed).unwrap();
+        screen.set_followed_client(followed).unwrap();
+        screen.add_watcher_client(watcher).unwrap();
+        screen.add_client(watcher).unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(size);
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        screen.remove_client(first).unwrap();
+        screen.remove_client(followed).unwrap();
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert_eq!(screen.followed_client_id, Some(followed));
+
+        screen.add_client(returning).unwrap();
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert_eq!(screen.followed_client_id, Some(returning));
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(crate::TerminalId::new(1), b"after-reattach".to_vec())
+            .unwrap();
+        let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(bytes.contains("after-reattach"), "{bytes:?}");
+        assert!(
+            !bytes.contains("\x1b[2J"),
+            "ordinary output must remain incremental"
+        );
+    }
+}
+
+#[test]
+fn retained_plugin_state_is_freed_when_following_ends_or_the_id_is_reused() {
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let plugin = crate::PluginId::new(2);
+    for transition in 0..3 {
+        let (mut screen, _capture) =
+            create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(plugin), false);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_plugin_bytes(plugin, followed, b"departed-client".to_vec())
+            .unwrap();
+        screen.set_followed_client(followed).unwrap();
+        screen.add_watcher_client(watcher).unwrap();
+        screen.remove_client(followed).unwrap();
+        assert!(screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap()
+            .pane_contents(Some(followed), false, None)
+            .viewport
+            .concat()
+            .contains("departed-client"));
+        match transition {
+            0 => screen.remove_watcher_client(watcher),
+            1 => screen.set_followed_client(ClientId::new(3)).unwrap(),
+            _ => screen.add_client(followed).unwrap(),
+        }
+        assert!(!screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Plugin(plugin))
+            .unwrap()
+            .pane_contents(Some(followed), false, None)
+            .viewport
+            .concat()
+            .contains("departed-client"));
+    }
+}
+
+#[test]
+fn a_returning_watcher_can_render_after_the_last_watchers_state_was_freed() {
+    let size = Size { cols: 80, rows: 24 };
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.set_followed_client(followed).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.remove_client(followed).unwrap();
+    screen.remove_watcher_client(watcher);
+
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(crate::TerminalId::new(1), b"while-nobody-watched".to_vec())
+        .unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(bytes.contains("while-nobody-watched"), "{bytes:?}");
+}
+
+#[test]
 fn attaching_terminal_client_follows_the_host_tab() {
     let size = Size {
         cols: 121,
@@ -268,7 +373,8 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
         .clear_force_render();
 
     let mut output = crate::output::Output::default();
-    output.add_post_vte_instruction_to_client(followed, "\x1b[?25l");
+    // A stream for another client must not change the followed client's crop state.
+    output.add_post_vte_instruction_to_client(ClientId::new(3), "\x1b[?25l");
     assert!(output.is_dirty());
     screen
         .render_watcher_output(&output, followed, None)
@@ -277,8 +383,8 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
     assert!(!screen.watcher_clients[&watcher].should_force_render());
     assert!(receiver.try_recv().is_err());
 
-    // An entry with no character chunks still delivers cursor instructions and updates crop state.
-    output.add_clients(&[followed].into_iter().collect(), Default::default(), None);
+    // Cursor-only output delivers a stream and updates crop state without pane registration.
+    output.add_post_vte_instruction_to_client(followed, "\x1b[?25l");
     output.set_cursor_coordinates(followed, 2, 2);
     screen
         .render_watcher_output(&output, followed, None)

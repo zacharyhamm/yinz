@@ -87,6 +87,63 @@ fn subscriber_receives_initial_delivery() {
 }
 
 #[test]
+fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
+    let client = ClientId::new(1);
+    let plain = ClientId::new(100);
+    let ansi = ClientId::new(101);
+    let pane_id = PaneId::Terminal(TERMINAL_1);
+    for include_report_contents in [false, true] {
+        let (mut screen, messages) =
+            create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.subscribe_to_pane_renders(plain, vec![pane_id], None, false);
+        screen.subscribe_to_pane_renders(ansi, vec![pane_id], None, true);
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.handle_pty_bytes(TERMINAL_1, b"\x1b[31mupdated-content".to_vec())
+            .unwrap();
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        let direct_plain = pane.pane_contents(None, false, None).viewport;
+        let direct_ansi = pane.pane_contents_with_ansi(None, false, None).viewport;
+        assert_ne!(direct_plain, direct_ansi);
+        let mut report = yinz_types::data::PaneRenderReport::default();
+        let report_viewport = vec!["already-serialized-content".to_owned()];
+        if include_report_contents {
+            report.add_pane_contents(
+                &[client],
+                pane_id,
+                PaneContents {
+                    viewport: report_viewport.clone(),
+                    ..Default::default()
+                },
+            );
+        }
+        messages.lock().unwrap().clear();
+        screen.deliver_to_pane_subscribers(Some(&report));
+        let expected_plain = if include_report_contents {
+            report_viewport
+        } else {
+            direct_plain
+        };
+        {
+            let messages = messages.lock().unwrap();
+            for (subscriber, expected) in [(plain, expected_plain), (ansi, direct_ansi)] {
+                assert_eq!(messages[&subscriber].len(), 1);
+                assert!(matches!(
+                    &messages[&subscriber][0],
+                    ServerToClientMsg::PaneRenderUpdate {
+                        viewport, is_initial: false, scrollback: None, ..
+                    } if viewport == &expected
+                ));
+            }
+        }
+        messages.lock().unwrap().clear();
+        screen.pane_subscriber_snapshots_dirty = true;
+        screen.deliver_to_pane_subscribers(Some(&report));
+        assert!(messages.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
     let client = ClientId::new(1);
     let subscriber = ClientId::new(100);
@@ -146,7 +203,7 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
                 b"updated-plugin-content".to_vec(),
             )])
             .unwrap();
-        screen.deliver_to_pane_subscribers_directly();
+        screen.deliver_to_pane_subscribers(None);
         if keep_cached_client_attached {
             assert!(matches!(
                 &messages.lock().unwrap()[&subscriber][0],
@@ -156,6 +213,85 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
         } else {
             assert!(messages.lock().unwrap().is_empty());
         }
+    }
+}
+
+#[test]
+fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() {
+    let watcher = ClientId::new(1);
+    let departed = ClientId::new(2);
+    let live = ClientId::new(3);
+    let subscriber = ClientId::new(100);
+    let plugin = crate::PluginId::new(20);
+    for (ansi, use_report) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (mut screen, messages) =
+            create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.add_watcher_client(watcher).unwrap();
+        screen.add_client(live).unwrap();
+        let (sender, _receiver) = channels::unbounded();
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.senders.to_plugin = Some(SenderWithContext::new(sender));
+        tab.new_pane(
+            PaneId::Plugin(plugin),
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::default(),
+            Some(live),
+            None,
+        )
+        .unwrap();
+        // Seed all three cached grids; only the live regular client's is authoritative.
+        for (client, bytes) in [
+            (watcher, "watcher-grid"),
+            (departed, "departed-grid"),
+            (live, "live-grid"),
+        ] {
+            tab.handle_plugin_bytes(plugin, client, bytes.as_bytes().to_vec())
+                .unwrap();
+        }
+        screen.subscribe_to_pane_renders(subscriber, vec![PaneId::Plugin(plugin)], None, ansi);
+        assert!(matches!(
+            &messages.lock().unwrap()[&subscriber][0],
+            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: true, .. }
+                if viewport.concat().contains("live-grid")
+        ));
+        messages.lock().unwrap().clear();
+        screen
+            .handle_plugin_render_assets(vec![crate::plugins::PluginRenderAsset::new(
+                plugin,
+                live,
+                b"live-update".to_vec(),
+            )])
+            .unwrap();
+        let mut report = yinz_types::data::PaneRenderReport::default();
+        for (client, text) in [
+            (watcher, "watcher-report"),
+            (departed, "departed-report"),
+            (live, "live-report"),
+        ] {
+            report.add_pane_contents(
+                &[client],
+                PaneId::Plugin(plugin),
+                PaneContents {
+                    viewport: vec![text.to_owned()],
+                    ..Default::default()
+                },
+            );
+        }
+        screen.deliver_to_pane_subscribers(use_report.then_some(&report));
+        let expected = if use_report && !ansi {
+            "live-report"
+        } else {
+            "live-update"
+        };
+        assert!(matches!(
+            &messages.lock().unwrap()[&subscriber][0],
+            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+                if viewport.concat().contains(expected)
+        ));
     }
 }
 

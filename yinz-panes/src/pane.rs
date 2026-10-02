@@ -127,6 +127,8 @@ pub trait Pane {
     fn content_header_rows(&self) -> usize {
         self.subtitle_rows()
     }
+    /// Initialize per-client state when a client joins the tab, preserving existing output.
+    fn add_client(&mut self, _client_id: ClientId) {}
     /// Forget state only when a client leaves the session, not when it changes tabs.
     fn remove_client(&mut self, _client_id: ClientId) {}
     /// Replay consumed content for a watcher without invalidating frame caches.

@@ -368,7 +368,7 @@ impl Screen {
 
             // Subscriber delivery — gated behind is_empty() for zero overhead
             if !self.pane_render_subscribers.is_empty() {
-                self.deliver_to_pane_subscribers_directly();
+                self.deliver_to_pane_subscribers(Some(&pane_render_report));
             }
 
             let _ = self
@@ -496,7 +496,7 @@ impl Screen {
         } else {
             // No regular clients but subscribers exist — query panes directly
             if !self.pane_render_subscribers.is_empty() {
-                self.deliver_to_pane_subscribers_directly();
+                self.deliver_to_pane_subscribers(None);
             }
         }
 

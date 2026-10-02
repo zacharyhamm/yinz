@@ -2291,6 +2291,11 @@ impl Tab {
             client_id,
             mode_info.unwrap_or_else(|| self.default_mode_info.clone()),
         );
+        for pane_id in self.get_all_pane_ids() {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                pane.add_client(client_id);
+            }
+        }
         self.ensure_selectable_focus(client_id)?;
         self.set_force_render();
         Ok(())
@@ -4206,7 +4211,13 @@ impl Tab {
         }
     }
     pub fn remove_client_pane_state(&mut self, client_id: ClientId) {
-        self.mouse_hover_pane_id.remove(&client_id);
+        self.forget_host_cursor_state(client_id);
+        self.invalidate_boundaries(client_id);
+        if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id) {
+            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                pane.set_hover_position(None);
+            }
+        }
         self.plugin_hover_pane_id.remove(&client_id);
         self.keyboard_text_selection.remove(&client_id);
         self.last_hint_text.remove(&client_id);

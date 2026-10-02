@@ -5,6 +5,21 @@ use yinz_types::internal_ids::ClientId;
 use yinz_types::pane_size::Offset;
 
 #[test]
+fn attaching_a_client_initializes_loading_without_restarting_completed_loads() {
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    // No start timestamp: the loading text is visible without waiting for its grace period.
+    pane.loading_indication = Default::default();
+    let loading = ClientId::new(1);
+    pane.add_client(loading);
+    assert!(pane.dump_screen(false, Some(loading)).contains("Loading"));
+    pane.loading_indication.ended = true;
+    let loaded = ClientId::new(2);
+    pane.add_client(loaded);
+    assert!(pane.grids.contains_key(&loaded));
+    assert!(pane.dump_screen(false, Some(loaded)).trim().is_empty());
+}
+
+#[test]
 fn frames_are_cached_per_client_but_pinned_frames_redraw() {
     let client = ClientId::new(1);
     let other = ClientId::new(2);
@@ -60,17 +75,18 @@ fn mixed_kitty_and_text_in_a_plugin_frame_preserve_placement_order() {
 }
 
 #[test]
-fn snapshots_choose_the_lowest_live_grid_and_disconnect_forgets_parser_state() {
+fn snapshots_use_the_requested_client_and_disconnect_forgets_parser_state() {
     let mut pane = test_plugin_pane(5, 60, Offset::default());
     let low = ClientId::new(1);
     let high = ClientId::new(2);
     pane.handle_plugin_bytes(high, b"higher".to_vec());
     pane.handle_plugin_bytes(low, b"\x1b[31mlower".to_vec());
+    assert!(pane.pane_contents(None, false, None).viewport.is_empty());
     for ansi in [false, true] {
         let contents = if ansi {
-            pane.pane_contents_with_ansi(None, false, None)
+            pane.pane_contents_with_ansi(Some(low), false, None)
         } else {
-            pane.pane_contents(None, false, None)
+            pane.pane_contents(Some(low), false, None)
         };
         assert!(contents.viewport.concat().contains("lower"));
     }
@@ -80,18 +96,18 @@ fn snapshots_choose_the_lowest_live_grid_and_disconnect_forgets_parser_state() {
     assert!(!pane.kitty_interceptors.contains_key(&low));
     assert!(!pane.should_render.contains_key(&low));
     assert!(pane
-        .pane_contents(None, false, None)
+        .pane_contents(Some(high), false, None)
         .viewport
         .concat()
         .contains("higher"));
     assert!(pane
-        .pane_contents_with_ansi(None, false, None)
+        .pane_contents_with_ansi(Some(high), false, None)
         .viewport
         .concat()
         .contains("higher"));
     pane.handle_plugin_bytes(low, b"reused".to_vec());
     assert!(pane
-        .pane_contents(None, false, None)
+        .pane_contents(Some(low), false, None)
         .viewport
         .concat()
         .contains("reused"));
@@ -100,9 +116,13 @@ fn snapshots_choose_the_lowest_live_grid_and_disconnect_forgets_parser_state() {
     // Painting a frame must not recreate a disconnected client's empty grid.
     pane.render_frame(low, frame_params(), InputMode::Normal)
         .unwrap();
-    assert!(pane.pane_contents(None, false, None).viewport.is_empty());
+    assert!(pane.grids.is_empty());
     assert!(pane
-        .pane_contents_with_ansi(None, false, None)
+        .pane_contents(Some(low), false, None)
+        .viewport
+        .is_empty());
+    assert!(pane
+        .pane_contents_with_ansi(Some(low), false, None)
         .viewport
         .is_empty());
 }

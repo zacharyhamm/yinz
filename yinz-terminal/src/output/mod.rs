@@ -685,7 +685,6 @@ pub struct Output {
     pub rendered_pane_contents: HashSet<PaneId>,
     pub rendered_pane_frames: HashSet<PaneId>,
     pub rendered_pane_boundaries: bool,
-    pub collect_ansi_pane_contents: bool,
     // per client: a smaller client (eg. a watcher) must be cropped against its own cursor, not
     // against whichever client happened to render last
     cursor_coordinates: HashMap<ClientId, (usize, usize)>,
@@ -983,8 +982,7 @@ impl Output {
         vte_instruction: &str,
     ) {
         for client_id in client_ids {
-            let entry = self.post_vte_instructions.entry(client_id).or_default();
-            entry.push(String::from(vte_instruction));
+            self.add_post_vte_instruction_to_client(client_id, vte_instruction);
         }
     }
     pub fn add_pre_vte_instruction_to_multiple_clients(
@@ -993,8 +991,7 @@ impl Output {
         vte_instruction: &str,
     ) {
         for client_id in client_ids {
-            let entry = self.pre_vte_instructions.entry(client_id).or_default();
-            entry.push(String::from(vte_instruction));
+            self.add_pre_vte_instruction_to_client(client_id, vte_instruction);
         }
     }
     pub fn mark_host_display_cleared_for_clients(
@@ -1016,6 +1013,8 @@ impl Output {
         client_id: ClientId,
         vte_instruction: &str,
     ) {
+        // A deferred tab can still send a bell or OSC 7 without rendering any panes.
+        self.client_character_chunks.entry(client_id).or_default();
         let entry = self.post_vte_instructions.entry(client_id).or_default();
         entry.push(String::from(vte_instruction));
     }
@@ -1024,6 +1023,7 @@ impl Output {
         client_id: ClientId,
         vte_instruction: &str,
     ) {
+        self.client_character_chunks.entry(client_id).or_default();
         let entry = self.pre_vte_instructions.entry(client_id).or_default();
         entry.push(String::from(vte_instruction));
     }
@@ -1419,15 +1419,6 @@ impl Output {
     ) {
         self.pane_render_report
             .add_pane_contents(client_ids, pane_id, pane_contents);
-    }
-    pub fn add_pane_contents_with_ansi(
-        &mut self,
-        client_ids: &[ClientId],
-        pane_id: PaneId,
-        pane_contents: PaneContents,
-    ) {
-        self.pane_render_report
-            .add_pane_contents_with_ansi(client_ids, pane_id, pane_contents);
     }
     pub fn drain_pane_render_report(&mut self) -> PaneRenderReport {
         let empty_pane_render_report = PaneRenderReport::default();

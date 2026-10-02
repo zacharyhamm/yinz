@@ -7668,7 +7668,7 @@ fn disconnected_plugin_grids_are_removed_from_inactive_suppressed_and_overlay_pa
             assert!(screen.tabs[&TabId::new(0)]
                 .get_pane_with_id(pane)
                 .unwrap()
-                .pane_contents(None, false, None)
+                .pane_contents(Some(low), false, None)
                 .viewport
                 .concat()
                 .contains("reused-client"));
