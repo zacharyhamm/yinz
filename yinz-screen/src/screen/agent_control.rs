@@ -7,8 +7,9 @@ use yinz_ipc::ipc::ServerToClientMsg;
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
-    is_command_prompt, needs_paste_lead_in, AgentOutcome, AgentRequest, AgentResponse, AgentStatus,
-    NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    is_command_prompt, needs_paste_lead_in, pi_prompt_text, AgentOutcome, AgentRequest,
+    AgentResponse, AgentStatus, NotReadyReason, PromptObservation, MAX_PROMPT_BYTES,
+    MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -601,7 +602,10 @@ impl Screen {
             && !info.exited
             && agent.state != AgentState::Exited
             && self.agent_input_enabled(pane_id);
-        let supported = matches!(agent.kind.as_str(), "claude" | "codex" | "muse" | "agy");
+        let supported = matches!(
+            agent.kind.as_str(),
+            "claude" | "codex" | "muse" | "agy" | "pi"
+        );
         let prompt_supported = supported
             && status_available
             && live
@@ -1098,7 +1102,7 @@ impl Screen {
                     && self.has_provisional_muse_lifecycle(pane);
                 let startup = matches!(
                     status.agent.kind.as_str(),
-                    "claude" | "codex" | "muse" | "agy"
+                    "claude" | "codex" | "muse" | "agy" | "pi"
                 ) && (status.agent.source == AgentSource::Spawned || provisional);
                 if !(status.status_available || startup)
                     || !self.agent_process_matches(pane, &status.agent.kind)
@@ -1135,6 +1139,15 @@ impl Screen {
                     return;
                 }
                 let revision = self.agent_input_revision(pane);
+                let pre_submit_dialog = status.agent.kind == "pi"
+                    && status.agent.is_waiting_on_a_person()
+                    && self.agent_controls.iter().any(|pending| {
+                        pending.pane == pane
+                            && pending
+                                .prompt
+                                .as_ref()
+                                .is_some_and(PromptObservation::waiting_before_submit)
+                    });
                 let dialog = ((startup && !(provisional && self.muse_composer(pane, false)))
                     || status.agent.state == AgentState::Waiting)
                     && (self
@@ -1142,6 +1155,7 @@ impl Screen {
                         .get(&pane)
                         .is_some_and(|lifecycle| lifecycle.input_revision == Some(revision))
                         || (startup && revision == 0)
+                        || pre_submit_dialog
                         || self.agent_dialog_inputs.get(&pane).is_some_and(|input| {
                             input.kind == status.agent.kind
                                 && input.conversation == status.agent.session_id
@@ -1150,7 +1164,7 @@ impl Screen {
                     && !self.agent_controls.iter().any(|pending| {
                         pending.pane == pane
                             && pending.prompt.as_ref().is_some_and(|prompt| {
-                                !prompt.acknowledged()
+                                (!prompt.acknowledged() && !pre_submit_dialog)
                                     || pending.delivery.is_some()
                                     || pending.enter_at.is_some()
                                     || pending.input_revision != revision
@@ -1175,8 +1189,9 @@ impl Screen {
                                     fresh_waiting: false,
                                 },
                             );
-                            // Permission keys belong to the accepted turn, rather than a new
-                            // prompt. Never advance an unaccepted or still-delivering paste.
+                            // Dialog answers preserve the pending prompt, including Pi dialogs
+                            // before submission. The checks above exclude incomplete delivery
+                            // and intervening manual input.
                             for pending in &mut self.agent_controls {
                                 if pending.pane == pane && pending.prompt.is_some() {
                                     pending.input_revision = input_revision;
@@ -1211,7 +1226,12 @@ impl Screen {
                     reject(self, outcome, message);
                     return;
                 }
-                if prompt.trim().is_empty()
+                let trimmed = if status.agent.kind == "pi" {
+                    pi_prompt_text(&prompt)
+                } else {
+                    prompt.trim()
+                };
+                if trimmed.is_empty()
                     || prompt.len() > MAX_PROMPT_BYTES
                     || prompt
                         .chars()
@@ -1229,7 +1249,7 @@ impl Screen {
                     return;
                 };
                 if is_command_prompt(&status.agent.kind, &prompt) {
-                    reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text, exact Claude /clear, and exact Codex /new");
+                    reject(self, AgentOutcome::Rejected, "command input requires agent send-keys; prompt accepts text, exact Claude /clear, and exact Codex/Pi /new");
                     return;
                 }
                 let observation = PromptObservation::new(
@@ -1296,29 +1316,30 @@ impl Screen {
                 };
                 // Codex reads quickly typed text followed by a paste as one burst, and an empty
                 // paste there discards the typed command, so a bare command is only typed.
-                let result = if paste.is_empty() && status.agent.kind == "codex" {
-                    self.write_to_pane_id(
-                        &None,
-                        prefix,
-                        false,
-                        pane,
-                        None,
-                        Some(yinz_bus::route::NotificationEnd::new(tx)),
-                    )
-                    .map(|_| ())
-                } else {
-                    let typed = (!prefix.is_empty())
-                        .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
-                    match typed {
-                        Some(Err(error)) => Err(error),
-                        _ => self.paste_to_pane_id(
-                            paste,
+                let result =
+                    if paste.is_empty() && matches!(status.agent.kind.as_str(), "codex" | "pi") {
+                        self.write_to_pane_id(
+                            &None,
+                            prefix,
+                            false,
                             pane,
                             None,
                             Some(yinz_bus::route::NotificationEnd::new(tx)),
-                        ),
-                    }
-                };
+                        )
+                        .map(|_| ())
+                    } else {
+                        let typed = (!prefix.is_empty())
+                            .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
+                        match typed {
+                            Some(Err(error)) => Err(error),
+                            _ => self.paste_to_pane_id(
+                                paste,
+                                pane,
+                                None,
+                                Some(yinz_bus::route::NotificationEnd::new(tx)),
+                            ),
+                        }
+                    };
                 let revision = self.agent_input_revision(pane);
                 if let Some(pending) = self.agent_controls.last_mut() {
                     pending.input_revision = revision;
@@ -1555,7 +1576,7 @@ impl Screen {
                         && (pending.until != AgentState::Idle
                             || !matches!(
                                 status.agent.kind.as_str(),
-                                "claude" | "codex" | "muse" | "agy"
+                                "claude" | "codex" | "muse" | "agy" | "pi"
                             )
                             || (status.ready && !self.claude_background_pending(pending.pane))) =>
                 {

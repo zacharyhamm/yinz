@@ -347,6 +347,7 @@ pub enum HocusHookAgent {
     Opencode,
     Muse,
     Agy,
+    Pi,
     All,
 }
 

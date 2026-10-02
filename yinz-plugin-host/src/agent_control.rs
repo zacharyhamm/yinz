@@ -258,6 +258,8 @@ pub(super) fn prepare_automation_agent(
             .filter(|cwd| cwd.is_absolute())
             .ok_or("SSH cwd must be absolute")?;
         command = yinz_runtime::agent::launch::plan(spec)?.0;
+        // SSH uses the remote installation, never the local extension placeholder.
+        yinz_runtime::agent::pi::strip_extension(&mut command.args);
         command.target =
             yinz_types::command::PaneTarget::from_parts(Some(&host), None, None, None)?;
         command.cwd = Some(cwd.clone());

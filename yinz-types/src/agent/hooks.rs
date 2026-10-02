@@ -972,6 +972,15 @@ fn prune_value(
 /// it ends one. [`hook_outcome`] is the reading that tells the two apart.
 /// Claude and Antigravity Stop hooks run before blocking hooks can continue the turn.
 pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
+    if kind == "pi"
+        && matches!(
+            event.hook_event_name.as_str(),
+            "ElicitationResult" | "PostCompact"
+        )
+        && event.source.as_deref() == Some("idle")
+    {
+        return Some(AgentState::Idle);
+    }
     if event.hook_event_name == "Stop"
         && ((kind == "claude" && event.claude_turn_complete != Some(true))
             || (kind == "agy" && event.agy_turn_complete != Some(true)))

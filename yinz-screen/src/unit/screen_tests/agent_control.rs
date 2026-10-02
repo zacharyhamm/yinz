@@ -308,7 +308,7 @@ fn an_agent_held_before_its_first_run_has_not_exited() {
 
 #[test]
 fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for split in [false, true] {
             let (mut screen, messages, writes) = setup(kind);
             screen
@@ -363,7 +363,7 @@ fn startup_dialog_keys_are_consumed_only_by_verified_startup() {
 
 #[test]
 fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for split in [false, true] {
             for progress in [false, true] {
                 let (mut screen, messages, writes) = setup(kind);
@@ -443,7 +443,7 @@ fn permission_keys_preserve_the_accepted_prompt_until_progress_and_completion() 
 
 #[test]
 fn a_fresh_waiting_hook_requires_another_dialog_answer() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         let (mut screen, messages, writes) = setup(kind);
         report_kind(&mut screen, kind, hook("SessionStart"));
         screen.agent_control(prompt(false), CLIENT);
@@ -472,7 +472,7 @@ fn a_fresh_waiting_hook_requires_another_dialog_answer() {
 
 #[test]
 fn completion_reply_accounts_for_permission_keys_before_reporting_readiness() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         let (mut screen, messages, writes) = setup(kind);
         report_kind(&mut screen, kind, hook("SessionStart"));
         screen.agent_control(prompt(true), CLIENT);
@@ -561,7 +561,7 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
 
 #[test]
 fn dialog_keys_cannot_consume_manual_input_or_a_failed_batch() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for startup in [false, true] {
             for interference in [
                 "before",
@@ -663,7 +663,7 @@ fn permission_keys_do_not_advance_an_unacknowledged_or_delivering_prompt() {
 
 #[test]
 fn respawn_restores_readiness_without_consuming_a_new_draft() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for keep_scrollback in [false, true] {
             for replace in [false, true] {
                 for draft in [false, true] {
@@ -906,7 +906,7 @@ fn opencode_idle_wait_requires_matching_lifecycle_evidence() {
 
 #[test]
 fn supported_idle_waits_require_readiness_even_without_prompt_support() {
-    for kind in ["claude", "codex", "muse"] {
+    for kind in ["claude", "codex", "muse", "pi"] {
         let (mut screen, messages, _writes) = setup(kind);
         report_kind(&mut screen, kind, hook("SessionStart"));
         screen
@@ -1422,7 +1422,7 @@ fn startup_wait_requires_lifecycle_evidence_and_binds_the_first_conversation() {
 
 #[test]
 fn repeated_startup_keeps_a_prompt_on_the_announced_conversation() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for replacement in [false, true] {
             let (mut screen, messages, _writes) = setup(kind);
             // Codex's bridge announces the conversation when the UI selects it; Claude reports
@@ -1464,7 +1464,7 @@ fn repeated_startup_keeps_a_prompt_on_the_announced_conversation() {
 
 #[test]
 fn startup_wait_survives_a_repeated_start_before_the_composer_is_ready() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for replacement in [false, true] {
             let (mut screen, messages, _writes) = setup(kind);
             // The agent reports its startup before its composer enables bracketed paste.
@@ -3551,7 +3551,7 @@ fn collapsed_claude_pastes_acknowledge_the_prompt_they_wrap() {
 
 #[test]
 fn prompt_delivery_normalizes_only_claude_format_controls() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for text in [
             "review \u{200b}text".into(),
             "review \u{202e}text".into(),
@@ -3615,7 +3615,7 @@ fn prompt_delivery_normalizes_only_claude_format_controls() {
 
 #[test]
 fn commands_are_rejected_before_claiming_or_writing_input() {
-    for kind in ["claude", "codex"] {
+    for kind in ["claude", "codex", "pi"] {
         for command in [
             "/probe",
             "/cost",
@@ -5358,4 +5358,418 @@ fn agy_confirmations_require_nonempty_matching_identities() {
     assert_eq!(done.outcome, AgentOutcome::Ok);
     assert!(done.agents[0].ready);
     assert!(screen.ignore_agy_confirmation(PANE, &hook("Stop")));
+}
+
+#[test]
+fn cli_pi_new_restores_readiness() {
+    for target in pane_targets() {
+        let (mut screen, messages, writes) = setup_on_target("pi", target);
+        report_kind(&mut screen, "pi", hook("SessionStart"));
+        screen.agent_control(
+            AgentRequest::Prompt {
+                pane_id: PANE,
+                expected_session_id: None,
+                prompt: "/new".into(),
+                wait: true,
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        // Typed alone: an empty paste after it would discard it in Codex's paste-burst handling.
+        assert_eq!(finish_paste(&writes), b"/new");
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(501));
+        assert_eq!(finish_paste(&writes), b"\r");
+        assert!(screen.agent_clear_inputs.contains_key(&PANE));
+        // The bridge reports a replaced thread as an end and a clear start.
+        report_kind(&mut screen, "pi", hook("SessionEnd"));
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::TargetChanged
+        );
+        // A wait issued before the new conversation starts waits for it.
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        report_kind(&mut screen, "pi", HookEvent { ..clear_start() });
+        assert!(screen.agent_clear_inputs.is_empty());
+        let waited = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(waited.outcome, AgentOutcome::Ok);
+        assert_eq!(
+            waited.agents[0].agent.session_id.as_deref(),
+            Some("cleared-conversation")
+        );
+        assert!(waited.agents[0].ready);
+        screen.agent_control(prompt(true), CLIENT);
+        assert!(replies(&messages, CLIENT).is_empty());
+        finish_paste(&writes);
+        for name in ["UserPromptSubmit", "Stop"] {
+            report_kind(
+                &mut screen,
+                "pi",
+                HookEvent {
+                    session_id: "cleared-conversation".into(),
+                    ..hook(name)
+                },
+            );
+        }
+        let completed = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(completed.outcome, AgentOutcome::Completed);
+        assert!(completed.agents[0].ready);
+    }
+}
+
+#[test]
+fn pi_normalized_prompt_completes_and_allows_another_prompt() {
+    let (mut screen, messages, writes) = setup("pi");
+    report_kind(&mut screen, "pi", hook("SessionStart"));
+    for (text, received) in [
+        (
+            "review\tthese\t\tfiles\nthen\treport",
+            "review    these        files\nthen    report",
+        ),
+        ("\u{feff}review", "review"),
+        (
+            " \u{feff}\treview\tthese files\u{feff}\n",
+            "review    these files",
+        ),
+        ("another prompt", "another prompt"),
+    ] {
+        screen.agent_control(
+            AgentRequest::Prompt {
+                pane_id: PANE,
+                expected_session_id: Some("conversation".into()),
+                prompt: text.into(),
+                wait: true,
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        assert_eq!(
+            finish_paste(&writes),
+            format!("\x1b[200~{text}\x1b[201~").as_bytes()
+        );
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(100));
+        assert_eq!(finish_paste(&writes), b"\r");
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                prompt: Some(received.into()),
+                ..hook("UserPromptSubmit")
+            },
+        );
+        assert!(replies(&messages, CLIENT).is_empty());
+        report_kind(&mut screen, "pi", hook("Stop"));
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Completed);
+        assert!(result.acknowledged);
+        assert!(result.agents[0].ready);
+        assert!(screen.agent_controls.is_empty());
+    }
+}
+
+#[test]
+fn pi_rejects_commands_and_empty_text_after_trimming() {
+    let (mut screen, messages, writes) = setup("pi");
+    writes.try_iter().for_each(drop);
+    report_kind(&mut screen, "pi", hook("SessionStart"));
+    for text in [
+        "\u{feff}!command",
+        "\u{feff}/reload",
+        "\u{feff}/new",
+        "/new\u{feff}",
+        "\u{feff}",
+        " \u{feff}\t\u{feff}\n",
+    ] {
+        screen.agent_control(
+            AgentRequest::Prompt {
+                pane_id: PANE,
+                expected_session_id: None,
+                prompt: text.into(),
+                wait: false,
+                timeout_ms: 30_000,
+            },
+            CLIENT,
+        );
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Rejected, "{text:?}");
+        assert!(result.agents[0].ready);
+        assert!(writes.try_iter().next().is_none());
+        assert!(screen.agent_controls.is_empty());
+    }
+}
+
+#[test]
+fn pi_early_startup_dialog_consumes_only_its_answer() {
+    for draft in [false, true] {
+        let (mut screen, messages, writes) = setup("pi");
+        if draft {
+            screen
+                .tab_containing_pane_mut(PANE)
+                .unwrap()
+                .write_to_active_terminal(&None, b"manual draft".to_vec(), false, CLIENT, None)
+                .unwrap();
+            writes.try_iter().for_each(drop);
+        }
+        // The extension announces startup before a dialog in an earlier startup handler.
+        for name in ["SessionStart", "Elicitation"] {
+            report_kind(
+                &mut screen,
+                "pi",
+                HookEvent {
+                    turn_id: None,
+                    ..hook(name)
+                },
+            );
+        }
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::NeedsInput
+        );
+        for key in [BareKey::Down, BareKey::Enter] {
+            screen.agent_control(send_keys(vec![key]), CLIENT);
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+            assert_eq!(screen.agent_dialog_inputs.contains_key(&PANE), !draft);
+        }
+        finish_paste(&writes);
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                source: Some("idle".into()),
+                turn_id: None,
+                ..hook("ElicitationResult")
+            },
+        );
+        // Pi now reaches Yinz's actual startup handler.
+        report_kind(&mut screen, "pi", hook("SessionStart"));
+        assert!(screen.agent_dialog_inputs.is_empty());
+        screen.agent_control(prompt(true), CLIENT);
+        if draft {
+            let result = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(result.outcome, AgentOutcome::Rejected);
+            assert_eq!(
+                result.agents[0].not_ready_reason,
+                Some(NotReadyReason::UnconsumedInput)
+            );
+            assert!(writes.try_iter().next().is_none());
+        } else {
+            assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+            report_kind(&mut screen, "pi", hook("UserPromptSubmit"));
+            report_kind(&mut screen, "pi", hook("Stop"));
+            let result = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(result.outcome, AgentOutcome::Completed);
+            assert!(result.agents[0].ready);
+        }
+    }
+}
+
+#[test]
+fn pi_dialog_before_submit_keeps_claim_and_consumes_only_its_answer() {
+    for wait_for_completion in [false, true] {
+        let (mut screen, messages, writes) = setup("pi");
+        report_kind(&mut screen, "pi", hook("SessionStart"));
+        screen.agent_control(prompt(wait_for_completion), CLIENT);
+        finish_paste(&writes);
+        let now = Instant::now();
+        screen.refresh_agent_controls_at(now);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(100));
+        assert_eq!(finish_paste(&writes), b"\r");
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                turn_id: None,
+                ..hook("Elicitation")
+            },
+        );
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::NeedsInput);
+        assert!(!result.acknowledged);
+        assert_eq!(result.turn_id, None);
+        assert!(!result.agents[0].ready);
+        assert_eq!(screen.agent_controls.len(), 1);
+        for key in [BareKey::Down, BareKey::Enter] {
+            screen.agent_control(send_keys(vec![key]), ClientId::new(2));
+            assert_eq!(
+                replies(&messages, ClientId::new(2))[0].outcome,
+                AgentOutcome::Ok
+            );
+            assert!(screen.agent_dialog_inputs.contains_key(&PANE));
+        }
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                turn_id: None,
+                source: Some("idle".into()),
+                ..hook("ElicitationResult")
+            },
+        );
+        // The idle dialog result cannot release the pending submission.
+        screen.agent_control(prompt(false), ClientId::new(2));
+        let blocked = replies(&messages, ClientId::new(2)).pop().unwrap();
+        assert_eq!(blocked.outcome, AgentOutcome::Rejected);
+        assert_eq!(
+            blocked.agents[0].not_ready_reason,
+            Some(NotReadyReason::PendingSubmission)
+        );
+        report_kind(&mut screen, "pi", hook("UserPromptSubmit"));
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                turn_id: Some("stale".into()),
+                ..hook("Stop")
+            },
+        );
+        assert_eq!(screen.agent_controls.len(), 1);
+        report_kind(&mut screen, "pi", hook("Stop"));
+        assert!(screen.agent_controls.is_empty());
+        assert!(
+            replies(&messages, CLIENT).is_empty(),
+            "the original caller was already answered"
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        let ready = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(ready.outcome, AgentOutcome::Ok);
+        assert!(ready.agents[0].ready);
+    }
+}
+
+#[test]
+fn pi_unverified_dialog_keys_cannot_acquire_prompt_correlation() {
+    for case in [
+        "stale-turn",
+        "empty-turn",
+        "conversation",
+        "kind",
+        "pane",
+        "nonhuman",
+        "manual-before",
+        "manual-after",
+        "delivering",
+        "stale-after-dialog",
+    ] {
+        let (mut screen, messages, writes) = setup("pi");
+        report_kind(&mut screen, "pi", hook("SessionStart"));
+        screen.agent_control(prompt(true), CLIENT);
+        if case != "delivering" {
+            finish_paste(&writes);
+            let now = Instant::now();
+            screen.refresh_agent_controls_at(now);
+            screen.refresh_agent_controls_at(now + Duration::from_millis(100));
+            assert_eq!(finish_paste(&writes), b"\r");
+        }
+        if case == "manual-before" {
+            screen.agent_write_for_test();
+        }
+        let mut dialog = HookEvent {
+            turn_id: None,
+            ..hook("Elicitation")
+        };
+        match case {
+            "stale-turn" => dialog.turn_id = Some("stale".into()),
+            "empty-turn" => dialog.turn_id = Some(String::new()),
+            "conversation" => dialog.session_id = "other".into(),
+            "nonhuman" => {
+                dialog.hook_event_name = "PermissionRequest".into();
+                dialog.approvals_reviewer = Some("auto_review".into());
+            },
+            _ => {},
+        }
+        if case == "pane" {
+            let event = AgentEvent::from_hook("pi", TerminalId::new(8), &dialog, String::new());
+            screen.agent_control_event(&event, Some(&dialog));
+            let HookOutcome::Reported(waiting) = hook_outcome("pi", &dialog) else {
+                panic!("dialog reports a waiting agent");
+            };
+            crate::screen::apply_pane_agent_report(&mut screen, PANE, Some(waiting)).unwrap();
+        } else {
+            report_kind(
+                &mut screen,
+                if case == "kind" { "codex" } else { "pi" },
+                dialog,
+            );
+        }
+        if case == "manual-after" {
+            screen.agent_write_for_test();
+        } else if case == "stale-after-dialog" {
+            report_kind(&mut screen, "pi", hook("Elicitation"));
+        }
+        replies(&messages, CLIENT);
+        screen.agent_control(send_keys(vec![BareKey::Enter]), ClientId::new(2));
+        let response = replies(&messages, ClientId::new(2)).pop().unwrap();
+        assert_eq!(
+            response.outcome,
+            if case == "kind" {
+                AgentOutcome::StatusUnavailable
+            } else {
+                AgentOutcome::Ok
+            },
+            "{case}"
+        );
+        assert!(screen.agent_dialog_inputs.is_empty(), "{case}");
+        finish_paste(&writes);
+        report_kind(&mut screen, "pi", hook("UserPromptSubmit"));
+        report_kind(&mut screen, "pi", hook("Stop"));
+        assert!(!screen.agent_status_for_test().ready, "{case}");
+    }
+}
+
+#[test]
+fn pi_manual_terminal_input_interrupts_correlation_before_completion() {
+    let (mut screen, messages, _writes) = setup("pi");
+    report_kind(&mut screen, "pi", hook("SessionStart"));
+    screen.agent_control(prompt(true), CLIENT);
+    finish_paste(&_writes);
+    report_kind(&mut screen, "pi", hook("UserPromptSubmit"));
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .write_to_active_terminal(&None, b"manual".to_vec(), false, CLIENT, None)
+        .unwrap();
+    report_kind(&mut screen, "pi", hook("Stop"));
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Interrupted);
+    assert!(result.acknowledged);
+    assert!(screen.agent_controls.is_empty());
+}
+
+#[test]
+fn pi_needs_hooks_and_restores_idle_after_an_idle_dialog_or_compaction() {
+    let (mut screen, messages, _writes) = setup("pi");
+    screen.agent_control(
+        AgentRequest::Status {
+            pane_id: PANE,
+            expected_session_id: None,
+        },
+        CLIENT,
+    );
+    let status = replies(&messages, CLIENT).pop().unwrap();
+    assert!(!status.agents[0].prompt_supported);
+    assert!(!status.agents[0].ready);
+    report_kind(&mut screen, "pi", hook("SessionStart"));
+    for (start, end) in [
+        ("Elicitation", "ElicitationResult"),
+        ("PreCompact", "PostCompact"),
+    ] {
+        report_kind(&mut screen, "pi", hook(start));
+        report_kind(
+            &mut screen,
+            "pi",
+            HookEvent {
+                source: Some("idle".into()),
+                ..hook(end)
+            },
+        );
+        screen.agent_control(wait(AgentState::Idle), CLIENT);
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Ok);
+        assert!(result.agents[0].ready);
+    }
 }

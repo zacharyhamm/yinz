@@ -1436,6 +1436,9 @@ fn permission_modes(kind: &str) -> &'static [&'static str] {
         "opencode" => launch::OPENCODE_PERMISSION_MODES,
         "muse" => launch::MUSE_PERMISSION_MODES,
         "agy" => launch::AGY_PERMISSION_MODES,
+        // pi's permission gating is its extensions', not a flag; the select offers
+        // only the default, which is the truth of it.
+        "pi" => launch::PI_PERMISSION_MODES,
         _ => &[],
     }
 }

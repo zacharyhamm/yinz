@@ -19,6 +19,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use {yinz_cli::args::Hocus, yinz_cli::args::HocusHookAgent, yinz_cli::args::HocusHooks};
@@ -34,6 +35,17 @@ const CODEX_EVENTS: &[&str] = yinz_types::agent::CODEX_HOOK_EVENTS;
 const OPENCODE_EVENTS: &[&str] = yinz_types::agent::OPENCODE_HOOK_EVENTS;
 const MUSE_EVENTS: &[&str] = yinz_types::agent::MUSE_HOOK_EVENTS;
 const AGY_EVENTS: &[&str] = yinz_types::agent::AGY_HOOK_EVENTS;
+const PI_EVENTS: &[&str] = yinz_runtime::agent::pi::PI_HOOK_EVENTS;
+
+/// The pi extension `install` writes, with this binary's own path baked in.
+///
+/// pi is extended with a TypeScript module rather than a shell hook, so it is the
+/// second agent - beside opencode - whose wiring is one file the agent loads, and the
+/// file is the very one a spawned pane is handed inline: `yinz_runtime::agent::pi`
+/// renders it, so an installed copy and a spawned pane's copy cannot drift apart.
+fn pi_extension(yinz: &Path) -> String {
+    yinz_runtime::agent::pi::render_pi_extension(yinz)
+}
 
 /// Bumped whenever [`script`] changes, or whenever the set of events wired around it does, so
 /// `status` can say the installed copy is old. v4 was the seventeen-event table; v5 is the one
@@ -160,6 +172,7 @@ fn agent_name(agent: HocusHookAgent) -> &'static str {
         HocusHookAgent::Opencode => "opencode",
         HocusHookAgent::Muse => "Muse",
         HocusHookAgent::Agy => "Antigravity (agy)",
+        HocusHookAgent::Pi => "pi",
         HocusHookAgent::All => unreachable!("all is expanded before an agent is named"),
     }
 }
@@ -184,12 +197,14 @@ pub(crate) fn selected_agents(
         HocusHookAgent::Opencode => vec![HocusHookAgent::Opencode],
         HocusHookAgent::Muse => vec![HocusHookAgent::Muse],
         HocusHookAgent::Agy => vec![HocusHookAgent::Agy],
+        HocusHookAgent::Pi => vec![HocusHookAgent::Pi],
         HocusHookAgent::All => vec![
             HocusHookAgent::Claude,
             HocusHookAgent::Codex,
             HocusHookAgent::Opencode,
             HocusHookAgent::Muse,
             HocusHookAgent::Agy,
+            HocusHookAgent::Pi,
         ],
     })
 }
@@ -318,6 +333,9 @@ finish "$1"
         HocusHookAgent::Agy => unreachable!("Agy uses its own script generator above"),
         HocusHookAgent::Opencode => {
             unreachable!("opencode runs a plugin, not a shell script; see `opencode_plugin`")
+        },
+        HocusHookAgent::Pi => {
+            unreachable!("pi runs an extension, not a shell script; see `pi_extension`")
         },
         HocusHookAgent::All => unreachable!("all is expanded before a script is generated"),
     };
@@ -855,6 +873,7 @@ pub(crate) fn home() -> Result<PathBuf> {
 pub(crate) fn agent_root(
     agent: HocusHookAgent,
     codex_home: Option<OsString>,
+    pi_home: Option<OsString>,
     xdg_config_home: Option<OsString>,
     home: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<PathBuf> {
@@ -863,6 +882,18 @@ pub(crate) fn agent_root(
         HocusHookAgent::Codex => match non_empty(codex_home) {
             Some(root) => root,
             None => home()?.join(".codex"),
+        },
+        // pi discovers extensions in `~/.pi/agent/extensions/` - its own convention,
+        // honoured rather than redirected, because a hand-run pi loads them from there
+        // with no flag at all.
+        HocusHookAgent::Pi => match non_empty(pi_home) {
+            Some(root) if root.as_os_str() == "~" => home()?,
+            Some(root) if root.as_os_str().as_encoded_bytes().starts_with(b"~/") => home()?.join(
+                root.strip_prefix("~")
+                    .context("cannot expand Pi directory override")?,
+            ),
+            Some(root) => root,
+            None => home()?.join(".pi/agent"),
         },
         // opencode reads its config from `$XDG_CONFIG_HOME/opencode`, and falls back to
         // `~/.config/opencode` where that is unset, the way opencode itself does.
@@ -904,7 +935,10 @@ impl Files {
     ) -> Result<Files> {
         if matches!(
             agent,
-            HocusHookAgent::Codex | HocusHookAgent::Opencode | HocusHookAgent::Muse
+            HocusHookAgent::Codex
+                | HocusHookAgent::Opencode
+                | HocusHookAgent::Muse
+                | HocusHookAgent::Pi
         ) && (project || project_dir.is_some())
         {
             return Err(anyhow!("{} hooks are user-level only", agent_name(agent)));
@@ -919,6 +953,7 @@ impl Files {
         let root = agent_root(
             agent,
             std::env::var_os("CODEX_HOME"),
+            std::env::var_os("PI_CODING_AGENT_DIR"),
             std::env::var_os("XDG_CONFIG_HOME"),
             home,
         )?;
@@ -935,6 +970,14 @@ impl Files {
             HocusHookAgent::Opencode => {
                 let plugin = root.join("plugin").join(OPENCODE_PLUGIN_FILE);
                 (plugin.clone(), plugin)
+            },
+            // The opencode shape exactly: one file the agent loads, which is both the
+            // artifact and the wiring, and `settings()` is never asked for it.
+            HocusHookAgent::Pi => {
+                let extension = root
+                    .join("extensions")
+                    .join(yinz_runtime::agent::pi::PI_EXTENSION_FILE);
+                (extension.clone(), extension)
             },
             HocusHookAgent::Agy => (
                 root.join("hocus").join(MARKER),
@@ -983,6 +1026,7 @@ impl Files {
             HocusHookAgent::Opencode => OPENCODE_EVENTS,
             HocusHookAgent::Muse => MUSE_EVENTS,
             HocusHookAgent::Agy => AGY_EVENTS,
+            HocusHookAgent::Pi => PI_EVENTS,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }
@@ -998,6 +1042,9 @@ impl Files {
             HocusHookAgent::Opencode => yinz_types::agent::OPENCODE_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::Muse => yinz_types::agent::MUSE_HOOK_TIMEOUT_SECONDS,
             HocusHookAgent::Agy => yinz_types::agent::AGY_HOOK_TIMEOUT_SECONDS,
+            // pi reports from its extension events, which have no hook timeout to wire:
+            // this arm exists only because the one-file install shares the type.
+            HocusHookAgent::Pi => 0,
             HocusHookAgent::All => unreachable!("all is expanded before resolving files"),
         }
     }
@@ -1008,6 +1055,12 @@ impl Files {
         } else {
             installed_events(settings)
         }
+    }
+
+    /// The one-file installs answer nothing here: their wiring is the file itself, and
+    /// `status` reads that rather than a settings document.
+    fn is_one_file(&self) -> bool {
+        matches!(self.agent, HocusHookAgent::Opencode | HocusHookAgent::Pi)
     }
 
     /// The legacy file with our entries still in it, if there is one to move out of.
@@ -1071,8 +1124,9 @@ fn read_generated(path: &Path) -> Result<Option<String>> {
 
 /// Write a generated file, keeping a copy of what was there.
 ///
-/// The same temporary-and-rename as [`write_settings`], because the opencode plugin is
-/// loaded by a running server: a half-written file would be a plugin that does not parse.
+/// The same temporary-and-rename as [`write_settings`], because the opencode plugin and
+/// the pi extension are loaded by their own processes: a half-written file would be one
+/// that does not parse.
 fn write_generated(path: &Path, text: &str) -> Result<bool> {
     let folder = path
         .parent()
@@ -1080,16 +1134,23 @@ fn write_generated(path: &Path, text: &str) -> Result<bool> {
     std::fs::create_dir_all(folder)
         .with_context(|| format!("cannot create {}", folder.display()))?;
     let backed_up = path.exists();
+    let kind = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("js");
     if backed_up {
-        let backup = path.with_extension("js.bak");
+        let backup = path.with_extension(format!("{kind}.bak"));
         std::fs::copy(path, &backup).with_context(|| {
             format!("cannot back {} up to {}", path.display(), backup.display())
         })?;
     }
-    let temporary = path.with_extension("js.hocus-tmp");
-    std::fs::write(&temporary, text)
-        .with_context(|| format!("cannot write {}", temporary.display()))?;
-    std::fs::rename(&temporary, path)
+    let mut temporary = tempfile::NamedTempFile::new_in(folder)
+        .with_context(|| format!("cannot create temporary file in {}", folder.display()))?;
+    temporary
+        .write_all(text.as_bytes())
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    temporary
+        .persist(path)
         .with_context(|| format!("cannot replace {}", path.display()))?;
     Ok(backed_up)
 }
@@ -1128,9 +1189,51 @@ fn install_opencode(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// pi's install: one extension file, and no settings merge, because the file *is* the
+/// wiring - the opencode shape, in pi's own extension directory.
+///
+/// The file is the same one a spawned pane is handed inline, so a machine with both sees
+/// two copies in one pi process; the extension claims the process itself and the second
+/// copy reports nothing, which is why the install never has to say "choose one".
+fn install_pi(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
+    let extension = pi_extension(yinz);
+    if let Some(existing) = read_generated(&files.script)? {
+        if !existing.contains(yinz_runtime::agent::pi::PI_EXTENSION_MARKER) {
+            return Err(anyhow!(
+                "{} exists and was not written by yinz; move it aside first",
+                files.script.display()
+            ));
+        }
+    }
+    if dry_run {
+        println!("would write {}:\n", files.script.display());
+        println!("{extension}");
+        return Ok(());
+    }
+    let backed_up = write_generated(&files.script, &extension)?;
+    println!("wrote {}", files.script.display());
+    println!(
+        "wired {} events through the pi extension",
+        files.events().len()
+    );
+    if backed_up {
+        println!(
+            "kept the previous extension as {}",
+            files.script.with_extension("ts.bak").display()
+        );
+    }
+    println!("restart pi so it loads the extension");
+    println!("a pane yinz spawns carries its own copy inline, so it reports from the start");
+    println!("run `yinz hocus hooks status` to check");
+    Ok(())
+}
+
 pub(crate) fn install(files: &Files, yinz: &Path, dry_run: bool) -> Result<()> {
     if files.agent == HocusHookAgent::Opencode {
         return install_opencode(files, yinz, dry_run);
+    }
+    if files.agent == HocusHookAgent::Pi {
+        return install_pi(files, yinz, dry_run);
     }
     let script = script(files.agent, yinz);
     let settings_path = files.settings();
@@ -1241,7 +1344,7 @@ fn make_executable(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn uninstall(files: &Files) -> Result<()> {
-    if files.agent == HocusHookAgent::Opencode {
+    if files.is_one_file() {
         return uninstall_opencode(files);
     }
     let settings_path = files.settings();
@@ -1286,10 +1389,16 @@ pub(crate) fn uninstall(files: &Files) -> Result<()> {
     Ok(())
 }
 
-/// Remove the opencode plugin, if it is one we wrote.
+/// Remove the one generated file of a one-file agent - the opencode plugin or the pi
+/// extension - if it is one we wrote.
 fn uninstall_opencode(files: &Files) -> Result<()> {
+    let marker = match files.agent {
+        HocusHookAgent::Opencode => OPENCODE_MARKER,
+        HocusHookAgent::Pi => yinz_runtime::agent::pi::PI_EXTENSION_MARKER,
+        _ => unreachable!("the dispatch above sends only the one-file agents"),
+    };
     match read_generated(&files.script)? {
-        Some(text) if text.contains(OPENCODE_MARKER) => {
+        Some(text) if text.contains(marker) => {
             std::fs::remove_file(&files.script)
                 .with_context(|| format!("cannot remove {}", files.script.display()))?;
             println!("removed {}", files.script.display());
@@ -1307,19 +1416,34 @@ fn uninstall_opencode(files: &Files) -> Result<()> {
 
 /// What is wired, and the things that would quietly stop it working.
 fn status(files: &Files) -> Result<()> {
-    if files.agent == HocusHookAgent::Opencode {
+    if files.is_one_file() {
+        let (label, marker, version) = match files.agent {
+            HocusHookAgent::Opencode => (
+                "plugin",
+                OPENCODE_MARKER,
+                OPENCODE_PLUGIN_VERSION.to_string(),
+            ),
+            HocusHookAgent::Pi => (
+                "extension",
+                yinz_runtime::agent::pi::PI_EXTENSION_MARKER,
+                yinz_runtime::agent::pi::PI_EXTENSION_VERSION.to_string(),
+            ),
+            _ => unreachable!("the dispatch above sends only the one-file agents"),
+        };
         println!("{}:", files.name());
         match read_generated(&files.script)? {
-            Some(text)
-                if text.contains(&format!("hocus-opencode-plugin v{OPENCODE_PLUGIN_VERSION}")) =>
-            {
-                println!("plugin:  {} (current)", files.script.display());
+            Some(text) if text.contains(&format!("{marker} v{version}")) => {
+                println!("{label}:  {} (current)", files.script.display());
             },
-            Some(_) => println!(
-                "plugin:  {} (older than this yinz - run `install` again)",
+            Some(text) if !text.contains(marker) => println!(
+                "{label}:  {} (foreign file - move it aside before install)",
                 files.script.display()
             ),
-            None => println!("plugin:  {} (missing)", files.script.display()),
+            Some(_) => println!(
+                "{label}:  {} (older than this yinz - run `install` again)",
+                files.script.display()
+            ),
+            None => println!("{label}:  {} (missing)", files.script.display()),
         }
         return Ok(());
     }
@@ -1713,6 +1837,18 @@ mod tests {
         }
     }
 
+    fn pi_files(temp: &Path) -> Files {
+        let extension = temp
+            .join("home/.pi/agent/extensions")
+            .join(yinz_runtime::agent::pi::PI_EXTENSION_FILE);
+        Files {
+            agent: HocusHookAgent::Pi,
+            script: extension.clone(),
+            user_settings: extension,
+            project: None,
+        }
+    }
+
     fn muse_files(temp: &Path) -> Files {
         Files {
             agent: HocusHookAgent::Muse,
@@ -2098,12 +2234,179 @@ mod tests {
         assert!(plugin.contains("\"/opt/my yinz/yinz\""), "{plugin}");
     }
 
+    /// pi's wiring is one extension file in pi's own extension directory, and it is the
+    /// very file a spawned pane is handed inline - so installing twice writes the same
+    /// bytes, and uninstalling takes the file with it.
+    #[test]
+    fn pi_extension_reports_lifecycle_and_recovers_across_reload() {
+        let temp = tempfile::tempdir().unwrap();
+        let extension = temp.path().join("reporter.mts");
+        let harness = temp.path().join("harness.mjs");
+        std::fs::write(&extension, pi_extension(Path::new("/test/yinz"))).unwrap();
+        std::fs::write(&harness, include_str!("unit/pi_extension.mjs")).unwrap();
+        for remote in [false, true] {
+            let mut command = Command::new("node");
+            command
+                .arg(&harness)
+                .arg(&extension)
+                .env("YINZ_PANE_ID", "1");
+            if remote {
+                command.env("YINZ_REMOTE_PANE_TOKEN", "test-token");
+            } else {
+                command.env_remove("YINZ_REMOTE_PANE_TOKEN");
+            }
+            let output = command
+                .output()
+                .expect("Node is required for Pi extension tests");
+            assert!(
+                output.status.success(),
+                "Pi reporter (remote={remote}): {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn pi_install_directory_override_does_not_need_home() {
+        for path in ["/custom/pi", "relative/pi", "~user/pi", "./~/pi"] {
+            assert_eq!(
+                agent_root(HocusHookAgent::Pi, None, Some(path.into()), None, || {
+                    panic!("override does not need HOME")
+                })
+                .unwrap(),
+                PathBuf::from(path)
+            );
+        }
+        assert_eq!(
+            agent_root(HocusHookAgent::Pi, None, Some("".into()), None, || Ok(
+                PathBuf::from("/home/test")
+            ))
+            .unwrap(),
+            PathBuf::from("/home/test/.pi/agent")
+        );
+    }
+
+    #[test]
+    fn pi_install_directory_override_expands_tilde() {
+        for (path, expected) in [
+            ("~", "/home/test"),
+            ("~/.config/pi", "/home/test/.config/pi"),
+        ] {
+            assert_eq!(
+                agent_root(HocusHookAgent::Pi, None, Some(path.into()), None, || Ok(
+                    PathBuf::from("/home/test")
+                ))
+                .unwrap(),
+                PathBuf::from(expected)
+            );
+            assert!(
+                agent_root(HocusHookAgent::Pi, None, Some(path.into()), None, || Err(
+                    anyhow!("HOME is not set")
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn a_pi_install_writes_the_shared_extension_and_uninstall_removes_it() {
+        let temp = temp_dir("pi-install");
+        let files = pi_files(&temp);
+        install(&files, &fake_yinz(&temp), false).unwrap();
+
+        let extension = read_generated(&files.script).unwrap().unwrap();
+        assert!(
+            extension.contains(&format!(
+                "{} v{}",
+                yinz_runtime::agent::pi::PI_EXTENSION_MARKER,
+                yinz_runtime::agent::pi::PI_EXTENSION_VERSION
+            )),
+            "{extension}"
+        );
+        // The routes the spawned copy keeps too: the pane report locally, the broker
+        // remotely, and nothing at all outside a yinz pane.
+        assert!(extension.contains("\"--kind\", \"pi\""), "{extension}");
+        assert!(extension.contains("--pty-broker"), "{extension}");
+        assert!(extension.contains("YINZ_PANE_ID"), "{extension}");
+        assert!(
+            !extension.contains("__YINZ_BIN__")
+                && !extension.contains("__TOKEN_ENV__")
+                && !extension.contains("__VERSION__"),
+            "every substitution is filled in"
+        );
+        // pi needs no settings: nothing but the extension was written.
+        assert!(!temp.join("home/.pi/agent/settings.json").exists());
+
+        install(&files, &fake_yinz(&temp), false).unwrap();
+        assert_eq!(read_generated(&files.script).unwrap().unwrap(), extension);
+
+        uninstall(&files).unwrap();
+        assert!(read_generated(&files.script).unwrap().is_none());
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn pi_install_dry_run_preserves_files_and_real_install_keeps_a_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = pi_files(temp.path());
+        install(&files, Path::new("/bin/yinz"), true).unwrap();
+        assert!(!files.script.exists());
+        install(&files, Path::new("/bin/yinz"), false).unwrap();
+        let original = std::fs::read_to_string(&files.script).unwrap();
+        install(&files, Path::new("/other/yinz"), true).unwrap();
+        assert_eq!(std::fs::read_to_string(&files.script).unwrap(), original);
+        install(&files, Path::new("/other/yinz"), false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(files.script.with_extension("ts.bak")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn pi_leaves_an_extension_it_did_not_write_alone() {
+        let temp = temp_dir("pi-foreign");
+        let files = pi_files(&temp);
+        std::fs::create_dir_all(files.script.parent().unwrap()).unwrap();
+        std::fs::write(&files.script, "// somebody else's extension\n").unwrap();
+
+        assert!(install(&files, &fake_yinz(&temp), false).is_err());
+        assert!(uninstall(&files).is_err());
+        assert_eq!(
+            read_generated(&files.script).unwrap().unwrap(),
+            "// somebody else's extension\n"
+        );
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    /// The default install covers every agent, and pi has no project install: `.pi/`
+    /// is repo content pi itself will not load without the user's trust.
+    #[test]
+    fn pi_is_part_of_the_default_install_and_never_a_project_one() {
+        let every = selected_agents(None, false).unwrap();
+        assert!(every.contains(&HocusHookAgent::Pi));
+        assert_eq!(
+            selected_agents(None, true).unwrap(),
+            vec![HocusHookAgent::Claude]
+        );
+        assert!(selected_agents(Some(HocusHookAgent::Pi), true).is_err());
+        assert_eq!(
+            agent_root(HocusHookAgent::Pi, None, None, None, || Ok(PathBuf::from(
+                "/home/me"
+            )))
+            .unwrap(),
+            PathBuf::from("/home/me/.pi/agent")
+        );
+        assert!(Files::resolve(HocusHookAgent::Pi, true, None).is_err());
+    }
+
     #[test]
     fn a_custom_codex_home_does_not_require_home() {
         assert_eq!(
             agent_root(
                 HocusHookAgent::Codex,
                 Some(OsString::from("/custom/codex")),
+                None,
                 None,
                 || Err(anyhow!("HOME is unavailable"))
             )
@@ -2118,18 +2421,24 @@ mod tests {
     #[test]
     fn an_empty_codex_home_falls_back_to_home_rather_than_to_the_current_folder() {
         assert_eq!(
-            agent_root(HocusHookAgent::Codex, Some(OsString::new()), None, || Ok(
-                PathBuf::from("/home/me")
-            ))
+            agent_root(
+                HocusHookAgent::Codex,
+                Some(OsString::new()),
+                None,
+                None,
+                || Ok(PathBuf::from("/home/me"))
+            )
             .unwrap(),
             PathBuf::from("/home/me/.codex")
         );
-        assert!(
-            agent_root(HocusHookAgent::Codex, Some(OsString::new()), None, || Err(
-                anyhow!("HOME is unavailable")
-            ))
-            .is_err()
-        );
+        assert!(agent_root(
+            HocusHookAgent::Codex,
+            Some(OsString::new()),
+            None,
+            None,
+            || Err(anyhow!("HOME is unavailable"))
+        )
+        .is_err());
     }
 
     /// opencode's config root is the one that follows `XDG_CONFIG_HOME`, and its empty
@@ -2139,6 +2448,7 @@ mod tests {
         assert_eq!(
             agent_root(
                 HocusHookAgent::Opencode,
+                None,
                 None,
                 Some(OsString::from("/xdg")),
                 || Ok(PathBuf::from("/home/me"))
@@ -2150,6 +2460,7 @@ mod tests {
             agent_root(
                 HocusHookAgent::Opencode,
                 None,
+                None,
                 Some(OsString::new()),
                 || Ok(PathBuf::from("/home/me"))
             )
@@ -2157,9 +2468,9 @@ mod tests {
             PathBuf::from("/home/me/.config/opencode")
         );
         assert_eq!(
-            agent_root(HocusHookAgent::Opencode, None, None, || Ok(PathBuf::from(
-                "/home/me"
-            )))
+            agent_root(HocusHookAgent::Opencode, None, None, None, || Ok(
+                PathBuf::from("/home/me")
+            ))
             .unwrap(),
             PathBuf::from("/home/me/.config/opencode")
         );
@@ -2172,6 +2483,7 @@ mod tests {
             agent_root(
                 HocusHookAgent::Muse,
                 None,
+                None,
                 Some(OsString::from("/xdg")),
                 || Ok(PathBuf::from("/home/me"))
             )
@@ -2179,16 +2491,20 @@ mod tests {
             PathBuf::from("/xdg/muse")
         );
         assert_eq!(
-            agent_root(HocusHookAgent::Muse, None, Some(OsString::new()), || Ok(
-                PathBuf::from("/home/me")
-            ))
+            agent_root(
+                HocusHookAgent::Muse,
+                None,
+                None,
+                Some(OsString::new()),
+                || Ok(PathBuf::from("/home/me"))
+            )
             .unwrap(),
             PathBuf::from("/home/me/.config/muse")
         );
         assert_eq!(
-            agent_root(HocusHookAgent::Muse, None, None, || Ok(PathBuf::from(
-                "/home/me"
-            )))
+            agent_root(HocusHookAgent::Muse, None, None, None, || Ok(
+                PathBuf::from("/home/me")
+            ))
             .unwrap(),
             PathBuf::from("/home/me/.config/muse")
         );
@@ -2234,6 +2550,7 @@ mod tests {
                 HocusHookAgent::Opencode,
                 HocusHookAgent::Muse,
                 HocusHookAgent::Agy,
+                HocusHookAgent::Pi,
             ]
         );
         assert_eq!(

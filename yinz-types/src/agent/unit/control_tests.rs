@@ -1271,3 +1271,196 @@ fn agy_competing_prompt_and_stop_failure() {
         Some(AgentOutcome::Failed)
     );
 }
+
+#[test]
+fn only_pi_normalizes_editor_input_before_correlating_a_prompt() {
+    for (prompt, normalized) in [
+        (
+            "review\tthese\t\tfiles\nthen\treport",
+            "review    these        files\nthen    report",
+        ),
+        ("\u{feff}review", "review"),
+        (" \u{feff}\treview\u{feff}\n", "review"),
+        (
+            "\u{feff}review\tthese\u{feff}files\u{feff}",
+            "review    these\u{feff}files",
+        ),
+    ] {
+        for kind in ["pi", "claude", "codex", "muse", "agy"] {
+            for received in [prompt, normalized] {
+                let mut observation = PromptObservation::new(kind, "conversation", prompt);
+                let hook = HookEvent {
+                    hook_event_name: "UserPromptSubmit".into(),
+                    session_id: "conversation".into(),
+                    turn_id: Some("turn".into()),
+                    prompt_id: Some("prompt".into()),
+                    prompt: Some(received.into()),
+                    ..Default::default()
+                };
+                let event = AgentEvent::from_hook(kind, TerminalId::new(7), &hook, String::new());
+                let matches = (kind == "pi") == (received == normalized);
+                assert_eq!(
+                    observation.observe(&event, Some(&hook)),
+                    Some(if matches {
+                        AgentOutcome::Submitted
+                    } else {
+                        AgentOutcome::Interrupted
+                    }),
+                    "{kind}: {received:?}"
+                );
+                assert_eq!(observation.acknowledged(), matches);
+            }
+        }
+    }
+}
+
+#[test]
+fn pi_dialog_before_submit_needs_input_without_acknowledging() {
+    let mut observation = PromptObservation::new("pi", "conversation", "review");
+    for turn in [Some("stale"), Some("")] {
+        assert_eq!(
+            observe(&mut observation, &event("pi", "Elicitation", turn, None)),
+            None
+        );
+    }
+    assert_eq!(
+        observe(&mut observation, &event("pi", "Elicitation", None, None)),
+        Some(AgentOutcome::NeedsInput)
+    );
+    assert!(!observation.acknowledged());
+    assert_eq!(observation.turn_id(), None);
+    assert_eq!(
+        observe(&mut observation, &event("pi", "Stop", Some("old"), None)),
+        None
+    );
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("pi", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::Submitted)
+    );
+    for turn in [None, Some("old")] {
+        assert_eq!(
+            observe(&mut observation, &event("pi", "Elicitation", turn, None)),
+            None,
+            "acknowledgement requires subsequent dialogs to match the turn"
+        );
+    }
+    assert_eq!(
+        observe(&mut observation, &event("pi", "Stop", Some("new"), None)),
+        Some(AgentOutcome::Completed)
+    );
+}
+
+#[test]
+fn pi_dialog_before_submit_requires_matching_conversation_and_agent() {
+    for mismatch in [
+        "hook-conversation",
+        "event-conversation",
+        "kind",
+        "nonhuman",
+    ] {
+        let mut observation = PromptObservation::new("pi", "conversation", "review");
+        let mut hook = HookEvent {
+            hook_event_name: "Elicitation".into(),
+            session_id: "conversation".into(),
+            ..Default::default()
+        };
+        if mismatch == "nonhuman" {
+            hook.hook_event_name = "PermissionRequest".into();
+            hook.approvals_reviewer = Some("auto_review".into());
+        }
+        let mut event = AgentEvent::from_hook("pi", TerminalId::new(7), &hook, String::new());
+        match mismatch {
+            "hook-conversation" => hook.session_id = "other".into(),
+            "event-conversation" => event.session_id = Some("other".into()),
+            "kind" => event.kind = "codex".into(),
+            _ => {},
+        }
+        assert_eq!(
+            observation.observe(&event, Some(&hook)),
+            if mismatch == "nonhuman" {
+                None
+            } else {
+                Some(AgentOutcome::TargetChanged)
+            },
+            "{mismatch}"
+        );
+        assert!(!observation.acknowledged());
+    }
+}
+
+#[test]
+fn pi_requires_matching_prompt_conversation_and_turn() {
+    for (stop, outcome) in [
+        ("Stop", AgentOutcome::Completed),
+        ("StopFailure", AgentOutcome::Failed),
+        ("Interrupt", AgentOutcome::Interrupted),
+    ] {
+        let mut observation = PromptObservation::new("pi", "conversation", "review");
+        assert_eq!(
+            observe(&mut observation, &event("pi", "Stop", Some("old"), None)),
+            None
+        );
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("pi", "UserPromptSubmit", None, Some("review"))
+            ),
+            Some(AgentOutcome::StatusUnavailable)
+        );
+        assert_eq!(
+            observe(
+                &mut observation,
+                &event("pi", "UserPromptSubmit", Some("new"), Some("review"))
+            ),
+            Some(AgentOutcome::Submitted)
+        );
+        for turn in [None, Some("old")] {
+            assert_eq!(
+                observe(&mut observation, &event("pi", stop, turn, None)),
+                None
+            );
+        }
+        assert_eq!(
+            observe(&mut observation, &event("pi", stop, Some("new"), None)),
+            Some(outcome)
+        );
+    }
+    let mut observation = PromptObservation::new("pi", "conversation", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("pi", "UserPromptSubmit", Some("new"), Some("manual"))
+        ),
+        Some(AgentOutcome::Interrupted)
+    );
+    let mut observation = PromptObservation::new("pi", "other", "review");
+    assert_eq!(
+        observe(
+            &mut observation,
+            &event("pi", "UserPromptSubmit", Some("new"), Some("review"))
+        ),
+        Some(AgentOutcome::TargetChanged)
+    );
+    assert!(is_conversation_reset("pi", "/new"));
+    assert!(!is_command_prompt("pi", "/new"));
+    for prompt in [
+        "/reload",
+        "/new extra",
+        "!ls",
+        "  !pwd",
+        "\u{feff}!command",
+        " \u{feff}\t/reload",
+        "\u{feff}/new",
+        "/new\u{feff}",
+    ] {
+        assert!(is_command_prompt("pi", prompt));
+    }
+    assert!(!is_command_prompt("pi", "\u{feff}ordinary prompt"));
+    assert_eq!(
+        pi_prompt_text("\u{0085}review\u{0085}"),
+        "\u{0085}review\u{0085}"
+    );
+}
