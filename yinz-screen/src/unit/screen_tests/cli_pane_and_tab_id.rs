@@ -1045,18 +1045,18 @@ fn subscriber_ansi_and_plain_receive_different_content() {
     let mut plain_map = HashMap::new();
     plain_map.insert(
         yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
-        PaneContents {
+        std::borrow::Cow::Owned(PaneContents {
             viewport: vec!["plain text".to_string()],
             ..Default::default()
-        },
+        }),
     );
     let mut ansi_map = HashMap::new();
     ansi_map.insert(
         yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
-        PaneContents {
+        std::borrow::Cow::Owned(PaneContents {
             viewport: vec!["\x1b[31mred text\x1b[0m".to_string()],
             ..Default::default()
-        },
+        }),
     );
     screen.deliver_subscriber_updates_from_map(&plain_map, Some(&ansi_map));
 

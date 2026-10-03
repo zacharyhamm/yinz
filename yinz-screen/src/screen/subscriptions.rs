@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use yinz_types::data::{PaneContents, PaneRenderReport};
@@ -8,17 +9,17 @@ use crate::{panes::PaneId, ClientId};
 use super::{Pane, PaneRenderSubscription, Screen};
 
 impl Screen {
-    fn subscriber_pane_contents(
-        &self,
+    pub(super) fn subscriber_pane_contents<'a>(
         pane: &dyn Pane,
+        clients: &[ClientId],
         get_full_scrollback: bool,
         max_lines: Option<usize>,
         ansi: bool,
-        report: Option<&PaneRenderReport>,
-    ) -> PaneContents {
+        report: Option<&'a PaneRenderReport>,
+    ) -> Cow<'a, PaneContents> {
         let contents = |client| {
             if ansi {
-                pane.pane_contents_with_ansi(client, get_full_scrollback, max_lines)
+                Cow::Owned(pane.pane_contents_with_ansi(client, get_full_scrollback, max_lines))
             } else {
                 report
                     .and_then(|report| match client {
@@ -31,25 +32,32 @@ impl Screen {
                             .values()
                             .find_map(|panes| panes.get(&pane.pid())),
                     })
-                    .cloned()
-                    .unwrap_or_else(|| pane.pane_contents(client, get_full_scrollback, max_lines))
+                    .map(Cow::Borrowed)
+                    .unwrap_or_else(|| {
+                        Cow::Owned(pane.pane_contents(client, get_full_scrollback, max_lines))
+                    })
             }
         };
         if matches!(pane.pid(), PaneId::Terminal(_)) {
             return contents(None);
         }
-        // Include live clients on other tabs: an inactive plugin can retain their grids.
-        let mut clients: Vec<_> = self.connected_clients.borrow().iter().copied().collect();
-        clients.sort_unstable();
         clients
-            .into_iter()
-            .chain(self.followed_client_id)
-            .filter(|id| !self.watcher_clients.contains_key(id))
+            .iter()
+            .copied()
             .find_map(|id| {
                 let contents = contents(Some(id));
                 (!contents.viewport.is_empty()).then_some(contents)
             })
             .unwrap_or_default()
+    }
+
+    fn subscriber_clients(&self) -> Vec<ClientId> {
+        // Include live clients on other tabs: an inactive plugin can retain their grids.
+        let mut clients: Vec<_> = self.connected_clients.borrow().iter().copied().collect();
+        clients.sort_unstable();
+        clients.extend(self.followed_client_id);
+        clients.retain(|id| !self.watcher_clients.contains_key(id));
+        clients
     }
 
     pub(super) fn subscribe_to_pane_renders(
@@ -61,6 +69,11 @@ impl Screen {
     ) {
         let mut previous_viewports = HashMap::new();
         let mut valid_pane_ids = HashSet::new();
+        let clients = if pane_ids.iter().any(|id| matches!(id, PaneId::Plugin(_))) {
+            self.subscriber_clients()
+        } else {
+            vec![]
+        };
 
         for pane_id in &pane_ids {
             let server_pane_id: PaneId = *pane_id;
@@ -71,13 +84,15 @@ impl Screen {
                     let get_full_scrollback = scrollback.is_some();
                     let max_lines = scrollback.filter(|&n| n != 0);
 
-                    let contents = self.subscriber_pane_contents(
+                    let contents = Self::subscriber_pane_contents(
                         pane,
+                        &clients,
                         get_full_scrollback,
                         max_lines,
                         ansi,
                         None,
-                    );
+                    )
+                    .into_owned();
 
                     if let Some(os_input) = &self.bus.os_input {
                         let scrollback_data = if scrollback.is_some() {
@@ -138,22 +153,30 @@ impl Screen {
             .collect();
 
         let has_ansi_subscribers = self.pane_render_subscribers.values().any(|s| s.ansi);
+        let clients = if all_subscribed_ids
+            .iter()
+            .any(|id| matches!(id, PaneId::Plugin(_)))
+        {
+            self.subscriber_clients()
+        } else {
+            vec![]
+        };
 
         // Reuse this pass's plain snapshots; missing panes and ANSI still need direct reads.
-        let mut pane_map: HashMap<yinz_types::data::PaneId, PaneContents> = HashMap::new();
-        let mut ansi_pane_map: HashMap<yinz_types::data::PaneId, PaneContents> = HashMap::new();
+        let mut pane_map = HashMap::new();
+        let mut ansi_pane_map = HashMap::new();
         for pane_id in &all_subscribed_ids {
             let server_pane_id: PaneId = *pane_id;
             for tab in self.tabs.values() {
                 if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
                     pane_map.insert(
                         *pane_id,
-                        self.subscriber_pane_contents(pane, false, None, false, report),
+                        Self::subscriber_pane_contents(pane, &clients, false, None, false, report),
                     );
                     if has_ansi_subscribers {
                         ansi_pane_map.insert(
                             *pane_id,
-                            self.subscriber_pane_contents(pane, false, None, true, None),
+                            Self::subscriber_pane_contents(pane, &clients, false, None, true, None),
                         );
                     }
                     break;
@@ -171,8 +194,8 @@ impl Screen {
     }
     pub(super) fn deliver_subscriber_updates_from_map(
         &mut self,
-        pane_map: &HashMap<yinz_types::data::PaneId, PaneContents>,
-        ansi_pane_map: Option<&HashMap<yinz_types::data::PaneId, PaneContents>>,
+        pane_map: &HashMap<yinz_types::data::PaneId, Cow<'_, PaneContents>>,
+        ansi_pane_map: Option<&HashMap<yinz_types::data::PaneId, Cow<'_, PaneContents>>>,
     ) {
         // Collect updates to send, avoiding borrow conflicts
         let mut updates_to_send: Vec<(ClientId, ServerToClientMsg)> = Vec::new();

@@ -1,5 +1,5 @@
-use anyhow::Result;
 use async_trait::async_trait;
+use yinz_runtime::errors::prelude::*;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::pane_size::Size;
 use yinz_types::style::default_palette;
@@ -530,15 +530,12 @@ pub(crate) fn stdout_writer(for_teardown: bool) -> Box<dyn io::Write> {
     // and the invoking shell can share it, and must retain their blocking mode.
     let tty = STDOUT_TTY
         .get_or_init(|| {
-            use std::os::unix::fs::OpenOptionsExt;
             if !stdout.is_terminal() {
                 return None;
             }
-            let path = nix::unistd::ttyname(&stdout).ok()?;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
-                .open(path)
+            reopen_stdout_tty(&stdout)
+                .context("writing frames through the shared, possibly blocking, stdout")
+                .to_log()
                 .ok()
         })
         .as_ref();
@@ -557,6 +554,22 @@ pub(crate) fn stdout_writer(for_teardown: bool) -> Box<dyn io::Write> {
     } else {
         Box::new(crate::terminal_escapes::HostWriter::new(writer, wait))
     }
+}
+
+/// A private, non-blocking file description for the terminal behind stdout.
+fn reopen_stdout_tty(stdout: &io::StdoutLock<'_>) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = nix::unistd::ttyname(stdout).context("failed to name stdout's terminal")?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
+        .open(&path)
+        .with_context(|| {
+            format!(
+                "failed to reopen {} for non-blocking writes",
+                path.display()
+            )
+        })
 }
 
 // Cache both success and failure across startup, frames, and teardown.

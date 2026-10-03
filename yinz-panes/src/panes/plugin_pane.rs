@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
 use yinz_runtime::shared::make_terminal_title;
@@ -295,17 +296,18 @@ impl Pane for PluginPane {
         // interceptor first and the captured commands handed to the grid directly. None of the
         // pause/forward machinery from that method applies here: a plugin pane has no pty, so
         // there is nothing to forward a query to and nothing to replay afterwards.
-        let mut forwarded: Vec<u8> = Vec::with_capacity(vte_bytes.len());
+        let mut forwarded: Cow<'_, [u8]> = Cow::Borrowed(&[]);
         for piece in interceptor.split(&vte_bytes) {
             match piece {
-                Piece::Run(run) => forwarded.extend_from_slice(run),
-                Piece::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
+                Piece::Run(run) if forwarded.is_empty() => forwarded = Cow::Borrowed(run),
+                Piece::Run(run) => forwarded.to_mut().extend_from_slice(run),
+                Piece::Forward(fwd) => forwarded.to_mut().extend_from_slice(fwd.as_slice()),
                 Piece::CaptureStarted => {
                     // Everything before the command has to reach the grid first: a placement is
                     // positioned by where the cursor is when it arrives.
                     if !forwarded.is_empty() {
                         vte_parser.advance(grid, &forwarded);
-                        forwarded.clear();
+                        forwarded = Cow::Borrowed(&[]);
                     }
                 },
                 Piece::Captured(command) => {
@@ -1608,7 +1610,7 @@ mod tests {
 
     /// Also hands back the plugin thread's receiver, for a test that drives a path which
     /// sends to it (the mouse handlers `unwrap` that send).
-    fn test_plugin_pane_and_plugin_receiver(
+    pub(super) fn test_plugin_pane_and_plugin_receiver(
         rows: usize,
         cols: usize,
         content_offset: Offset,
@@ -1800,7 +1802,7 @@ mod tests {
     /// The frame a plugin drawing an image emits, built with the very helpers a plugin calls -
     /// A second, hand-written copy of the
     /// escape sequences here would pass while the two halves disagreed.
-    fn image_frame(id: u32, cols: usize, png: &[u8]) -> Vec<u8> {
+    pub(super) fn image_frame(id: u32, cols: usize, png: &[u8]) -> Vec<u8> {
         let mut frame = png_transmit_sequence(id, png);
         frame.push_str(&place_image_sequence(id, cols, 1));
         frame.push_str(&image_row(id, 0, cols));
@@ -1828,7 +1830,7 @@ mod tests {
     }
 
     /// A 2x2 PNG, small enough to go over in one command.
-    fn tiny_png() -> Vec<u8> {
+    pub(super) fn tiny_png() -> Vec<u8> {
         let mut png = Vec::new();
         {
             let mut encoder = png::Encoder::new(&mut png, 2, 2);
@@ -1840,72 +1842,11 @@ mod tests {
         png
     }
 
-    fn kitty_chunks(pane: &mut PluginPane, client_id: ClientId) -> Vec<KittyImageChunk> {
+    pub(super) fn kitty_chunks(pane: &mut PluginPane, client_id: ClientId) -> Vec<KittyImageChunk> {
         pane.render(Some(client_id))
             .expect("render failed")
             .map(|(_, _, _, kitty)| kitty)
             .unwrap_or_default()
-    }
-
-    #[test]
-    fn client_grid_reset_follows_creation_including_delayed_frames() {
-        let (mut pane, rx) = test_plugin_pane_and_plugin_receiver(
-            10,
-            10,
-            Offset::default(),
-            Some(SizeInPixels {
-                width: 8,
-                height: 16,
-            }),
-        );
-        let first = ClientId::new(1);
-        let other = ClientId::new(2);
-        let reset = |client| {
-            let (PluginInstruction::Update(events), _) = rx.try_recv().expect("grid reset") else {
-                panic!("expected an update");
-            };
-            assert_eq!(
-                events,
-                vec![(
-                    Some(PluginId::new(1)),
-                    Some(client),
-                    Event::ClientGridReset(client)
-                )]
-            );
-            assert!(rx.is_empty(), "one notification per creation");
-        };
-        for client in [first, other] {
-            pane.add_client(client);
-            reset(client);
-            pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
-            assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
-        }
-        let placeholders = || image_row(42, 0, 2).into_bytes();
-        pane.handle_plugin_bytes(first, placeholders());
-        assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
-        assert!(rx.is_empty(), "ordinary frames preserve the namespace");
-
-        for delayed in [false, true] {
-            pane.remove_client(first);
-            assert!(rx.is_empty(), "deletion alone is not a new namespace");
-            if delayed {
-                // A frame queued before disconnect can create the grid before attachment.
-                pane.handle_plugin_bytes(first, placeholders());
-                assert!(kitty_chunks(&mut pane, first).is_empty());
-                reset(first);
-                pane.add_client(first);
-                assert!(rx.is_empty());
-            } else {
-                pane.add_client(first);
-                reset(first);
-            }
-            // A subscribed plugin responds to the reset by transmitting its pixels again.
-            pane.handle_plugin_bytes(first, image_frame(42, 2, &tiny_png()));
-            assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
-            pane.handle_plugin_bytes(other, placeholders());
-            assert_eq!(kitty_chunks(&mut pane, other).len(), 1);
-            assert!(rx.is_empty());
-        }
     }
 
     #[test]

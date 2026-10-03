@@ -1154,7 +1154,7 @@ mod coalescing_send_queue {
                 let server = server.clone();
                 let called = std::sync::Mutex::new(called);
                 Arc::new(move || {
-                    let _ = server.client_render_backlog(client);
+                    let _ = server.client_queue(client);
                     let _ = called.lock().unwrap().send(());
                 })
             };
@@ -1202,7 +1202,9 @@ mod coalescing_send_queue {
         .is_err());
 
         assert_eq!(
-            server.client_render_backlog(client),
+            server
+                .client_queue(client)
+                .map(|queue| queue.render_backlog()),
             Some(RenderBacklog::default())
         );
         assert!(!queue.state.is_poisoned());
@@ -1216,7 +1218,9 @@ mod coalescing_send_queue {
         .join()
         .is_err());
         assert_eq!(
-            server.client_render_backlog(client),
+            server
+                .client_queue(client)
+                .map(|queue| queue.render_backlog()),
             Some(RenderBacklog::default())
         );
         assert!(!server.client_senders.is_poisoned());
@@ -1224,7 +1228,7 @@ mod coalescing_send_queue {
         server.flush_client_writers(Duration::ZERO);
         let mut server = server;
         server.remove_client(client).unwrap();
-        assert!(server.client_render_backlog(client).is_none());
+        assert!(server.client_queue(client).is_none());
     }
 
     #[test]

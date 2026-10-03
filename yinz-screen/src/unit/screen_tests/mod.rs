@@ -372,21 +372,19 @@ impl ServerOsApi for FakeInputOutput {
     fn send_sigcont(&self, _pid: ProcessId) -> Result<()> {
         unimplemented!()
     }
-    fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
-        self.render_backlog
-            .lock()
-            .ok()?
-            .iter()
-            .find(|(id, _)| *id == client_id)
-            .map(|(_, backlog)| *backlog)
-    }
     fn client_render_backlog_and_notify(
         &self,
         client_id: ClientId,
         threshold: usize,
         ready: &RenderReady,
     ) -> Option<RenderBacklog> {
-        let backlog = self.client_render_backlog(client_id);
+        let backlog = self
+            .render_backlog
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(id, _)| *id == client_id)
+            .map(|(_, backlog)| *backlog);
         if backlog.is_some_and(|b| b.queued_renders >= threshold) {
             self.render_ready
                 .lock()

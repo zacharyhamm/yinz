@@ -117,6 +117,18 @@ fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
                 },
             );
         }
+        let contents =
+            Screen::subscriber_pane_contents(pane, &[], false, None, false, Some(&report));
+        if include_report_contents {
+            assert!(matches!(contents, std::borrow::Cow::Borrowed(borrowed)
+                if std::ptr::eq(borrowed, &report.all_pane_contents[&client][&pane_id])));
+        } else {
+            assert!(matches!(contents, std::borrow::Cow::Owned(_)));
+        }
+        assert!(matches!(
+            Screen::subscriber_pane_contents(pane, &[], false, None, true, Some(&report)),
+            std::borrow::Cow::Owned(_)
+        ));
         messages.lock().unwrap().clear();
         screen.deliver_to_pane_subscribers(Some(&report));
         let expected_plain = if include_report_contents {
@@ -221,77 +233,120 @@ fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() 
     let watcher = ClientId::new(1);
     let departed = ClientId::new(2);
     let live = ClientId::new(3);
+    let later = ClientId::new(4);
+    let followed = ClientId::new(5);
     let subscriber = ClientId::new(100);
-    let plugin = crate::PluginId::new(20);
+    let plugins = [
+        (crate::PluginId::new(20), live),
+        (crate::PluginId::new(21), later),
+        (crate::PluginId::new(22), followed),
+    ];
     for (ansi, use_report) in [(false, false), (true, false), (false, true), (true, true)] {
         let (mut screen, messages) =
             create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
         new_tab(&mut screen, 1, TabId::new(0));
         screen.add_watcher_client(watcher).unwrap();
+        screen.add_client(later).unwrap();
         screen.add_client(live).unwrap();
+        screen.followed_client_id = Some(followed);
         let (sender, _receiver) = channels::unbounded();
         let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
         tab.senders.to_plugin = Some(SenderWithContext::new(sender));
-        tab.new_pane(
-            PaneId::Plugin(plugin),
-            None,
-            None,
-            false,
-            false,
-            NewPanePlacement::default(),
-            Some(live),
-            None,
-        )
-        .unwrap();
-        // Seed all three cached grids; only the live regular client's is authoritative.
-        for (client, bytes) in [
-            (watcher, "watcher-grid"),
-            (departed, "departed-grid"),
-            (live, "live-grid"),
-        ] {
-            tab.handle_plugin_bytes(plugin, client, bytes.as_bytes().to_vec())
-                .unwrap();
+        for (plugin, selected) in plugins {
+            tab.new_pane(
+                PaneId::Plugin(plugin),
+                None,
+                None,
+                false,
+                false,
+                NewPanePlacement::default(),
+                Some(live),
+                None,
+            )
+            .unwrap();
+            // Remove loading grids so each pane can have a different first nonempty client.
+            let pane = tab.get_pane_with_id_mut(PaneId::Plugin(plugin)).unwrap();
+            for client in [live, later] {
+                pane.remove_client(client);
+            }
+            // Earlier eligible clients without a grid must be skipped independently per pane.
+            for (client, bytes) in [
+                (watcher, "watcher-grid"),
+                (departed, "departed-grid"),
+                (selected, "live-grid"),
+            ] {
+                tab.handle_plugin_bytes(plugin, client, bytes.as_bytes().to_vec())
+                    .unwrap();
+            }
         }
-        screen.subscribe_to_pane_renders(subscriber, vec![PaneId::Plugin(plugin)], None, ansi);
-        assert!(matches!(
-            &messages.lock().unwrap()[&subscriber][0],
-            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: true, .. }
-                if viewport.concat().contains("live-grid")
-        ));
+        // The lowest eligible client wins even when another eligible grid is nonempty.
+        tab.handle_plugin_bytes(plugins[0].0, later, b"later-grid".to_vec())
+            .unwrap();
+        let pane_ids = plugins.map(|(plugin, _)| PaneId::Plugin(plugin));
+        screen.subscribe_to_pane_renders(subscriber, pane_ids.to_vec(), None, ansi);
+        {
+            let messages = messages.lock().unwrap();
+            assert_eq!(messages[&subscriber].len(), plugins.len());
+            for message in &messages[&subscriber] {
+                assert!(matches!(message,
+                    ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: true, .. }
+                        if viewport.concat().contains("live-grid")
+                ));
+            }
+        }
         messages.lock().unwrap().clear();
         screen
-            .handle_plugin_render_assets(vec![crate::plugins::PluginRenderAsset::new(
-                plugin,
-                live,
-                b"live-update".to_vec(),
-            )])
+            .handle_plugin_render_assets(
+                plugins
+                    .map(|(plugin, selected)| {
+                        crate::plugins::PluginRenderAsset::new(
+                            plugin,
+                            selected,
+                            b"live-update".to_vec(),
+                        )
+                    })
+                    .to_vec(),
+            )
             .unwrap();
         let mut report = yinz_types::data::PaneRenderReport::default();
-        for (client, text) in [
-            (watcher, "watcher-report"),
-            (departed, "departed-report"),
-            (live, "live-report"),
-        ] {
-            report.add_pane_contents(
-                &[client],
-                PaneId::Plugin(plugin),
-                PaneContents {
-                    viewport: vec![text.to_owned()],
-                    ..Default::default()
-                },
-            );
+        for (plugin, selected) in plugins {
+            for (client, text) in [
+                (watcher, "watcher-report"),
+                (departed, "departed-report"),
+                (selected, "live-report"),
+            ] {
+                report.add_pane_contents(
+                    &[client],
+                    PaneId::Plugin(plugin),
+                    PaneContents {
+                        viewport: vec![text.to_owned()],
+                        ..Default::default()
+                    },
+                );
+            }
         }
+        report.add_pane_contents(
+            &[later],
+            pane_ids[0],
+            PaneContents {
+                viewport: vec!["later-report".to_owned()],
+                ..Default::default()
+            },
+        );
         screen.deliver_to_pane_subscribers(use_report.then_some(&report));
         let expected = if use_report && !ansi {
             "live-report"
         } else {
             "live-update"
         };
-        assert!(matches!(
-            &messages.lock().unwrap()[&subscriber][0],
-            ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
-                if viewport.concat().contains(expected)
-        ));
+        let messages = messages.lock().unwrap();
+        assert_eq!(messages[&subscriber].len(), plugins.len());
+        for message in &messages[&subscriber] {
+            assert!(matches!(message,
+                ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
+                    if viewport.concat().contains(expected)
+            ));
+        }
     }
 }
 
@@ -353,10 +408,10 @@ fn subscriber_no_update_on_unchanged_viewport() {
     let mut pane_map = HashMap::new();
     pane_map.insert(
         yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
-        PaneContents {
+        std::borrow::Cow::Owned(PaneContents {
             viewport: initial_viewport,
             ..Default::default()
-        },
+        }),
     );
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 
@@ -383,10 +438,10 @@ fn subscriber_receives_update_on_changed_viewport() {
     let mut pane_map = HashMap::new();
     pane_map.insert(
         yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
-        PaneContents {
+        std::borrow::Cow::Owned(PaneContents {
             viewport: vec!["changed line".to_string()],
             ..Default::default()
-        },
+        }),
     );
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 
@@ -501,10 +556,10 @@ fn multiple_subscribers_receive_updates() {
     let mut pane_map = HashMap::new();
     pane_map.insert(
         yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(1)),
-        PaneContents {
+        std::borrow::Cow::Owned(PaneContents {
             viewport: vec!["new content".to_string()],
             ..Default::default()
-        },
+        }),
     );
     screen.deliver_subscriber_updates_from_map(&pane_map, None);
 

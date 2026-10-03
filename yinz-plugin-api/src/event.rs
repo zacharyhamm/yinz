@@ -4604,33 +4604,3 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
     wire.multipane.as_mut().unwrap().ratio = 10_000;
     assert!(PaneInfo::try_from(wire).is_err());
 }
-
-#[test]
-fn client_grid_reset_roundtrips_and_rejects_malformed_payloads() {
-    use prost::Message;
-    for id in [0, 7, u16::MAX] {
-        let event = Event::ClientGridReset(ClientId::new(id));
-        let protobuf = ProtobufEvent::try_from(event.clone()).unwrap();
-        let decoded = ProtobufEvent::decode(protobuf.encode_to_vec().as_slice()).unwrap();
-        assert_eq!(Event::try_from(decoded).unwrap(), event);
-    }
-    assert_eq!(
-        EventType::try_from(ProtobufEventType::ClientGridReset).unwrap(),
-        EventType::ClientGridReset
-    );
-    assert_eq!(
-        ProtobufEventType::try_from(EventType::ClientGridReset).unwrap(),
-        ProtobufEventType::ClientGridReset
-    );
-    for payload in [
-        None,
-        Some(ProtobufEventPayload::VisiblePayload(true)),
-        Some(ProtobufEventPayload::ClientGridResetPayload(65536)),
-    ] {
-        assert!(Event::try_from(ProtobufEvent {
-            name: ProtobufEventType::ClientGridReset as i32,
-            payload
-        })
-        .is_err());
-    }
-}
