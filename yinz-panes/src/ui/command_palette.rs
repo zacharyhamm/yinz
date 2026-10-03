@@ -41,6 +41,7 @@ pub struct Entry {
     pub id: String,
     pub label: String,
     pub description: String,
+    pub shortcut: String,
     pub aliases: Vec<String>,
     pub kind: EntryKind,
 }
@@ -238,6 +239,15 @@ impl CommandPalette {
     }
 
     pub fn handle_key(&mut self, key: KeyWithModifier) -> Outcome {
+        let key = match key.bare_key {
+            BareKey::Char('n') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
+                KeyWithModifier::new(BareKey::Down)
+            },
+            BareKey::Char('p') if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
+                KeyWithModifier::new(BareKey::Up)
+            },
+            _ => key,
+        };
         if key.bare_key == BareKey::Esc {
             return self.back();
         }
@@ -491,6 +501,7 @@ impl CommandPalette {
         let width = rect.cols - 2 * layout.border;
         (rect.y..rect.y + rect.rows)
             .map(|y| {
+                let mut shortcut_start = usize::MAX;
                 let (text, styles) = if layout.border == 1 && y == rect.y {
                     (format!("╭{}╮", fit(" Do ", width, '─')), border.clone())
                 } else if layout.border == 1 && y == rect.y + rect.rows - 1 {
@@ -516,15 +527,19 @@ impl CommandPalette {
                         (
                             self.error.clone().unwrap_or_else(|| {
                                 if self.form.is_some() {
-                                    "Tab/↑↓ Fields  Enter Next/Submit  Esc Back"
+                                    "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
                                 } else if self.picker.is_some() {
-                                    "↑↓ Select  Enter Choose  Esc Back"
+                                    "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
                                 } else {
-                                    "↑↓ Select  Enter Choose  Esc Close"
+                                    "↑↓/Ctrl+n/p Select  Enter Choose  Esc Close"
                                 }
                                 .into()
                             }),
-                            fill.clone(),
+                            if self.error.is_some() {
+                                fill.clone()
+                            } else {
+                                heading.clone()
+                            },
                         )
                     } else if (layout.options_y..layout.options_y + layout.options_rows)
                         .contains(&y)
@@ -565,7 +580,7 @@ impl CommandPalette {
                         } else if let Some(entry) =
                             self.matches.get(index).map(|i| &self.entries[*i])
                         {
-                            format!(
+                            let label = format!(
                                 "{} {}{}",
                                 if index == self.selected { '›' } else { ' ' },
                                 entry.label,
@@ -574,7 +589,18 @@ impl CommandPalette {
                                 } else {
                                     format!(" — {}", entry.description)
                                 }
-                            )
+                            );
+                            if entry.shortcut.is_empty() {
+                                label
+                            } else {
+                                use unicode_width::UnicodeWidthStr;
+                                let shortcut =
+                                    take_columns(&entry.shortcut, width.saturating_sub(3));
+                                let label =
+                                    fit(&label, width.saturating_sub(shortcut.width() + 1), ' ');
+                                shortcut_start = label.chars().count() + 1;
+                                format!("{label} {shortcut}")
+                            }
                         } else if self.matches.is_empty() && y == layout.options_y {
                             "No matches".into()
                         } else {
@@ -594,17 +620,25 @@ impl CommandPalette {
                         (String::new(), fill.clone())
                     };
                     let text = fit(&text, width, ' ');
+                    let subtle: RcCharacterStyles = styles.dim(Some(AnsiCode::On)).into();
+                    let mut characters = Vec::new();
                     if layout.border == 1 {
-                        let mut characters =
-                            vec![TerminalCharacter::new_styled('│', border.clone())];
-                        characters.extend(
-                            text.chars()
-                                .map(|c| TerminalCharacter::new_styled(c, styles.clone())),
-                        );
                         characters.push(TerminalCharacter::new_styled('│', border.clone()));
-                        return CharacterChunk::new(characters, rect.x, y);
                     }
-                    (text, styles)
+                    characters.extend(text.chars().enumerate().map(|(index, c)| {
+                        TerminalCharacter::new_styled(
+                            c,
+                            if index >= shortcut_start {
+                                subtle.clone()
+                            } else {
+                                styles.clone()
+                            },
+                        )
+                    }));
+                    if layout.border == 1 {
+                        characters.push(TerminalCharacter::new_styled('│', border.clone()));
+                    }
+                    return CharacterChunk::new(characters, rect.x, y);
                 };
                 CharacterChunk::new(
                     text.chars()

@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use yinz_bus::screen::ScreenInstruction;
+use yinz_bus::ServerInstruction;
 use yinz_runtime::errors::prelude::*;
-use yinz_types::data::{NewPanePlacement, PaneId};
+use yinz_types::data::{InputMode, KeybindsVec, NewPanePlacement, PaneId};
 use yinz_types::geometry::Direction;
 use yinz_types::input::actions::Action;
 use yinz_types::input::command::{RunCommandAction, TerminalAction};
-use yinz_types::internal_ids::{SessionName, TabId};
+use yinz_types::input::keybinds::shortcut_for_action;
+use yinz_types::internal_ids::{SessionName, TabId, TabNumber};
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::Viewport;
@@ -22,6 +24,18 @@ pub(super) struct CommandPaletteState {
     pane_id: PaneId,
     actions: HashMap<String, Builtin>,
     painted: Option<CellRect>,
+    shortcut_keybinds: KeybindsVec,
+    shortcuts: HashMap<String, CachedShortcut>,
+    #[cfg(test)]
+    pub(super) shortcut_lookups: usize,
+    #[cfg(test)]
+    pub(super) shortcut_keymap_filters: usize,
+}
+
+struct CachedShortcut {
+    original: Option<Action>,
+    target: Option<Action>,
+    hint: String,
 }
 
 impl Screen {
@@ -36,6 +50,15 @@ impl Screen {
             return;
         };
         self.close_context_menu(client_id);
+        self.bus
+            .senders
+            .send_to_server(ServerInstruction::ChangeMode(
+                client_id,
+                InputMode::Locked,
+                None,
+            ))
+            .context("failed to lock input when opening command palette")
+            .non_fatal();
         self.command_palettes.insert(
             client_id,
             CommandPaletteState {
@@ -44,6 +67,12 @@ impl Screen {
                 pane_id,
                 actions: HashMap::new(),
                 painted: None,
+                shortcut_keybinds: Vec::new(),
+                shortcuts: HashMap::new(),
+                #[cfg(test)]
+                shortcut_lookups: 0,
+                #[cfg(test)]
+                shortcut_keymap_filters: 0,
             },
         );
         self.refresh_command_palettes();
@@ -257,7 +286,13 @@ enum FormKind {
 }
 
 impl Screen {
-    fn palette_entries(&self, pane_id: PaneId, tab_id: TabId) -> Vec<(Entry, Builtin)> {
+    fn palette_entries(
+        &self,
+        pane_id: PaneId,
+        tab_id: TabId,
+        client: ClientId,
+        state: &mut CommandPaletteState,
+    ) -> Vec<(Entry, Builtin)> {
         use Action::*;
         let mut entries = Vec::new();
         let mut command = |id: &str, label: &str, aliases: &[&str], activation: Builtin| {
@@ -265,6 +300,7 @@ impl Screen {
                 Entry {
                     id: id.into(),
                     label: label.into(),
+                    shortcut: String::new(),
                     description: String::new(),
                     aliases: aliases.iter().map(|s| (*s).into()).collect(),
                     kind: EntryKind::Command,
@@ -392,6 +428,7 @@ impl Screen {
                 Entry {
                     id: format!("tab:{}", tab.id),
                     label: tab_label.clone(),
+                    shortcut: String::new(),
                     description: format!("{} panes", panes.len()),
                     aliases: vec![tab.name.clone()],
                     kind: EntryKind::Tab,
@@ -406,6 +443,7 @@ impl Screen {
                     Entry {
                         id: format!("pane:{}", pane.id),
                         label: format!("{} ({})", pane.title, pane.id),
+                        shortcut: String::new(),
                         description: tab_label.clone(),
                         aliases: vec![pane.title],
                         kind: EntryKind::Pane,
@@ -419,12 +457,125 @@ impl Screen {
                 Entry {
                     id: format!("session:{}", session.name),
                     label: session.name.to_string(),
+                    shortcut: String::new(),
                     description: format!("{} connected clients", session.connected_clients),
                     aliases: vec![],
                     kind: EntryKind::Session,
                 },
                 Builtin::Action(switch_session(session.name.clone(), None)),
             ));
+        }
+        let mode_info = self
+            .mode_info
+            .get(&client)
+            .unwrap_or(&self.default_mode_info);
+        if state.shortcut_keybinds != mode_info.keybinds {
+            state.shortcuts.clear();
+            state.shortcut_keybinds.clone_from(&mode_info.keybinds);
+        }
+        let mut regular_keybinds = None;
+        for (entry, builtin) in &mut entries {
+            let builtin = &*builtin;
+            let target = match builtin {
+                Builtin::Action(ToggleFocusFullscreenByPaneId { .. }) => {
+                    Some(ToggleFocusFullscreen)
+                },
+                Builtin::Action(TogglePaneEmbedOrFloatingByPaneId { .. }) => {
+                    Some(TogglePaneEmbedOrFloating)
+                },
+                Builtin::Action(ToggleFloatingPanesByTabId { .. }) => Some(ToggleFloatingPanes),
+                Builtin::Action(MoveTabByTabId { direction, .. }) => Some(MoveTab {
+                    direction: *direction,
+                }),
+                Builtin::Action(GoToTabById { id }) => self
+                    .tabs
+                    .get(id)
+                    .and_then(|tab| TabNumber::try_from(tab.position).ok())
+                    .map(|index| GoToTab { index }),
+                Builtin::Action(NewTiledPane {
+                    direction,
+                    command: None,
+                    pane_name,
+                    ..
+                }) => Some(NewPane {
+                    direction: *direction,
+                    pane_name: pane_name.clone(),
+                    start_suppressed: false,
+                }),
+                Builtin::Action(NewFloatingPane {
+                    command: None,
+                    pane_name,
+                    ..
+                }) if self
+                    .tabs
+                    .get(&tab_id)
+                    .is_some_and(|tab| tab.are_floating_panes_visible()) =>
+                {
+                    Some(NewPane {
+                        direction: None,
+                        pane_name: pane_name.clone(),
+                        start_suppressed: false,
+                    })
+                },
+                Builtin::Action(action) => Some(action.clone()),
+                Builtin::Form(FormKind::ClosePane) => Some(CloseFocus),
+                Builtin::Form(FormKind::CloseTab) => Some(CloseTab),
+                Builtin::Form(FormKind::RenamePane) => Some(SwitchToMode {
+                    input_mode: InputMode::RenamePane,
+                }),
+                Builtin::Form(FormKind::RenameTab) => Some(SwitchToMode {
+                    input_mode: InputMode::RenameTab,
+                }),
+                _ => None,
+            };
+            let original = match builtin {
+                Builtin::Action(action) => Some(action.clone()),
+                _ => None,
+            };
+            if let Some(cached) = state.shortcuts.get(&entry.id) {
+                if cached.original == original && cached.target == target {
+                    entry.shortcut.clone_from(&cached.hint);
+                    continue;
+                }
+            }
+            #[cfg(test)]
+            {
+                state.shortcut_lookups += 1;
+            }
+            // Prefer regular modes even when a Tmux route is shorter. Cache hits never
+            // build this keymap, and all misses in this refresh share it.
+            let regular_keybinds = regular_keybinds.get_or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    state.shortcut_keymap_filters += 1;
+                }
+                mode_info
+                    .keybinds
+                    .iter()
+                    .filter(|(mode, _)| *mode != InputMode::Tmux)
+                    .cloned()
+                    .collect()
+            });
+            let is_target = |action: &Action| {
+                target.as_ref() == Some(action) || original.as_ref() == Some(action)
+            };
+            entry.shortcut = shortcut_for_action(regular_keybinds, InputMode::Locked, is_target)
+                .or_else(|| shortcut_for_action(&mode_info.keybinds, InputMode::Locked, is_target))
+                .map(|keys| {
+                    keys.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" → ")
+                })
+                .unwrap_or_default();
+            state.shortcuts.insert(
+                entry.id.clone(),
+                CachedShortcut {
+                    original,
+                    target,
+                    hint: entry.shortcut.clone(),
+                },
+            );
         }
         entries
     }
@@ -436,8 +587,8 @@ impl Screen {
             .map(|(client, state)| (*client, state.pane_id, state.tab_id))
             .collect();
         for (client, pane, tab) in clients {
-            let entries = self.palette_entries(pane, tab);
-            if let Some(state) = self.command_palettes.get_mut(&client) {
+            if let Some(mut state) = self.command_palettes.remove(&client) {
+                let entries = self.palette_entries(pane, tab, client, &mut state);
                 state
                     .widget
                     .set_entries(entries.iter().map(|(entry, _)| entry.clone()).collect());
@@ -445,6 +596,10 @@ impl Screen {
                     .into_iter()
                     .map(|(entry, action)| (entry.id, action))
                     .collect();
+                state
+                    .shortcuts
+                    .retain(|id, _| state.actions.contains_key(id));
+                self.command_palettes.insert(client, state);
             }
         }
     }

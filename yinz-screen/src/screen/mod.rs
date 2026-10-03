@@ -3946,6 +3946,10 @@ impl Screen {
         }
         self.broadcast_nested_shortcuts();
         self.reapply_theme_after_reconfigure(explicit_theme_hue);
+        if !self.command_palettes.is_empty() {
+            self.render()
+                .context("failed to refresh command palette after reconfiguration")?;
+        }
         Ok(())
     }
     /// Apply a host-reported color-palette theme mode (CSI 2031 / DSR 997).

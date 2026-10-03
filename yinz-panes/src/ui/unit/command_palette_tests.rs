@@ -9,6 +9,7 @@ fn entry(id: &str, label: &str, kind: EntryKind) -> Entry {
         id: id.into(),
         label: label.into(),
         description: String::new(),
+        shortcut: String::new(),
         aliases: vec![],
         kind,
     }
@@ -401,4 +402,94 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
             rows: 11
         }
     );
+}
+
+#[test]
+fn control_navigation_matches_arrows_in_results_and_forms() {
+    let mut palette = palette();
+    let next = KeyWithModifier::new(BareKey::Char('n')).with_ctrl_modifier();
+    let previous = KeyWithModifier::new(BareKey::Char('p')).with_ctrl_modifier();
+    for (key, selected) in [
+        (previous.clone(), 0),
+        (next.clone(), 1),
+        (next.clone(), 2),
+        (next.clone(), 2),
+        (previous.clone(), 1),
+    ] {
+        assert_eq!(palette.handle_key(key), Outcome::None);
+        assert_eq!(palette.selected, selected);
+        assert_eq!(palette.input.get_text(), "");
+    }
+    palette.open_form(Form::new(
+        "form".into(),
+        "Form".into(),
+        vec![Field::text("Name", "original")],
+        "Create",
+        false,
+    ));
+    palette.handle_key(next);
+    assert_eq!(palette.form.as_ref().unwrap().selected, 1);
+    palette.handle_key(previous);
+    assert_eq!(palette.form.as_ref().unwrap().selected, 0);
+    assert_eq!(
+        palette.form.as_ref().unwrap().fields[0].text_value(),
+        "original"
+    );
+}
+
+#[test]
+fn shortcuts_remain_visible_beside_long_unicode_labels() {
+    let mut palette = CommandPalette::default();
+    let mut entry = entry("new", &"界".repeat(80), EntryKind::Command);
+    entry.shortcut = "Ctrl g → Alt n".into();
+    palette.set_entries(vec![entry]);
+    for cols in 0..90 {
+        let layout = palette.layout(Viewport {
+            cols,
+            rows: 24,
+            ..Default::default()
+        });
+        for chunk in palette.chunks(&layout, &Style::default()) {
+            assert_eq!(chunk.width(), layout.rect.cols);
+        }
+        if cols >= 30 {
+            assert!(rendered_lines(&palette, &layout)
+                .iter()
+                .any(|line| line.contains("Ctrl g → Alt n")));
+        }
+    }
+}
+
+#[test]
+fn shortcuts_are_subtle_on_selected_and_unselected_rows() {
+    let mut palette = palette();
+    for entry in &mut palette.entries {
+        entry.shortcut = "Ctrl n".into();
+    }
+    for rows in [3, 24] {
+        let layout = palette.layout(Viewport {
+            cols: 60,
+            rows,
+            ..Default::default()
+        });
+        for chunk in palette.chunks(&layout, &Style::default()) {
+            let text: String = chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character)
+                .collect();
+            if let Some(start) = text.find("Ctrl n") {
+                let start = text[..start].chars().count();
+                let characters = &chunk.terminal_characters;
+                assert_ne!(characters[layout.border].styles.dim, Some(AnsiCode::On));
+                for character in &characters[start..start + 6] {
+                    assert_eq!(character.styles.dim, Some(AnsiCode::On));
+                    assert_eq!(
+                        character.styles.background,
+                        characters[layout.border].styles.background
+                    );
+                }
+            }
+        }
+    }
 }
