@@ -610,6 +610,105 @@ fn watcher_frame(
     bytes
 }
 
+#[test]
+fn a_wider_shorter_watchers_padding_preserves_unchanged_rows() {
+    let watcher = ClientId::new(2);
+    let watcher_size = Size {
+        cols: 123,
+        rows: 10,
+    };
+    let mut screen = create_fixed_size_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, watcher_size);
+    screen.set_followed_client(ClientId::new(1)).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(watcher_size);
+
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            b"first-row\x1b[10;1Hunchanged-tenth-row".to_vec(),
+        )
+        .unwrap();
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert_eq!(
+        grid.dump_screen(false).lines().nth(9),
+        Some("unchanged-tenth-row")
+    );
+
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"\x1b[1;1Hupdated-row".to_vec())
+        .unwrap();
+    let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(bytes.contains("updated-row"), "{bytes:?}");
+    assert!(
+        !bytes.contains("unchanged-tenth-row"),
+        "only dirty rows are replayed: {bytes:?}"
+    );
+    assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+    assert_eq!(grid.dump_screen(false).lines().next(), Some("updated-row"));
+    assert_eq!(
+        grid.dump_screen(false).lines().nth(9),
+        Some("unchanged-tenth-row")
+    );
+}
+
+#[test]
+fn a_larger_watchers_padding_preserves_cursor_on_shape_only_updates() {
+    let watcher = ClientId::new(2);
+    let watcher_size = Size {
+        cols: 123,
+        rows: 22,
+    };
+    let mut screen = create_fixed_size_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, watcher_size);
+    screen
+        .update_synchronized_output_support(watcher, true)
+        .unwrap();
+    screen.set_followed_client(ClientId::new(1)).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(watcher_size);
+
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"unchanged-content\x1b[4;7H".to_vec())
+        .unwrap();
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert_eq!(grid.cursor_coordinates(), Some((6, 3, true)));
+    let original_shape = grid.cursor_shape();
+
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"\x1b[6 q".to_vec())
+        .unwrap();
+    let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    assert!(bytes.contains("\x1b[6 q"), "{bytes:?}");
+    assert!(!bytes.contains("unchanged-content"), "{bytes:?}");
+    assert!(
+        !bytes.contains("\x1b[4;7H"),
+        "cursor position is memoized: {bytes:?}"
+    );
+    assert_eq!(grid.cursor_coordinates(), Some((6, 3, true)));
+    assert_ne!(
+        grid.cursor_shape().get_csi_str(),
+        original_shape.get_csi_str()
+    );
+    assert_eq!(grid.cursor_shape().get_csi_str(), "\x1b[6 q");
+}
+
 /// A watcher smaller than the session it follows has its cursor hidden during serialization when
 /// the followed client's cursor falls outside its size - in that one watcher's byte stream, which
 /// the tab's memo of what the host was told cannot see. The frame that brings the cursor back into
