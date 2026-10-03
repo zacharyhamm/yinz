@@ -373,9 +373,10 @@ struct WebRequestStreamState {
 )]
 pub enum BackgroundJob {
     DisplayPaneError(Vec<PaneId>, String),
-    AnimatePluginLoading(PluginId),                  // u32 - plugin_id
-    StopPluginLoadingAnimation(PluginId),            // u32 - plugin_id
-    ReportSessionInfo(SessionName, SessionInfo),     // String - session name
+    AnimatePluginLoading(PluginId),       // u32 - plugin_id
+    StopPluginLoadingAnimation(PluginId), // u32 - plugin_id
+    WatchCommandPaletteSessions(bool),
+    ReportSessionInfo(SessionName, SessionInfo), // String - session name
     ReportPluginList(BTreeMap<PluginId, RunPlugin>), // String - session name
     ReportLayoutInfo((String, BTreeMap<String, String>)), // BTreeMap<file_name, pane_contents>
     RunCommand(
@@ -526,6 +527,7 @@ pub fn background_jobs_main(
         current_session_info: current_session_info.clone(),
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
+    let mut command_palette_sessions: Option<Arc<AtomicBool>> = None;
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -676,6 +678,60 @@ pub fn background_jobs_main(
             BackgroundJob::StopAnimationClock => {
                 if let Some((running, _)) = animation_clock.take() {
                     running.store(false, Ordering::SeqCst);
+                }
+            },
+            BackgroundJob::WatchCommandPaletteSessions(watch) => {
+                if let Some(running) = command_palette_sessions.take() {
+                    running.store(false, Ordering::SeqCst);
+                }
+                if watch {
+                    let running = Arc::new(AtomicBool::new(true));
+                    command_palette_sessions = Some(running.clone());
+                    let senders = bus.senders.clone();
+                    let name = current_session_name.clone();
+                    let info = current_session_info.clone();
+                    let plugins = current_session_plugin_list.clone();
+                    runtime.spawn(async move {
+                        while running.load(Ordering::SeqCst) {
+                            let (Ok(name), Ok(current), Ok(plugins)) = (
+                                name.lock().map(|name| name.clone()),
+                                info.lock().map(|info| info.clone()),
+                                plugins.lock().map(|plugins| plugins.clone()),
+                            ) else {
+                                log::error!(
+                                    "cannot scan palette sessions: session state lock poisoned"
+                                );
+                                break;
+                            };
+                            let scanned = tokio::task::spawn_blocking(move || {
+                                scan_session_list_default_dirs(
+                                    &name,
+                                    &current.available_layouts,
+                                    &plugins,
+                                )
+                            })
+                            .await;
+                            if !running.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            match scanned {
+                                Ok((live, saved)) => {
+                                    if senders
+                                        .send_to_screen(ScreenInstruction::UpdateSessionInfos(
+                                            live, saved,
+                                        ))
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                },
+                                Err(error) => {
+                                    log::error!("failed to scan palette sessions: {error}")
+                                },
+                            }
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    });
                 }
             },
             BackgroundJob::ReportSessionInfo(session_name, session_info) => {

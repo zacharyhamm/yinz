@@ -1,46 +1,186 @@
 use super::*;
 
 fn key(palette: &mut CommandPalette, key: BareKey) {
-    assert!(!palette.handle_key(KeyWithModifier::new(key)));
+    assert_eq!(palette.handle_key(KeyWithModifier::new(key)), Outcome::None);
+}
+
+fn entry(id: &str, label: &str, kind: EntryKind) -> Entry {
+    Entry {
+        id: id.into(),
+        label: label.into(),
+        description: String::new(),
+        aliases: vec![],
+        kind,
+    }
+}
+
+fn palette() -> CommandPalette {
+    let mut palette = CommandPalette::default();
+    let mut pane = entry("pane", "日本語 terminal", EntryKind::Pane);
+    pane.aliases.push("console".into());
+    palette.set_entries(vec![
+        entry("new", "New pane", EntryKind::Command),
+        entry("tab", "New tab", EntryKind::Command),
+        pane,
+    ]);
+    palette
+}
+
+fn ids(palette: &CommandPalette) -> Vec<&str> {
+    palette
+        .matches
+        .iter()
+        .map(|index| palette.entries[*index].id.as_str())
+        .collect()
 }
 
 #[test]
-fn filtering_selection_and_feedback() {
-    let mut palette = CommandPalette::default();
-    assert_eq!(palette.matches(), OPTIONS);
-    key(&mut palette, BareKey::Up);
-    assert_eq!(palette.selected, 0);
-    for _ in 0..10 {
-        key(&mut palette, BareKey::Down);
-    }
-    assert_eq!(palette.selected, 5);
+fn fuzzy_ranking_aliases_unicode_and_empty_queries() {
+    let mut palette = palette();
+    assert_eq!(ids(&palette), ["new", "tab", "pane"]);
+    palette.insert_text("np");
+    assert_eq!(ids(&palette), ["new"]);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("new".into())
+    );
+    palette.input.set_text("console".into());
+    palette.rematch();
+    assert_eq!(ids(&palette), ["pane"]);
+    palette.input.set_text("日語".into());
+    palette.rematch();
+    assert_eq!(ids(&palette), ["pane"]);
+    palette.input.set_text("unmatched".into());
+    palette.rematch();
+    assert!(ids(&palette).is_empty());
     key(&mut palette, BareKey::Enter);
-    assert_eq!(palette.feedback, Some("Help"));
-    palette.insert_text("NEW");
-    assert_eq!(palette.selected, 0);
-    assert_eq!(palette.feedback, None);
-    assert_eq!(palette.matches(), ["New pane", "New tab"]);
+    palette.set_entries(vec![
+        entry("gap", "n--------p", EntryKind::Command),
+        entry("exact", "np", EntryKind::Command),
+        entry("tie", "np", EntryKind::Command),
+    ]);
+    palette.input.set_text("np".into());
+    palette.rematch();
+    assert_eq!(ids(&palette), ["exact", "tie", "gap"]);
+}
+
+#[test]
+fn picker_restores_search_and_updates_preserve_stable_selection() {
+    let mut palette = palette();
+    palette.insert_text("new");
     key(&mut palette, BareKey::Down);
+    palette.open_picker(EntryKind::Pane);
+    assert_eq!(ids(&palette), ["pane"]);
+    palette.insert_text("console");
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.input.get_text(), "new");
+    assert_eq!(palette.selected_entry().unwrap().id, "tab");
+    let mut entries = palette.entries.clone();
+    entries.insert(0, entry("first", "New first", EntryKind::Command));
+    palette.set_entries(entries);
+    assert_eq!(palette.selected_entry().unwrap().id, "tab");
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Esc)),
+        Outcome::Dismiss
+    );
+}
+
+#[test]
+fn forms_edit_navigate_preserve_search_and_only_submit_from_button() {
+    let mut palette = palette();
+    palette.insert_text("new");
+    palette.open_form(Form::new(
+        "form".into(),
+        "New pane".into(),
+        vec![
+            Field::text("Name", "original"),
+            Field::choice("Placement", &["Tiled", "Floating"]),
+        ],
+        "Create",
+        false,
+    ));
+    key(&mut palette, BareKey::Left);
+    key(&mut palette, BareKey::Char('!'));
     key(&mut palette, BareKey::Enter);
-    assert_eq!(palette.feedback, Some("New tab"));
-    palette.insert_text("z");
-    assert!(palette.matches().is_empty());
-    key(&mut palette, BareKey::Down);
+    key(&mut palette, BareKey::Right);
     key(&mut palette, BareKey::Enter);
-    assert_eq!(palette.selected, 0);
-    assert_eq!(palette.feedback, None);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Submit {
+            id: "form".into(),
+            values: vec!["origina!l".into(), "Floating".into()]
+        }
+    );
+    palette.set_error("Try another name".into());
     let layout = palette.layout(Viewport {
         cols: 80,
         rows: 24,
         ..Default::default()
     });
-    let text: String = palette
+    let rendered: String = palette
         .chunks(&layout, &Style::default())
         .iter()
         .flat_map(|chunk| chunk.terminal_characters.iter().map(|c| c.character))
         .collect();
-    assert!(text.contains("No matches"));
-    assert!(palette.handle_key(KeyWithModifier::new(BareKey::Esc)));
+    assert!(rendered.contains("Try another name"));
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier()),
+        Outcome::None
+    );
+    assert_eq!(palette.form.as_ref().unwrap().selected, 1);
+    key(&mut palette, BareKey::Up);
+    assert_eq!(palette.form.as_ref().unwrap().selected, 0);
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.input.get_text(), "new");
+}
+
+#[test]
+fn confirmation_defaults_to_cancel_and_requires_explicit_selection() {
+    let mut palette = palette();
+    for confirm in [false, true] {
+        palette.open_form(Form::new(
+            "close".into(),
+            "Close terminal 1?".into(),
+            vec![],
+            "Close pane",
+            true,
+        ));
+        if confirm {
+            key(&mut palette, BareKey::Down);
+            assert_eq!(
+                palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                Outcome::Submit {
+                    id: "close".into(),
+                    values: vec![]
+                }
+            );
+        } else {
+            key(&mut palette, BareKey::Enter);
+            assert!(palette.form.is_none());
+        }
+    }
+}
+
+#[test]
+fn clicking_uses_scrolled_geometry() {
+    let mut palette = palette();
+    let surface = Viewport {
+        cols: 30,
+        rows: 6,
+        ..Default::default()
+    };
+    key(&mut palette, BareKey::Down);
+    key(&mut palette, BareKey::Down);
+    let layout = palette.layout(surface);
+    assert_eq!(layout.first_option, 2);
+    palette.click(
+        &layout,
+        Position::new(layout.options_y as i32, layout.rect.x as u16 + 2),
+    );
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("pane".into())
+    );
 }
 
 #[test]
@@ -105,36 +245,4 @@ fn layout_and_cursor_fit_even_the_smallest_surfaces() {
             rows: 11
         }
     );
-}
-
-#[test]
-fn clicking_and_short_list_window_share_the_rendered_geometry() {
-    let mut palette = CommandPalette::default();
-    let layout = palette.layout(Viewport {
-        cols: 80,
-        rows: 24,
-        ..Default::default()
-    });
-    palette.click(
-        &layout,
-        Position::new(layout.options_y as i32 + 2, layout.rect.x as u16 + 2),
-    );
-    key(&mut palette, BareKey::Enter);
-    assert_eq!(palette.feedback, Some("Find file"));
-    let surface = Viewport {
-        cols: 30,
-        rows: 6,
-        ..Default::default()
-    };
-    for _ in 0..5 {
-        key(&mut palette, BareKey::Down);
-    }
-    let layout = palette.layout(surface);
-    assert_eq!(layout.first_option, 5);
-    palette.click(
-        &layout,
-        Position::new(layout.options_y as i32, layout.rect.x as u16 + 2),
-    );
-    key(&mut palette, BareKey::Enter);
-    assert_eq!(palette.feedback, Some("Help"));
 }

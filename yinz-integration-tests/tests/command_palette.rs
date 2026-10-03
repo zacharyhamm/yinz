@@ -28,7 +28,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
     let before = shell.stdin_bytes();
     yinz.send_stdin(DO);
     yinz.wait_until("palette opened", |snapshot| {
-        snapshot.contains("Open settings")
+        snapshot.contains("Switch session")
     });
     yinz.send_stdin(b"x");
     yinz.wait_until("WriteChars preserves the original key", |snapshot| {
@@ -69,7 +69,7 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
         for close in [DO, keys::ESC.as_slice()] {
             yinz.send_stdin(DO);
             yinz.wait_until("palette opens with an empty query", |snapshot| {
-                snapshot.contains("Open settings") && snapshot.contains("New tab")
+                snapshot.contains("Switch session") && snapshot.contains("New tab")
             });
             // Ctrl+p normally enters Pane mode; it must stay inside the palette.
             yinz.send_stdin(&keys::ctrl('p'));
@@ -77,10 +77,6 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
             yinz.send_stdin(b"\x1b[200~ew\npane\x1b[201~");
             yinz.wait_until("typing and paste filtered", |snapshot| {
                 snapshot.contains("> New pane") && !snapshot.contains("New tab")
-            });
-            yinz.send_stdin(&keys::ENTER);
-            yinz.wait_until("dummy selection acknowledged", |snapshot| {
-                snapshot.contains("Selected: New pane")
             });
             assert_eq!(shell.stdin_bytes(), expected, "{mode:?}");
             yinz.send_stdin(close);
@@ -135,7 +131,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         // Opening and dismissing the palette also drains any ignored Pane-mode paste.
         yinz.send_stdin(DO);
         yinz.wait_until("palette opened", |snapshot| {
-            snapshot.contains("Open settings")
+            snapshot.contains("Switch session")
         });
         yinz.send_stdin(&keys::ESC);
         let before = yinz.wait_until("baseline after dismissal", |snapshot| {
@@ -144,7 +140,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         let stdin_before = shell.stdin_bytes();
         yinz.send_stdin(DO);
         yinz.wait_until("palette reopened", |snapshot| {
-            snapshot.contains("Open settings")
+            snapshot.contains("Switch session")
         });
         yinz.send_stdin("\x1b[200~café\n東京\x1b[201~".as_bytes());
         yinz.send_stdin("\x1b[200~Ω\x1b[201~".as_bytes());
@@ -170,7 +166,7 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
         }
         yinz.send_stdin(DO);
         yinz.wait_until("palette still opens after fallback", |snapshot| {
-            snapshot.contains("Open settings")
+            snapshot.contains("Switch session")
         });
         yinz.send_stdin(&keys::ESC);
         let after_fallback = yinz.wait_until("fallback settled", |snapshot| {
@@ -227,4 +223,258 @@ fn command_palette_closed_paste_reaches_normal_locked_and_synchronized_terminals
         });
         yinz.quit();
     }
+}
+
+fn palette_query(yinz: &yinz_integration_tests::TestSession, query: &str) {
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette opened", |snapshot| {
+        snapshot.contains("Switch session")
+    });
+    yinz.send_stdin(query.as_bytes());
+    yinz.wait_until("palette query rendered", |snapshot| {
+        snapshot.contains(&format!("> {query}"))
+    });
+    yinz.send_stdin(&keys::ENTER);
+}
+
+fn replace_name(yinz: &yinz_integration_tests::TestSession, name: &str) {
+    yinz.wait_until("name form opened", |snapshot| snapshot.contains("Name:"));
+    yinz.send_stdin(&keys::ctrl('u'));
+    yinz.send_stdin(name.as_bytes());
+    yinz.send_stdin(b"\r\r");
+}
+
+#[test]
+fn command_palette_creates_renames_navigates_and_confirms_closing() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_frame_style \"full\"")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let root = yinz.expect_pty_spawn();
+    root.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "Rename pane…");
+    replace_name(&yinz, "palette-root");
+    yinz.wait_until("root renamed", |snapshot| {
+        snapshot.contains("palette-root") && !snapshot.contains("Name:")
+    });
+
+    palette_query(&yinz, "New pane…");
+    yinz.wait_until("creation form opened", |snapshot| {
+        snapshot.contains("Placement:")
+    });
+    yinz.send_stdin(b"palette-child\r/tmp\r\x1b[C\r\r");
+    let child = yinz.expect_pty_spawn();
+    child.output(b"CHILD");
+    yinz.wait_until("named child created", |snapshot| {
+        snapshot.contains("palette-child") && snapshot.contains("CHILD")
+    });
+    let Some(yinz_types::input::command::TerminalAction::RunCommand(command)) =
+        child.terminal_action()
+    else {
+        panic!("expected shell command");
+    };
+    assert_eq!(command.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
+    yinz.send_stdin(b"child input");
+    child.wait_for_stdin("new pane is focused", |bytes| {
+        bytes.ends_with(b"child input")
+    });
+    assert!(root.stdin_bytes().is_empty());
+
+    palette_query(&yinz, "New tab…");
+    yinz.wait_until("new tab form opened", |snapshot| {
+        snapshot.contains("Directory:")
+    });
+    yinz.send_stdin(b"palette-tab\r/tmp\r\r");
+    let tab_shell = yinz.expect_pty_spawn();
+    tab_shell.output(b"TAB CONTENT");
+    yinz.wait_until("new tab focused", |snapshot| {
+        snapshot.contains("TAB CONTENT") && !snapshot.contains("CHILD")
+    });
+    palette_query(&yinz, "Rename tab…");
+    replace_name(&yinz, "palette-renamed-tab");
+    yinz.wait_until("tab rename submitted", |snapshot| {
+        !snapshot.contains("Name:") && snapshot.contains("TAB CONTENT")
+    });
+
+    // Direct pane destinations switch tabs as well as focus the pane.
+    palette_query(&yinz, "palette-root");
+    yinz.wait_until("original pane focused", |snapshot| {
+        snapshot.contains("CHILD") && !snapshot.contains("TAB CONTENT")
+    });
+    yinz.send_stdin(b"root input");
+    root.wait_for_stdin("destination receives input", |bytes| bytes == b"root input");
+    palette_query(&yinz, "Switch tab…");
+    yinz.send_stdin(b"palette-renamed-tab");
+    yinz.wait_until("tab picker finds renamed tab", |snapshot| {
+        snapshot.contains("> palette-renamed-tab")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("tab destination focused", |snapshot| {
+        snapshot.contains("TAB CONTENT") && !snapshot.contains("CHILD")
+    });
+
+    palette_query(&yinz, "Close tab…");
+    yinz.wait_until("tab confirmation identifies target and count", |snapshot| {
+        snapshot.contains("palette-renamed-tab")
+            && snapshot.contains("1 panes")
+            && snapshot.contains("Cancel")
+    });
+    yinz.send_stdin(&keys::ENTER); // default Cancel
+    yinz.wait_until("cancel restores search", |snapshot| {
+        snapshot.contains("> Close tab…")
+    });
+    assert!(!tab_shell.is_exited());
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("confirmation reopened", |snapshot| {
+        snapshot.contains("Cancel")
+    });
+    yinz.send_stdin(b"\x1b[B\r");
+    yinz.wait_until("tab closed", |snapshot| {
+        snapshot.contains("CHILD")
+            && !snapshot.contains("TAB CONTENT")
+            && !snapshot.contains("Cancel")
+    });
+    assert!(tab_shell.is_exited());
+
+    palette_query(&yinz, "palette-child");
+    yinz.wait_until("child focused", |snapshot| {
+        !snapshot.contains("> palette-child")
+    });
+    palette_query(&yinz, "Close pane…");
+    yinz.wait_until("pane confirmation identifies target", |snapshot| {
+        snapshot.contains("Close palette-child") && snapshot.contains("Cancel")
+    });
+    yinz.send_stdin(b"\x1b[B\r");
+    yinz.wait_until("child closed", |snapshot| {
+        !snapshot.contains("CHILD")
+            && !snapshot.contains("Cancel")
+            && snapshot.contains("palette-root")
+    });
+    assert!(child.is_exited());
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_new_session_validates_then_hands_off_name_and_directory() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "New session…");
+    yinz.wait_until("session form opened", |snapshot| snapshot.contains("Name:"));
+    yinz.send_stdin(b"\r\r\r");
+    yinz.wait_until("empty name rejected", |snapshot| {
+        snapshot.contains("Session name cannot be empty")
+    });
+    yinz.send_stdin(b"\x1b[A\x1b[A");
+    yinz.send_stdin(yinz.session_name().as_bytes());
+    yinz.send_stdin(b"\r\r\r");
+    yinz.wait_until("conflicting name rejected", |snapshot| {
+        snapshot.contains("already exists")
+    });
+    yinz.send_stdin(b"\x1b[A\x1b[A");
+    yinz.send_stdin(&keys::ctrl('u'));
+    let name = format!("{}-new", yinz.session_name());
+    yinz.send_stdin(name.as_bytes());
+    yinz.send_stdin(b"\r/tmp\r\r");
+    let connection = yinz.take_session_switch();
+    assert_eq!(
+        connection.name.as_ref().map(|name| name.as_str()),
+        Some(name.as_str())
+    );
+    assert_eq!(
+        connection.cwd.as_deref(),
+        Some(std::path::Path::new("/tmp"))
+    );
+    assert!(connection.layout.is_none(), "use default session layout");
+    yinz.quit();
+}
+
+#[test]
+fn command_palette_switches_to_a_live_session() {
+    let mut destination = TestRunner::new(TERMINAL_SIZE)
+        .skip_concurrency_slot()
+        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    destination.expect_pty_spawn().output(PROMPT);
+    let mut source = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\ndisable_session_metadata false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    source.expect_pty_spawn().output(PROMPT);
+    source.wait_until("source ready", |snapshot| snapshot.contains("$"));
+    palette_query(&source, "Switch session…");
+    source.send_stdin(destination.session_name().as_bytes());
+    source.wait_until("live session is offered", |snapshot| {
+        snapshot.contains(&format!("> {}", destination.session_name()))
+            && snapshot.contains("connected clients")
+    });
+    source.send_stdin(&keys::ENTER);
+    let connection = source.take_session_switch();
+    assert_eq!(
+        connection.name.as_ref().map(|name| name.as_str()),
+        Some(destination.session_name())
+    );
+    assert!(connection.cwd.is_none());
+    source.quit();
+    destination.quit();
+}
+
+#[test]
+fn command_palette_saves_and_renames_the_session() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\nsession_serialization false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "Save session");
+    yinz.wait_for_serialized_session();
+    yinz.wait_until("save dismissed palette", |snapshot| {
+        !snapshot.contains("Esc Close")
+    });
+    palette_query(&yinz, "Rename session…");
+    let name = format!("{}-renamed", yinz.session_name());
+    replace_name(&yinz, &name);
+    yinz.wait_until("rename dismissed palette", |snapshot| {
+        !snapshot.contains("Name:")
+    });
+    // Screen queue ordering makes a subsequent palette show the new session name.
+    palette_query(&yinz, "Rename session…");
+    yinz.wait_until("renamed session prefilled", |snapshot| {
+        snapshot.contains(&name)
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.send_stdin(&keys::ESC);
+    yinz.quit();
+    assert_eq!(yinz.orphan_sweeps(), vec![name]);
+}
+
+#[test]
+fn command_palette_detaches_only_its_client() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let pane = yinz.expect_pty_spawn();
+    pane.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("other client ready", |snapshot| snapshot.contains("$"));
+    palette_query(&yinz, "Detach");
+    yinz.wait_until_raw_output("palette detached client", |bytes| {
+        String::from_utf8_lossy(bytes).contains("Bye from Yinz!")
+    });
+    other.send_stdin(b"still attached");
+    pane.wait_for_stdin("other client still works", |bytes| {
+        bytes == b"still attached"
+    });
+    assert!(!pane.is_exited());
+    other.quit();
+    pane.exit(Some(0));
+    yinz.wait_for_exit();
 }

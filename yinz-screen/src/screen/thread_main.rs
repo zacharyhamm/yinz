@@ -3147,6 +3147,44 @@ pub fn screen_thread_main(
                 } => {
                     screen.set_context_menu_items(request_id, items, plugin_id, client_id);
                 },
+                ScreenInstruction::ActivateCommandPaletteAction {
+                    pane_id,
+                    tab_id,
+                    action,
+                    create_session,
+                    client_id,
+                } => {
+                    screen.dispatch_command_palette_action(
+                        pane_id,
+                        tab_id,
+                        action,
+                        create_session,
+                        client_id,
+                    );
+                    screen.render()?;
+                },
+                ScreenInstruction::MoveCommandPalettePane {
+                    pane_id,
+                    tab_id,
+                    direction,
+                    client_id,
+                } => {
+                    if let Err(error) =
+                        screen.move_command_palette_pane(pane_id, tab_id, direction, client_id)
+                    {
+                        screen
+                            .bus
+                            .senders
+                            .send_to_screen(ScreenInstruction::Notify(
+                                format!("Could not move pane: {error}"),
+                                None,
+                                None,
+                                None,
+                            ))
+                            .non_fatal();
+                    }
+                    screen.render()?;
+                },
                 ScreenInstruction::ActivateContextMenuItem {
                     pane_id,
                     actions,

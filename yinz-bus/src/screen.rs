@@ -667,6 +667,19 @@ pub enum ScreenInstruction {
     /// instruction already sitting in the queue behind the click that activated the item would
     /// otherwise be processed *after* an inline focus restoration and *before* the actions - which
     /// are dispatched from a spawned thread - putting the two on either side of it.
+    ActivateCommandPaletteAction {
+        pane_id: PaneId,
+        tab_id: TabId,
+        action: Action,
+        create_session: bool,
+        client_id: ClientId,
+    },
+    MoveCommandPalettePane {
+        pane_id: PaneId,
+        tab_id: TabId,
+        direction: Option<Direction>,
+        client_id: ClientId,
+    },
     ActivateContextMenuItem {
         pane_id: PaneId,
         actions: Vec<Action>,
