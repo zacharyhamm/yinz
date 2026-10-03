@@ -1,9 +1,87 @@
 #![cfg(unix)]
 
+use yinz_cli::args::CliAction;
 use yinz_integration_tests::{keys, LayoutInfo, TestRunner, PROMPT, TERMINAL_SIZE};
-use yinz_types::data::InputMode;
 
 const DO: &[u8] = b"\x1b[112;7u"; // Ctrl+Alt+p, encoded with CSI u.
+
+#[test]
+fn command_palette_refreshes_shortcuts_after_reconfigure_without_input() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+            load_plugins clear-defaults=true {}
+            pane_animations false
+            default_mode "locked"
+            keybinds clear-defaults=true {
+                locked {
+                    bind "Ctrl Alt p" { ToggleCommandPalette; }
+                    bind "Ctrl g" { SwitchToMode "Normal"; }
+                    bind "Ctrl b" { SwitchToMode "Tmux"; }
+                }
+                normal { bind "Ctrl p" { SwitchToMode "Pane"; }; }
+                pane { bind "f" { ToggleFocusFullscreen; }; }
+                tmux { bind "z" { ToggleFocusFullscreen; }; }
+            }
+            "#,
+        )
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette opened", |snapshot| {
+        snapshot.contains("Switch session")
+    });
+    yinz.send_stdin(b"Fullscreen");
+    yinz.wait_until("regular route wins over shorter Tmux route", |snapshot| {
+        snapshot.contains("> Fullscreen") && snapshot.contains("Ctrl g → Ctrl p → f")
+    });
+
+    // No keyboard input or terminal output after opening and filtering the palette.
+    for (kdl, hint, old_hint) in [
+        (
+            r#"keybinds { pane { unbind "f"; bind "x" { ToggleFocusFullscreen; }; }; }"#,
+            "Ctrl g → Ctrl p → x",
+            "Ctrl g → Ctrl p → f",
+        ),
+        (
+            r#"keybinds { normal { unbind "Ctrl p"; bind "Ctrl o" { SwitchToMode "Pane"; }; }; }"#,
+            "Ctrl g → Ctrl o → x",
+            "Ctrl g → Ctrl p → x",
+        ),
+        (
+            r#"keybinds { pane { unbind "x"; }; }"#,
+            "Ctrl b → z",
+            "Ctrl g → Ctrl o → x",
+        ),
+        (r#"keybinds { tmux { unbind "z"; }; }"#, "", "Ctrl b → z"),
+        (
+            r#"keybinds { locked { bind "Alt f" { ToggleFocusFullscreen; }; }; }"#,
+            "Alt f",
+            "Ctrl b → z",
+        ),
+    ] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::Reconfigure {
+                kdl: Some(kdl.into()),
+                file: None,
+                write: false,
+            }),
+            0
+        );
+        yinz.wait_until("open palette reflects the new bindings", |snapshot| {
+            snapshot.contains("> Fullscreen")
+                && snapshot.contains("Fullscreen/restore pane")
+                && snapshot.contains("Esc Close")
+                && snapshot.contains(hint)
+                && !snapshot.contains(old_hint)
+        });
+    }
+    assert!(shell.stdin_bytes().is_empty());
+    yinz.quit();
+}
 
 #[test]
 fn command_palette_receives_original_keys_before_write_bindings() {
@@ -12,7 +90,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
             r#"
             load_plugins clear-defaults=true {}
             keybinds {
-                normal {
+                locked {
                     bind "Esc" { Write 27; }
                     bind "x" { WriteChars "remapped"; }
                     bind "n" { Write 65; WriteChars "second"; }
@@ -83,15 +161,11 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
             yinz.wait_until("toggle or Escape closes palette", |snapshot| {
                 !snapshot.contains("Selected:") && !snapshot.contains("Esc Close")
             });
-            if matches!(mode, InputMode::Normal | InputMode::Locked) {
-                yinz.send_stdin(b"still focused\x04");
-                expected.extend_from_slice(b"still focused\x04");
-            }
-            if mode == InputMode::Locked {
-                // Quit must still be unbound after either way of closing Do.
-                yinz.send_stdin(&keys::ctrl('q'));
-                expected.extend_from_slice(&keys::ctrl('q'));
-            }
+            yinz.send_stdin(b"still focused\x04");
+            expected.extend_from_slice(b"still focused\x04");
+            // Opening from any mode leaves the client locked after either dismissal.
+            yinz.send_stdin(&keys::ctrl('q'));
+            expected.extend_from_slice(&keys::ctrl('q'));
             shell.wait_for_stdin("mode and Ctrl+d passthrough preserved", |bytes| {
                 bytes == expected
             });
@@ -157,29 +231,13 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
             &format!("paste must preserve the underlying {mode} state"),
         );
         assert_eq!(shell.stdin_bytes(), stdin_before, "{mode}");
-        // Check the fallback again after dismissal, including ignored Pane-mode paste.
+        // Opening the palette switches every initial mode to Locked.
         yinz.send_stdin("\x1b[200~é\x1b[201~".as_bytes());
-        if mode != "pane" {
-            yinz.wait_until("rename/search paste resumes", |snapshot| {
-                snapshot.contains("baseé")
-            });
-        }
-        yinz.send_stdin(DO);
-        yinz.wait_until("palette still opens after fallback", |snapshot| {
-            snapshot.contains("Switch session")
-        });
-        yinz.send_stdin(&keys::ESC);
-        let after_fallback = yinz.wait_until("fallback settled", |snapshot| {
-            !snapshot.contains("Esc Close") && snapshot.tab_bar_appears()
-        });
-        if mode == "pane" {
-            yinz_integration_tests::assert_same_rendered_grid(
-                &after_fallback,
-                &before,
-                "Pane-mode paste stays ignored",
-            );
-        }
-        assert_eq!(shell.stdin_bytes(), stdin_before, "{mode}");
+        let expected = [stdin_before, "é".as_bytes().to_vec()].concat();
+        shell.wait_for_stdin(
+            "locked paste reaches the terminal after dismissal",
+            |bytes| bytes == expected,
+        );
         yinz.quit();
     }
 }
