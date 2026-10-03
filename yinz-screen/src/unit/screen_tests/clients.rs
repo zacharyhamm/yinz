@@ -181,7 +181,7 @@ fn departed_plugin_output_updates_watchers_and_always_releases_its_blocker() {
 }
 
 #[test]
-fn retained_plugin_state_is_freed_when_following_ends_or_the_id_is_reused() {
+fn retained_plugin_state_survives_watchers_leaving_until_its_source_is_replaced() {
     let followed = ClientId::new(1);
     let watcher = ClientId::new(2);
     let plugin = crate::PluginId::new(2);
@@ -199,6 +199,7 @@ fn retained_plugin_state_is_freed_when_following_ends_or_the_id_is_reused() {
         screen.set_followed_client(followed).unwrap();
         screen.add_watcher_client(watcher).unwrap();
         screen.remove_client(followed).unwrap();
+        screen.show_plugin_cursor(plugin, followed, Some((1, 1)));
         assert!(screen.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Plugin(plugin))
             .unwrap()
@@ -215,27 +216,63 @@ fn retained_plugin_state_is_freed_when_following_ends_or_the_id_is_reused() {
             screen.departed_followed_tab_id,
             (transition == 0).then_some(TabId::new(0))
         );
-        assert!(!screen.tabs[&TabId::new(0)]
+        let pane = screen.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Plugin(plugin))
-            .unwrap()
-            .pane_contents(Some(followed), false, None)
-            .viewport
-            .concat()
-            .contains("departed-client"));
+            .unwrap();
+        assert_eq!(
+            pane.cursor_coordinates(Some(followed)).is_some(),
+            transition == 0
+        );
+        assert_eq!(
+            pane.pane_contents(Some(followed), false, None)
+                .viewport
+                .concat()
+                .contains("departed-client"),
+            transition == 0
+        );
     }
 }
 
 #[test]
-fn a_returning_watcher_can_render_after_the_last_watchers_state_was_freed() {
+fn a_returning_watcher_renders_plugin_updates_received_while_nobody_watched() {
     let size = Size { cols: 80, rows: 24 };
     let followed = ClientId::new(1);
     let watcher = ClientId::new(2);
-    let mut screen = create_new_screen(size, true, true);
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
     new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
+    screen
+        .focus_pane_with_id(PaneId::Plugin(PLUGIN_2), false, false, followed)
+        .unwrap();
+    screen
+        .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+            PLUGIN_2,
+            followed,
+            b"before-detach".to_vec(),
+        )])
+        .unwrap();
+    assert!(screen.show_plugin_cursor(PLUGIN_2, followed, Some((1, 1))));
     screen.set_followed_client(followed).unwrap();
     screen.add_watcher_client(watcher).unwrap();
     screen.remove_client(followed).unwrap();
     screen.remove_watcher_client(watcher);
+    let pane = screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+        .unwrap();
+    assert!(pane
+        .pane_contents(Some(followed), false, None)
+        .viewport
+        .concat()
+        .contains("before-detach"));
+    assert_eq!(pane.cursor_coordinates(Some(followed)), Some((1, 1, true)));
+    screen
+        .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+            PLUGIN_2,
+            followed,
+            b"\r\nplugin-without-watchers".to_vec(),
+        )])
+        .unwrap();
+    assert!(screen.show_plugin_cursor(PLUGIN_2, followed, Some((3, 2))));
 
     screen
         .tabs
@@ -248,6 +285,15 @@ fn a_returning_watcher_can_render_after_the_last_watchers_state_was_freed() {
     let mut grid = grid_for_render_snapshot(size);
     let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
     assert!(bytes.contains("while-nobody-watched"), "{bytes:?}");
+    assert!(bytes.contains("plugin-without-watchers"), "{bytes:?}");
+    let pane = screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+        .unwrap();
+    assert_eq!(pane.cursor_coordinates(Some(followed)), Some((3, 2, true)));
+    assert_eq!(
+        grid.cursor_coordinates(),
+        Some((pane.get_content_x() + 3, pane.get_content_y() + 2, true))
+    );
 }
 
 #[test]
