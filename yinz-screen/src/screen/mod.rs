@@ -2264,7 +2264,9 @@ impl Screen {
         }
 
         // If the followed client disconnected, find the next regular client
-        if Some(client_id) == self.followed_client_id {
+        if Some(client_id) == self.followed_client_id
+            && self.connected_clients.borrow().contains(&client_id)
+        {
             // Try to find another regular (non-watcher) client
             let next_client = self
                 .connected_clients
@@ -4711,6 +4713,7 @@ impl Screen {
     }
     fn accepts_plugin_output(&self, client_id: ClientId) -> bool {
         self.connected_clients.borrow().contains(&client_id)
+            || self.client_sizes.contains_key(&client_id)
             || (self.followed_client_id == Some(client_id) && !self.watcher_clients.is_empty())
     }
 
