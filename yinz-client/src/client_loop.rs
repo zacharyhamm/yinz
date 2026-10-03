@@ -161,13 +161,15 @@ impl ClientLoop<'_> {
                 let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
                 let written =
-                    write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
+                    write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes())
+                        .context("failed to write a frame to the terminal")
+                        .to_log();
                 self.render_budget.release(render_bytes).non_fatal();
                 if let Err(e) = written {
-                    log::error!("failed to write a frame to the terminal: {e}");
                     self.os_input
                         .send_to_server(ClientToServerMsg::ClientExited);
-                    outcome.exit_msg = format!("Could not write to the terminal: {e}");
+                    outcome.exit_msg =
+                        format!("Could not write to the terminal: {}", e.root_cause());
                     return true;
                 }
                 let elapsed = started.elapsed();

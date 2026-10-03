@@ -1170,3 +1170,48 @@ fn preserve_background_color_on_resize() {
         trailing_spaces
     );
 }
+
+#[test]
+fn a_replayed_render_repeats_only_the_lines_the_last_render_read() {
+    let rows = |grid: &mut Grid| -> Vec<usize> {
+        grid.render(0, 0, &Style::default())
+            .unwrap()
+            .map(|(chunks, ..)| chunks.iter().map(|chunk| chunk.y).collect())
+            .unwrap_or_default()
+    };
+    let all_rows: Vec<usize> = (0..8).collect();
+    let mut grid = create_grid_with_size_and_raw(8, 10, b"");
+    assert_eq!(rows(&mut grid), all_rows);
+    grid.replay_last_render();
+    assert_eq!(rows(&mut grid), all_rows);
+
+    feed_bytes(&mut grid, b"\x1b[3;1Hthird\x1b[5;1Hfifth");
+    let read = rows(&mut grid);
+    assert!(read.contains(&2) && read.contains(&4), "{read:?}");
+    assert!(!read.contains(&7), "{read:?}");
+    grid.replay_last_render();
+    assert_eq!(rows(&mut grid), read);
+    assert_eq!(rows(&mut grid), Vec::<usize>::new());
+
+    // Lines changed since the last render are sent along with the replay.
+    feed_bytes(&mut grid, b"\x1b[7;1Hseventh");
+    let read = rows(&mut grid);
+    assert!(read.contains(&6), "{read:?}");
+    feed_bytes(&mut grid, b"\x1b[2;1Hsecond");
+    grid.replay_last_render();
+    let replayed = rows(&mut grid);
+    assert!(
+        read.iter().all(|row| replayed.contains(row)),
+        "{replayed:?}"
+    );
+    assert!(replayed.contains(&1), "{replayed:?}");
+    assert!(!replayed.contains(&7), "{replayed:?}");
+
+    // A locked grid replays its completed text and keeps its pending lines for the unlock.
+    feed_bytes(&mut grid, b"\x1b[?2026h\x1b[8;1Hlocked");
+    assert_eq!(rows(&mut grid), Vec::<usize>::new());
+    grid.replay_last_render();
+    assert_eq!(rows(&mut grid), all_rows);
+    feed_bytes(&mut grid, b"\x1b[?2026l");
+    assert!(rows(&mut grid).contains(&7));
+}

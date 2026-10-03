@@ -1226,6 +1226,18 @@ impl Grid {
         self.repaint_completed_text = true;
         self.output_buffer.update_all_lines();
     }
+    /// Make the next render repeat what the last one sent, for watchers that mirror a
+    /// client whose render has already consumed the changes. Only valid with no output in
+    /// between.
+    pub fn replay_last_render(&mut self) {
+        if self.lock_renders {
+            // A locked grid only ever renders its whole completed text, which leaves the
+            // changed lines for after the unlock.
+            self.repaint_completed_text = true;
+        } else {
+            self.output_buffer.replay_last_read();
+        }
+    }
     pub fn update_line_for_rendering(&mut self, line_index: usize) {
         self.output_buffer.update_line(line_index);
     }
@@ -2087,7 +2099,7 @@ impl Grid {
             x_offset,
             y_offset,
         );
-        self.output_buffer.clear();
+        self.output_buffer.consume();
 
         (
             changed_character_chunks,

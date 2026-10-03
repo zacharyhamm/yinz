@@ -365,6 +365,50 @@ fn hover_only_changes_wake_a_healthy_watcher() {
 }
 
 #[test]
+fn watchers_receive_only_the_lines_that_changed() {
+    let mut paced = screen_with_backlog();
+    paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+    paced.screen.set_watcher_size(OTHER_CLIENT, SIZE);
+    paced.screen.set_followed_client(CLIENT).unwrap();
+    fn write(paced: &mut PacedScreen, bytes: &[u8]) {
+        paced
+            .screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), bytes.to_vec())
+            .unwrap();
+        paced_render(&mut paced.screen);
+    }
+    write(&mut paced, b"unchanged-first-line\r\n");
+    let _ = rendered_bytes(&paced.to_server);
+
+    write(&mut paced, b"newly-written-line");
+    let frames: Vec<_> = paced
+        .to_server
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ServerInstruction::Render(Some(output)) => Some(output),
+            _ => None,
+        })
+        .collect();
+    for client in [CLIENT, OTHER_CLIENT] {
+        let frame: String = frames
+            .iter()
+            .filter_map(|frame| frame.get(&client).cloned())
+            .collect();
+        assert!(
+            frame.contains("newly-written-line"),
+            "{client:?}: {frame:?}"
+        );
+        assert!(
+            !frame.contains("unchanged-first-line"),
+            "{client:?}: {frame:?}"
+        );
+    }
+}
+
+#[test]
 fn watcher_only_sessions_pace_until_the_watcher_drains_or_detaches() {
     let mut paced = screen_with_backlog();
     paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();

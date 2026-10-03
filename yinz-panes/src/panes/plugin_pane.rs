@@ -485,7 +485,7 @@ impl Pane for PluginPane {
     }
     fn prepare_content_replay(&mut self, client_id: ClientId) {
         if let Some(grid) = self.grids.get_mut(&client_id) {
-            grid.render_full_viewport();
+            grid.replay_last_render();
             self.should_render.insert(client_id, true);
         }
     }
