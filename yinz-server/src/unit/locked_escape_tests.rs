@@ -38,6 +38,7 @@ fn session() -> SessionMetaData {
         session_configuration: Default::default(),
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
+        command_palette_restore_modes: HashMap::new(),
         screen_thread: None,
         pty_thread: None,
         plugin_thread: None,
@@ -639,6 +640,151 @@ fn locked_escape_resize_does_not_resolve_or_extend_the_prefix() {
     );
     assert_eq!(
         session.current_input_modes[&ClientId::new(1)],
+        InputMode::Locked
+    );
+}
+
+#[test]
+fn command_palette_holds_input_locked_and_restores_only_the_original_lock_state() {
+    for original in [
+        InputMode::Normal,
+        InputMode::Locked,
+        InputMode::Pane,
+        InputMode::Scroll,
+    ] {
+        let mut session = session();
+        let (screen_tx, screen_rx) = channels::unbounded();
+        session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+        session.current_input_modes.insert(CLIENT_1, original);
+        let restored = if original == InputMode::Locked {
+            InputMode::Locked
+        } else {
+            InputMode::Normal
+        };
+        for _ in 0..2 {
+            session.set_command_palette_open(CLIENT_1, true).unwrap();
+            // Repeated open notifications must not replace the saved state with Locked.
+            session.set_command_palette_open(CLIENT_1, true).unwrap();
+            assert_eq!(session.current_input_modes[&CLIENT_1], InputMode::Locked);
+            assert_eq!(session.command_palette_restore_modes[&CLIENT_1], restored);
+            for requested in [InputMode::Normal, InputMode::Pane, InputMode::Locked] {
+                let (completion_tx, mut completion_rx) = tokio::sync::oneshot::channel();
+                session
+                    .change_input_mode(
+                        CLIENT_1,
+                        requested,
+                        Some(yinz_bus::route::NotificationEnd::new(completion_tx)),
+                    )
+                    .unwrap();
+                assert_eq!(session.current_input_modes[&CLIENT_1], InputMode::Locked);
+                for (instruction, _) in screen_rx.try_iter() {
+                    assert!(matches!(
+                        instruction,
+                        ScreenInstruction::ChangeMode(InputMode::Locked, _, CLIENT_1, _)
+                    ));
+                }
+                assert!(
+                    completion_rx.try_recv().is_ok(),
+                    "blocked mode changes must still complete"
+                );
+                session.change_mode_for_all_clients(requested);
+                assert_eq!(session.current_input_modes[&CLIENT_1], InputMode::Locked);
+                assert_eq!(session.current_input_modes[&ClientId::new(2)], requested);
+            }
+            session.set_command_palette_open(CLIENT_1, false).unwrap();
+            assert_eq!(session.current_input_modes[&CLIENT_1], restored);
+            assert!(session.command_palette_restore_modes.is_empty());
+            assert!(matches!(screen_rx.try_recv().unwrap().0,
+                ScreenInstruction::ChangeMode(mode, _, CLIENT_1, _) if mode == restored));
+            session.set_command_palette_open(CLIENT_1, false).unwrap();
+            assert!(screen_rx.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn command_palette_cancels_pending_unlocks_and_bypasses_ctrl_g_prefix() {
+    for timeout_ms in [0, 250] {
+        let mut session = session();
+        let config = Config::from_kdl(
+            &format!("locked_escape_timeout_ms {timeout_ms}"),
+            Some(Config::from_default_assets().unwrap()),
+        )
+        .unwrap();
+        session
+            .session_configuration
+            .set_saved_configuration(config);
+        let pending = LockedEscape::new(Instant::now(), DEFAULT_TIMEOUT);
+        session.locked_escapes.insert(CLIENT_1, pending);
+        session.set_command_palette_open(CLIENT_1, true).unwrap();
+        assert!(session.locked_escapes.is_empty());
+        session
+            .resolve_locked_escape(CLIENT_1, pending.token)
+            .unwrap();
+        assert_eq!(session.current_input_modes[&CLIENT_1], InputMode::Locked);
+        let session_data = Arc::new(RwLock::new(Some(session)));
+        let (tx, _rx) = channels::unbounded();
+        let to_server = SenderWithContext::new(tx);
+        for (value, bytes) in [("Ctrl g", vec![7]), ("g", vec![b'g'])] {
+            let result = prepare_input(
+                ClientToServerMsg::Key {
+                    key: key(value),
+                    raw_bytes: bytes.clone(),
+                    is_kitty_keyboard_protocol: false,
+                },
+                &session_data,
+                &to_server,
+                CLIENT_1,
+            )
+            .unwrap();
+            assert!(
+                matches!(result, Some(ClientToServerMsg::Key { key: actual, raw_bytes, .. })
+                if actual == key(value) && raw_bytes == bytes)
+            );
+            let guard = session_data.read().unwrap();
+            let session = guard.as_ref().unwrap();
+            assert!(session.locked_escapes.is_empty());
+            assert_eq!(session.current_input_modes[&CLIENT_1], InputMode::Locked);
+        }
+    }
+}
+
+#[test]
+fn command_palette_disconnect_discards_restore_state_without_unlocking_other_clients() {
+    let mut session = session();
+    session
+        .current_input_modes
+        .insert(CLIENT_1, InputMode::Normal);
+    session.set_command_palette_open(CLIENT_1, true).unwrap();
+    session
+        .set_command_palette_open(ClientId::new(2), true)
+        .unwrap();
+    let (screen_tx, screen_rx) = channels::unbounded();
+    session.senders.to_screen = Some(SenderWithContext::new(screen_tx));
+    let session_data = Arc::new(RwLock::new(Some(session)));
+    let session_state = Arc::new(RwLock::new(crate::SessionState::new()));
+    let mut os: Box<dyn crate::os_input_output::ServerOsApi> = Box::new(CapturingOs::default());
+    crate::remove_client_and_flush_forwards(CLIENT_1, &mut os, &session_state, &session_data);
+    let mut guard = session_data.write().unwrap();
+    let session = guard.as_mut().unwrap();
+    assert!(!session
+        .command_palette_restore_modes
+        .contains_key(&CLIENT_1));
+    assert!(session
+        .command_palette_restore_modes
+        .contains_key(&ClientId::new(2)));
+    // Screen's later dismissal notification must not restore the departed client's mode.
+    session.set_command_palette_open(CLIENT_1, false).unwrap();
+    assert!(screen_rx.try_recv().is_err());
+    assert_eq!(
+        session.current_input_modes[&ClientId::new(2)],
+        InputMode::Locked
+    );
+    session
+        .set_command_palette_open(ClientId::new(2), false)
+        .unwrap();
+    assert_eq!(
+        session.current_input_modes[&ClientId::new(2)],
         InputMode::Locked
     );
 }

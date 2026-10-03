@@ -838,22 +838,77 @@ fn palette_moves_only_the_captured_pane_and_never_a_replacement() {
 }
 
 #[test]
-fn opening_palette_requests_locked_mode_only_for_its_client() {
+fn palette_releases_its_input_lock_on_every_dismissal_path() {
+    for dismissal in ["toggle", "escape", "click", "action", "tab", "disconnect"] {
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        screen.toggle_command_palette(CLIENT);
+        match dismissal {
+            "toggle" => screen.toggle_command_palette(CLIENT),
+            "escape" => {
+                screen.command_palette_handles_input(
+                    &Some(KeyWithModifier::new(BareKey::Esc)),
+                    &[],
+                    false,
+                    CLIENT,
+                );
+            },
+            "click" => {
+                screen.command_palette_handles_mouse(
+                    &MouseEvent::new_left_press_event(Position::new(0, 0)),
+                    CLIENT,
+                );
+            },
+            "action" => {
+                screen.command_palette_handles_input(&None, b"Fullscreen", false, CLIENT);
+                screen.command_palette_handles_input(
+                    &Some(KeyWithModifier::new(BareKey::Enter)),
+                    &[],
+                    false,
+                    CLIENT,
+                );
+            },
+            "tab" => {
+                new_tab(&mut screen, 2, TabId::new(1));
+                screen.render().unwrap();
+            },
+            "disconnect" => screen.remove_client(CLIENT).unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(screen.command_palettes.is_empty(), "{dismissal}");
+        let lifecycle: Vec<_> = receiver
+            .try_iter()
+            .filter_map(|(instruction, _)| match instruction {
+                ServerInstruction::SetCommandPaletteOpen(client, open) => Some((client, open)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lifecycle,
+            vec![(CLIENT, true), (CLIENT, false)],
+            "{dismissal}"
+        );
+        assert!(!screen.close_command_palette(CLIENT));
+        assert!(receiver.try_recv().is_err());
+    }
+}
+
+#[test]
+fn palette_keeps_screen_mode_locked_only_for_its_client() {
     let mut screen = screen();
-    let receiver = screen_wired_to_server(&mut screen);
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
     screen.toggle_command_palette(CLIENT);
-    let modes: Vec<_> = receiver
-        .try_iter()
-        .filter_map(|(instruction, _)| match instruction {
-            ServerInstruction::ChangeMode(client, mode, _) => Some((client, mode)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(modes, vec![(CLIENT, InputMode::Locked)]);
-    screen.toggle_command_palette(CLIENT);
-    assert!(!receiver
-        .try_iter()
-        .any(|(instruction, _)| matches!(instruction, ServerInstruction::ChangeMode(..))));
+    for mode in [InputMode::Normal, InputMode::Pane, InputMode::Scroll] {
+        screen.change_mode(mode, None, CLIENT).unwrap();
+        assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+        screen.change_mode_for_all_clients(mode, None).unwrap();
+        assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Locked);
+        assert_eq!(screen.mode_info[&other].mode, mode);
+    }
+    screen.close_command_palette(CLIENT);
+    screen.change_mode(InputMode::Normal, None, CLIENT).unwrap();
+    assert_eq!(screen.mode_info[&CLIENT].mode, InputMode::Normal);
 }
 
 #[test]

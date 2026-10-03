@@ -96,6 +96,7 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             session_configuration: Default::default(),
             key_passthrough_clients: HashMap::new(),
             locked_escapes: HashMap::new(),
+            command_palette_restore_modes: HashMap::new(),
             screen_thread: None,
             pty_thread: None,
             plugin_thread: None,
