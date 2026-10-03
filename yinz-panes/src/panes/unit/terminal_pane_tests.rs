@@ -1871,11 +1871,11 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     let foreground = PaletteColor::Rgb((100, 150, 200));
     for (millis, strength) in [
         (0, 0.0),
-        (450, 0.2),
-        (900, 0.4),
-        (1350, 0.2),
+        (450, 0.35),
+        (900, 0.7),
+        (1350, 0.35),
         (1800, 0.0),
-        (2700, 0.4),
+        (2700, 0.7),
         (3600, 0.0),
     ] {
         pane.set_should_render(false);
@@ -1898,7 +1898,7 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
             foreground,
         );
     }
-    assert_eq!(pane.waiting_pulse(), Some((0.4, foreground)));
+    assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
     pane.sample_waiting_pulse(start, false, foreground);
     assert_eq!(pane.waiting_pulse(), None);
     assert_eq!(
@@ -1917,14 +1917,11 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
         true,
         foreground,
     );
-    pane.acknowledge_waiting();
-    assert_eq!(pane.waiting_pulse(), None);
-    pane.sample_waiting_pulse(start, true, foreground);
-    assert_eq!(pane.waiting_pulse(), None);
     pane.set_agent_info(Some(waiting.clone()));
     waiting.cwd = Some("/work".into());
     pane.set_agent_info(Some(waiting.clone()));
-    assert_eq!(pane.waiting_pulse_started_at(), None);
+    assert_eq!(pane.waiting_pulse_started_at(), Some(start));
+    assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
     assert!(pane.stack_list_entry_label().contains('🔔'));
 
     for next in [
@@ -1940,18 +1937,33 @@ fn waiting_pulse_uses_elapsed_time_and_rearms_only_for_a_new_wait() {
     ] {
         pane.set_agent_info(next);
         assert_eq!(pane.waiting_pulse_started_at(), None);
+        assert_eq!(pane.waiting_pulse(), None);
+        assert!(!pane.stack_list_entry_label().contains('🔔'));
+        pane.sample_waiting_pulse(start, true, foreground);
+        assert_eq!(pane.waiting_pulse(), None);
         pane.set_agent_info(Some(waiting.clone()));
         assert!(
             pane.waiting_pulse_started_at().is_some(),
             "a new human wait re-arms attention"
         );
+        pane.sample_waiting_pulse(
+            pane.waiting_pulse_started_at().unwrap() + std::time::Duration::from_millis(900),
+            true,
+            foreground,
+        );
+        assert_eq!(pane.waiting_pulse(), Some((0.7, foreground)));
+        assert!(pane.stack_list_entry_label().contains('🔔'));
     }
     pane.hold(Some(0), false, RunCommand::default());
     assert_eq!(pane.waiting_pulse_started_at(), None);
+    assert_eq!(pane.waiting_pulse(), None);
+    assert!(!pane.stack_list_entry_label().contains('🔔'));
     pane.set_agent_info(Some(waiting.clone()));
     assert!(pane.waiting_pulse_started_at().is_some());
     pane.respawn(Some(RunCommand::default()), false).unwrap();
     assert_eq!(pane.waiting_pulse_started_at(), None);
+    assert_eq!(pane.waiting_pulse(), None);
+    assert!(!pane.stack_list_entry_label().contains('🔔'));
 }
 
 fn frame_params(is_main_client: bool) -> FrameParams {

@@ -223,7 +223,7 @@ fn palette_paste_resize_and_outside_click_repaint_without_changing_focus() {
     let mut screen = screen();
     let other_pane = PaneId::Terminal(TerminalId::new(2));
     let tab = screen.get_active_tab_mut(CLIENT).unwrap();
-    tab.horizontal_split(other_pane, None, CLIENT, None, None)
+    tab.horizontal_split(other_pane, None, None, CLIENT, None, None)
         .unwrap();
     tab.move_focus_up(CLIENT).unwrap();
     let receiver = screen_wired_to_server(&mut screen);

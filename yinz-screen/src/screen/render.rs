@@ -22,21 +22,6 @@ impl Screen {
             })
     }
 
-    fn acknowledge_waiting_panes(&mut self) {
-        for (client_id, tab_id) in &self.active_tab_ids {
-            if self.watcher_clients.contains_key(client_id) {
-                continue;
-            }
-            if let Some(pane) = self
-                .tabs
-                .get_mut(tab_id)
-                .and_then(|tab| tab.get_active_pane_mut(*client_id))
-            {
-                pane.acknowledge_waiting();
-            }
-        }
-    }
-
     pub fn render(&mut self) -> Result<()> {
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
@@ -45,8 +30,6 @@ impl Screen {
         // message, triggering our render_to_clients method which does the actual rendering
 
         self.dismiss_stale_command_palettes();
-        // Selection acknowledges immediately, even if focus leaves again before the debounced frame.
-        self.acknowledge_waiting_panes();
         self.sync_nested_guest_fullscreen_state();
         self.report_pane_tabs()?;
 
@@ -74,7 +57,6 @@ impl Screen {
         // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
         let now = self.frame_now();
-        self.acknowledge_waiting_panes();
         self.reap_settled_notifications(now);
         self.advance_frame_color_fades(now);
         self.advance_plugin_loading_animations();
