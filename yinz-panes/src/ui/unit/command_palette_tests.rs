@@ -493,3 +493,83 @@ fn shortcuts_are_subtle_on_selected_and_unselected_rows() {
         }
     }
 }
+
+#[test]
+fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(vec![
+        entry("new-live", "n--------p", EntryKind::Session),
+        entry("old-live", "np", EntryKind::Session),
+        entry("new-exited", "n--------p", EntryKind::ExitedSession),
+        entry("old-exited", "np", EntryKind::ExitedSession),
+        entry("command", "np", EntryKind::Command),
+    ]);
+    palette.open_picker(EntryKind::Session);
+    assert_eq!(
+        ids(&palette),
+        ["new-live", "old-live", "new-exited", "old-exited"]
+    );
+    palette.insert_text("np");
+    assert_eq!(
+        ids(&palette),
+        ["old-live", "new-live", "old-exited", "new-exited"]
+    );
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    for selected in 0..palette.matches.len() {
+        palette.selected = selected;
+        let layout = palette.layout(surface);
+        let lines = rendered_lines(&palette, &layout);
+        let mut group = None;
+        for (row, result) in layout.result_rows.iter().enumerate() {
+            match result {
+                ResultRow::Heading(label) => {
+                    group = Some(*label);
+                    assert!(lines[layout.options_y + row - layout.rect.y].contains(label));
+                    palette.click(
+                        &layout,
+                        Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+                    );
+                    assert_eq!(palette.selected, selected);
+                },
+                ResultRow::Entry(index) => {
+                    let expected =
+                        if palette.entries[palette.matches[*index]].kind == EntryKind::Session {
+                            "Live sessions"
+                        } else {
+                            "Exited sessions"
+                        };
+                    assert_eq!(group, Some(expected));
+                    palette.click(
+                        &layout,
+                        Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+                    );
+                    assert_eq!(
+                        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                        Outcome::Activate(palette.entries[palette.matches[*index]].id.clone())
+                    );
+                    palette.selected = selected;
+                },
+            }
+        }
+    }
+    let selected = palette.selected_entry().unwrap().id.clone();
+    let mut entries = palette.entries.clone();
+    entries.reverse();
+    for entry in &mut entries {
+        entry.description = "updated age".into();
+    }
+    palette.set_entries(entries);
+    assert_eq!(palette.selected_entry().unwrap().id, selected);
+    palette.set_entries(vec![entry("exited", "np", EntryKind::ExitedSession)]);
+    let lines = rendered_lines(&palette, &palette.layout(surface)).join("\n");
+    assert!(lines.contains("Exited sessions"));
+    assert!(!lines.contains("Live sessions"));
+    palette.set_entries(vec![]);
+    let lines = rendered_lines(&palette, &palette.layout(surface)).join("\n");
+    assert!(lines.contains("No matches"));
+    assert!(!lines.contains("Exited sessions"));
+}

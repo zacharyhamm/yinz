@@ -507,7 +507,8 @@ fn command_palette_switches_to_a_live_session() {
     source.send_stdin(destination.session_name().as_bytes());
     source.wait_until("live session is offered", |snapshot| {
         snapshot.contains(&format!("> {}", destination.session_name()))
-            && snapshot.contains("connected clients")
+            && snapshot.contains("connected client")
+            && snapshot.contains("up ")
     });
     source.send_stdin(&keys::ENTER);
     let connection = source.take_session_switch();
@@ -573,4 +574,44 @@ fn command_palette_detaches_only_its_client() {
     other.quit();
     pane.exit(Some(0));
     yinz.wait_for_exit();
+}
+
+#[test]
+fn command_palette_switches_to_an_exited_session() {
+    use yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR;
+    use yinz_runtime::session_checkpoint::write_checkpoint;
+    std::fs::create_dir_all(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
+    let saved = tempfile::Builder::new()
+        .prefix("exited-")
+        .tempdir_in(&*YINZ_SESSION_INFO_CACHE_DIR)
+        .unwrap();
+    let name = saved.path().file_name().unwrap().to_str().unwrap();
+    write_checkpoint(
+        saved.path(),
+        "",
+        &("layout { pane; }".into(), Default::default()),
+    )
+    .unwrap();
+    let mut source = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    source.expect_pty_spawn().output(PROMPT);
+    source.wait_until("source ready", |snapshot| snapshot.contains("$"));
+    palette_query(&source, "Switch session…");
+    source.send_stdin(name.as_bytes());
+    source.wait_until("exited session is offered", |snapshot| {
+        snapshot.contains("Exited sessions")
+            && snapshot.contains(name)
+            && snapshot.contains("Enter to restore")
+            && !snapshot.contains("Live sessions")
+    });
+    source.send_stdin(&keys::ENTER);
+    let connection = source.take_session_switch();
+    assert_eq!(
+        connection.name.as_ref().map(|name| name.as_str()),
+        Some(name)
+    );
+    assert!(connection.cwd.is_none());
+    source.quit();
 }

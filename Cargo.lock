@@ -6871,6 +6871,7 @@ dependencies = [
  "anyhow",
  "crossbeam",
  "hegeltest",
+ "humantime",
  "insta",
  "interprocess",
  "log",

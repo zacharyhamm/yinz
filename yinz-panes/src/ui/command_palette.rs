@@ -23,6 +23,7 @@ pub enum EntryKind {
     Pane,
     Tab,
     Session,
+    ExitedSession,
 }
 
 impl EntryKind {
@@ -32,6 +33,7 @@ impl EntryKind {
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
             Self::Session => Some("Switch session"),
+            Self::ExitedSession => Some("Exited sessions"),
         }
     }
 }
@@ -186,7 +188,12 @@ impl CommandPalette {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| self.picker.is_none_or(|kind| entry.kind == kind))
+            .filter(|(_, entry)| {
+                self.picker.is_none_or(|kind| {
+                    entry.kind == kind
+                        || (kind == EntryKind::Session && entry.kind == EntryKind::ExitedSession)
+                })
+            })
             .filter_map(|(index, entry)| {
                 std::iter::once(&entry.label)
                     .chain(entry.aliases.iter())
@@ -197,7 +204,14 @@ impl CommandPalette {
                     .map(|score| (index, score))
             })
             .collect();
-        matches.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+        matches.sort_by_key(|(index, score)| {
+            let group = match self.entries[*index].kind {
+                EntryKind::Session => 1,
+                EntryKind::ExitedSession => 2,
+                _ => 0,
+            };
+            (group, std::cmp::Reverse(*score))
+        });
         self.matches = matches.into_iter().map(|(index, _)| index).collect();
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
@@ -355,11 +369,19 @@ impl CommandPalette {
             return vec![];
         }
         let heading = |index: usize| {
-            self.picker
-                .is_none()
-                .then(|| self.entries[self.matches[index]].kind.parent_label())
-                .flatten()
-                .filter(|_| capacity >= 2)
+            let kind = self.entries[self.matches[index]].kind;
+            let label = if self.picker == Some(EntryKind::Session) {
+                match kind {
+                    EntryKind::Session => Some("Live sessions"),
+                    EntryKind::ExitedSession => Some("Exited sessions"),
+                    _ => None,
+                }
+            } else if self.picker.is_none() {
+                kind.parent_label()
+            } else {
+                None
+            };
+            label.filter(|_| capacity >= 2)
         };
         // Walk back from the selection, charging one extra row for each parent group.
         let mut start = self.selected;

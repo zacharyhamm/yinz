@@ -544,7 +544,11 @@ impl Screen {
     ) -> Result<()> {
         // Disk scans can lag a screen update, or omit this session before its first save.
         if let Some(current) = self.peer_sessions_cache.get(&self.session_name) {
-            new_session_infos.insert(self.session_name.clone(), current.clone());
+            let mut current = current.clone();
+            if let Some(scanned) = new_session_infos.get(&self.session_name) {
+                current.creation_time = scanned.creation_time;
+            }
+            new_session_infos.insert(self.session_name.clone(), current);
         }
         self.peer_sessions_cache = new_session_infos;
         self.resurrectable_sessions_cache = resurrectable_sessions;
