@@ -224,7 +224,6 @@ pin_context_to_instruction! {
         "ClearAllPluginHighlights",
         "CommandPalette",
         "RenderWriterReady",
-        "RenderDeadline",
     ];
     only_special: [
         "HandlePtyBytes",
@@ -241,7 +240,6 @@ pin_context_to_instruction! {
     ];
     targets: [
         ("RenderWriterReady", ScreenInstruction::RenderWriterReady, "RenderToClients"),
-        ("RenderDeadline", ScreenInstruction::RenderDeadline(std::time::Instant::now()), "RenderToClients"),
         (
             "CommandPalette",
             ScreenInstruction::CommandPalette(crate::command_palette::Instruction::Discover { client: ClientId::new(1), opening: 1, revision: 1 }),
@@ -474,10 +472,9 @@ pin_context_to_instruction! {
     instruction: BackgroundJob;
     context: BackgroundJobContext;
     // the two cancel/finish jobs share the WebRequest context with the request itself
-    special: ["CancelWebRequest", "WebRequestStreamFinished", "SetRenderDeadline"];
+    special: ["CancelWebRequest", "WebRequestStreamFinished"];
     only_special: [];
     targets: [
-        ("SetRenderDeadline", BackgroundJob::SetRenderDeadline(None), "RenderToClients"),
         (
             "CancelWebRequest",
             BackgroundJob::CancelWebRequest(PluginId::new(1), ClientId::new(1), "s".to_owned()),

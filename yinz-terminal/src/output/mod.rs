@@ -1005,6 +1005,9 @@ impl Output {
     pub fn mark_host_display_cleared_for_client(&mut self, client_id: ClientId) {
         self.clients_with_cleared_host_display.insert(client_id);
     }
+    pub fn host_display_cleared_for_client(&self, client_id: ClientId) -> bool {
+        self.clients_with_cleared_host_display.contains(&client_id)
+    }
     pub fn any_host_display_cleared(&self) -> bool {
         !self.clients_with_cleared_host_display.is_empty()
     }
@@ -1217,7 +1220,10 @@ impl Output {
                     client_serialized_render_instructions.push_str(&vte_instruction);
                 }
             }
-            serialized_render_instructions.insert(client_id, client_serialized_render_instructions);
+            if !client_serialized_render_instructions.is_empty() {
+                serialized_render_instructions
+                    .insert(client_id, client_serialized_render_instructions);
+            }
         }
         Ok(serialized_render_instructions)
     }
@@ -1312,7 +1318,10 @@ impl Output {
                 }
             }
 
-            serialized_render_instructions.insert(client_id, client_serialized_render_instructions);
+            if !client_serialized_render_instructions.is_empty() {
+                serialized_render_instructions
+                    .insert(client_id, client_serialized_render_instructions);
+            }
         }
         Ok(serialized_render_instructions)
     }

@@ -9,25 +9,12 @@ use crate::plugins::PluginInstruction;
 use crate::{ClientId, ServerInstruction};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use yinz_bus::os_input_output::RenderReady;
 use yinz_types::pane_size::Viewport;
 
 /// At least this many queued frames makes a client count as behind.
 /// Readiness notifications re-enter the render debouncer.
 const MAX_QUEUED_RENDERS: usize = 1;
-/// One write can legitimately block for seconds: the client reads the next frame only
-/// once its terminal has taken several megabytes of the last. Only a client that has
-/// stopped reading should take this long.
-const STALLED_CLIENT_WRITE: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Copy)]
-enum RenderReadiness {
-    Ready,
-    /// Behind; holds frames back until it drains or, at this instant, counts as stalled.
-    Blocked(Instant),
-    Stalled,
-}
 
 impl Screen {
     pub(super) fn watched_tab_id(&self) -> Option<TabId> {
@@ -62,21 +49,12 @@ impl Screen {
     }
 
     /// Asks the client's writer how far behind it is, arming `ready` if it is behind.
-    fn client_render_readiness(&self, client: ClientId, ready: &RenderReady) -> RenderReadiness {
+    fn client_render_is_blocked(&self, client: ClientId, ready: &RenderReady) -> bool {
         self.bus
             .os_input
             .as_ref()
             .and_then(|os| os.client_render_backlog_and_notify(client, MAX_QUEUED_RENDERS, ready))
-            .map_or(RenderReadiness::Ready, |backlog| {
-                let elapsed = backlog.in_flight_for.unwrap_or_default();
-                if elapsed >= STALLED_CLIENT_WRITE {
-                    RenderReadiness::Stalled
-                } else if backlog.queued_renders >= MAX_QUEUED_RENDERS {
-                    RenderReadiness::Blocked(Instant::now() + (STALLED_CLIENT_WRITE - elapsed))
-                } else {
-                    RenderReadiness::Ready
-                }
-            })
+            .is_some_and(|backlog| backlog.queued_renders >= MAX_QUEUED_RENDERS)
     }
 
     /// `known` holds this pass's answers, so a client in several recipient sets - its tab, the
@@ -84,25 +62,18 @@ impl Screen {
     fn recipients_are_blocked(
         &self,
         recipients: impl Iterator<Item = ClientId>,
-        known: &mut HashMap<ClientId, RenderReadiness>,
+        known: &mut HashMap<ClientId, bool>,
         ready: &RenderReady,
-        deadline: &mut Instant,
     ) -> bool {
         let mut has_blocked = false;
         let mut has_ready = false;
         // Do not short-circuit: every recipient must have its readiness callback armed.
         for client in recipients {
-            let readiness = *known
+            let blocked = *known
                 .entry(client)
-                .or_insert_with(|| self.client_render_readiness(client, ready));
-            match readiness {
-                RenderReadiness::Ready => has_ready = true,
-                RenderReadiness::Blocked(stalls_at) => {
-                    has_blocked = true;
-                    *deadline = (*deadline).min(stalls_at);
-                },
-                RenderReadiness::Stalled => {},
-            }
+                .or_insert_with(|| self.client_render_is_blocked(client, ready));
+            has_blocked |= blocked;
+            has_ready |= !blocked;
         }
         has_blocked && !has_ready
     }
@@ -123,10 +94,8 @@ impl Screen {
             })
         };
         let mut known = HashMap::new();
-        let mut next_deadline = Instant::now() + STALLED_CLIENT_WRITE;
         let mut blocked = HashSet::new();
         for (tab_id, tab) in &self.tabs {
-            let mut tab_deadline = Instant::now() + STALLED_CLIENT_WRITE;
             let recipients: Vec<_> = self
                 .connected_clients
                 .borrow()
@@ -142,48 +111,17 @@ impl Screen {
                         .filter(|_| followed_tab == Some(*tab_id)),
                 )
                 .collect();
-            if self.recipients_are_blocked(
-                recipients.into_iter(),
-                &mut known,
-                &ready,
-                &mut tab_deadline,
-            ) {
-                next_deadline = next_deadline.min(tab_deadline);
+            if self.recipients_are_blocked(recipients.into_iter(), &mut known, &ready) {
                 blocked.insert(*tab_id);
             }
         }
-        let mut subscriber_deadline = Instant::now() + STALLED_CLIENT_WRITE;
         self.deferred_subscriber_renders = self.pane_subscriber_snapshots_dirty
             && self.recipients_are_blocked(
                 self.pane_render_subscribers.keys().copied(),
                 &mut known,
                 &ready,
-                &mut subscriber_deadline,
             );
-        if self.deferred_subscriber_renders {
-            next_deadline = next_deadline.min(subscriber_deadline);
-        }
         self.deferred_render_tabs = blocked.clone();
-        if blocked.is_empty() && !self.deferred_subscriber_renders {
-            if self.render_deadline.take().is_some() {
-                self.bus
-                    .senders
-                    .send_to_background_jobs(BackgroundJob::SetRenderDeadline(None))
-                    .context("failed to cancel the render deadline")
-                    .non_fatal();
-            }
-        } else if self
-            .render_deadline
-            .is_none_or(|deadline| deadline <= Instant::now() || next_deadline < deadline)
-        {
-            let deadline = next_deadline;
-            self.render_deadline = Some(deadline);
-            self.bus
-                .senders
-                .send_to_background_jobs(BackgroundJob::SetRenderDeadline(Some(deadline)))
-                .context("failed to set the render deadline")
-                .non_fatal();
-        }
         blocked
     }
 
@@ -200,14 +138,6 @@ impl Screen {
     /// `ScreenInstruction::RenderWriterReady`: a client that was behind has drained.
     pub(super) fn on_render_writer_ready(&self) {
         self.resume_deferred_render();
-    }
-
-    /// `ScreenInstruction::RenderDeadline`: a held-back client has taken long enough to count
-    /// as stalled. A deadline since replaced or cleared says nothing.
-    pub(super) fn on_render_deadline(&self, deadline: Instant) {
-        if self.render_deadline == Some(deadline) {
-            self.resume_deferred_render();
-        }
     }
 
     pub fn render_to_clients(&mut self) -> Result<()> {
@@ -364,13 +294,6 @@ impl Screen {
             // destination, or the last tab waiting for its replacement. Drawing it is harmless:
             // `render_panes` copes with no active tiled pane, and its overlays are what there
             // is to see.
-            replay_clear = self
-                .followed_client_id
-                .filter(|_| has_watchers)
-                .and_then(|client| self.active_tab_ids.get(&client))
-                .filter(|tab_id| !deferred_tabs.contains(tab_id))
-                .and_then(|tab_id| self.tabs.get(tab_id))
-                .is_some_and(|tab| tab.should_clear_display_before_rendering());
             let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
                 if !deferred_tabs.contains(tab_index)
@@ -381,6 +304,11 @@ impl Screen {
                     tabs_that_rendered.push(*tab_index);
                 }
             }
+            // Rendering can set and consume a tab's clear flag (eg. when adopting stacks).
+            replay_clear = self
+                .followed_client_id
+                .filter(|_| has_watchers)
+                .is_some_and(|client| output.host_display_cleared_for_client(client));
             // Watchers need pane contents consumed by the regular-client pass, but menus and
             // notifications paint independently and must not force a full pane repaint.
             replay_contents = std::mem::take(&mut output.rendered_pane_contents);
@@ -537,10 +465,7 @@ impl Screen {
                 if trace_attach {
                     log::info!("attach trace: render output serialization begin");
                 }
-                let mut serialized_output = output.serialize().context(err_context)?;
-                // A client with nothing to show gets no frame: each one queued counts against how
-                // far behind its writer is.
-                serialized_output.retain(|_, frame| !frame.is_empty());
+                let serialized_output = output.serialize().context(err_context)?;
                 if trace_attach {
                     log::info!(
                         "attach trace: render output serialization complete clients={} bytes={} after {:?}",

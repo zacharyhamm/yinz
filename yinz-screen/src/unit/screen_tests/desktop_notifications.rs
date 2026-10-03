@@ -563,3 +563,33 @@ fn codex_plan_notifications_require_an_idle_reported_conversation() {
         assert!(agent_events(&receiver).is_empty(), "{case}");
     }
 }
+
+#[test]
+fn notifications_omit_recipients_with_no_terminal_output() {
+    let (mut screen, receiver) =
+        screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, kitty_env());
+    let quiet = ClientId::new(2);
+    screen.add_client(quiet).unwrap();
+    screen
+        .client_notification_protocols
+        .insert(quiet, NotificationProtocol::Off);
+    screen.forward_desktop_notifications(
+        vec![PendingNotification::Osc9 {
+            body: "finished".into(),
+        }],
+        TerminalId::new(1),
+    );
+    let frames: Vec<_> = receiver
+        .try_iter()
+        .filter_map(|(instruction, _)| {
+            if let ServerInstruction::Render(Some(frames)) = instruction {
+                Some(frames)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].len(), 1);
+    assert!(frames[0][&ClientId::new(1)].contains("finished"));
+}
