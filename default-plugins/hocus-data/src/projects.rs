@@ -800,6 +800,22 @@ pub fn project_for_cwd<'a>(
     for_repository(projects, repository).or_else(|| for_cwd(projects, cwd))
 }
 
+/// Resolve registered membership, preferring explicit local roots over repository matches.
+pub fn registered_for_cwd<'a>(
+    probed: &Probed,
+    projects: &'a Registry,
+    cwd: &Location,
+) -> Option<&'a Project> {
+    if let Some(project) = projects
+        .values()
+        .filter(|project| !project.discovered && contains(project, cwd))
+        .max_by_key(|project| Path::new(&project.root).components().count())
+    {
+        return Some(project);
+    }
+    project_for_cwd(probed, projects, cwd)
+}
+
 /// What to *call* the project a folder is in, which is a wider question than
 /// which project owns it.
 ///
@@ -813,14 +829,7 @@ pub fn project_for_cwd<'a>(
 /// An explicitly registered local root names its folders immediately, even without Git.
 /// Otherwise repository matching and the checkout's own name supply the label.
 pub fn label_for_cwd(probed: &Probed, projects: &Registry, cwd: &Location) -> Option<String> {
-    if let Some(project) = projects
-        .values()
-        .filter(|project| !project.discovered && contains(project, cwd))
-        .max_by_key(|project| Path::new(&project.root).components().count())
-    {
-        return Some(project.name.clone());
-    }
-    if let Some(project) = project_for_cwd(probed, projects, cwd) {
+    if let Some(project) = registered_for_cwd(probed, projects, cwd) {
         return Some(project.name.clone());
     }
     repository_for_cwd(probed, cwd)?.checkout_name()

@@ -1040,6 +1040,12 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     ))
                     .non_fatal();
             },
+            PluginCommand::SetProjectContext(projects, panes) => {
+                env.senders
+                    .send_to_screen(ScreenInstruction::SetProjectContext(projects, panes))
+                    .context("failed to set project context")
+                    .non_fatal();
+            },
             PluginCommand::SetTabProjects(tab_projects) => set_tab_projects(env, tab_projects),
             PluginCommand::BreakPanesToTabWithId(pane_ids, tab_id, should_change_focus) => {
                 break_panes_to_tab_with_id(
@@ -8987,6 +8993,7 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::CloseTabWithId
         | CommandType::RenameTabWithId
         | CommandType::ArrangeProjectPanes
+        | CommandType::SetProjectContext
         | CommandType::SetTabProjects
         | CommandType::BreakPanesToTabWithId
         | CommandType::ReloadPlugin

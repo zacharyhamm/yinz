@@ -156,6 +156,7 @@ pub enum ScreenContext {
     RenameTabWithId,
     ArrangeProjectPanes,
     SetTabProjects,
+    SetProjectContext,
     BreakPanesToTabWithId,
     RecomputeTabSize,
     TerminalPixelDimensions,

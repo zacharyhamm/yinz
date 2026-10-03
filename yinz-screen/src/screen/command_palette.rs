@@ -20,8 +20,7 @@ use crate::ClientId;
 
 pub(super) struct CommandPaletteState {
     widget: CommandPalette,
-    tab_id: TabId,
-    pane_id: PaneId,
+    context: PaletteContext,
     actions: HashMap<String, Builtin>,
     painted: Option<CellRect>,
     shortcut_keybinds: KeybindsVec,
@@ -32,6 +31,19 @@ pub(super) struct CommandPaletteState {
     pub(super) shortcut_keymap_filters: usize,
 }
 
+struct PaletteContext {
+    tab_id: TabId,
+    pane_id: PaneId,
+    current_project: Option<String>,
+}
+
+#[derive(Default)]
+pub(super) struct ClientProject {
+    pub(super) current: Option<String>,
+    focused: Option<PaneId>,
+    focused_project: Option<String>,
+}
+
 struct CachedShortcut {
     original: Option<Action>,
     target: Option<Action>,
@@ -39,6 +51,28 @@ struct CachedShortcut {
 }
 
 impl Screen {
+    pub(super) fn reconcile_project_contexts(&mut self) {
+        for client in self.active_tab_ids.keys().copied().collect::<Vec<_>>() {
+            let focused = self.get_active_pane_id(&client);
+            let project = focused
+                .and_then(|pane| self.pane_projects.get(&pane))
+                .cloned();
+            let state = self.client_projects.entry(client).or_default();
+            if (state.focused != focused || state.focused_project != project) && project.is_some() {
+                state.current.clone_from(&project);
+            }
+            if state
+                .current
+                .as_ref()
+                .is_none_or(|name| !self.projects.contains(name))
+            {
+                state.current = project.clone().or_else(|| self.projects.first().cloned());
+            }
+            state.focused = focused;
+            state.focused_project = project;
+        }
+    }
+
     pub(crate) fn toggle_command_palette(&mut self, client_id: ClientId) {
         if self.close_command_palette(client_id) {
             return;
@@ -59,8 +93,11 @@ impl Screen {
             client_id,
             CommandPaletteState {
                 widget: CommandPalette::default(),
-                tab_id,
-                pane_id,
+                context: PaletteContext {
+                    tab_id,
+                    pane_id,
+                    current_project: None,
+                },
                 actions: HashMap::new(),
                 painted: None,
                 shortcut_keybinds: Vec::new(),
@@ -111,7 +148,9 @@ impl Screen {
         let stale: Vec<_> = self
             .command_palettes
             .iter()
-            .filter(|(client, state)| self.active_tab_ids.get(client) != Some(&state.tab_id))
+            .filter(|(client, state)| {
+                self.active_tab_ids.get(client) != Some(&state.context.tab_id)
+            })
             .map(|(client, _)| *client)
             .collect();
         for client in stale {
@@ -214,7 +253,7 @@ impl Screen {
                 .replace(rect)
                 .is_some_and(|previous| previous != rect);
             // ponytail: repaint intersecting panes per frame; cache cells only if measured cost warrants it.
-            if let Some(tab) = self.tabs.get_mut(&state.tab_id) {
+            if let Some(tab) = self.tabs.get_mut(&state.context.tab_id) {
                 if geometry_changed {
                     tab.set_should_clear_display_before_rendering();
                     tab.set_force_render();
@@ -271,6 +310,7 @@ impl Screen {
 enum Builtin {
     Action(Action),
     Picker(EntryKind),
+    Project(String),
     Form(FormKind),
 }
 
@@ -339,6 +379,12 @@ impl Screen {
             "Switch tab…",
             &["find tab"],
             Builtin::Picker(EntryKind::Tab),
+        );
+        command(
+            "switch-project",
+            "Switch current project…",
+            &["project context"],
+            Builtin::Picker(EntryKind::Project),
         );
         command(
             "switch-session",
@@ -419,6 +465,23 @@ impl Screen {
             ("detach", "Detach", Detach),
         ] {
             command(id, label, &[], Builtin::Action(action));
+        }
+        for name in &self.projects {
+            entries.push((
+                Entry {
+                    id: format!("project:{name}"),
+                    label: name.clone(),
+                    description: if state.context.current_project.as_ref() == Some(name) {
+                        "Current".into()
+                    } else {
+                        String::new()
+                    },
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::Project,
+                },
+                Builtin::Project(name.clone()),
+            ));
         }
         let mut tabs: Vec<_> = self.tabs.values().collect();
         tabs.sort_by_key(|tab| tab.position);
@@ -618,13 +681,22 @@ impl Screen {
     }
 
     fn refresh_command_palettes(&mut self) {
+        self.reconcile_project_contexts();
         let clients: Vec<_> = self
             .command_palettes
             .iter()
-            .map(|(client, state)| (*client, state.pane_id, state.tab_id))
+            .map(|(client, state)| (*client, state.context.pane_id, state.context.tab_id))
             .collect();
         for (client, pane, tab) in clients {
             if let Some(mut state) = self.command_palettes.remove(&client) {
+                state.context.current_project = self
+                    .client_projects
+                    .get(&client)
+                    .and_then(|state| state.current.clone());
+                state
+                    .widget
+                    .current_project
+                    .clone_from(&state.context.current_project);
                 let entries = self.palette_entries(pane, tab, client, &mut state);
                 state
                     .widget
@@ -694,8 +766,8 @@ impl Screen {
         let Some(state) = self.command_palettes.get(&client) else {
             return;
         };
-        let pane = state.pane_id;
-        let tab = state.tab_id;
+        let pane = state.context.pane_id;
+        let tab = state.context.tab_id;
         let (id, values) = match outcome {
             Outcome::Activate(id) => (id, None),
             Outcome::Submit { id, values } => (id, Some(values)),
@@ -711,6 +783,17 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::Project(name) => {
+                if self.projects.contains(&name) {
+                    self.client_projects.entry(client).or_default().current = Some(name);
+                    if let Some(state) = self.command_palettes.get_mut(&client) {
+                        state.widget.back();
+                    }
+                } else if let Some(state) = self.command_palettes.get_mut(&client) {
+                    state.widget.set_error("Project no longer exists".into());
+                }
+                return;
+            },
             Builtin::Picker(kind) => {
                 if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.open_picker(kind);

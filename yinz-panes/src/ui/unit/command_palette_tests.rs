@@ -573,3 +573,47 @@ fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
     assert!(lines.contains("No matches"));
     assert!(!lines.contains("Exited sessions"));
 }
+
+#[test]
+fn project_picker_restores_search_and_clips_unicode_in_every_view() {
+    let mut palette = palette();
+    let name = "日本語🦀".repeat(30);
+    palette.current_project = Some(name.clone());
+    let mut project = entry("project", &name, EntryKind::Project);
+    project.description = "Current".into();
+    palette.entries.push(project);
+    palette.insert_text("New");
+    key(&mut palette, BareKey::Down);
+    let selected = palette.selected_entry().unwrap().id.clone();
+    palette.open_picker(EntryKind::Project);
+    palette.insert_text("日本");
+    assert_eq!(ids(&palette), vec!["project"]);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("project".into())
+    );
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    let lines = rendered_lines(&palette, &palette.layout(surface));
+    assert!(lines[0].contains("Project: 日本"));
+    for line in &lines {
+        assert!(unicode_width::UnicodeWidthStr::width(line.as_str()) <= 80);
+    }
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.input.get_text(), "New");
+    assert_eq!(palette.selected_entry().unwrap().id, selected);
+    palette.open_picker(EntryKind::Project);
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(palette.input.get_text(), "New");
+    palette.open_form(Form::new("form".into(), "Form".into(), vec![], "OK", false));
+    assert!(rendered_lines(&palette, &palette.layout(surface))[0].contains("Project: 日本"));
+    palette.back();
+    palette.set_entries(vec![]);
+    palette.open_picker(EntryKind::Project);
+    assert!(rendered_lines(&palette, &palette.layout(surface))
+        .iter()
+        .any(|line| line.contains("No projects")));
+}

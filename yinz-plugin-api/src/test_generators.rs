@@ -1981,6 +1981,9 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
                 pane_ids: vec![u32s(tc)],
             }])
         },
+        CommandType::SetProjectContext => {
+            PluginCommand::SetProjectContext(vec![strings(tc)], vec![(pane_id(tc), strings(tc))])
+        },
         CommandType::SetTabProjects => PluginCommand::SetTabProjects(tab_projects(tc)),
         CommandType::BreakPanesToTabWithId => PluginCommand::BreakPanesToTabWithId(
             pane_ids(tc),

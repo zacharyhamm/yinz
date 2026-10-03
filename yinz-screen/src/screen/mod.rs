@@ -600,6 +600,9 @@ pub(crate) struct Screen {
     arrangement_projects: HashMap<TabId, String>,
     pending_arrangement: Option<arrange_projects::PendingArrangement>,
     tab_projects: HashMap<TabId, String>,
+    projects: std::collections::BTreeSet<String>,
+    pane_projects: HashMap<PaneId, String>,
+    client_projects: HashMap<ClientId, command_palette::ClientProject>,
     pixel_dimensions: PixelDimensions,
     character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
     stacked_resize: Rc<RefCell<bool>>,
@@ -1329,6 +1332,9 @@ impl Screen {
             arrangement_projects: HashMap::new(),
             pending_arrangement: None,
             tab_projects: HashMap::new(),
+            projects: Default::default(),
+            pane_projects: HashMap::new(),
+            client_projects: HashMap::new(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
             tab_history: BTreeMap::new(),
@@ -2204,6 +2210,7 @@ impl Screen {
         self.context_menus.remove(&client_id);
         self.close_command_palette(client_id);
         self.command_palette_mouse_captures.remove(&client_id);
+        self.client_projects.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices

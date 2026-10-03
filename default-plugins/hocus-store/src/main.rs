@@ -49,6 +49,8 @@ use yinz_tile::prelude::*;
 
 const RETRY_SECONDS: f64 = 5.0;
 
+type ProjectContext = (Vec<String>, Vec<(PaneId, String)>);
+
 #[derive(Default)]
 struct State {
     host_id: HostId,
@@ -62,6 +64,7 @@ struct State {
     /// going busy changes the snapshot and nothing about where the panes are.
     /// `None` forces the first publication, including an empty map after a reload.
     published_tab_names: Option<BTreeMap<TabId, String>>,
+    published_project_context: Option<ProjectContext>,
 }
 
 register_plugin!(State);
@@ -87,7 +90,10 @@ impl YinzPlugin for State {
             &FetchRequest::entity("project").limit(store::LIST_FETCH_LIMIT),
             WatchMode::Rows,
         ) {
-            Ok(handle) => self.project_watch_id = Some(handle.watch_id),
+            Ok(handle) => {
+                self.project_watch_id = Some(handle.watch_id);
+                self.publish_project_context(&projects::from_rows(&handle.rows), None);
+            },
             Err(error) => eprintln!("hocus-store: could not watch projects: {error}"),
         }
         // Ask hocus-agentd for pane snapshots, which is where discovered
@@ -109,12 +115,17 @@ impl YinzPlugin for State {
         }
         if let Event::PluginDataChanged { watch_id, rows, .. } = event {
             if self.project_watch_id == Some(watch_id) {
-                if let Some(reply) = self.latest_snapshot.take() {
-                    if let Some(panes) = reply.panes.as_deref() {
-                        self.publish_tab_names(&projects::from_rows(&rows), &reply, panes);
-                    }
-                    self.latest_snapshot = Some(reply);
+                let registry = projects::from_rows(&rows);
+                let snapshot = self.latest_snapshot.take();
+                if let Some((reply, panes)) = snapshot
+                    .as_ref()
+                    .and_then(|reply| reply.panes.as_deref().map(|panes| (reply, panes)))
+                {
+                    self.publish_tab_names(&registry, reply, panes);
+                } else {
+                    self.publish_project_context(&registry, snapshot.as_ref());
                 }
+                self.latest_snapshot = snapshot;
             }
         }
         false
@@ -250,6 +261,7 @@ impl State {
         reply: &PollReply,
         panes: &[agents::AgentPane],
     ) {
+        self.publish_project_context(registry, Some(reply));
         let owners: BTreeMap<u32, String> = panes
             .iter()
             .chain(&reply.suppressed_panes)
@@ -277,6 +289,33 @@ impl State {
         }
         Self::set_tab_names(&names);
         self.published_tab_names = Some(names);
+    }
+
+    fn publish_project_context(
+        &mut self,
+        registry: &projects::Registry,
+        reply: Option<&PollReply>,
+    ) {
+        let mut assignments = Vec::new();
+        if let Some(reply) = reply {
+            for pane in reply.panes.iter().flatten().chain(&reply.suppressed_panes) {
+                if let Some(project) = pane.checkout_location().and_then(|location| {
+                    projects::registered_for_cwd(&reply.repositories, registry, &location)
+                }) {
+                    assignments.push((
+                        PaneId::Terminal(TerminalId::new(pane.pane_id)),
+                        project.name.clone(),
+                    ));
+                }
+            }
+        }
+        assignments.sort();
+        let context = (registry.keys().cloned().collect(), assignments);
+        if self.published_project_context.as_ref() != Some(&context) {
+            #[cfg(target_family = "wasm")]
+            set_project_context(context.0.clone(), context.1.clone());
+            self.published_project_context = Some(context);
+        }
     }
 
     #[cfg(target_family = "wasm")]
@@ -637,6 +676,41 @@ mod tests {
         assert!(state.arrangement_pending);
     }
 
+    #[test]
+    fn project_context_publishes_registry_without_panes_and_registered_membership() {
+        let project = projects::validate("registered", "/work/root").unwrap();
+        let mut registry = projects::Registry::from([(project.name.clone(), project)]);
+        let mut state = State::default();
+        state.publish_project_context(&registry, None);
+        assert_eq!(
+            state.published_project_context,
+            Some((vec!["registered".into()], vec![]))
+        );
+        let reply: PollReply = serde_json::from_str(&snapshot_of_panes(
+            vec![
+                pane_in(1, "shell", None, "/work/root"),
+                pane_in(2, "shell", None, "/unregistered"),
+                agents::AgentPane {
+                    host: Some("remote".into()),
+                    ..pane_in(3, "shell", None, "/work/root")
+                },
+            ],
+            BTreeMap::new(),
+        ))
+        .unwrap();
+        state.publish_project_context(&registry, Some(&reply));
+        let expected = Some((
+            vec!["registered".into()],
+            vec![(PaneId::Terminal(TerminalId::new(1)), "registered".into())],
+        ));
+        assert_eq!(state.published_project_context, expected);
+        state.publish_project_context(&registry, Some(&reply));
+        assert_eq!(state.published_project_context, expected);
+        registry.clear();
+        state.publish_project_context(&registry, Some(&reply));
+        assert_eq!(state.published_project_context, Some((vec![], vec![])));
+    }
+
     /// A store with the shared entities declared, as a session has them.
     ///
     /// The real engine over a temporary file, so discovery below is a genuine
@@ -836,7 +910,9 @@ mod tests {
             "the-workspace"
         );
 
+        let context = state.published_project_context.clone();
         state.on_snapshot(&Unreachable, &snapshot);
+        assert_eq!(state.published_project_context, context);
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
@@ -973,6 +1049,7 @@ mod tests {
         state.update(changed(watch.rows, watch.watch_id));
         assert!(state.latest_snapshot.is_none());
         assert!(state.published_tab_names.is_none());
+        assert_eq!(state.published_project_context, Some((vec![], vec![])));
 
         backend
             .apply(vec![projects::to_mutation(
@@ -1013,6 +1090,17 @@ mod tests {
             "hocus"
         );
         state.update(changed(rows.clone(), watch.watch_id));
+        assert_eq!(
+            state.published_project_context.as_ref().unwrap().0,
+            vec!["renamed"]
+        );
+        assert!(state
+            .published_project_context
+            .as_ref()
+            .unwrap()
+            .1
+            .iter()
+            .all(|(_, name)| name == "renamed"));
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
             "renamed"

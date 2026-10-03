@@ -1486,3 +1486,91 @@ fn palette_restores_exited_sessions_and_rejects_deleted_checkpoints() {
     assert!(receiver.try_recv().is_err());
     assert!(screen.command_palettes.contains_key(&CLIENT));
 }
+
+#[test]
+fn project_context_tracks_focus_membership_and_client_lifetime() {
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let other = PaneId::Terminal(TerminalId::new(2));
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .horizontal_split(other, None, None, CLIENT, None, None)
+        .unwrap();
+    screen.projects = ["alpha", "beta", "gamma"].map(String::from).into();
+    screen.pane_projects = [(pane, "beta".into()), (other, "gamma".into())].into();
+    screen
+        .focus_pane_with_id(pane, false, false, CLIENT)
+        .unwrap();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    palette_search(&mut screen, "Switch current project");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(pane));
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    let second = ClientId::new(2);
+    screen.add_client(second).unwrap();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&second].current.as_deref(),
+        Some("beta")
+    );
+    screen.close_command_palette(CLIENT);
+    screen
+        .focus_pane_with_id(other, false, false, CLIENT)
+        .unwrap();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("gamma")
+    );
+    screen.pane_projects.insert(other, "beta".into());
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    screen.pane_projects.clear();
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("beta")
+    );
+    screen.projects.remove("beta");
+    screen.reconcile_project_contexts();
+    assert_eq!(
+        screen.client_projects[&CLIENT].current.as_deref(),
+        Some("alpha")
+    );
+    screen.projects.clear();
+    screen.reconcile_project_contexts();
+    assert_eq!(screen.client_projects[&CLIENT].current, None);
+    screen.remove_client(second).unwrap();
+    assert!(!screen.client_projects.contains_key(&second));
+}
+
+#[test]
+fn vanished_project_selection_stays_open_with_an_error() {
+    let mut screen = screen();
+    screen.projects.insert("gone".into());
+    palette_search(&mut screen, "Switch current project");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.projects.clear();
+    palette_key(&mut screen, BareKey::Enter);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(rendered.contains("Project no longer exists"), "{rendered}");
+}
