@@ -1,5 +1,5 @@
 use crate::output::{CharacterChunk, Output};
-use crate::pane::Pane;
+use crate::pane::{Pane, RenderedPane};
 use crate::panes::terminal_character::AnsiCode;
 use crate::panes::PaneId;
 use crate::ui::boundaries::Boundaries;
@@ -23,6 +23,14 @@ pub fn dim_character_chunks(character_chunks: &mut [CharacterChunk]) {
             });
         }
     }
+}
+
+/// Whether a pane render emitted anything, so a watcher replay has to repeat it.
+fn rendered_anything((character_chunks, raw_vte_output, sixel, kitty): &RenderedPane) -> bool {
+    !character_chunks.is_empty()
+        || !sixel.is_empty()
+        || !kitty.is_empty()
+        || raw_vte_output.as_ref().is_some_and(|s| !s.is_empty())
 }
 
 pub struct PaneContentsAndUi<'a> {
@@ -139,21 +147,18 @@ impl<'a> PaneContentsAndUi<'a> {
         // and we can clear them from the UI below
         drop(self.pane.drain_fake_cursors());
 
-        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) =
-            self.pane.render(None).context(err_context)?
-        {
+        if let Some(rendered) = self.pane.render(None).context(err_context)? {
             let clients: Vec<ClientId> = clients.collect();
             if self
                 .output
                 .pane_change_client
                 .is_some_and(|client| clients.contains(&client))
-                && (!character_chunks.is_empty()
-                    || !sixel_image_chunks.is_empty()
-                    || !kitty_image_chunks.is_empty()
-                    || raw_vte_output.as_ref().is_some_and(|s| !s.is_empty()))
+                && rendered_anything(&rendered)
             {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
+            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+                rendered;
             self.output
                 .add_character_chunks_to_multiple_clients(
                     character_chunks,
@@ -191,19 +196,16 @@ impl<'a> PaneContentsAndUi<'a> {
     pub fn render_pane_contents_for_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to render pane contents for client {client_id}");
 
-        if let Some((character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks)) =
-            self.pane
-                .render(Some(client_id))
-                .with_context(err_context)?
+        if let Some(rendered) = self
+            .pane
+            .render(Some(client_id))
+            .with_context(err_context)?
         {
-            if self.output.pane_change_client == Some(client_id)
-                && (!character_chunks.is_empty()
-                    || !sixel_image_chunks.is_empty()
-                    || !kitty_image_chunks.is_empty()
-                    || raw_vte_output.as_ref().is_some_and(|s| !s.is_empty()))
-            {
+            if self.output.pane_change_client == Some(client_id) && rendered_anything(&rendered) {
                 self.output.rendered_pane_contents.insert(self.pane.pid());
             }
+            let (character_chunks, raw_vte_output, sixel_image_chunks, kitty_image_chunks) =
+                rendered;
             self.output
                 .add_character_chunks_to_client(client_id, character_chunks, self.z_index)
                 .with_context(err_context)?;

@@ -13,6 +13,7 @@ use crate::panes::{
 use crate::pty::VteBytes;
 use crate::route::NotificationEnd;
 use crate::ClientId;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
@@ -236,12 +237,13 @@ impl Pane for TerminalPane {
             self.pending_pty_input.extend(bytes);
             return;
         }
-        let mut forwarded: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut forwarded: Cow<'_, [u8]> = Cow::Borrowed(&[]);
         let mut pieces = self.kitty_interceptor.split(&bytes);
         while let Some(piece) = pieces.next() {
             match piece {
-                Piece::Run(run) => forwarded.extend_from_slice(run),
-                Piece::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
+                Piece::Run(run) if forwarded.is_empty() => forwarded = Cow::Borrowed(run),
+                Piece::Run(run) => forwarded.to_mut().extend_from_slice(run),
+                Piece::Forward(fwd) => forwarded.to_mut().extend_from_slice(fwd.as_slice()),
                 Piece::CaptureStarted => {
                     // Only an actual Kitty APC needs a flush. Ordinary escape sequences stay
                     // batched together, even when the same read also contains image commands.
@@ -261,7 +263,7 @@ impl Pane for TerminalPane {
                             pieces.reset_interceptor();
                             return;
                         }
-                        forwarded.clear();
+                        forwarded = Cow::Borrowed(&[]);
                     }
                 },
                 Piece::Captured(cmd) => {

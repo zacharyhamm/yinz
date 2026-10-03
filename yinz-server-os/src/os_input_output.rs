@@ -169,7 +169,7 @@ const SEND_QUEUE_RENDER_BYTE_CAPACITY: usize = 1024;
 /// SwitchSession. Only non-initial `PaneRenderUpdate`s without scrollback are
 /// replaceable snapshots; those keep one pending update per pane.
 ///
-/// The screen paces itself against `render_backlog`, skipping frames while
+/// The screen paces itself against `render_backlog_and_notify`, skipping frames while
 /// every client has renders queued, so a slow client on its own sees fewer,
 /// larger frames. A slow client among healthy ones is not waited for. The caps
 /// below are the last resort for it, and for a client that stops reading: ordered
@@ -419,6 +419,7 @@ impl CoalescingSendQueue {
         drop(state);
         notify(ready);
     }
+    #[cfg(test)]
     fn render_backlog(&self) -> RenderBacklog {
         self.render_backlog_and_notify(usize::MAX, None)
     }
@@ -838,6 +839,12 @@ impl ServerOsInputOutput {
             log::warn!("recovered poisoned client sender registry");
             senders
         })
+    }
+    /// The client's writer queue, cloned out so the registry is not held while it is inspected.
+    fn client_queue(&self, client_id: ClientId) -> Option<Arc<CoalescingSendQueue>> {
+        self.lock_client_senders()
+            .get(&client_id)
+            .map(|sender| sender.queue.clone())
     }
     /// Resolve where a command runs: this binary for a local Codex wrapper, the ssh host for an
     /// ssh one, and for a Firecracker one the endpoint the provider hands back once
@@ -1391,25 +1398,14 @@ impl ServerOsApi for ServerOsInputOutput {
         Ok(())
     }
 
-    fn client_render_backlog(&self, client_id: ClientId) -> Option<RenderBacklog> {
-        let queue = self
-            .lock_client_senders()
-            .get(&client_id)
-            .map(|sender| sender.queue.clone());
-        queue.map(|queue| queue.render_backlog())
-    }
-
     fn client_render_backlog_and_notify(
         &self,
         client_id: ClientId,
         threshold: usize,
         ready: &RenderReady,
     ) -> Option<RenderBacklog> {
-        let queue = self
-            .lock_client_senders()
-            .get(&client_id)
-            .map(|sender| sender.queue.clone());
-        queue.map(|queue| queue.render_backlog_and_notify(threshold, Some(ready)))
+        self.client_queue(client_id)
+            .map(|queue| queue.render_backlog_and_notify(threshold, Some(ready)))
     }
 
     fn load_palette(&self) -> Palette {

@@ -33,7 +33,7 @@ use std::{
 pub use async_trait::async_trait;
 
 /// How far behind a client's writer is: what the screen consults before rendering
-/// another frame for it. See `ServerOsApi::client_render_backlog`.
+/// another frame for it. See `ServerOsApi::client_render_backlog_and_notify`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderBacklog {
     /// Full `Render` frames and coalesced pane snapshots queued behind the message
@@ -171,22 +171,21 @@ pub trait ServerOsApi: Send + Sync {
     fn remove_client(&mut self, client_id: ClientId) -> Result<()>;
     /// A connected client's render backlog. The screen skips a frame while every
     /// client is behind, so dirty state accumulates into one later frame instead
-    /// of queueing diffs the clients cannot drain. A default of none: test fakes
-    /// have no writers to fall behind. Implementations must also return none after
-    /// logging a failed backlog query; writer failure must not panic the screen.
-    fn client_render_backlog(&self, _client_id: ClientId) -> Option<RenderBacklog> {
-        None
-    }
+    /// of queueing diffs the clients cannot drain.
+    ///
     /// Atomically inspect the queue and, if it is at or above `threshold`, arm `ready` to be
     /// called once. Clone it only when arming: most clients are not behind. Invoke the callback
     /// after draining below the threshold or closing, outside locks.
+    ///
+    /// A default of none: test fakes have no writers to fall behind. Implementations must also
+    /// return none after logging a failed backlog query; writer failure must not panic the screen.
     fn client_render_backlog_and_notify(
         &self,
-        client_id: ClientId,
+        _client_id: ClientId,
         _threshold: usize,
         _ready: &RenderReady,
     ) -> Option<RenderBacklog> {
-        self.client_render_backlog(client_id)
+        None
     }
     fn load_palette(&self) -> Palette;
     /// Returns the current working directory for a given pid

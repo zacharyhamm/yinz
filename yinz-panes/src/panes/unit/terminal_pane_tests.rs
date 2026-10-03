@@ -1635,6 +1635,8 @@ fn host_query_pause_and_replay_preserve_every_input_split() {
     for terminator in ["\x07", "\x1b\\"] {
         for (tail, expected_screen) in [
             ("after\x1b[31mred\x1b[m\x1b[6n", "beforeafterred"),
+            // A borrowed run, a reconstructed non-Kitty prefix, and another run share a batch.
+            ("after\x1b_Xignored\x1b\\red\x1b[6n", "beforeafterred"),
             ("after\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n", "beforeafterred"),
             // The query fills the whole parser batch before the capture starts.
             ("\x1b_Gq=2,a=d,d=A\x1b\\red\x1b[6n", "beforered"),

@@ -1,8 +1,13 @@
-use super::tests::{frame_params, test_plugin_pane};
+use super::tests::{
+    frame_params, image_frame, kitty_chunks, test_plugin_pane,
+    test_plugin_pane_and_plugin_receiver, tiny_png,
+};
 use crate::pane::Pane;
-use yinz_types::data::InputMode;
-use yinz_types::internal_ids::ClientId;
-use yinz_types::pane_size::Offset;
+use crate::plugins::PluginInstruction;
+use yinz_tile::ui_components::image_row;
+use yinz_types::data::{Event, InputMode};
+use yinz_types::internal_ids::{ClientId, PluginId};
+use yinz_types::pane_size::{Offset, SizeInPixels};
 
 #[test]
 fn attaching_a_client_initializes_loading_without_restarting_completed_loads() {
@@ -125,4 +130,84 @@ fn snapshots_use_the_requested_client_and_disconnect_forgets_parser_state() {
         .pane_contents_with_ansi(Some(low), false, None)
         .viewport
         .is_empty());
+}
+
+#[test]
+fn runs_and_reconstructed_prefixes_preserve_plugin_output() {
+    let client = ClientId::new(1);
+    let prefix = b"\x1b_Xignored\x1b\\";
+    for split in 0..=2 {
+        let mut pane = test_plugin_pane(10, 40, Offset::default());
+        pane.handle_plugin_bytes(client, prefix[..split].to_vec());
+        let mut frame = prefix[split..].to_vec();
+        frame.extend_from_slice(b"head\x1b_Xignored\x1b\\tail\x1b_Gq=2,a=d,d=A\x1b\\end");
+        pane.handle_plugin_bytes(client, frame);
+
+        let grid = pane.grids.get(&client).expect("plugin grid");
+        assert_eq!(grid.dump_screen(false).trim_end(), "headtailend");
+        assert_eq!(grid.kitty_commands_handled(), 1);
+        assert!(grid.pending_messages_to_pty.is_empty());
+        assert!(grid.pending_forwarded_queries.is_empty());
+    }
+}
+
+#[test]
+fn client_grid_reset_follows_creation_including_delayed_frames() {
+    let (mut pane, rx) = test_plugin_pane_and_plugin_receiver(
+        10,
+        10,
+        Offset::default(),
+        Some(SizeInPixels {
+            width: 8,
+            height: 16,
+        }),
+    );
+    let first = ClientId::new(1);
+    let other = ClientId::new(2);
+    let reset = |client| {
+        let (PluginInstruction::Update(events), _) = rx.try_recv().expect("grid reset") else {
+            panic!("expected an update");
+        };
+        assert_eq!(
+            events,
+            vec![(
+                Some(PluginId::new(1)),
+                Some(client),
+                Event::ClientGridReset(client)
+            )]
+        );
+        assert!(rx.is_empty(), "one notification per creation");
+    };
+    for client in [first, other] {
+        pane.add_client(client);
+        reset(client);
+        pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
+        assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
+    }
+    let placeholders = || image_row(42, 0, 2).into_bytes();
+    pane.handle_plugin_bytes(first, placeholders());
+    assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
+    assert!(rx.is_empty(), "ordinary frames preserve the namespace");
+
+    for delayed in [false, true] {
+        pane.remove_client(first);
+        assert!(rx.is_empty(), "deletion alone is not a new namespace");
+        if delayed {
+            // A frame queued before disconnect can create the grid before attachment.
+            pane.handle_plugin_bytes(first, placeholders());
+            assert!(kitty_chunks(&mut pane, first).is_empty());
+            reset(first);
+            pane.add_client(first);
+            assert!(rx.is_empty());
+        } else {
+            pane.add_client(first);
+            reset(first);
+        }
+        // A subscribed plugin responds to the reset by transmitting its pixels again.
+        pane.handle_plugin_bytes(first, image_frame(42, 2, &tiny_png()));
+        assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
+        pane.handle_plugin_bytes(other, placeholders());
+        assert_eq!(kitty_chunks(&mut pane, other).len(), 1);
+        assert!(rx.is_empty());
+    }
 }
