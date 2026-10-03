@@ -34,6 +34,162 @@ fn ids(palette: &CommandPalette) -> Vec<&str> {
         .collect()
 }
 
+fn rendered_lines(palette: &CommandPalette, layout: &CommandPaletteLayout) -> Vec<String> {
+    palette
+        .chunks(layout, &Style::default())
+        .iter()
+        .map(|chunk| {
+            chunk
+                .terminal_characters
+                .iter()
+                .map(|c| c.character)
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn picker_headings_remain_visible_with_no_matches() {
+    for (kind, label) in [
+        (EntryKind::Pane, "Focus pane"),
+        (EntryKind::Tab, "Switch tab"),
+        (EntryKind::Session, "Switch session"),
+    ] {
+        let mut palette = palette();
+        palette.open_picker(kind);
+        for query in ["", "missing"] {
+            palette.insert_text(query);
+            let layout = palette.layout(Viewport {
+                cols: 80,
+                rows: 24,
+                ..Default::default()
+            });
+            let lines = rendered_lines(&palette, &layout);
+            assert!(lines[layout.picker_heading_y.unwrap() - layout.rect.y].contains(label));
+            if query == "missing" {
+                assert!(lines.iter().any(|line| line.contains("No matches")));
+            }
+            let chunks = palette.chunks(&layout, &Style::default());
+            assert_eq!(
+                chunks[layout.picker_heading_y.unwrap() - layout.rect.y].terminal_characters
+                    [layout.border]
+                    .styles
+                    .dim,
+                Some(AnsiCode::On)
+            );
+        }
+        key(&mut palette, BareKey::Esc);
+        assert!(palette.picker.is_none());
+        assert_eq!(palette.input.get_text(), "");
+    }
+}
+
+#[test]
+fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
+    let mut palette = CommandPalette::default();
+    palette.set_entries(vec![
+        entry("pane1", "match one", EntryKind::Pane),
+        entry("pane2", "match two", EntryKind::Pane),
+        entry("tab", "match three", EntryKind::Tab),
+        entry("pane3", "match four", EntryKind::Pane),
+        entry("command", "match five", EntryKind::Command),
+        entry("session", "match six", EntryKind::Session),
+    ]);
+    palette.insert_text("match");
+    assert_eq!(
+        ids(&palette),
+        ["pane1", "pane2", "tab", "pane3", "command", "session"]
+    );
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    for selected in 0..palette.matches.len() {
+        assert_eq!(palette.selected, selected);
+        let layout = palette.layout(surface);
+        let lines = rendered_lines(&palette, &layout);
+        let mut parent = None;
+        let mut visible = Vec::new();
+        for (row, result) in layout.result_rows.iter().enumerate() {
+            match result {
+                ResultRow::Heading(label) => {
+                    parent = Some(*label);
+                    assert!(lines[layout.options_y + row - layout.rect.y].contains(label));
+                    assert!(matches!(
+                        layout.result_rows.get(row + 1),
+                        Some(ResultRow::Entry(_))
+                    ));
+                    palette.click(
+                        &layout,
+                        Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+                    );
+                    assert_eq!(palette.selected, selected);
+                },
+                ResultRow::Entry(index) => {
+                    let kind = palette.entries[palette.matches[*index]].kind;
+                    if let Some(label) = kind.parent_label() {
+                        assert_eq!(parent, Some(label));
+                    } else {
+                        parent = None;
+                    }
+                    visible.push(*index);
+                },
+            }
+        }
+        assert!(visible.contains(&selected));
+        assert!(visible.windows(2).all(|pair| pair[1] == pair[0] + 1));
+        for (row, result) in layout.result_rows.iter().enumerate() {
+            if let ResultRow::Entry(index) = result {
+                palette.click(
+                    &layout,
+                    Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+                );
+                assert_eq!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::Activate(palette.entries[palette.matches[*index]].id.clone())
+                );
+            }
+        }
+        palette.selected = selected;
+        key(&mut palette, BareKey::Down);
+    }
+}
+
+#[test]
+fn headings_fit_small_surfaces_and_keep_the_selected_result_visible() {
+    let mut palette = palette();
+    palette.selected = 2;
+    for picker in [None, Some(EntryKind::Pane)] {
+        if let Some(kind) = picker {
+            palette.open_picker(kind);
+        }
+        for rows in 0..12 {
+            for cols in 0..20 {
+                let layout = palette.layout(Viewport {
+                    x: 2,
+                    y: 3,
+                    cols,
+                    rows,
+                });
+                let chunks = palette.chunks(&layout, &Style::default());
+                for chunk in chunks {
+                    assert_eq!(chunk.width(), layout.rect.cols);
+                    assert!(chunk.y < 3 + rows);
+                }
+                if layout.options_rows > 0 {
+                    assert!(layout.result_rows.iter().any(
+                        |row| matches!(row, ResultRow::Entry(index) if *index == palette.selected)
+                    ));
+                }
+                if let Some((x, y)) = palette.cursor(&layout) {
+                    assert!(layout.rect.contains(x, y));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn fuzzy_ranking_aliases_unicode_and_empty_queries() {
     let mut palette = palette();

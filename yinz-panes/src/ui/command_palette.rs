@@ -12,7 +12,9 @@ use yinz_types::text_input::viewport::{take_columns, viewport};
 use yinz_types::text_input::TextInput;
 
 use crate::output::CharacterChunk;
-use crate::panes::terminal_character::{RcCharacterStyles, TerminalCharacter, RESET_STYLES};
+use crate::panes::terminal_character::{
+    AnsiCode, RcCharacterStyles, TerminalCharacter, RESET_STYLES,
+};
 use crate::ui::damage::CellRect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +23,17 @@ pub enum EntryKind {
     Pane,
     Tab,
     Session,
+}
+
+impl EntryKind {
+    fn parent_label(self) -> Option<&'static str> {
+        match self {
+            Self::Command => None,
+            Self::Pane => Some("Focus pane"),
+            Self::Tab => Some("Switch tab"),
+            Self::Session => Some("Switch session"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +147,13 @@ pub struct CommandPaletteLayout {
     options_rows: usize,
     first_option: usize,
     footer_y: Option<usize>,
+    picker_heading_y: Option<usize>,
+    result_rows: Vec<ResultRow>,
+}
+
+enum ResultRow {
+    Heading(&'static str),
+    Entry(usize),
 }
 
 impl CommandPalette {
@@ -320,6 +340,46 @@ impl CommandPalette {
             .map_or(self.selected, |form| form.selected)
     }
 
+    fn result_rows(&self, capacity: usize) -> Vec<ResultRow> {
+        if capacity == 0 || self.matches.is_empty() || self.form.is_some() {
+            return vec![];
+        }
+        let heading = |index: usize| {
+            self.picker
+                .is_none()
+                .then(|| self.entries[self.matches[index]].kind.parent_label())
+                .flatten()
+                .filter(|_| capacity >= 2)
+        };
+        // Walk back from the selection, charging one extra row for each parent group.
+        let mut start = self.selected;
+        let mut used = 1 + usize::from(heading(start).is_some());
+        while start > 0 {
+            let previous = heading(start - 1);
+            let cost = 1 + usize::from(previous.is_some() && previous != heading(start));
+            if used + cost > capacity {
+                break;
+            }
+            used += cost;
+            start -= 1;
+        }
+        let mut rows = Vec::new();
+        let mut previous = None;
+        for index in start..self.matches.len() {
+            let parent = heading(index);
+            let new_heading = parent.filter(|_| parent != previous);
+            if rows.len() + 1 + usize::from(new_heading.is_some()) > capacity {
+                break;
+            }
+            if let Some(label) = new_heading {
+                rows.push(ResultRow::Heading(label));
+            }
+            rows.push(ResultRow::Entry(index));
+            previous = parent;
+        }
+        rows
+    }
+
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
         let cols = surface.cols.min(64);
         let rows = surface.rows.min(11);
@@ -347,6 +407,9 @@ impl CommandPalette {
             options_rows,
             first_option: (self.selection() + 1).saturating_sub(options_rows),
             footer_y,
+            picker_heading_y: (self.picker.is_some() && self.form.is_none() && rows >= 6)
+                .then_some(input_y + 1),
+            result_rows: self.result_rows(options_rows),
         }
     }
 
@@ -363,8 +426,10 @@ impl CommandPalette {
                 if index < form.rows() {
                     form.selected = index;
                 }
-            } else if index < self.matches.len() {
-                self.selected = index;
+            } else if let Some(ResultRow::Entry(index)) =
+                layout.result_rows.get(y - layout.options_y)
+            {
+                self.selected = *index;
             }
         }
     }
@@ -419,6 +484,10 @@ impl CommandPalette {
             .foreground(Some(style.colors.text_selected.base.into()))
             .background(Some(style.colors.text_selected.background.into()))
             .into();
+        let heading: RcCharacterStyles = RESET_STYLES
+            .foreground(Some(style.colors.text_unselected.base.into()))
+            .dim(Some(AnsiCode::On))
+            .into();
         let width = rect.cols - 2 * layout.border;
         (rect.y..rect.y + rect.rows)
             .map(|y| {
@@ -434,6 +503,14 @@ impl CommandPalette {
                                 |form| form.title.clone(),
                             ),
                             fill.clone(),
+                        )
+                    } else if Some(y) == layout.picker_heading_y {
+                        (
+                            self.picker
+                                .and_then(EntryKind::parent_label)
+                                .unwrap_or_default()
+                                .into(),
+                            heading.clone(),
                         )
                     } else if Some(y) == layout.footer_y {
                         (
@@ -452,7 +529,14 @@ impl CommandPalette {
                     } else if (layout.options_y..layout.options_y + layout.options_rows)
                         .contains(&y)
                     {
-                        let index = layout.first_option + y - layout.options_y;
+                        let row = layout.result_rows.get(y - layout.options_y);
+                        let index = if self.form.is_some() {
+                            layout.first_option + y - layout.options_y
+                        } else if let Some(ResultRow::Entry(index)) = row {
+                            *index
+                        } else {
+                            usize::MAX
+                        };
                         let text = if let Some(form) = &self.form {
                             if let Some(field) = form.fields.get(index) {
                                 match &field.value {
@@ -476,6 +560,8 @@ impl CommandPalette {
                             } else {
                                 String::new()
                             }
+                        } else if let Some(ResultRow::Heading(label)) = row {
+                            (*label).into()
                         } else if let Some(entry) =
                             self.matches.get(index).map(|i| &self.entries[*i])
                         {
@@ -489,14 +575,16 @@ impl CommandPalette {
                                     format!(" — {}", entry.description)
                                 }
                             )
-                        } else if self.matches.is_empty() && index == 0 {
+                        } else if self.matches.is_empty() && y == layout.options_y {
                             "No matches".into()
                         } else {
                             String::new()
                         };
                         (
                             text,
-                            if index == self.selection() {
+                            if matches!(row, Some(ResultRow::Heading(_))) {
+                                heading.clone()
+                            } else if index == self.selection() {
                                 selected.clone()
                             } else {
                                 fill.clone()
