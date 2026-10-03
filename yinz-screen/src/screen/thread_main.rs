@@ -2169,7 +2169,6 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::RemoveClient(client_id) => {
-                    pending.remove_client_plugin_output(client_id);
                     screen.detach_agent_controls(client_id);
                     attach_traces_waiting_for_first_render.remove(&client_id);
                     // A connection that never attached — a session probe, a one-shot
@@ -2180,6 +2179,9 @@ pub fn screen_thread_main(
                     // plugin threads' load while an agent worked.
                     let was_attached = screen.is_client_attached(client_id);
                     screen.remove_client(client_id).non_fatal();
+                    if !screen.accepts_plugin_output(client_id) {
+                        pending.remove_client_plugin_output(client_id);
+                    }
                     if was_attached {
                         // the departing client may have been the one constraining the
                         // screen size; resize_to_clients also reports session state.
@@ -3890,6 +3892,11 @@ pub fn screen_thread_main(
                     screen.remove_watcher_client(client_id);
                 },
                 ScreenInstruction::SetFollowedClient(client_id) => {
+                    if let Some(departed) = screen.followed_client_id.filter(|id| {
+                        *id != client_id && !screen.connected_clients.borrow().contains(id)
+                    }) {
+                        pending.remove_client_plugin_output(departed);
+                    }
                     screen
                         .set_followed_client(client_id)
                         .context("failed to set followed client")?;

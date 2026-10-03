@@ -2396,9 +2396,6 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
-        if self.watcher_clients.is_empty() {
-            self.clear_disconnected_followed_client_state();
-        }
         self.resume_deferred_render();
         // A watcher reports its own synchronised-output support like any other client, and ids
         // are recycled - so its answer goes with it, as `remove_client` does for a regular one.
@@ -2431,7 +2428,6 @@ impl Screen {
             for tab in self.tabs.values_mut() {
                 tab.remove_client_pane_state(client_id);
             }
-            // Keep the render source for a later watcher, without keeping its cached state.
             self.pane_subscriber_snapshots_dirty = true;
         }
     }
@@ -4714,7 +4710,7 @@ impl Screen {
     fn accepts_plugin_output(&self, client_id: ClientId) -> bool {
         self.connected_clients.borrow().contains(&client_id)
             || self.client_sizes.contains_key(&client_id)
-            || (self.followed_client_id == Some(client_id) && !self.watcher_clients.is_empty())
+            || self.followed_client_id == Some(client_id)
     }
 
     fn handle_plugin_render_assets(

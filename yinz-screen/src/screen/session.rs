@@ -218,6 +218,15 @@ impl Screen {
         log::info!(
             "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
         );
+        // Purge the departed source before a regular client can reuse its id.
+        if !self.watcher_clients.contains_key(&client_id) {
+            if let Some(departed) = self
+                .followed_client_id
+                .filter(|id| !self.connected_clients.borrow().contains(id))
+            {
+                pending.remove_client_plugin_output(departed);
+            }
+        }
         self.set_client_size(client_id, client_size);
         log::info!(
         "attach trace: screen client_id={client_id} client size recorded after {:?}; Screen::add_client begin",

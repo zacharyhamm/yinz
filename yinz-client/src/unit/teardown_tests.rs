@@ -123,7 +123,7 @@ mod claiming_the_terminal {
         claim_terminal, ClientTeardown, END_SYNCHRONIZED_OUTPUT, QUERY_HOST_THEME,
     };
     use std::io::{self, Write};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{atomic::AtomicU8, Arc, Mutex};
     use yinz_types::pane_size::Size;
     use yinz_types::style::Palette;
 
@@ -202,7 +202,12 @@ mod claiming_the_terminal {
     #[test]
     fn mouse_reporting_is_disabled_and_flushed_before_raw_mode_is_unset() {
         let terminal = RecordingTerminal::default();
-        ClientTeardown::new(24, true).restore(&terminal, "bye");
+        ClientTeardown::new(24, true).restore_with_sync(
+            &mut RecordingStdout(terminal.0.clone()),
+            || terminal.unset_raw_mode().unwrap(),
+            Some("bye"),
+            &AtomicU8::new(0),
+        );
         let events = terminal.events();
         // The open frame is closed first, so the host is not holding the mouse reset back.
         let Event::Wrote(released) = &events[0] else {

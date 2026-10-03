@@ -23,6 +23,113 @@ fn assert_no_cursor_reports(instructions: impl Iterator<Item = PluginInstruction
 }
 
 #[test]
+fn queued_plugin_output_follows_the_retained_source_through_disconnects() {
+    let size = Size { cols: 80, rows: 10 };
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let other = ClientId::new(3);
+    for transition in ["retain", "switch", "replace", "reuse", "ordinary"] {
+        let mut mock = MockScreen::new(size);
+        let server_rx = mock.server_receiver.take().unwrap();
+        let screen_thread = mock.run(None, vec![]);
+        let received = Watched::new(vec![]);
+        let server_thread =
+            log_actions_in_thread!(received, ServerInstruction::KillSession, server_rx);
+        let send = |instruction| mock.to_screen.send(instruction).unwrap();
+        if transition != "ordinary" {
+            send(ScreenInstruction::AddWatcherClient(watcher, size));
+        }
+        send(ScreenInstruction::PluginBytes(vec![
+            PluginRenderAsset::new(PLUGIN_2, followed, b"queued-before-detach".to_vec()),
+        ]));
+        send(ScreenInstruction::ShowPluginCursor(
+            PLUGIN_2,
+            followed,
+            Some((2, 1)),
+        ));
+        send(ScreenInstruction::RemoveClient(followed));
+        if transition != "ordinary" {
+            send(ScreenInstruction::RemoveWatcherClient(watcher));
+        }
+        match transition {
+            "switch" => {
+                send(ScreenInstruction::SetFollowedClient(other));
+                // Accept the old source again so stale queued events cannot hide behind
+                // accepts_plugin_output rejecting them when the pane is created.
+                send(ScreenInstruction::SetFollowedClient(followed));
+            },
+            "replace" => {
+                send(ScreenInstruction::AddClient(other, size, None, None));
+                send(ScreenInstruction::AddClient(followed, size, None, None));
+                send(ScreenInstruction::SetFollowedClient(followed));
+            },
+            "reuse" | "ordinary" => {
+                send(ScreenInstruction::AddClient(followed, size, None, None));
+            },
+            _ => {},
+        }
+        send(ScreenInstruction::AddWatcherClient(watcher, size));
+        send(ScreenInstruction::NewPane(
+            PaneId::Plugin(PLUGIN_2),
+            None,
+            None,
+            None,
+            NewPanePlacement::InPlace {
+                pane_id_to_replace: Some(PaneId::Terminal(TerminalId::new(0))),
+                close_replaced_pane: true,
+                borderless: Some(false),
+            },
+            false,
+            ClientTabIndexOrPaneId::TabIndex(TabId::new(0)),
+            None,
+            false,
+        ));
+        // Creation requeues pending events. The reply guarantees they are in the queue
+        // before the rename, so its visible title marks a frame after their replay.
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        send(ScreenInstruction::GetPaneInfo {
+            pane_id: PaneId::Plugin(PLUGIN_2),
+            response_channel: tx,
+        });
+        assert!(rx
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap()
+            .is_some());
+        send(ScreenInstruction::RenamePane(
+            PaneId::Plugin(PLUGIN_2),
+            b"ready-after-placement".to_vec(),
+            None,
+        ));
+        let (cursor, frame) = received.wait_until(
+            "watcher sees plugin after queued output replay",
+            yinz_test_support::default_timeout(),
+            |events| {
+                let mut grid = grid_for_render_snapshot(size);
+                events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ServerInstruction::Render(Some(clients)) => clients.get(&watcher),
+                        _ => None,
+                    })
+                    .map(|bytes| take_snapshot_and_cursor_coordinates(bytes, &mut grid))
+                    .find(|(_, frame)| frame.contains("ready-after-placement"))
+            },
+        );
+        assert_eq!(
+            frame.contains("queued-before-detach"),
+            transition == "retain",
+            "{transition}: {frame}"
+        );
+        assert_eq!(
+            cursor,
+            (transition == "retain").then_some((3, 2)),
+            "{transition}: {frame}"
+        );
+        mock.teardown(vec![screen_thread, server_thread]);
+    }
+}
+
+#[test]
 fn plugin_cursor_show_move_and_hide_render_without_session_reports() {
     let size = Size { cols: 80, rows: 10 };
     let mut mock = MockScreen::new(size);
