@@ -6,7 +6,7 @@ fn leaving_a_hover_highlight_for_a_nonselectable_pane_requests_a_render() {
     let source = PaneId::Terminal(crate::TerminalId::new(1));
     let destination = PaneId::Terminal(crate::TerminalId::new(2));
     let mut tab = create_new_tab(Size { cols: 80, rows: 20 }, ModeInfo::default());
-    tab.vertical_split(destination, None, client, None, None)
+    tab.vertical_split(destination, None, None, client, None, None)
         .unwrap();
     tab.get_pane_with_id_mut(destination)
         .unwrap()

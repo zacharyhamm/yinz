@@ -3908,6 +3908,7 @@ pub(crate) fn check_event_permission(
         | EventType::InterceptedKeyPress
         | EventType::Timer
         | EventType::Visible
+        | EventType::ClientGridReset
         | EventType::BeforeClose
         | EventType::CustomMessage
         | EventType::PermissionRequestResult

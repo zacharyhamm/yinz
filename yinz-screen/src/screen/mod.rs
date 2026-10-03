@@ -790,6 +790,7 @@ pub(crate) struct Screen {
     render_blocker: RenderBlocker,
     watcher_clients: HashMap<ClientId, WatcherState>,
     followed_client_id: Option<ClientId>,
+    departed_followed_tab_id: Option<TabId>,
     cached_layouts: Vec<LayoutInfo>,
     cached_layout_errors: Vec<LayoutWithError>,
     pane_render_subscribers: HashMap<ClientId, PaneRenderSubscription>,
@@ -1411,6 +1412,7 @@ impl Screen {
             render_blocker: RenderBlocker::new(100),
             watcher_clients: HashMap::new(),
             followed_client_id: None,
+            departed_followed_tab_id: None,
             cached_layouts: vec![],
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
@@ -2149,6 +2151,7 @@ impl Screen {
             }
             self.set_followed_client(client_id)
                 .context("failed to follow the attaching client")?;
+            self.departed_followed_tab_id = None;
         }
 
         let mut tab_history = vec![];
@@ -2271,12 +2274,15 @@ impl Screen {
                 .find(|id| !self.watcher_clients.contains_key(id) && id != &client_id);
 
             // If no regular client remains but we have watchers, keep the old followed_client_id
-            // for terminal rendering (plugins will use their last state)
+            // and its tab as the watchers' render source.
             if let Some(next_client) = next_client {
                 self.set_followed_client(next_client)
                     .with_context(err_context)?;
             } else if self.watcher_clients.is_empty() {
                 self.followed_client_id = None;
+                self.departed_followed_tab_id = None;
+            } else {
+                self.departed_followed_tab_id = self.active_tab_ids.get(&client_id).copied();
             }
         }
 
@@ -2402,6 +2408,7 @@ impl Screen {
     pub fn set_followed_client(&mut self, client_id: ClientId) -> Result<()> {
         if self.followed_client_id != Some(client_id) {
             self.clear_disconnected_followed_client_state();
+            self.departed_followed_tab_id = None;
         }
         self.followed_client_id = Some(client_id);
         for watcher in self.watcher_clients.values_mut() {
@@ -4702,6 +4709,11 @@ impl Screen {
             (tiled_panes, floating_panes, hide_floating_panes)
         }
     }
+    fn accepts_plugin_output(&self, client_id: ClientId) -> bool {
+        self.connected_clients.borrow().contains(&client_id)
+            || (self.followed_client_id == Some(client_id) && !self.watcher_clients.is_empty())
+    }
+
     fn handle_plugin_render_assets(
         &mut self,
         plugin_render_assets: Vec<PluginRenderAsset>,
@@ -4711,7 +4723,8 @@ impl Screen {
         for mut plugin_render_asset in plugin_render_assets {
             let plugin_id = plugin_render_asset.plugin_id;
             let client_id = plugin_render_asset.client_id;
-            if !self.connected_clients.borrow().contains(&client_id) {
+            self.render_blocker.remove_blocking_plugin(plugin_id);
+            if !self.accepts_plugin_output(client_id) {
                 continue;
             }
             let mut vte_bytes = Some(std::mem::take(&mut plugin_render_asset.bytes));
@@ -4733,7 +4746,6 @@ impl Screen {
                 plugin_render_asset.bytes = vte_bytes.take().unwrap();
                 unhandled_render_assets.push(plugin_render_asset);
             }
-            self.render_blocker.remove_blocking_plugin(plugin_id);
         }
         if !handled_render_assets.is_empty() {
             self.render()?;
@@ -4746,7 +4758,7 @@ impl Screen {
         client_id: ClientId,
         cursor_position: Option<(usize, usize)>,
     ) -> bool {
-        if !self.connected_clients.borrow().contains(&client_id) {
+        if !self.accepts_plugin_output(client_id) {
             return true;
         }
         for tab in self.tabs.values_mut() {

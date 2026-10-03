@@ -13,6 +13,7 @@ export type PermissionStatus = "Granted" | "Denied";
 export type PaneId = { Terminal: number } | { Plugin: number };
 export type PipeSource = { Cli: string } | { Plugin: number } | "Keybind";
 export interface EventPayloads {
+  ClientGridReset: number;
   ModeUpdate: ModeInfo; TabUpdate: TabInfo[]; PaneUpdate: PaneManifest; Key: KeyWithModifier;
   Mouse: Mouse; Timer: number; CopyToClipboard: 'Command' | 'Primary' | 'System'; Visible: boolean; CustomMessage: [string, string];
   FileSystemCreate: [string, FileMetadata | null][]; FileSystemRead: [string, FileMetadata | null][];

@@ -466,6 +466,15 @@ impl TryFrom<ProtobufEvent> for Event {
                 None => Ok(Event::ConfigWasWrittenToDisk),
                 _ => Err("Malformed payload for the ConfigWasWrittenToDisk Event"),
             },
+            Ok(ProtobufEventType::ClientGridReset) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::ClientGridResetPayload(client_id)) => {
+                    Ok(Event::ClientGridReset(
+                        ClientId::try_from(client_id)
+                            .map_err(|_| "client_id is outside u16 range")?,
+                    ))
+                },
+                _ => Err("Malformed payload for the ClientGridReset Event"),
+            },
             Ok(ProtobufEventType::BeforeClose) => match protobuf_event.payload {
                 None => Ok(Event::BeforeClose),
                 _ => Err("Malformed payload for the BeforeClose Event"),
@@ -1293,6 +1302,12 @@ impl TryFrom<Event> for ProtobufEvent {
             Event::ConfigWasWrittenToDisk => Ok(ProtobufEvent {
                 name: ProtobufEventType::ConfigWasWrittenToDisk as i32,
                 payload: None,
+            }),
+            Event::ClientGridReset(client_id) => Ok(ProtobufEvent {
+                name: ProtobufEventType::ClientGridReset as i32,
+                payload: Some(ProtobufEventPayload::ClientGridResetPayload(u32::from(
+                    client_id.get(),
+                ))),
             }),
             Event::BeforeClose => Ok(ProtobufEvent {
                 name: ProtobufEventType::BeforeClose as i32,
@@ -2770,6 +2785,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::FailedToChangeHostFolder => EventType::FailedToChangeHostFolder,
             ProtobufEventType::PastedText => EventType::PastedText,
             ProtobufEventType::ConfigWasWrittenToDisk => EventType::ConfigWasWrittenToDisk,
+            ProtobufEventType::ClientGridReset => EventType::ClientGridReset,
             ProtobufEventType::BeforeClose => EventType::BeforeClose,
             ProtobufEventType::InterceptedKeyPress => EventType::InterceptedKeyPress,
             ProtobufEventType::PaneRenderReport => EventType::PaneRenderReport,
@@ -2837,6 +2853,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::FailedToChangeHostFolder => ProtobufEventType::FailedToChangeHostFolder,
             EventType::PastedText => ProtobufEventType::PastedText,
             EventType::ConfigWasWrittenToDisk => ProtobufEventType::ConfigWasWrittenToDisk,
+            EventType::ClientGridReset => ProtobufEventType::ClientGridReset,
             EventType::BeforeClose => ProtobufEventType::BeforeClose,
             EventType::InterceptedKeyPress => ProtobufEventType::InterceptedKeyPress,
             EventType::PaneRenderReport => ProtobufEventType::PaneRenderReport,
@@ -4586,4 +4603,34 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
     let mut wire = wire;
     wire.multipane.as_mut().unwrap().ratio = 10_000;
     assert!(PaneInfo::try_from(wire).is_err());
+}
+
+#[test]
+fn client_grid_reset_roundtrips_and_rejects_malformed_payloads() {
+    use prost::Message;
+    for id in [0, 7, u16::MAX] {
+        let event = Event::ClientGridReset(ClientId::new(id));
+        let protobuf = ProtobufEvent::try_from(event.clone()).unwrap();
+        let decoded = ProtobufEvent::decode(protobuf.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(Event::try_from(decoded).unwrap(), event);
+    }
+    assert_eq!(
+        EventType::try_from(ProtobufEventType::ClientGridReset).unwrap(),
+        EventType::ClientGridReset
+    );
+    assert_eq!(
+        ProtobufEventType::try_from(EventType::ClientGridReset).unwrap(),
+        ProtobufEventType::ClientGridReset
+    );
+    for payload in [
+        None,
+        Some(ProtobufEventPayload::VisiblePayload(true)),
+        Some(ProtobufEventPayload::ClientGridResetPayload(65536)),
+    ] {
+        assert!(Event::try_from(ProtobufEvent {
+            name: ProtobufEventType::ClientGridReset as i32,
+            payload
+        })
+        .is_err());
+    }
 }

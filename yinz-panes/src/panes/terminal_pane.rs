@@ -1,8 +1,6 @@
 use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::pane::{AdjustedInput, GuestChoiceIndicator, Pane, TextAroundPosition};
-use crate::panes::kitty_graphics::{
-    InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore,
-};
+use crate::panes::kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece};
 use crate::panes::selection::Selection;
 use crate::panes::sixel::SixelImageStore;
 use crate::panes::FrameColorOverride;
@@ -239,36 +237,12 @@ impl Pane for TerminalPane {
             return;
         }
         let mut forwarded: Vec<u8> = Vec::with_capacity(bytes.len());
-        let mut index = 0;
-        while index < bytes.len() {
-            if self.kitty_interceptor.is_capturing() {
-                let run = self.kitty_interceptor.capture_run(&bytes[index..]);
-                if run > 0 {
-                    // `CaptureStarted` already flushed the preceding terminal bytes.
-                    index += run;
-                    continue;
-                }
-            }
-            // Ordinary escapes are forwarded unchanged too. Scan once to the next APC candidate,
-            // retaining a final ESC so a prefix split across reads still reaches the interceptor.
-            if self.kitty_interceptor.is_in_ground_state() {
-                let rest = &bytes[index..];
-                let run_length = memchr::memmem::find(rest, b"\x1b_")
-                    .unwrap_or_else(|| rest.len() - usize::from(rest.last() == Some(&0x1b)));
-                if run_length > 0 {
-                    forwarded.extend_from_slice(&rest[..run_length]);
-                    index += run_length;
-                    continue;
-                }
-            }
-            let byte = bytes[index];
-            index += 1;
-            match self.kitty_interceptor.advance(byte) {
-                InterceptorResult::Forward(fwd) => {
-                    forwarded.extend_from_slice(fwd.as_slice());
-                },
-                InterceptorResult::Swallow => {},
-                InterceptorResult::CaptureStarted => {
+        let mut pieces = self.kitty_interceptor.split(&bytes);
+        while let Some(piece) = pieces.next() {
+            match piece {
+                Piece::Run(run) => forwarded.extend_from_slice(run),
+                Piece::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
+                Piece::CaptureStarted => {
                     // Only an actual Kitty APC needs a flush. Ordinary escape sequences stay
                     // batched together, even when the same read also contains image commands.
                     if !forwarded.is_empty() {
@@ -283,20 +257,20 @@ impl Pane for TerminalPane {
                             self.pending_pty_input.extend(&forwarded[consumed..]);
                             // The prefix may have spanned reads, so reconstruct it explicitly.
                             self.pending_pty_input.extend(b"\x1b_G");
-                            self.pending_pty_input.extend(&bytes[index..]);
-                            self.kitty_interceptor.reset();
+                            self.pending_pty_input.extend(&bytes[pieces.position()..]);
+                            pieces.reset_interceptor();
                             return;
                         }
                         forwarded.clear();
                     }
                 },
-                InterceptorResult::Captured(cmd) => {
+                Piece::Captured(cmd) => {
                     self.grid.handle_kitty_apc(&cmd);
                     if !self.grid.pending_forwarded_queries.is_empty() {
                         // Grid produced a forward. Stop feeding; queue the
                         // un-fed remainder so Tab can replay it after the
                         // reply.
-                        self.pending_pty_input.extend(&bytes[index..]);
+                        self.pending_pty_input.extend(&bytes[pieces.position()..]);
                         return;
                     }
                 },
@@ -1834,6 +1808,26 @@ impl TerminalPane {
         self.waiting_pulse_started_at = None;
         if self.waiting_pulse.take().is_some() {
             self.set_should_render(true);
+        }
+    }
+
+    /// The byte-at-a-time ingest `handle_pty_bytes` has to match: every byte through the
+    /// interceptor, and whatever it forwards straight to the parser. Without the host-query
+    /// pause, so only for streams that ask the host nothing.
+    #[cfg(test)]
+    pub(crate) fn ingest_per_byte(&mut self, bytes: &[u8]) {
+        use crate::panes::kitty_graphics::InterceptorResult;
+        self.grid.should_render = true;
+        for &byte in bytes {
+            match self.kitty_interceptor.advance(byte) {
+                InterceptorResult::Forward(forward) => {
+                    self.vte_parser.advance(&mut self.grid, forward.as_slice())
+                },
+                InterceptorResult::Swallow | InterceptorResult::CaptureStarted => {},
+                InterceptorResult::Captured(command) => {
+                    self.grid.handle_kitty_apc(&command);
+                },
+            }
         }
     }
 

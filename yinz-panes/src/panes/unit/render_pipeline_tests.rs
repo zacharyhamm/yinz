@@ -232,12 +232,14 @@ fn pty_partitions_preserve_styled_state_and_replies(tc: hegel::TestCase) {
 }
 
 /// Parser batches end at Kitty capture starts and read boundaries. Splitting a stream with APCs,
-/// other escapes and doubled ESCs changes those batches without changing the resulting pane.
+/// other escapes and doubled ESCs changes those batches without changing the resulting pane, and
+/// the pane is the one byte-at-a-time ingest builds.
 #[hegel::test]
 fn bulk_and_intercepted_ingest_leave_identical_panes(tc: hegel::TestCase) {
     let (cols, rows) = (number(&tc, 1, 16), number(&tc, 1, 6));
     let mut whole = Surface::new(&[geom(0, 0, cols, rows)]);
     let mut split = Surface::new(&[geom(0, 0, cols, rows)]);
+    let mut per_byte = Surface::new(&[geom(0, 0, cols, rows)]);
     let sizes: Vec<_> = (0..8).map(|_| number(&tc, 1, 13)).collect();
     let mut stream = Vec::new();
     for _ in 0..number(&tc, 1, 20) {
@@ -256,16 +258,31 @@ fn bulk_and_intercepted_ingest_leave_identical_panes(tc: hegel::TestCase) {
     }
     whole.panes[0].handle_pty_bytes(stream.clone());
     feed_partitioned(&mut split.panes[0], &stream, &sizes);
-    let (a, b) = (&mut whole.panes[0], &mut split.panes[0]);
+    per_byte.panes[0].ingest_per_byte(&stream);
+    let (a, b, c) = (
+        &mut whole.panes[0],
+        &mut split.panes[0],
+        &mut per_byte.panes[0],
+    );
     assert_eq!(
         cells(a),
         cells(b),
         "stream {stream:?}, partitions {sizes:?}"
     );
+    assert_eq!(cells(a), cells(c), "stream {stream:?}");
     assert_eq!(a.cursor_coordinates(), b.cursor_coordinates());
+    assert_eq!(a.cursor_coordinates(), c.cursor_coordinates());
     assert_eq!(a.pending_pty_input, b.pending_pty_input);
-    assert_eq!(a.drain_messages_to_pty(), b.drain_messages_to_pty());
-    assert_eq!(whole.frame(true, true), split.frame(true, true));
+    assert!(
+        a.pending_pty_input.is_empty(),
+        "the stream asks the host nothing"
+    );
+    let replies = a.drain_messages_to_pty();
+    assert_eq!(replies, b.drain_messages_to_pty());
+    assert_eq!(replies, c.drain_messages_to_pty());
+    let frame = whole.frame(true, true);
+    assert_eq!(frame, split.frame(true, true));
+    assert_eq!(frame, per_byte.frame(true, true));
 }
 
 fn check_frame(surface: &mut Surface, host: &mut Surface, cols: usize, rows: usize) {

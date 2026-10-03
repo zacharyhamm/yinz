@@ -50,7 +50,7 @@ use {
 };
 
 use crate::background_jobs::BackgroundJob;
-use crate::os_input_output::{AsyncReader, NullAsyncReader, RenderBacklog};
+use crate::os_input_output::{AsyncReader, NullAsyncReader, RenderBacklog, RenderReady};
 use crate::pty_writer::PtyWriteInstruction;
 use crate::{
     plugins::{PluginInstruction, PluginRenderAsset},
@@ -269,7 +269,7 @@ type PluginReceiver = Receiver<(PluginInstruction, ErrorContext)>;
 type CapturedClientMessages = Arc<Mutex<HashMap<ClientId, Vec<ServerToClientMsg>>>>;
 /// What the fake os api reports as each client's render backlog.
 type RenderBacklogs = Arc<Mutex<Vec<(ClientId, RenderBacklog)>>>;
-type RenderReadyCallbacks = Arc<Mutex<HashMap<ClientId, Box<dyn FnOnce() + Send>>>>;
+type RenderReadyCallbacks = Arc<Mutex<HashMap<ClientId, RenderReady>>>;
 
 #[derive(Clone, Default)]
 struct FakeInputOutput {
@@ -384,11 +384,14 @@ impl ServerOsApi for FakeInputOutput {
         &self,
         client_id: ClientId,
         threshold: usize,
-        ready: Box<dyn FnOnce() + Send>,
+        ready: &RenderReady,
     ) -> Option<RenderBacklog> {
         let backlog = self.client_render_backlog(client_id);
         if backlog.is_some_and(|b| b.queued_renders >= threshold) {
-            self.render_ready.lock().unwrap().insert(client_id, ready);
+            self.render_ready
+                .lock()
+                .unwrap()
+                .insert(client_id, ready.clone());
         }
         backlog
     }

@@ -47,6 +47,36 @@ struct ActiveWebRequestStream {
 
 const OUTPUT_TRUNCATED: &[u8] = b"\n[truncated]";
 
+/// Tells the screen when a held-back client will count as stalled. One deadline at a time:
+/// setting another, or none, abandons the last.
+#[derive(Default)]
+struct RenderDeadlineTimer {
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl RenderDeadlineTimer {
+    fn set(
+        &mut self,
+        runtime: &tokio::runtime::Handle,
+        senders: &crate::thread_bus::ThreadSenders,
+        deadline: Option<Instant>,
+    ) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        if let Some(deadline) = deadline {
+            let senders = senders.clone();
+            self.task = Some(runtime.spawn(async move {
+                tokio::time::sleep_until(deadline.into()).await;
+                senders
+                    .send_to_screen(ScreenInstruction::RenderDeadline(deadline))
+                    .context("failed to tell the screen a render deadline passed")
+                    .non_fatal();
+            }));
+        }
+    }
+}
+
 async fn read_command_stream<R>(
     mut stream: R,
     max_output_bytes: Option<usize>,
@@ -530,7 +560,7 @@ pub fn background_jobs_main(
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
     let mut command_palette_sessions: Option<Arc<AtomicBool>> = None;
-    let mut render_deadline_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut render_deadline = RenderDeadlineTimer::default();
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -961,16 +991,7 @@ pub fn background_jobs_main(
                 );
             },
             BackgroundJob::SetRenderDeadline(deadline) => {
-                if let Some(task) = render_deadline_task.take() {
-                    task.abort();
-                }
-                if let Some(deadline) = deadline {
-                    let senders = bus.senders.clone();
-                    render_deadline_task = Some(runtime.spawn(async move {
-                        tokio::time::sleep_until(deadline.into()).await;
-                        let _ = senders.send_to_screen(ScreenInstruction::RenderDeadline(deadline));
-                    }));
-                }
+                render_deadline.set(runtime.handle(), &bus.senders, deadline);
             },
             BackgroundJob::RenderToClients => {
                 // last_render_request being Some() represents a render request that is pending
@@ -3518,5 +3539,51 @@ mod web_request_stream_tests {
             plugin_rx.try_recv().is_err(),
             "nothing may follow a terminator"
         );
+    }
+}
+
+#[cfg(test)]
+mod render_deadline_tests {
+    use super::*;
+    use crate::thread_bus::ThreadSenders;
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+
+    #[tokio::test(start_paused = true)]
+    async fn render_deadlines_fire_once_at_the_latest_deadline_and_none_cancels() {
+        let (to_screen, screen_rx) = unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            ..Default::default()
+        };
+        let runtime = tokio::runtime::Handle::current();
+        let fired = || -> Vec<Instant> {
+            screen_rx
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    ScreenInstruction::RenderDeadline(deadline) => Some(deadline),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut timer = RenderDeadlineTimer::default();
+        let start = tokio::time::Instant::now();
+        let first = (start + Duration::from_secs(10)).into_std();
+        let second = (start + Duration::from_secs(20)).into_std();
+
+        timer.set(&runtime, &senders, Some(first));
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert_eq!(fired(), vec![]);
+        // Replaced before it fires: the first deadline never reaches the screen.
+        timer.set(&runtime, &senders, Some(second));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(fired(), vec![]);
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        assert_eq!(fired(), vec![second]);
+
+        let third = (tokio::time::Instant::now() + Duration::from_secs(5)).into_std();
+        timer.set(&runtime, &senders, Some(third));
+        timer.set(&runtime, &senders, None);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(fired(), vec![]);
     }
 }

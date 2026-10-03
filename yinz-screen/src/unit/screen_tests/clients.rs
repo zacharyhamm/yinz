@@ -13,6 +13,7 @@ fn watchers_resume_incremental_output_when_a_regular_client_returns() {
     for returning in [first, followed] {
         let mut screen = create_new_screen(size, true, true);
         new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
         screen.add_client(followed).unwrap();
         screen.set_followed_client(followed).unwrap();
         screen.add_watcher_client(watcher).unwrap();
@@ -24,15 +25,21 @@ fn watchers_resume_incremental_output_when_a_regular_client_returns() {
         screen.remove_client(followed).unwrap();
         watcher_frame(&mut screen, &receiver, watcher, &mut grid);
         assert_eq!(screen.followed_client_id, Some(followed));
+        assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
 
         screen.add_client(returning).unwrap();
         watcher_frame(&mut screen, &receiver, watcher, &mut grid);
         assert_eq!(screen.followed_client_id, Some(returning));
+        assert_eq!(screen.departed_followed_tab_id, None);
+        assert_eq!(
+            screen.watched_tab_id(),
+            screen.active_tab_ids.get(&returning).copied()
+        );
         screen
             .tabs
-            .get_mut(&TabId::new(0))
+            .get_mut(&TabId::new(1))
             .unwrap()
-            .handle_pty_bytes(crate::TerminalId::new(1), b"after-reattach".to_vec())
+            .handle_pty_bytes(crate::TerminalId::new(2), b"after-reattach".to_vec())
             .unwrap();
         let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
         assert!(bytes.contains("after-reattach"), "{bytes:?}");
@@ -41,6 +48,120 @@ fn watchers_resume_incremental_output_when_a_regular_client_returns() {
             "ordinary output must remain incremental"
         );
     }
+}
+
+#[test]
+fn watchers_retain_the_departed_clients_tab_until_it_closes() {
+    let size = Size { cols: 80, rows: 24 };
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    for fallback in [TabId::new(0), TabId::new(2)] {
+        let mut screen = create_new_screen(size, true, true);
+        new_tab(&mut screen, 1, fallback);
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen.set_followed_client(followed).unwrap();
+        screen.add_watcher_client(watcher).unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(size);
+        for (tab_id, terminal, content) in [
+            (fallback, 1, "other-tab"),
+            (TabId::new(1), 2, "watched-tab"),
+        ] {
+            screen
+                .tabs
+                .get_mut(&tab_id)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(terminal), content.as_bytes().to_vec())
+                .unwrap();
+        }
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        screen.remove_client(followed).unwrap();
+        assert!(!screen.active_tab_ids.contains_key(&followed));
+        for content in ["after-detach", "incremental-update"] {
+            screen
+                .tabs
+                .get_mut(&TabId::new(1))
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(2), format!("\r\n{content}").into_bytes())
+                .unwrap();
+            let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+            let snapshot = format!("{grid:?}");
+            assert!(snapshot.contains("watched-tab"), "{snapshot}");
+            assert!(snapshot.contains(content), "{snapshot}");
+            assert!(!snapshot.contains("other-tab"), "{snapshot}");
+            assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+        }
+        screen.remove_watcher_client(watcher);
+        assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
+        screen.add_watcher_client(watcher).unwrap();
+        watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(format!("{grid:?}").contains("incremental-update"));
+
+        screen.close_tab_by_id(TabId::new(1)).unwrap();
+        assert_eq!(screen.watched_tab_id(), Some(fallback));
+        assert!(screen.watcher_clients[&watcher].should_force_render());
+        let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(bytes.contains("\x1b[2J"), "{bytes:?}");
+        let snapshot = format!("{grid:?}");
+        assert!(snapshot.contains("other-tab"), "{snapshot}");
+        assert!(!snapshot.contains("watched-tab"), "{snapshot}");
+        assert!(!screen.watcher_clients[&watcher].should_force_render());
+        assert!(!watcher_frame(&mut screen, &receiver, watcher, &mut grid).contains("\x1b[2J"));
+        screen.close_tab_by_id(fallback).unwrap();
+        assert!(receiver
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+    }
+}
+
+#[test]
+fn departed_plugin_output_updates_watchers_and_always_releases_its_blocker() {
+    let size = Size { cols: 80, rows: 24 };
+    let followed = ClientId::new(1);
+    let watcher = ClientId::new(2);
+    let departed = ClientId::new(3);
+    let plugin = crate::PluginId::new(2);
+    let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
+    new_tab(&mut screen, 1, TabId::new(0));
+    add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(plugin), false);
+    screen.add_client(departed).unwrap();
+    screen.set_followed_client(followed).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.remove_client(departed).unwrap();
+    screen.remove_client(followed).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    for (client, content) in [
+        (followed, "accepted-plugin"),
+        (departed, "discarded-plugin"),
+    ] {
+        screen.render_blocker.register_blocking_plugin(plugin);
+        assert!(screen
+            .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+                plugin,
+                client,
+                content.as_bytes().to_vec(),
+            )])
+            .unwrap()
+            .is_empty());
+        assert!(!screen.render_blocker.blocking_plugins.contains_key(&plugin));
+        assert!(screen.show_plugin_cursor(plugin, client, Some((1, 1))));
+    }
+    watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+    let snapshot = format!("{grid:?}");
+    assert!(snapshot.contains("accepted-plugin"), "{snapshot}");
+    assert!(!snapshot.contains("discarded-plugin"), "{snapshot}");
+    let pane = screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PaneId::Plugin(plugin))
+        .unwrap();
+    assert!(pane.cursor_coordinates(Some(followed)).is_some());
+    assert!(pane.cursor_coordinates(Some(departed)).is_none());
+    assert!(!pane
+        .pane_contents(Some(departed), false, None)
+        .viewport
+        .concat()
+        .contains("discarded-plugin"));
 }
 
 #[test]
@@ -74,6 +195,10 @@ fn retained_plugin_state_is_freed_when_following_ends_or_the_id_is_reused() {
             1 => screen.set_followed_client(ClientId::new(3)).unwrap(),
             _ => screen.add_client(followed).unwrap(),
         }
+        assert_eq!(
+            screen.departed_followed_tab_id,
+            (transition == 0).then_some(TabId::new(0))
+        );
         assert!(!screen.tabs[&TabId::new(0)]
             .get_pane_with_id(PaneId::Plugin(plugin))
             .unwrap()
@@ -383,7 +508,9 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
     assert!(!screen.watcher_clients[&watcher].should_force_render());
     assert!(receiver.try_recv().is_err());
 
-    // Cursor-only output delivers a stream and updates crop state without pane registration.
+    // Cursor-only output delivers a stream and updates crop state without pane registration: a
+    // pre- or post-VTE instruction puts its client in the frame, which is what lets a held-back
+    // tab still deliver its bell and OSC 7 (see `render_pacing`).
     output.add_post_vte_instruction_to_client(followed, "\x1b[?25l");
     output.set_cursor_coordinates(followed, 2, 2);
     screen

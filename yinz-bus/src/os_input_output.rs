@@ -43,6 +43,10 @@ pub struct RenderBacklog {
     pub in_flight_for: Option<Duration>,
 }
 
+/// Called when a client's render queue drains below the threshold it was armed at, or closes.
+/// Shared, so one notifier serves every client a render pass arms.
+pub type RenderReady = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct ResolvedSpawn {
@@ -173,13 +177,14 @@ pub trait ServerOsApi: Send + Sync {
     fn client_render_backlog(&self, _client_id: ClientId) -> Option<RenderBacklog> {
         None
     }
-    /// Atomically inspect the queue and arm a one-shot callback if it is at or above
-    /// `threshold`. Invoke the callback after draining below it or closing, outside locks.
+    /// Atomically inspect the queue and, if it is at or above `threshold`, arm `ready` to be
+    /// called once. Clone it only when arming: most clients are not behind. Invoke the callback
+    /// after draining below the threshold or closing, outside locks.
     fn client_render_backlog_and_notify(
         &self,
         client_id: ClientId,
         _threshold: usize,
-        _ready: Box<dyn FnOnce() + Send>,
+        _ready: &RenderReady,
     ) -> Option<RenderBacklog> {
         self.client_render_backlog(client_id)
     }

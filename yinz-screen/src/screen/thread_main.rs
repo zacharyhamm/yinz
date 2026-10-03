@@ -538,12 +538,10 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::RenderWriterReady => {
-                    screen.resume_deferred_render();
+                    screen.on_render_writer_ready();
                 },
                 ScreenInstruction::RenderDeadline(deadline) => {
-                    if screen.render_deadline == Some(deadline) {
-                        screen.resume_deferred_render();
-                    }
+                    screen.on_render_deadline(deadline);
                 },
                 ScreenInstruction::RenderToClients => {
                     // render_blocker.can_render() returning true means that either all pending plugins

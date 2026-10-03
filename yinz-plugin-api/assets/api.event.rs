@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="59, 60, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55")]
+    #[prost(oneof="event::Payload", tags="59, 60, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 61")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -122,6 +122,8 @@ pub mod event {
         RunCommandOutputPayload(super::RunCommandOutputPayload),
         #[prost(message, tag="55")]
         PaneOutputPayload(super::PaneOutputPayload),
+        #[prost(uint32, tag="61")]
+        ClientGridResetPayload(u32),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1269,6 +1271,7 @@ pub enum EventType {
     PaneOutput = 61,
     PaneTabsUpdate = 62,
     AgentProvidersChanged = 63,
+    ClientGridReset = 64,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1336,6 +1339,7 @@ impl EventType {
             EventType::PaneOutput => "PaneOutput",
             EventType::PaneTabsUpdate => "PaneTabsUpdate",
             EventType::AgentProvidersChanged => "AgentProvidersChanged",
+            EventType::ClientGridReset => "ClientGridReset",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1400,6 +1404,7 @@ impl EventType {
             "PaneOutput" => Some(Self::PaneOutput),
             "PaneTabsUpdate" => Some(Self::PaneTabsUpdate),
             "AgentProvidersChanged" => Some(Self::AgentProvidersChanged),
+            "ClientGridReset" => Some(Self::ClientGridReset),
             _ => None,
         }
     }

@@ -135,6 +135,131 @@ fn a_client_stalled_on_one_write_stops_holding_back_rendering() {
 }
 
 #[test]
+fn stalled_recipients_do_not_bypass_healthy_blocked_recipients() {
+    let stalled = ClientId::new(3);
+    for kind in ["clients", "watchers", "subscribers"] {
+        let mut paced = screen_with_backlog();
+        match kind {
+            "clients" => {
+                paced.screen.add_client(stalled).unwrap();
+                paced.screen.add_client(OTHER_CLIENT).unwrap();
+                paced.screen.remove_client(CLIENT).unwrap();
+            },
+            "watchers" => {
+                paced.screen.add_watcher_client(stalled).unwrap();
+                paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+                paced.screen.remove_client(CLIENT).unwrap();
+            },
+            _ => {
+                for client in [stalled, OTHER_CLIENT] {
+                    paced.screen.subscribe_to_pane_renders(
+                        client,
+                        vec![PaneId::Terminal(TerminalId::new(1))],
+                        None,
+                        false,
+                    );
+                }
+            },
+        }
+        paced_render(&mut paced.screen);
+        paced.to_server.try_iter().for_each(drop);
+        paced.client_messages.lock().unwrap().clear();
+        *paced.backlog.lock().unwrap() = vec![
+            (CLIENT, behind()),
+            (stalled, backlog(1, Some(Duration::from_secs(30)))),
+            (OTHER_CLIENT, backlog(1, Some(Duration::from_secs(10)))),
+        ];
+        paced
+            .screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), b"pending-healthy-writer".to_vec())
+            .unwrap();
+        paced.screen.render().unwrap();
+        paced_render(&mut paced.screen);
+        assert!(paced.client_messages.lock().unwrap().is_empty(), "{kind}");
+        assert!(
+            !paced.to_server.try_iter().any(|(instruction, _)| {
+                matches!(instruction, ServerInstruction::Render(Some(output))
+                if output.values().any(|bytes| bytes.contains("pending-healthy-writer")))
+            }),
+            "{kind}"
+        );
+        let deadline = paced.screen.render_deadline.unwrap();
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            remaining > Duration::from_secs(15) && remaining <= Duration::from_secs(20),
+            "{kind}: {remaining:?}"
+        );
+        assert!(paced.ready.lock().unwrap().contains_key(&stalled), "{kind}");
+        assert!(
+            paced.ready.lock().unwrap().contains_key(&OTHER_CLIENT),
+            "{kind}"
+        );
+
+        paced
+            .backlog
+            .lock()
+            .unwrap()
+            .retain(|(id, _)| *id != OTHER_CLIENT);
+        paced.ready.lock().unwrap().remove(&OTHER_CLIENT).unwrap()();
+        assert!(paced
+            .to_screen
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, ScreenInstruction::RenderWriterReady)));
+        paced_render(&mut paced.screen);
+        if kind == "subscribers" {
+            assert!(paced.client_messages.lock().unwrap()[&OTHER_CLIENT]
+                .iter()
+                .any(|message| {
+                    matches!(message, ServerToClientMsg::PaneRenderUpdate { viewport, .. }
+                    if viewport.iter().any(|line| line.contains("pending-healthy-writer")))
+                }));
+        } else {
+            assert!(paced.to_server.try_iter().any(|(instruction, _)| {
+                matches!(instruction, ServerInstruction::Render(Some(output))
+                    if output.get(&OTHER_CLIENT).is_some_and(|bytes| bytes.contains("pending-healthy-writer")))
+            }), "{kind}");
+        }
+    }
+}
+
+#[test]
+fn ready_recipients_do_not_prevent_arming_blocked_recipients() {
+    let mut paced = screen_with_backlog();
+    for id in 2..10 {
+        let client = ClientId::new(id);
+        paced.screen.add_watcher_client(client).unwrap();
+        paced.backlog.lock().unwrap().push((client, behind()));
+    }
+    assert!(paced.screen.deferred_tabs().is_empty());
+    for id in 2..10 {
+        assert!(paced.ready.lock().unwrap().contains_key(&ClientId::new(id)));
+    }
+}
+
+#[test]
+fn watcher_pacing_uses_the_departed_clients_last_tab() {
+    let mut paced = screen_with_backlog();
+    new_tab(&mut paced.screen, 2, TabId::new(1));
+    paced.screen.add_watcher_client(OTHER_CLIENT).unwrap();
+    paced.screen.remove_client(CLIENT).unwrap();
+    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
+    assert_eq!(
+        paced.screen.deferred_tabs(),
+        [TabId::new(1)].into_iter().collect()
+    );
+    paced.screen.close_tab_by_id(TabId::new(1)).unwrap();
+    assert_eq!(
+        paced.screen.deferred_tabs(),
+        [TabId::new(0)].into_iter().collect()
+    );
+    paced.screen.remove_watcher_client(OTHER_CLIENT);
+    assert!(paced.screen.deferred_tabs().is_empty());
+}
+
+#[test]
 fn one_slow_client_does_not_hold_back_the_others() {
     let mut paced = screen_with_backlog();
     paced.screen.add_client(OTHER_CLIENT).unwrap();
@@ -886,14 +1011,14 @@ fn writer_notification_resumes_deferred_frames_through_the_debouncer() {
         .to_screen
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, ScreenInstruction::RenderWriterReady)));
-    paced.screen.resume_deferred_render();
+    paced.screen.on_render_writer_ready();
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
     paced_render(&mut paced.screen);
     assert!(rendered_bytes(&paced.to_server).contains("notification-resumed"));
     assert!(paced.screen.render_deadline.is_none());
     assert!(paced.screen.deferred_render_tabs.is_empty());
     let _ = render_retries_requested(&paced.to_background_jobs);
-    paced.screen.resume_deferred_render();
+    paced.screen.on_render_writer_ready();
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
 }
 
@@ -918,10 +1043,11 @@ fn timeout_and_disconnect_release_deferred_work() {
             paced.screen.remove_client(CLIENT).unwrap();
             assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
         } else {
-            paced.screen.render_deadline = Some(std::time::Instant::now());
+            let deadline = std::time::Instant::now();
+            paced.screen.render_deadline = Some(deadline);
             *paced.backlog.lock().unwrap() =
                 vec![(CLIENT, backlog(1, Some(Duration::from_secs(30))))];
-            paced.screen.resume_deferred_render();
+            paced.screen.on_render_deadline(deadline);
             assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
         }
         paced_render(&mut paced.screen);
@@ -1032,4 +1158,241 @@ fn one_stalled_writer_does_not_release_a_different_tabs_pending_work() {
     let blocked = paced.screen.deferred_tabs();
     assert_eq!(blocked, HashSet::from([TabId::new(0)]));
     assert!(paced.screen.render_deadline.unwrap() > std::time::Instant::now());
+}
+
+/// Every client's bytes from the frames sent so far.
+fn rendered_by_client(receiver: &ServerReceiver) -> HashMap<ClientId, String> {
+    let mut by_client: HashMap<ClientId, String> = HashMap::new();
+    for (instruction, _) in receiver.try_iter() {
+        if let ServerInstruction::Render(Some(output)) = instruction {
+            for (client_id, bytes) in output {
+                by_client.entry(client_id).or_default().push_str(&bytes);
+            }
+        }
+    }
+    by_client
+}
+
+/// The last absolute cursor move in `bytes`, as `(row, column)`.
+fn last_goto(bytes: &str) -> Option<(usize, usize)> {
+    bytes
+        .match_indices("\x1b[")
+        .filter_map(|(start, _)| {
+            let rest = &bytes[start + 2..];
+            let end = rest.find(|c: char| !(c.is_ascii_digit() || c == ';'))?;
+            if !rest[end..].starts_with('H') {
+                return None;
+            }
+            let (row, column) = rest[..end].split_once(';')?;
+            Some((row.parse().ok()?, column.parse().ok()?))
+        })
+        .last()
+}
+
+fn show_toast(screen: &mut Screen) {
+    use crate::screen::Notification;
+    use yinz_types::animation::Tween;
+    use yinz_types::internal_ids::NotificationId;
+    let mut toast = Notification::new(
+        NotificationId::new(0),
+        "build finished".to_owned(),
+        None,
+        None,
+        std::time::Instant::now(),
+    );
+    toast.reveal = Tween::settled(1.0);
+    toast.y_offset = Tween::settled(0.0);
+    screen.notifications.push(toast);
+}
+
+fn open_menu(screen: &mut Screen, client_id: ClientId) {
+    use yinz_types::data::{ContextMenuContext, ContextMenuItem};
+    use yinz_types::input::actions::Action;
+    let request_id = screen.open_context_menu(
+        ContextMenuContext {
+            pane_id: PaneId::Terminal(TerminalId::new(1)),
+            click: (40, 10),
+            ..Default::default()
+        },
+        client_id,
+    );
+    screen.set_context_menu_items(
+        request_id,
+        vec![ContextMenuItem::new("Copy", vec![Action::Copy])],
+        Some(crate::PluginId::new(7)),
+        client_id,
+    );
+}
+
+/// A held-back client gets no frame at all, overlays included: toasts, menus and palettes paint
+/// only for clients a rendered tab put in the frame, so none can leave the cursor on its last
+/// goto. Once the client catches up, the overlay arrives with the pane and the cursor where it
+/// belongs.
+#[test]
+fn overlays_wait_with_a_held_back_tab_and_arrive_with_its_cursor() {
+    for overlay in ["toast", "menu", "palette"] {
+        let mut paced = screen_with_backlog();
+        paced.screen.add_client(OTHER_CLIENT).unwrap();
+        paced
+            .screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), b"\x1b[4;7H".to_vec())
+            .unwrap();
+        paced_render(&mut paced.screen);
+        let pane_cursor = last_goto(&rendered_bytes(&paced.to_server)).expect("cursor placed");
+        let _ = rendered_by_client(&paced.to_server);
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
+        // Written without moving the cursor the host was last shown.
+        paced
+            .screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(1), b"\x1b7held-back\x1b8".to_vec())
+            .unwrap();
+        match overlay {
+            "toast" => show_toast(&mut paced.screen),
+            "menu" => open_menu(&mut paced.screen, CLIENT),
+            _ => paced.screen.toggle_command_palette(CLIENT),
+        }
+        for _ in 0..2 {
+            paced_render(&mut paced.screen);
+            assert!(
+                paced.screen.deferred_render_tabs.contains(&TabId::new(0)),
+                "{overlay}"
+            );
+            assert_eq!(
+                rendered_by_client(&paced.to_server),
+                HashMap::new(),
+                "{overlay}"
+            );
+        }
+
+        paced.backlog.lock().unwrap().clear();
+        paced_render(&mut paced.screen);
+        let frame = rendered_bytes(&paced.to_server);
+        assert!(frame.contains("held-back"), "{overlay}: {frame:?}");
+        match overlay {
+            "toast" => assert!(frame.contains("build finished"), "{frame:?}"),
+            "menu" => assert!(frame.contains("Copy"), "{frame:?}"),
+            // The palette places its own cursor, in its input, after everything else.
+            _ => assert!(frame.ends_with("\x1b[2 q\x1b[?25h"), "{frame:?}"),
+        }
+        if overlay != "palette" {
+            assert_eq!(last_goto(&frame), Some(pane_cursor), "{overlay}: {frame:?}");
+        }
+    }
+}
+
+/// A held-back client that still owes its host a Kitty delete keeps it for its own next frame,
+/// rather than making every pass dirty and sending everyone else empty frames meanwhile.
+#[test]
+fn deletes_owed_by_a_held_back_client_wait_for_its_next_frame() {
+    use crate::output::HostKittyState;
+    let mut paced = screen_with_backlog();
+    paced.screen.add_client(OTHER_CLIENT).unwrap();
+    new_tab(&mut paced.screen, 2, TabId::new(1));
+    assert_ne!(
+        paced.screen.active_tab_ids[&CLIENT],
+        paced.screen.active_tab_ids[&OTHER_CLIENT]
+    );
+    paced_render(&mut paced.screen);
+    let _ = rendered_by_client(&paced.to_server);
+    paced
+        .screen
+        .kitty_host_capabilities
+        .borrow_mut()
+        .insert(CLIENT, true);
+    // An image the host still holds, and the store has since freed.
+    let mut host_state = HostKittyState::default();
+    host_state.transmitted.insert((1, None), 9);
+    paced
+        .screen
+        .client_kitty_host_state
+        .borrow_mut()
+        .insert(CLIENT, host_state);
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
+    paced_render(&mut paced.screen);
+    paced_render(&mut paced.screen);
+    assert_eq!(rendered_by_client(&paced.to_server), HashMap::new());
+
+    paced.backlog.lock().unwrap().clear();
+    paced_render(&mut paced.screen);
+    let frames = rendered_by_client(&paced.to_server);
+    assert!(
+        frames
+            .get(&CLIENT)
+            .is_some_and(|frame| frame.contains("\x1b_Ga=d,q=2,d=I,i=9")),
+        "{frames:?}"
+    );
+    assert!(!frames.contains_key(&OTHER_CLIENT), "{frames:?}");
+}
+
+/// Bells go to regular clients. A watcher's stream is the watcher pass's: a bell reaching it from
+/// the regular pass would be a frame of its own.
+#[test]
+fn bells_do_not_reach_watchers_through_the_regular_pass() {
+    let mut paced = screen_with_backlog();
+    let watcher = ClientId::new(3);
+    paced.screen.add_watcher_client(watcher).unwrap();
+    paced.screen.add_client(watcher).unwrap();
+    paced_render(&mut paced.screen);
+    let _ = rendered_by_client(&paced.to_server);
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"ring\x07".to_vec())
+        .unwrap();
+    paced_render(&mut paced.screen);
+    let frames = rendered_by_client(&paced.to_server);
+    assert!(
+        frames
+            .get(&CLIENT)
+            .is_some_and(|frame| frame.contains('\x07')),
+        "{frames:?}"
+    );
+    assert!(
+        !frames
+            .get(&watcher)
+            .is_some_and(|frame| frame.contains('\x07')),
+        "{frames:?}"
+    );
+}
+
+/// What `thread_main` does with `RenderWriterReady` and `RenderDeadline`: resume held-back work,
+/// and only for the deadline the screen last set.
+#[test]
+fn render_instructions_resume_deferred_work_only_for_the_current_deadline() {
+    let mut paced = screen_with_backlog();
+    paced_render(&mut paced.screen);
+    let _ = rendered_bytes(&paced.to_server);
+    let _ = render_retries_requested(&paced.to_background_jobs);
+    // Nothing is held back, so neither asks for a render.
+    paced.screen.on_render_writer_ready();
+    paced.screen.on_render_deadline(std::time::Instant::now());
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
+
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
+    paced
+        .screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(1), b"held".to_vec())
+        .unwrap();
+    paced_render(&mut paced.screen);
+    let deadline = paced
+        .screen
+        .render_deadline
+        .expect("a held-back frame sets a deadline");
+    let _ = render_retries_requested(&paced.to_background_jobs);
+    // A deadline since replaced says nothing.
+    paced
+        .screen
+        .on_render_deadline(deadline - Duration::from_millis(1));
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
+    paced.screen.on_render_deadline(deadline);
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
+    paced.screen.on_render_writer_ready();
+    assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
 }

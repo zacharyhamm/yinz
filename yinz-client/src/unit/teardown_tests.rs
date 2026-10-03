@@ -30,7 +30,8 @@ fn startup_and_ordinary_teardown_do_not_emit_dcs() {
         ClientTeardown::new(24, false),
         ClientTeardown::at_startup(true),
     ] {
-        let sequences = teardown.restore_sequences();
+        // No frame is open: what the process-wide state says depends on which tests ran before.
+        let sequences = teardown.restore_sequences_with_sync(0);
         assert!(
             sequences.find("\x1b[?2026l").unwrap() < sequences.find(EXIT_ALTERNATE_SCREEN).unwrap()
         );
@@ -118,7 +119,9 @@ fn the_focus_reporting_sequences_are_the_decset_1004_pair() {
 
 mod claiming_the_terminal {
     use crate::os_input_output::{StdioAccess, TtyControl, DISABLE_MOUSE_SUPPORT};
-    use crate::terminal_escapes::{claim_terminal, ClientTeardown, QUERY_HOST_THEME};
+    use crate::terminal_escapes::{
+        claim_terminal, ClientTeardown, END_SYNCHRONIZED_OUTPUT, QUERY_HOST_THEME,
+    };
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
     use yinz_types::pane_size::Size;
@@ -201,14 +204,23 @@ mod claiming_the_terminal {
         let terminal = RecordingTerminal::default();
         ClientTeardown::new(24, true).restore(&terminal, "bye");
         let events = terminal.events();
-        assert_eq!(
-            &events[..3],
-            &[
-                Event::Wrote(DISABLE_MOUSE_SUPPORT.to_owned()),
-                Event::Flushed,
-                Event::RawModeOff,
-            ],
+        // The open frame is closed first, so the host is not holding the mouse reset back.
+        let Event::Wrote(released) = &events[0] else {
+            panic!("expected a write first, got: {:?}", *events);
+        };
+        assert!(
+            released.ends_with(&format!("{END_SYNCHRONIZED_OUTPUT}{DISABLE_MOUSE_SUPPORT}")),
+            "got: {:?}",
+            *events
         );
+        assert_eq!(&events[1..3], &[Event::Flushed, Event::RawModeOff]);
+        let mouse_resets = events
+            .iter()
+            .filter(|event| {
+                matches!(event, Event::Wrote(written) if written.contains(DISABLE_MOUSE_SUPPORT))
+            })
+            .count();
+        assert_eq!(mouse_resets, 1, "got: {:?}", *events);
     }
 
     #[test]

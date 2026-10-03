@@ -1081,12 +1081,10 @@ mod coalescing_send_queue {
                 });
                 barrier.wait();
                 let ready = ready.clone();
-                queue.render_backlog_and_notify(
-                    1,
-                    Some(Box::new(move || {
-                        ready.store(true, Ordering::SeqCst);
-                    })),
-                )
+                let notify: RenderReady = Arc::new(move || {
+                    ready.store(true, Ordering::SeqCst);
+                });
+                queue.render_backlog_and_notify(1, Some(&notify))
             });
             assert!(backlog.queued_renders == 0 || ready.load(Ordering::SeqCst));
         }
@@ -1100,10 +1098,10 @@ mod coalescing_send_queue {
                 let queue = Arc::new(CoalescingSendQueue::new());
                 queue.push(render("frame"));
                 let calls = Arc::new(AtomicUsize::new(0));
-                let callback = {
+                let callback: RenderReady = {
                     let queue = queue.clone();
                     let calls = calls.clone();
-                    Box::new(move || {
+                    Arc::new(move || {
                         // Reentering proves the callback does not own the queue lock.
                         assert_eq!(queue.render_backlog().queued_renders, 0);
                         calls.fetch_add(1, Ordering::SeqCst);
@@ -1119,7 +1117,7 @@ mod coalescing_send_queue {
                 if !register_first {
                     drain();
                 }
-                let backlog = queue.render_backlog_and_notify(1, Some(callback));
+                let backlog = queue.render_backlog_and_notify(1, Some(&callback));
                 assert_eq!(backlog.queued_renders, usize::from(register_first));
                 if register_first {
                     drain();
@@ -1128,6 +1126,55 @@ mod coalescing_send_queue {
                 queue.finish_send();
                 assert_eq!(calls.load(Ordering::SeqCst), usize::from(register_first));
             }
+        }
+    }
+
+    /// A render-ready callback consults the sender registry again (the screen's next pass
+    /// does), so the paths that close a queue must not run it while holding the registry.
+    #[test]
+    fn render_ready_callbacks_run_outside_the_sender_registry() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        for flush in [false, true] {
+            let mut server = make_server();
+            let client = ClientId::new(1);
+            let queue = Arc::new(CoalescingSendQueue::new());
+            queue.push(render("frame"));
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            server.client_senders.lock().unwrap().insert(
+                client,
+                ClientSender {
+                    queue: queue.clone(),
+                    stream_fd: socket.into(),
+                },
+            );
+            let (called, was_called) = mpsc::channel();
+            let ready: RenderReady = {
+                let server = server.clone();
+                let called = std::sync::Mutex::new(called);
+                Arc::new(move || {
+                    let _ = server.client_render_backlog(client);
+                    let _ = called.lock().unwrap().send(());
+                })
+            };
+            assert_eq!(
+                server
+                    .client_render_backlog_and_notify(client, 1, &ready)
+                    .map(|backlog| backlog.queued_renders),
+                Some(1)
+            );
+            // Run where a deadlock cannot hang the test: the callback reports from that thread.
+            std::thread::spawn(move || {
+                if flush {
+                    server.flush_client_writers(Duration::ZERO);
+                } else {
+                    server.remove_client(client).unwrap();
+                }
+            });
+            was_called
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("callback deadlocked on the registry, flush={flush}"));
         }
     }
 
@@ -1142,7 +1189,6 @@ mod coalescing_send_queue {
         server.client_senders.lock().unwrap().insert(
             client,
             ClientSender {
-                client_id: client,
                 queue: queue.clone(),
                 stream_fd: socket.into(),
             },
@@ -1868,11 +1914,14 @@ mod client_writer_flush {
         .unwrap();
 
         // What every break in the server main loop does on its way out.
-        sender
-            .send_or_buffer(ServerToClientMsg::Exit {
+        crate::os_input_output::send_or_buffer(
+            crate::ClientId::new(1),
+            &sender.queue,
+            ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Normal,
-            })
-            .expect("queueing the exit failed");
+            },
+        )
+        .expect("queueing the exit failed");
         sender.close();
 
         assert!(
@@ -1926,11 +1975,14 @@ mod client_writer_flush {
         .unwrap();
         let queue = sender.queue.clone();
         drop(client_end);
-        sender
-            .send_or_buffer(ServerToClientMsg::Render {
+        crate::os_input_output::send_or_buffer(
+            crate::ClientId::new(1),
+            &sender.queue,
+            ServerToClientMsg::Render {
                 content: "x".to_owned(),
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         sender.close();
         assert!(live_writers.wait_until_drained(Duration::from_secs(5)));
         assert!(queue.state.lock().unwrap().in_flight.is_none());
@@ -1984,11 +2036,14 @@ mod client_writer_flush {
             server_fd,
         )
         .unwrap();
-        sender
-            .send_or_buffer(ServerToClientMsg::Exit {
+        crate::os_input_output::send_or_buffer(
+            crate::ClientId::new(1),
+            &sender.queue,
+            ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Normal,
-            })
-            .expect("queueing the exit failed");
+            },
+        )
+        .expect("queueing the exit failed");
         sender.close();
 
         assert!(

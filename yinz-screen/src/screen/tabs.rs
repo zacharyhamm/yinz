@@ -1062,6 +1062,12 @@ impl Screen {
             );
         }
         let mut tab_to_close = self.tabs.remove(&tab_id).with_context(err_context)?;
+        if self.departed_followed_tab_id == Some(tab_id) {
+            self.departed_followed_tab_id = self.tabs.keys().next().copied();
+            for watcher in self.watcher_clients.values_mut() {
+                watcher.set_force_render();
+            }
+        }
         self.deferred_tab_closes.remove(&tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
         if preserve_guards {

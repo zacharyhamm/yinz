@@ -688,13 +688,17 @@ fn sdk_decoded_event_types_narrow_by_type_and_keep_raw_values() {
             serde_json::to_value(Event::Mouse(Mouse::LeftClick(3, 4))).unwrap(),
         ),
         ("input", serde_json::to_value(Event::InputReceived).unwrap()),
+        (
+            "reset",
+            serde_json::to_value(Event::ClientGridReset(ClientId::new(42))).unwrap(),
+        ),
     ];
     let mut source = String::from("import yinz, {type DecodedEvent, type DecodedEventOf, type HookPoint, type BareKey, type Event} from 'yinz:plugin';\n");
     for (name, value) in &fixtures {
         source.push_str(&format!("const {name} = {value} satisfies Event;\n"));
     }
     source.push_str(r#"
-      const events: Event[] = [result, exited, key, mouse, input];
+      const events: Event[] = [result, exited, key, mouse, input, reset];
       for (const raw of events) {
         const e: DecodedEvent = yinz.event(raw);
         const t: string = e.type; const r: Event = e.raw;
@@ -702,6 +706,7 @@ fn sdk_decoded_event_types_narrow_by_type_and_keep_raw_values() {
         if (e.type === 'CommandPaneExited') { const id: number = e.paneId; const c: number | null = e.exitCode; }
         if (e.type === 'Key') { const k: string = e.key; const b: BareKey = e.value.bare_key; }
         if (e.type === 'Mouse') { if (e.kind === 'LeftClick') { const line: number | bigint = e.line; } }
+        if (e.type === 'ClientGridReset') { const clientId: number = e.value; }
         if (e.type === 'InputReceived') { const v: undefined = e.value; }
         if (e.type === 'Hook') { const p: HookPoint = e.value.point; }
         if (e.type === 'Timer') { const seconds: number = e.value; }
