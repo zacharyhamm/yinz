@@ -489,7 +489,7 @@ impl Screen {
         if !item.actions.is_empty() {
             // Not run here. The focus restoration and the actions have to stay on the same side of
             // every instruction already queued behind the click that activated this item, and the
-            // actions can only be dispatched from another thread (see `run_context_menu_actions`).
+            // actions can only be dispatched from another thread (see `run_overlay_actions`).
             // Enqueueing both as one instruction is what keeps them together; the screen channel is
             // unbounded, so this self-send cannot block the thread it is sent from.
             self.bus
@@ -539,7 +539,7 @@ impl Screen {
     /// [`Screen::activate_context_menu_item`] enqueued - so everything the queue was already
     /// holding has been processed, and whatever focus *those* instructions wanted is about to be
     /// overridden by the pane the user actually right-clicked. The override itself belongs to
-    /// [`Screen::run_context_menu_actions`], which puts it next to the action it is for.
+    /// [`Screen::run_overlay_actions`], which puts it next to the action it is for.
     pub(crate) fn dispatch_context_menu_actions(
         &mut self,
         pane_id: PaneId,
@@ -555,7 +555,7 @@ impl Screen {
             log::debug!("context menu pane {pane_id:?} is gone, dropping its item's actions");
             return;
         }
-        self.run_context_menu_actions(pane_id, actions, client_id);
+        self.run_overlay_actions(pane_id, actions, client_id, None);
     }
 
     /// Route an item's actions, in order, off the screen thread - each one against `pane_id`.
@@ -576,7 +576,13 @@ impl Screen {
     /// starting up free to land between the two. What remains is another thread's send falling
     /// between these two sends, which is a focus change genuinely concurrent with the item rather
     /// than one that was already queued.
-    fn run_context_menu_actions(&self, pane_id: PaneId, actions: Vec<Action>, client_id: ClientId) {
+    pub(super) fn run_overlay_actions(
+        &self,
+        pane_id: PaneId,
+        actions: Vec<Action>,
+        client_id: ClientId,
+        palette_tab: Option<yinz_types::internal_ids::TabId>,
+    ) {
         let senders = self.bus.senders.clone();
         let default_mode = self.default_mode_info.mode;
         let default_shell = self.default_shell_action.clone();
@@ -599,11 +605,13 @@ impl Screen {
                     let name = action.to_string();
                     // A no-op when the pane is already focused, which is the ordinary case - see
                     // the `already_focused` arm of `ScreenInstruction::FocusPaneWithId`.
-                    senders
-                        .send_to_screen(ScreenInstruction::FocusPaneWithId(
-                            pane_id, false, false, client_id, None,
-                        ))
-                        .non_fatal();
+                    if palette_tab.is_none() {
+                        senders
+                            .send_to_screen(ScreenInstruction::FocusPaneWithId(
+                                pane_id, false, false, client_id, None,
+                            ))
+                            .non_fatal();
+                    }
                     // An item's action is something the user performed, so the plugins holding
                     // `InterceptInput` and watching `Event::UserAction` have to see it - the key
                     // and CLI paths in `route.rs` both send this before routing, and a menu is
@@ -616,12 +624,49 @@ impl Screen {
                             cli_client_id: None,
                         })
                         .non_fatal();
+                    if let Some(tab_id) = palette_tab {
+                        let direction = match action {
+                            Action::BreakPane => Some(None),
+                            Action::BreakPaneLeft => {
+                                Some(Some(yinz_types::geometry::Direction::Left))
+                            },
+                            Action::BreakPaneRight => {
+                                Some(Some(yinz_types::geometry::Direction::Right))
+                            },
+                            _ => None,
+                        };
+                        if let Some(direction) = direction {
+                            senders
+                                .send_to_plugin(PluginInstruction::Update(vec![(
+                                    None,
+                                    Some(client_id),
+                                    Event::InputReceived,
+                                )]))
+                                .non_fatal();
+                            senders
+                                .send_to_screen(ScreenInstruction::MoveCommandPalettePane {
+                                    pane_id,
+                                    tab_id,
+                                    direction,
+                                    client_id,
+                                })
+                                .non_fatal();
+                            continue;
+                        }
+                    }
                     // Named rather than left as `None`: `new_pane_routing` consults it for
                     // `no_focus`/`near_current_pane` placements, which without it would be placed
                     // relative to whatever the client is focused on rather than to the pane the
                     // menu was opened over. Everything else routes by client, which the
                     // `FocusPaneWithId` above has just pointed at the same pane.
-                    if let Err(e) = route_action(
+                    let focus_created_pane = palette_tab.is_some()
+                        && matches!(
+                            action,
+                            Action::NewTiledPane { .. } | Action::NewFloatingPane { .. }
+                        );
+                    let focus_toggled_pane = palette_tab.is_some()
+                        && matches!(action, Action::TogglePaneEmbedOrFloatingByPaneId { .. });
+                    let result = route_action(
                         action,
                         client_id,
                         None,
@@ -633,11 +678,51 @@ impl Screen {
                         None,
                         leaves_clipboard_message,
                         true, // is_client_input
-                    ) {
-                        log::error!("context menu action '{name}' failed: {e:?}");
-                        // Stop at the first failure: the actions of one item are a sequence, and
-                        // running the rest of a sequence whose start did not happen is worse than
-                        // running none of it.
+                    );
+                    let error = match result {
+                        Err(error) => Some(format!("{error:#}")),
+                        Ok((_, Some(completion))) => {
+                            // ID-relative actions leave focus alone. The palette belongs to a
+                            // client, so reveal and focus its created or toggled pane afterward.
+                            let pane_to_focus = if focus_toggled_pane {
+                                Some(pane_id)
+                            } else if focus_created_pane {
+                                completion.affected_pane_id
+                            } else {
+                                None
+                            };
+                            if completion.error_message.is_none() {
+                                if let Some(pane_id) = pane_to_focus {
+                                    route_action(
+                                        Action::FocusPaneByPaneId { pane_id },
+                                        client_id,
+                                        None,
+                                        Some(pane_id),
+                                        senders.clone(),
+                                        default_shell.clone(),
+                                        None,
+                                        default_mode,
+                                        None,
+                                        false,
+                                        true,
+                                    )
+                                    .non_fatal();
+                                }
+                            }
+                            completion.error_message
+                        },
+                        _ => None,
+                    };
+                    if let Some(error) = error {
+                        log::error!("overlay action '{name}' failed: {error}");
+                        senders
+                            .send_to_screen(ScreenInstruction::Notify(
+                                format!("{name}: {error}"),
+                                None,
+                                None,
+                                None,
+                            ))
+                            .non_fatal();
                         break;
                     }
                 }
@@ -645,7 +730,16 @@ impl Screen {
         // A thread that will not spawn means the item silently did nothing - worth a log line, not
         // worth taking the session down for.
         if let Err(e) = spawned {
-            log::error!("failed to spawn context menu action thread: {e}");
+            log::error!("failed to spawn overlay action thread: {e}");
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::Notify(
+                    format!("Could not start action: {e}"),
+                    None,
+                    None,
+                    None,
+                ))
+                .non_fatal();
         }
     }
 }

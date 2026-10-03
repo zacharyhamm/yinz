@@ -539,9 +539,13 @@ impl Screen {
     }
     pub fn update_session_infos(
         &mut self,
-        new_session_infos: BTreeMap<SessionName, SessionInfo>,
+        mut new_session_infos: BTreeMap<SessionName, SessionInfo>,
         resurrectable_sessions: BTreeMap<SessionName, Duration>,
     ) -> Result<()> {
+        // Disk scans can lag a screen update, or omit this session before its first save.
+        if let Some(current) = self.peer_sessions_cache.get(&self.session_name) {
+            new_session_infos.insert(self.session_name.clone(), current.clone());
+        }
         self.peer_sessions_cache = new_session_infos;
         self.resurrectable_sessions_cache = resurrectable_sessions;
         self.bus
@@ -558,6 +562,10 @@ impl Screen {
                 ),
             )]))
             .context("failed to update session info")?;
+        if !self.command_palettes.is_empty() {
+            self.render()
+                .context("failed to refresh palette sessions")?;
+        }
         Ok(())
     }
 

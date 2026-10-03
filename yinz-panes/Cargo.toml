@@ -18,6 +18,7 @@ yinz-terminal = { path = "../yinz-terminal", version = "0.1.0" }
 ansi_term = { workspace = true }
 kasuari = { version = "0.4.12", default-features = false }
 log = { workspace = true }
+nucleo-matcher = "0.3.1"
 unicode-width = { workspace = true }
 vte = { workspace = true }
 

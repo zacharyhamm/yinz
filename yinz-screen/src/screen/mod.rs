@@ -2202,7 +2202,7 @@ impl Screen {
         // No force-render: the client is going, and the cells its menu occupied belong to a screen
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);
-        self.command_palettes.remove(&client_id);
+        self.close_command_palette(client_id);
         self.command_palette_mouse_captures.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
