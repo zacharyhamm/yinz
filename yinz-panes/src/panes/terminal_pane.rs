@@ -1210,7 +1210,7 @@ impl Pane for TerminalPane {
         // would leave the resume hint up over a dead pane forever.
         self.suspended = false;
         self.is_held = Some((exit_status, is_first_run, run_command));
-        self.acknowledge_waiting();
+        self.clear_waiting_pulse();
         if let Some(agent) = self.agent.as_mut() {
             agent.state = AgentState::Exited;
             agent.detail = None;
@@ -1302,12 +1302,6 @@ impl Pane for TerminalPane {
     fn waiting_pulse_started_at(&self) -> Option<Instant> {
         self.waiting_pulse_started_at
     }
-    fn acknowledge_waiting(&mut self) {
-        self.waiting_pulse_started_at = None;
-        if self.waiting_pulse.take().is_some() {
-            self.set_should_render(true);
-        }
-    }
     fn sample_waiting_pulse(&mut self, now: Instant, enabled: bool, foreground: PaletteColor) {
         let pulse = self
             .waiting_pulse_started_at
@@ -1318,7 +1312,7 @@ impl Pane for TerminalPane {
                     as f32
                     / 900_000_000.0;
                 (
-                    0.4 * Easing::EaseInOut.apply(1.0 - (phase - 1.0).abs()),
+                    0.7 * Easing::EaseInOut.apply(1.0 - (phase - 1.0).abs()),
                     foreground,
                 )
             });
@@ -1412,7 +1406,7 @@ impl Pane for TerminalPane {
             .as_ref()
             .is_some_and(AgentInfo::is_waiting_on_a_person);
         if !waiting {
-            self.acknowledge_waiting();
+            self.clear_waiting_pulse();
         } else if !self
             .agent
             .as_ref()
@@ -1554,7 +1548,7 @@ impl Pane for TerminalPane {
             self.suspended = false;
             self.agent_input_revision = 0;
             self.agent_input_at = None;
-            self.acknowledge_waiting();
+            self.clear_waiting_pulse();
             if let Some(agent) = self.agent.as_mut() {
                 agent.state = AgentState::Busy;
                 if fresh_agent {
@@ -1804,6 +1798,13 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
 }
 
 impl TerminalPane {
+    fn clear_waiting_pulse(&mut self) {
+        self.waiting_pulse_started_at = None;
+        if self.waiting_pulse.take().is_some() {
+            self.set_should_render(true);
+        }
+    }
+
     fn restart_command_args(&self) -> Result<Option<Vec<String>>, String> {
         match self.is_held.as_ref() {
             Some((_, false, command)) if self.was_an_agent => {

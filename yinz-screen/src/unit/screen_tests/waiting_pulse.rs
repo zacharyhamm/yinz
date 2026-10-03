@@ -132,7 +132,7 @@ fn waiting_pulse_repaints_idle_frames_boundaries_and_both_stack_headers() {
         assert!(
             grid.as_character_lines().iter().flatten().any(|cell| {
                 matches!(cell.character, '─' | '│' | '┌' | '└' | '┐' | '┘')
-                    && cell.styles.foreground == Some(AnsiCode::RgbCode((162, 192, 222)))
+                    && cell.styles.foreground == Some(AnsiCode::RgbCode((209, 224, 239)))
             }),
             "floating={floating}, stacked={stacked}, list={list}, style={style:?}"
         );
@@ -276,10 +276,10 @@ fn waiting_pulse_overrides_stop_the_clock_and_clearing_resumes_the_episode() {
             AnsiCode::from(yinz_types::animation::blend(
                 screen.style.colors.frame_highlight.emphasis_0,
                 PaletteColor::Rgb((255, 255, 255)),
-                0.4,
+                0.7,
             ))
         } else {
-            AnsiCode::RgbCode((162, 192, 222))
+            AnsiCode::RgbCode((209, 224, 239))
         };
         let col = (x..x + pane.cols())
             .find(|col| peak[y][*col].styles.foreground == Some(pulse_color))
@@ -357,7 +357,7 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
             CLIENT,
             AnsiCode::from(screen.style.colors.frame_highlight.emphasis_0),
         ),
-        (other, AnsiCode::RgbCode((162, 192, 222))),
+        (other, AnsiCode::RgbCode((209, 224, 239))),
     ] {
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         render_frame_into(&mut screen, &server_rx, client, &mut grid);
@@ -388,7 +388,7 @@ fn waiting_pulse_overrides_respect_other_viewers_and_watchers() {
     assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
     assert_eq!(
         grid.as_character_lines()[y][x].styles.foreground,
-        Some(AnsiCode::RgbCode((162, 192, 222)))
+        Some(AnsiCode::RgbCode((209, 224, 239)))
     );
     assert_eq!(waiting_since(&screen), Some(start));
     assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StartAnimationClock(PERIOD)));
@@ -448,7 +448,7 @@ fn waiting_pulse_grouped_boundaries_and_list_borders_keep_precedence_over_overri
         let expected = AnsiCode::from(yinz_types::animation::blend(
             screen.style.colors.frame_highlight.emphasis_0,
             PaletteColor::Rgb((255, 255, 255)),
-            0.4,
+            0.7,
         ));
         assert!(grid
             .as_character_lines()
@@ -512,7 +512,7 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
         screen.tabs.get_mut(&TAB).unwrap().set_force_render();
         for (elapsed, expected) in [
             (0, (100, 150, 200)),
-            (900, (162, 192, 222)),
+            (900, (209, 224, 239)),
             (1800, (100, 150, 200)),
         ] {
             screen.pinned_now = Some(start + Duration::from_millis(elapsed));
@@ -622,11 +622,11 @@ fn waiting_pulse_wins_shared_idle_boundary_in_both_pane_id_orders() {
 }
 
 #[test]
-fn waiting_pulse_acknowledges_focus_before_debounce_and_for_any_client() {
+fn waiting_pulse_survives_focus_for_any_client_until_waiting_clears() {
     let (mut screen, jobs) = pair(false, false, false, PaneFrameStyle::Full);
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     screen.render_to_clients().unwrap();
-    assert!(waiting_since(&screen).is_some());
+    let start = waiting_since(&screen).unwrap();
     for pane in [WAITING, FOCUSED] {
         screen
             .tabs
@@ -638,13 +638,13 @@ fn waiting_pulse_acknowledges_focus_before_debounce_and_for_any_client() {
     }
     assert_eq!(
         waiting_since(&screen),
-        None,
-        "focus and leave before a frame still acknowledges"
+        Some(start),
+        "focus and leave before a frame preserves the waiting episode"
     );
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
     screen.render_to_clients().unwrap();
-    assert_eq!(screen.animation_clock_period(Instant::now()), None);
-    assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock));
+    assert_eq!(waiting_since(&screen), Some(start));
+    assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
 
     let other = ClientId::new(2);
     screen.add_client(other).unwrap();
@@ -654,27 +654,35 @@ fn waiting_pulse_acknowledges_focus_before_debounce_and_for_any_client() {
         .unwrap()
         .focus_pane_with_id(WAITING, false, false, other)
         .unwrap();
-    // A new wait while already selected is acknowledged immediately, session-wide.
+    // A new wait also pulses while already selected by another client.
     apply_pane_agent_report(&mut screen, WAITING, None).unwrap();
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
+    let start = waiting_since(&screen).unwrap();
+    screen.pinned_now = Some(start + Duration::from_millis(900));
+    screen.render_to_clients().unwrap();
+    assert_eq!(waiting_since(&screen), Some(start));
+    let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+    assert_eq!(pane.waiting_pulse().unwrap().0, 0.7);
+    assert!(pane.stack_list_entry_label().contains('🔔'));
+    assert_eq!(screen.animation_clock_period(start), Some(PERIOD));
+    drain_background_jobs(&jobs);
+
+    apply_pane_agent_report(
+        &mut screen,
+        WAITING,
+        Some(AgentInfo {
+            state: AgentState::Busy,
+            ..waiting()
+        }),
+    )
+    .unwrap();
+    screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), None);
-    screen
-        .tabs
-        .get_mut(&TAB)
-        .unwrap()
-        .focus_pane_with_id(FOCUSED, false, false, other)
-        .unwrap();
-    apply_pane_agent_report(&mut screen, WAITING, None).unwrap();
-    apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
-    assert!(waiting_since(&screen).is_some(), "the next episode re-arms");
-    screen
-        .tabs
-        .get_mut(&TAB)
-        .unwrap()
-        .focus_pane_with_id(WAITING, false, false, other)
-        .unwrap();
-    screen.render().unwrap();
-    assert_eq!(waiting_since(&screen), None);
+    let pane = screen.tabs[&TAB].get_pane_with_id(WAITING).unwrap();
+    assert_eq!(pane.waiting_pulse(), None);
+    assert!(!pane.stack_list_entry_label().contains('🔔'));
+    assert_eq!(screen.animation_clock_period(start), None);
+    assert!(drain_background_jobs(&jobs).contains(&BackgroundJob::StopAnimationClock));
 }
 
 #[test]
@@ -978,7 +986,7 @@ fn waiting_pulse_counts_only_the_hidden_stack_members_header() {
 }
 
 #[test]
-fn waiting_pulse_acknowledgment_uses_keyboard_focus_and_ignores_watchers() {
+fn waiting_pulse_survives_floating_focus_and_watchers() {
     let (mut screen, _) = pair(false, false, false, PaneFrameStyle::Full);
     let tab = screen.tabs.get_mut(&TAB).unwrap();
     tab.focus_pane_with_id(WAITING, false, false, CLIENT)
@@ -995,8 +1003,7 @@ fn waiting_pulse_acknowledgment_uses_keyboard_focus_and_ignores_watchers() {
     )
     .unwrap();
     apply_pane_agent_report(&mut screen, WAITING, Some(waiting())).unwrap();
-    let start = waiting_since(&screen)
-        .expect("the tiled focus under a floating pane is not keyboard focus");
+    let start = waiting_since(&screen).unwrap();
     screen.render_to_clients().unwrap();
     assert_eq!(waiting_since(&screen), Some(start));
     screen
