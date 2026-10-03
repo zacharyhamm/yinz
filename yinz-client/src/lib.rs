@@ -734,6 +734,10 @@ pub fn start_client(
 
     let _ = send_input_instructions.send(InputInstruction::Exit);
 
+    if outcome.exit_status != 0 {
+        std::process::exit(outcome.exit_status);
+    }
+
     reconnect_to_session
 }
 

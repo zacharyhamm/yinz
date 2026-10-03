@@ -218,9 +218,9 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             shutdown.begin();
             drop(receiver);
             router.join().unwrap();
-            finished.send(outcome.exit_msg).unwrap();
+            finished.send(outcome).unwrap();
         });
-        let exit_msg = completion
+        let outcome = completion
             .recv_timeout(Duration::from_secs(30))
             .expect("the terminal loop and router must both finish");
         worker.join().unwrap();
@@ -229,12 +229,15 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             .iter()
             .any(|message| matches!(message, ClientToServerMsg::ClientExited)));
         if broken_terminal {
+            assert_eq!(outcome.exit_status, 1);
             assert!(
-                exit_msg.contains("Could not write to the terminal"),
-                "{exit_msg}"
+                outcome.exit_msg.contains("Could not write to the terminal"),
+                "{}",
+                outcome.exit_msg
             );
             assert!(observed.stdout_bytes().is_empty());
         } else {
+            assert_eq!(outcome.exit_status, 0);
             assert_eq!(observed.stdout_bytes(), b"firstsecond");
         }
     }

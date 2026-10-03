@@ -218,6 +218,88 @@ impl TestBridge {
 }
 
 #[test]
+fn pane_render_history_survives_deferred_clients() {
+    use yinz_types::{data::PaneId, internal_ids::TerminalId};
+
+    let mut test = TestBridge::new();
+    let first = ClientId::new(1);
+    let second = ClientId::new(2);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let closed_pane = PaneId::Terminal(TerminalId::new(2));
+    let contents = PaneContents {
+        viewport: vec!["unchanged".into()],
+        ..Default::default()
+    };
+    let changed = PaneContents {
+        viewport: vec!["changed".into()],
+        ..Default::default()
+    };
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    let mut report = PaneRenderReport::default();
+    report.add_pane_contents(&[first, second], pane, contents.clone());
+    report.add_pane_contents(&[first], closed_pane, contents);
+    test.bridge
+        .handle_pane_render_report(report.clone(), shutdown.clone())
+        .unwrap();
+
+    // All clients can be deferred, or just one while another continues rendering.
+    test.bridge
+        .handle_pane_render_report(PaneRenderReport::default(), shutdown.clone())
+        .unwrap();
+    let mut partial = PaneRenderReport::default();
+    partial.add_pane_contents(&[second], pane, changed.clone());
+    test.bridge
+        .handle_pane_render_report(partial, shutdown.clone())
+        .unwrap();
+    report.add_pane_contents(&[second], pane, changed.clone());
+    assert!(test
+        .bridge
+        .get_changed_panes_per_client(
+            &report.all_pane_contents,
+            test.bridge
+                .previous_pane_render_report
+                .as_ref()
+                .map(|r| &r.all_pane_contents),
+        )
+        .is_empty());
+
+    // Resuming replaces this client's pane map, so closed panes disappear from history.
+    report
+        .all_pane_contents
+        .get_mut(&first)
+        .unwrap()
+        .remove(&closed_pane);
+    test.bridge
+        .handle_pane_render_report(report.clone(), shutdown)
+        .unwrap();
+    assert_eq!(
+        test.bridge.previous_pane_render_report.as_ref(),
+        Some(&report)
+    );
+
+    report.add_pane_contents(&[first], pane, changed.clone());
+    let expected = HashMap::from([(first, HashMap::from([(pane, changed)]))]);
+    assert_eq!(
+        test.bridge.get_changed_panes_per_client(
+            &report.all_pane_contents,
+            test.bridge
+                .previous_pane_render_report
+                .as_ref()
+                .map(|r| &r.all_pane_contents),
+        ),
+        expected,
+    );
+    test.bridge.remove_client(first);
+    assert!(!test
+        .bridge
+        .previous_pane_render_report
+        .as_ref()
+        .unwrap()
+        .all_pane_contents
+        .contains_key(&first));
+}
+
+#[test]
 fn cancelled_deno_load_never_leaves_a_cached_pipe_recipient() {
     for pipe_before_disconnect in [false, true] {
         let mut test = TestBridge::new();

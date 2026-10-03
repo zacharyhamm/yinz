@@ -29,6 +29,8 @@ use {
 pub(crate) struct LoopOutcome {
     /// The message to show as the client hands the terminal back.
     pub exit_msg: String,
+    /// The process status to use after orderly cleanup.
+    pub exit_status: i32,
     /// Set when the client should reconnect to a different session rather
     /// than exiting.
     pub reconnect_to_session: Option<SessionConnection>,
@@ -42,8 +44,8 @@ pub(crate) struct ClientLoop<'a> {
     /// Re-announces this client to its Yinz host, and knows whether one has
     /// ever answered — which is how the client learns it is nested at all.
     pub nested_reannounce: &'a NestedReannounce,
-    /// How to hand the terminal back when an instruction turns out to be
-    /// fatal. Errors do not return through `LoopOutcome` — they exit.
+    /// How to hand the terminal back for fatal instructions that exit immediately.
+    /// Terminal write failures return through `LoopOutcome` for orderly cleanup.
     pub teardown: ClientTeardown,
     /// The host's synchronised-output support, which the server can change
     /// at runtime once it learns what the terminal advertised.
@@ -63,6 +65,7 @@ impl ClientLoop<'_> {
     ) -> LoopOutcome {
         let mut outcome = LoopOutcome {
             exit_msg: String::new(),
+            exit_status: 0,
             reconnect_to_session: None,
         };
         let started_at = Instant::now();
@@ -170,6 +173,7 @@ impl ClientLoop<'_> {
                         .send_to_server(ClientToServerMsg::ClientExited);
                     outcome.exit_msg =
                         format!("Could not write to the terminal: {}", e.root_cause());
+                    outcome.exit_status = 1;
                     return true;
                 }
                 let elapsed = started.elapsed();

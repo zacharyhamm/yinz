@@ -2805,7 +2805,12 @@ impl WasmBridge {
             self.update_plugins(updates, shutdown_sender.clone())?;
         }
 
-        self.previous_pane_render_report = Some(pane_render_report);
+        // Deferred clients are absent from this report. Keep their comparison history until
+        // they render again or disconnect, replacing the full pane map for clients that rendered.
+        self.previous_pane_render_report
+            .get_or_insert_with(PaneRenderReport::default)
+            .all_pane_contents
+            .extend(pane_render_report.all_pane_contents);
         Ok(())
     }
 
