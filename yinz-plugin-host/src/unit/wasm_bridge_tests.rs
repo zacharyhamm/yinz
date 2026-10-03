@@ -3980,3 +3980,120 @@ fn a_resize_skips_an_instance_whose_lock_is_poisoned() {
     assert!(frames(&mut test, plugin).is_empty());
     test.bridge.unload_plugin(plugin).unwrap();
 }
+
+#[test]
+fn client_grid_reset_is_targeted_subscribed_ungated_and_keeps_identity_on_replay() {
+    let mut test = TestBridge::new();
+    let owner = ClientId::new(1);
+    let other = ClientId::new(2);
+    for client in [owner, other] {
+        test.bridge.add_client(client).unwrap();
+    }
+    let source = r#"
+        let resets: number[] = [];
+        export default {
+            update(event) {
+                if (typeof event === 'object' && 'ClientGridReset' in event) {
+                    resets.push(event.ClientGridReset);
+                    return true;
+                }
+                return false;
+            },
+            render() { return `size ${resets.join(',')};`; }
+        };
+    "#;
+    let plugin = PluginId::new(1);
+    for id in [1, 2] {
+        for client in [1, 2] {
+            let context = test.context(id, client, source);
+            test.load(context).unwrap();
+        }
+    }
+    // Subscribe directly, as the plugin thread would after the SDK's subscribe command.
+    for (_, _, instance, subscriptions) in test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .running_plugins_and_subscriptions()
+    {
+        subscriptions
+            .lock()
+            .unwrap()
+            .insert(EventType::ClientGridReset);
+        assert_eq!(
+            check_event_permission(
+                instance.lock().unwrap().env(),
+                &Event::ClientGridReset(other)
+            ),
+            (PermissionStatus::Granted, None)
+        );
+    }
+    let _ = frames(&mut test, plugin);
+    let (shutdown, _receiver) = tokio::sync::mpsc::channel(1);
+    test.bridge
+        .update_plugins(
+            vec![(Some(plugin), Some(other), Event::ClientGridReset(other))],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.settle(plugin);
+    test.settle(PluginId::new(2));
+    // All instances subscribe, but only the addressed plugin/client receives the event.
+    let deliveries: Vec<_> = test
+        .receiver::<ScreenInstruction>()
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            ScreenInstruction::PluginBytes(assets) => Some(assets),
+            _ => None,
+        })
+        .flatten()
+        .map(|asset| (asset.plugin_id, asset.client_id))
+        .collect();
+    assert_eq!(deliveries, [(plugin, other)]);
+
+    test.bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin_and_subscriptions(PluginId::new(2), other)
+        .unwrap()
+        .1
+        .lock()
+        .unwrap()
+        .remove(&EventType::ClientGridReset);
+    // Subscription still matters for lifecycle events with no permission requirement.
+    test.bridge
+        .update_plugins(
+            vec![(
+                Some(PluginId::new(2)),
+                Some(other),
+                Event::ClientGridReset(other),
+            )],
+            shutdown.clone(),
+        )
+        .unwrap();
+    test.settle(PluginId::new(2));
+    assert!(frames(&mut test, PluginId::new(2)).is_empty());
+
+    test.bridge.cache_plugin_events(plugin);
+    test.bridge
+        .update_plugins(
+            vec![(Some(plugin), Some(other), Event::ClientGridReset(other))],
+            shutdown.clone(),
+        )
+        .unwrap();
+    assert!(
+        matches!(&test.bridge.cached_events_for_pending_plugins[&plugin][0], EventOrPipeMessage::Event(Event::ClientGridReset(client)) if *client == other)
+    );
+    test.bridge
+        .apply_cached_events(vec![plugin], true, shutdown)
+        .unwrap();
+    test.settle(plugin);
+    let mut replayed = frames_by_client(&mut test, plugin);
+    replayed.sort_by_key(|(client, _)| *client);
+    assert_eq!(
+        replayed,
+        [(owner, "size 2".into()), (other, "size 2,2".into())]
+    );
+}

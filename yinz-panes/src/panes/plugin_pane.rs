@@ -8,7 +8,7 @@ use crate::output::{CharacterChunk, KittyImageChunk, SixelImageChunk};
 use crate::pane::{AdjustedInput, Pane};
 use crate::panes::{
     grid::Grid,
-    kitty_graphics::{InterceptorResult, KittyApcInterceptor, KittyHostSupport, KittyImageStore},
+    kitty_graphics::{KittyApcInterceptor, KittyHostSupport, KittyImageStore, Piece},
     sixel::SixelImageStore,
     terminal_pane::{BRACKETED_PASTE_BEGIN, BRACKETED_PASTE_END},
     FrameColorOverride, LinkHandler, PaneId, EMPTY_TERMINAL_CHARACTER,
@@ -75,6 +75,15 @@ macro_rules! get_or_create_grid {
             );
             grid.hide_cursor();
             grid.update_kitty_host_support($self.kitty_host_support);
+            $self
+                .send_plugin_instructions
+                .send(PluginInstruction::Update(vec![(
+                    Some($self.pid),
+                    Some($client_id),
+                    Event::ClientGridReset($client_id),
+                )]))
+                .context("failed to notify plugin of client grid reset")
+                .non_fatal();
             grid
         })
     }};
@@ -287,29 +296,11 @@ impl Pane for PluginPane {
         // pause/forward machinery from that method applies here: a plugin pane has no pty, so
         // there is nothing to forward a query to and nothing to replay afterwards.
         let mut forwarded: Vec<u8> = Vec::with_capacity(vte_bytes.len());
-        let mut index = 0;
-        while index < vte_bytes.len() {
-            // Between sequences every non-escape byte is forwarded unchanged, so the whole run up
-            // to the next escape can be copied at once rather than driven through the state
-            // machine a byte at a time. A plugin frame is almost entirely such runs.
-            if interceptor.is_in_ground_state() {
-                let rest = &vte_bytes[index..];
-                let run_length = rest
-                    .iter()
-                    .position(|byte| *byte == 0x1b)
-                    .unwrap_or(rest.len());
-                if run_length > 0 {
-                    forwarded.extend_from_slice(&rest[..run_length]);
-                    index += run_length;
-                    continue;
-                }
-            }
-            let byte = vte_bytes[index];
-            index += 1;
-            match interceptor.advance(byte) {
-                InterceptorResult::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
-                InterceptorResult::Swallow => {},
-                InterceptorResult::CaptureStarted => {
+        for piece in interceptor.split(&vte_bytes) {
+            match piece {
+                Piece::Run(run) => forwarded.extend_from_slice(run),
+                Piece::Forward(fwd) => forwarded.extend_from_slice(fwd.as_slice()),
+                Piece::CaptureStarted => {
                     // Everything before the command has to reach the grid first: a placement is
                     // positioned by where the cursor is when it arrives.
                     if !forwarded.is_empty() {
@@ -317,7 +308,7 @@ impl Pane for PluginPane {
                         forwarded.clear();
                     }
                 },
-                InterceptorResult::Captured(command) => {
+                Piece::Captured(command) => {
                     grid.handle_kitty_apc(&command);
                     // A plugin has no pty to answer on, so a reply or a forwarded query has
                     // nowhere to go and would otherwise accumulate for the life of the pane.
@@ -1854,6 +1845,67 @@ mod tests {
             .expect("render failed")
             .map(|(_, _, _, kitty)| kitty)
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn client_grid_reset_follows_creation_including_delayed_frames() {
+        let (mut pane, rx) = test_plugin_pane_and_plugin_receiver(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 8,
+                height: 16,
+            }),
+        );
+        let first = ClientId::new(1);
+        let other = ClientId::new(2);
+        let reset = |client| {
+            let (PluginInstruction::Update(events), _) = rx.try_recv().expect("grid reset") else {
+                panic!("expected an update");
+            };
+            assert_eq!(
+                events,
+                vec![(
+                    Some(PluginId::new(1)),
+                    Some(client),
+                    Event::ClientGridReset(client)
+                )]
+            );
+            assert!(rx.is_empty(), "one notification per creation");
+        };
+        for client in [first, other] {
+            pane.add_client(client);
+            reset(client);
+            pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
+            assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
+        }
+        let placeholders = || image_row(42, 0, 2).into_bytes();
+        pane.handle_plugin_bytes(first, placeholders());
+        assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
+        assert!(rx.is_empty(), "ordinary frames preserve the namespace");
+
+        for delayed in [false, true] {
+            pane.remove_client(first);
+            assert!(rx.is_empty(), "deletion alone is not a new namespace");
+            if delayed {
+                // A frame queued before disconnect can create the grid before attachment.
+                pane.handle_plugin_bytes(first, placeholders());
+                assert!(kitty_chunks(&mut pane, first).is_empty());
+                reset(first);
+                pane.add_client(first);
+                assert!(rx.is_empty());
+            } else {
+                pane.add_client(first);
+                reset(first);
+            }
+            // A subscribed plugin responds to the reset by transmitting its pixels again.
+            pane.handle_plugin_bytes(first, image_frame(42, 2, &tiny_png()));
+            assert_eq!(kitty_chunks(&mut pane, first).len(), 1);
+            pane.handle_plugin_bytes(other, placeholders());
+            assert_eq!(kitty_chunks(&mut pane, other).len(), 1);
+            assert!(rx.is_empty());
+        }
     }
 
     #[test]

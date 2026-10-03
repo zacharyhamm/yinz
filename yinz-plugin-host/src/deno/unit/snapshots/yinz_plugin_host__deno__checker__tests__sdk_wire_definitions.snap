@@ -1,6 +1,6 @@
 ---
 source: yinz-plugin-host/src/deno/unit/checker.rs
-assertion_line: 1018
+assertion_line: 1023
 expression: wire
 ---
 commands
@@ -1826,6 +1826,7 @@ RunCommandOutput = 60;
 PaneOutput = 61;
 PaneTabsUpdate = 62;
 AgentProvidersChanged = 63;
+ClientGridReset = 64;
 }
 message EventNameList {
 repeated EventType event_types = 1;
@@ -1886,6 +1887,7 @@ AgentEventPayload agent_event_payload = 52;
 ModifiersHeldPayload modifiers_held_payload = 53;
 RunCommandOutputPayload run_command_output_payload = 54;
 PaneOutputPayload pane_output_payload = 55;
+uint32 client_grid_reset_payload = 61;
 }
 }
 message PaneOutputPayload {

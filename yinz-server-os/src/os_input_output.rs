@@ -13,7 +13,8 @@ use crate::pty_host::remote::{
     RemoteConn, RemoteStatus,
 };
 use yinz_bus::os_input_output::{
-    AdoptedTerminal, AsyncReader, RemoteEndpoint, RenderBacklog, ResolvedSpawn, ServerOsApi,
+    AdoptedTerminal, AsyncReader, RemoteEndpoint, RenderBacklog, RenderReady, ResolvedSpawn,
+    ServerOsApi,
 };
 use yinz_types::command::PaneTarget;
 use yinz_types::data::RemotePaneHandoff;
@@ -189,7 +190,7 @@ struct SendQueueState {
     render_bytes: usize,
     /// `Render`s in `control`.
     queued_renders: usize,
-    render_ready: Option<(usize, Box<dyn FnOnce() + Send>)>,
+    render_ready: Option<(usize, RenderReady)>,
     pending_pane_renders: BTreeMap<yinz_types::data::PaneId, ServerToClientMsg>,
     in_flight: Option<InFlightSend>,
     closed: bool,
@@ -418,7 +419,7 @@ impl CoalescingSendQueue {
     fn render_backlog_and_notify(
         &self,
         threshold: usize,
-        ready: Option<Box<dyn FnOnce() + Send>>,
+        ready: Option<&RenderReady>,
     ) -> RenderBacklog {
         let mut state = self.recover_state(self.state.lock());
         let backlog = if state.closed {
@@ -431,7 +432,7 @@ impl CoalescingSendQueue {
         };
         if backlog.queued_renders >= threshold {
             if let Some(ready) = ready {
-                state.render_ready = Some((threshold, ready));
+                state.render_ready = Some((threshold, ready.clone()));
             }
         }
         drop(state);
@@ -501,7 +502,6 @@ impl LiveWriters {
 }
 
 struct ClientSender {
-    client_id: ClientId,
     queue: Arc<CoalescingSendQueue>,
     /// The connection's socket, kept only so that `remove_client` can shut its
     /// read half down. See `shutdown_reads`.
@@ -642,55 +642,50 @@ impl ClientSender {
             live_writers.deregister();
             return Err(error);
         }
-        Ok(ClientSender {
-            client_id,
-            queue,
-            stream_fd,
-        })
+        Ok(ClientSender { queue, stream_fd })
     }
-    pub fn send_or_buffer(&self, msg: ServerToClientMsg) -> Result<()> {
-        let err_context = || {
-            format!(
-                "failed to send or buffer message for client {}",
-                self.client_id
-            )
-        };
+}
 
-        match self.queue.push(msg) {
-            SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
-            SendQueuePush::ControlQueueFull(overflow) => {
-                let in_flight = overflow
-                    .in_flight
-                    .map(|send| {
-                        format!(
-                            "kind={} render_bytes={} elapsed_ms={}",
-                            send.kind,
-                            send.render_bytes,
-                            send.started.elapsed().as_millis()
-                        )
-                    })
-                    .unwrap_or_else(|| "none".to_owned());
-                log::warn!(
-                    "output pressure: server pid={} client_id={} queue overflow reason={} queued_messages={} ordered={}/{} pending_pane_renders={} render_allocation_bytes={}/{} rejected_render_len={} rejected_render_capacity={} in_flight={}",
-                    std::process::id(), self.client_id, overflow.reason,
-                    overflow.ordered + overflow.pending_pane_renders, overflow.ordered,
-                    SEND_QUEUE_CONTROL_CAPACITY, overflow.pending_pane_renders,
-                    overflow.render_bytes, SEND_QUEUE_RENDER_BYTE_CAPACITY,
-                    overflow.rejected_render_len, overflow.rejected_render_capacity, in_flight
-                );
-                Err(YinzError::ClientTooSlow {
-                    client_id: self.client_id,
+/// Queue `msg` for `client_id`'s writer. Takes the queue rather than its `ClientSender`, so
+/// callers can release the sender registry first: a push can run a render-ready callback.
+fn send_or_buffer(
+    client_id: ClientId,
+    queue: &CoalescingSendQueue,
+    msg: ServerToClientMsg,
+) -> Result<()> {
+    let err_context = || format!("failed to send or buffer message for client {client_id}");
+
+    match queue.push(msg) {
+        SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
+        SendQueuePush::ControlQueueFull(overflow) => {
+            let in_flight = overflow
+                .in_flight
+                .map(|send| {
+                    format!(
+                        "kind={} render_bytes={} elapsed_ms={}",
+                        send.kind,
+                        send.render_bytes,
+                        send.started.elapsed().as_millis()
+                    )
                 })
-                .with_context(err_context)
-            },
-        }
+                .unwrap_or_else(|| "none".to_owned());
+            log::warn!(
+                "output pressure: server pid={} client_id={} queue overflow reason={} queued_messages={} ordered={}/{} pending_pane_renders={} render_allocation_bytes={}/{} rejected_render_len={} rejected_render_capacity={} in_flight={}",
+                std::process::id(), client_id, overflow.reason,
+                overflow.ordered + overflow.pending_pane_renders, overflow.ordered,
+                SEND_QUEUE_CONTROL_CAPACITY, overflow.pending_pane_renders,
+                overflow.render_bytes, SEND_QUEUE_RENDER_BYTE_CAPACITY,
+                overflow.rejected_render_len, overflow.rejected_render_capacity, in_flight
+            );
+            Err(YinzError::ClientTooSlow { client_id }).with_context(err_context)
+        },
     }
 }
 
 impl ClientSender {
     /// Stop accepting messages and let the writer thread finish what it has.
-    /// Idempotent, so shutdown can call it on senders still in the map without
-    /// disturbing the ones already dropped.
+    /// Idempotent. Shutdown closes the queues themselves, outside the registry lock.
+    #[cfg(test)]
     fn close(&self) {
         self.queue.close();
     }
@@ -1325,10 +1320,15 @@ impl ServerOsApi for ServerOsInputOutput {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");
 
-        if let Some(sender) = self.lock_client_senders().get_mut(&client_id) {
-            sender.send_or_buffer(msg).with_context(err_context)
-        } else {
-            Ok(())
+        // Pushed after the registry is released: a push can run a render-ready callback,
+        // which may itself consult the registry.
+        let queue = self
+            .lock_client_senders()
+            .get(&client_id)
+            .map(|sender| sender.queue.clone());
+        match queue {
+            Some(queue) => send_or_buffer(client_id, &queue, msg).with_context(err_context),
+            None => Ok(()),
         }
     }
 
@@ -1356,13 +1356,17 @@ impl ServerOsApi for ServerOsInputOutput {
             stream_fd,
         )
         .context("failed to start client writer")?;
-        self.lock_client_senders().insert(client_id, sender);
+        // A sender this id replaces closes its queue as it drops, after the registry is released.
+        let replaced = self.lock_client_senders().insert(client_id, sender);
+        drop(replaced);
         Ok(receiver)
     }
 
     fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
-        let mut client_senders = self.lock_client_senders();
-        if let Some(sender) = client_senders.remove(&client_id) {
+        // Dropped after the registry is released: closing the queue runs any armed
+        // render-ready callback.
+        let sender = self.lock_client_senders().remove(&client_id);
+        if let Some(sender) = sender {
             // Order matters: dropping `sender` closes the queue so the writer
             // thread drains and sends its final `Exit`, and `shutdown_reads`
             // touches only the read half, so that write still lands. What it
@@ -1385,7 +1389,7 @@ impl ServerOsApi for ServerOsInputOutput {
         &self,
         client_id: ClientId,
         threshold: usize,
-        ready: Box<dyn FnOnce() + Send>,
+        ready: &RenderReady,
     ) -> Option<RenderBacklog> {
         let queue = self
             .lock_client_senders()
@@ -1655,9 +1659,15 @@ impl ServerOsApi for ServerOsInputOutput {
 
     fn flush_client_writers(&self, deadline: Duration) {
         // Closing each queue is what lets a writer thread finish: `pop` returns
-        // `None` once the queue is closed and drained.
-        for sender in self.lock_client_senders().values() {
-            sender.close();
+        // `None` once the queue is closed and drained. Closed after the registry is
+        // released, since closing runs any armed render-ready callback.
+        let queues: Vec<_> = self
+            .lock_client_senders()
+            .values()
+            .map(|sender| sender.queue.clone())
+            .collect();
+        for queue in queues {
+            queue.close();
         }
         if !self.live_writers.wait_until_drained(deadline) {
             log::warn!("timed out waiting for client writer threads to drain; some clients may not have been told why the session ended");

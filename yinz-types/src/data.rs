@@ -275,6 +275,8 @@ pub enum Event {
     PastedText(String),
     ConfigWasWrittenToDisk,
     BeforeClose,
+    /// This client's plugin grid has a fresh image namespace. Retransmit cached images.
+    ClientGridReset(ClientId),
     InterceptedKeyPress(KeyWithModifier),
     /// An action was performed by the user (requires InterceptInput permission)
     UserAction(

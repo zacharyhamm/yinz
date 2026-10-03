@@ -1203,6 +1203,7 @@ impl YinzPlugin for State {
             EventType::Timer,
             EventType::PermissionRequestResult,
             EventType::BeforeClose,
+            EventType::ClientGridReset,
             // A running plugin's KDL block is otherwise frozen at server start:
             // even an explicit reload replays the configuration captured then,
             // so without this a config fix needs a whole Yinz restart.
@@ -1608,6 +1609,10 @@ impl State {
                 } else {
                     self.kitty_graphics.remove(&self.client)
                 }
+            },
+            Event::ClientGridReset(client_id) => {
+                self.wand_transmitted.remove(&client_id);
+                true
             },
             Event::PaneUpdate(manifest) => self.on_panes(manifest),
             // Somebody clicked a toast hocus raised. The host has already focused our pane; this

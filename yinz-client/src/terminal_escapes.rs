@@ -397,22 +397,30 @@ impl ClientTeardown {
         }
     }
 
-    /// The escape ribbon that restores the terminal, with nothing printed after it.
+    /// The whole escape ribbon that restores the terminal, with nothing printed after it.
+    /// [`Self::restore_with`] writes it in two flushed halves around restoring input.
     ///
     /// Safe to write even if the terminal was never fully claimed: popping an alternate screen
     /// that was never entered, and an empty kitty keyboard stack, are both no-ops.
+    #[cfg(test)]
     pub fn restore_sequences(&self) -> String {
         self.restore_sequences_with_sync(OPEN_SYNC_OUTPUT.load(Ordering::SeqCst))
     }
 
-    fn restore_sequences_with_sync(&self, open_sync: u8) -> String {
-        let kitty_exit = if self.include_kitty_exit {
-            EXIT_KITTY_KEYBOARD_MODE
-        } else {
-            ""
-        };
+    #[cfg(test)]
+    pub(crate) fn restore_sequences_with_sync(&self, open_sync: u8) -> String {
         format!(
-            "{}{}{}{}{}{}{}{}{}",
+            "{}{}",
+            Self::release_sequences(open_sync),
+            self.mode_sequences()
+        )
+    }
+
+    /// Closes any frame the host is holding back, then stops mouse reports. Written and flushed
+    /// before raw mode goes off, so no report arrives while the shell's terminal echoes it.
+    fn release_sequences(open_sync: u8) -> String {
+        format!(
+            "{}{}{}",
             if open_sync & 2 != 0 {
                 "\x1bP=2s\x1b\\"
             } else {
@@ -420,6 +428,18 @@ impl ClientTeardown {
             },
             END_SYNCHRONIZED_OUTPUT,
             DISABLE_MOUSE_SUPPORT,
+        )
+    }
+
+    /// Everything else the client pushed, unwound once input is restored.
+    fn mode_sequences(&self) -> String {
+        let kitty_exit = if self.include_kitty_exit {
+            EXIT_KITTY_KEYBOARD_MODE
+        } else {
+            ""
+        };
+        format!(
+            "{}{}{}{}{}{}",
             kitty_exit,
             DISABLE_HOST_THEME_NOTIFY,
             DISABLE_FOCUS_REPORTING,
@@ -429,15 +449,25 @@ impl ClientTeardown {
         )
     }
 
-    /// The escape ribbon that restores the terminal, followed by `message`.
-    pub fn message(&self, message: &str) -> String {
+    /// Where the parting message goes, followed by the message.
+    fn placed_message(&self, message: &str) -> String {
         // Without a known row count we can't place the cursor, so break the
         // line instead to keep the message off the restored screen's content.
         let position = match self.rows {
             Some(rows) => format!("\u{1b}[{};{}H", rows, 1),
             None => "\r\n".to_owned(),
         };
-        format!("{}{}{}\n", self.restore_sequences(), position, message)
+        format!("{}{}\n", position, message)
+    }
+
+    /// The escape ribbon that restores the terminal, followed by `message`.
+    #[cfg(test)]
+    pub fn message(&self, message: &str) -> String {
+        format!(
+            "{}{}",
+            self.restore_sequences(),
+            self.placed_message(message)
+        )
     }
 
     /// Restore the terminal and exit, for failures during startup.
@@ -512,26 +542,38 @@ impl ClientTeardown {
         restore_input: impl FnOnce(),
         message: Option<&str>,
     ) {
-        stdout
-            .write_all(DISABLE_MOUSE_SUPPORT.as_bytes())
-            .context("failed to disable mouse support during terminal restoration")
-            .non_fatal();
-        stdout
-            .flush()
-            .context("failed to flush mouse support reset during terminal restoration")
+        self.restore_with_sync(stdout, restore_input, message, &OPEN_SYNC_OUTPUT);
+    }
+
+    /// [`Self::restore_with`], against `open` rather than the process-wide frame state.
+    pub(crate) fn restore_with_sync(
+        &self,
+        stdout: &mut dyn Write,
+        restore_input: impl FnOnce(),
+        message: Option<&str>,
+        open: &AtomicU8,
+    ) {
+        let written =
+            stdout.write_all(Self::release_sequences(open.load(Ordering::SeqCst)).as_bytes());
+        let released = written.and(stdout.flush());
+        if released.is_ok() {
+            open.store(0, Ordering::SeqCst);
+        }
+        released
+            .context("failed to close output and disable mouse support during terminal restoration")
             .non_fatal();
         // Always restore input, even after a permanent output failure.
         restore_input();
-        let ribbon = message.map_or_else(|| self.restore_sequences(), |msg| self.message(msg));
-        let written = stdout.write_all(ribbon.as_bytes());
-        let flushed = stdout.flush();
-        if written.is_ok() && flushed.is_ok() {
-            OPEN_SYNC_OUTPUT.store(0, Ordering::SeqCst);
+        let mut ribbon = self.mode_sequences();
+        if let Some(message) = message {
+            ribbon.push_str(&self.placed_message(message));
         }
-        written
+        stdout
+            .write_all(ribbon.as_bytes())
             .context("failed to restore terminal output mode")
             .non_fatal();
-        flushed
+        stdout
+            .flush()
             .context("failed to flush terminal restoration")
             .non_fatal();
     }

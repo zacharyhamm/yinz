@@ -1,4 +1,4 @@
-use super::{InterceptorResult, KittyApcInterceptor, MAX_CAPTURE_LEN};
+use super::{InterceptorResult, KittyApcInterceptor, Piece, MAX_CAPTURE_LEN};
 #[derive(Default, Clone, PartialEq, Debug)]
 struct RecordingPerformer {
     events: Vec<String>,
@@ -422,7 +422,7 @@ fn drive_per_byte(reads: &[&[u8]]) -> (Driven, bool) {
     (driven, interceptor.is_in_ground_state())
 }
 
-/// The way `TerminalPane::handle_pty_bytes` drives it: payload runs in bulk.
+/// The way both pane kinds drive it: through `split`, with ground-state and payload runs in bulk.
 fn drive_in_runs(reads: &[&[u8]]) -> (Driven, bool) {
     let mut interceptor = KittyApcInterceptor::new();
     let mut driven = Driven {
@@ -430,17 +430,13 @@ fn drive_in_runs(reads: &[&[u8]]) -> (Driven, bool) {
         captured: vec![],
     };
     for read in reads {
-        let mut index = 0;
-        while index < read.len() {
-            if interceptor.is_capturing() {
-                let run = interceptor.capture_run(&read[index..]);
-                if run > 0 {
-                    index += run;
-                    continue;
-                }
+        for piece in interceptor.split(read) {
+            match piece {
+                Piece::Run(run) => driven.forwarded.extend_from_slice(run),
+                Piece::Forward(bytes) => driven.forwarded.extend_from_slice(bytes.as_slice()),
+                Piece::CaptureStarted => {},
+                Piece::Captured(payload) => driven.captured.push(payload),
             }
-            driven.record(interceptor.advance(read[index]));
-            index += 1;
         }
     }
     (driven, interceptor.is_in_ground_state())

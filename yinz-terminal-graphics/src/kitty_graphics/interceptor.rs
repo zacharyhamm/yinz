@@ -53,6 +53,74 @@ pub enum InterceptorResult {
     Captured(Vec<u8>),
 }
 
+/// A step of [`KittyApcInterceptor::split`]: what `advance` would have produced, with runs the
+/// state machine would only have passed through borrowed from the input instead.
+pub enum Piece<'a> {
+    /// Terminal bytes up to the next `ESC _`, forwarded unchanged.
+    Run(&'a [u8]),
+    /// Terminal bytes the state machine held back and now returns.
+    Forward(ForwardBytes),
+    /// `ESC _ G` is complete: flush preceding terminal bytes before capturing the payload.
+    CaptureStarted,
+    Captured(Vec<u8>),
+}
+
+/// The interceptor driven over one read, in bulk where it can be. See
+/// [`KittyApcInterceptor::split`].
+pub struct Split<'i, 'a> {
+    interceptor: &'i mut KittyApcInterceptor,
+    bytes: &'a [u8],
+    index: usize,
+}
+
+impl Split<'_, '_> {
+    /// How much of the read the pieces so far consumed.
+    pub fn position(&self) -> usize {
+        self.index
+    }
+    /// Abandon the read: the caller requeues what is left, including any prefix it began.
+    pub fn reset_interceptor(&mut self) {
+        self.interceptor.reset();
+    }
+}
+
+impl<'a> Iterator for Split<'_, 'a> {
+    type Item = Piece<'a>;
+
+    fn next(&mut self) -> Option<Piece<'a>> {
+        while self.index < self.bytes.len() {
+            if self.interceptor.is_capturing() {
+                let run = self.interceptor.capture_run(&self.bytes[self.index..]);
+                if run > 0 {
+                    self.index += run;
+                    continue;
+                }
+            }
+            // Ordinary escapes return to ground after one or two bytes and are forwarded
+            // unchanged, so the run extends to the next APC candidate. A final ESC stays with the
+            // state machine, so a prefix split across reads still reaches it.
+            if self.interceptor.is_in_ground_state() {
+                let rest = &self.bytes[self.index..];
+                let run = memchr::memmem::find(rest, b"\x1b_")
+                    .unwrap_or_else(|| rest.len() - usize::from(rest.last() == Some(&0x1b)));
+                if run > 0 {
+                    self.index += run;
+                    return Some(Piece::Run(&rest[..run]));
+                }
+            }
+            let byte = self.bytes[self.index];
+            self.index += 1;
+            match self.interceptor.advance(byte) {
+                InterceptorResult::Forward(bytes) => return Some(Piece::Forward(bytes)),
+                InterceptorResult::Swallow => {},
+                InterceptorResult::CaptureStarted => return Some(Piece::CaptureStarted),
+                InterceptorResult::Captured(command) => return Some(Piece::Captured(command)),
+            }
+        }
+        None
+    }
+}
+
 impl KittyApcInterceptor {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
@@ -98,6 +166,16 @@ impl KittyApcInterceptor {
         let run = memchr::memchr(0x1a, &bytes[..run]).unwrap_or(run);
         self.push_capture_bytes(&bytes[..run]);
         run
+    }
+    /// Drive the interceptor over `bytes`, producing what `advance` on each byte would, but
+    /// with ground-state runs and payload runs taken in one step each. What both pane kinds
+    /// ingest through.
+    pub fn split<'i, 'a>(&'i mut self, bytes: &'a [u8]) -> Split<'i, 'a> {
+        Split {
+            interceptor: self,
+            bytes,
+            index: 0,
+        }
     }
     pub fn advance(&mut self, byte: u8) -> InterceptorResult {
         match self.state {

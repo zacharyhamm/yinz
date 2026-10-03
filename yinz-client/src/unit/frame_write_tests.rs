@@ -163,6 +163,8 @@ impl Write for PartialFrameHost {
 
 #[test]
 fn partial_synchronized_frames_attempt_end_and_flush_without_hiding_the_error() {
+    use super::write_synchronised_tracking;
+    use std::sync::atomic::AtomicU8;
     let frame = b"frame";
     for sync in [SyncOutput::Csi, SyncOutput::Dcs] {
         for prefix in [
@@ -176,7 +178,11 @@ fn partial_synchronized_frames_attempt_end_and_flush_without_hiding_the_error() 
                     cleanup_fails,
                     ..Default::default()
                 };
-                let error = write_synchronised(&mut host, Some(sync), frame).unwrap_err();
+                // Local frame state: a failed cleanup leaves it open, and the process-wide copy
+                // would leak that into every later teardown test in this process.
+                let open = AtomicU8::new(0);
+                let error =
+                    write_synchronised_tracking(&mut host, Some(sync), frame, &open).unwrap_err();
                 assert_eq!(error.kind(), ErrorKind::PermissionDenied);
                 assert_eq!(
                     host.attempts
@@ -282,18 +288,19 @@ fn an_abandoned_host_that_is_still_draining_gets_the_whole_frame() {
 #[test]
 fn pixel_size_queries_never_wait_for_the_terminal_and_coalesce() {
     use std::sync::{mpsc, Arc, Mutex};
+    use yinz_test_support::{default_timeout, Watched};
 
     /// Blocks its first write until the test opens the gate.
     struct GatedStdout {
         gate: Arc<Mutex<mpsc::Receiver<()>>>,
         entered: mpsc::Sender<()>,
-        out: Arc<Mutex<Vec<u8>>>,
+        out: Watched<Vec<u8>>,
     }
     impl Write for GatedStdout {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             let _ = self.entered.send(());
             self.gate.lock().unwrap().recv().unwrap();
-            self.out.lock().unwrap().extend_from_slice(bytes);
+            self.out.lock().extend_from_slice(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -304,7 +311,7 @@ fn pixel_size_queries_never_wait_for_the_terminal_and_coalesce() {
     let (open_gate, gate) = mpsc::channel();
     let gate = Arc::new(Mutex::new(gate));
     let (entered, writing) = mpsc::channel();
-    let out = Arc::new(Mutex::new(Vec::new()));
+    let out = Watched::<Vec<u8>>::default();
     let queries = PixelSizeQueries::spawn({
         let out = out.clone();
         move || -> Box<dyn Write> {
@@ -330,16 +337,11 @@ fn pixel_size_queries_never_wait_for_the_terminal_and_coalesce() {
         open_gate.send(()).unwrap();
     }
     let query = crate::stdin_handler::PIXEL_SIZE_QUERY.as_bytes();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while out.lock().unwrap().len() < 2 * query.len() {
-        assert!(
-            Instant::now() < deadline,
-            "the queued query was never written"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    out.wait_until("the queued query to be written", default_timeout(), |out| {
+        (out.len() >= 2 * query.len()).then_some(())
+    });
     // The ten requests made while the first was stuck came to one more query.
-    assert_eq!(*out.lock().unwrap(), [query, query].concat());
+    assert_eq!(out.get(), [query, query].concat());
     assert!(writing.recv_timeout(Duration::from_millis(1)).is_ok());
     assert!(writing.recv_timeout(Duration::from_millis(100)).is_err());
 }
@@ -411,9 +413,11 @@ fn an_unclosed_dcs_survives_later_frames_until_its_own_end_is_flushed() {
 
 #[test]
 fn startup_and_panic_restoration_restore_input_between_flushed_output_phases() {
-    use super::ClientTeardown;
+    use super::{ClientTeardown, END_SYNCHRONIZED_OUTPUT};
+    use crate::os_input_output::DISABLE_MOUSE_SUPPORT;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::atomic::AtomicU8;
     struct RecordingHost {
         host: FullHost,
         events: Rc<RefCell<Vec<String>>>,
@@ -454,22 +458,28 @@ fn startup_and_panic_restoration_restore_input_between_flushed_output_phases() {
                 },
                 |_| Ok(()),
             );
-            ClientTeardown::at_startup(true).restore_with(
+            ClientTeardown::at_startup(true).restore_with_sync(
                 &mut host,
                 || {
                     events.borrow_mut().push("<input>".into());
                 },
                 message,
+                &AtomicU8::new(0),
             );
             let events = events.borrow().concat();
             if broken {
                 assert_eq!(events, "<input>");
             } else {
+                // The frame closes before mouse reports stop, and both land before raw mode is off.
                 assert!(
                     events.starts_with(&format!(
-                        "{}<flush><input>",
-                        crate::os_input_output::DISABLE_MOUSE_SUPPORT
+                        "{END_SYNCHRONIZED_OUTPUT}{DISABLE_MOUSE_SUPPORT}<flush><input>"
                     )),
+                    "{events:?}"
+                );
+                assert_eq!(
+                    events.matches(DISABLE_MOUSE_SUPPORT).count(),
+                    1,
                     "{events:?}"
                 );
                 assert!(events.ends_with("<flush>"));

@@ -562,6 +562,8 @@ pub fn start_client(
             let send_client_instructions = send_client_instructions.clone();
             let os_input = os_input.clone();
             Box::new(move |info| {
+                // A paused host terminal must not keep a panicking client from tearing down.
+                crate::terminal_escapes::abandon_stalled_output();
                 os_input.disable_mouse().non_fatal();
                 if let Ok(()) = os_input.unset_raw_mode() {
                     handle_panic(info, Some(&send_client_instructions));

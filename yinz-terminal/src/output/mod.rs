@@ -1331,14 +1331,21 @@ impl Output {
                 .any(|chunks_by_pane| chunks_by_pane.values().any(|c| !c.is_empty()))
             || self.has_pending_kitty_host_deletes()
     }
+    /// Whether a client in this frame still has a freed image on its host. Only those clients'
+    /// deletes are serialized; a client held back from this frame pays its own with the next
+    /// frame it is in, and must not make this one dirty for everybody else meanwhile.
     pub fn has_pending_kitty_host_deletes(&self) -> bool {
         let kitty_image_store = self.kitty_image_store.borrow();
-        self.kitty_host_state.borrow().values().any(|host_state| {
-            host_state
-                .transmitted
-                .keys()
-                .any(|(internal_id, _)| kitty_image_store.get(*internal_id).is_none())
-        })
+        let kitty_host_state = self.kitty_host_state.borrow();
+        self.client_character_chunks
+            .keys()
+            .filter_map(|client_id| kitty_host_state.get(client_id))
+            .any(|host_state| {
+                host_state
+                    .transmitted
+                    .keys()
+                    .any(|(internal_id, _)| kitty_image_store.get(*internal_id).is_none())
+            })
     }
     pub fn has_rendered_assets(&self) -> bool {
         // pre_vte and post_vte are not considered rendered assets as they should not be visible

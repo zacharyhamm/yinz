@@ -2153,7 +2153,22 @@ fn is_dirty_with_kitty_chunks_and_pending_deletes() {
             ..Default::default()
         },
     );
-    let pending_output = create_test_kitty_output(&pending_parts);
+    // A client held back from this frame keeps its deletes for its next one.
+    let mut pending_output = create_test_kitty_output(&pending_parts);
+    pending_output.add_clients(
+        &create_test_clients(2)
+            .into_iter()
+            .filter(|client_id| *client_id != ClientId::new(1))
+            .collect(),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
+    assert!(!pending_output.is_dirty());
+    pending_output.add_clients(
+        &create_test_clients(1),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        None,
+    );
     assert!(pending_output.is_dirty());
 }
 

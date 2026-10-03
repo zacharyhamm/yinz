@@ -2866,6 +2866,35 @@ mod tests {
     }
 
     #[test]
+    fn client_grid_reset_invalidates_only_its_wand_after_batched_capabilities() {
+        let mut state = empty_state(false);
+        let first = ClientId::new(1);
+        let other = ClientId::new(2);
+        for client in [first, other] {
+            state.client = client;
+            state.kitty_graphics.insert(client);
+            render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        }
+        state.client = first;
+        // Reconnection can batch the initial false capability and the probe's true answer
+        // before either causes a render. Neither update invalidates the transmitted pixels.
+        for supported in [false, true] {
+            let mut mode = yinz_tile::prelude::ModeInfo::default();
+            mode.capabilities.kitty_graphics = supported;
+            state.handle(Event::ModeUpdate(mode));
+        }
+        assert_eq!(state.wand_transmitted, BTreeSet::from([first, other]));
+        // Pending-plugin replay may run under a different acting client; use the payload.
+        state.client = other;
+        assert!(state.handle(Event::ClientGridReset(first)));
+        assert_eq!(state.wand_transmitted, BTreeSet::from([other]));
+        assert_eq!(state.kitty_graphics, BTreeSet::from([first, other]));
+        state.client = first;
+        render_transcript(&mut state, 0, WAND_HEIGHT, WAND_COLS);
+        assert_eq!(state.wand_transmitted, BTreeSet::from([first, other]));
+    }
+
+    #[test]
     fn kitty_graphics_support_is_scoped_to_the_rendering_client() {
         let mut state = State::default();
         state.kitty_graphics.insert(ClientId::new(1));

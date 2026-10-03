@@ -7,8 +7,9 @@ Timings come from `cargo x bench` (`yinz-server/benches/multi_pane_render.rs`), 
 stack-sampling profiles of that bench (samply could not run at `perf_event_paranoid=2`), and throwaway
 microbenchmarks that copied the relevant loops. Most runs were short Criterion runs on a machine shared with other
 sessions (load averages of about 9–46), so absolute times vary up to about 2x between runs; relative results were
-consistent. Since then, candidates 1 (without the inlining) and 2 (option A) and the Kitty
-`capture_run` change have landed; see [Implemented](#implemented). Nothing else has.
+consistent. Since then, candidate 1 (without the inlining), candidate 2 (as one parser batch per Kitty APC
+rather than option A), the Kitty `capture_run` change, the translucency runs, `base64-simd` for Kitty payloads,
+and shrinking rows that enter the scrollback have landed; see [Implemented](#implemented).
 
 ## Verdict on SIMD
 
@@ -67,16 +68,16 @@ previous commit (the last three rows against the branch's `head` baseline, on a 
 | Change | Where | Measured |
 | --- | --- | --- |
 | Candidate 1, partly: skip the style diff for a cell whose styles `Rc` is the previous cell's, when the chunk has no selection; and return early from `update_and_return_diff` for an unchanged style even with `changed_colors` (an OSC 4 palette re-sent a reset on every reset cell) | `serialize_chunks`, `RcCharacterStyles::ptr_eq`, `update_and_return_diff` | Landed with the commit before the baseline, so not in these numbers |
-| Candidate 2, option A: a read with no `ESC _` and no trailing ESC, in ground state, goes to `advance_until_terminated` whole | `TerminalPane::handle_pty_bytes` | `ingest/sgr_churn` −9 to −14%, `frame/sgr_churn` −3 to −15%, `ingest/cursor_moves` −3 to −15% |
+| Candidate 2: in ground state, copy everything up to the next `ESC _` into one batch (keeping a trailing ESC back for the next read), and hand the batch to vte only when a Kitty APC starts or the read ends. This replaced option A, which passed whole only a read with no `ESC _` and no trailing ESC | `KittyApcInterceptor::split`, driving `TerminalPane::handle_pty_bytes` and `PluginPane::handle_plugin_bytes` | A/B in one tree against one vte call per escape, on a quiet machine: `ingest/sgr_churn` and `ingest/mixed_kitty_sgr` −12 to −16%, `short_lines` −5 to −7%, `cursor_moves` −3 to −9%, `alt_screen_redraw` −2 to −7%, `plain_text` −1 to −5%; `blank_lines` and `unicode_wide` within noise. Option A on its own measured `ingest/sgr_churn` −9 to −14% |
 | Kitty `capture_run` with `memchr3` + `memchr`, matching `push_capture_byte`'s overflow | `interceptor.rs`, called from `TerminalPane::handle_pty_bytes` | `kitty_graphics/ingest` −70%, `kitty_graphics/frame` −64% |
 | Resolve and blend translucent cells once per run of equal styles, instead of allocating a styles `Rc` per covered cell twice | `Composition::add` and `finish` in `yinz-terminal/src/output/translucency.rs` | `panel/opacity_75/1` −40%, `panel/opacity_75/16` −13%, `panel_text` −45 to −55% |
 | `base64-simd` for Kitty payloads both ways (decode checked against the `base64` crate by property test); share the cached encoding as `Rc<String>`; write transmissions straight into the frame with their size reserved; fill RGB→RGBA from an opaque buffer | `store.rs`, `parser.rs`, `emit_kitty_transmit` and `serialize_kitty_frame` | `kitty_graphics/ingest` −66%, `frame` −68%, `render_only` −73% |
 | Shrink short lines on every path into the scrollback, so no row keeps spare capacity there | `bounded_push` in `grid.rs` | Memory, not speed. Pre-sizing new rows to the pane width did not pay: for a scrolling newline (`add_canonical_line`) it made `ingest/short_lines` 5–11% slower, and for a wrap (`line_wrap`) it gained nothing and cost `sgr_churn` and `unicode_wide` about 1% (interleaved A/B, three rounds). Both were removed |
 
 Both ingest changes have property tests comparing them with the byte-at-a-time path:
-`bulk_and_intercepted_ingest_leave_identical_panes` in `yinz-panes` and
-`bulk_capture_matches_per_byte_capture` in `yinz-terminal-graphics`. `PluginPane::handle_plugin_bytes`
-still drives the interceptor byte by byte.
+`bulk_and_intercepted_ingest_leave_identical_panes` in `yinz-panes` (against `TerminalPane::ingest_per_byte`, as well
+as across random read splits) and `bulk_capture_matches_per_byte_capture` in `yinz-terminal-graphics`. Both pane
+kinds ingest through the same driver, `KittyApcInterceptor::split`.
 
 ## Non-SIMD performance candidates
 
@@ -107,6 +108,10 @@ per-byte interceptor steps, and a copy into `forwarded`.
   `plain_text` −1 to −2%. A scalar `windows(2)` pre-scan made plain text about 3% slower.
 - **Option B, no pre-scan.** Extend the ground-state run past `ESC x` when `x` is neither `_` nor ESC, since the
   interceptor forwards that pair and returns to ground anyway. Measured −8 to −10% on `sgr_churn`.
+
+Option A landed first and was then replaced by a version of option B that scans once per run: the ground-state
+run extends to the next `ESC _` (keeping a trailing ESC back), and the batch goes to vte only when a Kitty APC
+starts or the read ends. See [Implemented](#implemented).
 
 Why this is equivalent: `Grid::terminated()` looks only at `pending_forwarded_queries`, the leftover bytes after a
 pause are the same, a partial UTF-8 sequence cut off by an ESC produces the same U+FFFD, and a trailing ESC falls

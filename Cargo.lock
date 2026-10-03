@@ -6469,6 +6469,7 @@ dependencies = [
  "yinz-ipc",
  "yinz-key-codec",
  "yinz-runtime",
+ "yinz-test-support",
  "yinz-types",
 ]
 

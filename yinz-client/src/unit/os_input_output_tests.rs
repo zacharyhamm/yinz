@@ -65,27 +65,166 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
     );
 }
 
+/// Reopening is an optimization: failure must leave inherited stdout usable, and neither
+/// success nor failure may be retried by later frame/startup/teardown writers.
+#[test]
+fn stdout_tty_cache_survives_startup_frames_and_teardown() {
+    use crate::terminal_escapes::{self, ClientTeardown};
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use nix::libc;
+    use std::os::fd::AsRawFd;
+    const CHILD: &str = "YINZ_TEST_STDOUT_TTY_CACHE";
+    if let Some(scenario) = std::env::var_os(CHILD) {
+        let fail = scenario == "failed";
+        let stdout = io::stdout();
+        let inherited_flags = fcntl(&stdout, FcntlArg::F_GETFL).unwrap();
+        assert!(stdout.is_terminal());
+        let path = nix::unistd::ttyname(&stdout).unwrap();
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: both calls receive valid pointers; only this subprocess's soft limit changes.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        let exhausted = libc::rlimit {
+            rlim_cur: 0,
+            ..limit
+        };
+        if fail {
+            assert_eq!(
+                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &exhausted) },
+                0
+            );
+            assert!(nix::unistd::ttyname(&stdout).is_ok());
+            assert_eq!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EMFILE)
+            );
+        }
+        let client = get_client_os_input().unwrap();
+        terminal_escapes::enter_terminal(&client, true, false);
+        let cached = STDOUT_TTY
+            .get()
+            .expect("first writer initializes the cache")
+            .as_ref();
+        assert_eq!(cached.is_none(), fail);
+        let cached_fd = cached.map(AsRawFd::as_raw_fd);
+        if let Some(tty) = cached {
+            assert!(
+                OFlag::from_bits_truncate(fcntl(tty, FcntlArg::F_GETFL).unwrap())
+                    .contains(OFlag::O_NONBLOCK)
+            );
+        }
+        // Reverse the open conditions. Success must reuse its fd even if opening now fails;
+        // failure must stay cached even though the tty can now be opened.
+        let next_limit = if fail { &limit } else { &exhausted };
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, next_limit) },
+            0
+        );
+        if fail {
+            assert!(std::fs::OpenOptions::new().write(true).open(&path).is_ok());
+        }
+        terminal_escapes::write_seqs(&client, &["frame output"]);
+        ClientTeardown::at_startup(true).restore_startup(Some("startup restored"));
+        ClientTeardown::new(24, true).restore(&client, "session restored");
+        assert_eq!(
+            STDOUT_TTY.get().unwrap().as_ref().map(AsRawFd::as_raw_fd),
+            cached_fd
+        );
+        assert_eq!(fcntl(&stdout, FcntlArg::F_GETFL).unwrap(), inherited_flags);
+        assert_eq!(
+            fcntl(io::stdin(), FcntlArg::F_GETFL).unwrap(),
+            inherited_flags
+        );
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        return;
+    }
+    for scenario in ["success", "failed"] {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_input_output::tests::stdout_tty_cache_survives_startup_frames_and_teardown",
+                "--nocapture",
+            ])
+            .env(CHILD, scenario)
+            .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(pty.slave))
+            .output()
+            .unwrap();
+        let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
+        fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        let mut master = std::fs::File::from(pty.master);
+        let mut bytes = Vec::new();
+        // Linux ends a PTY read with EIO, BSD with EOF; all preceding bytes matter here.
+        let _ = master.read_to_end(&mut bytes);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            output.status.success(),
+            "{scenario}: {text}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for expected in [
+            terminal_escapes::ENTER_ALTERNATE_SCREEN,
+            "frame output",
+            "startup restored",
+            "session restored",
+            terminal_escapes::EXIT_KITTY_KEYBOARD_MODE,
+        ] {
+            assert!(
+                text.contains(expected),
+                "{scenario} missing {expected:?}: {text}"
+            );
+        }
+    }
+}
+
 /// The host terminal is a tty, which is what macOS `poll` cannot wait on. A full one is
 /// backpressure, a drained one is ready, and a closed one fails the write, not the wait.
+///
+/// The waits use a timeout far longer than the test allows, so one that returns did so because
+/// the tty became writable: neither a fixed sleep nor a wait that never blocks passes.
 #[test]
 fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
     use crate::terminal_escapes::HostWriter;
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use std::sync::mpsc;
+    const NEVER: time::Duration = time::Duration::from_secs(30);
+    const PROMPTLY: time::Duration = time::Duration::from_secs(10);
 
-    let pty = nix::pty::openpty(None, None).unwrap();
-    let flags = OFlag::from_bits_truncate(fcntl(&pty.slave, FcntlArg::F_GETFL).unwrap());
-    fcntl(&pty.slave, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
-    let mut slave = std::fs::File::from(pty.slave);
-    let mut master = std::fs::File::from(pty.master);
-    let deadline = time::Instant::now() + time::Duration::from_secs(5);
+    fn nonblocking_pty() -> (std::fs::File, std::fs::File) {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let flags = OFlag::from_bits_truncate(fcntl(&pty.slave, FcntlArg::F_GETFL).unwrap());
+        fcntl(&pty.slave, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        (
+            std::fs::File::from(pty.slave),
+            std::fs::File::from(pty.master),
+        )
+    }
+
+    let (mut slave, master) = nonblocking_pty();
+    // A tty with room is ready at once.
+    let started = time::Instant::now();
+    wait_until_writable(&slave, NEVER).unwrap();
+    assert!(started.elapsed() < PROMPTLY);
+
+    let deadline = time::Instant::now() + PROMPTLY;
     loop {
         match slave.write(&[b'x'; 4096]) {
             Ok(_) => {},
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 let started = time::Instant::now();
-                wait_until_stdout_is_writable(&slave).unwrap();
-                if started.elapsed() >= time::Duration::from_millis(50) {
+                wait_until_writable(&slave, time::Duration::from_millis(200)).unwrap();
+                if started.elapsed() >= time::Duration::from_millis(150) {
                     break;
                 }
                 // The kernel can move bytes between the tty's internal queues
@@ -96,12 +235,40 @@ fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
         }
     }
 
-    // Drain the host side; the tty takes output again.
-    let mut drained = [0; 65536];
-    let _ = master.read(&mut drained).unwrap();
-    wait_until_stdout_is_writable(&slave).unwrap();
+    // A full tty keeps the wait waiting...
+    let (woke, woken) = mpsc::channel();
+    let waiter = {
+        let slave = slave.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let _ = woke.send(wait_until_writable(&slave, NEVER).map_err(|error| error.kind()));
+        })
+    };
+    assert!(
+        woken
+            .recv_timeout(time::Duration::from_millis(300))
+            .is_err(),
+        "the wait returned while the tty was still full"
+    );
+    // ...until the host side reads.
+    let drainer = {
+        let mut master = master.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut drained = [0; 65536];
+            // Ends once every slave descriptor is closed.
+            while master.read(&mut drained).is_ok_and(|read| read > 0) {}
+        })
+    };
+    woken
+        .recv_timeout(PROMPTLY)
+        .expect("the wait outlasted the drain")
+        .unwrap();
+    waiter.join().unwrap();
+    drop(slave);
+    drop(master);
+    drainer.join().unwrap();
 
     // Close the host side; the retried write reports it instead of waiting forever.
+    let (slave, master) = nonblocking_pty();
     drop(master);
     let mut writer = HostWriter::new(&slave, wait_until_stdout_is_writable);
     let error = loop {

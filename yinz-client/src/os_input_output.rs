@@ -11,7 +11,7 @@ use crate::os_input_output_unix::{
 use std::io::prelude::*;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::{io, thread, time};
 use {
     yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcReceiverWithContext,
@@ -520,68 +520,75 @@ pub(crate) fn stdout_writer() -> Box<dyn io::Write> {
     let stdout = ::std::io::stdout().lock();
     // Reopen the tty instead of changing stdout's shared file description: stdin
     // and the invoking shell can share it, and must retain their blocking mode.
-    let tty = io::stdout().is_terminal().then(|| {
-        use std::os::unix::fs::OpenOptionsExt;
-        let path = nix::unistd::ttyname(&stdout).map_err(io::Error::from)?;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
-            .open(path)
-    });
+    let tty = STDOUT_TTY
+        .get_or_init(|| {
+            use std::os::unix::fs::OpenOptionsExt;
+            if !stdout.is_terminal() {
+                return None;
+            }
+            let path = nix::unistd::ttyname(&stdout).ok()?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags((nix::fcntl::OFlag::O_NONBLOCK | nix::fcntl::OFlag::O_NOCTTY).bits())
+                .open(path)
+                .ok()
+        })
+        .as_ref();
     Box::new(crate::terminal_escapes::HostWriter::new(
         StdoutWriter { stdout, tty },
         |writer| match &writer.tty {
-            Some(Ok(tty)) => wait_until_stdout_is_writable(tty),
+            Some(tty) => wait_until_stdout_is_writable(tty),
             _ => wait_until_stdout_is_writable(&writer.stdout),
         },
     ))
 }
 
+// Cache both success and failure across startup, frames, and teardown.
+static STDOUT_TTY: OnceLock<Option<std::fs::File>> = OnceLock::new();
+
 struct StdoutWriter {
     stdout: io::StdoutLock<'static>,
-    tty: Option<io::Result<std::fs::File>>,
+    tty: Option<&'static std::fs::File>,
 }
 
 impl StdoutWriter {
-    fn writer(&mut self) -> io::Result<&mut dyn Write> {
+    fn writer(&mut self) -> &mut dyn Write {
         match &mut self.tty {
-            Some(Ok(tty)) => Ok(tty),
-            Some(Err(error)) => Err(io::Error::new(error.kind(), error.to_string())),
-            None => Ok(&mut self.stdout),
+            Some(tty) => tty,
+            None => &mut self.stdout,
         }
     }
 }
 
 impl Write for StdoutWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.writer()?.write(bytes)
+        self.writer().write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.writer()?.flush()
+        self.writer().flush()
     }
 }
 
 /// Pause while the terminal is full, then let HostWriter retry. A timeout is temporary
 /// backpressure, not an error.
+fn wait_until_stdout_is_writable(stdout: &impl std::os::fd::AsFd) -> io::Result<()> {
+    wait_until_writable(stdout, time::Duration::from_millis(100))
+}
+
+/// Wait until `fd` can take output, or `timeout` passes.
 ///
 /// `select`, not `poll`: macOS `poll` does not support ttys and answers `POLLNVAL`, which
 /// would turn ordinary backpressure into a failed write. tmux waits on ttys the same way.
 /// A closed terminal still reports ready, and the retried write then returns its error.
-#[cfg(unix)]
-fn wait_until_stdout_is_writable(stdout: &impl std::os::fd::AsFd) -> io::Result<()> {
+fn wait_until_writable(fd: &impl std::os::fd::AsFd, timeout: time::Duration) -> io::Result<()> {
     use nix::sys::select::{select, FdSet};
     use nix::sys::time::{TimeVal, TimeValLike};
     let mut writable = FdSet::new();
-    writable.insert(stdout.as_fd());
-    let mut timeout = TimeVal::milliseconds(100);
+    writable.insert(fd.as_fd());
+    let micros = i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX);
+    let mut timeout = TimeVal::microseconds(micros);
     select(None, None, Some(&mut writable), None, Some(&mut timeout)).map_err(io::Error::from)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn wait_until_stdout_is_writable(_stdout: &io::StdoutLock<'static>) -> io::Result<()> {
-    std::thread::sleep(time::Duration::from_millis(1));
     Ok(())
 }
 
