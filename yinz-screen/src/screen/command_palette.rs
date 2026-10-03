@@ -453,17 +453,53 @@ impl Screen {
                 ));
             }
         }
-        for session in self.peer_sessions_cache.values() {
+        let mut sessions: Vec<_> = self.peer_sessions_cache.values().collect();
+        sessions.sort_by_key(|session| (session.creation_time, &session.name));
+        for session in sessions {
+            let seconds = session.creation_time.as_secs();
+            let age = std::time::Duration::from_secs(if seconds >= 60 {
+                seconds / 60 * 60
+            } else {
+                seconds
+            });
             entries.push((
                 Entry {
                     id: format!("session:{}", session.name),
                     label: session.name.to_string(),
                     shortcut: String::new(),
-                    description: format!("{} connected clients", session.connected_clients),
+                    description: format!(
+                        "up {} · {} connected client{}",
+                        humantime::format_duration(age),
+                        session.connected_clients,
+                        if session.connected_clients == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                    ),
                     aliases: vec![],
                     kind: EntryKind::Session,
                 },
                 Builtin::Action(switch_session(session.name.clone(), None)),
+            ));
+        }
+        let mut exited: Vec<_> = self
+            .resurrectable_sessions_cache
+            .iter()
+            .filter(|(name, _)| !self.peer_sessions_cache.contains_key(*name))
+            .collect();
+        exited.sort_by_key(|(name, age)| (*age, *name));
+        for (name, _) in exited {
+            entries.push((
+                Entry {
+                    id: format!("session:{name}"),
+                    label: name.to_string(),
+                    shortcut: String::new(),
+                    description: "Exited · Enter to restore".into(),
+                    aliases: vec![],
+                    kind: EntryKind::ExitedSession,
+                },
+                Builtin::Action(switch_session(name.clone(), None)),
             ));
         }
         let mode_info = self
@@ -613,9 +649,16 @@ impl Screen {
             Action::FocusPaneByPaneId { pane_id } => self.tab_containing_pane(*pane_id).is_some(),
             Action::GoToTabById { id } => self.tabs.contains_key(id),
             Action::SwitchSession { name, .. } => {
-                self.peer_sessions_cache.contains_key(name)
-                    && (*name == self.session_name
-                        || yinz_runtime::consts::YINZ_SOCK_DIR.join(name).exists())
+                if self.peer_sessions_cache.contains_key(name) {
+                    *name == self.session_name
+                        || yinz_runtime::consts::YINZ_SOCK_DIR.join(name).exists()
+                } else {
+                    self.resurrectable_sessions_cache.contains_key(name)
+                        && yinz_runtime::session_checkpoint::SessionCheckpoint::read(
+                            &yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR.join(name),
+                        )
+                        .is_ok_and(|checkpoint| checkpoint.layout_path().is_file())
+                }
             },
             _ => true,
         }

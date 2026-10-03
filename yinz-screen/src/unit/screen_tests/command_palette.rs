@@ -1,5 +1,5 @@
 use super::*;
-use yinz_types::internal_ids::TabNumber;
+use yinz_types::internal_ids::{SessionName, TabNumber};
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 const CLIENT: ClientId = ClientId::new(1);
@@ -1361,4 +1361,128 @@ fn palette_new_pane_keeps_default_shortcut_when_floating_panes_are_visible() {
     screen.command_palette_handles_input(&None, b"New floating pane", false, CLIENT);
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!rendered.contains("Ctrl g → Alt n"), "{rendered}");
+}
+
+#[test]
+fn palette_sessions_show_ages_and_sort_newest_first_with_exited_separate() {
+    use std::time::Duration;
+    use yinz_types::data::SessionInfo;
+    let mut screen = screen();
+    screen.peer_sessions_cache.clear();
+    for (name, seconds) in [("aa-old", 8060), ("bb-new", 20), ("cc-new", 20)] {
+        let mut info = SessionInfo::new(SessionName::new(name));
+        info.creation_time = Duration::from_secs(seconds);
+        info.connected_clients = 1;
+        screen.peer_sessions_cache.insert(info.name.clone(), info);
+    }
+    for (name, seconds) in [("aa-old", 1), ("dd-exited", 80), ("ee-exited", 10)] {
+        screen
+            .resurrectable_sessions_cache
+            .insert(SessionName::new(name), Duration::from_secs(seconds));
+    }
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "Switch session…");
+    palette_key(&mut screen, BareKey::Enter);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Live sessions"), "{snapshot}");
+    assert!(
+        snapshot.find("bb-new").unwrap() < snapshot.find("cc-new").unwrap(),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.find("cc-new").unwrap() < snapshot.find("aa-old").unwrap(),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("up 20s · 1 connected client"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains("up 2h 14m"), "{snapshot}");
+    for _ in 0..3 {
+        palette_key(&mut screen, BareKey::Down);
+    }
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Exited sessions"), "{snapshot}");
+    assert!(
+        snapshot.contains("ee-exited — Exited · Enter to restore"),
+        "{snapshot}"
+    );
+    palette_key(&mut screen, BareKey::Down);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        snapshot.find("ee-exited").unwrap() < snapshot.find("dd-exited").unwrap(),
+        "{snapshot}"
+    );
+    // The duplicate live name must not add an exited entry before these two.
+    assert!(snapshot.contains("› dd-exited"), "{snapshot}");
+}
+
+#[test]
+fn palette_session_scan_refreshes_current_age_without_replacing_local_metadata() {
+    use std::time::Duration;
+    let mut screen = screen();
+    let name = screen.session_name.clone();
+    let current = screen.peer_sessions_cache.get_mut(&name).unwrap();
+    current.creation_time = Duration::from_secs(10);
+    current.connected_clients = 7;
+    let mut scanned = current.clone();
+    scanned.creation_time = Duration::from_secs(70);
+    scanned.connected_clients = 99;
+    screen
+        .update_session_infos(
+            [(name.clone(), scanned)].into_iter().collect(),
+            Default::default(),
+        )
+        .unwrap();
+    let current = &screen.peer_sessions_cache[&name];
+    assert_eq!(current.creation_time, Duration::from_secs(70));
+    assert_eq!(current.connected_clients, 7);
+}
+
+#[test]
+fn palette_restores_exited_sessions_and_rejects_deleted_checkpoints() {
+    use yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR;
+    use yinz_runtime::session_checkpoint::{write_checkpoint, SessionCheckpoint};
+
+    let mut screen = screen();
+    std::fs::create_dir_all(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
+    let saved = tempfile::tempdir_in(&*YINZ_SESSION_INFO_CACHE_DIR).unwrap();
+    let name = SessionName::new(saved.path().file_name().unwrap().to_str().unwrap());
+    write_checkpoint(
+        saved.path(),
+        "",
+        &("layout { pane; }".into(), Default::default()),
+    )
+    .unwrap();
+    screen
+        .resurrectable_sessions_cache
+        .insert(name.clone(), Default::default());
+    let receiver = palette_actions_receiver(&mut screen);
+    palette_search(&mut screen, "Switch session…");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, name.as_str().as_bytes(), false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    let action = enqueued_palette_action(&receiver);
+    assert!(matches!(&action, Action::SwitchSession { name: target, .. } if target == &name));
+
+    let layout = SessionCheckpoint::read(saved.path()).unwrap().layout_path();
+    std::fs::remove_file(layout).unwrap();
+    screen.dispatch_command_palette_action(
+        PaneId::Terminal(TerminalId::new(1)),
+        TabId::new(0),
+        action,
+        false,
+        CLIENT,
+    );
+    assert!(matches!(
+        receiver.try_recv().unwrap().0,
+        ScreenInstruction::Notify(..)
+    ));
+    palette_search(&mut screen, "Switch session…");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, name.as_str().as_bytes(), false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(receiver.try_recv().is_err());
+    assert!(screen.command_palettes.contains_key(&CLIENT));
 }
