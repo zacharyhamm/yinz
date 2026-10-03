@@ -100,7 +100,7 @@ fn plugin_cursor_show_move_and_hide_render_without_session_reports() {
 }
 
 #[test]
-fn replayed_plugin_cursor_renders_without_session_reports() {
+fn early_plugin_output_survives_layout_and_replayed_cursor_renders_without_session_reports() {
     let size = Size { cols: 80, rows: 10 };
     let client_id = ClientId::new(1);
     let mut screen = create_new_screen(size, true, true);
@@ -116,6 +116,18 @@ fn replayed_plugin_cursor_renders_without_session_reports() {
     screen
         .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client_id))
         .unwrap();
+    // Startup sizes the client before loading plugins, but attaches it only after layout.
+    assert!(screen.client_sizes.contains_key(&client_id));
+    assert!(!screen.connected_clients.borrow().contains(&client_id));
+    let pending_frames = screen
+        .handle_plugin_render_assets(vec![PluginRenderAsset::new(
+            PLUGIN_2,
+            client_id,
+            b"workflow".to_vec(),
+        )])
+        .unwrap();
+    assert_eq!(pending_frames.len(), 1);
+    assert!(!screen.show_plugin_cursor(PLUGIN_2, client_id, Some((1, 1))));
     screen
         .apply_layout(
             TiledPaneLayout {
@@ -135,17 +147,21 @@ fn replayed_plugin_cursor_renders_without_session_reports() {
             None,
         )
         .unwrap();
-    screen
-        .handle_plugin_render_assets(vec![PluginRenderAsset {
-            plugin_id: PLUGIN_2,
-            client_id,
-            bytes: b"workflow".to_vec(),
-        }])
-        .unwrap();
+    super::super::replay_pending_plugin_events(
+        &mut screen,
+        vec![
+            ScreenInstruction::PluginBytes(pending_frames),
+            ScreenInstruction::ShowPluginCursor(PLUGIN_2, client_id, Some((1, 1))),
+        ],
+    )
+    .unwrap();
     let server_rx = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(size);
     // Settle the initial frame and its derived tab title before measuring cursor-only work.
-    render_frame_into(&mut screen, &server_rx, client_id, &mut grid);
+    let (cursor, frame) =
+        render_frame_and_cursor_into(&mut screen, &server_rx, client_id, &mut grid);
+    assert!(frame.contains("workflow"), "{frame}");
+    assert_eq!(cursor, Some((1, 1)));
     plugin_rx.try_iter().for_each(drop);
     let (jobs_tx, jobs_rx) = channels::unbounded();
     screen.bus.senders.to_background_jobs = Some(SenderWithContext::new(jobs_tx));

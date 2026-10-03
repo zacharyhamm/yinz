@@ -126,6 +126,10 @@ pub trait TtyControl {
 pub trait StdioAccess {
     /// Returns the writer that allows writing to standard output.
     fn get_stdout_writer(&self) -> Box<dyn io::Write>;
+    /// Returns a writer that waits indefinitely on temporary backpressure during restoration.
+    fn get_stdout_writer_for_teardown(&self) -> Box<dyn io::Write> {
+        self.get_stdout_writer()
+    }
     /// Returns a BufReader that allows to read from STDIN line by line, also locks STDIN
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead>;
     /// Returns the raw contents of standard input.
@@ -363,7 +367,11 @@ impl StdioAccess for ClientOsInputOutput {
         }
     }
     fn get_stdout_writer(&self) -> Box<dyn io::Write> {
-        stdout_writer()
+        stdout_writer(false)
+    }
+
+    fn get_stdout_writer_for_teardown(&self) -> Box<dyn io::Write> {
+        stdout_writer(true)
     }
 
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
@@ -514,7 +522,7 @@ pub fn get_cli_client_os_input() -> Result<ClientOsInputOutput, std::io::Error> 
 pub const DEFAULT_STDIN_POLL_TIMEOUT_MS: u64 = 10;
 
 /// A serialized stdout writer that waits out transient terminal backpressure.
-pub(crate) fn stdout_writer() -> Box<dyn io::Write> {
+pub(crate) fn stdout_writer(for_teardown: bool) -> Box<dyn io::Write> {
     // Hold the lock for the writer's whole life, including its waits on a full
     // terminal, so another thread cannot write into the middle of a frame.
     let stdout = ::std::io::stdout().lock();
@@ -534,13 +542,21 @@ pub(crate) fn stdout_writer() -> Box<dyn io::Write> {
                 .ok()
         })
         .as_ref();
-    Box::new(crate::terminal_escapes::HostWriter::new(
-        StdoutWriter { stdout, tty },
-        |writer| match &writer.tty {
-            Some(tty) => wait_until_stdout_is_writable(tty),
-            _ => wait_until_stdout_is_writable(&writer.stdout),
-        },
-    ))
+    let writer = StdoutWriter { stdout, tty };
+    let wait = |writer: &StdoutWriter| match &writer.tty {
+        Some(tty) => wait_until_stdout_is_writable(tty),
+        _ => wait_until_stdout_is_writable(&writer.stdout),
+    };
+    if for_teardown {
+        Box::new(crate::terminal_escapes::HostWriter::with_stall_policy(
+            writer,
+            wait,
+            || false,
+            time::Duration::ZERO,
+        ))
+    } else {
+        Box::new(crate::terminal_escapes::HostWriter::new(writer, wait))
+    }
 }
 
 // Cache both success and failure across startup, frames, and teardown.

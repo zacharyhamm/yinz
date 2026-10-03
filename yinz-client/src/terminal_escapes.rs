@@ -200,9 +200,9 @@ pub const STALLED_OUTPUT_LIMIT: Duration = Duration::from_secs(2);
 /// it would take.
 const MAX_STALL_BACKOFF: Duration = Duration::from_millis(25);
 
-/// Stop waiting indefinitely on a stalled host terminal: every write that has made no
-/// progress for [`STALLED_OUTPUT_LIMIT`] now fails. Called when a quit signal arrives, so
-/// a paused terminal cannot keep the client from rendering its last frame and tearing down.
+/// Stop waiting indefinitely on a stalled host terminal: ordinary writes that have made no
+/// progress for [`STALLED_OUTPUT_LIMIT`] now fail. Called when a quit signal arrives, so
+/// frame writers release stdout's lock and let terminal restoration take over.
 pub fn abandon_stalled_output() {
     ABANDON_STALLED_OUTPUT.store(true, Ordering::SeqCst);
 }
@@ -509,7 +509,7 @@ impl ClientTeardown {
     /// needs the process to stay alive to reconnect.
     pub fn restore<O: TtyControl + StdioAccess + ?Sized>(&self, os_input: &O, message: &str) {
         abandon_stalled_output();
-        let mut stdout = os_input.get_stdout_writer();
+        let mut stdout = os_input.get_stdout_writer_for_teardown();
         self.restore_with(
             &mut *stdout,
             || {
@@ -524,7 +524,7 @@ impl ClientTeardown {
 
     pub(crate) fn restore_startup(&self, message: Option<&str>) {
         abandon_stalled_output();
-        let mut stdout = crate::os_input_output::stdout_writer();
+        let mut stdout = crate::os_input_output::stdout_writer(true);
         self.restore_with(
             &mut *stdout,
             || {

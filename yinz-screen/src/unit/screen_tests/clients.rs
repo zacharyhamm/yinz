@@ -27,6 +27,22 @@ fn watchers_resume_incremental_output_when_a_regular_client_returns() {
         assert_eq!(screen.followed_client_id, Some(followed));
         assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
 
+        // A one-shot CLI connection can reuse the departed ID without attaching.
+        screen.remove_client(followed).unwrap();
+        assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(1)));
+        screen
+            .tabs
+            .get_mut(&TabId::new(1))
+            .unwrap()
+            .handle_pty_bytes(
+                crate::TerminalId::new(2),
+                b"after-cli-disconnect\r\n".to_vec(),
+            )
+            .unwrap();
+        let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(bytes.contains("after-cli-disconnect"), "{bytes:?}");
+        assert!(!bytes.contains("\x1b[2J"), "{bytes:?}");
+
         screen.add_client(returning).unwrap();
         watcher_frame(&mut screen, &receiver, watcher, &mut grid);
         assert_eq!(screen.followed_client_id, Some(returning));

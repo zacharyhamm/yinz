@@ -2,14 +2,18 @@ use super::*;
 
 #[test]
 fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
+    use crate::terminal_escapes::{self, ClientTeardown};
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
-    use nix::sys::termios::{tcflow, FlowArg};
+    use nix::sys::termios::{tcflow, tcgetattr, FlowArg, LocalFlags};
     use std::sync::mpsc;
     const CHILD: &str = "YINZ_TEST_BLOCKING_STDOUT_STALL";
-    if std::env::var_os(CHILD).is_some() {
+    if let Some(scenario) = std::env::var_os(CHILD) {
         let stdout = io::stdout();
         let flags = OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL).unwrap());
         assert!(!flags.contains(OFlag::O_NONBLOCK));
+        let original = tcgetattr(io::stdin()).unwrap();
+        let mut client = get_client_os_input().unwrap();
+        client.set_raw_mode();
         // The kernel's Ctrl-S effect, with an initially blocking stdout.
         tcflow(&stdout, FlowArg::TCOOFF).unwrap();
         let (entered, ready) = mpsc::channel();
@@ -23,15 +27,51 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             finished.send(written).unwrap();
         });
         ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
-        crate::terminal_escapes::abandon_stalled_output();
+        terminal_escapes::abandon_stalled_output();
         let written = result.recv_timeout(time::Duration::from_secs(10));
-        // Resume even on failure, so the harness can print the regression instead of hanging.
-        tcflow(&stdout, FlowArg::TCOON).unwrap();
+        if written.is_err() {
+            tcflow(&stdout, FlowArg::TCOON).unwrap();
+        }
         writer.join().unwrap();
         assert_eq!(
             written.unwrap().unwrap_err().kind(),
             io::ErrorKind::TimedOut
         );
+
+        // Restoration takes the frame writer's lock, but must outwait its cancellation limit.
+        let (entered, ready) = mpsc::channel();
+        let (finished, result) = mpsc::channel();
+        let restorer = thread::spawn(move || {
+            entered.send(()).unwrap();
+            if scenario == "startup" {
+                ClientTeardown::at_startup(true).restore_startup(Some("restored"));
+            } else {
+                ClientTeardown::new(24, true).restore(&client, "restored");
+            }
+            finished.send(()).unwrap();
+        });
+        ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
+        // Timing is the behavior under test: keep output paused past the frame stall limit.
+        let still_waiting = result
+            .recv_timeout(terminal_escapes::STALLED_OUTPUT_LIMIT + time::Duration::from_secs(1));
+        let paused = tcgetattr(io::stdin()).unwrap();
+        // Resume before assertions so a regression cannot strand the harness's output.
+        tcflow(&stdout, FlowArg::TCOON).unwrap();
+        restorer.join().unwrap();
+        assert!(matches!(
+            still_waiting,
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        assert!(!paused.local_flags.contains(LocalFlags::ICANON));
+        let restored = tcgetattr(io::stdin()).unwrap();
+        assert_eq!(restored.input_flags, original.input_flags);
+        assert_eq!(restored.output_flags, original.output_flags);
+        assert_eq!(restored.control_flags, original.control_flags);
+        assert_eq!(
+            restored.local_flags - LocalFlags::PENDIN,
+            original.local_flags - LocalFlags::PENDIN,
+        );
+        assert_eq!(restored.control_chars, original.control_chars);
         assert_eq!(
             OFlag::from_bits_truncate(fcntl(&stdout, FcntlArg::F_GETFL).unwrap()),
             flags
@@ -40,29 +80,43 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             OFlag::from_bits_truncate(fcntl(io::stdin(), FcntlArg::F_GETFL).unwrap()),
             flags
         );
-        // Teardown can take the same lock and restore terminal output.
-        let mut stdout = stdout_writer();
-        stdout.write_all(b"restored\n").unwrap();
-        stdout.flush().unwrap();
         return;
     }
-    let pty = nix::pty::openpty(None, None).unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "os_input_output::tests::quitting_interrupts_a_flow_controlled_blocking_stdout",
-            "--nocapture",
-        ])
-        .env(CHILD, "1")
-        .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
-        .stdout(std::process::Stdio::from(pty.slave))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for scenario in ["ordinary", "startup"] {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_input_output::tests::quitting_interrupts_a_flow_controlled_blocking_stdout",
+                "--nocapture",
+            ])
+            .env(CHILD, scenario)
+            .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
+            .stdout(std::process::Stdio::from(pty.slave))
+            .output()
+            .unwrap();
+        let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
+        fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        let mut bytes = Vec::new();
+        // Linux ends a PTY read with EIO, BSD with EOF; inspect all preceding output.
+        let _ = std::fs::File::from(pty.master).read_to_end(&mut bytes);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            output.status.success(),
+            "{scenario}: {text}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let teardown = if scenario == "startup" {
+            ClientTeardown::at_startup(true)
+        } else {
+            ClientTeardown::new(24, true)
+        };
+        assert!(
+            text.contains(&teardown.restore_sequences_with_sync(0)),
+            "{scenario}: incomplete restoration: {text:?}"
+        );
+        assert!(text.contains("restored"), "{scenario}: {text:?}");
+    }
 }
 
 /// Reopening is an optimization: failure must leave inherited stdout usable, and neither
