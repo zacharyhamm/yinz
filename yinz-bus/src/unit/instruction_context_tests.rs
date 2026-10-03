@@ -416,7 +416,7 @@ pin_context_to_instruction! {
     mod server;
     instruction: ServerInstruction;
     context: ServerContext;
-    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "KillSessionWithCompletion", "CliPipeError"];
+    special: ["FirstClientConnected", "AttachWatcherClient", "ResolveLockedEscape", "SetCommandPaletteOpen", "KillSessionWithCompletion", "CliPipeError"];
     only_special: ["NewClient", "AttachClient"];
     targets: [
         (
@@ -433,6 +433,11 @@ pin_context_to_instruction! {
             "KillSessionWithCompletion",
             ServerInstruction::KillSessionWithCompletion(ClientId::new(1)),
             "KillSession"
+        ),
+        (
+            "SetCommandPaletteOpen",
+            ServerInstruction::SetCommandPaletteOpen(ClientId::new(1), true),
+            "ChangeMode"
         ),
         (
             "ResolveLockedEscape",

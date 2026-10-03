@@ -48,6 +48,7 @@ pub enum ServerInstruction {
     },
     DisconnectAllClientsExcept(ClientId),
     ChangeMode(ClientId, InputMode, Option<NotificationEnd>),
+    SetCommandPaletteOpen(ClientId, bool),
     ResolveLockedEscape(ClientId, uuid::Uuid),
     ChangeModeForAllClients(InputMode),
     Reconfigure {
@@ -103,6 +104,7 @@ impl From<&ServerInstruction> for ServerContext {
             ServerInstruction::FirstClientConnected(..) => ServerContext::NewClient,
             ServerInstruction::AttachWatcherClient(..) => ServerContext::AttachClient,
             ServerInstruction::ResolveLockedEscape(..) => ServerContext::ChangeMode,
+            ServerInstruction::SetCommandPaletteOpen(..) => ServerContext::ChangeMode,
             ServerInstruction::KillSessionWithCompletion(..) => ServerContext::KillSession,
             ServerInstruction::CliPipeError(..) => ServerContext::LogError,
             other => {

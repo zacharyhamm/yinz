@@ -117,6 +117,12 @@ pub(crate) fn prepare_input(
         let Some(session) = guard.as_mut() else {
             return Ok(Some(instruction));
         };
+        if session
+            .command_palette_restore_modes
+            .contains_key(&client_id)
+        {
+            return Ok(Some(instruction));
+        }
         let pending = session.locked_escapes.get(&client_id).copied();
         if let (Some(pending), ClientToServerMsg::Key { key, .. }) = (pending, &instruction) {
             if pending.completes(key, Instant::now()) {
@@ -155,7 +161,11 @@ pub(crate) fn prepare_input(
             let Some(session) = guard.as_mut() else {
                 return Ok(Some(instruction));
             };
-            if session.key_passthrough_clients.contains_key(&client_id) {
+            if session.key_passthrough_clients.contains_key(&client_id)
+                || session
+                    .command_palette_restore_modes
+                    .contains_key(&client_id)
+            {
                 return Ok(Some(instruction));
             }
             let timeout = session

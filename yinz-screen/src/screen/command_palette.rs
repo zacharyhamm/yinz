@@ -52,11 +52,7 @@ impl Screen {
         self.close_context_menu(client_id);
         self.bus
             .senders
-            .send_to_server(ServerInstruction::ChangeMode(
-                client_id,
-                InputMode::Locked,
-                None,
-            ))
+            .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, true))
             .context("failed to lock input when opening command palette")
             .non_fatal();
         self.command_palettes.insert(
@@ -90,6 +86,11 @@ impl Screen {
         if self.command_palettes.remove(&client_id).is_none() {
             return false;
         }
+        self.bus
+            .senders
+            .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
+            .context("failed to restore input mode when closing command palette")
+            .non_fatal();
         if self.command_palettes.is_empty() {
             self.bus
                 .senders

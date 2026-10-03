@@ -82,7 +82,7 @@ impl ServerOsApi for CapturingOs {
         unimplemented!()
     }
     fn remove_client(&mut self, _: ClientId) -> Result<()> {
-        unimplemented!()
+        Ok(())
     }
     fn load_palette(&self) -> Palette {
         unimplemented!()

@@ -193,6 +193,11 @@ impl Screen {
         base_mode: Option<InputMode>,
         client_id: ClientId,
     ) -> Result<()> {
+        let new_mode = if self.command_palettes.contains_key(&client_id) {
+            InputMode::Locked
+        } else {
+            new_mode
+        };
         let mut mode_info = self
             .mode_info
             .get(&client_id)

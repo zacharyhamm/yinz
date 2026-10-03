@@ -89,6 +89,7 @@ fn command_palette_receives_original_keys_before_write_bindings() {
         .with_config(
             r#"
             load_plugins clear-defaults=true {}
+            default_mode "locked"
             keybinds {
                 locked {
                     bind "Esc" { Write 27; }
@@ -132,23 +133,55 @@ fn command_palette_receives_original_keys_before_write_bindings() {
 
 #[test]
 fn command_palette_default_binding_captures_keys_and_paste_without_running_commands() {
+    use yinz_types::{data::InputMode, input::actions::Action};
+
     let config = yinz_config::config::Config::from_default_assets().unwrap();
     for mode in config.keybinds.0.into_keys() {
         let mut yinz = TestRunner::new(TERMINAL_SIZE)
-            .with_config(&format!(
-                "load_plugins clear-defaults=true {{}}\ndefault_mode \"{mode:?}\""
-            ))
+            .with_config(
+                r#"
+                load_plugins clear-defaults=true {}
+                keybinds {
+                    normal { bind "Ctrl x" { WriteChars "unlocked"; }; }
+                    locked { bind "Ctrl x" { WriteChars "locked"; }; }
+                }
+                "#,
+            )
             .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
             .start();
         let shell = yinz.expect_pty_spawn();
         shell.output(PROMPT);
         yinz.wait_until("shell ready", |snapshot| snapshot.contains("$"));
+        assert_eq!(
+            yinz.run_actions_reporting(vec![Action::SwitchModeForAllClients { input_mode: mode }])
+                .0,
+            0,
+        );
         let mut expected = shell.stdin_bytes();
         for close in [DO, keys::ESC.as_slice()] {
             yinz.send_stdin(DO);
             yinz.wait_until("palette opens with an empty query", |snapshot| {
                 snapshot.contains("Switch session") && snapshot.contains("New tab")
             });
+            // The timed unlock prefix must not swallow the following g inside the palette.
+            yinz.send_stdin(b"\x07g");
+            yinz.wait_until(
+                "Ctrl+g leaves the following key for the palette",
+                |snapshot| snapshot.contains("> g"),
+            );
+            yinz.send_stdin(&keys::ctrl('u'));
+            assert_eq!(
+                yinz.run_actions_reporting(vec![
+                    Action::SwitchToMode {
+                        input_mode: InputMode::Normal
+                    },
+                    Action::SwitchModeForAllClients {
+                        input_mode: InputMode::Normal
+                    },
+                ])
+                .0,
+                0,
+            );
             // Ctrl+p normally enters Pane mode; it must stay inside the palette.
             yinz.send_stdin(&keys::ctrl('p'));
             yinz.send_stdin(b"N");
@@ -163,12 +196,17 @@ fn command_palette_default_binding_captures_keys_and_paste_without_running_comma
             });
             yinz.send_stdin(b"still focused\x04");
             expected.extend_from_slice(b"still focused\x04");
-            // Opening from any mode leaves the client locked after either dismissal.
-            yinz.send_stdin(&keys::ctrl('q'));
-            expected.extend_from_slice(&keys::ctrl('q'));
-            shell.wait_for_stdin("mode and Ctrl+d passthrough preserved", |bytes| {
-                bytes == expected
+            // Observe the server's keybinding mode without a quit binding ending the test.
+            yinz.send_stdin(&keys::ctrl('x'));
+            expected.extend_from_slice(if mode == InputMode::Locked {
+                b"locked"
+            } else {
+                b"unlocked"
             });
+            shell.wait_for_stdin(
+                "original lock state and Ctrl+d passthrough restored",
+                |bytes| bytes == expected,
+            );
         }
         yinz.quit();
     }
@@ -231,11 +269,11 @@ fn command_palette_captures_paste_before_every_mode_fallback() {
             &format!("paste must preserve the underlying {mode} state"),
         );
         assert_eq!(shell.stdin_bytes(), stdin_before, "{mode}");
-        // Opening the palette switches every initial mode to Locked.
+        // Unlocked submodes return to Normal, where paste reaches the terminal.
         yinz.send_stdin("\x1b[200~é\x1b[201~".as_bytes());
         let expected = [stdin_before, "é".as_bytes().to_vec()].concat();
         shell.wait_for_stdin(
-            "locked paste reaches the terminal after dismissal",
+            "normal paste reaches the terminal after dismissal",
             |bytes| bytes == expected,
         );
         yinz.quit();

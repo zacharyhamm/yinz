@@ -375,6 +375,8 @@ pub(crate) struct SessionMetaData {
     pub session_configuration: SessionConfiguration,
     pub key_passthrough_clients: HashMap<ClientId, PaneId>,
     pub locked_escapes: HashMap<ClientId, locked_escape::LockedEscape>,
+    // Presence holds this client in Locked; dismissal restores only the original lock state.
+    command_palette_restore_modes: HashMap<ClientId, InputMode>,
     screen_thread: Option<thread::JoinHandle<()>>,
     pty_thread: Option<thread::JoinHandle<()>>,
     plugin_thread: Option<thread::JoinHandle<()>>,
@@ -396,6 +398,11 @@ impl SessionMetaData {
         completion: Option<NotificationEnd>,
     ) -> Result<()> {
         self.locked_escapes.remove(&client_id);
+        let input_mode = if self.command_palette_restore_modes.contains_key(&client_id) {
+            InputMode::Locked
+        } else {
+            input_mode
+        };
         let base_mode = self
             .session_configuration
             .get_client_default_input_mode(&client_id);
@@ -408,6 +415,33 @@ impl SessionMetaData {
                 completion,
             ))
             .context("changing client input mode")
+    }
+
+    fn set_command_palette_open(&mut self, client_id: ClientId, open: bool) -> Result<()> {
+        let mode = if open {
+            let previous_mode = self
+                .current_input_modes
+                .get(&client_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    self.session_configuration
+                        .get_client_default_input_mode(&client_id)
+                });
+            self.command_palette_restore_modes
+                .entry(client_id)
+                .or_insert(if previous_mode == InputMode::Locked {
+                    InputMode::Locked
+                } else {
+                    InputMode::Normal
+                });
+            InputMode::Locked
+        } else if let Some(mode) = self.command_palette_restore_modes.remove(&client_id) {
+            mode
+        } else {
+            return Ok(());
+        };
+        self.change_input_mode(client_id, mode, None)
+            .context("updating command palette input lock")
     }
 
     pub fn get_client_keybinds_and_mode(
@@ -456,7 +490,9 @@ impl SessionMetaData {
         self.locked_escapes.clear();
         let all_clients: Vec<ClientId> = self.current_input_modes.keys().copied().collect();
         for client_id in all_clients {
-            self.current_input_modes.insert(client_id, input_mode);
+            if !self.command_palette_restore_modes.contains_key(&client_id) {
+                self.current_input_modes.insert(client_id, input_mode);
+            }
         }
     }
     /// Reconfigure every thread for the clients whose configuration changed, each with its
@@ -568,6 +604,9 @@ fn remove_client_and_flush_forwards(
     session_data: &Arc<RwLock<Option<SessionMetaData>>>,
 ) {
     let _ = os_input.remove_client(client_id);
+    with_session_mut(session_data, |session| {
+        session.command_palette_restore_modes.remove(&client_id);
+    });
     let stuck_tokens = session_state.write().unwrap().remove_client(client_id);
     if stuck_tokens.is_empty() {
         return;
@@ -1767,6 +1806,20 @@ pub fn start_server_impl(
                         .non_fatal()
                 });
             },
+            ServerInstruction::SetCommandPaletteOpen(client_id, open) => {
+                if session_state
+                    .read()
+                    .unwrap()
+                    .interactive_clients
+                    .contains(&client_id)
+                {
+                    with_session_mut(&session_data, |session| {
+                        session
+                            .set_command_palette_open(client_id, open)
+                            .non_fatal();
+                    });
+                }
+            },
             ServerInstruction::ResolveLockedEscape(client_id, token) => {
                 let mut guard = session_data
                     .write()
@@ -2560,6 +2613,7 @@ fn init_session(
         session_recorder_thread,
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
+        command_palette_restore_modes: HashMap::new(),
         config_file_path: cli_assets.config_file_path,
         config_dir: cli_assets.config_dir,
     }
