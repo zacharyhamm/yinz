@@ -621,6 +621,28 @@ impl Screen {
         }
     }
 
+    fn validate_palette_split(
+        &self,
+        pane: PaneId,
+        tab: TabId,
+        action: &Action,
+    ) -> std::result::Result<(), String> {
+        if matches!(
+            action,
+            Action::NewTiledPane {
+                direction: Some(_),
+                ..
+            }
+        ) && !self.tabs.get(&tab).is_some_and(|tab| {
+            !tab.are_floating_panes_visible() && tab.get_tiled_pane_ids().contains(&pane)
+        }) {
+            return Err(
+                "Directional splits require a tiled pane with floating panes hidden.".into(),
+            );
+        }
+        Ok(())
+    }
+
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
         if outcome == Outcome::Dismiss {
             self.close_command_palette(client);
@@ -679,7 +701,10 @@ impl Screen {
                 }
             },
         };
-        match result {
+        match result.and_then(|action| {
+            self.validate_palette_split(pane, tab, &action)?;
+            Ok(action)
+        }) {
             Ok(action) => {
                 self.close_command_palette(client);
                 self.bus
@@ -887,6 +912,13 @@ impl Screen {
                     None,
                     None,
                 ))
+                .non_fatal();
+            return;
+        }
+        if let Err(error) = self.validate_palette_split(pane, tab, &action) {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::Notify(error, None, None, None))
                 .non_fatal();
             return;
         }
