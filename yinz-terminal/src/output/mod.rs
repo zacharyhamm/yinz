@@ -1246,20 +1246,27 @@ impl Output {
             // Add padding instructions if max_size is larger than content_size
             if let (Some(max_size), Some(content_size)) = (max_size, content_size) {
                 if max_size.rows > content_size.rows || max_size.cols > content_size.cols {
-                    // Clear each line from the end of rendered content to the end of the watcher's line
-                    for y in 0..content_size.rows {
-                        let padding_instruction = format!(
-                            "\u{1b}[{};{}H\u{1b}[m\u{1b}[K",
-                            y + 1,
-                            content_size.cols + 1
-                        );
-                        client_serialized_render_instructions.push_str(&padding_instruction);
+                    // Padding must preserve the cursor even when this frame has no pane content.
+                    client_serialized_render_instructions.push_str("\u{1b}[s");
+                    if max_size.cols > content_size.cols {
+                        // Stay within visible rows: hosts clamp out-of-range cursor moves.
+                        for y in 0..content_size.rows.min(max_size.rows) {
+                            let padding_instruction = format!(
+                                "\u{1b}[{};{}H\u{1b}[m\u{1b}[K",
+                                y + 1,
+                                content_size.cols + 1
+                            );
+                            client_serialized_render_instructions.push_str(&padding_instruction);
+                        }
                     }
 
-                    // Clear all content below the last rendered line
-                    let clear_below_instruction =
-                        format!("\u{1b}[{};{}H\u{1b}[m\u{1b}[J", content_size.rows + 1, 1);
-                    client_serialized_render_instructions.push_str(&clear_below_instruction);
+                    if max_size.rows > content_size.rows {
+                        // Clear all content below the last rendered line.
+                        let clear_below_instruction =
+                            format!("\u{1b}[{};{}H\u{1b}[m\u{1b}[J", content_size.rows + 1, 1);
+                        client_serialized_render_instructions.push_str(&clear_below_instruction);
+                    }
+                    client_serialized_render_instructions.push_str("\u{1b}[u");
                 }
             }
 

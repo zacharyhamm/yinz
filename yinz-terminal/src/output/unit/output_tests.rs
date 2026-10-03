@@ -595,6 +595,51 @@ fn test_serialize_with_size_adds_padding_instructions() {
 }
 
 #[test]
+fn test_serialize_with_size_pads_only_extra_watcher_space() {
+    let content_size = Size { rows: 2, cols: 4 };
+    for (watcher_size, padding) in [
+        (
+            Size { rows: 1, cols: 6 },
+            "\x1b[s\x1b[1;5H\x1b[m\x1b[K\x1b[u",
+        ),
+        (
+            Size { rows: 3, cols: 2 },
+            "\x1b[s\x1b[3;1H\x1b[m\x1b[J\x1b[u",
+        ),
+        (
+            Size { rows: 3, cols: 6 },
+            "\x1b[s\x1b[1;5H\x1b[m\x1b[K\x1b[2;5H\x1b[m\x1b[K\x1b[3;1H\x1b[m\x1b[J\x1b[u",
+        ),
+        (content_size, ""),
+    ] {
+        let mut output = create_test_output();
+        let client = ClientId::new(1);
+        output.add_clients(
+            &create_test_clients(1),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output.add_pre_vte_instruction_to_client(client, "\x1b[?25l");
+        output
+            .add_character_chunks_to_client(
+                client,
+                vec![create_character_chunk_from_str("Hi", 0, 0)],
+                None,
+            )
+            .unwrap();
+        output.add_post_vte_instruction_to_client(client, "\x1b[6 q");
+        let result = output
+            .serialize_with_size(Some(watcher_size), Some(content_size))
+            .unwrap();
+        assert_eq!(
+            result[&client],
+            format!("\x1b[?25l{padding}\x1b[1;1H\x1b[mHi\x1b[6 q"),
+            "watcher size: {watcher_size:?}"
+        );
+    }
+}
+
+#[test]
 fn test_serialize_with_size_hides_cursor_when_cropped() {
     let mut output = create_test_output();
     let client_ids = create_test_clients(1);
