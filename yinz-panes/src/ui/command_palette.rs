@@ -24,11 +24,13 @@ pub enum EntryKind {
     Tab,
     Session,
     ExitedSession,
+    Project,
 }
 
 impl EntryKind {
     fn parent_label(self) -> Option<&'static str> {
         match self {
+            Self::Project => Some("Switch current project"),
             Self::Command => None,
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
@@ -131,6 +133,7 @@ impl Form {
 
 #[derive(Default)]
 pub struct CommandPalette {
+    pub current_project: Option<String>,
     input: TextInput,
     selected: usize,
     entries: Vec<Entry>,
@@ -189,10 +192,12 @@ impl CommandPalette {
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
-                self.picker.is_none_or(|kind| {
-                    entry.kind == kind
-                        || (kind == EntryKind::Session && entry.kind == EntryKind::ExitedSession)
-                })
+                self.picker
+                    .map_or(entry.kind != EntryKind::Project, |kind| {
+                        entry.kind == kind
+                            || (kind == EntryKind::Session
+                                && entry.kind == EntryKind::ExitedSession)
+                    })
             })
             .filter_map(|(index, entry)| {
                 std::iter::once(&entry.label)
@@ -234,7 +239,7 @@ impl CommandPalette {
         self.error = Some(error);
     }
 
-    fn back(&mut self) -> Outcome {
+    pub fn back(&mut self) -> Outcome {
         self.error = None;
         if self.form.take().is_some() {
             return Outcome::None;
@@ -525,7 +530,20 @@ impl CommandPalette {
             .map(|y| {
                 let mut shortcut_start = usize::MAX;
                 let (text, styles) = if layout.border == 1 && y == rect.y {
-                    (format!("╭{}╮", fit(" Do ", width, '─')), border.clone())
+                    (
+                        format!(
+                            "╭{}╮",
+                            fit(
+                                &format!(
+                                    " Do · Project: {} ",
+                                    self.current_project.as_deref().unwrap_or("None")
+                                ),
+                                width,
+                                '─'
+                            )
+                        ),
+                        border.clone(),
+                    )
                 } else if layout.border == 1 && y == rect.y + rect.rows - 1 {
                     (format!("╰{}╯", "─".repeat(width)), border.clone())
                 } else {
@@ -624,7 +642,13 @@ impl CommandPalette {
                                 format!("{label} {shortcut}")
                             }
                         } else if self.matches.is_empty() && y == layout.options_y {
-                            "No matches".into()
+                            if self.picker == Some(EntryKind::Project)
+                                && !self.entries.iter().any(|e| e.kind == EntryKind::Project)
+                            {
+                                "No projects".into()
+                            } else {
+                                "No matches".into()
+                            }
                         } else {
                             String::new()
                         };

@@ -2843,6 +2843,15 @@ pub fn screen_thread_main(
                     screen.arrange_project_panes(groups, client_id).non_fatal();
                     screen.render()?;
                 },
+                ScreenInstruction::SetProjectContext(projects, panes) => {
+                    screen.projects = projects.into_iter().collect();
+                    screen.pane_projects = panes
+                        .into_iter()
+                        .filter(|(_, project)| screen.projects.contains(project))
+                        .collect();
+                    screen.reconcile_project_contexts();
+                    screen.render()?;
+                },
                 ScreenInstruction::SetTabProjects(tab_projects) => {
                     // Whole map each time, so a tab that lost its project loses the
                     // name with it. Tabs we have never heard of are kept: a plugin can
@@ -4280,6 +4289,7 @@ pub fn screen_thread_main(
             .settle_tabs()
             .context("failed to settle tabs after instruction")
             .non_fatal();
+        screen.reconcile_project_contexts();
         // Teardown can finish before its queued close notification reaches this thread.
         pending
             .waiting_for_pane

@@ -1549,6 +1549,11 @@ pub fn arrange_project_panes(groups: Vec<ProjectPaneGroup>) {
     send(PluginCommand::ArrangeProjectPanes(groups));
 }
 
+/// Replace the registered project names and pane memberships for this session.
+pub fn set_project_context(projects: Vec<String>, panes: Vec<(PaneId, String)>) {
+    send(PluginCommand::SetProjectContext(projects, panes));
+}
+
 /// Tells the host which project each tab is working on, keyed by tab id.
 ///
 /// Not a rename: the name is shown in place of the tab's default "Tab #N", and a

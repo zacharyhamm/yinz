@@ -643,3 +643,66 @@ fn arrangement_loads_chrome_for_a_new_project_tab() {
         }
     }
 }
+
+#[test]
+fn registry_updates_palette_and_switching_project_preserves_focus() {
+    let folder = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let config = format!(
+        r#"{HOCUS_PROJECT_CONFIG}
+        keybinds {{ shared {{ bind "Ctrl Alt p" {{ ToggleCommandPalette; }}; }}; }}
+    "#
+    );
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&config)
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane cwd=\"{}\"; }}",
+            folder.path().display()
+        )))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(b"$ ");
+    yinz.wait_until("shell ready", |screen| screen.contains("$"));
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.wait_until("empty project context", |screen| {
+        screen.contains("Project: None")
+    });
+    mutate_store(
+        &yinz,
+        "project_remember",
+        serde_json::json!({
+            "name": "alpha", "root": folder.path(),
+        }),
+    );
+    yinz.wait_until("registry reaches open palette", |screen| {
+        screen.contains("Project: alpha")
+    });
+    mutate_store(
+        &yinz,
+        "project_remember",
+        serde_json::json!({
+            "name": "beta", "root": other.path(),
+        }),
+    );
+    yinz.send_stdin(b"Switch current project");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("projects without panes appear", |screen| {
+        screen.contains("beta") && screen.contains("Current")
+    });
+    yinz.send_stdin(b"beta");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("selection returns to previous search", |screen| {
+        screen.contains("Project: beta") && screen.contains("> Switch current project")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("palette closed", |screen| !screen.contains("Project: beta"));
+    yinz.send_stdin(b"still focused");
+    shell.wait_for_stdin("input reaches original pane", |bytes| {
+        bytes.ends_with(b"still focused")
+    });
+    yinz.send_stdin(b"\x1b[112;7u");
+    yinz.wait_until("selection survives palette lifetime", |screen| {
+        screen.contains("Project: beta")
+    });
+    yinz.quit();
+}

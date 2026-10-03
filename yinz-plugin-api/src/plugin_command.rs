@@ -152,12 +152,12 @@ pub use super::generated_api::api::{
         OrphanedPaneList as ProtobufOrphanedPaneList, OverrideLayoutPayload,
         PageScrollDownInPaneIdPayload, PageScrollUpInPaneIdPayload,
         PaneGitProbe as ProtobufPaneGitProbe, PaneId as ProtobufPaneId,
-        PaneIdAndFloatingPaneCoordinates, PaneType as ProtobufPaneType, ParseLayoutPayload,
-        ParseLayoutResponse as ProtobufParseLayoutResponse, PluginCommand as ProtobufPluginCommand,
-        PluginMessagePayload, ProjectConfigWritePayload, QueueStatusPayload,
-        QueueStatusResponse as ProtobufQueueStatusResponse, ReadPluginLogPayload,
-        ReadPluginLogResponse as ProtobufReadPluginLogResponse, RebindKeysPayload,
-        ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
+        PaneIdAndFloatingPaneCoordinates, PaneProject, PaneType as ProtobufPaneType,
+        ParseLayoutPayload, ParseLayoutResponse as ProtobufParseLayoutResponse,
+        PluginCommand as ProtobufPluginCommand, PluginMessagePayload, ProjectConfigWritePayload,
+        QueueStatusPayload, QueueStatusResponse as ProtobufQueueStatusResponse,
+        ReadPluginLogPayload, ReadPluginLogResponse as ProtobufReadPluginLogResponse,
+        RebindKeysPayload, ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
         RegexHighlight as ProtobufRegexHighlight, ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         ReplacePaneWithExistingPanePayload, RequestPluginPermissionPayload,
@@ -174,9 +174,9 @@ pub use super::generated_api::api::{
         SetPaneBorderlessPayload, SetPaneColorPayload,
         SetPaneFrameStylePayload as ProtobufSetPaneFrameStylePayload,
         SetPaneRegexHighlightsPayload, SetPaneSubtitlePayload, SetPaneTitlePrefixPayload,
-        SetQuitNoticePayload, SetRelatedPanesPayload, SetSelfMouseSelectionSupportPayload,
-        SetTabProjectsPayload, SetTimeoutPayload, ShowCursorPayload,
-        ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
+        SetProjectContextPayload, SetQuitNoticePayload, SetRelatedPanesPayload,
+        SetSelfMouseSelectionSupportPayload, SetTabProjectsPayload, SetTimeoutPayload,
+        ShowCursorPayload, ShowFloatingPanesPayload as ProtobufShowFloatingPanesPayload,
         ShowFloatingPanesResponse as ProtobufShowFloatingPanesResponse, ShowPaneWithIdPayload,
         SpawnAgentPayload, SpawnAgentResponse as ProtobufSpawnAgentResponse, StackPanesPayload,
         SubscribePayload, SwitchSessionPayload, SwitchTabToIdPayload, SwitchTabToPayload,
@@ -2364,6 +2364,24 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     ))
                 },
                 _ => Err("Mismatched payload for ArrangeProjectPanes"),
+            },
+            Some(CommandName::SetProjectContext) => match protobuf_plugin_command.payload {
+                Some(Payload::SetProjectContextPayload(payload)) => {
+                    Ok(PluginCommand::SetProjectContext(
+                        payload.projects,
+                        payload
+                            .panes
+                            .into_iter()
+                            .map(|pane| {
+                                Ok((
+                                    pane.pane_id.ok_or("missing project pane id")?.try_into()?,
+                                    pane.project,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, &'static str>>()?,
+                    ))
+                },
+                _ => Err("Mismatched payload for SetProjectContext"),
             },
             Some(CommandName::SetTabProjects) => match protobuf_plugin_command.payload {
                 Some(Payload::SetTabProjectsPayload(payload)) => Ok(PluginCommand::SetTabProjects(
@@ -4881,6 +4899,23 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                                 pane_ids: g.pane_ids,
                             })
                             .collect(),
+                    },
+                )),
+            }),
+            PluginCommand::SetProjectContext(projects, panes) => Ok(ProtobufPluginCommand {
+                name: CommandName::SetProjectContext as i32,
+                payload: Some(Payload::SetProjectContextPayload(
+                    SetProjectContextPayload {
+                        projects,
+                        panes: panes
+                            .into_iter()
+                            .map(|(pane_id, project)| {
+                                Ok(PaneProject {
+                                    pane_id: Some(pane_id.try_into()?),
+                                    project,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, &'static str>>()?,
                     },
                 )),
             }),
@@ -8149,6 +8184,7 @@ mod tests {
                 | PluginCommand::CloseTabWithId(_)
                 | PluginCommand::RenameTabWithId(..)
                 | PluginCommand::ArrangeProjectPanes(_)
+                | PluginCommand::SetProjectContext(..)
                 | PluginCommand::SetTabProjects(_)
                 | PluginCommand::BreakPanesToTabWithId(..)
                 | PluginCommand::ReloadPlugin(_)

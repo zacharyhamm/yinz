@@ -51,6 +51,7 @@ fn host_sugar_builds_unit_positional_array_and_named_payloads() {
       bind({load() {
         check(yinz.host.getPluginIds().client_id === 5);
         yinz.host.switchTabTo(2);
+        yinz.host.setProjectContext(["alpha"], [[{Terminal: 7}, "alpha"]]);
         yinz.host.renameTab(0, 'logs');
         yinz.host.renameTab([0, 'logs']);
         yinz.host.renameTab({tabIndex: 0, name: 'logs'});
@@ -83,7 +84,7 @@ fn host_sugar_builds_unit_positional_array_and_named_payloads() {
     capture_commands(&mut runtime);
     run(&mut runtime, r#"
       const expected = [
-        'GetPluginIds', {SwitchTabTo: 2}, {RenameTab: [0, 'logs']}, {RenameTab: [0, 'logs']}, {RenameTab: [0, 'logs']},
+        'GetPluginIds', {SwitchTabTo: 2}, {SetProjectContext: [['alpha'], [[{Terminal: 7}, 'alpha']]]}, {RenameTab: [0, 'logs']}, {RenameTab: [0, 'logs']}, {RenameTab: [0, 'logs']},
         {RenameTabWithId: [4, 'four']}, {RenameTerminalPane: [1, 'one']}, {RenamePluginPane: [2, 'two']},
         {FocusTerminalPane: [7, null, null]}, {FocusPluginPane: [8, true, false]},
         {ShowPaneWithId: [{Terminal: 7}, false, true]}, {SetFloatingPanePinned: [{Plugin: 3}, true]},
