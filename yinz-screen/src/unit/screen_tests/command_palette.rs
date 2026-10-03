@@ -415,6 +415,212 @@ fn palette_builtin_actions_capture_origin_and_close_before_dispatch() {
 }
 
 #[test]
+fn palette_rejects_directional_splits_without_losing_input() {
+    for target in ["floating", "overlay", "tiled-with-floating-visible"] {
+        for (query, placement_steps) in [("Split right", 1), ("Split down", 2)] {
+            for form in [false, true] {
+                let mut screen = screen();
+                let other = PaneId::Terminal(TerminalId::new(2));
+                if target == "overlay" {
+                    screen
+                        .get_active_tab_mut(CLIENT)
+                        .unwrap()
+                        .new_overlay_pane(
+                            other,
+                            None,
+                            None,
+                            false,
+                            true,
+                            OverlayPlacement::dismissible(None),
+                            None,
+                        )
+                        .unwrap();
+                    assert_eq!(screen.get_active_pane_id(&CLIENT), Some(other));
+                } else if target == "floating" {
+                    screen = floating_only_screen();
+                }
+                let receiver = palette_actions_receiver(&mut screen);
+                let renders = screen_wired_to_server(&mut screen);
+                palette_search(&mut screen, if form { "New pane…" } else { query });
+                if form {
+                    palette_key(&mut screen, BareKey::Enter);
+                    screen.command_palette_handles_input(&None, b"keep-name", false, CLIENT);
+                    palette_key(&mut screen, BareKey::Enter);
+                    screen.command_palette_handles_input(&None, b"/tmp", false, CLIENT);
+                    palette_key(&mut screen, BareKey::Enter);
+                    for _ in 0..placement_steps {
+                        palette_key(&mut screen, BareKey::Right);
+                    }
+                    palette_key(&mut screen, BareKey::Enter);
+                }
+                if target == "tiled-with-floating-visible" {
+                    screen
+                        .get_active_tab_mut(CLIENT)
+                        .unwrap()
+                        .new_floating_pane(other, None, None, false, true, None, None)
+                        .unwrap();
+                }
+                palette_key(&mut screen, BareKey::Enter);
+                assert!(screen.command_palettes.contains_key(&CLIENT));
+                assert!(
+                    receiver.try_recv().is_err(),
+                    "{target}, {query}, form={form}"
+                );
+                let mut grid = grid_for_render_snapshot(SIZE);
+                let rendered = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+                // The footer clips the full error to the palette width.
+                assert!(
+                    rendered.contains("splits require a tiled pane"),
+                    "{rendered}"
+                );
+                if form {
+                    for value in [
+                        "keep-name",
+                        "/tmp",
+                        if placement_steps == 1 {
+                            "Right"
+                        } else {
+                            "Down"
+                        },
+                    ] {
+                        assert!(rendered.contains(value), "{rendered}");
+                    }
+                } else {
+                    assert!(rendered.contains(&format!("> {query}")), "{rendered}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn palette_rechecks_directional_splits_before_dispatch() {
+    for query in ["Split right", "Split down"] {
+        for change in ["floating-visible", "target-floating", "target-moved"] {
+            let mut screen = screen();
+            let receiver = palette_actions_receiver(&mut screen);
+            palette_search(&mut screen, query);
+            palette_key(&mut screen, BareKey::Enter);
+            assert!(screen.command_palettes.is_empty());
+            let action = enqueued_palette_action(&receiver);
+            let origin = PaneId::Terminal(TerminalId::new(1));
+            let other = PaneId::Terminal(TerminalId::new(2));
+            let tab = screen.get_active_tab_mut(CLIENT).unwrap();
+            if change == "floating-visible" {
+                tab.new_floating_pane(other, None, None, false, true, None, None)
+                    .unwrap();
+            } else {
+                tab.horizontal_split(other, None, None, CLIENT, None, None)
+                    .unwrap();
+                if change == "target-floating" {
+                    tab.toggle_pane_embed_or_floating_for_pane_id(origin, None)
+                        .unwrap();
+                    tab.hide_floating_panes();
+                } else {
+                    new_tab(&mut screen, 3, TabId::new(1));
+                    screen
+                        .move_command_palette_pane(
+                            origin,
+                            TabId::new(0),
+                            Some(Direction::Right),
+                            CLIENT,
+                        )
+                        .unwrap();
+                }
+            }
+            let (sender, pty_receiver) = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+            screen.dispatch_command_palette_action(origin, TabId::new(0), action, false, CLIENT);
+            assert!(matches!(
+                receiver.try_recv().unwrap().0,
+                ScreenInstruction::Notify(message, None, None, None)
+                    if message == "Directional splits require a tiled pane with floating panes hidden."
+            ));
+            assert!(pty_receiver.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn palette_dispatches_supported_pane_placements() {
+    for floating_visible in [false, true] {
+        for (query, placement_steps, direction, floating) in [
+            ("Split right", None, Some(Direction::Right), false),
+            ("Split down", None, Some(Direction::Down), false),
+            ("New pane…", Some(1), Some(Direction::Right), false),
+            ("New pane…", Some(2), Some(Direction::Down), false),
+            ("New pane…", Some(0), None, false),
+            ("New pane…", Some(3), None, true),
+            ("New floating pane", None, None, true),
+            ("New pane", None, None, floating_visible),
+        ] {
+            if floating_visible && direction.is_some() {
+                continue;
+            }
+            let expected = if floating {
+                NewPanePlacement::Floating(None)
+            } else {
+                NewPanePlacement::Tiled {
+                    direction,
+                    borderless: None,
+                }
+            };
+            let mut screen = if floating_visible {
+                floating_only_screen()
+            } else {
+                screen()
+            };
+            let origin = screen.get_active_pane_id(&CLIENT).unwrap();
+            let receiver = palette_actions_receiver(&mut screen);
+            palette_search(&mut screen, query);
+            if let Some(placement_steps) = placement_steps {
+                for _ in 0..3 {
+                    palette_key(&mut screen, BareKey::Enter);
+                }
+                for _ in 0..placement_steps {
+                    palette_key(&mut screen, BareKey::Right);
+                }
+                palette_key(&mut screen, BareKey::Enter);
+            }
+            palette_key(&mut screen, BareKey::Enter);
+            assert!(screen.command_palettes.is_empty());
+            let ScreenInstruction::ActivateCommandPaletteAction {
+                pane_id,
+                tab_id,
+                action,
+                create_session,
+                client_id,
+            } = receiver.try_recv().unwrap().0
+            else {
+                panic!("expected palette activation");
+            };
+            assert_eq!(pane_id, origin);
+            let (sender, pty_receiver) = channels::unbounded();
+            screen.bus.senders.to_pty = Some(SenderWithContext::new(sender));
+            screen.dispatch_command_palette_action(
+                pane_id,
+                tab_id,
+                action,
+                create_session,
+                client_id,
+            );
+            let instruction = pty_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .0;
+            match instruction {
+                PtyInstruction::SpawnTerminal(_, _, placement, _, target, completion, _) => {
+                    assert_eq!(placement, expected);
+                    assert_eq!(target, ClientTabIndexOrPaneId::PaneId(origin));
+                    drop(completion);
+                },
+                other => panic!("unexpected instruction: {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn palette_forms_validate_session_names_and_capture_creation_values() {
     let mut screen = screen();
     let receiver = palette_actions_receiver(&mut screen);
