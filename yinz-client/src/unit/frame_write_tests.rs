@@ -36,7 +36,7 @@ impl Write for FullHost {
 }
 
 /// Retries at once: `FullHost` takes more on the very next write.
-fn host_writer(host: FullHost) -> HostWriter<FullHost> {
+fn host_writer<W: Write>(host: W) -> HostWriter<W> {
     HostWriter::new(host, |_| Ok(()))
 }
 
@@ -118,6 +118,51 @@ fn interrupted_readiness_polls_retry_without_losing_partial_output() {
     let mut host = HostWriter::new(FullHost::default(), |_| Err(ErrorKind::Interrupted.into()));
     write_synchronised(&mut host, None, b"whole-frame").unwrap();
     assert_eq!(host.get_ref().written, b"whole-frame");
+}
+
+/// Takes whatever it is given, counting the calls it took to get it.
+#[derive(Default)]
+struct VectoredHost {
+    written: Vec<u8>,
+    writes: usize,
+}
+
+impl Write for VectoredHost {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.writes += 1;
+        self.written.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.writes += 1;
+        for buf in bufs {
+            self.written.extend_from_slice(buf);
+        }
+        Ok(bufs.iter().map(|buf| buf.len()).sum())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_host_with_room_takes_a_synchronized_frame_in_one_write() {
+    use super::write_synchronised_tracking;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    for sync in [None, Some(SyncOutput::Csi), Some(SyncOutput::Dcs)] {
+        let open = AtomicU8::new(0);
+        let mut host = host_writer(VectoredHost::default());
+        write_synchronised_tracking(&mut host, sync, b"whole-frame", &open).unwrap();
+        let expected = [
+            sync.map_or(&[][..], |sync| sync.start_seq()),
+            b"whole-frame",
+            sync.map_or(&[][..], |sync| sync.end_seq()),
+        ]
+        .concat();
+        assert_eq!(host.get_ref().written, expected);
+        assert_eq!(host.get_ref().writes, 1);
+        assert_eq!(open.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// Fail once after a byte prefix, so a start marker, payload or end marker can be

@@ -9,7 +9,7 @@
 
 use crate::os_input_output::{StdioAccess, TtyControl, DISABLE_MOUSE_SUPPORT};
 use crate::stdin_ansi_parser::SyncOutput;
-use std::io::Write;
+use std::io::{IoSlice, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use yinz_ipc::nested_session;
@@ -161,32 +161,45 @@ fn write_synchronised_tracking(
         Some(SyncOutput::Dcs) => 2,
         None => 0,
     };
-    let written = sync
-        .map_or(Ok(()), |sync| {
-            // Record the first accepted byte: even a partial introducer needs cleanup.
-            let mut start = sync.start_seq();
-            while !start.is_empty() {
-                match w.write(start) {
-                    Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
-                    Ok(n) => {
-                        open.fetch_or(sync_bit, Ordering::SeqCst);
-                        start = &start[n..];
-                    },
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
-        })
-        .and_then(|()| w.write_all(bytes));
-    let closed = sync
-        .filter(|_| open.load(Ordering::SeqCst) & sync_bit != 0)
-        .map_or(Ok(()), |sync| w.write_all(sync.end_seq()));
+    let (start, end) = sync.map_or((&[][..], &[][..]), |sync| {
+        (sync.start_seq(), sync.end_seq())
+    });
+    // One vectored write, so a host that takes the whole frame gets it in one syscall.
+    let mut slices = [IoSlice::new(start), IoSlice::new(bytes), IoSlice::new(end)];
+    let mut pending = &mut slices[..];
+    let total = start.len() + bytes.len() + end.len();
+    let mut accepted = 0;
+    let written = loop {
+        if accepted == total {
+            break Ok(());
+        }
+        match w.write_vectored(pending) {
+            Ok(0) => break Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                // Record the first accepted byte: even a partial introducer needs cleanup.
+                open.fetch_or(sync_bit, Ordering::SeqCst);
+                accepted += n;
+                IoSlice::advance_slices(&mut pending, n);
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {},
+            Err(e) => break Err(e),
+        }
+    };
+    // A frame cut short before its end marker still closes what it, or an earlier frame,
+    // opened. One cut short inside its end marker is not retried.
+    let closed = if written.is_err()
+        && accepted <= start.len() + bytes.len()
+        && open.load(Ordering::SeqCst) & sync_bit != 0
+    {
+        w.write_all(end).map(|()| true)
+    } else {
+        Ok(written.is_ok())
+    };
     let flushed = w.flush();
-    if closed.is_ok() && flushed.is_ok() {
+    if matches!(closed, Ok(true)) && flushed.is_ok() {
         open.fetch_and(!sync_bit, Ordering::SeqCst);
     }
-    written.and(closed).and(flushed)
+    written.and(closed.map(drop)).and(flushed)
 }
 
 /// Set once the client starts quitting; from then on a stalled host terminal is given up on.
@@ -302,6 +315,10 @@ impl<W: Write> HostWriter<W> {
 impl<W: Write> Write for HostWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.retry(|inner| inner.write(bytes))
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.retry(|inner| inner.write_vectored(bufs))
     }
 
     fn flush(&mut self) -> std::io::Result<()> {

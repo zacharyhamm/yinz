@@ -487,7 +487,7 @@ impl Pane for TerminalPane {
     }
     fn prepare_content_replay(&mut self, _client_id: ClientId) {
         self.grid.should_render = true;
-        self.grid.render_full_viewport();
+        self.grid.replay_last_render();
     }
     fn invalidate_frame(&mut self, client_id: ClientId) {
         self.frame.remove(&client_id);

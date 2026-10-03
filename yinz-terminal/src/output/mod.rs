@@ -2103,6 +2103,14 @@ impl ChangedLines {
     pub fn is_empty(&self) -> bool {
         self.words.iter().all(|word| *word == 0)
     }
+    pub fn union_with(&mut self, other: &ChangedLines) {
+        if other.words.len() > self.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        for (word, other) in self.words.iter_mut().zip(&other.words) {
+            *word |= other;
+        }
+    }
     /// Ascending line indices.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.words
@@ -2126,6 +2134,9 @@ impl ChangedLines {
 pub struct OutputBuffer {
     pub changed_lines: ChangedLines, // line index
     pub should_update_all_lines: bool,
+    /// What the last render read, kept so watchers can be sent the same lines.
+    last_read: ChangedLines,
+    last_read_all: bool,
     styled_underlines: bool,
 }
 
@@ -2134,6 +2145,8 @@ impl Default for OutputBuffer {
         OutputBuffer {
             changed_lines: ChangedLines::default(),
             should_update_all_lines: true, // first time we should do a full render
+            last_read: ChangedLines::default(),
+            last_read_all: false,
             styled_underlines: true,
         }
     }
@@ -2159,6 +2172,22 @@ impl OutputBuffer {
     pub fn clear(&mut self) {
         self.changed_lines.clear();
         self.should_update_all_lines = false;
+    }
+    /// Clear the changed lines once a render has read them, remembering them for
+    /// [`Self::replay_last_read`]. Swapping keeps both allocations.
+    pub fn consume(&mut self) {
+        std::mem::swap(&mut self.changed_lines, &mut self.last_read);
+        self.last_read_all = self.should_update_all_lines;
+        self.clear();
+    }
+    /// Mark the lines the last render read as changed again, so a second render
+    /// before any new output sends exactly what the first one did.
+    pub fn replay_last_read(&mut self) {
+        if self.last_read_all {
+            self.update_all_lines();
+        } else if !self.should_update_all_lines {
+            self.changed_lines.union_with(&self.last_read);
+        }
     }
     pub fn serialize(
         &self,

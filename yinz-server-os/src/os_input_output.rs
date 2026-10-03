@@ -215,6 +215,16 @@ struct QueueOverflow {
 }
 
 impl SendQueueState {
+    /// The registered readiness callback, once the backlog has fallen below its threshold or
+    /// the queue has closed. The caller runs it after unlocking: it re-enters the screen.
+    fn take_render_ready(&mut self) -> Option<RenderReady> {
+        let threshold = self.render_ready.as_ref()?.0;
+        if self.closed || self.queued_renders + self.pending_pane_renders.len() < threshold {
+            self.render_ready.take().map(|(_, ready)| ready)
+        } else {
+            None
+        }
+    }
     fn overflow(&self, reason: &'static str, msg: &ServerToClientMsg) -> QueueOverflow {
         let (rejected_render_len, rejected_render_capacity) = match msg {
             ServerToClientMsg::Render { content } => (content.len(), content.capacity()),
@@ -308,8 +318,9 @@ impl CoalescingSendQueue {
         let mut state = self.recover_state(self.state.lock());
         if state.closed {
             // the writer is gone; pretend-queue so late senders don't error
+            let ready = state.take_render_ready();
             drop(state);
-            self.notify_render_ready();
+            notify(ready);
             return SendQueuePush::Queued;
         }
         let outcome = match slot_for(&msg) {
@@ -347,8 +358,9 @@ impl CoalescingSendQueue {
             },
         };
         self.message_available.notify_one();
+        let ready = state.take_render_ready();
         drop(state);
-        self.notify_render_ready();
+        notify(ready);
         outcome
     }
     /// Blocks until a message is available; `None` once closed and drained.
@@ -366,8 +378,9 @@ impl CoalescingSendQueue {
                     render_bytes,
                     started: Instant::now(),
                 });
+                let ready = state.take_render_ready();
                 drop(state);
-                self.notify_render_ready();
+                notify(ready);
                 return Some(msg);
             }
             if let Some((_, msg)) = state.pending_pane_renders.pop_first() {
@@ -377,41 +390,34 @@ impl CoalescingSendQueue {
                     render_bytes,
                     started: Instant::now(),
                 });
+                let ready = state.take_render_ready();
                 drop(state);
-                self.notify_render_ready();
+                notify(ready);
                 return Some(msg);
             }
             if state.closed {
+                let ready = state.take_render_ready();
                 drop(state);
-                self.notify_render_ready();
+                notify(ready);
                 return None;
             }
             state = self.recover_state(self.message_available.wait(state));
         }
     }
     fn close(&self) {
-        self.recover_state(self.state.lock()).closed = true;
+        let mut state = self.recover_state(self.state.lock());
+        state.closed = true;
         self.message_available.notify_all();
-        self.notify_render_ready();
+        let ready = state.take_render_ready();
+        drop(state);
+        notify(ready);
     }
     fn finish_send(&self) {
-        self.recover_state(self.state.lock()).in_flight = None;
-        self.notify_render_ready();
-    }
-    fn notify_render_ready(&self) {
-        let ready = {
-            let mut state = self.recover_state(self.state.lock());
-            if state.render_ready.as_ref().is_some_and(|(threshold, _)| {
-                state.closed || state.queued_renders + state.pending_pane_renders.len() < *threshold
-            }) {
-                state.render_ready.take()
-            } else {
-                None
-            }
-        };
-        if let Some((_, ready)) = ready {
-            ready();
-        }
+        let mut state = self.recover_state(self.state.lock());
+        state.in_flight = None;
+        let ready = state.take_render_ready();
+        drop(state);
+        notify(ready);
     }
     fn render_backlog(&self) -> RenderBacklog {
         self.render_backlog_and_notify(usize::MAX, None)
@@ -435,14 +441,22 @@ impl CoalescingSendQueue {
                 state.render_ready = Some((threshold, ready.clone()));
             }
         }
+        let ready = state.take_render_ready();
         drop(state);
-        self.notify_render_ready();
+        notify(ready);
         backlog
     }
     #[cfg(test)]
     fn len(&self) -> usize {
         let state = self.recover_state(self.state.lock());
         state.control.len() + state.pending_pane_renders.len()
+    }
+}
+
+/// Runs a readiness callback taken under the queue lock, once that lock is released.
+fn notify(ready: Option<RenderReady>) {
+    if let Some(ready) = ready {
+        ready();
     }
 }
 

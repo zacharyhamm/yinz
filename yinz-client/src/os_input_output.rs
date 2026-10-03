@@ -581,6 +581,10 @@ impl Write for StdoutWriter {
         self.writer().write(bytes)
     }
 
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.writer().write_vectored(bufs)
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         self.writer().flush()
     }

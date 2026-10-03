@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use yinz_runtime::errors::FatalError;
+use yinz_runtime::errors::{FatalError, LoggableError};
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabNumber;
 
@@ -638,7 +638,7 @@ pub fn start_client(
         let os_api = os_input.clone();
         move || os_api.get_stdout_writer()
     })
-    .inspect_err(|e| log::error!("{e:#}"))
+    .to_log()
     .ok();
     let _signal_thread = thread::Builder::new()
         .name("signal_listener".to_string())

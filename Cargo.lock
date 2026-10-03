@@ -6647,7 +6647,6 @@ dependencies = [
  "kdl",
  "log",
  "nucleo-matcher",
- "memchr",
  "png",
  "unicode-width 0.2.2",
  "vte 0.15.0",
