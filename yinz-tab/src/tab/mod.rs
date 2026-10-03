@@ -8526,6 +8526,9 @@ impl Tab {
                 Ok(_) => output
                     .serialize()
                     .and_then(|serialized_output| {
+                        if serialized_output.is_empty() {
+                            return Ok(());
+                        }
                         self.senders
                             .send_to_server(ServerInstruction::Render(Some(serialized_output)))
                     })

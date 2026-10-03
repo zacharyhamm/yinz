@@ -1,11 +1,13 @@
-//! Bounds the frame bytes the router has read off the server socket but the client
+//! Bounds the frames and frame bytes the router has read off the server socket but the client
 //! loop has not yet written to the terminal.
 //!
 //! The channel between them holds up to 50 instructions of any size. With frames
 //! carrying multi-megabyte graphics uploads, that let a client hide hundreds of
 //! megabytes of backlog from the server, which paces its rendering on what is still
 //! queued for the socket. With the budget full, the router stops reading, the
-//! socket fills, and the server sees the client fall behind.
+//! socket fills, and the server sees the client fall behind. At most two frames
+//! are reserved, including the one being written; the router can also hold one
+//! decoded frame while waiting for room.
 
 use std::sync::{Condvar, Mutex};
 use yinz_runtime::errors::prelude::*;
@@ -22,6 +24,7 @@ pub(crate) struct RenderBudget {
 #[derive(Default)]
 struct BudgetState {
     pending: usize,
+    frames: usize,
     closed: bool,
 }
 
@@ -40,10 +43,16 @@ impl RenderBudget {
     pub fn reserve(&self, bytes: usize) -> Result<()> {
         let err_context = "failed to reserve room for a frame";
         let mut state = self.state.lock().to_anyhow().context(err_context)?;
-        while !state.closed && state.pending > 0 && state.pending + bytes > self.limit {
+        while !state.closed
+            && (state.frames >= 2
+                || (state.frames > 0
+                    && (state.pending > self.limit
+                        || bytes > self.limit.saturating_sub(state.pending))))
+        {
             state = self.room.wait(state).to_anyhow().context(err_context)?;
         }
         state.pending += bytes;
+        state.frames += 1;
         Ok(())
     }
 
@@ -55,6 +64,7 @@ impl RenderBudget {
             .to_anyhow()
             .context("failed to release a written frame")?;
         state.pending = state.pending.saturating_sub(bytes);
+        state.frames = state.frames.saturating_sub(1);
         self.room.notify_all();
         Ok(())
     }

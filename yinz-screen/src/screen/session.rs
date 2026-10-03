@@ -218,15 +218,7 @@ impl Screen {
         log::info!(
             "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
         );
-        // Purge the departed source before a regular client can reuse its id.
-        if !self.watcher_clients.contains_key(&client_id) {
-            if let Some(departed) = self
-                .followed_client_id
-                .filter(|id| !self.connected_clients.borrow().contains(id))
-            {
-                pending.remove_client_plugin_output(departed);
-            }
-        }
+        let departed = self.departed_follow_source();
         self.set_client_size(client_id, client_size);
         log::info!(
         "attach trace: screen client_id={client_id} client size recorded after {:?}; Screen::add_client begin",
@@ -236,7 +228,7 @@ impl Screen {
         // only the reflow: this handler reports and renders on its own way out.
         // Reject a client whose size leaves nothing to lay out: keeping its size in the
         // shared minimum would make every later render fail for all clients.
-        let attach_result = self.add_client(client_id);
+        let attach_result = self.register_client(client_id);
         log::info!(
         "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
         attach_started_at.elapsed(),
@@ -256,7 +248,7 @@ impl Screen {
             Err::<(), _>(error)
                 .context("failed to attach client at its reported size")
                 .non_fatal();
-            self.remove_client(client_id).non_fatal();
+            self.rollback_client_registration(client_id, departed);
             self.resize_to_clients().non_fatal();
             self.bus
                 .senders
@@ -264,6 +256,12 @@ impl Screen {
                 .non_fatal();
             attach_traces_waiting_for_first_render.remove(&client_id);
             return Ok(());
+        }
+        self.commit_following_client(client_id, departed);
+        if !self.watcher_clients.contains_key(&client_id) {
+            if let Some((source, _)) = departed {
+                pending.remove_client_plugin_output(source);
+            }
         }
         if let Some(pane_id) = pane_id_to_focus {
             log::info!(

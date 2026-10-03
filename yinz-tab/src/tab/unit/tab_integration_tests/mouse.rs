@@ -3533,3 +3533,32 @@ fn reserving_a_suppressed_multipane_slot_does_not_evict_the_tabs_working_pane() 
             .is_suppressed
     );
 }
+
+#[test]
+fn clipboard_without_terminal_bytes_still_reports_completion() {
+    use crate::tab::clipboard::ClipboardProvider;
+    use crate::tab::copy_command::CopyCommand;
+    use yinz_types::data::{CopyDestination, Event};
+    for command in [false, true] {
+        let (mut tab, plugin_rx) =
+            create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+        let (sender, server_rx) = channels::unbounded();
+        tab.senders.to_server = Some(SenderWithContext::new(sender));
+        let destination = if command {
+            tab.clipboard_provider =
+                ClipboardProvider::Command(CopyCommand::new("/usr/bin/true".into()));
+            CopyDestination::Command
+        } else {
+            tab.remove_client(ClientId::new(1));
+            tab.clipboard_provider.as_copy_destination()
+        };
+        // Empty input avoids depending on when the command closes stdin.
+        tab.write_selection_to_clipboard("").unwrap();
+        assert!(server_rx.try_recv().is_err());
+        assert!(plugin_rx
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction,
+            PluginInstruction::Update(events) if events.iter().any(|(_, _, event)|
+                matches!(event, Event::CopyToClipboard(actual) if *actual == destination)))));
+    }
+}

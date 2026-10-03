@@ -28,7 +28,9 @@ fn queued_plugin_output_follows_the_retained_source_through_disconnects() {
     let followed = ClientId::new(1);
     let watcher = ClientId::new(2);
     let other = ClientId::new(3);
-    for transition in ["retain", "switch", "replace", "reuse", "ordinary"] {
+    for transition in [
+        "retain", "release", "switch", "replace", "reuse", "ordinary",
+    ] {
         let mut mock = MockScreen::new(size);
         let server_rx = mock.server_receiver.take().unwrap();
         let screen_thread = mock.run(None, vec![]);
@@ -48,10 +50,11 @@ fn queued_plugin_output_follows_the_retained_source_through_disconnects() {
             Some((2, 1)),
         ));
         send(ScreenInstruction::RemoveClient(followed));
-        if transition != "ordinary" {
+        if !matches!(transition, "ordinary" | "retain") {
             send(ScreenInstruction::RemoveWatcherClient(watcher));
         }
         match transition {
+            "release" => send(ScreenInstruction::SetFollowedClient(followed)),
             "switch" => {
                 send(ScreenInstruction::SetFollowedClient(other));
                 // Accept the old source again so stale queued events cannot hide behind

@@ -47,36 +47,6 @@ struct ActiveWebRequestStream {
 
 const OUTPUT_TRUNCATED: &[u8] = b"\n[truncated]";
 
-/// Tells the screen when a held-back client will count as stalled. One deadline at a time:
-/// setting another, or none, abandons the last.
-#[derive(Default)]
-struct RenderDeadlineTimer {
-    task: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl RenderDeadlineTimer {
-    fn set(
-        &mut self,
-        runtime: &tokio::runtime::Handle,
-        senders: &crate::thread_bus::ThreadSenders,
-        deadline: Option<Instant>,
-    ) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-        if let Some(deadline) = deadline {
-            let senders = senders.clone();
-            self.task = Some(runtime.spawn(async move {
-                tokio::time::sleep_until(deadline.into()).await;
-                senders
-                    .send_to_screen(ScreenInstruction::RenderDeadline(deadline))
-                    .context("failed to tell the screen a render deadline passed")
-                    .non_fatal();
-            }));
-        }
-    }
-}
-
 async fn read_command_stream<R>(
     mut stream: R,
     max_output_bytes: Option<usize>,
@@ -452,7 +422,6 @@ pub enum BackgroundJob {
         u64,
     ),
     RenderToClients,
-    SetRenderDeadline(Option<Instant>),
     ClearHelpText {
         client_id: ClientId,
     },
@@ -477,7 +446,6 @@ impl From<&BackgroundJob> for BackgroundJobContext {
             BackgroundJob::CancelWebRequest(..) | BackgroundJob::WebRequestStreamFinished(..) => {
                 BackgroundJobContext::WebRequest
             },
-            BackgroundJob::SetRenderDeadline(_) => BackgroundJobContext::RenderToClients,
             other => {
                 let name: &'static str = other.into();
                 BackgroundJobContext::from_str(name).unwrap_or_else(|_| {
@@ -560,7 +528,6 @@ pub fn background_jobs_main(
         current_session_plugin_list: current_session_plugin_list.clone(),
     });
     let mut command_palette_sessions: Option<Arc<AtomicBool>> = None;
-    let mut render_deadline = RenderDeadlineTimer::default();
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -989,9 +956,6 @@ pub fn background_jobs_main(
                     Some(generation),
                     error,
                 );
-            },
-            BackgroundJob::SetRenderDeadline(deadline) => {
-                render_deadline.set(runtime.handle(), &bus.senders, deadline);
             },
             BackgroundJob::RenderToClients => {
                 // last_render_request being Some() represents a render request that is pending
@@ -3541,7 +3505,3 @@ mod web_request_stream_tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "./unit/render_deadline_tests.rs"]
-mod render_deadline_tests;

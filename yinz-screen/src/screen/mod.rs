@@ -798,7 +798,6 @@ pub(crate) struct Screen {
     pane_subscriber_snapshots_dirty: bool,
     deferred_render_tabs: HashSet<TabId>,
     deferred_subscriber_renders: bool,
-    render_deadline: Option<Instant>,
     /// What each plugin wants said, and decided, when the session is about to end.
     ///
     /// Keyed by plugin id and dropped when that plugin's pane closes, so a plugin that goes away
@@ -1419,7 +1418,6 @@ impl Screen {
             pane_subscriber_snapshots_dirty: true,
             deferred_render_tabs: HashSet::new(),
             deferred_subscriber_renders: false,
-            render_deadline: None,
             quit_notices: BTreeMap::new(),
             replacement_tab: None,
             replacement_pending: false,
@@ -2133,26 +2131,84 @@ impl Screen {
     }
 
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
+        let departed = self.departed_follow_source();
+        let result = self.register_client(client_id);
+        if result.is_ok() {
+            self.commit_following_client(client_id, departed);
+        } else {
+            self.rollback_client_registration(client_id, departed);
+        }
+        result
+    }
+
+    fn departed_follow_source(&self) -> Option<(ClientId, Option<TabId>)> {
+        self.followed_client_id
+            .filter(|id| !self.connected_clients.borrow().contains(id))
+            .map(|id| (id, self.departed_followed_tab_id))
+    }
+
+    fn rollback_client_registration(
+        &mut self,
+        client_id: ClientId,
+        departed: Option<(ClientId, Option<TabId>)>,
+    ) {
+        // A reused source id is provisional: removing it must preserve its retained pane state.
+        self.connected_clients.borrow_mut().remove(&client_id);
+        self.active_tab_ids.remove(&client_id);
+        self.tab_history.remove(&client_id);
+        self.client_sizes.remove(&client_id);
+        for tab in self.tabs.values_mut() {
+            tab.remove_client(client_id);
+        }
+        self.remove_client(client_id).non_fatal();
+        if let Some((source, tab)) = departed {
+            self.followed_client_id = Some(source);
+            self.departed_followed_tab_id = tab;
+        }
+    }
+
+    fn commit_following_client(
+        &mut self,
+        client_id: ClientId,
+        departed: Option<(ClientId, Option<TabId>)>,
+    ) {
+        if self.watcher_clients.contains_key(&client_id)
+            || (departed.is_none() && self.followed_client_id.is_some())
+        {
+            return;
+        }
+        if let Some((source, _)) = departed {
+            for tab in self.tabs.values_mut() {
+                tab.remove_client_pane_state(source);
+            }
+            if source == client_id {
+                if let Some(tab) = self
+                    .active_tab_ids
+                    .get(&client_id)
+                    .and_then(|id| self.tabs.get_mut(id))
+                {
+                    for pane_id in tab.get_all_pane_ids() {
+                        if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
+                            pane.add_client(client_id);
+                        }
+                    }
+                }
+            }
+        }
+        self.followed_client_id = Some(client_id);
+        self.departed_followed_tab_id = None;
+        self.pane_subscriber_snapshots_dirty = true;
+        for watcher in self.watcher_clients.values_mut() {
+            watcher.set_force_render();
+        }
+    }
+
+    fn register_client(&mut self, client_id: ClientId) -> Result<()> {
         let attach_started_at = std::time::Instant::now();
         let err_context = |tab_index| {
             format!("failed to attach client {client_id} to tab with index {tab_index}")
         };
         log::info!("attach trace: Screen::add_client client_id={client_id} state setup begin");
-
-        if !self.watcher_clients.contains_key(&client_id)
-            && self
-                .followed_client_id
-                .is_none_or(|id| !self.connected_clients.borrow().contains(&id))
-        {
-            // A departed client's state only serves watchers until a live client returns.
-            // Clear it before attaching, including when this connection reuses the same id.
-            if self.followed_client_id == Some(client_id) {
-                self.clear_disconnected_followed_client_state();
-            }
-            self.set_followed_client(client_id)
-                .context("failed to follow the attaching client")?;
-            self.departed_followed_tab_id = None;
-        }
 
         let mut tab_history = vec![];
         if let Some((_first_client, first_tab_history)) = self.tab_history.iter().next() {
@@ -2396,6 +2452,11 @@ impl Screen {
 
     pub fn remove_watcher_client(&mut self, client_id: ClientId) {
         self.watcher_clients.remove(&client_id);
+        if self.watcher_clients.is_empty() && self.departed_follow_source().is_some() {
+            self.clear_disconnected_followed_client_state();
+            self.followed_client_id = None;
+            self.departed_followed_tab_id = None;
+        }
         self.resume_deferred_render();
         // A watcher reports its own synchronised-output support like any other client, and ids
         // are recycled - so its answer goes with it, as `remove_client` does for a regular one.

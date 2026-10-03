@@ -540,9 +540,6 @@ pub fn screen_thread_main(
                 ScreenInstruction::RenderWriterReady => {
                     screen.on_render_writer_ready();
                 },
-                ScreenInstruction::RenderDeadline(deadline) => {
-                    screen.on_render_deadline(deadline);
-                },
                 ScreenInstruction::RenderToClients => {
                     // render_blocker.can_render() returning true means that either all pending plugins
                     // (only those waiting for a new tab layout to be applied!) have been rendered or
@@ -3889,7 +3886,13 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::RemoveWatcherClient(client_id) => {
+                    let departed = screen.departed_follow_source();
                     screen.remove_watcher_client(client_id);
+                    if screen.followed_client_id.is_none() {
+                        if let Some((source, _)) = departed {
+                            pending.remove_client_plugin_output(source);
+                        }
+                    }
                 },
                 ScreenInstruction::SetFollowedClient(client_id) => {
                     if let Some(departed) = screen.followed_client_id.filter(|id| {

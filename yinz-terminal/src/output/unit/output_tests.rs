@@ -3180,3 +3180,25 @@ mod shared_style_serialization {
         assert!(bytes.ends_with("xxx"), "{bytes:?}");
     }
 }
+
+#[test]
+fn serializers_omit_empty_clients_but_preserve_control_only_output() {
+    for sized in [false, true] {
+        let mut output = create_test_output();
+        let empty = ClientId::new(1);
+        let notified = ClientId::new(2);
+        output.add_clients(
+            &[empty, notified].into_iter().collect(),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output.add_post_vte_instruction_to_client(notified, "\x1b]9;hello\x1b\\");
+        let frames = if sized {
+            output.serialize_with_size(None, None).unwrap()
+        } else {
+            output.serialize().unwrap()
+        };
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[&notified], "\x1b]9;hello\x1b\\");
+    }
+}

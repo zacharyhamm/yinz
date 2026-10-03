@@ -72,3 +72,34 @@ fn a_poisoned_budget_notifies_the_client_loop_even_while_other_senders_are_alive
     assert!(receiver.try_recv().unwrap_err().is_empty());
     drop(other_sender);
 }
+
+#[test]
+fn two_small_or_empty_frames_fill_the_budget_until_writing_finishes() {
+    for bytes in [0, 1] {
+        let budget = Arc::new(RenderBudget::new(10));
+        budget.reserve(bytes).unwrap();
+        budget.reserve(bytes).unwrap();
+        let next = reserve_in_background(&budget, bytes);
+        assert!(next.recv_timeout(Duration::from_millis(200)).is_err());
+        budget.release(bytes).unwrap();
+        next.recv_timeout(Duration::from_secs(30)).unwrap();
+        let blocked = reserve_in_background(&budget, bytes);
+        assert!(blocked.recv_timeout(Duration::from_millis(200)).is_err());
+        budget.close().unwrap();
+        blocked.recv_timeout(Duration::from_secs(30)).unwrap();
+    }
+}
+
+#[test]
+fn an_oversized_frame_waits_even_for_a_zero_byte_reservation() {
+    let budget = Arc::new(RenderBudget::new(10));
+    budget.reserve(0).unwrap();
+    let next = reserve_in_background(&budget, 100);
+    assert!(next.recv_timeout(Duration::from_millis(200)).is_err());
+    budget.release(0).unwrap();
+    next.recv_timeout(Duration::from_secs(30)).unwrap();
+    let next = reserve_in_background(&budget, 0);
+    assert!(next.recv_timeout(Duration::from_millis(200)).is_err());
+    budget.release(100).unwrap();
+    next.recv_timeout(Duration::from_secs(30)).unwrap();
+}
