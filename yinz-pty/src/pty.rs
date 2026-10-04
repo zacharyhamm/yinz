@@ -2134,6 +2134,13 @@ impl Pty {
                         .send_to_screen(instruction)
                         .with_context(err_context)?;
                 }
+                if terminal.held.is_none() && terminal.child_exit_status.is_none() {
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal.terminal_id))
+                        .context("failed to request redraw for adopted tab pane")
+                        .non_fatal();
+                }
                 if terminal.held.is_some() {
                     self.bus
                         .senders

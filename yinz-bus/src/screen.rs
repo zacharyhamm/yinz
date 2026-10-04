@@ -584,6 +584,8 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         released: Result<ReleasedPane, String>,
     },
+    /// Nudge an adopted pane's process to repaint by briefly changing its size.
+    RequestPaneRedraw(TerminalId),
     /// The pty thread has taken a supervisor over and this session now owns
     /// `terminal_id`. All that is left is to give it a pane and paint it.
     AdoptedPaneReady {

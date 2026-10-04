@@ -521,6 +521,14 @@ fn pty_writer_records_successful_resize() {
             PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 80, 24, None, None),
             PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 100, 30, None, None),
             PtyWriteInstruction::ApplyCachedResizes,
+            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 99, 30, None, None),
+            PtyWriteInstruction::ResizePty(
+                crate::TerminalId::new(1),
+                100,
+                30,
+                Some(800),
+                Some(480),
+            ),
         ],
     );
     let resize_events: Vec<_> = rec_receiver
@@ -531,8 +539,10 @@ fn pty_writer_records_successful_resize() {
         })
         .filter(|event| event.kind == yinz_storage::session_recording::EventKind::Resize)
         .collect();
-    assert_eq!(resize_events.len(), 1);
+    assert_eq!(resize_events.len(), 3);
     assert_eq!(resize_events[0].data, b"100x30");
+    assert_eq!(resize_events[1].data, b"99x30");
+    assert_eq!(resize_events[2].data, b"100x30");
 
     // Second case: error should produce no resize event
     // Use a mock that errors on resize by overriding ServerOsApi impl: we need a variant that fails

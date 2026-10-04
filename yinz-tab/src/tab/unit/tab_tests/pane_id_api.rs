@@ -1179,3 +1179,71 @@ pub fn resizing_a_floating_pane_by_id_marks_only_the_floating_layout_as_changed(
     assert!(tab.swap_layouts.is_floating_damaged());
     assert!(!tab.swap_layouts.is_tiled_damaged());
 }
+
+#[test]
+fn request_pane_redraw_restores_content_size_and_pixels_without_changing_geometry() {
+    for columns in [1, 80] {
+        let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, false);
+        let terminal_id = TerminalId::new(1);
+        let id = PaneId::Terminal(terminal_id);
+        *tab.character_cell_size.borrow_mut() = Some(SizeInPixels {
+            width: 8,
+            height: 16,
+        });
+        let pane = tab.get_pane_with_id_mut(id).unwrap();
+        let mut geom = pane.current_geom();
+        geom.cols = yinz_types::pane_size::Dimension::fixed(columns + 2);
+        pane.set_geom(geom);
+        pane.set_content_offset(yinz_types::pane_size::Offset::frame(1));
+        let geometry = pane.current_geom();
+        let rows = pane.get_content_rows() as u16;
+        let rx = install_pty_writer_capture(&mut tab);
+        tab.request_pane_redraw(terminal_id).unwrap();
+        let instructions = drain_pty_writer(&rx);
+        assert!(matches!(instructions.as_slice(), [
+            PtyWriteInstruction::ApplyCachedResizes,
+            PtyWriteInstruction::ResizePty(id1, temporary, height1, None, None),
+            PtyWriteInstruction::ResizePty(id2, width, height2, Some(pixels_x), Some(pixels_y)),
+        ] if *id1 == terminal_id && *id2 == terminal_id
+            && *temporary == if columns == 1 { 2 } else { columns as u16 - 1 }
+            && *width == columns as u16 && *height1 == rows && *height2 == rows
+            && *pixels_x == columns as u16 * 8 && *pixels_y == rows * 16));
+        assert_eq!(tab.get_pane_with_id(id).unwrap().current_geom(), geometry);
+        tab.request_pane_redraw(TerminalId::new(99)).unwrap();
+        tab.hold_pane(id, Some(0), false, RunCommand::default());
+        tab.request_pane_redraw(terminal_id).unwrap();
+        assert!(drain_pty_writer(&rx).is_empty());
+    }
+}
+
+#[test]
+fn request_pane_redraw_waits_for_the_entire_pending_layout_event() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, false);
+    let terminal_id = TerminalId::new(1);
+    let id = PaneId::Terminal(terminal_id);
+    let rx = install_pty_writer_capture(&mut tab);
+    let (tx, screen_rx) = unbounded();
+    tab.senders.to_screen = Some(SenderWithContext::new(tx));
+    tab.is_pending = true;
+    tab.request_pane_redraw(terminal_id).unwrap();
+    assert!(drain_pty_writer(&rx).is_empty());
+    assert!(screen_rx.is_empty());
+    tab.is_pending = false;
+    tab.apply_buffered_instructions().unwrap();
+    assert!(drain_pty_writer(&rx).is_empty());
+    // Group relocation happens after the buffered instructions are drained.
+    let pane = tab.get_pane_with_id_mut(id).unwrap();
+    let mut geom = pane.current_geom();
+    geom.cols = yinz_types::pane_size::Dimension::fixed(42);
+    pane.set_geom(geom);
+    let columns = pane.get_content_columns() as u16;
+    let (crate::screen::ScreenInstruction::RequestPaneRedraw(requested), _) =
+        screen_rx.try_recv().unwrap()
+    else {
+        panic!("expected deferred redraw");
+    };
+    tab.request_pane_redraw(requested).unwrap();
+    assert!(
+        matches!(drain_pty_writer(&rx).last(), Some(PtyWriteInstruction::ResizePty(_, width, ..)) if *width == columns)
+    );
+}

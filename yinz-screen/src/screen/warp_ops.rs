@@ -1294,6 +1294,7 @@ impl Screen {
         child_exit_status: Option<Option<i32>>,
     ) -> Result<()> {
         let err_context = || format!("failed to place adopted pane {terminal_id}");
+        let request_redraw = payload.held.is_none() && child_exit_status.is_none();
         let pane_id = PaneId::Terminal(terminal_id);
         let invoked_with = Some(Run::Command(cmd.clone()));
         // A pane whose child is already gone should arrive held, showing its exit
@@ -1426,6 +1427,13 @@ impl Screen {
                 .senders
                 .send_to_screen(ScreenInstruction::SetPaneAgent(pane_id, Some(agent), None))
                 .with_context(err_context)?;
+        }
+        if request_redraw {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal_id))
+                .context("failed to request redraw for adopted pane")
+                .non_fatal();
         }
         Ok(())
     }
