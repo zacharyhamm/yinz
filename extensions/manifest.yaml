@@ -6,6 +6,7 @@ models:
     - yinz.ts
     - git_workflow.ts
     - question.ts
+    - yinz_install.ts
 reports:
     - workflow.ts
 workflows:
@@ -13,3 +14,4 @@ workflows:
     - workflow-yinz-review-integration.yaml
     - workflow-yinz-question.yaml
     - workflow-yinz-agent-exit.yaml
+    - workflow-yinz-install.yaml
