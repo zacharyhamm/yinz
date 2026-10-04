@@ -22,6 +22,32 @@ fn unsigned_option<T: TryFrom<i64>>(
 }
 
 pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
+    let background_opacity = kdl_options
+        .get("background_opacity")
+        .map(|node| {
+            let entry = node.get(0).ok_or_else(|| {
+                kdl_parsing_error!("background_opacity requires a percentage".into(), node)
+            })?;
+            let opacity = entry
+                .value()
+                .as_i64()
+                .and_then(|v| u8::try_from(v).ok())
+                .or_else(|| {
+                    let value = entry.value().as_string()?;
+                    let digits = value.strip_suffix('%').unwrap_or(value);
+                    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                        .then(|| digits.parse::<u8>().ok())
+                        .flatten()
+                })
+                .filter(|v| *v <= 100);
+            opacity.ok_or_else(|| {
+                kdl_parsing_error!(
+                    "background_opacity must be a whole percentage from 0 to 100".into(),
+                    entry
+                )
+            })
+        })
+        .transpose()?;
     let on_force_close =
         match kdl_property_first_arg_as_string_or_error!(kdl_options, "on_force_close") {
             Some((string, entry)) => Some(OnForceClose::from_str(string).map_err(|_| {
@@ -342,6 +368,7 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         serialize_pane_viewport,
         scrollback_lines_to_serialize,
         styled_underlines,
+        background_opacity,
         serialization_interval,
         disable_session_metadata,
         support_kitty_keyboard_protocol,
@@ -2320,6 +2347,14 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
         scrollback_lines_to_serialize_to_kdl(value, add_comments)
     {
         nodes.push(scrollback_lines_to_serialize);
+    }
+    if let Some(opacity) = value.background_opacity {
+        let mut node = KdlNode::new("background_opacity");
+        node.push(format!("{opacity}%"));
+        if add_comments {
+            node.set_leading("\n// Background opacity for Hocus, the command palette and translucent overlays (default: 85%).\n// Text and controls remain opaque. 0 is clear; 100 is solid.\n");
+        }
+        nodes.push(node);
     }
     if let Some(styled_underlines) = styled_underlines_to_kdl(value, add_comments) {
         nodes.push(styled_underlines);

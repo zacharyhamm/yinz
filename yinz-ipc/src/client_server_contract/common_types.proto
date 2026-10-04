@@ -1504,6 +1504,7 @@ message Options {
   optional uint64 locked_escape_timeout_ms = 75;
   optional bool agent_double_escape = 76;
   optional bool pane_animations = 77;
+  optional uint32 background_opacity = 78;
 }
 
 enum OnForceClose {

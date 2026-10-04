@@ -23,6 +23,9 @@ Options {
     firecracker_provider_timeout_secs: None,
     pane_frames: None,
     pane_animations: None,
+    background_opacity: Some(
+        85,
+    ),
     pane_frame_style: None,
     notification_position: None,
     notification_timeout: None,

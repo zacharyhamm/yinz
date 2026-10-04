@@ -345,6 +345,7 @@ pub struct Tab {
     arrow_fonts: bool,
     kitty_host_support: Option<KittyHostSupport>,
     sixel_host_support: Option<bool>,
+    background_opacity: u8,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
     explicitly_disable_kitty_keyboard_protocol: bool,
@@ -597,6 +598,7 @@ impl Tab {
             arrow_fonts,
             kitty_host_support: None,
             sixel_host_support: None,
+            background_opacity: yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY,
             styled_underlines,
             osc8_hyperlinks,
             explicitly_disable_kitty_keyboard_protocol,
@@ -5359,6 +5361,13 @@ impl Tab {
             .map(|stack| stack.layers.len())
             .unwrap_or(0)
     }
+    pub fn update_background_opacity(&mut self, opacity: u8) {
+        if self.background_opacity != opacity {
+            self.background_opacity = opacity;
+            self.set_force_render();
+        }
+    }
+
     pub fn set_overlay_background_opacity(&mut self, pane: PaneId, opacity: u8) -> Result<()> {
         self.overlay_panes.set_background_opacity(pane, opacity)?;
         self.set_force_render();
@@ -5602,7 +5611,9 @@ impl Tab {
                     .map(|index| index + floating_layers)
             })
             .map_or(0, |index| index + 1);
-        let translucent = self.overlay_panes.translucent_layers(floating_layers);
+        let translucent = self
+            .overlay_panes
+            .translucent_layers(floating_layers, self.background_opacity);
         let covered: Vec<_> = stack
             .layers
             .iter()
@@ -5807,7 +5818,7 @@ impl Tab {
         }
         let translucent = self
             .overlay_panes
-            .translucent_layers(self.floating_layer_count());
+            .translucent_layers(self.floating_layer_count(), self.background_opacity);
         if !translucent.is_empty() {
             // ponytail: repaint intersecting panes on each requested frame; add persistent cell
             // caches only if measured panel repaint cost warrants their invalidation machinery.

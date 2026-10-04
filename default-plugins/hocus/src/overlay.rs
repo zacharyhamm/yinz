@@ -12,12 +12,6 @@ use crate::ui;
 use crate::State;
 
 const DEFAULT_PAD: usize = 3;
-const DEFAULT_BACKGROUND_OPACITY: u8 = 75;
-
-fn parse_background_opacity(value: &str) -> Option<u8> {
-    let opacity = Measure::parse(value)?.of(100);
-    (opacity <= 100).then_some(opacity as u8)
-}
 const RING_FOCUS_PENDING_FRAMES: u8 = 4;
 const DEFAULT_WIDTH_PERCENT: usize = 60;
 const DEFAULT_HEIGHT_PERCENT: usize = 66;
@@ -112,11 +106,6 @@ fn split_widths(ratio: u16, rows: usize, cols: usize) -> (usize, usize) {
 pub(crate) fn geometry_warnings(config: &BTreeMap<String, String>) -> Vec<String> {
     let keys = [
         (
-            "background_opacity",
-            "a whole percentage from 0 to 100",
-            format!("{DEFAULT_BACKGROUND_OPACITY}%"),
-        ),
-        (
             "width",
             "a column count like \"120\" or a percentage like \"60%\"",
             format!("{DEFAULT_WIDTH_PERCENT}%"),
@@ -140,15 +129,11 @@ pub(crate) fn geometry_warnings(config: &BTreeMap<String, String>) -> Vec<String
     keys.into_iter()
         .filter_map(|(key, shape, fallback)| {
             let value = config.get(key)?;
-            let readable = if key == "background_opacity" {
-                parse_background_opacity(value).is_some()
-            } else {
-                match Measure::parse(value) {
-                    // The one key of the four that is never a share of anything.
-                    Some(Measure::Percent(_)) => key != "pad",
-                    Some(Measure::Cells(_)) => true,
-                    None => value.trim().is_empty(),
-                }
+            let readable = match Measure::parse(value) {
+                // The one key of the four that is never a share of anything.
+                Some(Measure::Percent(_)) => key != "pad",
+                Some(Measure::Cells(_)) => true,
+                None => value.trim().is_empty(),
             };
             (!readable).then(|| format!("{key} {value:?} is not {shape}; using {fallback}"))
         })
@@ -405,13 +390,6 @@ impl State {
         self.log_global("config_warning", serde_json::json!({ "geometry": lines }));
     }
 
-    fn background_opacity(&self) -> u8 {
-        self.kdl
-            .get("background_opacity")
-            .and_then(|value| parse_background_opacity(value))
-            .unwrap_or(DEFAULT_BACKGROUND_OPACITY)
-    }
-
     fn placement_command(
         &self,
         panel: Rect,
@@ -427,7 +405,7 @@ impl State {
                 coordinates: Some(coordinates),
                 split: None,
                 override_user_placement,
-                background_opacity: Some(self.background_opacity()),
+                background_opacity: Some(0),
             })
         } else {
             let agents = if let Some(agents) = self.panel_child_plugin() {
@@ -448,7 +426,7 @@ impl State {
                     MultipaneChild::Existing(PaneId::Plugin(self.own_plugin_id)),
                 ],
                 placement: OverlayPlacement {
-                    background_opacity: Some(self.background_opacity()),
+                    background_opacity: Some(0),
                     kind: OverlayKind::Dismissible,
                     coordinates: Some(coordinates),
                 },

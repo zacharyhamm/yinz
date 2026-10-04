@@ -762,6 +762,7 @@ pub(crate) struct Screen {
     /// shell instead of falling back to `get_default_shell()`.
     default_shell_action: Option<TerminalAction>,
     styled_underlines: bool,
+    background_opacity: u8,
     osc8_hyperlinks: bool,
     arrow_fonts: bool,
     #[cfg_attr(test, allow(dead_code))]
@@ -1230,6 +1231,7 @@ impl Screen {
             simplified_ui,
             pane_animations,
             styled_underlines,
+            background_opacity,
             osc8_hyperlinks,
             default_shell,
             default_cwd,
@@ -1377,6 +1379,7 @@ impl Screen {
             pending_pane_groups: HashMap::new(),
             pending_group_placements: HashMap::new(),
             styled_underlines,
+            background_opacity,
             osc8_hyperlinks,
             arrow_fonts,
             resurrectable_sessions_cache,
@@ -1826,6 +1829,7 @@ impl Screen {
         if let Some(aggregate) = self.sixel_host_support_aggregate() {
             tab.update_sixel_host_support(aggregate);
         }
+        tab.update_background_opacity(self.background_opacity);
         tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
         self.tabs.insert(tab_id, tab);
         Ok(())
@@ -3779,6 +3783,7 @@ impl Screen {
             simplified_ui,
             pane_animations,
             styled_underlines,
+            background_opacity,
             osc8_hyperlinks,
             default_mode,
             default_shell,
@@ -3893,6 +3898,7 @@ impl Screen {
         }
         // read every frame by the output
         self.styled_underlines = styled_underlines;
+        self.background_opacity = background_opacity;
         self.osc8_hyperlinks = osc8_hyperlinks;
         self.explicitly_disable_kitty_keyboard_protocol = disable_kitty_keyboard_protocol;
         let kitty_graphics_support_changed =
@@ -3916,6 +3922,7 @@ impl Screen {
             tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
             tab.update_session_is_mirrored(session_is_mirrored);
             tab.update_render_options(styled_underlines, osc8_hyperlinks);
+            tab.update_background_opacity(background_opacity);
             tab.update_kitty_keyboard_protocol_disabled(disable_kitty_keyboard_protocol);
             tab.sync_stacked_pane_list_mode();
         }

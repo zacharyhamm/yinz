@@ -769,6 +769,7 @@ fn test_client_messages() {
                 serialize_pane_viewport: Some(true),
                 scrollback_lines_to_serialize: Some(10000),
                 styled_underlines: Some(true),
+                background_opacity: Some(85),
                 serialization_interval: Some(yinz_types::units::ElapsedSeconds::new(1)),
                 locked_escape_timeout_ms: Some(yinz_types::units::ElapsedMillis::new(500)),
                 disable_session_metadata: Some(true),
@@ -5384,5 +5385,26 @@ fn overlay_opacity_is_optional_and_validated_at_the_ipc_boundary() {
             };
             assert_eq!(overlay.background_opacity, opacity);
         }
+    }
+}
+
+#[test]
+fn global_background_opacity_wire_range_and_roundtrip() {
+    use crate::client_server_contract::client_server_contract::Options as WireOptions;
+    for opacity in [None, Some(0), Some(85), Some(100)] {
+        let options = Options {
+            background_opacity: opacity,
+            ..Default::default()
+        };
+        let wire = WireOptions::from(options.clone());
+        assert_eq!(wire.background_opacity, opacity.map(u32::from));
+        assert_eq!(Options::try_from(wire).unwrap(), options);
+    }
+    for opacity in [101, 256, u32::MAX] {
+        assert!(Options::try_from(WireOptions {
+            background_opacity: Some(opacity),
+            ..Default::default()
+        })
+        .is_err());
     }
 }

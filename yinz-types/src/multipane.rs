@@ -231,7 +231,8 @@ pub struct UpdateMultipane {
     pub coordinates: Option<crate::geometry::FloatingPaneCoordinates>,
     pub split: Option<MultipaneSplit>,
     pub override_user_placement: bool,
-    /// None preserves the current opacity; 100 makes the container opaque.
+    /// Below 100 opts into global background_opacity; the percentage does not override it.
+    /// None preserves eligibility; 100 makes the container opaque.
     #[serde(default)]
     pub background_opacity: Option<u8>,
 }

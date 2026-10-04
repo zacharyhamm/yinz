@@ -672,3 +672,56 @@ fn legacy_startup_options_are_ignored_like_other_unknown_options() {
         );
     }
 }
+
+#[test]
+fn global_background_opacity_parsing_merge_and_serialization() {
+    for opacity in [0, 85, 100] {
+        for literal in [
+            opacity.to_string(),
+            format!("\"{opacity}\""),
+            format!("\"{opacity}%\""),
+        ] {
+            let document = format!("background_opacity {literal}").parse().unwrap();
+            let options = crate::kdl::options::from_kdl(&document).unwrap();
+            assert_eq!(options.background_opacity, Some(opacity));
+            let merged = Options {
+                background_opacity: Some(50),
+                ..Default::default()
+            }
+            .merge(options.clone());
+            assert_eq!(merged.background_opacity, Some(opacity));
+            let serialized = crate::kdl::options::to_kdl(&merged, false);
+            let mut document = KdlDocument::new();
+            document.nodes_mut().extend(serialized);
+            assert_eq!(
+                crate::kdl::options::from_kdl(&document)
+                    .unwrap()
+                    .background_opacity,
+                Some(opacity)
+            );
+            assert_eq!(
+                options.merge(Options::default()).background_opacity,
+                Some(opacity)
+            );
+        }
+    }
+    for literal in [
+        "",
+        "-1",
+        "101",
+        "256",
+        "85.5",
+        "true",
+        "\"\"",
+        "\"85.5%\"",
+        "\"+85\"",
+        "\"101%\"",
+        "\"clear\"",
+    ] {
+        let document = format!("background_opacity {literal}").parse().unwrap();
+        assert!(
+            crate::kdl::options::from_kdl(&document).is_err(),
+            "{literal}"
+        );
+    }
+}

@@ -549,13 +549,14 @@ impl OverlayPanes {
         self.set_force_render();
         Ok(())
     }
-    pub fn translucent_layers(&self, offset: usize) -> Vec<(usize, CellRect, u8)> {
+    pub fn translucent_layers(&self, offset: usize, opacity: u8) -> Vec<(usize, CellRect, u8)> {
         self.visible_containers()
             .iter()
             .enumerate()
+            .filter(|_| opacity < 100)
             .filter_map(|(index, id)| {
                 let overlay = &self.panes[id];
-                let opacity = overlay
+                overlay
                     .background_opacity
                     .filter(|opacity| *opacity < 100)?;
                 let geom = self.current_geom(overlay);

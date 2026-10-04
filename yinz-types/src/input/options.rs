@@ -204,6 +204,8 @@ impl FromStr for NotificationPosition {
     }
 }
 
+pub const DEFAULT_BACKGROUND_OPACITY: u8 = 85;
+
 /// How long a notification stays on screen when `notification_timeout` is unset.
 pub const DEFAULT_NOTIFICATION_TIMEOUT_SECS: u64 = 10;
 /// The floor a spawned agent pane's equal share of a tab must clear, as a terminal size:
@@ -283,6 +285,9 @@ pub struct Options {
     /// Animate pane opening effects (default: true).
     #[serde(default)]
     pub pane_animations: Option<bool>,
+    /// Background blending percentage for overlays that opt into transparency.
+    #[serde(default)]
+    pub background_opacity: Option<u8>,
     #[serde(default)]
     pub pane_frame_style: Option<PaneFrameStyle>,
     /// The corner notifications appear in
@@ -543,6 +548,7 @@ impl Options {
         let firecracker_provider_timeout_secs = other
             .firecracker_provider_timeout_secs
             .or(self.firecracker_provider_timeout_secs);
+        let background_opacity = other.background_opacity.or(self.background_opacity);
         let pane_animations = other.pane_animations.or(self.pane_animations);
         let pane_frames = other.pane_frames.or(self.pane_frames);
         let pane_frame_style = other.pane_frame_style.or(self.pane_frame_style);
@@ -666,6 +672,7 @@ impl Options {
             firecracker_provider_timeout_secs,
             pane_frames,
             pane_animations,
+            background_opacity,
             pane_frame_style,
             notification_position,
             notification_timeout,

@@ -43,6 +43,7 @@ pub struct ScreenConfig {
     pub pane_frame_style: PaneFrameStyle,
     pub simplified_ui: bool,
     pub pane_animations: bool,
+    pub background_opacity: u8,
     pub styled_underlines: bool,
     pub osc8_hyperlinks: bool,
     // modes, shells and paths
@@ -126,6 +127,9 @@ impl ScreenConfig {
             pane_frame_style: PaneFrameStyle::from_options(options),
             simplified_ui: options.simplified_ui.unwrap_or(false),
             pane_animations: options.pane_animations.unwrap_or(true),
+            background_opacity: options
+                .background_opacity
+                .unwrap_or(yinz_types::input::options::DEFAULT_BACKGROUND_OPACITY),
             styled_underlines: options.styled_underlines.unwrap_or(true),
             osc8_hyperlinks: options.osc8_hyperlinks.unwrap_or(true),
             default_mode: options.default_mode,

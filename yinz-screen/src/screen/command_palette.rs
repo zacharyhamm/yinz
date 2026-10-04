@@ -285,7 +285,7 @@ impl Screen {
                 .add_translucent_overlay(
                     client,
                     layout.rect,
-                    75,
+                    self.background_opacity,
                     state.widget.chunks(&layout, &self.style),
                     *self.terminal_emulator_colors.borrow(),
                     self.style.colors.text_unselected.background,

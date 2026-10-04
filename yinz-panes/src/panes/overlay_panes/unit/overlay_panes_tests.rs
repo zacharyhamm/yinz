@@ -3767,6 +3767,7 @@ fn a_click_on_a_squeezed_divider_keeps_the_ratio() {
 #[test]
 fn translucent_container_keeps_opacity_through_transfer_replacement_and_visibility() {
     let (mut panes, children, _) = composed(MultipaneDirection::LeftRight);
+    assert!(panes.translucent_layers(3, 0).is_empty());
     panes.set_background_opacity(children[0], 75).unwrap();
     assert!(panes.set_background_opacity(children[0], 101).is_err());
     assert_eq!(
@@ -3776,11 +3777,14 @@ fn translucent_container_keeps_opacity_through_transfer_replacement_and_visibili
     let container = panes.take_container(children[0]).unwrap();
     let mut destination = overlay_panes(120, 40);
     destination.insert_container(container);
-    assert_eq!(destination.translucent_layers(3)[0].0, 4);
+    assert_eq!(destination.translucent_layers(3, 85)[0].0, 4);
     destination.hide_pane(children[0]);
-    assert!(destination.translucent_layers(3).is_empty());
+    assert!(destination.translucent_layers(3, 85).is_empty());
     destination.show_pane(children[0]);
-    assert_eq!(destination.translucent_layers(3)[0].2, 75);
+    assert_eq!(destination.translucent_layers(3, 85)[0].2, 85);
+    assert!(destination.translucent_layers(3, 100).is_empty());
+    assert_eq!(destination.translucent_layers(3, 0)[0].2, 0);
+    assert_eq!(destination.translucent_layers(3, 85)[0].2, 85);
     let replacement = PaneId::Terminal(TerminalId::new(9));
     destination
         .replace_pane(children[1], mock_pane(replacement))
@@ -3795,5 +3799,6 @@ fn translucent_container_keeps_opacity_through_transfer_replacement_and_visibili
     destination
         .set_background_opacity(replacement, 100)
         .unwrap();
-    assert!(destination.translucent_layers(3).is_empty());
+    assert!(destination.translucent_layers(3, 85).is_empty());
+    assert!(destination.translucent_layers(3, 0).is_empty());
 }
