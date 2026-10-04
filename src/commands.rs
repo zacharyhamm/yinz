@@ -739,6 +739,11 @@ pub(crate) fn send_action_to_session(
 ) {
     let (requested_session_name, caller) = command_target(requested_session_name);
     fill_caller_pane(&mut cli_action, caller);
+    if let Some(session_name) = requested_session_name {
+        wait_for_command_session(&session_name);
+        attach_with_cli_client(cli_action, &session_name, config, caller);
+        return;
+    }
     let named_store_action = matches!(
         cli_action,
         yinz_cli::args::CliAction::NotesTodos(_)
@@ -751,16 +756,6 @@ pub(crate) fn send_action_to_session(
             std::process::exit(1);
         },
         ActiveSession::One(session_name) => {
-            if let Some(requested_session_name) = requested_session_name {
-                if requested_session_name != session_name {
-                    eprintln!(
-                        "Session '{}' not found. The following sessions are active:",
-                        requested_session_name
-                    );
-                    eprintln!("{}", session_name);
-                    std::process::exit(1);
-                }
-            }
             attach_with_cli_client(cli_action, &session_name, config, caller);
         },
         ActiveSession::Many => {
@@ -769,34 +764,15 @@ pub(crate) fn send_action_to_session(
                 .iter()
                 .map(|s| s.0.clone())
                 .collect();
-            if let Some(session_name) = requested_session_name {
-                if existing_sessions.contains(&session_name) {
-                    attach_with_cli_client(cli_action, &session_name, config, caller);
-                } else {
-                    eprintln!(
-                        "Session '{}' not found. The following sessions are active:",
-                        session_name
-                    );
-                    if named_store_action {
-                        for name in &existing_sessions {
-                            eprintln!("{name}");
-                        }
-                    } else {
-                        list_sessions(false, false, true, false);
-                    }
-                    std::process::exit(1);
+            eprintln!("Please specify the session name to send actions to. The following sessions are active:");
+            if named_store_action {
+                for name in &existing_sessions {
+                    eprintln!("{name}");
                 }
             } else {
-                eprintln!("Please specify the session name to send actions to. The following sessions are active:");
-                if named_store_action {
-                    for name in &existing_sessions {
-                        eprintln!("{name}");
-                    }
-                } else {
-                    list_sessions(false, false, true, false);
-                }
-                std::process::exit(1);
+                list_sessions(false, false, true, false);
             }
+            std::process::exit(1);
         },
     };
 }
@@ -844,53 +820,65 @@ pub(crate) fn resolve_session_for_command(
     purpose: &str,
 ) -> (SessionName, Option<TerminalId>) {
     let (requested_session_name, caller) = command_target(requested_session_name);
+    if let Some(session_name) = requested_session_name {
+        wait_for_command_session(&session_name);
+        return (session_name, caller);
+    }
     let session = match get_active_session() {
         ActiveSession::None => {
             eprintln!("{}", no_active_session_message());
             std::process::exit(1);
         },
-        ActiveSession::One(session_name) => {
-            if let Some(ref requested) = requested_session_name {
-                if *requested != session_name {
-                    eprintln!(
-                        "Session '{}' not found. The following sessions are active:",
-                        requested
-                    );
-                    eprintln!("{}", session_name);
-                    std::process::exit(1);
-                }
-            }
-            session_name
-        },
+        ActiveSession::One(session_name) => session_name,
         ActiveSession::Many => {
-            let existing_sessions: Vec<SessionName> = get_sessions()
-                .unwrap_or_default()
-                .iter()
-                .map(|s| s.0.clone())
-                .collect();
-            if let Some(session_name) = requested_session_name {
-                if existing_sessions.contains(&session_name) {
-                    session_name
-                } else {
-                    eprintln!(
-                        "Session '{}' not found. The following sessions are active:",
-                        session_name
-                    );
-                    list_sessions(false, false, true, false);
-                    std::process::exit(1);
-                }
-            } else {
-                eprintln!(
-                    "Please specify the session name to {purpose}. The following sessions are \
-                     active:"
-                );
-                list_sessions(false, false, true, false);
-                std::process::exit(1);
-            }
+            eprintln!(
+                "Please specify the session name to {purpose}. The following sessions are active:"
+            );
+            list_sessions(false, false, true, false);
+            std::process::exit(1);
         },
     };
     (session, caller)
 }
+
+fn wait_for_command_session(session_name: &SessionName) {
+    command_session_ready(session_name, Duration::from_secs(30), session_status).unwrap_or_else(
+        |error| {
+            eprintln!("{error}");
+            process::exit(1);
+        },
+    );
+}
+
+fn command_session_ready(
+    session_name: &SessionName,
+    within: Duration,
+    mut probe: impl FnMut(&SessionName) -> Result<SessionProbe, std::io::ErrorKind>,
+) -> Result<(), String> {
+    validate_session_name(session_name.as_str())?;
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let status = probe(session_name);
+        if status != Ok(SessionProbe::Unresponsive) {
+            return match named_session_exists_or_error(session_name, status)? {
+                true => Ok(()),
+                false => Err(format!("Session '{session_name}' not found.")),
+            };
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(unresponsive_session_message(session_name.as_str()));
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(100)));
+        if std::time::Instant::now() >= deadline {
+            return Err(unresponsive_session_message(session_name.as_str()));
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "unit/command_session.rs"]
+mod command_session_tests;
 
 pub(crate) fn subscribe_to_session(
     subscribe_cli: yinz_cli::args::SubscribeCli,

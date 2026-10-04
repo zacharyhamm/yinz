@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::JoinHandle,
@@ -81,6 +81,7 @@ impl Drop for Supervisor {
     }
 }
 struct Session {
+    probes: Arc<AtomicUsize>,
     messages: mpsc::Receiver<ClientToServerMsg>,
     stop: Arc<AtomicBool>,
     path: PathBuf,
@@ -88,6 +89,9 @@ struct Session {
 }
 impl Session {
     fn new(root: &Path, name: &str) -> Self {
+        Self::with_unresponsive_probes(root, name, 0)
+    }
+    fn with_unresponsive_probes(root: &Path, name: &str, unresponsive: usize) -> Self {
         let path = root
             .join(&*yinz_runtime::consts::CLIENT_SERVER_CONTRACT_DIR)
             .join(name);
@@ -99,6 +103,8 @@ impl Session {
         let (tx, messages) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
+        let probes = Arc::new(AtomicUsize::new(0));
+        let observed = probes.clone();
         let thread = std::thread::spawn(move || loop {
             let socket = listener.accept().unwrap();
             if done.load(Ordering::SeqCst) {
@@ -109,6 +115,13 @@ impl Session {
             let IpcRecv::Msg(message, _) = receiver.recv_client_msg() else {
                 continue;
             };
+            if matches!(message, ClientToServerMsg::ConnStatus)
+                && observed.fetch_add(1, Ordering::SeqCst) < unresponsive
+            {
+                // Withhold the reply until the CLI's liveness deadline closes the probe.
+                assert!(matches!(receiver.recv_client_msg(), IpcRecv::Eof));
+                continue;
+            }
             let reply = match &message {
                 ClientToServerMsg::ConnStatus => ServerToClientMsg::Connected {
                     warp_companions: true,
@@ -137,6 +150,7 @@ impl Session {
             sender.send_server_msg(reply).unwrap();
         });
         Self {
+            probes,
             messages,
             stop,
             path,
@@ -443,4 +457,41 @@ fn control_agent_registration_uses_inherited_owner_and_never_falls_back() {
         ClientToServerMsg::AgentControl(AgentRequest::SetControlAgent { enabled: true, .. })
     ));
     assert!(owner.messages.try_recv().is_err());
+}
+
+#[test]
+fn named_actions_and_commands_wait_for_readiness_without_probing_other_sessions() {
+    for explicit in [false, true] {
+        for args in [vec!["action", "write-chars", "hello"], vec!["events"]] {
+            let dir = tempfile::tempdir().unwrap();
+            let owner = Session::with_unresponsive_probes(dir.path(), "owner", 2);
+            let unrelated = Session::new(dir.path(), "other");
+            let _supervisor = Supervisor::new(dir.path(), "owner", 42);
+            let mut cmd = command(dir.path());
+            if explicit {
+                cmd.args(["--session", "owner"]);
+            }
+            let output = cmd.args(&args).output().unwrap();
+            // The fake peer closes event streams after acknowledging the request.
+            if args[0] == "action" {
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(matches!(owner.receive(), ClientToServerMsg::Action { .. }));
+            } else {
+                assert!(matches!(
+                    owner.receive(),
+                    ClientToServerMsg::SubscribeToEvents { .. }
+                ));
+            }
+            assert_eq!(owner.probes.load(Ordering::SeqCst), 3);
+            assert!(
+                owner.messages.try_recv().is_err(),
+                "dispatched more than once"
+            );
+            assert_eq!(unrelated.probes.load(Ordering::SeqCst), 0);
+        }
+    }
 }
