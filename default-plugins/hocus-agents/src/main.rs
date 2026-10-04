@@ -3777,7 +3777,10 @@ impl State {
                     .as_ref()
                     .is_none_or(|(id, _)| *id != reading.id)
                 {
-                    self.reader_blocks = Some((reading.id, markdown::parse(&reading.text).into()));
+                    self.reader_blocks = Some((
+                        reading.id,
+                        agents::entry_blocks(reading.kind, &reading.text).into(),
+                    ));
                 }
                 let blocks = self
                     .reader_blocks

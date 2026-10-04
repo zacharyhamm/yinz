@@ -65,6 +65,7 @@ fn run_pages_can_be_followed_with_structured_revision_cursors() {
     let run = agents::AgentRun {
         entries: (1..=3)
             .map(|revision| agents::RunEntry {
+                tool: None,
                 revision,
                 event_id: Some(format!("event-{revision}")),
                 kind: agents::RunEntryKind::Result,

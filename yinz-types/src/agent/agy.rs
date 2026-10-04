@@ -85,6 +85,11 @@ pub fn to_hook_event(event: &Value) -> HookEvent {
         tool_name: tool_name.clone(),
         tool_input,
         message: error.clone(),
+        error: error.clone().map(Value::String),
+        tool_use_id: matches!(event_name, "PreToolUse" | "PostToolUse")
+            .then(|| event.get("stepIdx").and_then(Value::as_u64))
+            .flatten()
+            .map(|idx| format!("step:{idx}")),
         turn_id: step_idx.map(|idx| idx.to_string()),
         agy_turn_complete,
         ..Default::default()

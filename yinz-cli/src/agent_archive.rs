@@ -43,7 +43,7 @@ pub enum AgentArchive {
         #[serde(skip)]
         json: bool,
     },
-    /// Search recorded agent messages and prompts.
+    /// Search recorded conversation and retained tool names, arguments, output, and errors.
     #[clap(name = "history-search")]
     AgentHistorySearch {
         query: String,

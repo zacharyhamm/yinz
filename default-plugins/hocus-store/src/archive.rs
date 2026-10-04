@@ -90,7 +90,11 @@ pub fn query(backend: &impl Backend, op: &str, args: &Value) -> Result<String, S
                             .map(run_history::anchored_from)
                     });
                 let page = run_history::entry_page(backend, id, from, limit)?;
-                let entries: Vec<_> = page.entries.iter().map(|entry| json!({"revision":entry.revision,"kind":entry.kind.label(),"created_at_ms":entry.created_at_ms,"age":entry.created_at_ms.map(|at| agents::short_age(now,at)),"text":entry.text})).collect();
+                let entries: Vec<_> = page
+                    .entries
+                    .iter()
+                    .map(|entry| run_history::entry_reply(entry, now))
+                    .collect();
                 let mut reply = run_history::header_reply(&header, &registry, now);
                 reply["shown"] = json!(entries.len());
                 reply["entries"] = json!(entries);

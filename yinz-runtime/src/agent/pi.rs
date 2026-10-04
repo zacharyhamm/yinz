@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 /// Bumped whenever [`PI_EXTENSION_TEMPLATE`]'s substitutions-bearing body changes, or the
 /// set of events it wires does, so a data-dir copy from an older yinz is replaced rather
 /// than pointed at. The same discipline `src/hocus_hooks.rs` keeps for its script.
-pub const PI_EXTENSION_VERSION: u32 = 6;
+pub const PI_EXTENSION_VERSION: u32 = 7;
 
 /// What marks the generated file as ours, for install/uninstall/status and for nothing
 /// else: a file without it is a person's own extension and is never touched.

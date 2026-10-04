@@ -360,10 +360,10 @@ static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-static AWS_KEY: LazyLock<Regex> = LazyLock::new(|| js(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"));
+static AWS_KEY: LazyLock<Regex> = LazyLock::new(|| js(yinz_types::secrets::AWS_KEY_PATTERN));
 
 static GITHUB_TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| js(r"\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]{36,}\b"));
+    LazyLock::new(|| js(yinz_types::secrets::GITHUB_TOKEN_PATTERN));
 
 /// The TypeScript ends this with `(?=\s|$)`, checked by [`ends_at_space`]
 /// instead. The separator is spaces and tabs only, so a match never crosses a

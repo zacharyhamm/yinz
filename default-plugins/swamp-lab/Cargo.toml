@@ -7,9 +7,9 @@ edition.workspace = true
 workspace = true
 
 # Sans-IO: this crate builds requests and parses responses, and the caller sends
-# them. No yinz dependency, so it links into a wasm plugin and a native binary
-# alike.
+# them. Only portable domain helpers are shared with yinz-types; there is no runtime dependency.
 [dependencies]
+yinz-types = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

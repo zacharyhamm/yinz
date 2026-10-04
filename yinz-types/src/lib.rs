@@ -56,3 +56,5 @@ pub mod input;
 pub mod session_manifest;
 
 pub mod authoring;
+
+pub mod secrets;

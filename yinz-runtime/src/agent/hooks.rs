@@ -12,6 +12,29 @@ const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 /// Parse a hook on the machine running the agent. Preserve unknown JSON fields when adding
 /// Codex's reviewer and assistant messages. Unreadable transcripts leave reporting functional.
 pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEvent, String)> {
+    let bytes = json.len();
+    let (mut event, mut json) = parse_provider_hook_event(kind, json).map_err(|error| {
+        // Serde's type errors can quote the rejected value. Report only size and location.
+        <serde_json::Error as serde::de::Error>::custom(format!(
+            "invalid hook JSON ({bytes} bytes, line {}, column {})",
+            error.line(),
+            error.column()
+        ))
+    })?;
+    event.tool_capture = yinz_types::agent::tool_capture::prepare(kind, &event);
+    let mut raw: Value = serde_json::from_str(&json)?;
+    if event.tool_capture.is_some() || raw.get("tool_capture").is_some() {
+        raw["tool_capture"] = serde_json::to_value(&event.tool_capture)?;
+        json = serde_json::to_string(&raw)?;
+    }
+    if kind == "codex" {
+        let (event, json) = event.broadcast(json);
+        return Ok((event.into_owned(), json));
+    }
+    Ok((event, json))
+}
+
+fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEvent, String)> {
     // Compatibility with OpenCode hook files installed before TypeScript agent providers.
     // Current adapters already emit the shared HookEvent wire format.
     if kind == "opencode" {
@@ -71,7 +94,7 @@ pub fn parse_hook_event(kind: &str, json: String) -> serde_json::Result<(HookEve
     if !changed {
         return Ok((event, json));
     }
-    let json = event.broadcast_json(serde_json::to_string(&raw)?);
+    let json = serde_json::to_string(&raw)?;
     Ok((serde_json::from_str(&json)?, json))
 }
 

@@ -297,6 +297,9 @@ impl PromptObservation {
         event: &AgentEvent,
         hook: Option<&HookEvent>,
     ) -> Option<AgentOutcome> {
+        if hook.is_some_and(|hook| hook.archive_only) {
+            return None;
+        }
         self.waiting_before_submit = false;
         if self.finished {
             return None;

@@ -2675,17 +2675,7 @@ impl State {
         let entries: Vec<serde_json::Value> = page
             .entries
             .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "revision": entry.revision,
-                    "kind": entry.kind.label(),
-                    "created_at_ms": entry.created_at_ms,
-                    "age": entry
-                        .created_at_ms
-                        .map(|at| agents::short_age(now_ms, at)),
-                    "text": entry.text,
-                })
-            })
+            .map(|entry| run_history::entry_reply(entry, now_ms))
             .collect();
         let mut reply = self.run_reply(&header, now_ms);
         if let Some(object) = reply.as_object_mut() {

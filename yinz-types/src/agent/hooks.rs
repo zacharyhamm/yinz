@@ -658,6 +658,22 @@ pub struct HookEvent {
     /// is taken from it is truncated hard and drawn as plain text.
     #[serde(default)]
     pub tool_input: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_response: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_interrupt: Option<bool>,
+    #[serde(default, alias = "isError", skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_capture: Option<super::tool_capture::ToolCapture>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub archive_only: bool,
     /// What the agent said last, on a `Stop` or a `StopFailure`.
     ///
     /// Claude Code's own description of the field is "avoids the need to read and parse the
@@ -748,9 +764,8 @@ impl HookEvent {
     /// they arrived in. The budget only ever bites on an object with more keys than a tool
     /// call has any business carrying, and it drops the tail rather than the head.
     ///
-    /// Anything Claude Code sends that this struct does not model — `tool_response` above
-    /// all — is gone, because a pruned event travels re-serialized from the fields here.
-    /// Nothing in this tree reads those: every reader parses this same struct.
+    /// Unknown provider fields and raw responses are dropped. The archive-specific
+    /// `tool_capture` was prepared before pruning and survives with its own bounds.
     pub fn pruned(&self) -> HookEvent {
         self.pruned_to(PRUNED_INPUT_BUDGET)
     }
@@ -809,6 +824,14 @@ impl HookEvent {
             notification_type: self.notification_type.clone(),
             tool_use_id: self.tool_use_id.clone(),
             tool_name: self.tool_name.clone(),
+            tool_response: None,
+            error: None,
+            is_interrupt: self.is_interrupt,
+            is_error: self.is_error,
+            duration_ms: self.duration_ms,
+            parent_tool_use_id: self.parent_tool_use_id.clone(),
+            tool_capture: self.tool_capture.clone(),
+            archive_only: self.archive_only,
             tool_input: self.tool_input.as_ref().map(|input| {
                 let mut budget = budget;
                 prune_value(input, None, &mut budget)
@@ -988,6 +1011,9 @@ fn prune_value(
 /// it ends one. [`hook_outcome`] is the reading that tells the two apart.
 /// Claude and Antigravity Stop hooks run before blocking hooks can continue the turn.
 pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
+    if event.archive_only {
+        return None;
+    }
     if kind == "pi"
         && matches!(
             event.hook_event_name.as_str(),
@@ -1024,6 +1050,9 @@ pub fn hook_state_for(kind: &str, event: &HookEvent) -> Option<AgentState> {
 }
 
 pub fn hook_state(event: &HookEvent) -> Option<AgentState> {
+    if event.archive_only {
+        return None;
+    }
     match event.hook_event_name.as_str() {
         "SessionStart"
             if matches!(
@@ -1357,7 +1386,7 @@ pub enum HookOutcome {
 /// Read one hook event from an agent of `kind`. Every reported record is complete — kind,
 /// state, hint, folder, session — so setting it needs no merge with what came before.
 pub fn hook_outcome(kind: &str, event: &HookEvent) -> HookOutcome {
-    if event.is_worker() {
+    if event.is_worker() || event.archive_only {
         return HookOutcome::Nothing;
     }
     if event.hook_event_name == HOOK_SESSION_END {

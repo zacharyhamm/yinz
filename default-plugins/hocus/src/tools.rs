@@ -1524,7 +1524,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_run",
-            "Read one run's timeline of prompts, plans, questions, messages and results. Takes run_id or \
+            "Read one run's timeline of prompts, plans, questions, messages, results and tool calls/results. Takes run_id or \
              pane_id; no revision reads the end of it.",
             json!({
                 "type": "object",
@@ -1542,7 +1542,7 @@ pub fn specs() -> Value {
         ),
         tool(
             "agent_history_search",
-            "Search what agents were asked and said, across every run in this archive. A hit's \
+            "Search agent conversation and retained tool names, arguments, output and errors, across every run in this archive. A hit's \
              run_id and revision go to agent_run to read around it.",
             json!({
                 "type": "object",

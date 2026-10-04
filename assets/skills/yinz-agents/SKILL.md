@@ -153,3 +153,12 @@ Results retain the maximum of 50 hits. `truncated: true` can mean older entries
 remain unsearched, the scope is incomplete, or more hits exist. Narrow the scope
 to search further. There are no tuning flags or continuation cursor. Hocus's
 `agent_history_search` tool accepts the same mode as `"regex": true`.
+
+Tool history includes `tool_call` and `tool_result` entries, with worker attribution and bounded,
+redacted arguments, output, and errors. Search retained names or payload text with
+`yinz agent history-search 'exec_command'`. Read the complete retained payload with
+`yinz agent run RUN_ID --from-revision REVISION --limit 1`. Normal pages set
+`tool.payload_omitted`, which differs from capture truncation. Upgrade all database-sharing
+Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
+See [the agent CLI guide](../../../docs/AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
+and adapter refresh commands. No historical import is performed.

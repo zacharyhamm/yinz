@@ -466,6 +466,21 @@ pub struct EntryPage {
     pub earlier: bool,
 }
 
+/// Shared JSON entry shape for the CLI and Hocus archive tools.
+pub fn entry_reply(entry: &RunEntry, now_ms: i64) -> serde_json::Value {
+    let mut reply = serde_json::json!({
+        "revision": entry.revision,
+        "kind": entry.kind.label(),
+        "created_at_ms": entry.created_at_ms,
+        "age": entry.created_at_ms.map(|at| crate::agents::short_age(now_ms, at)),
+        "text": entry.text,
+    });
+    if let Some(tool) = &entry.tool {
+        reply["tool"] = serde_json::json!(tool);
+    }
+    reply
+}
+
 /// A page of `run_id`'s entries.
 ///
 /// `from` is where to start. `None` means **the newest page**, which is what a bare read of a
@@ -503,10 +518,9 @@ pub fn entry_page(
     // `entries_from_rows` sorts by revision whichever way the rows arrived, so the newest-page
     // fetch needs no reversing — only its own bound re-applying, since it took the *last*
     // `limit` entries and the budget below cuts from the wrong end for that case.
-    let budgeted = budget(&mut entries, from.is_none());
+    budget(&mut entries, from.is_none(), from.is_some() && limit == 1);
     let first = entries.first().map(|entry| entry.revision);
     let last = entries.last().map(|entry| entry.revision);
-    let read = u64::try_from(entries.len()).unwrap_or(u64::MAX);
     // What is unread *after* this page, and only ever for a page read forward. A page taken
     // backward from the end of the run has nothing ahead of it however short the budget cut it:
     // what it dropped is older than what it kept, which is what `earlier` reports. Saying
@@ -517,7 +531,7 @@ pub fn entry_page(
     // entries read thirty at a time would otherwise advertise a thirty-first that is not there,
     // and the caller renders that as a sentence telling a reader to go and get it.
     let next_revision = match (last, from) {
-        (Some(last), Some(_)) if budgeted || read >= limit as u64 => {
+        (Some(last), Some(_)) => {
             let after = backend.count(
                 &FetchRequest::entity(rows::ENTRY_ENTITY)
                     .filter(Pred::eq("run_id", run_id))
@@ -592,11 +606,14 @@ pub fn anchored_from(revision: u64) -> u64 {
 /// otherwise the oldest are kept, since the caller asked to start there and expects to page
 /// forward from what it got.
 ///
-/// A page of one is exempt from [`ENTRY_TEXT_CHARS`]: it is the only way to read a long entry.
-fn budget(entries: &mut Vec<RunEntry>, from_end: bool) -> bool {
-    if entries.len() > 1 {
+/// An exact revision with limit one is exempt from previews: it returns the retained payload.
+fn budget(entries: &mut Vec<RunEntry>, from_end: bool, exact: bool) -> bool {
+    if !exact {
         for entry in entries.iter_mut() {
             entry.text = cut(&entry.text, ENTRY_TEXT_CHARS);
+            if let Some(tool) = &mut entry.tool {
+                tool.omit_payload();
+            }
         }
     }
     let mut spent = 0usize;
@@ -606,7 +623,7 @@ fn budget(entries: &mut Vec<RunEntry>, from_end: bool) -> bool {
         false => (0..entries.len()).collect(),
     };
     for index in ordered {
-        let cost = entries[index].text.len();
+        let cost = serde_json::to_vec(&entries[index]).map_or(usize::MAX, |value| value.len());
         if kept > 0 && spent.saturating_add(cost) > PAGE_TEXT_BUDGET {
             break;
         }
@@ -964,12 +981,28 @@ fn hits_for(
     let mut rows = backend.fetch(&scoped(
         FetchRequest::entity(rows::ENTRY_ENTITY)
             .search(query)
+            .select([
+                "run_id",
+                "revision",
+                "kind",
+                "text",
+                "created_at_ms",
+                "host_id",
+            ])
             .limit(want),
     ))?;
     if rows.is_empty() {
         rows = backend.fetch(&scoped(
             FetchRequest::entity(rows::ENTRY_ENTITY)
                 .filter(Pred::contains("text", query))
+                .select([
+                    "run_id",
+                    "revision",
+                    "kind",
+                    "text",
+                    "created_at_ms",
+                    "host_id",
+                ])
                 .sort_by("created_at_ms", SortDir::Desc)
                 .limit(want),
         ))?;
@@ -1151,6 +1184,7 @@ mod tests {
 
     pub(super) fn entry(revision: u64, kind: RunEntryKind, text: &str, at: i64) -> RunEntry {
         RunEntry {
+            tool: None,
             revision,
             event_id: Some(format!("event-{revision}")),
             kind,
@@ -1224,6 +1258,99 @@ mod tests {
         write(&backend, &first);
         write(&backend, &second);
         backend
+    }
+
+    #[test]
+    fn tool_pages_continue_when_the_store_byte_cap_shortens_a_fetch() {
+        let backend = backend();
+        let mut run = run("large-tools", "codex", "main", 1);
+        let hook = yinz_tile::agent::HookEvent {
+            hook_event_name: "PostToolUse".into(),
+            tool_name: Some("shell".into()),
+            tool_response: Some(serde_json::json!("bounded-output ".repeat(8000))),
+            ..Default::default()
+        };
+        let capture = yinz_tile::agent::tool_capture::prepare("codex", &hook).unwrap();
+        for revision in 1..=100 {
+            let mut e = entry(revision, RunEntryKind::ToolResult, &capture.text(), 1);
+            e.tool = Some(capture.clone());
+            run.entries.push(e);
+        }
+        write(&backend, &run);
+        let mut from = Some(1);
+        let mut revisions = Vec::new();
+        while let Some(next) = from {
+            let page = entry_page(&backend, &run.id, Some(next), 100).unwrap();
+            assert!(!page.entries.is_empty());
+            assert!(page
+                .entries
+                .iter()
+                .all(|e| e.tool.as_ref().unwrap().payload_omitted));
+            revisions.extend(page.entries.iter().map(|e| e.revision));
+            from = page.next_revision;
+        }
+        assert_eq!(revisions, (1..=100).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn tool_payload_round_trip_search_and_exact_retrieval() {
+        let backend = backend();
+        let mut run = run("tool-run", "codex", "main", 1);
+        let hook = yinz_tile::agent::HookEvent {
+            hook_event_name: "PostToolUse".into(),
+            tool_name: Some("exec_command".into()),
+            tool_use_id: Some("one".into()),
+            tool_response: Some(
+                serde_json::json!({"text":"searchable needle", "password":"never-store-this"}),
+            ),
+            ..Default::default()
+        };
+        let capture = yinz_tile::agent::tool_capture::prepare("codex", &hook).unwrap();
+        for revision in 1..=3 {
+            let mut e = entry(revision, RunEntryKind::ToolResult, &capture.text(), 1);
+            e.tool = Some(capture.clone());
+            run.entries.push(e);
+        }
+        write(&backend, &run);
+        let page = entry_page(&backend, &run.id, Some(1), 2).unwrap();
+        assert_eq!(page.next_revision, Some(3));
+        assert!(page.entries[0].tool.as_ref().unwrap().payload_omitted);
+        assert!(page.entries[0]
+            .tool
+            .as_ref()
+            .unwrap()
+            .output
+            .as_ref()
+            .unwrap()
+            .text
+            .is_empty());
+        let exact = entry_page(&backend, &run.id, Some(2), 1).unwrap();
+        assert_eq!(exact.entries[0].tool, Some(capture));
+        assert_eq!(
+            search(
+                &backend,
+                &Filter::default(),
+                Some(&run.id),
+                "needle",
+                false,
+                10
+            )
+            .unwrap()
+            .hits
+            .len(),
+            3
+        );
+        assert!(search(
+            &backend,
+            &Filter::default(),
+            Some(&run.id),
+            "never-store-this",
+            false,
+            10
+        )
+        .unwrap()
+        .hits
+        .is_empty());
     }
 
     // -- searching ------------------------------------------------------
