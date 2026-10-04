@@ -31,7 +31,7 @@ export default function (pi: ExtensionAPI): void {
     if (ctx.mode !== "tui") return;
     // Parallel progress cannot dismiss an open dialog. Pi pairs overlapping dialogs for us.
     if (waiting && ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact", "PostCompact"]
-      .some(name => name === hook.hook_event_name)) return;
+      .some(name => name === hook.hook_event_name)) hook.archive_only = true;
     const token = process.env[PANE_TOKEN_ENV];
     if (!token && !process.env.YINZ_PANE_ID) return;
     const args = token
@@ -90,11 +90,12 @@ export default function (pi: ExtensionAPI): void {
   });
   pi.on("tool_execution_start", (event, ctx) => {
     report(ctx, { ...base("PreToolUse", ctx), tool_name: event.toolName,
-      tool_use_id: event.toolCallId, tool_input: event.args });
+      tool_use_id: event.toolCallId, parent_tool_use_id: event.parentToolCallId, tool_input: event.args });
   });
   pi.on("tool_execution_end", (event, ctx) => {
     report(ctx, { ...base(event.isError ? "PostToolUseFailure" : "PostToolUse", ctx),
-      tool_name: event.toolName, tool_use_id: event.toolCallId });
+      tool_name: event.toolName, tool_use_id: event.toolCallId, parent_tool_use_id: event.parentToolCallId,
+      tool_response: event.result, is_error: event.isError });
   });
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") return;

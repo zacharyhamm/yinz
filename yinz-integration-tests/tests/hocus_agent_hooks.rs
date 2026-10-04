@@ -785,3 +785,77 @@ fn muse_events_report_lifecycle_and_approval_needs() {
     );
     assert!(pane_agent(&mut yinz, pane_id).is_null());
 }
+
+#[test]
+fn normalized_tool_reports_survive_archive_reload_and_cli_retrieval() {
+    use serde_json::json;
+    use yinz_cli::agent_archive::AgentArchive;
+    let mut size = TERMINAL_SIZE;
+    size.rows = 70;
+    let mut yinz = TestRunner::new(size)
+        .with_config(HOCUS_CONFIG)
+        .with_layout(LayoutInfo::Stringified(HOCUS_LAYOUT.to_owned()))
+        .start();
+    yinz.wait_until("hocus asks for permissions", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("permissions accepted", |grid| {
+        !grid.contains("Allow? (y/n)")
+    });
+    submit(&yinz, "/agent_list {}");
+    yinz.wait_until("daemon found the pane", |grid| grid.contains("agents"));
+    let pane_id = agent_pane_id(&mut yinz);
+    clear(&yinz, "agents");
+    for provider in ["claude", "codex"] {
+        for hook in ["PreToolUse", "PostToolUse", "PostToolUse"] {
+            let native = json!({"hook_event_name":hook, "session_id":"tool-conversation",
+                "tool_name":"shell", "tool_use_id":"call-1", "agent_id":"worker-1",
+                "tool_input":{"command":"echo archive-tool-needle", "password":"never-retain-password"},
+                "tool_response":{"text":"archive-tool-needle"}});
+            let (event, raw) =
+                yinz_runtime::agent::hooks::parse_hook_event(provider, native.to_string()).unwrap();
+            let actions = hook_report_actions(
+                provider,
+                PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(pane_id)),
+                &event,
+                raw,
+            );
+            let (code, output) = yinz.run_actions_reporting(actions);
+            assert_eq!(code, 0, "{output}");
+        }
+        let run_id = format!("{provider}:tool-conversation");
+        submit(&yinz, &format!("/agent_run {{\"run_id\":\"{run_id}\"}}"));
+        yinz.wait_until("two tool entries, with replay removed", |grid| {
+            grid.contains("2 of 2 entries") && grid.contains("archive-tool-needle")
+        });
+        clear(&yinz, "2 of 2 entries");
+        yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+            url: "hocus-agentd".into(),
+            configuration: None,
+        });
+        let query = AgentArchive::AgentRun {
+            run_id: run_id.clone(),
+            revision: None,
+            from_revision: Some(2),
+            limit: 1,
+            json: true,
+        };
+        let (code, output) = yinz.run_actions_reporting(vec![query.action().unwrap()]);
+        assert_eq!(code, 0, "{output}");
+        let reply: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        let tool = &reply["data"]["entries"][0]["tool"];
+        assert_eq!(tool["worker_id"], "worker-1");
+        assert!(tool["output"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("archive-tool-needle"));
+        assert!(!output.contains("never-retain-password"));
+        submit(&yinz, &format!("/agent_history_search {{\"run_id\":\"{run_id}\",\"query\":\"archive-tool-needle\"}}"));
+        yinz.wait_until("retained tool text is searchable after reload", |grid| {
+            grid.contains("archive-tool-needle") && grid.contains("tool_result")
+        });
+        clear(&yinz, "archive-tool-needle");
+    }
+}

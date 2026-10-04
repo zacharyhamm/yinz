@@ -109,3 +109,12 @@ The next useful improvements need more than a shortcut:
 
 These follow-ups should extend the existing run, store, and workflow ownership mechanisms.
 The first iteration adds no task scheduler, new database schema, or separate build runner.
+
+Tool history includes `tool_call` and `tool_result` entries, with worker attribution and bounded,
+redacted arguments, output, and errors. Search retained names or payload text with
+`yinz agent history-search 'exec_command'`. Read the complete retained payload with
+`yinz agent run RUN_ID --from-revision REVISION --limit 1`. Normal pages set
+`tool.payload_omitted`, which differs from capture truncation. Upgrade all database-sharing
+Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
+See [the agent CLI guide](AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
+and adapter refresh commands. No historical import is performed.

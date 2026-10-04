@@ -183,6 +183,7 @@ fn tool_call(hook: &mut HookEvent, properties: Option<&Value>) {
     hook.tool_name = prop("tool").and_then(Value::as_str).map(normalize_tool);
     hook.tool_use_id = string(prop("callID"));
     hook.tool_input = prop("args").map(normalize_args);
+    hook.tool_response = prop("output").cloned();
 }
 
 /// opencode's tool name as the equivalent the shared readers already know.

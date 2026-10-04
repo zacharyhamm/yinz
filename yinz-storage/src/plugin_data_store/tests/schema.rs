@@ -555,3 +555,72 @@ fn reserved_attributes_cannot_create_or_migrate_an_entity() {
         }
     }
 }
+
+#[test]
+fn tool_history_v4_adds_nullable_metadata_without_changing_searchable_entries() {
+    let (store, _dir) = store();
+    let old = EntityDef::new("agent_run_entry", 3)
+        .attr(AttrDef::text("run_id").required())
+        .attr(AttrDef::int("revision").required())
+        .attr(AttrDef::text("kind").required())
+        .attr(AttrDef::text("text").full_text().required());
+    store.define_entity(NS, OWNER, &old, false).unwrap();
+    store
+        .apply(
+            NS,
+            &[Mutation::put("agent_run_entry")
+                .uid("run#1")
+                .set("run_id", "run")
+                .set("revision", 1_i64)
+                .set("kind", "prompt")
+                .set("text", "legacy searchable needle")
+                .build()],
+        )
+        .unwrap();
+    let mut new = old.clone();
+    new.version = 4;
+    new.attrs.push(AttrDef::json("tool"));
+    let info = store.define_entity(NS, OWNER, &new, false).unwrap();
+    assert_eq!(info.attrs_added, ["tool"]);
+    assert!(store
+        .define_entity(NS, OWNER, &new, false)
+        .unwrap()
+        .attrs_added
+        .is_empty());
+    let rows = store
+        .fetch(
+            NS,
+            &FetchRequest::entity("agent_run_entry").search("needle"),
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.get(&rows.rows[0], "tool"), Some(&DataValue::Null));
+    assert_eq!(
+        rows.get(&rows.rows[0], "text"),
+        Some(&DataValue::Text("legacy searchable needle".into()))
+    );
+    assert!(store.define_entity(NS, OWNER, &old, false).is_err());
+    store
+        .apply(
+            NS,
+            &[Mutation::put("agent_run_entry")
+                .uid("run#2")
+                .set("run_id", "run")
+                .set("revision", 2_i64)
+                .set("kind", "tool_result")
+                .set("text", "new output needle")
+                .set("tool", r#"{"name":"shell","status":"completed"}"#)
+                .build()],
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .fetch(
+                NS,
+                &FetchRequest::entity("agent_run_entry").search("needle")
+            )
+            .unwrap()
+            .len(),
+        2
+    );
+}

@@ -825,6 +825,8 @@ pub type Summaries = BTreeMap<u32, Summary>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunEntryKind {
+    ToolCall,
+    ToolResult,
     Prompt,
     Plan,
     Question,
@@ -852,6 +854,8 @@ pub enum RunEntryKind {
 impl RunEntryKind {
     pub fn label(self) -> &'static str {
         match self {
+            RunEntryKind::ToolCall => "tool_call",
+            RunEntryKind::ToolResult => "tool_result",
             RunEntryKind::Prompt => "prompt",
             RunEntryKind::Plan => "plan",
             RunEntryKind::Question => "question",
@@ -869,6 +873,8 @@ impl RunEntryKind {
     /// spelling, and `every_kind_survives_its_label` holds them together.
     pub fn from_label(label: &str) -> Option<RunEntryKind> {
         match label {
+            "tool_call" => Some(RunEntryKind::ToolCall),
+            "tool_result" => Some(RunEntryKind::ToolResult),
             "prompt" => Some(RunEntryKind::Prompt),
             "plan" => Some(RunEntryKind::Plan),
             "question" => Some(RunEntryKind::Question),
@@ -883,6 +889,8 @@ impl RunEntryKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<yinz_tile::agent::tool_capture::ToolCapture>,
     pub revision: u64,
     #[serde(default)]
     pub event_id: Option<String>,
@@ -1389,6 +1397,7 @@ pub fn push_summary_entry(run: &mut AgentRun, text: &str, now_ms: i64) -> bool {
     }
     run.revision += 1;
     run.entries.push(RunEntry {
+        tool: None,
         revision: run.revision,
         // No provider event behind it, so nothing to deduplicate deliveries of. The
         // comparison above is what stops this kind repeating, and it is a different
@@ -1492,6 +1501,11 @@ pub mod rows {
             .set("revision", entry.revision as i64)
             .set("kind", entry.kind.label())
             .set("text", entry.text.clone());
+        if let Some(tool) = &entry.tool {
+            if let Ok(value) = serde_json::to_string(tool) {
+                put = put.set("tool", value);
+            }
+        }
         if let Some(event_id) = entry.event_id.as_ref() {
             put = put.set("event_id", event_id.clone());
         }
@@ -1550,6 +1564,10 @@ pub mod rows {
                 _ => None,
             };
             grouped.entry(run_id).or_default().push(RunEntry {
+                tool: match rows.get(row, "tool") {
+                    Some(DataValue::Text(value)) => serde_json::from_str(value).ok(),
+                    _ => None,
+                },
                 revision,
                 event_id,
                 kind,
@@ -2386,6 +2404,27 @@ struct ParsedEvent {
     gutter: String,
 }
 
+/// Tool payloads are literal terminal-safe text, never Markdown instructions.
+pub fn entry_blocks(kind: &str, text: &str) -> Vec<crate::markdown::MdBlock> {
+    if !matches!(kind, "tool_call" | "tool_result") {
+        return crate::markdown::parse(text);
+    }
+    crate::text::sanitize(text)
+        .lines()
+        .map(|line| crate::markdown::MdBlock {
+            chars: line
+                .chars()
+                .map(|ch| crate::markdown::StyledChar {
+                    ch,
+                    style: Default::default(),
+                })
+                .collect(),
+            compact: true,
+            ..Default::default()
+        })
+        .collect()
+}
+
 impl ParsedEvent {
     fn new(
         revision: Option<u64>,
@@ -2395,8 +2434,15 @@ impl ParsedEvent {
         digest: Option<&str>,
         raw: &str,
     ) -> Self {
-        let (blocks, complete) =
-            crate::markdown::parse_head(digest.unwrap_or(raw), ENTRY_HEAD_BLOCKS, ENTRY_HEAD_BYTES);
+        let (blocks, complete) = if matches!(kind, "tool_call" | "tool_result") {
+            let mut end = raw.len().min(ENTRY_HEAD_BYTES);
+            while !raw.is_char_boundary(end) {
+                end -= 1;
+            }
+            (entry_blocks(kind, &raw[..end]), end == raw.len())
+        } else {
+            crate::markdown::parse_head(digest.unwrap_or(raw), ENTRY_HEAD_BLOCKS, ENTRY_HEAD_BYTES)
+        };
         Self {
             revision,
             kind,
@@ -2513,6 +2559,8 @@ impl ParsedRun {
                     | RunEntryKind::Question
                     | RunEntryKind::Summary
                     | RunEntryKind::Message
+                    | RunEntryKind::ToolCall
+                    | RunEntryKind::ToolResult
                     | RunEntryKind::Result
             )
         }) {
@@ -5086,6 +5134,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, text)| RunEntry {
+                    tool: None,
                     revision: index as u64 + 1,
                     event_id: None,
                     kind: RunEntryKind::Question,
@@ -5250,6 +5299,7 @@ mod tests {
                 created_at_ms: None,
             }),
             entries: vec![RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Summary,
@@ -5291,6 +5341,7 @@ mod tests {
     #[test]
     fn a_filed_summary_round_trips_as_its_own_kind() {
         let entry = RunEntry {
+            tool: None,
             revision: 4,
             event_id: None,
             kind: RunEntryKind::Summary,
@@ -5388,6 +5439,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: vec![RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Result,
@@ -5480,6 +5532,7 @@ mod tests {
             summarized_revision: 0,
             summary: None,
             entries: vec![RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -5824,6 +5877,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, text)| RunEntry {
+                    tool: None,
                     revision: index as u64 + 1,
                     event_id: None,
                     kind: RunEntryKind::Prompt,
@@ -5905,6 +5959,7 @@ mod tests {
         let mut adopted = stored_run(&gaining, "claude:session-1").adopted_by(2, &owner("there"));
         adopted.revision += 1;
         adopted.entries.push(RunEntry {
+            tool: None,
             revision: adopted.revision,
             event_id: None,
             kind: RunEntryKind::Result,
@@ -7712,6 +7767,7 @@ mod tests {
     fn a_long_event_is_capped_at_four_rows_that_name_what_is_missing() {
         let mut run = a_pane_run();
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -7742,6 +7798,7 @@ mod tests {
     fn a_mixed_run() -> AgentRun {
         let mut run = a_pane_run();
         let entry = |revision: u64, kind: RunEntryKind, text: String, created_at_ms| RunEntry {
+            tool: None,
             revision,
             event_id: None,
             kind,
@@ -7807,6 +7864,7 @@ mod tests {
         let before = parsed.parses;
 
         run.entries.push(RunEntry {
+            tool: None,
             revision: 6,
             event_id: None,
             kind: RunEntryKind::Question,
@@ -7953,6 +8011,7 @@ mod tests {
 
         let mut long = a_pane_run();
         long.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Message,
@@ -7992,6 +8051,7 @@ mod tests {
             assert!(text.len() >= 100_000, "{shape} is {} bytes", text.len());
             let mut run = a_pane_run();
             run.entries = vec![RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Message,
@@ -8067,6 +8127,7 @@ mod tests {
     fn an_event_that_fits_the_cap_grows_no_marker() {
         let mut run = a_pane_run();
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -8091,6 +8152,7 @@ mod tests {
         run.summary = Some(a_summary("Ran the tests, all green.", false));
         run.entries = vec![
             RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -8098,6 +8160,7 @@ mod tests {
                 created_at_ms: Some(40),
             },
             RunEntry {
+                tool: None,
                 revision: 2,
                 event_id: None,
                 kind: RunEntryKind::Question,
@@ -8135,6 +8198,7 @@ mod tests {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("Ran the **tests**, all green.", false));
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -8184,6 +8248,7 @@ mod tests {
         run.summary = None;
         run.entries = vec![
             RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -8191,6 +8256,7 @@ mod tests {
                 created_at_ms: None,
             },
             RunEntry {
+                tool: None,
                 revision: 2,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -8238,6 +8304,7 @@ mod tests {
         run.summary = Some(a_summary("Ran the tests.", false));
         run.entries = vec![
             RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -8245,6 +8312,7 @@ mod tests {
                 created_at_ms: None,
             },
             RunEntry {
+                tool: None,
                 revision: 2,
                 event_id: None,
                 kind: RunEntryKind::Question,
@@ -8269,6 +8337,7 @@ mod tests {
         let mut run = a_pane_run();
         run.summary = Some(a_summary("  Ran the tests.  ", false));
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Summary,
@@ -8299,6 +8368,7 @@ mod tests {
         let mut run = a_pane_run();
         run.summary = None;
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -8320,6 +8390,7 @@ mod tests {
         run.outcome = RunOutcome::Completed;
         run.summarized_revision = 0;
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Result,
@@ -8345,6 +8416,7 @@ mod tests {
             false,
         ));
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Result,
@@ -8373,6 +8445,7 @@ mod tests {
         let minute = 60_000;
         run.entries = vec![
             RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -8380,6 +8453,7 @@ mod tests {
                 created_at_ms: Some(100 * minute),
             },
             RunEntry {
+                tool: None,
                 revision: 2,
                 event_id: None,
                 kind: RunEntryKind::Question,
@@ -8387,6 +8461,7 @@ mod tests {
                 created_at_ms: Some(105 * minute),
             },
             RunEntry {
+                tool: None,
                 revision: 3,
                 event_id: None,
                 kind: RunEntryKind::Plan,
@@ -8422,6 +8497,7 @@ mod tests {
         let mut run = a_pane_run();
         run.summary = None;
         run.entries = vec![RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -8886,6 +8962,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, text)| RunEntry {
+                tool: None,
                 revision: index as u64 + 1,
                 event_id: None,
                 kind: RunEntryKind::Prompt,
@@ -9008,6 +9085,7 @@ mod tests {
         // Byte for byte what an entry of any other kind renders to.
         let mut same = a_pane_run();
         same.entries = vec![RunEntry {
+            tool: None,
             kind: RunEntryKind::Question,
             ..run.entries[0].clone()
         }];
@@ -9151,6 +9229,7 @@ mod tests {
         // And the whole point of taking it from there: it can be computed again from the entry.
         let (_, text) = run_entry(&prompt_event(&typed)).expect("an entry");
         let stored = RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: RunEntryKind::Prompt,
@@ -9182,6 +9261,7 @@ mod tests {
     fn a_run_recorded_before_ids_existed_is_still_compared_by_one() {
         let (_, text) = run_entry(&prompt_event(&task_notification(3))).expect("an entry");
         let legacy = |kind, text: &str| RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind,
@@ -9205,6 +9285,7 @@ mod tests {
 
         // An id it was given is the one it keeps, whatever its text now says.
         let stored = RunEntry {
+            tool: None,
             event_id: Some("UserPromptSubmit:given".to_owned()),
             ..legacy(RunEntryKind::Prompt, &text)
         };

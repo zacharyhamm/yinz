@@ -1542,8 +1542,12 @@ pub fn actions_from_cli(
                 use std::io::Read;
                 let mut json = String::new();
                 std::io::stdin()
+                    .take(yinz_types::agent::NATIVE_HOOK_MAX_BYTES as u64 + 1)
                     .read_to_string(&mut json)
                     .map_err(|e| format!("failed to read the hook event from stdin: {e}"))?;
+                if json.len() > yinz_types::agent::NATIVE_HOOK_MAX_BYTES {
+                    return Err("hook input exceeds 2097152 bytes".into());
+                }
                 // Ownership is part of the bounded raw JSON, so annotate before pruning.
                 if let Ok(owner) = std::env::var("YINZ_SWAMP_OWNER") {
                     let mut raw: serde_json::Value = serde_json::from_str(&json)

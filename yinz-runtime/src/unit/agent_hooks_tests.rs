@@ -139,7 +139,10 @@ fn codex_permission_enrichment_does_not_change_other_events_or_explicit_reviewer
         hook["hook_event_name"] = name.into();
         hook["approvals_reviewer"] = reviewer;
         let raw = hook.to_string();
-        assert_eq!(parse_hook_event(kind, raw.clone()).unwrap().1, raw);
+        let (_, enriched) = parse_hook_event(kind, raw.clone()).unwrap();
+        let mut enriched: Value = serde_json::from_str(&enriched).unwrap();
+        enriched.as_object_mut().unwrap().remove("tool_capture");
+        assert_eq!(enriched, serde_json::from_str::<Value>(&raw).unwrap());
     }
 }
 
@@ -704,4 +707,28 @@ fn agy_native_submissions_and_normalized_confirmations_round_trip() {
         assert_eq!(parsed, confirmation);
         assert_eq!(parse_hook_event("agy", raw).unwrap().0, confirmation);
     }
+}
+
+#[test]
+fn tool_payload_survives_host_normalization_and_broadcast_pruning() {
+    for provider in ["claude", "codex", "muse", "pi", "opencode", "custom"] {
+        let raw = json!({"hook_event_name":"PostToolUse", "session_id":"s", "tool_use_id":"c", "tool_name":"shell", "agent_id":"worker", "tool_response":{"text":"雪".repeat(200000), "password":"must-not-persist"}}).to_string();
+        let (event, raw) = parse_hook_event(provider, raw).unwrap();
+        let capture = event.tool_capture.clone().unwrap();
+        let bounded = event.broadcast_json(raw);
+        assert!(bounded.len() <= yinz_types::agent::HOOK_BROADCAST_MAX_BYTES);
+        let decoded: yinz_types::agent::HookEvent = serde_json::from_str(&bounded).unwrap();
+        assert_eq!(decoded.tool_capture, Some(capture.clone()));
+        assert!(!capture.text().contains("must-not-persist"));
+    }
+}
+
+#[test]
+fn malformed_tool_metadata_diagnostics_do_not_quote_payload_values() {
+    let raw = json!({"hook_event_name":"PostToolUse", "tool_name":"shell", "duration_ms":"confidential-value"});
+    let error = parse_hook_event("claude", raw.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("confidential-value"));
+    assert!(error.contains("bytes"));
 }

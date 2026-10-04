@@ -1022,6 +1022,9 @@ impl State {
         // The screen applied the record before broadcasting this event. Writing it back
         // here can overwrite a newer report while the daemon catches up on its queue.
         self.record_run_event(pane_id, kind, event, now_ms());
+        if event.archive_only {
+            return;
+        }
         if event.hook_event_name == agents::HOOK_SESSION_END {
             // The session is over, so there is nothing left reporting for this pane
             // and the heuristic takes it back. The pane itself may well live on - a
@@ -1333,13 +1336,52 @@ impl State {
             .entry(pane_id)
             .or_default()
             .capture(run, event, now_ms);
-        if let Some((kind, text)) = agents::run_entry(event) {
+        if let Some(tool) = &event.tool_capture {
+            let event_id = tool.event_id();
+            if event_id.as_ref().is_none_or(|id| {
+                !run.entries
+                    .iter()
+                    .any(|entry| entry.event_id.as_ref() == Some(id))
+            }) {
+                run.revision += 1;
+                run.entries.push(agents::RunEntry {
+                    revision: run.revision,
+                    event_id,
+                    kind: if tool.status == "requested" {
+                        agents::RunEntryKind::ToolCall
+                    } else {
+                        agents::RunEntryKind::ToolResult
+                    },
+                    text: tool.text(),
+                    tool: Some(tool.clone()),
+                    created_at_ms: Some(now_ms),
+                });
+                changed = true;
+            }
+        }
+        // Plan/question prose must use the same safe arguments as its tool entry.
+        let mut prose_event = event.clone();
+        if let Some(tool) = &event.tool_capture {
+            if tool.metadata_redacted || tool.metadata_truncated {
+                prose_event.tool_use_id = tool.identity.clone();
+            }
+        }
+        if let Some(arguments) = event
+            .tool_capture
+            .as_ref()
+            .and_then(|tool| tool.arguments.as_ref())
+        {
+            prose_event.tool_input = Some(serde_json::from_str(&arguments.text).unwrap_or_else(|_| {
+                serde_json::json!({"plan": arguments.text, "questions": [{"question": arguments.text}]})
+            }));
+        }
+        if let Some((kind, text)) = agents::run_entry(&prose_event) {
             // The text the entry will keep, not the event's own prompt: the id is stored beside
             // that text and compared against ids taken from other entries' text, and
             // `entry_event_id` is what takes them - including from an entry recorded before the
             // field existed, which has none of its own.
             let event_id = messages::stop_event_id(event, &text)
-                .or_else(|| agents::run_event_id(event, &text));
+                .or_else(|| agents::run_event_id(&prose_event, &text));
             let duplicate = messages::stop_duplicates(run, event, &text)
                 || match event_id.as_deref() {
                     Some(event_id) => run
@@ -1354,6 +1396,7 @@ impl State {
             if !duplicate {
                 run.revision += 1;
                 run.entries.push(agents::RunEntry {
+                    tool: None,
                     revision: run.revision,
                     event_id,
                     kind,
@@ -4472,6 +4515,7 @@ mod tests {
                 created_at_ms: None,
             }),
             entries: vec![agents::RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: agents::RunEntryKind::Prompt,
@@ -6565,6 +6609,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tool_history_replays_workers_missing_ids_and_plan_entries() {
+        let mut state = State::default();
+        let mut event = hook("PreToolUse");
+        event.tool_name = Some("update_plan".into());
+        event.tool_use_id = Some("call".into());
+        event.tool_input = Some(serde_json::json!({"plan":"inspect the compiler"}));
+        event.tool_capture = yinz_tile::agent::tool_capture::prepare("codex", &event);
+        state.record_run_event(7, "codex", &event, 1);
+        state.record_run_event(7, "codex", &event, 2);
+        assert_eq!(state.runs[&7].entries.len(), 2);
+        assert_eq!(
+            state.runs[&7].entries[0].kind,
+            agents::RunEntryKind::ToolCall
+        );
+        assert_eq!(state.runs[&7].entries[1].kind, agents::RunEntryKind::Plan);
+        let mut reloaded = State::default();
+        reloaded.runs.insert(
+            7,
+            serde_json::from_str(&serde_json::to_string(&state.runs[&7]).unwrap()).unwrap(),
+        );
+        reloaded.record_run_event(7, "codex", &event, 3);
+        assert_eq!(reloaded.runs[&7].entries.len(), 2);
+        event.hook_event_name = "PostToolUse".into();
+        event.tool_response = Some(serde_json::json!({"text":"retained needle"}));
+        for worker in [None, Some("worker-a"), Some("worker-b")] {
+            event.agent_id = worker.map(str::to_owned);
+            event.tool_capture = yinz_tile::agent::tool_capture::prepare("codex", &event);
+            reloaded.record_run_event(7, "codex", &event, 4);
+            reloaded.record_run_event(7, "codex", &event, 5);
+        }
+        assert_eq!(reloaded.runs[&7].entries.len(), 5);
+        event.tool_use_id = None;
+        event.tool_capture = yinz_tile::agent::tool_capture::prepare("codex", &event);
+        reloaded.record_run_event(7, "codex", &event, 6);
+        reloaded.record_run_event(7, "codex", &event, 7);
+        assert_eq!(reloaded.runs[&7].entries.len(), 7);
+        assert!(!run_delta(&reloaded.runs[&7])
+            .unwrap()
+            .contains("retained needle"));
+        event.hook_event_name = "PreToolUse".into();
+        event.tool_use_id = Some("Bearer exposed-credential".into());
+        event.tool_capture = yinz_tile::agent::tool_capture::prepare("codex", &event);
+        reloaded.record_run_event(7, "codex", &event, 8);
+        assert!(!serde_json::to_string(&reloaded.runs[&7].entries)
+            .unwrap()
+            .contains("exposed-credential"));
+    }
+
     /// One hook payload, as the generated script forwards it.
     fn hook(name: &str) -> wire::HookEvent {
         wire::HookEvent {
@@ -6742,6 +6835,7 @@ mod tests {
             omitted_entries: 0,
         };
         run.entries.push(agents::RunEntry {
+            tool: None,
             revision: 1,
             event_id: None,
             kind: agents::RunEntryKind::Prompt,
@@ -9272,6 +9366,7 @@ mod tests {
         };
         agents::push_summary_entry(&mut run, "a paraphrase of a paraphrase", 100);
         run.entries.push(agents::RunEntry {
+            tool: None,
             revision: 2,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -9312,6 +9407,7 @@ mod tests {
             summary: None,
             entries: vec![
                 agents::RunEntry {
+                    tool: None,
                     revision: 1,
                     event_id: None,
                     kind: agents::RunEntryKind::Prompt,
@@ -9319,6 +9415,7 @@ mod tests {
                     created_at_ms: Some(10),
                 },
                 agents::RunEntry {
+                    tool: None,
                     revision: 2,
                     event_id: None,
                     kind: agents::RunEntryKind::Result,
@@ -9781,6 +9878,7 @@ mod tests {
                 if owner == "same" {
                     archived.revision += 1;
                     archived.entries.push(agents::RunEntry {
+                        tool: None,
                         revision: archived.revision,
                         event_id: Some("message:[\"t\",\"session:final\"]".into()),
                         kind: agents::RunEntryKind::Message,

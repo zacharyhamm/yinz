@@ -178,12 +178,14 @@ for (const type of ["permission.asked", "permission.updated", "permission.replie
 await part("resumed-child", "answer", "a", "hidden")
 await completed("resumed-child", "answer")
 await drain()
-assert.equal(children.length, beforeResumed)
+assert.equal(children.length, beforeResumed + 2)
+assert.ok(children.slice(beforeResumed).every(c => c.payload.archive_only && c.payload.agent_id === "resumed-child" && c.payload.session_id === "one"))
 assert.equal(lookups.filter(id => id === "resumed-child").length, 1)
 await event("session.deleted", { info: { id: "resumed-child", parentID: "one" } })
 await event("session.deleted", { info: { id: "unseen-child", parentID: "one" } })
 await drain()
-assert.equal(children.length, beforeResumed)
+assert.equal(children.length, beforeResumed + 2)
+assert.ok(children.slice(beforeResumed).every(c => c.payload.archive_only && c.payload.agent_id === "resumed-child" && c.payload.session_id === "one"))
 
 for (const mode of ["throw", "error"]) {
   const id = `retry-${mode}`
@@ -210,6 +212,18 @@ releaseLookup()
 await drain()
 assert.deepEqual(children.slice(beforeDelayed).map(c => c.payload.hook_event_name), ["PreToolUse", "Stop"])
 assert.equal(children[beforeDelayed].payload.tool_input.command, "original")
+
+const beforeChildTool = children.length
+await hooks["tool.execute.before"]({ sessionID: "resumed-child", callID: "child-call", tool: "bash" }, { args: { command: "true" } })
+await hooks["tool.execute.after"]({ sessionID: "resumed-child", callID: "child-call", tool: "bash" }, { output: "retained result" })
+await event("message.part.updated", { part: { type: "tool", sessionID: "resumed-child", callID: "failed-call", tool: "bash", state: { status: "error", input: {}, error: "failed" } } })
+await drain()
+const childReports = children.slice(beforeChildTool).map(c => c.payload)
+assert.equal(childReports.length, 3)
+assert.ok(childReports.every(p => p.session_id === "one" && p.agent_id === "resumed-child" && p.archive_only))
+assert.equal(childReports[1].tool_response, "retained result")
+assert.equal(childReports[2].hook_event_name, "PostToolUseFailure")
+
 console.log("OpenCode plugin regressions passed")
 
 // The provider's native adapter emits the same contract as any other agent plugin.

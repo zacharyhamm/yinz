@@ -161,6 +161,7 @@ fn long_run() -> AgentRun {
                 _ => (RunEntryKind::Message, 1),
             };
             RunEntry {
+                tool: None,
                 revision: n + 1,
                 event_id: None,
                 kind,
@@ -213,6 +214,7 @@ fn huge_block_run() -> AgentRun {
         .take(9)
         .zip(1u64..)
         .map(|(text, revision)| RunEntry {
+            tool: None,
             revision,
             event_id: None,
             kind: RunEntryKind::Message,
@@ -272,6 +274,7 @@ fn agents_history(c: &mut Criterion) {
     group.bench_function("grown", |b| {
         let mut grown = run.clone();
         grown.entries.push(RunEntry {
+            tool: None,
             revision: 1_000,
             event_id: None,
             kind: RunEntryKind::Message,

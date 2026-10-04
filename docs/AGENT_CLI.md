@@ -544,6 +544,60 @@ remain unsearched, the scope is incomplete, or more hits exist. Narrow the scope
 to search further. There are no tuning flags or continuation cursor. Hocus's
 `agent_history_search` tool accepts the same mode as `"regex": true`.
 
+
+### Durable tool history
+
+New reports add `tool_call` and `tool_result` entries alongside conversation entries.
+There is no historical import or new transcript capture. Automatic summaries still use only conversation entries.
+`runs`, `run`, and `history-search` return JSON. `--kind` still selects the provider.
+
+Each tool entry has optional `tool` metadata: `name`, `call_id`, `turn_id`, `worker_id`,
+`parent_call_id`, `source_event`, `status`, `duration_ms`, and retained payloads.
+Timestamps record receipt time. Status is `requested`, `completed`, `succeeded`,
+`failed`, `cancelled`, or `denied`. A request does not prove execution.
+`completed` does not prove success. Missing completions and unmatched results remain visible.
+Stable worker/call/event identities suppress replay. Events without stable IDs remain separate.
+`identity` hashes the original correlation fields. `metadata_truncated` and `metadata_redacted` describe changes to displayed metadata.
+
+`arguments`, `output`, and `error` contain `text`, `format`, `original_bytes`,
+`redacted`, `truncated`, and `attachments_omitted`. `format` is `text` or `json`.
+Truncated JSON is a preview and may not parse. `output_unavailable` means no output body arrived.
+Normal pages omit payload text and set `tool.payload_omitted: true`.
+This display omission differs from irreversible capture truncation.
+Retrieve one complete retained entry with:
+
+```sh
+yinz agent run RUN_ID --from-revision REVISION --limit 1
+yinz agent history-search 'exec_command'
+yinz agent history-search 'compiler error'
+```
+
+Arguments retain at most 16 KiB, output 64 KiB, and errors 8 KiB, including JSON encoding.
+The tool object is bounded by 96 KiB. Tool metadata plus searchable text is bounded by 192 KiB.
+Local and remote native input is limited to 2 MiB. Broadcasts remain limited to 256 KiB.
+Redaction precedes truncation and search text generation. Credential fields, recognized textual
+credentials, and private keys are replaced. Binary attachment bodies are omitted.
+Yinz does not fetch resources or read files referenced by tool output.
+Heuristic redaction cannot identify every secret in arbitrary text. Flags report transformations, not a secret-free guarantee.
+
+Coverage includes events that Yinz receives. Claude can omit rejected calls.
+Codex hosted tools lack hooks, and `write_stdin` can complete an earlier command without a new call hook.
+Codex completion alone does not establish success. Muse payload limits can prevent hooks from starting.
+Pi results during dialogs are archived without changing pane state.
+OpenCode child calls retain worker attribution after verified ancestry lookup. Failed lookups suppress the report.
+Antigravity uses `step:<stepIdx>` as its call ID and has no documented output body.
+Other agents need an adapter that emits the shared hook contract. Executable detection alone does not capture tools.
+
+Upgrade all Hocus plugins and servers that share the database together.
+The additive `agent_run_entry` v4 schema adds nullable JSON `tool` metadata.
+Existing entries remain unchanged. Older declarations reject the new column as a removal.
+Refresh installed adapters on each local or remote agent host:
+
+```sh
+yinz hocus hooks install --agent pi
+yinz hocus hooks install --agent opencode
+```
+
 ## TypeScript agent plugins
 
 Agent plugins are TypeScript modules in the existing Deno plugin runtime.

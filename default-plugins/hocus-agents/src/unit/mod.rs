@@ -200,6 +200,7 @@ fn search_revisions_reposition_with_list_focus_and_refresh_preserves_scroll() {
     let mut run = a_run();
     run.entries = (1..=600)
         .map(|revision| agents::RunEntry {
+            tool: None,
             revision,
             text: format!("message {revision}"),
             kind: agents::RunEntryKind::Message,
@@ -954,6 +955,7 @@ fn the_history_body_is_its_share_less_the_pinned_header() {
     run.summary = None;
     run.entries = (0..30)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -1004,6 +1006,7 @@ fn the_pinned_header_carries_the_offset_and_does_not_scroll() {
     run.started_at_ms = 1_788_546_727_000;
     run.entries = (0..30)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -1612,6 +1615,7 @@ fn the_divider_says_a_summary_was_asked_for_until_something_answers() {
 
     // A summary made after the press is the answer.
     run.entries.push(agents::RunEntry {
+        tool: None,
         revision: 5,
         event_id: None,
         kind: agents::RunEntryKind::Summary,
@@ -2720,6 +2724,7 @@ fn the_wheel_scrolls_the_history_and_stops_at_both_ends() {
     ]));
     let mut run = a_run();
     run.entries.push(agents::RunEntry {
+        tool: None,
         revision: 5,
         event_id: None,
         kind: agents::RunEntryKind::Question,
@@ -2782,6 +2787,7 @@ fn a_resized_half_over_a_grown_run_draws_what_a_fresh_one_does() {
     state.render(13, 41);
 
     run.entries.push(agents::RunEntry {
+        tool: None,
         revision: 9,
         event_id: None,
         kind: agents::RunEntryKind::Question,
@@ -2973,6 +2979,7 @@ fn tab_walks_the_ring_and_jk_follow_the_focus() {
     ]));
     let mut run = a_run();
     run.entries.push(agents::RunEntry {
+        tool: None,
         revision: 5,
         event_id: None,
         kind: agents::RunEntryKind::Question,
@@ -3061,6 +3068,7 @@ fn the_cursor_winds_the_half_back_to_the_event_it_lands_on() {
     run.summary = None;
     run.entries = (0..30)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -3116,6 +3124,7 @@ fn walking_to_the_oldest_event_shows_the_omitted_notice() {
     run.omitted_entries = 3;
     run.entries = (0..30)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -3148,6 +3157,7 @@ fn enter_in_the_history_half_opens_the_event_and_esc_comes_back() {
     let mut run = a_run();
     run.summary = None;
     run.entries = vec![agents::RunEntry {
+        tool: None,
         revision: 1,
         event_id: None,
         kind: agents::RunEntryKind::Prompt,
@@ -3202,6 +3212,7 @@ fn the_reader_is_an_age_that_goes_on_ticking() {
     let mut run = a_run();
     run.summary = None;
     run.entries = vec![agents::RunEntry {
+        tool: None,
         revision: 1,
         event_id: None,
         kind: agents::RunEntryKind::Prompt,
@@ -3250,6 +3261,7 @@ fn the_reader_is_wrapped_once_per_event_fold_and_width() {
     let mut run = a_run();
     run.summary = None;
     run.entries = vec![agents::RunEntry {
+        tool: None,
         revision: 1,
         event_id: None,
         kind: agents::RunEntryKind::Prompt,
@@ -3292,6 +3304,7 @@ fn the_page_keys_are_the_historys_from_either_half() {
     let mut run = a_run();
     run.entries = (0..40)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,
@@ -3618,6 +3631,7 @@ fn the_history_is_rendered_once_per_thing_it_depends_on() {
     state.history_cache = Some((state.history_cache.take().unwrap().0, poison.clone()));
     let mut run = a_run();
     run.entries.push(agents::RunEntry {
+        tool: None,
         revision: 5,
         event_id: None,
         kind: agents::RunEntryKind::Question,
@@ -3917,6 +3931,7 @@ fn a_run() -> agents::AgentRun {
         }),
         entries: vec![
             agents::RunEntry {
+                tool: None,
                 revision: 1,
                 event_id: None,
                 kind: agents::RunEntryKind::Prompt,
@@ -3924,6 +3939,7 @@ fn a_run() -> agents::AgentRun {
                 created_at_ms: None,
             },
             agents::RunEntry {
+                tool: None,
                 revision: 2,
                 event_id: None,
                 kind: agents::RunEntryKind::Question,
@@ -3931,6 +3947,7 @@ fn a_run() -> agents::AgentRun {
                 created_at_ms: None,
             },
             agents::RunEntry {
+                tool: None,
                 revision: 3,
                 event_id: None,
                 kind: agents::RunEntryKind::Step,
@@ -3938,6 +3955,7 @@ fn a_run() -> agents::AgentRun {
                 created_at_ms: None,
             },
             agents::RunEntry {
+                tool: None,
                 revision: 4,
                 event_id: None,
                 kind: agents::RunEntryKind::Result,
@@ -4026,6 +4044,7 @@ fn reading_entry(kind: agents::RunEntryKind, text: &str) -> State {
     // summary - see `agents::run_history`. Every other kind is drawn either way.
     run.summarized_revision = 0;
     run.entries = vec![agents::RunEntry {
+        tool: None,
         revision: 1,
         event_id: None,
         kind,
@@ -4757,6 +4776,7 @@ fn questions(count: u64) -> agents::AgentRun {
     run.summary = None;
     run.entries = (0..count)
         .map(|index| agents::RunEntry {
+            tool: None,
             revision: index + 1,
             event_id: None,
             kind: agents::RunEntryKind::Question,

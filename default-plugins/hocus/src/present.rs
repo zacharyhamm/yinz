@@ -825,7 +825,11 @@ fn agent_run(value: &Value) -> Option<String> {
         // The text is the agent's own — a prompt as it was typed, a plan as it
         // was written — and is already markdown, so it is passed through rather
         // than escaped, exactly as `note_get` passes a note's body through.
-        markdown_body(&text(entry, "text"), "", &mut out);
+        if matches!(text(entry, "kind").as_str(), "tool_call" | "tool_result") {
+            out.push_str(&fence(&text(entry, "text")));
+        } else {
+            markdown_body(&text(entry, "text"), "", &mut out);
+        }
     }
     if let Some(more) = value.get("more").and_then(Value::as_str) {
         out.push_str(&format!("\n_more entries: `{more}`_\n"));

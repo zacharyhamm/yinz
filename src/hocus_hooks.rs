@@ -62,7 +62,7 @@ const SCRIPT_VERSION: u32 = 12;
 /// The same discipline for the generated opencode plugin, which is one file rather than a
 /// script plus a settings block. Bumped whenever [`opencode_plugin`] changes.
 #[cfg(test)]
-const OPENCODE_PLUGIN_VERSION: u32 = 5;
+const OPENCODE_PLUGIN_VERSION: u32 = 6;
 
 /// What marks an entry in the settings file as ours, and nothing else as ours.
 ///

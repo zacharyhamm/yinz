@@ -124,7 +124,6 @@ assert.equal(children.length, consumed + 1, 'reports remain ordered without bloc
 assert.equal((await next()).tool_input.command, 'original');
 assert.equal((await next()).hook_event_name, 'Elicitation');
 // Parallel progress must not overwrite the open dialog's Waiting state.
-const beforeProgress = spawns;
 for (const [name, event] of [
   ['tool_execution_start', { toolName: 'bash', toolCallId: 'parallel', args: {} }],
   ['tool_execution_end', { toolName: 'bash', toolCallId: 'parallel', isError: false }],
@@ -135,7 +134,7 @@ for (const [name, event] of [
 ]) {
   emit(name, event);
   await flush();
-  assert.equal(spawns, beforeProgress, `${name} must leave the dialog waiting`);
+  assert.equal((await next()).archive_only, true, `${name} must leave the dialog waiting`);
 }
 emit('ui_prompt_end');
 const dialogResult = await next();

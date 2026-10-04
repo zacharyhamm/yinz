@@ -69,6 +69,7 @@ fn push(
     }
     run.revision += 1;
     run.entries.push(RunEntry {
+        tool: None,
         revision: run.revision,
         event_id: Some(id),
         kind: RunEntryKind::Message,

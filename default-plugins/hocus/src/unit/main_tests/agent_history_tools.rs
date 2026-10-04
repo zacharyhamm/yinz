@@ -13,6 +13,7 @@ use yinz_tile::prelude::HostId;
 
 fn entry(revision: u64, kind: RunEntryKind, text: &str) -> RunEntry {
     RunEntry {
+        tool: None,
         revision,
         event_id: Some(format!("event-{revision}")),
         kind,

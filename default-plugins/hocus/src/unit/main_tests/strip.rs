@@ -349,6 +349,7 @@ fn a_search_hits_history_counts_the_older_entries_it_leaves_out() {
     let run_id = agents::run_id("claude", 3, "session-1", 10, &host);
     let entries: Vec<_> = (1..=6)
         .map(|revision| agents::RunEntry {
+            tool: None,
             revision,
             event_id: None,
             kind: agents::RunEntryKind::Message,
