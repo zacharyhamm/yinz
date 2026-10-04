@@ -1034,7 +1034,7 @@ fn failed_attach_preserves_retained_plugin_state_until_successful_commit() {
 }
 
 #[test]
-fn failed_new_tab_registration_rolls_back_and_disconnects_once() {
+fn failed_new_tab_registration_rolls_back_without_disconnecting() {
     let client = ClientId::new(1);
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
     let receiver = screen_wired_to_server(&mut screen);
@@ -1059,6 +1059,9 @@ fn failed_new_tab_registration_rolls_back_and_disconnects_once() {
             None,
         )
         .unwrap();
+    assert!(screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+        .is_some());
     assert!(!screen.connected_clients.borrow().contains(&client));
     assert!(!screen.active_tab_ids.contains_key(&client));
     assert!(!screen.tab_history.contains_key(&client));
@@ -1071,7 +1074,7 @@ fn failed_new_tab_registration_rolls_back_and_disconnects_once() {
                 instruction, ServerInstruction::ClientExit(id, None) if *id == client
             ))
             .count(),
-        1
+        0
     );
 }
 
@@ -1409,7 +1412,7 @@ fn registration_preserves_reused_source_state_in_every_tab() {
                 .collect();
             assert_eq!(plugin_events.iter().filter(|event|
                 matches!(event, PluginInstruction::AddClient(id) if *id == returning)
-            ).count(), 1, "{registration}");
+            ).count(), usize::from(registration != "layout"), "{registration}");
             if registration != "layout" {
                 assert!(
                     matches!(plugin_events.first(), Some(PluginInstruction::AddClient(id)) if *id == returning)
@@ -1483,9 +1486,11 @@ fn failed_layout_registration_preserves_departed_source_and_pending_output() {
                 Some((2, 2)),
             )],
         );
-        // Tabs keep their senders; only the transaction's plugin registration fails.
-        screen.bus.senders.should_silently_fail = false;
-        screen.bus.senders.to_plugin = None;
+        // The committed layout survives a failure in screen registration's reflow.
+        screen.set_client_size(returning, Size { cols: 79, rows: 24 });
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.senders.should_silently_fail = false;
+        tab.senders.to_pty_writer = None;
         screen
             .land_layout(
                 TiledPaneLayout::default(),
@@ -1518,6 +1523,139 @@ fn failed_layout_registration_preserves_departed_source_and_pending_output() {
             .contains("retained-content"));
         assert_eq!(receiver.try_iter().filter(|(instruction, _)|
             matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == returning)
-        ).count(), 1);
+        ).count(), 0);
+    }
+}
+
+#[test]
+fn unattached_disconnect_preserves_pane_state_and_clean_subscriber_snapshots() {
+    let source = ClientId::new(1);
+    for connection in [source, ClientId::new(99)] {
+        let (mut screen, capture) =
+            create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        screen.add_watcher_client(ClientId::new(2)).unwrap();
+        screen.remove_client(source).unwrap();
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        tab.set_guest_modal_on_pane(pane_id, &[connection]);
+        tab.pending_agent_escapes
+            .insert((connection, pane_id), std::time::Instant::now());
+        screen
+            .mode_info
+            .insert(connection, screen.default_mode_info.clone());
+        screen.pane_subscriber_snapshots_dirty = false;
+        capture.drain_plugin_events();
+
+        screen.remove_client(connection).unwrap();
+
+        assert!(!screen.pane_subscriber_snapshots_dirty);
+        assert!(!screen.mode_info.contains_key(&connection));
+        let tab = &screen.tabs[&TabId::new(0)];
+        assert!(tab.pane_has_guest_modal_for_client(pane_id, connection));
+        assert!(tab
+            .pending_agent_escapes
+            .contains_key(&(connection, pane_id)));
+        assert!(capture.plugin_rx.try_iter().next().is_none());
+    }
+}
+
+#[test]
+fn detached_layout_registers_only_with_the_screen() {
+    let client = ClientId::new(3);
+    let (mut screen, capture) = create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.remove_client(ClientId::new(1)).unwrap();
+    capture.drain_plugin_events();
+    screen
+        .new_tab(TabId::new(1), (vec![], vec![]), None, Some(client))
+        .unwrap();
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(2), None)],
+            vec![],
+            HashMap::new(),
+            TabId::new(1),
+            true,
+            client,
+            None,
+        )
+        .unwrap();
+    assert!(screen.is_client_attached(client));
+    assert_eq!(screen.followed_client_id, Some(client));
+    assert!(screen.tabs[&TabId::new(1)]
+        .get_pane_with_id(PaneId::Terminal(TerminalId::new(2)))
+        .is_some());
+    assert!(!capture
+        .plugin_rx
+        .try_iter()
+        .any(|(event, _)| matches!(event, PluginInstruction::AddClient(_))));
+}
+
+#[test]
+fn retiring_a_followed_source_preserves_another_clients_hover() {
+    use yinz_types::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+    for commit in [false, true] {
+        let source = ClientId::new(1);
+        let remaining = ClientId::new(3);
+        let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(
+            &mut screen,
+            TabId::new(0),
+            PaneId::Terminal(TerminalId::new(2)),
+            false,
+        );
+        screen.add_watcher_client(ClientId::new(2)).unwrap();
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        let pane_id = PaneId::Terminal(TerminalId::new(1));
+        let position = Position::new(5, 5);
+        tab.add_client(remaining, None).unwrap();
+        for client in [source, remaining] {
+            tab.focus_pane_with_id(PaneId::Terminal(TerminalId::new(2)), false, false, client)
+                .unwrap();
+            tab.handle_mouse_event_with_passthrough(
+                &MouseEvent::new_buttonless_motion(position),
+                client,
+                None,
+            )
+            .unwrap();
+        }
+        assert_eq!(tab.query_mouse_hover_pane_id().len(), 2);
+        let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
+        pane.set_plugin_regex_highlights(
+            crate::PluginId::new(1),
+            vec![RegexHighlight {
+                pattern: "test".into(),
+                style: HighlightStyle::None,
+                layer: HighlightLayer::Hint,
+                context: Default::default(),
+                on_hover: true,
+                bold: false,
+                italic: false,
+                underline: false,
+                tooltip_text: None,
+            }],
+            &Default::default(),
+        );
+        pane.set_hover_position(Some(position));
+        screen.remove_client(source).unwrap();
+        if commit {
+            screen.add_client(remaining).unwrap();
+        } else {
+            screen.remove_watcher_client(ClientId::new(2));
+        }
+        let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+        assert!(!tab.query_mouse_hover_pane_id().contains_key(&source));
+        assert_eq!(
+            tab.query_mouse_hover_pane_id().get(&remaining),
+            Some(&pane_id)
+        );
+        assert!(!tab
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .set_hover_position(Some(position)));
     }
 }

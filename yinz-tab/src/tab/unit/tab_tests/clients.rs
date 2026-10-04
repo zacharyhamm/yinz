@@ -1,6 +1,7 @@
 use super::*;
 use yinz_bus::loading_indication::LoadingIndication;
 use yinz_types::data::{PermissionType, PluginPermission};
+use yinz_types::position::Position;
 
 #[test]
 fn joining_clients_see_plugin_errors_and_permission_prompts_without_plugin_bytes() {
@@ -221,4 +222,48 @@ fn a_closed_focus_pane_is_not_offered_to_a_joining_client() {
 
     let landed = tab.get_active_pane_id(joining);
     assert!(landed.is_some() && landed != Some(focused), "{landed:?}");
+}
+
+#[test]
+fn removing_clients_preserves_shared_hover_until_the_last_client_leaves() {
+    use yinz_types::data::{HighlightLayer, HighlightStyle, RegexHighlight};
+    for first in [ClientId::new(1), ClientId::new(2)] {
+        let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, false);
+        let clients = [ClientId::new(1), ClientId::new(2)];
+        let pane_id = tab.get_active_pane_id(clients[0]).unwrap();
+        for client in clients {
+            tab.mouse_hover_pane_id.insert(client, pane_id);
+        }
+        let pane = tab.get_pane_with_id_mut(pane_id).unwrap();
+        pane.set_plugin_regex_highlights(
+            crate::PluginId::new(1),
+            vec![RegexHighlight {
+                pattern: "test".into(),
+                style: HighlightStyle::None,
+                layer: HighlightLayer::Hint,
+                context: Default::default(),
+                on_hover: true,
+                bold: false,
+                italic: false,
+                underline: false,
+                tooltip_text: None,
+            }],
+            &Default::default(),
+        );
+        let position = Some(Position::new(0, 0));
+        assert!(pane.set_hover_position(position));
+        tab.remove_client_pane_state(first);
+        assert!(!tab
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .set_hover_position(position));
+        let last = clients.into_iter().find(|id| *id != first).unwrap();
+        assert_eq!(tab.mouse_hover_pane_id.get(&last), Some(&pane_id));
+        tab.remove_client_pane_state(last);
+        assert!(!tab
+            .get_pane_with_id_mut(pane_id)
+            .unwrap()
+            .set_hover_position(None));
+        assert!(tab.mouse_hover_pane_id.is_empty());
+    }
 }

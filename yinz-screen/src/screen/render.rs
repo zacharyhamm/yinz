@@ -586,6 +586,12 @@ impl Screen {
                         || replay_clear
                         || tab.should_clear_display_before_rendering();
                     if repaint_whole {
+                        // A watcher about to be repainted whole has not necessarily seen this
+                        // screen before - it may have just attached, resized, or changed which
+                        // client it follows, none of which the tab's memo (which is keyed by the
+                        // followed client, one entry for every watcher) can tell apart. State the
+                        // cursor from scratch for it.
+                        tab.forget_watcher_host_cursor_state(followed_client_id);
                         tab.set_force_render();
                         // A forced pane repaint cannot erase overlays outside the panes.
                         watcher_output.add_pre_vte_instruction_to_client(
@@ -607,14 +613,6 @@ impl Screen {
                                 pane.invalidate_frame(followed_client_id);
                             }
                         }
-                    }
-                    if repaint_whole {
-                        // A watcher about to be repainted whole has not necessarily seen this
-                        // screen before - it may have just attached, resized, or changed which
-                        // client it follows, none of which the tab's memo (which is keyed by the
-                        // followed client, one entry for every watcher) can tell apart. State the
-                        // cursor from scratch for it.
-                        tab.forget_watcher_host_cursor_state(followed_client_id);
                     }
                     // A watcher whose last frame ended in a serialization-time `?25l` has a host
                     // cursor the memo does not describe: it is down, and the goto that "placed" it

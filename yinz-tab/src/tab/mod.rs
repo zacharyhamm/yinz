@@ -4214,8 +4214,10 @@ impl Tab {
         self.forget_host_cursor_state(client_id);
         self.invalidate_boundaries(client_id);
         if let Some(pane_id) = self.mouse_hover_pane_id.remove(&client_id) {
-            if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
-                pane.set_hover_position(None);
+            if !self.mouse_hover_pane_id.values().any(|id| *id == pane_id) {
+                if let Some(pane) = self.get_pane_with_id_mut(pane_id) {
+                    pane.set_hover_position(None);
+                }
             }
         }
         self.plugin_hover_pane_id.remove(&client_id);

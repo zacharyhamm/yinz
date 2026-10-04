@@ -783,13 +783,18 @@ fn removing_a_client_only_clears_its_own_frame_override() {
     let mut pane = make_terminal_pane_for_bell();
     for owner in [None, Some(other), Some(client)] {
         pane.add_highlight_pane_frame_color_override(Some("highlight".into()), owner);
+        let previous_override = pane.pane_frame_color_override.clone();
         pane.set_should_render(false);
         pane.remove_client(client);
         assert_eq!(
-            pane.pane_frame_color_override.is_none(),
-            owner == Some(client)
+            pane.pane_frame_color_override,
+            if owner == Some(client) {
+                None
+            } else {
+                previous_override
+            }
         );
-        assert!(!pane.should_render());
+        assert_eq!(pane.should_render(), owner == Some(client));
     }
 }
 

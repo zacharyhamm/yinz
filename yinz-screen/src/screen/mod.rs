@@ -2098,7 +2098,7 @@ impl Screen {
             let mut retired_source = None;
             if !self.active_tab_ids.contains_key(&client_id) {
                 // Capture the departed source before the layout provisionally connects this id.
-                self.register_client_transaction(client_id, departed, None)
+                self.register_client_transaction(client_id, departed, None, false)
                     .map(|source| retired_source = source)
                     .with_context(err_context)
                     .non_fatal();
@@ -2141,7 +2141,7 @@ impl Screen {
     #[cfg(test)]
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
         let departed = self.departed_follow_source();
-        self.register_client_transaction(client_id, departed, None)
+        self.register_client_transaction(client_id, departed, None, true)
             .map(|_| ())
     }
 
@@ -2152,15 +2152,18 @@ impl Screen {
         client_id: ClientId,
         departed: Option<(ClientId, Option<TabId>)>,
         client_size: Option<Size>,
+        attaching: bool,
     ) -> Result<Option<ClientId>> {
         if let Some(size) = client_size {
             self.set_client_size(client_id, size);
         }
         let result = (|| {
-            self.bus
-                .senders
-                .send_to_plugin(PluginInstruction::AddClient(client_id))
-                .context("adding the registering client to the plugins")?;
+            if attaching {
+                self.bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::AddClient(client_id))
+                    .context("adding the registering client to the plugins")?;
+            }
             self.register_client(client_id)
                 .context("registering the client with the screen")?;
             if client_size.is_some() {
@@ -2177,11 +2180,13 @@ impl Screen {
                 if client_size.is_some() {
                     self.resize_to_clients().non_fatal();
                 }
-                self.bus
-                    .senders
-                    .send_to_server(ServerInstruction::ClientExit(client_id, None))
-                    .context("disconnecting client after failed registration")
-                    .non_fatal();
+                if attaching {
+                    self.bus
+                        .senders
+                        .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                        .context("disconnecting client after failed registration")
+                        .non_fatal();
+                }
                 Err(error)
             },
         }
@@ -2206,7 +2211,7 @@ impl Screen {
         for tab in self.tabs.values_mut() {
             tab.remove_client(client_id);
         }
-        self.remove_client(client_id).non_fatal();
+        self.remove_client_inner(client_id, true).non_fatal();
         if let Some((source, tab)) = departed {
             self.followed_client_id = Some(source);
             self.departed_followed_tab_id = tab;
@@ -2318,6 +2323,11 @@ impl Screen {
     }
 
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
+        let was_attached = self.is_client_attached(client_id);
+        self.remove_client_inner(client_id, was_attached)
+    }
+
+    fn remove_client_inner(&mut self, client_id: ClientId, clean_panes: bool) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
         // `and` evaluates every cleanup step while retaining the first error.
         let mut result = Ok(());
@@ -2350,9 +2360,11 @@ impl Screen {
         }
         self.nested_guest_choices
             .retain(|(choice_client_id, _), _| *choice_client_id != client_id);
-        for tab in self.tabs.values_mut() {
-            tab.clear_guest_modal_for_client_on_all_panes(client_id);
-            tab.clear_guest_choice_indicator_for_client_on_all_panes(client_id);
+        if clean_panes {
+            for tab in self.tabs.values_mut() {
+                tab.clear_guest_modal_for_client_on_all_panes(client_id);
+                tab.clear_guest_choice_indicator_for_client_on_all_panes(client_id);
+            }
         }
 
         // If the followed client disconnected, find the next regular client
@@ -2382,15 +2394,17 @@ impl Screen {
             }
         }
 
-        // Watchers still following this client keep seeing its pane state.
-        let still_followed = self.followed_client_id == Some(client_id);
-        for tab in self.tabs.values_mut() {
-            if !still_followed {
-                tab.remove_client_pane_state(client_id);
-            }
-            tab.remove_client(client_id);
-            if tab.has_no_connected_clients() {
-                result = result.and(tab.visible(false).with_context(err_context));
+        if clean_panes {
+            // Watchers still following this client keep seeing its pane state.
+            let still_followed = self.followed_client_id == Some(client_id);
+            for tab in self.tabs.values_mut() {
+                if !still_followed {
+                    tab.remove_client_pane_state(client_id);
+                }
+                tab.remove_client(client_id);
+                if tab.has_no_connected_clients() {
+                    result = result.and(tab.visible(false).with_context(err_context));
+                }
             }
         }
 
@@ -2463,7 +2477,9 @@ impl Screen {
         // reports once, through `resize_to_clients`, and only for a client that
         // was actually attached — reporting here as well made every departing
         // connection cost the session two extra full-manifest broadcasts.
-        self.pane_subscriber_snapshots_dirty = true;
+        if clean_panes {
+            self.pane_subscriber_snapshots_dirty = true;
+        }
         self.resume_deferred_render();
         result
     }

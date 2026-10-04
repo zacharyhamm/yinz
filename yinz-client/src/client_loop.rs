@@ -26,7 +26,7 @@ use {
 };
 
 /// Why the loop stopped, and what the caller should do next.
-pub(crate) struct LoopOutcome {
+pub struct ClientOutcome {
     /// The message to show as the client hands the terminal back.
     pub exit_msg: String,
     /// The process status to use after orderly cleanup.
@@ -45,7 +45,7 @@ pub(crate) struct ClientLoop<'a> {
     /// ever answered — which is how the client learns it is nested at all.
     pub nested_reannounce: &'a NestedReannounce,
     /// How to hand the terminal back for fatal instructions that exit immediately.
-    /// Terminal write failures return through `LoopOutcome` for orderly cleanup.
+    /// Terminal write failures return through `ClientOutcome` for orderly cleanup.
     pub teardown: ClientTeardown,
     /// The host's synchronised-output support, which the server can change
     /// at runtime once it learns what the terminal advertised.
@@ -62,8 +62,8 @@ impl ClientLoop<'_> {
             ClientInstruction,
             yinz_types::diagnostics::ErrorContext,
         )>,
-    ) -> LoopOutcome {
-        let mut outcome = LoopOutcome {
+    ) -> ClientOutcome {
+        let mut outcome = ClientOutcome {
             exit_msg: String::new(),
             exit_status: 0,
             reconnect_to_session: None,
@@ -139,7 +139,7 @@ impl ClientLoop<'_> {
     fn handle(
         &mut self,
         instruction: ClientInstruction,
-        outcome: &mut LoopOutcome,
+        outcome: &mut ClientOutcome,
         slow_warnings: &mut SlowWarnings,
     ) -> bool {
         match instruction {

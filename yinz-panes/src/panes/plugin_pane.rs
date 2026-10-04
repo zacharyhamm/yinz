@@ -484,13 +484,7 @@ impl Pane for PluginPane {
         self.cursor_visibility.remove(&client_id);
         self.frame.remove(&client_id);
         self.pane_tabs_views.remove(&client_id);
-        if self
-            .pane_frame_color_override
-            .as_ref()
-            .is_some_and(|color| color.is_cleared_by(Some(client_id)))
-        {
-            self.pane_frame_color_override = None;
-        }
+        self.clear_pane_frame_color_override(Some(client_id));
     }
     fn prepare_content_replay(&mut self, client_id: ClientId) {
         if let Some(grid) = self.grids.get_mut(&client_id) {

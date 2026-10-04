@@ -215,7 +215,7 @@ fn spawn_client_thread(
     config_options: Options,
     client_info: ClientInfo,
     pane_id_to_focus: Option<yinz_types::data::PaneId>,
-) -> JoinHandle<Option<SessionConnection>> {
+) -> JoinHandle<yinz_client::ClientOutcome> {
     std::thread::Builder::new()
         .name("in_process_yinz_client".to_string())
         .spawn(move || {
@@ -239,7 +239,7 @@ fn spawn_client_thread(
 
 pub struct TestClient {
     fake_client_handle: FakeClientHandle,
-    thread: Option<JoinHandle<Option<SessionConnection>>>,
+    thread: Option<JoinHandle<yinz_client::ClientOutcome>>,
 }
 
 #[derive(Clone)]
@@ -313,7 +313,7 @@ impl TestClient {
 }
 
 fn join_client_thread_with_timeout(
-    join_handle: JoinHandle<Option<SessionConnection>>,
+    join_handle: JoinHandle<yinz_client::ClientOutcome>,
 ) -> Option<SessionConnection> {
     let (done_tx, done_rx) = mpsc::channel();
     std::thread::Builder::new()
@@ -324,7 +324,10 @@ fn join_client_thread_with_timeout(
         })
         .unwrap();
     match done_rx.recv_timeout(CLIENT_JOIN_TIMEOUT) {
-        Ok(Ok(reconnect)) => reconnect,
+        Ok(Ok(outcome)) => {
+            assert_eq!(outcome.exit_status, 0, "{}", outcome.exit_msg);
+            outcome.reconnect_to_session
+        },
         Ok(Err(_)) => panic!("client thread panicked"),
         Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out waiting for client thread"),
         Err(mpsc::RecvTimeoutError::Disconnected) => {

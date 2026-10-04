@@ -23,6 +23,7 @@ compile_error!("Yinz does not support Windows");
 
 pub mod cli_client;
 mod client_loop;
+pub use client_loop::ClientOutcome;
 mod command_is_executing;
 mod host_transport;
 mod input_handler;
@@ -408,10 +409,14 @@ pub fn start_client(
     pane_id_to_focus: Option<yinz_types::pane_id::PaneId>,
     is_a_reconnect: bool,
     start_detached_and_exit: bool,
-) -> Option<SessionConnection> {
+) -> ClientOutcome {
     if start_detached_and_exit {
         start_server_detached(os_input, cli_args, config, config_options, info);
-        return None;
+        return ClientOutcome {
+            exit_msg: String::new(),
+            exit_status: 0,
+            reconnect_to_session: None,
+        };
     }
     info!("Starting Yinz client!");
 
@@ -716,8 +721,6 @@ pub fn start_client(
     render_budget.close().non_fatal();
     client_shutdown.begin();
     drop(receive_client_instructions);
-    let exit_msg = outcome.exit_msg;
-    let reconnect_to_session = outcome.reconnect_to_session;
 
     router_thread.join().unwrap();
 
@@ -725,20 +728,16 @@ pub fn start_client(
         say_bye(&*os_input);
     }
 
-    if reconnect_to_session.is_none() {
-        info!("{}", exit_msg);
-        teardown.restore(&*os_input, &exit_msg);
+    if outcome.reconnect_to_session.is_none() {
+        info!("{}", outcome.exit_msg);
+        teardown.restore(&*os_input, &outcome.exit_msg);
     } else {
         write_seqs(&*os_input, &[CLEAR_SCREEN]);
     }
 
     let _ = send_input_instructions.send(InputInstruction::Exit);
 
-    if outcome.exit_status != 0 {
-        std::process::exit(outcome.exit_status);
-    }
-
-    reconnect_to_session
+    outcome
 }
 
 pub fn start_server_detached(
