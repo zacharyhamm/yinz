@@ -39,8 +39,6 @@ pub struct RenderBacklog {
     /// Full `Render` frames and coalesced pane snapshots queued behind the message
     /// being written, if any. Both are produced by the screen's render pass.
     pub queued_renders: usize,
-    /// How long the message being written has been blocked on the socket.
-    pub in_flight_for: Option<Duration>,
 }
 
 /// Called when a client's render queue drains below the threshold it was armed at, or closes.

@@ -1,5 +1,4 @@
 use super::*;
-use std::time::Duration;
 
 const CLIENT: ClientId = ClientId::new(1);
 const OTHER_CLIENT: ClientId = ClientId::new(2);
@@ -41,15 +40,12 @@ fn screen_with_backlog() -> PacedScreen {
     }
 }
 
-fn backlog(queued_renders: usize, in_flight_for: Option<Duration>) -> RenderBacklog {
-    RenderBacklog {
-        queued_renders,
-        in_flight_for,
-    }
+fn backlog(queued_renders: usize) -> RenderBacklog {
+    RenderBacklog { queued_renders }
 }
 
 fn behind() -> RenderBacklog {
-    backlog(1, Some(Duration::from_millis(50)))
+    backlog(1)
 }
 
 fn rendered_bytes(receiver: &ServerReceiver) -> String {
@@ -80,11 +76,8 @@ fn a_client_with_a_queued_frame_holds_back_rendering() {
     assert!(paced.screen.deferred_tabs().is_empty());
 
     // Writing the only frame it has is keeping up.
-    for seconds in [1, 29, 30, 60] {
-        *paced.backlog.lock().unwrap() =
-            vec![(CLIENT, backlog(0, Some(Duration::from_secs(seconds))))];
-        assert!(paced.screen.deferred_tabs().is_empty());
-    }
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, backlog(0))];
+    assert!(paced.screen.deferred_tabs().is_empty());
 
     *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
     assert!(!paced.screen.deferred_tabs().is_empty());
@@ -97,7 +90,7 @@ fn single_ready_client_clears_stale_deferrals() {
     *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
     assert_eq!(
         paced.screen.deferred_tabs(),
-        [TabId::new(0)].into_iter().collect()
+        &[TabId::new(0)].into_iter().collect()
     );
     assert!(paced.ready.lock().unwrap().contains_key(&CLIENT));
 
@@ -111,7 +104,7 @@ fn single_ready_client_clears_stale_deferrals() {
 }
 
 #[test]
-fn deferred_panes_still_deliver_bells_and_directory_updates_once() {
+fn deferred_panes_deliver_bells_and_directory_updates_once_after_resuming() {
     for visual_bell in [false, true] {
         let mut paced = screen_with_backlog();
         paced.screen.visual_bell = visual_bell;
@@ -129,29 +122,83 @@ fn deferred_panes_still_deliver_bells_and_directory_updates_once() {
             )
             .unwrap();
 
-        paced_render(&mut paced.screen);
+        let previous_osc7 = paced.screen.last_forwarded_osc7.clone();
+        for _ in 0..2 {
+            paced_render(&mut paced.screen);
+            assert!(!paced.screen.deferred_render_tabs.is_empty());
+            assert!(rendered_by_client(&paced.to_server).is_empty());
+            assert_eq!(paced.screen.last_forwarded_osc7, previous_osc7);
+            let tab = paced.screen.tabs.get(&TabId::new(0)).unwrap();
+            assert!(tab.get_active_pane(CLIENT).unwrap().has_bell());
+        }
 
-        assert!(!paced.screen.deferred_tabs().is_empty());
+        paced.backlog.lock().unwrap().clear();
+        let ready = paced.ready.lock().unwrap().remove(&CLIENT).unwrap();
+        ready();
+        assert!(paced.to_screen.try_iter().any(|(instruction, _)| {
+            matches!(instruction, ScreenInstruction::RenderWriterReady)
+        }));
+        paced.screen.resume_deferred_render();
+        paced_render(&mut paced.screen);
         let bytes = rendered_bytes(&paced.to_server);
-        assert!(bytes.contains('\x07'), "{bytes:?}");
-        assert!(bytes.contains(osc7), "{bytes:?}");
-        assert!(!bytes.contains("pending-content"), "{bytes:?}");
+        assert!(bytes.contains("pending-content"), "{bytes:?}");
+        assert_eq!(bytes.matches('\x07').count(), 1, "{bytes:?}");
+        assert_eq!(bytes.matches(osc7).count(), 1, "{bytes:?}");
         assert_eq!(
             paced.screen.last_forwarded_osc7[&CLIENT].as_deref(),
             Some("file://host/deferred")
         );
-
-        *paced.backlog.lock().unwrap() = vec![(CLIENT, backlog(0, None))];
         paced_render(&mut paced.screen);
         let bytes = rendered_bytes(&paced.to_server);
-        assert!(bytes.contains("pending-content"), "{bytes:?}");
         assert!(!bytes.contains('\x07'), "{bytes:?}");
         assert!(!bytes.contains(osc7), "{bytes:?}");
     }
 }
 
 #[test]
-fn queued_frames_remain_blocked_regardless_of_write_duration() {
+fn deferred_clients_do_not_receive_another_tabs_bell_or_directory_updates() {
+    for visual_bell in [false, true] {
+        let mut paced = screen_with_backlog();
+        paced.screen.visual_bell = visual_bell;
+        paced.screen.add_client(OTHER_CLIENT).unwrap();
+        new_tab(&mut paced.screen, 2, TabId::new(1));
+        assert_eq!(paced.screen.active_tab_ids[&CLIENT], TabId::new(1));
+        assert_eq!(paced.screen.active_tab_ids[&OTHER_CLIENT], TabId::new(0));
+        paced_render(&mut paced.screen);
+        let _ = rendered_by_client(&paced.to_server);
+        *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
+        let previous_osc7 = paced.screen.last_forwarded_osc7.get(&OTHER_CLIENT).cloned();
+        for (tab_id, terminal, text) in [(0, 1, "blocked"), (1, 2, "ready")] {
+            paced
+                .screen
+                .tabs
+                .get_mut(&TabId::new(tab_id))
+                .unwrap()
+                .handle_pty_bytes(
+                    TerminalId::new(terminal),
+                    format!("{text}\x07\x1b]7;file://host/{text}\x1b\\").into_bytes(),
+                )
+                .unwrap();
+        }
+        paced_render(&mut paced.screen);
+        let frames = rendered_by_client(&paced.to_server);
+        assert!(!frames.contains_key(&OTHER_CLIENT), "{frames:?}");
+        assert!(frames[&CLIENT].contains('\x07'), "{frames:?}");
+        assert!(frames[&CLIENT].contains("\x1b]7;file://host/ready\x1b\\"));
+        assert_eq!(
+            paced.screen.last_forwarded_osc7.get(&OTHER_CLIENT),
+            previous_osc7.as_ref()
+        );
+        paced.backlog.lock().unwrap().clear();
+        paced_render(&mut paced.screen);
+        let frames = rendered_by_client(&paced.to_server);
+        assert!(frames[&OTHER_CLIENT].contains('\x07'), "{frames:?}");
+        assert!(frames[&OTHER_CLIENT].contains("\x1b]7;file://host/blocked\x1b\\"));
+    }
+}
+
+#[test]
+fn queued_frames_hold_back_pending_updates_until_the_writer_is_ready() {
     for kind in ["clients", "watchers", "subscribers"] {
         let mut paced = screen_with_backlog();
         let recipient = match kind {
@@ -174,11 +221,8 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
         paced_render(&mut paced.screen);
         let _ = rendered_by_client(&paced.to_server);
         paced.client_messages.lock().unwrap().clear();
-        for (row, seconds) in [29, 30, 60].into_iter().enumerate() {
-            *paced.backlog.lock().unwrap() = vec![
-                (CLIENT, backlog(1, Some(Duration::from_secs(seconds)))),
-                (recipient, backlog(1, Some(Duration::from_secs(seconds)))),
-            ];
+        for row in 1..=3 {
+            *paced.backlog.lock().unwrap() = vec![(CLIENT, backlog(1)), (recipient, backlog(1))];
             paced
                 .screen
                 .tabs
@@ -186,7 +230,7 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
                 .unwrap()
                 .handle_pty_bytes(
                     TerminalId::new(1),
-                    format!("\x1b[{};1Hpending-{seconds}", row + 1).into_bytes(),
+                    format!("\x1b[{row};1Hpending-{row}").into_bytes(),
                 )
                 .unwrap();
             paced.screen.render().unwrap();
@@ -195,11 +239,11 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
                 paced_render(&mut paced.screen);
                 assert!(
                     rendered_by_client(&paced.to_server).is_empty(),
-                    "{kind}: {seconds}"
+                    "{kind}: {row}"
                 );
                 assert!(
                     paced.client_messages.lock().unwrap().is_empty(),
-                    "{kind}: {seconds}"
+                    "{kind}: {row}"
                 );
                 assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
                 assert!(
@@ -214,7 +258,7 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
             .to_screen
             .try_iter()
             .any(|(instruction, _)| matches!(instruction, ScreenInstruction::RenderWriterReady)));
-        paced.screen.on_render_writer_ready();
+        paced.screen.resume_deferred_render();
         assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
         paced_render(&mut paced.screen);
         let contents = if kind == "subscribers" {
@@ -232,9 +276,9 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
                 .remove(&recipient)
                 .unwrap()
         };
-        for seconds in [29, 30, 60] {
+        for row in 1..=3 {
             assert!(
-                contents.contains(&format!("pending-{seconds}")),
+                contents.contains(&format!("pending-{row}")),
                 "{kind}: {contents:?}"
             );
         }
@@ -242,7 +286,7 @@ fn queued_frames_remain_blocked_regardless_of_write_duration() {
 }
 
 #[test]
-fn long_writes_do_not_bypass_other_blocked_recipients() {
+fn queued_frames_do_not_bypass_other_blocked_recipients() {
     let slow = ClientId::new(3);
     for kind in ["clients", "watchers", "subscribers"] {
         let mut paced = screen_with_backlog();
@@ -273,8 +317,8 @@ fn long_writes_do_not_bypass_other_blocked_recipients() {
         paced.client_messages.lock().unwrap().clear();
         *paced.backlog.lock().unwrap() = vec![
             (CLIENT, behind()),
-            (slow, backlog(1, Some(Duration::from_secs(30)))),
-            (OTHER_CLIENT, backlog(1, Some(Duration::from_secs(10)))),
+            (slow, backlog(1)),
+            (OTHER_CLIENT, backlog(1)),
         ];
         paced
             .screen
@@ -349,12 +393,12 @@ fn watcher_pacing_uses_the_departed_clients_last_tab() {
     *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
     assert_eq!(
         paced.screen.deferred_tabs(),
-        [TabId::new(1)].into_iter().collect()
+        &[TabId::new(1)].into_iter().collect()
     );
     paced.screen.close_tab_by_id(TabId::new(1)).unwrap();
     assert_eq!(
         paced.screen.deferred_tabs(),
-        [TabId::new(0)].into_iter().collect()
+        &[TabId::new(0)].into_iter().collect()
     );
     paced.screen.remove_watcher_client(OTHER_CLIENT);
     assert!(paced.screen.deferred_tabs().is_empty());
@@ -366,7 +410,7 @@ fn one_slow_client_does_not_hold_back_the_others() {
     paced.screen.add_client(OTHER_CLIENT).unwrap();
     // Attaching asks for a frame of its own.
     let _ = render_retries_requested(&paced.to_background_jobs);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     assert!(paced.screen.deferred_tabs().is_empty());
     assert!(paced.screen.deferred_tabs().is_empty());
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
@@ -382,7 +426,7 @@ fn a_slow_regular_client_does_not_hold_back_a_healthy_watcher() {
     paced.screen.set_followed_client(CLIENT).unwrap();
     paced.screen.render_to_clients().unwrap();
     let _ = rendered_bytes(&paced.to_server);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
 
     paced
         .screen
@@ -435,7 +479,7 @@ fn hover_only_changes_wake_a_healthy_watcher() {
         .unwrap();
     paced.screen.render_to_clients().unwrap();
     let _ = rendered_bytes(&paced.to_server);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
 
     let pane = paced.screen.tabs[&TabId::new(0)]
         .get_pane_with_id(hovered_pane)
@@ -517,7 +561,7 @@ fn watcher_only_sessions_pace_until_the_watcher_drains_or_detaches() {
     *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
     assert!(!paced.screen.deferred_tabs().is_empty());
 
-    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, backlog(0))];
     assert!(paced.screen.deferred_tabs().is_empty());
     *paced.backlog.lock().unwrap() = vec![(OTHER_CLIENT, behind())];
     paced.screen.remove_watcher_client(OTHER_CLIENT);
@@ -536,7 +580,7 @@ fn a_slow_terminal_does_not_hold_back_a_pane_subscriber() {
     paced.screen.render_to_clients().unwrap();
     let _ = rendered_bytes(&paced.to_server);
     paced.client_messages.lock().unwrap().clear();
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     paced
         .screen
         .get_active_tab_mut(CLIENT)
@@ -603,7 +647,7 @@ fn slow_terminal_and_subscriber_defer_until_the_subscriber_drains() {
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
 
     // The attached terminal is still slow, but the subscriber is ready again.
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     paced_render(&mut paced.screen);
     let messages = paced.client_messages.lock().unwrap();
     let subscriber_messages = messages.get(&OTHER_CLIENT).expect("subscriber update");
@@ -626,7 +670,7 @@ fn deferred_subscriber_snapshots_wait_for_new_render_requests() {
         paced.screen.render_to_clients().unwrap();
         paced.client_messages.lock().unwrap().clear();
         let _ = rendered_bytes(&paced.to_server);
-        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
         paced
             .screen
             .handle_pty_bytes(
@@ -696,7 +740,7 @@ fn an_idle_subscribed_pane_does_not_bypass_a_slow_terminals_backlog() {
     paced.screen.render_to_clients().unwrap();
     paced.client_messages.lock().unwrap().clear();
     let _ = rendered_bytes(&paced.to_server);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     paced
         .screen
         .get_active_tab_mut(CLIENT)
@@ -713,7 +757,7 @@ fn an_idle_subscribed_pane_does_not_bypass_a_slow_terminals_backlog() {
 }
 
 #[test]
-fn deferred_plugin_snapshots_use_a_client_of_each_subscribed_tab() {
+fn deferred_plugin_snapshots_use_the_same_client_across_tabs() {
     let subscriber = ClientId::new(3);
     for ansi in [false, true] {
         let mut paced = screen_with_backlog();
@@ -784,7 +828,7 @@ fn deferred_plugin_snapshots_use_a_client_of_each_subscribed_tab() {
         *paced.backlog.lock().unwrap() = vec![
             (CLIENT, behind()),
             (OTHER_CLIENT, behind()),
-            (subscriber, backlog(0, None)),
+            (subscriber, backlog(0)),
         ];
         paced_render(&mut paced.screen);
         assert_eq!(rendered_bytes(&paced.to_server), "");
@@ -810,7 +854,7 @@ fn an_idle_watched_tab_does_not_bypass_a_slow_terminals_backlog() {
     paced.screen.set_followed_client(ClientId::new(99)).unwrap();
     paced.screen.render_to_clients().unwrap();
     let _ = rendered_bytes(&paced.to_server);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     paced
         .screen
         .get_active_tab_mut(CLIENT)
@@ -877,7 +921,7 @@ fn caption_changes_wake_a_watcher_and_idle_frames_resume_pacing() {
         paced.screen.set_followed_client(CLIENT).unwrap();
         paced.screen.render_to_clients().unwrap();
         let _ = rendered_bytes(&paced.to_server);
-        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
 
         paced
             .screen
@@ -1048,7 +1092,7 @@ fn collapsed_stack_titles_wake_watchers_without_losing_hidden_content() {
         paced.screen.set_followed_client(CLIENT).unwrap();
         paced.screen.render_to_clients().unwrap();
         let _ = rendered_bytes(&paced.to_server);
-        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+        *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
 
         paced
             .screen
@@ -1136,7 +1180,7 @@ fn fullscreen_hidden_floating_panes_do_not_keep_idle_watchers_ready() {
     paced.screen.set_followed_client(CLIENT).unwrap();
     paced.screen.render_to_clients().unwrap();
     let _ = rendered_bytes(&paced.to_server);
-    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0, None))];
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, backlog(0))];
     paced
         .screen
         .tabs
@@ -1227,6 +1271,13 @@ fn writer_notification_resumes_deferred_frames_through_the_debouncer() {
     assert!(paced.to_background_jobs.try_iter().next().is_none());
     assert_eq!(rendered_bytes(&paced.to_server), "");
 
+    let first_ready = paced.ready.lock().unwrap()[&CLIENT].clone();
+    paced_render(&mut paced.screen);
+    assert!(Arc::ptr_eq(
+        &first_ready,
+        &paced.ready.lock().unwrap()[&CLIENT]
+    ));
+
     paced.backlog.lock().unwrap().clear();
     let ready = paced.ready.lock().unwrap().remove(&CLIENT).unwrap();
     ready();
@@ -1234,13 +1285,13 @@ fn writer_notification_resumes_deferred_frames_through_the_debouncer() {
         .to_screen
         .try_iter()
         .any(|(instruction, _)| matches!(instruction, ScreenInstruction::RenderWriterReady)));
-    paced.screen.on_render_writer_ready();
+    paced.screen.resume_deferred_render();
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 1);
     paced_render(&mut paced.screen);
     assert!(rendered_bytes(&paced.to_server).contains("notification-resumed"));
     assert!(paced.screen.deferred_render_tabs.is_empty());
     let _ = render_retries_requested(&paced.to_background_jobs);
-    paced.screen.on_render_writer_ready();
+    paced.screen.resume_deferred_render();
     assert_eq!(render_retries_requested(&paced.to_background_jobs), 0);
 }
 
@@ -1337,20 +1388,15 @@ fn output_on_another_tab_does_not_repaint_watched_contents() {
 }
 
 #[test]
-fn long_writes_keep_each_tabs_pending_work_deferred() {
+fn queued_frames_keep_each_tabs_pending_work_deferred() {
     let mut paced = screen_with_backlog();
     paced.screen.add_client(OTHER_CLIENT).unwrap();
     new_tab(&mut paced.screen, 2, TabId::new(1));
-    for seconds in [29, 30, 60] {
-        *paced.backlog.lock().unwrap() = vec![
-            (CLIENT, backlog(1, Some(Duration::from_secs(seconds)))),
-            (OTHER_CLIENT, behind()),
-        ];
-        assert_eq!(
-            paced.screen.deferred_tabs(),
-            HashSet::from([TabId::new(0), TabId::new(1)])
-        );
-    }
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind()), (OTHER_CLIENT, behind())];
+    assert_eq!(
+        paced.screen.deferred_tabs(),
+        &HashSet::from([TabId::new(0), TabId::new(1)])
+    );
 }
 
 /// Every client's bytes from the frames sent so far.

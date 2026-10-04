@@ -31,6 +31,10 @@ impl Screen {
 
     pub fn render(&mut self) -> Result<()> {
         self.pane_subscriber_snapshots_dirty = true;
+        self.schedule_render()
+    }
+
+    pub(super) fn schedule_render(&mut self) -> Result<()> {
         // here we schedule the RenderToClients background job which debounces renders every 10ms
         // rather than actually rendering
         //
@@ -79,9 +83,9 @@ impl Screen {
     }
 
     /// Check and arm each queue before deciding which tabs can consume dirty state.
-    pub(super) fn deferred_tabs(&mut self) -> HashSet<TabId> {
-        // One notifier for the pass, cloned only into the queues of clients that are behind.
-        let ready: RenderReady = {
+    pub(super) fn deferred_tabs(&mut self) -> &HashSet<TabId> {
+        // Reuse one notifier, cloned only into the queues of clients that are behind.
+        let ready = self.render_writer_ready.get_or_init(|| {
             let to_screen = self.bus.senders.to_screen.clone();
             Arc::new(move || {
                 if let Some(to_screen) = &to_screen {
@@ -91,25 +95,28 @@ impl Screen {
                         .non_fatal();
                 }
             })
-        };
-        let mut known = HashMap::new();
+        });
+        self.deferred_render_tabs.clear();
+        let mut blocked_client = None;
         let connected_clients = self.connected_clients.borrow();
         if connected_clients.len() == 1
             && self.watcher_clients.is_empty()
             && self.pane_render_subscribers.is_empty()
         {
             if let Some(&client) = connected_clients.iter().next() {
-                let blocked = self.client_render_is_blocked(client, &ready);
+                let blocked = self.client_render_is_blocked(client, ready);
                 if !blocked {
-                    self.deferred_render_tabs.clear();
                     self.deferred_subscriber_renders = false;
-                    return HashSet::new();
+                    return &self.deferred_render_tabs;
                 }
-                known.insert(client, blocked);
+                blocked_client = Some(client);
             }
         }
+        let mut known = HashMap::new();
+        if let Some(client) = blocked_client {
+            known.insert(client, true);
+        }
         let followed_tab = self.watched_tab_id();
-        let mut blocked = HashSet::new();
         for (tab_id, tab) in &self.tabs {
             let recipients = connected_clients
                 .iter()
@@ -123,18 +130,17 @@ impl Screen {
                         .copied()
                         .filter(|_| followed_tab == Some(*tab_id)),
                 );
-            if self.recipients_are_blocked(recipients, &mut known, &ready) {
-                blocked.insert(*tab_id);
+            if self.recipients_are_blocked(recipients, &mut known, ready) {
+                self.deferred_render_tabs.insert(*tab_id);
             }
         }
-        self.deferred_subscriber_renders = self.pane_subscriber_snapshots_dirty
+        self.deferred_subscriber_renders = self.subscriber_snapshots_pending()
             && self.recipients_are_blocked(
                 self.pane_render_subscribers.keys().copied(),
                 &mut known,
-                &ready,
+                ready,
             );
-        self.deferred_render_tabs = blocked.clone();
-        blocked
+        &self.deferred_render_tabs
     }
 
     pub(super) fn resume_deferred_render(&self) {
@@ -145,11 +151,6 @@ impl Screen {
                 .context("failed to resume a deferred render")
                 .non_fatal();
         }
-    }
-
-    /// `ScreenInstruction::RenderWriterReady`: a client that was behind has drained.
-    pub(super) fn on_render_writer_ready(&self) {
-        self.resume_deferred_render();
     }
 
     pub fn render_to_clients(&mut self) -> Result<()> {
@@ -165,7 +166,7 @@ impl Screen {
             log::info!("attach trace: render frame setup begin");
         }
 
-        let deferred_tabs = self.deferred_tabs();
+        self.deferred_tabs();
         // One instant for the whole frame. Every animation is *sampled* here rather than advanced
         // on the clock tick, so there is no skew between "advance" and "paint" and every frame -
         // whoever scheduled it - moves the animation to where the wall clock says it should be.
@@ -308,7 +309,7 @@ impl Screen {
             // is to see.
             let mut tabs_that_rendered: Vec<TabId> = vec![];
             for (tab_index, tab) in &mut self.tabs {
-                if !deferred_tabs.contains(tab_index)
+                if !self.deferred_render_tabs.contains(tab_index)
                     && (tab.should_retain_tab() || !tab.is_pending())
                 {
                     // Pass None for normal client rendering
@@ -368,7 +369,7 @@ impl Screen {
                     !self
                         .active_tab_ids
                         .get(client_id)
-                        .is_some_and(|tab_id| deferred_tabs.contains(tab_id))
+                        .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
                 })
                 .collect();
             self.render_command_palettes(&mut output, palette_clients.into_iter())
@@ -376,10 +377,7 @@ impl Screen {
 
             let pane_render_report = output.drain_pane_render_report();
 
-            // Subscriber delivery — gated behind is_empty() for zero overhead
-            if !self.pane_render_subscribers.is_empty() {
-                self.deliver_to_pane_subscribers(Some(&pane_render_report));
-            }
+            self.deliver_to_pane_subscribers(Some(&pane_render_report));
 
             let _ = self
                 .bus
@@ -397,6 +395,9 @@ impl Screen {
                     self.active_tab_ids.values().copied().collect();
 
                 for tab in self.tabs.values_mut() {
+                    if self.deferred_render_tabs.contains(&tab.id) {
+                        continue;
+                    }
                     let is_active = active_tab_ids_snapshot.contains(&tab.id);
                     let (new_panes, tab_newly_set) =
                         tab.check_and_handle_bell_notifications(is_active);
@@ -426,6 +427,9 @@ impl Screen {
             } else {
                 // visual_bell disabled: still detect bell for ANSI BEL forwarding only
                 for tab in self.tabs.values_mut() {
+                    if self.deferred_render_tabs.contains(&tab.id) {
+                        continue;
+                    }
                     if tab.check_and_consume_bells_without_visual_notification() {
                         has_bell = true;
                     }
@@ -437,16 +441,21 @@ impl Screen {
                 // instruction gives its client a frame even when none of its panes rendered.
                 output.add_post_vte_instruction_to_multiple_clients(
                     self.active_tab_ids
-                        .keys()
-                        .copied()
-                        .filter(|client_id| !self.watcher_clients.contains_key(client_id)),
+                        .iter()
+                        .filter(|(client_id, tab_id)| {
+                            !self.watcher_clients.contains_key(client_id)
+                                && !self.deferred_render_tabs.contains(tab_id)
+                        })
+                        .map(|(client_id, _)| *client_id),
                     "\u{7}", // ANSI BEL
                 );
             }
 
             let mut has_osc7_update = false;
             for (client_id, tab_index) in &self.active_tab_ids {
-                if self.watcher_clients.contains_key(client_id) {
+                if self.watcher_clients.contains_key(client_id)
+                    || self.deferred_render_tabs.contains(tab_index)
+                {
                     continue;
                 }
                 if let Some(tab) = self.tabs.get(tab_index) {
@@ -509,16 +518,16 @@ impl Screen {
                 self.log_and_report_session_state()?;
             }
         } else {
-            // No regular clients but subscribers exist — query panes directly
-            if !self.pane_render_subscribers.is_empty() {
-                self.deliver_to_pane_subscribers(None);
-            }
+            // No regular clients — query subscribed panes directly.
+            self.deliver_to_pane_subscribers(None);
         }
 
         self.report_pane_tabs()?;
 
         // === PHASE 2: Render for watchers ===
-        if has_watchers && watched_tab_id.is_some_and(|tab_id| !deferred_tabs.contains(&tab_id)) {
+        if has_watchers
+            && watched_tab_id.is_some_and(|tab_id| !self.deferred_render_tabs.contains(&tab_id))
+        {
             if let (Some(followed_client_id), Some(focused_tab_index_of_followed_client_id)) =
                 (self.followed_client_id, watched_tab_id)
             {

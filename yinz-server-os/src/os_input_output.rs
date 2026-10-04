@@ -446,7 +446,6 @@ impl CoalescingSendQueue {
         } else {
             RenderBacklog {
                 queued_renders: state.queued_renders + state.pending_pane_renders.len(),
-                in_flight_for: state.in_flight.map(|send| send.started.elapsed()),
             }
         };
         if backlog.queued_renders >= threshold {

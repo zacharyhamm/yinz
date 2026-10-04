@@ -204,7 +204,7 @@ fn retained_plugin_state_is_released_when_unused_or_replaced() {
         match transition {
             0 => screen.remove_watcher_client(watcher),
             1 => screen.set_followed_client(ClientId::new(3)).unwrap(),
-            _ => screen.add_client(followed).unwrap(),
+            _ => screen.add_client(ClientId::new(3)).unwrap(),
         }
         assert_eq!(screen.departed_followed_tab_id, None);
         let pane = screen.tabs[&TabId::new(0)]
@@ -1018,12 +1018,17 @@ fn failed_attach_preserves_retained_plugin_state_until_successful_commit() {
             let pane = screen.tabs[&TabId::new(1)]
                 .get_pane_with_id(PaneId::Plugin(plugin))
                 .unwrap();
-            assert!(pane.cursor_coordinates(Some(source)).is_none());
-            assert!(!pane
-                .pane_contents(Some(source), false, None)
-                .viewport
-                .concat()
-                .contains("retained-content"));
+            assert_eq!(
+                pane.cursor_coordinates(Some(source)),
+                (returning == source).then_some((1, 1, true))
+            );
+            assert_eq!(
+                pane.pane_contents(Some(source), false, None)
+                    .viewport
+                    .concat()
+                    .contains("retained-content"),
+                returning == source
+            );
         }
     }
 }
@@ -1303,4 +1308,216 @@ fn failed_plugin_registration_rejects_attachment_once() {
     assert!(!screen.client_sizes.contains_key(&client));
     assert!(traces.is_empty());
     assert_eq!(receiver.try_iter().filter(|(instruction, _)| matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == client)).count(), 1);
+}
+
+#[test]
+fn registration_preserves_reused_source_state_in_every_tab() {
+    use crate::screen::thread_main::PendingEvents;
+    let size = Size { cols: 80, rows: 24 };
+    let source = ClientId::new(1);
+    for returning in [source, ClientId::new(3)] {
+        for registration in ["direct", "attach", "layout"] {
+            let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+            for id in 0..2 {
+                let tab_id = TabId::new(id);
+                let plugin = crate::PluginId::new(id as u32 + 10);
+                new_tab(&mut screen, id as u32 + 1, tab_id);
+                add_pane_to_tab(&mut screen, tab_id, PaneId::Plugin(plugin), false);
+                screen
+                    .tabs
+                    .get_mut(&tab_id)
+                    .unwrap()
+                    .handle_plugin_bytes(plugin, source, b"retained-content".to_vec())
+                    .unwrap();
+                screen.show_plugin_cursor(plugin, source, Some((1, 1)));
+            }
+            screen.set_followed_client(source).unwrap();
+            screen.add_watcher_client(ClientId::new(2)).unwrap();
+            screen.remove_client(source).unwrap();
+            for id in 0..2 {
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(id))
+                    .unwrap()
+                    .pending_agent_escapes
+                    .insert(
+                        (source, PaneId::Plugin(crate::PluginId::new(id as u32 + 10))),
+                        std::time::Instant::now(),
+                    );
+            }
+            capture.drain_plugin_events();
+            let mut pending = PendingEvents::default();
+            let pending_pane = PaneId::Plugin(crate::PluginId::new(99));
+            pending.waiting_for_pane.insert(
+                pending_pane,
+                vec![
+                    ScreenInstruction::PluginBytes(vec![PluginRenderAsset::new(
+                        crate::PluginId::new(99),
+                        source,
+                        b"stale-output".to_vec(),
+                    )]),
+                    ScreenInstruction::ShowPluginCursor(
+                        crate::PluginId::new(99),
+                        source,
+                        Some((2, 2)),
+                    ),
+                ],
+            );
+            match registration {
+                "direct" => screen.add_client(returning).unwrap(),
+                "attach" => screen
+                    .attach_client(
+                        returning,
+                        size,
+                        None,
+                        None,
+                        &mut HashMap::new(),
+                        &mut pending,
+                    )
+                    .unwrap(),
+                "layout" => {
+                    let tab_id = TabId::new(2);
+                    screen
+                        .new_tab(tab_id, (vec![], vec![]), None, Some(returning))
+                        .unwrap();
+                    screen
+                        .land_layout(
+                            TiledPaneLayout::default(),
+                            vec![],
+                            vec![(TerminalId::new(3), None)],
+                            vec![],
+                            vec![],
+                            HashMap::new(),
+                            tab_id,
+                            true,
+                            returning,
+                            None,
+                            None,
+                            &mut pending,
+                        )
+                        .unwrap();
+                },
+                _ => unreachable!(),
+            }
+            assert_eq!(screen.followed_client_id, Some(returning), "{registration}");
+            assert_eq!(screen.departed_followed_tab_id, None, "{registration}");
+            assert!(screen.connected_clients.borrow().contains(&returning));
+            let plugin_events: Vec<_> = capture
+                .plugin_rx
+                .try_iter()
+                .map(|(event, _)| event)
+                .collect();
+            assert_eq!(plugin_events.iter().filter(|event|
+                matches!(event, PluginInstruction::AddClient(id) if *id == returning)
+            ).count(), 1, "{registration}");
+            if registration != "layout" {
+                assert!(
+                    matches!(plugin_events.first(), Some(PluginInstruction::AddClient(id)) if *id == returning)
+                );
+            }
+            if registration != "direct" {
+                assert!(pending.waiting_for_pane.is_empty(), "{registration}");
+            }
+            for id in 0..2 {
+                assert_eq!(
+                    screen.tabs[&TabId::new(id)]
+                        .pending_agent_escapes
+                        .contains_key(&(
+                            source,
+                            PaneId::Plugin(crate::PluginId::new(id as u32 + 10))
+                        )),
+                    returning == source,
+                    "{registration}, tab {id}"
+                );
+                let pane = screen.tabs[&TabId::new(id)]
+                    .get_pane_with_id(PaneId::Plugin(crate::PluginId::new(id as u32 + 10)))
+                    .unwrap();
+                assert_eq!(
+                    pane.cursor_coordinates(Some(source)),
+                    (returning == source).then_some((1, 1, true)),
+                    "{registration}, tab {id}"
+                );
+                assert_eq!(
+                    pane.pane_contents(Some(source), false, None)
+                        .viewport
+                        .concat()
+                        .contains("retained-content"),
+                    returning == source,
+                    "{registration}, tab {id}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_layout_registration_preserves_departed_source_and_pending_output() {
+    use crate::screen::thread_main::PendingEvents;
+    let source = ClientId::new(1);
+    for returning in [source, ClientId::new(3)] {
+        let (mut screen, _capture) =
+            create_new_screen_with_theme_capture(Size { cols: 80, rows: 24 });
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_plugin_bytes(PLUGIN_2, source, b"retained-content".to_vec())
+            .unwrap();
+        screen.show_plugin_cursor(PLUGIN_2, source, Some((1, 1)));
+        screen.set_followed_client(source).unwrap();
+        screen.add_watcher_client(ClientId::new(2)).unwrap();
+        screen.remove_client(source).unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let tab_id = TabId::new(1);
+        screen
+            .new_tab(tab_id, (vec![], vec![]), None, Some(returning))
+            .unwrap();
+        let mut pending = PendingEvents::default();
+        pending.waiting_for_pane.insert(
+            PaneId::Plugin(PLUGIN_2),
+            vec![ScreenInstruction::ShowPluginCursor(
+                PLUGIN_2,
+                source,
+                Some((2, 2)),
+            )],
+        );
+        // Tabs keep their senders; only the transaction's plugin registration fails.
+        screen.bus.senders.should_silently_fail = false;
+        screen.bus.senders.to_plugin = None;
+        screen
+            .land_layout(
+                TiledPaneLayout::default(),
+                vec![],
+                vec![(TerminalId::new(2), None)],
+                vec![],
+                vec![],
+                HashMap::new(),
+                tab_id,
+                false,
+                returning,
+                None,
+                None,
+                &mut pending,
+            )
+            .unwrap();
+        assert!(!screen.connected_clients.borrow().contains(&returning));
+        assert!(!screen.active_tab_ids.contains_key(&returning));
+        assert_eq!(screen.followed_client_id, Some(source));
+        assert_eq!(screen.departed_followed_tab_id, Some(TabId::new(0)));
+        assert_eq!(pending.waiting_for_pane.len(), 1);
+        let pane = screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+            .unwrap();
+        assert_eq!(pane.cursor_coordinates(Some(source)), Some((1, 1, true)));
+        assert!(pane
+            .pane_contents(Some(source), false, None)
+            .viewport
+            .concat()
+            .contains("retained-content"));
+        assert_eq!(receiver.try_iter().filter(|(instruction, _)|
+            matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == returning)
+        ).count(), 1);
+    }
 }

@@ -777,6 +777,23 @@ pub fn bell_notification_state_set_and_cleared() {
 }
 
 #[test]
+fn removing_a_client_only_clears_its_own_frame_override() {
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let mut pane = make_terminal_pane_for_bell();
+    for owner in [None, Some(other), Some(client)] {
+        pane.add_highlight_pane_frame_color_override(Some("highlight".into()), owner);
+        pane.set_should_render(false);
+        pane.remove_client(client);
+        assert_eq!(
+            pane.pane_frame_color_override.is_none(),
+            owner == Some(client)
+        );
+        assert!(!pane.should_render());
+    }
+}
+
+#[test]
 fn automatic_program_titles_follow_manual_then_osc_precedence() {
     let mut pane = make_terminal_pane_for_bell();
     let raw_title = pane.current_title();

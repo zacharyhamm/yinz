@@ -169,10 +169,31 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
     use yinz_ipc::ipc::ClientToServerMsg;
     use yinz_types::internal_ids::SessionName;
 
-    for broken_terminal in [false, true] {
+    const CHILD: &str = "YINZ_TEST_QUITTING_RENDER_PRESSURE";
+    let quitting = std::env::var_os(CHILD).is_some();
+    if quitting {
+        crate::terminal_escapes::abandon_stalled_output();
+    } else {
+        // Cancellation is process-global; isolate it from other tests under libtest too.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unit::router_tests::the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    for error in [
+        None,
+        Some(std::io::ErrorKind::BrokenPipe),
+        Some(std::io::ErrorKind::TimedOut),
+    ] {
         let mut os_input = FakeClientOsApi::default().capturing_stdout();
-        if broken_terminal {
-            os_input = os_input.with_stdout_error(std::io::ErrorKind::BrokenPipe);
+        if let Some(error) = error {
+            os_input = os_input.with_stdout_error(error);
         }
         for content in ["first", "second"] {
             os_input.queue_from_server(ServerToClientMsg::Render {
@@ -228,7 +249,7 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             .sent_messages()
             .iter()
             .any(|message| matches!(message, ClientToServerMsg::ClientExited)));
-        if broken_terminal {
+        if error.is_some() && !(quitting && error == Some(std::io::ErrorKind::TimedOut)) {
             assert_eq!(outcome.exit_status, 1);
             assert!(
                 outcome.exit_msg.contains("Could not write to the terminal"),
@@ -238,7 +259,13 @@ fn the_client_loop_releases_render_pressure_on_delivery_and_terminal_failure() {
             assert!(observed.stdout_bytes().is_empty());
         } else {
             assert_eq!(outcome.exit_status, 0);
-            assert_eq!(observed.stdout_bytes(), b"firstsecond");
+            assert_eq!(outcome.exit_msg, ExitReason::Normal.to_string());
+            let expected = if error.is_some() {
+                &b""[..]
+            } else {
+                &b"firstsecond"[..]
+            };
+            assert_eq!(observed.stdout_bytes(), expected);
         }
     }
 }

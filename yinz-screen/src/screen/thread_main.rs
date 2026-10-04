@@ -538,7 +538,7 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::RenderWriterReady => {
-                    screen.on_render_writer_ready();
+                    screen.resume_deferred_render();
                 },
                 ScreenInstruction::RenderToClients => {
                     // render_blocker.can_render() returning true means that either all pending plugins

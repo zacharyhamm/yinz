@@ -2,6 +2,7 @@
 const TERMINAL_1: yinz_types::internal_ids::TerminalId =
     yinz_types::internal_ids::TerminalId::new(1);
 
+use super::super::subscriptions::SUBSCRIBER_SNAPSHOT_READS;
 use super::*;
 use yinz_test_support::Watched;
 use yinz_types::internal_ids::TabId;
@@ -118,7 +119,7 @@ fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
             );
         }
         let contents =
-            Screen::subscriber_pane_contents(pane, &[], false, None, false, Some(&report));
+            Screen::subscriber_pane_contents(pane, None, false, None, false, Some(&report));
         if include_report_contents {
             assert!(matches!(contents, std::borrow::Cow::Borrowed(borrowed)
                 if std::ptr::eq(borrowed, &report.all_pane_contents[&client][&pane_id])));
@@ -126,7 +127,7 @@ fn subscribers_reuse_plain_render_reports_and_read_missing_or_ansi_contents() {
             assert!(matches!(contents, std::borrow::Cow::Owned(_)));
         }
         assert!(matches!(
-            Screen::subscriber_pane_contents(pane, &[], false, None, true, Some(&report)),
+            Screen::subscriber_pane_contents(pane, None, false, None, true, Some(&report)),
             std::borrow::Cow::Owned(_)
         ));
         messages.lock().unwrap().clear();
@@ -206,7 +207,16 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
                     viewport.iter().any(|line| line.contains("cached-plugin-content"))
                 } else { viewport.is_empty() }
         ));
+        // A plugin update must not invalidate this unrelated terminal subscription.
+        screen.subscribe_to_pane_renders(
+            ClientId::new(101),
+            vec![PaneId::Terminal(TerminalId::new(2))],
+            None,
+            !ansi,
+        );
+        screen.deliver_to_pane_subscribers(None);
         messages.lock().unwrap().clear();
+        SUBSCRIBER_SNAPSHOT_READS.with_borrow_mut(Vec::clear);
 
         screen
             .handle_plugin_render_assets(vec![crate::plugins::PluginRenderAsset::new(
@@ -216,6 +226,15 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
             )])
             .unwrap();
         screen.deliver_to_pane_subscribers(None);
+        let reads = SUBSCRIBER_SNAPSHOT_READS.with_borrow_mut(std::mem::take);
+        assert_eq!(
+            reads,
+            if keep_cached_client_attached {
+                vec![(PaneId::Plugin(plugin), ansi)]
+            } else {
+                vec![]
+            }
+        );
         if keep_cached_client_attached {
             assert!(matches!(
                 &messages.lock().unwrap()[&subscriber][0],
@@ -229,7 +248,7 @@ fn subscribers_receive_cached_plugin_contents_on_inactive_tabs() {
 }
 
 #[test]
-fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() {
+fn subscribers_use_one_client_even_when_other_plugin_grids_have_contents() {
     let watcher = ClientId::new(1);
     let departed = ClientId::new(2);
     let live = ClientId::new(3);
@@ -264,12 +283,12 @@ fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() 
                 None,
             )
             .unwrap();
-            // Remove loading grids so each pane can have a different first nonempty client.
+            // Only the first plugin has a grid for the lowest eligible client.
             let pane = tab.get_pane_with_id_mut(PaneId::Plugin(plugin)).unwrap();
             for client in [live, later] {
                 pane.remove_client(client);
             }
-            // Earlier eligible clients without a grid must be skipped independently per pane.
+            // Higher, departed, and watcher grids must never substitute for that client.
             for (client, bytes) in [
                 (watcher, "watcher-grid"),
                 (departed, "departed-grid"),
@@ -289,8 +308,10 @@ fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() 
             assert_eq!(messages[&subscriber].len(), plugins.len());
             for message in &messages[&subscriber] {
                 assert!(matches!(message,
-                    ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: true, .. }
-                        if viewport.concat().contains("live-grid")
+                    ServerToClientMsg::PaneRenderUpdate { pane_id, viewport, is_initial: true, .. }
+                        if if *pane_id == pane_ids[0] {
+                            viewport.concat().contains("live-grid")
+                        } else { viewport.is_empty() }
                 ));
             }
         }
@@ -340,14 +361,142 @@ fn subscribers_prefer_live_regular_plugin_grids_to_watcher_and_departed_grids() 
             "live-update"
         };
         let messages = messages.lock().unwrap();
-        assert_eq!(messages[&subscriber].len(), plugins.len());
-        for message in &messages[&subscriber] {
-            assert!(matches!(message,
-                ServerToClientMsg::PaneRenderUpdate { viewport, is_initial: false, .. }
-                    if viewport.concat().contains(expected)
-            ));
+        assert_eq!(messages[&subscriber].len(), 1);
+        assert!(matches!(&messages[&subscriber][0],
+            ServerToClientMsg::PaneRenderUpdate { pane_id, viewport, is_initial: false, .. }
+                if *pane_id == pane_ids[0] && viewport.concat().contains(expected)
+        ));
+        drop(messages);
+
+        // An empty selected-client report is authoritative even with a nonempty direct grid.
+        report.add_pane_contents(&[live], pane_ids[0], PaneContents::default());
+        screen.mark_subscriber_pane_dirty(pane_ids[0]);
+        screen.deliver_to_pane_subscribers(use_report.then_some(&report));
+        if use_report && !ansi {
+            assert!(
+                screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
+                    .is_empty()
+            );
         }
+
+        // Losing the selected grid cannot switch the source to a higher client's grid.
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .get_pane_with_id_mut(pane_ids[0])
+            .unwrap()
+            .remove_client(live);
+        screen.mark_subscriber_pane_dirty(pane_ids[0]);
+        screen.deliver_to_pane_subscribers(None);
+        assert!(
+            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]].is_empty()
+        );
+
+        // Detaching the selected client does change the source to the next live client.
+        screen.remove_client(live).unwrap();
+        screen.deliver_to_pane_subscribers(None);
+        assert!(
+            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[0]]
+                .concat()
+                .contains("later-grid")
+        );
+
+        // With no regular clients left, the retained followed client is the fallback.
+        screen.remove_client(later).unwrap();
+        screen.followed_client_id = Some(followed);
+        screen.render().unwrap();
+        screen.deliver_to_pane_subscribers(None);
+        assert!(
+            screen.pane_render_subscribers[&subscriber].previous_viewports[&pane_ids[2]]
+                .concat()
+                .contains("live-update")
+        );
     }
+}
+
+#[test]
+fn subscribers_only_serialize_dirty_panes_in_requested_formats() {
+    let (mut screen, _) = create_new_screen_with_message_capture(Size { cols: 80, rows: 20 });
+    for id in 1..=4 {
+        new_tab(&mut screen, id, TabId::new(id as usize - 1));
+    }
+    let panes = [1, 2, 3, 4].map(|id| PaneId::Terminal(TerminalId::new(id)));
+    for (id, pane, ansi) in [
+        (100, panes[0], false),
+        (101, panes[0], false),
+        (102, panes[1], true),
+        (103, panes[1], true),
+        (104, panes[2], false),
+        (105, panes[2], true),
+    ] {
+        screen.subscribe_to_pane_renders(ClientId::new(id), vec![pane], None, ansi);
+    }
+    screen.deliver_to_pane_subscribers(None);
+    let take_reads = || SUBSCRIBER_SNAPSHOT_READS.with_borrow_mut(std::mem::take);
+    take_reads();
+    let mut pending = super::super::thread_main::PendingEvents::default();
+
+    screen
+        .handle_pty_bytes(TerminalId::new(4), b"unsubscribed".to_vec(), &mut pending)
+        .unwrap();
+    screen.deliver_to_pane_subscribers(None);
+    assert!(take_reads().is_empty());
+    assert!(!screen.subscriber_snapshots_pending());
+
+    screen
+        .handle_pty_bytes(TerminalId::new(1), b"plain".to_vec(), &mut pending)
+        .unwrap();
+    screen.deliver_to_pane_subscribers(None);
+    assert_eq!(take_reads(), [(panes[0], false)]);
+
+    screen.deferred_subscriber_renders = true;
+    for (id, bytes) in [(2, "ANSI"), (3, "both"), (2, " latest")] {
+        screen
+            .handle_pty_bytes(TerminalId::new(id), bytes.as_bytes().to_vec(), &mut pending)
+            .unwrap();
+        screen.deliver_to_pane_subscribers(None);
+    }
+    assert!(take_reads().is_empty());
+    assert!(screen.subscriber_snapshots_pending());
+    screen.deferred_subscriber_renders = false;
+    screen.deliver_to_pane_subscribers(None);
+    let mut reads = take_reads();
+    reads.sort();
+    assert_eq!(
+        reads,
+        [(panes[1], true), (panes[2], false), (panes[2], true)]
+    );
+    assert!(
+        screen.pane_render_subscribers[&ClientId::new(102)].previous_viewports[&panes[1]]
+            .concat()
+            .contains("ANSI latest")
+    );
+    screen.deliver_to_pane_subscribers(None);
+    assert!(take_reads().is_empty());
+
+    screen.render().unwrap();
+    screen.deliver_to_pane_subscribers(None);
+    let mut reads = take_reads();
+    reads.sort();
+    assert_eq!(
+        reads,
+        [
+            (panes[0], false),
+            (panes[1], true),
+            (panes[2], false),
+            (panes[2], true)
+        ]
+    );
+
+    screen.mark_subscriber_pane_dirty(panes[0]);
+    screen.notify_pane_closed_to_subscribers(panes[0]);
+    assert!(!screen.pane_subscriber_dirty_panes.contains(&panes[0]));
+    screen.mark_subscriber_pane_dirty(panes[1]);
+    screen.pane_render_subscribers.clear();
+    screen.deliver_to_pane_subscribers(None);
+    assert!(screen.pane_subscriber_dirty_panes.is_empty());
+    assert!(take_reads().is_empty());
 }
 
 #[test]

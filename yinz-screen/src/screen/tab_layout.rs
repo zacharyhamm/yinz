@@ -286,6 +286,9 @@ impl Screen {
             client_id,
             blocking_terminal,
         );
+        if let Ok(Some(source)) = &applied {
+            pending.remove_client_plugin_output(*source);
+        }
         let layout_failed = applied.is_err();
         if let Err(error) = applied {
             let mut message = format!("Failed to apply layout for tab {tab_id}: {error:#}");

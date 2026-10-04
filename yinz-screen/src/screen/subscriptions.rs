@@ -8,18 +8,32 @@ use crate::{panes::PaneId, ClientId};
 
 use super::{Pane, PaneRenderSubscription, Screen};
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static SUBSCRIBER_SNAPSHOT_READS: std::cell::RefCell<Vec<(PaneId, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl Screen {
     pub(super) fn subscriber_pane_contents<'a>(
         pane: &dyn Pane,
-        clients: &[ClientId],
+        client: Option<ClientId>,
         get_full_scrollback: bool,
         max_lines: Option<usize>,
         ansi: bool,
         report: Option<&'a PaneRenderReport>,
     ) -> Cow<'a, PaneContents> {
+        let direct_contents = |client| {
+            #[cfg(test)]
+            SUBSCRIBER_SNAPSHOT_READS.with_borrow_mut(|reads| reads.push((pane.pid(), ansi)));
+            Cow::Owned(if ansi {
+                pane.pane_contents_with_ansi(client, get_full_scrollback, max_lines)
+            } else {
+                pane.pane_contents(client, get_full_scrollback, max_lines)
+            })
+        };
         let contents = |client| {
             if ansi {
-                Cow::Owned(pane.pane_contents_with_ansi(client, get_full_scrollback, max_lines))
+                direct_contents(client)
             } else {
                 report
                     .and_then(|report| match client {
@@ -33,31 +47,45 @@ impl Screen {
                             .find_map(|panes| panes.get(&pane.pid())),
                     })
                     .map(Cow::Borrowed)
-                    .unwrap_or_else(|| {
-                        Cow::Owned(pane.pane_contents(client, get_full_scrollback, max_lines))
-                    })
+                    .unwrap_or_else(|| direct_contents(client))
             }
         };
         if matches!(pane.pid(), PaneId::Terminal(_)) {
             return contents(None);
         }
-        clients
-            .iter()
-            .copied()
-            .find_map(|id| {
-                let contents = contents(Some(id));
-                (!contents.viewport.is_empty()).then_some(contents)
-            })
+        client
+            .map(|client| contents(Some(client)))
             .unwrap_or_default()
     }
 
-    fn subscriber_clients(&self) -> Vec<ClientId> {
-        // Include live clients on other tabs: an inactive plugin can retain their grids.
-        let mut clients: Vec<_> = self.connected_clients.borrow().iter().copied().collect();
-        clients.sort_unstable();
-        clients.extend(self.followed_client_id);
-        clients.retain(|id| !self.watcher_clients.contains_key(id));
-        clients
+    fn subscriber_client(&self) -> Option<ClientId> {
+        // Choose independently of pane contents, including cached grids on inactive tabs.
+        self.connected_clients
+            .borrow()
+            .iter()
+            .filter(|id| !self.watcher_clients.contains_key(id))
+            .copied()
+            .min()
+            .or_else(|| {
+                self.followed_client_id
+                    .filter(|id| !self.watcher_clients.contains_key(id))
+            })
+    }
+
+    pub(super) fn mark_subscriber_pane_dirty(&mut self, pane_id: PaneId) {
+        if self
+            .pane_render_subscribers
+            .values()
+            .any(|sub| sub.pane_ids.contains(&pane_id))
+        {
+            self.pane_subscriber_dirty_panes.insert(pane_id);
+        }
+    }
+
+    pub(super) fn subscriber_snapshots_pending(&self) -> bool {
+        !self.pane_render_subscribers.is_empty()
+            && (self.pane_subscriber_snapshots_dirty
+                || !self.pane_subscriber_dirty_panes.is_empty())
     }
 
     pub(super) fn subscribe_to_pane_renders(
@@ -69,11 +97,7 @@ impl Screen {
     ) {
         let mut previous_viewports = HashMap::new();
         let mut valid_pane_ids = HashSet::new();
-        let clients = if pane_ids.iter().any(|id| matches!(id, PaneId::Plugin(_))) {
-            self.subscriber_clients()
-        } else {
-            vec![]
-        };
+        let client = self.subscriber_client();
 
         for pane_id in &pane_ids {
             let server_pane_id: PaneId = *pane_id;
@@ -86,7 +110,7 @@ impl Screen {
 
                     let contents = Self::subscriber_pane_contents(
                         pane,
-                        &clients,
+                        client,
                         get_full_scrollback,
                         max_lines,
                         ansi,
@@ -142,54 +166,43 @@ impl Screen {
         }
     }
     pub(super) fn deliver_to_pane_subscribers(&mut self, report: Option<&PaneRenderReport>) {
-        if !self.pane_subscriber_snapshots_dirty || self.deferred_subscriber_renders {
+        if self.pane_render_subscribers.is_empty() {
+            self.pane_subscriber_dirty_panes.clear();
+            self.pane_subscriber_snapshots_dirty = false;
             return;
         }
-        // Collect unique pane IDs across all subscribers
-        let all_subscribed_ids: HashSet<yinz_types::data::PaneId> = self
-            .pane_render_subscribers
-            .values()
-            .flat_map(|sub| sub.pane_ids.iter().copied())
-            .collect();
-
-        let has_ansi_subscribers = self.pane_render_subscribers.values().any(|s| s.ansi);
-        let clients = if all_subscribed_ids
-            .iter()
-            .any(|id| matches!(id, PaneId::Plugin(_)))
-        {
-            self.subscriber_clients()
-        } else {
-            vec![]
-        };
-
-        // Reuse this pass's plain snapshots; missing panes and ANSI still need direct reads.
+        if !self.subscriber_snapshots_pending() || self.deferred_subscriber_renders {
+            return;
+        }
+        let client = self.subscriber_client();
         let mut pane_map = HashMap::new();
         let mut ansi_pane_map = HashMap::new();
-        for pane_id in &all_subscribed_ids {
-            let server_pane_id: PaneId = *pane_id;
-            for tab in self.tabs.values() {
-                if let Some(pane) = tab.get_pane_with_id(server_pane_id) {
-                    pane_map.insert(
-                        *pane_id,
-                        Self::subscriber_pane_contents(pane, &clients, false, None, false, report),
+        for (ansi, map) in [(false, &mut pane_map), (true, &mut ansi_pane_map)] {
+            let pane_ids: HashSet<_> = self
+                .pane_render_subscribers
+                .values()
+                .filter(|sub| sub.ansi == ansi)
+                .flat_map(|sub| sub.pane_ids.iter().copied())
+                .filter(|id| {
+                    self.pane_subscriber_snapshots_dirty
+                        || self.pane_subscriber_dirty_panes.contains(id)
+                })
+                .collect();
+            for pane_id in pane_ids {
+                if let Some(pane) = self
+                    .tabs
+                    .values()
+                    .find_map(|tab| tab.get_pane_with_id(pane_id))
+                {
+                    map.insert(
+                        pane_id,
+                        Self::subscriber_pane_contents(pane, client, false, None, ansi, report),
                     );
-                    if has_ansi_subscribers {
-                        ansi_pane_map.insert(
-                            *pane_id,
-                            Self::subscriber_pane_contents(pane, &clients, false, None, true, None),
-                        );
-                    }
-                    break;
                 }
             }
         }
-
-        let ansi_map_ref = if has_ansi_subscribers {
-            Some(&ansi_pane_map)
-        } else {
-            None
-        };
-        self.deliver_subscriber_updates_from_map(&pane_map, ansi_map_ref);
+        self.deliver_subscriber_updates_from_map(&pane_map, Some(&ansi_pane_map));
+        self.pane_subscriber_dirty_panes.clear();
         self.pane_subscriber_snapshots_dirty = false;
     }
     pub(super) fn deliver_subscriber_updates_from_map(
@@ -263,6 +276,7 @@ impl Screen {
         }
     }
     pub(super) fn notify_pane_closed_to_subscribers(&mut self, pane_id: yinz_types::data::PaneId) {
+        self.pane_subscriber_dirty_panes.remove(&pane_id);
         let mut dead_subscribers = Vec::new();
 
         for (subscriber_id, subscription) in &mut self.pane_render_subscribers {

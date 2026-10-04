@@ -10,6 +10,24 @@ use yinz_types::internal_ids::{ClientId, PluginId};
 use yinz_types::pane_size::{Offset, SizeInPixels};
 
 #[test]
+fn removing_a_client_only_clears_its_own_frame_override() {
+    let client = ClientId::new(1);
+    let other = ClientId::new(2);
+    let mut pane = test_plugin_pane(5, 60, Offset::default());
+    for owner in [None, Some(other), Some(client)] {
+        pane.add_client(client);
+        pane.add_highlight_pane_frame_color_override(Some("highlight".into()), owner);
+        pane.set_should_render(false);
+        pane.remove_client(client);
+        assert_eq!(
+            pane.pane_frame_color_override.is_none(),
+            owner == Some(client)
+        );
+        assert!(!pane.should_render());
+    }
+}
+
+#[test]
 fn attaching_a_client_initializes_loading_without_restarting_completed_loads() {
     let mut pane = test_plugin_pane(5, 60, Offset::default());
     // No start timestamp: the loading text is visible without waiting for its grace period.
@@ -152,7 +170,7 @@ fn runs_and_reconstructed_prefixes_preserve_plugin_output() {
 }
 
 #[test]
-fn client_grid_reset_follows_creation_including_delayed_frames() {
+fn client_grid_reset_only_follows_recreation_including_delayed_frames() {
     let (mut pane, rx) = test_plugin_pane_and_plugin_receiver(
         10,
         10,
@@ -164,6 +182,27 @@ fn client_grid_reset_follows_creation_including_delayed_frames() {
     );
     let first = ClientId::new(1);
     let other = ClientId::new(2);
+    pane = super::PluginPane::new(
+        pane.pid,
+        pane.geom,
+        pane.send_plugin_instructions.clone(),
+        pane.pane_title.clone(),
+        pane.pane_name.clone(),
+        pane.sixel_image_store.clone(),
+        pane.kitty_image_store.clone(),
+        pane.terminal_emulator_colors.clone(),
+        pane.terminal_emulator_color_codes.clone(),
+        pane.link_handler.clone(),
+        pane.character_cell_size.clone(),
+        vec![first],
+        pane.style,
+        None,
+        false,
+        false,
+        false,
+    );
+    assert!(pane.grids.contains_key(&first));
+    assert!(rx.is_empty(), "construction does not reset grids");
     let reset = |client| {
         let (PluginInstruction::Update(events), _) = rx.try_recv().expect("grid reset") else {
             panic!("expected an update");
@@ -176,11 +215,16 @@ fn client_grid_reset_follows_creation_including_delayed_frames() {
                 Event::ClientGridReset(client)
             )]
         );
-        assert!(rx.is_empty(), "one notification per creation");
+        assert!(rx.is_empty(), "one notification per recreation");
     };
     for client in [first, other] {
+        if client == other {
+            pane.remove_client(client);
+        }
         pane.add_client(client);
-        reset(client);
+        assert!(rx.is_empty(), "first attachment already renders");
+        pane.add_client(client);
+        assert!(rx.is_empty(), "repeated attachment preserves the grid");
         pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
         assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
     }
@@ -190,6 +234,7 @@ fn client_grid_reset_follows_creation_including_delayed_frames() {
     assert!(rx.is_empty(), "ordinary frames preserve the namespace");
 
     for delayed in [false, true] {
+        pane.remove_client(first);
         pane.remove_client(first);
         assert!(rx.is_empty(), "deletion alone is not a new namespace");
         if delayed {

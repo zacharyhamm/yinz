@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 use yinz_runtime::shared::make_terminal_title;
 use yinz_types::internal_ids::PluginId;
@@ -76,15 +76,17 @@ macro_rules! get_or_create_grid {
             );
             grid.hide_cursor();
             grid.update_kitty_host_support($self.kitty_host_support);
-            $self
-                .send_plugin_instructions
-                .send(PluginInstruction::Update(vec![(
-                    Some($self.pid),
-                    Some($client_id),
-                    Event::ClientGridReset($client_id),
-                )]))
-                .context("failed to notify plugin of client grid reset")
-                .non_fatal();
+            if $self.removed_client_grids.remove(&$client_id) {
+                $self
+                    .send_plugin_instructions
+                    .send(PluginInstruction::Update(vec![(
+                        Some($self.pid),
+                        Some($client_id),
+                        Event::ClientGridReset($client_id),
+                    )]))
+                    .context("failed to notify plugin of client grid reset")
+                    .non_fatal();
+            }
             grid
         })
     }};
@@ -122,6 +124,8 @@ pub struct PluginPane {
     /// as well as on each grid so a client that attaches later gets a correctly-configured grid.
     kitty_host_support: KittyHostSupport,
     grids: HashMap<ClientId, Grid>,
+    // First attachment already renders; only a lost grid needs its image data retransmitted.
+    removed_client_grids: HashSet<ClientId>,
     cursor_visibility: HashMap<ClientId, Option<(usize, usize)>>,
     prev_pane_name: String,
     frame: HashMap<ClientId, PaneFrame>,
@@ -203,6 +207,7 @@ impl PluginPane {
             kitty_interceptors: HashMap::new(),
             kitty_host_support: KittyHostSupport::Supported,
             grids: HashMap::new(),
+            removed_client_grids: HashSet::new(),
             cursor_visibility: HashMap::new(),
             style,
             pane_frame_color_override: None,
@@ -470,7 +475,9 @@ impl Pane for PluginPane {
         }
     }
     fn remove_client(&mut self, client_id: ClientId) {
-        self.grids.remove(&client_id);
+        if self.grids.remove(&client_id).is_some() {
+            self.removed_client_grids.insert(client_id);
+        }
         self.vte_parsers.remove(&client_id);
         self.kitty_interceptors.remove(&client_id);
         self.should_render.remove(&client_id);
@@ -480,7 +487,7 @@ impl Pane for PluginPane {
         if self
             .pane_frame_color_override
             .as_ref()
-            .is_some_and(|color| color.client_id == Some(client_id))
+            .is_some_and(|color| color.is_cleared_by(Some(client_id)))
         {
             self.pane_frame_color_override = None;
         }
@@ -1088,8 +1095,7 @@ impl Pane for PluginPane {
         // A command that failed is a fact about the pane, so every client sees it.
         let override_ =
             FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
-        if self.pane_frame_color_override.as_ref() != Some(&override_) {
-            self.pane_frame_color_override = Some(override_);
+        if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }
     }
@@ -1100,8 +1106,7 @@ impl Pane for PluginPane {
     ) {
         let override_ =
             FrameColorOverride::new(self.style.colors.frame_highlight.base, text, client_id);
-        if self.pane_frame_color_override.as_ref() != Some(&override_) {
-            self.pane_frame_color_override = Some(override_);
+        if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }
     }

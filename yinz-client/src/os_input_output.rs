@@ -126,7 +126,7 @@ pub trait TtyControl {
 pub trait StdioAccess {
     /// Returns the writer that allows writing to standard output.
     fn get_stdout_writer(&self) -> Box<dyn io::Write>;
-    /// Returns a writer that waits indefinitely on temporary backpressure during restoration.
+    /// Returns a writer that bounds stalls during terminal restoration.
     fn get_stdout_writer_for_teardown(&self) -> Box<dyn io::Write> {
         self.get_stdout_writer()
     }
@@ -548,8 +548,8 @@ pub(crate) fn stdout_writer(for_teardown: bool) -> Box<dyn io::Write> {
         Box::new(crate::terminal_escapes::HostWriter::with_stall_policy(
             writer,
             wait,
-            || false,
-            time::Duration::ZERO,
+            || true,
+            crate::terminal_escapes::STALLED_OUTPUT_LIMIT,
         ))
     } else {
         Box::new(crate::terminal_escapes::HostWriter::new(writer, wait))
@@ -581,25 +581,29 @@ struct StdoutWriter {
 }
 
 impl StdoutWriter {
-    fn writer(&mut self) -> &mut dyn Write {
+    fn writer(&mut self) -> io::Result<&mut dyn Write> {
         match &mut self.tty {
-            Some(tty) => tty,
-            None => &mut self.stdout,
+            Some(tty) => {
+                // Standard stdout may hold newline-free text written before this frame.
+                self.stdout.flush()?;
+                Ok(tty)
+            },
+            None => Ok(&mut self.stdout),
         }
     }
 }
 
 impl Write for StdoutWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.writer().write(bytes)
+        self.writer()?.write(bytes)
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        self.writer().write_vectored(bufs)
+        self.writer()?.write_vectored(bufs)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.writer().flush()
+        self.stdout.flush()
     }
 }
 

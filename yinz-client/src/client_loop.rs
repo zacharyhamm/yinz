@@ -9,7 +9,7 @@ use crate::os_input_output::ClientOsApi;
 use crate::render_budget::RenderBudget;
 use crate::router::SlowWarnings;
 use crate::stdin_ansi_parser::{ForwardKind, StdinAnsiParser, SyncOutput};
-use crate::terminal_escapes::{write_synchronised, ClientTeardown};
+use crate::terminal_escapes::{stalled_output_abandoned, write_synchronised, ClientTeardown};
 use crate::{
     command_is_executing::CommandIsExecuting, nested_reannounce::NestedReannounce,
     stdin_ansi_parser, ClientInstruction, InputInstruction,
@@ -164,11 +164,19 @@ impl ClientLoop<'_> {
                 let started = Instant::now();
                 let mut stdout = self.os_input.get_stdout_writer();
                 let written =
-                    write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes())
-                        .context("failed to write a frame to the terminal")
-                        .to_log();
+                    write_synchronised(&mut *stdout, self.synchronised_output, output.as_bytes());
                 self.render_budget.release(render_bytes).non_fatal();
-                if let Err(e) = written {
+                if matches!(&written, Err(e) if e.kind() == std::io::ErrorKind::TimedOut)
+                    && stalled_output_abandoned()
+                {
+                    // Quitting cancelled this frame. Keep draining instructions so the
+                    // server's exit reason, rather than output backpressure, decides the status.
+                    return false;
+                }
+                if let Err(e) = written
+                    .context("failed to write a frame to the terminal")
+                    .to_log()
+                {
                     self.os_input
                         .send_to_server(ClientToServerMsg::ClientExited);
                     outcome.exit_msg =
