@@ -2530,6 +2530,93 @@ impl WasmBridge {
         );
     }
 
+    pub fn deno_palette(
+        &self,
+        delivery: yinz_bus::command_palette::Delivery,
+        shutdown: Sender<()>,
+    ) {
+        let plugin_id = delivery.owner.plugin_id;
+        self.plugin_executor.execute_for_plugin_tagged(
+            plugin_id,
+            "deno_palette",
+            false,
+            move |senders, plugin_map, connected_clients, _, _| {
+                let _shutdown = shutdown;
+                let instances = plugin_map.lock().unwrap().running_plugins();
+                for (id, owner, instance) in instances {
+                    if id != plugin_id {
+                        continue;
+                    }
+                    let mut plugin = instance.lock().unwrap();
+                    if plugin.is_unavailable()
+                        || plugin.deno_generation() != Some(delivery.owner.generation)
+                        || delivery.active.as_ref().is_some_and(|active| {
+                            !active.load(std::sync::atomic::Ordering::Acquire)
+                        })
+                        || (!plugin.env().plugin_config.is_shared() && owner != delivery.client)
+                    {
+                        continue;
+                    }
+                    let is_request = matches!(
+                        delivery.message,
+                        yinz_types::command_palette::Message::Discover { .. }
+                            | yinz_types::command_palette::Message::Execute { .. }
+                    );
+                    if is_request
+                        && (!connected_clients.lock().unwrap().contains(&delivery.client)
+                            || matches!(
+                                crate::yinz_exports::check_command_permission(
+                                    plugin.env(),
+                                    &yinz_types::data::PluginCommand::CommandPalette(
+                                        yinz_types::command_palette::Command::Unregister {
+                                            registration: String::new()
+                                        }
+                                    )
+                                ),
+                                (yinz_types::data::PermissionStatus::Denied, _)
+                            ))
+                    {
+                        continue;
+                    }
+                    let previous =
+                        std::mem::replace(&mut plugin.env_mut().client_id, delivery.client);
+                    let result = plugin.deno_palette(&delivery.message);
+                    plugin.env_mut().client_id = previous;
+                    let clients = if plugin.env().plugin_config.is_shared() {
+                        connected_clients.lock().unwrap().clone()
+                    } else {
+                        vec![owner]
+                    };
+                    let result = result.and_then(|render| {
+                        if render && plugin.has_area() {
+                            render_plugin_for_clients(plugin_id, &mut plugin, &clients)
+                        } else {
+                            Ok(vec![])
+                        }
+                    });
+                    match result {
+                        Ok(assets) if !assets.is_empty() => senders
+                            .send_to_screen(ScreenInstruction::PluginBytes(assets))
+                            .context("rendering palette plugin")
+                            .non_fatal(),
+                        Ok(_) => {},
+                        Err(error) => {
+                            plugin.mark_failed();
+                            handle_plugin_crash(
+                                plugin_id,
+                                Some(delivery.owner.generation),
+                                Some(plugin.instance_id),
+                                format!("{error:#}"),
+                                senders.clone(),
+                            );
+                        },
+                    }
+                    break;
+                }
+            },
+        );
+    }
+
     pub fn deno_tick(&self, plugin_id: PluginId, generation: u64, shutdown: Sender<()>) {
         self.plugin_executor.execute_for_plugin_tagged(
             plugin_id,

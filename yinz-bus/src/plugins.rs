@@ -111,6 +111,7 @@ pub enum PluginInstruction {
     Update(Vec<(Option<PluginId>, Option<ClientId>, Event)>), // Focused plugin / broadcast, client_id, event data
     InputBarrier(PluginId, NotificationEnd),
     DenoTick(PluginId, ClientId, u64),
+    DenoPalette(crate::command_palette::Delivery),
     DenoEvent(PluginId, ClientId, u64, Event),
     DenoDispose(PluginId, u64),
     Unload(PluginId), // plugin_id
@@ -370,6 +371,7 @@ impl From<&PluginInstruction> for PluginContext {
         match plugin_instruction {
             PluginInstruction::DataRequest { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
+            PluginInstruction::DenoPalette(..) => PluginContext::Update,
             PluginInstruction::DenoTick(..) => PluginContext::Update,
             PluginInstruction::DenoEvent(..) => PluginContext::Update,
             PluginInstruction::DenoDispose(..) => PluginContext::Unload,

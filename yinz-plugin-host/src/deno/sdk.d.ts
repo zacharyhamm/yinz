@@ -979,3 +979,65 @@ export interface Agents {
   waitForTurn(pane: AgentPane, options?: AgentTurnOptions): CancellablePromise<AgentTurn>;
   prompt(pane: AgentPane, text: string, options?: AgentTurnOptions & {enter?: boolean}): CancellablePromise<AgentTurn>;
 }
+
+// ---- section: sdk_palette
+export interface Yinz {
+  readonly commandPalette: CommandPalette;
+}
+/** Context captured by the host for this palette opening, preserved across await. */
+export interface PaletteContext {
+  readonly clientId: number;
+  readonly paneId: PaneId;
+  readonly tabId: number;
+  readonly currentProject: string | null;
+}
+export interface PaletteCancellation {
+  /** Cancellation invalidates the result; it cannot undo external operations. */
+  readonly cancelled: boolean;
+  /** Runs once on cancellation, or immediately if already cancelled. Returns a remover; callbacks are cleared when the request settles. */
+  onCancel(callback: () => void): () => void;
+}
+export interface PaletteRequest extends PaletteContext, PaletteCancellation {
+  readonly query: string;
+}
+export interface PaletteExecution extends PaletteContext, PaletteCancellation {
+  /** Close this opening immediately. The callback continues; returned views are ignored. */
+  close(): void;
+}
+export interface PaletteAction {
+  /** Unique and stable within this provider or nested list. */
+  id: string;
+  label: string;
+  description?: string;
+  /** Return an actions, form, or text view to push it; other successful returns close. Malformed views and thrown errors show an inline retryable error. */
+  run(context: PaletteExecution): PaletteView | void | Promise<PaletteView | void>;
+}
+export type PaletteActionSource = (request: PaletteRequest) => PaletteAction[] | Promise<PaletteAction[]>;
+export type PaletteField =
+  | { type: "text"; id: string; label: string; initialValue?: string }
+  | { type: "choice"; id: string; label: string; options: string[]; initialValue?: string };
+export type PaletteView =
+  | { type: "actions"; title: string; actions: PaletteAction[] | PaletteActionSource }
+  | { type: "form"; title: string; fields: PaletteField[]; submitLabel?: string;
+      /** Same return and error handling as PaletteAction.run. */
+      onSubmit(values: Record<string, string>, context: PaletteExecution): PaletteView | void | Promise<PaletteView | void> }
+  | { type: "text"; title: string; text: string };
+export interface CommandPalette {
+  /**
+   * Register after awaiting ReadApplicationState permission in load(). Deno only; workers
+   * cannot register. IDs are unique within the instance. Returns an idempotent unregister.
+   * Providers run independently on opening and after a 150 ms search debounce, with a
+   * 10 second discovery deadline. Results keep their order without extra fuzzy filtering.
+   * Static nested lists use fuzzy matching; function sources receive their own query.
+   * Replies allow 100 actions, 16 fields, and 256 KiB of display data. Labels must be
+   * nonempty; text cannot contain terminal controls. Choices default to the first option,
+   * text fields to empty, and the submit label to "Submit". Form values use field IDs.
+   * Escape dismisses root discovery immediately. During execution or nested discovery it
+   * cancels work first, then navigates back; back preserves entered values.
+   * Query changes, navigation, dismissal, unregister, reload, and disconnect cancel work.
+   * Network requests still require WebAccess. Use onCancel(() => request.cancel()) to
+   * release a webRequest wait. Execution has no deadline; close() restores input at once.
+   */
+  /** Ordinary instances serve only their owning client; shared=true serves all session clients. */
+  registerProvider(provider: { id: string; title: string; provideActions: PaletteActionSource }): () => void;
+}

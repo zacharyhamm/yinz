@@ -1680,3 +1680,666 @@ fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
         assert_eq!(grid.as_character_lines()[y][x], cell);
     }
 }
+
+#[test]
+fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yinz_bus::command_palette::{Delivery, Instruction, Owner};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Action, Command, Message, Reply};
+    use yinz_types::internal_ids::PluginId;
+
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (sender, requests) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let owner = Owner {
+        plugin_id: PluginId::new(50),
+        generation: 9,
+        client_id: Some(CLIENT),
+    };
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let command = |command| Instruction::Command {
+        owner: owner.clone(),
+        client: CLIENT,
+        unavailable: unavailable.clone(),
+        command,
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "remote".into(),
+        title: "Remote".into(),
+        registration: "1".into(),
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(request, _)| match request {
+                PluginInstruction::DenoPalette(
+                    delivery @ Delivery {
+                        message: Message::Discover { .. } | Message::Execute { .. },
+                        ..
+                    },
+                ) => Some(delivery),
+                _ => None,
+            })
+            .expect("private request")
+    };
+    let first = next();
+    let Message::Discover {
+        scope: first_scope,
+        context,
+        ..
+    } = &first.message
+    else {
+        panic!()
+    };
+    assert_eq!(context.client_id, u32::from(CLIENT.get()));
+    // Repainting never requests discovery again.
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!requests.try_iter().any(|(request, _)| matches!(
+        request,
+        PluginInstruction::DenoPalette(Delivery {
+            message: Message::Discover { .. },
+            ..
+        })
+    )));
+    screen.command_palette_handles_input(&None, b"remote-query", false, CLIENT);
+    assert!(!first.active.unwrap().load(Ordering::Acquire));
+    let reply = |scope, label: &str| {
+        command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions {
+                actions: vec![Action {
+                    id: "action".into(),
+                    label: label.into(),
+                    description: String::new(),
+                    handle: "handle".into(),
+                }],
+            }),
+        })
+    };
+    assert!(!screen.plugin_palette_instruction(reply(first_scope.clone(), "Obsolete")));
+    let releases: Vec<_> = requests
+        .try_iter()
+        .filter_map(|(request, _)| match request {
+            PluginInstruction::DenoPalette(Delivery {
+                message: Message::Release { handles },
+                ..
+            }) => Some(handles),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(releases, vec![vec!["handle".to_owned()]]);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!snapshot.contains("Obsolete"));
+    // Drive the debounce deterministically, without sleeping.
+    screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening: first_scope.opening,
+        revision: first_scope.revision + 1,
+    });
+    let Message::Discover { scope, .. } = next().message else {
+        panic!()
+    };
+    assert!(screen.plugin_palette_instruction(reply(scope, "Semantic result")));
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Semantic result"), "{snapshot}");
+    // Typing and paste preserve the semantic action while replacement is debounced.
+    palette_key(&mut screen, BareKey::Char('x'));
+    screen.command_palette_handles_input(&None, b"paste", false, CLIENT);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Semantic result"), "{snapshot}");
+    assert!(snapshot.contains("Loading"), "{snapshot}");
+    assert!(!requests.try_iter().any(|(request, _)| matches!(
+        request,
+        PluginInstruction::DenoPalette(Delivery {
+            message: Message::Release { .. },
+            ..
+        })
+    )));
+    assert!(
+        screen.plugin_palette_instruction(command(Command::Register {
+            id: "unrelated".into(),
+            title: "Unrelated".into(),
+            registration: "3".into(),
+        }))
+    );
+    for (request, _) in requests.try_iter() {
+        assert!(!matches!(
+            request,
+            PluginInstruction::DenoPalette(Delivery {
+                message: Message::Release { .. },
+                ..
+            })
+        ));
+    }
+    let native_actions = palette_actions_receiver(&mut screen);
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        &[],
+        false,
+        CLIENT,
+    );
+    let execution = next();
+    let Message::Execute { scope, handle, .. } = execution.message else {
+        panic!()
+    };
+    assert_eq!(handle, "handle");
+    assert!(native_actions.try_recv().is_err());
+    // Loading an unrelated provider must not cancel an action already running.
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "other".into(),
+        title: "Other".into(),
+        registration: "2".into(),
+    }));
+    assert!(execution.active.unwrap().load(Ordering::Acquire));
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        &[],
+        false,
+        CLIENT,
+    );
+    assert!(!requests.try_iter().any(|(request, _)| matches!(
+        request,
+        PluginInstruction::DenoPalette(Delivery {
+            message: Message::Execute { .. },
+            ..
+        })
+    )));
+    screen.plugin_palette_instruction(command(Command::Close {
+        scope: scope.clone(),
+    }));
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    screen.toggle_command_palette(CLIENT);
+    screen.plugin_palette_instruction(command(Command::Close {
+        scope: scope.clone(),
+    }));
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::Close),
+    }));
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+    screen.plugin_palette_instruction(Instruction::Dispose {
+        plugin_id: owner.plugin_id,
+        generation: owner.generation,
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!snapshot.contains("Remote"));
+}
+
+#[test]
+fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Action, Command, Message, Reply};
+    use yinz_types::internal_ids::PluginId;
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (sender, requests) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let command = |owner, command| Instruction::Command {
+        owner,
+        client: CLIENT,
+        unavailable: Arc::new(AtomicBool::new(false)),
+        command,
+    };
+    for (id, title) in [(3, "Z provider"), (2, "A provider"), (1, "A provider")] {
+        screen.plugin_palette_instruction(command(
+            Owner {
+                plugin_id: PluginId::new(id),
+                generation: u64::from(id),
+                client_id: None,
+            },
+            Command::Register {
+                id: "same-id".into(),
+                title: title.into(),
+                registration: "1".into(),
+            },
+        ));
+    }
+    screen.toggle_command_palette(CLIENT);
+    let request = requests
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::DenoPalette(delivery) => Some(delivery),
+            _ => None,
+        })
+        .unwrap();
+    let Message::Discover { scope, .. } = request.message else {
+        panic!()
+    };
+    screen.command_palette_handles_input(&None, b"zz-no-native", false, CLIENT);
+    screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening: scope.opening,
+        revision: scope.revision + 1,
+    });
+    let mut deliveries: Vec<_> = requests.try_iter().filter_map(|(instruction, _)| match instruction {
+        PluginInstruction::DenoPalette(delivery) if matches!(&delivery.message, Message::Discover { scope: current, .. } if current.revision == scope.revision + 1) => Some(delivery), _ => None,
+    }).collect();
+    deliveries.reverse();
+    for delivery in deliveries {
+        let Message::Discover { scope, .. } = delivery.message else {
+            panic!()
+        };
+        let id = delivery.owner.plugin_id.get();
+        if id == 3 {
+            screen.plugin_palette_instruction(Instruction::Timeout {
+                owner: delivery.owner,
+                client: CLIENT,
+                scope,
+            });
+            assert!(!delivery.active.unwrap().load(Ordering::Acquire));
+        } else {
+            screen.plugin_palette_instruction(command(
+                delivery.owner,
+                Command::Reply {
+                    scope,
+                    result: Ok(Reply::Actions {
+                        actions: vec![Action {
+                            id: "same-action-id".into(),
+                            label: format!("Result {id}"),
+                            description: String::new(),
+                            handle: "1".into(),
+                        }],
+                    }),
+                },
+            ));
+        }
+    }
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        snapshot.find("Result 1").unwrap() < snapshot.find("Result 2").unwrap(),
+        "{snapshot}"
+    );
+    assert!(
+        snapshot.contains("timed out after 10 seconds"),
+        "{snapshot}"
+    );
+    screen.command_palette_handles_input(&None, b"x", false, CLIENT);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Loading"), "{snapshot}");
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Esc)),
+        &[],
+        false,
+        CLIENT,
+    );
+    // Escape also cancels a query whose debounce has not dispatched yet.
+    screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening: scope.opening,
+        revision: scope.revision + 2,
+    });
+    assert!(!requests.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PluginInstruction::DenoPalette(yinz_bus::command_palette::Delivery {
+            message: Message::Discover { .. },
+            ..
+        })
+    )));
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!snapshot.contains("Loading"), "{snapshot}");
+}
+
+#[test]
+fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Command, Message};
+    use yinz_types::internal_ids::PluginId;
+
+    for shared in [false, true] {
+        for during_debounce in [false, true] {
+            let mut screen = screen();
+            let other = ClientId::new(2);
+            screen.add_client(other).unwrap();
+            let (sender, requests) = unbounded();
+            screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+            let unavailable = Arc::new(AtomicBool::new(false));
+            let owner = Owner {
+                plugin_id: PluginId::new(50),
+                generation: 9,
+                client_id: if shared { None } else { Some(CLIENT) },
+            };
+            let register = || Instruction::Command {
+                owner: owner.clone(),
+                client: CLIENT,
+                unavailable: unavailable.clone(),
+                command: Command::Register {
+                    id: "provider".into(),
+                    title: "Provider".into(),
+                    registration: "1".into(),
+                },
+            };
+            assert!(!screen.plugin_palette_instruction(register()));
+            screen.toggle_command_palette(CLIENT);
+            screen.toggle_command_palette(other);
+            assert!(!screen.plugin_palette_instruction(register()));
+            let discoveries: Vec<_> = requests
+                .try_iter()
+                .filter_map(|(instruction, _)| match instruction {
+                    PluginInstruction::DenoPalette(delivery)
+                        if matches!(delivery.message, Message::Discover { .. }) =>
+                    {
+                        Some(delivery)
+                    },
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(discoveries.len(), if shared { 2 } else { 1 });
+            let request = discoveries.iter().find(|d| d.client == CLIENT).unwrap();
+            let Message::Discover { scope, .. } = &request.message else {
+                panic!()
+            };
+            if !during_debounce {
+                unavailable.store(true, Ordering::Release);
+            }
+            screen.command_palette_handles_input(&None, b"query", false, CLIENT);
+            unavailable.store(true, Ordering::Release);
+            let changed = screen.plugin_palette_instruction(Instruction::Discover {
+                client: CLIENT,
+                opening: scope.opening,
+                revision: scope.revision + 1,
+            });
+            assert_eq!(changed, during_debounce);
+            for request in discoveries {
+                assert!(!request.active.unwrap().load(Ordering::Acquire));
+            }
+            assert!(!requests.try_iter().any(|(instruction, _)| matches!(
+                instruction, PluginInstruction::DenoPalette(delivery)
+                    if matches!(delivery.message, Message::Discover { .. })
+                        || matches!(delivery.message, Message::Release { ref handles } if handles.is_empty())
+            )));
+            assert!(!screen.plugin_palette_instruction(Instruction::Dispose {
+                plugin_id: owner.plugin_id,
+                generation: owner.generation,
+            }));
+        }
+    }
+}
+
+#[test]
+fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply, View};
+    use yinz_types::internal_ids::PluginId;
+
+    let mut screen = screen();
+    let (sender, requests) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let owner = Owner {
+        plugin_id: PluginId::new(50),
+        generation: 9,
+        client_id: Some(CLIENT),
+    };
+    let command = |command| Instruction::Command {
+        owner: owner.clone(),
+        client: CLIENT,
+        unavailable: unavailable.clone(),
+        command,
+    };
+    let action = |handle: &str| PaletteAction {
+        id: "stable".into(),
+        label: "Retained action".into(),
+        description: String::new(),
+        handle: handle.into(),
+    };
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::DenoPalette(delivery)
+                    if matches!(
+                        delivery.message,
+                        Message::Discover { .. } | Message::Execute { .. }
+                    ) =>
+                {
+                    Some(delivery)
+                },
+                _ => None,
+            })
+            .unwrap()
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "provider".into(),
+        title: "Provider".into(),
+        registration: "1".into(),
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let Message::Discover { scope, .. } = next().message else {
+        panic!()
+    };
+    assert!(screen.plugin_palette_instruction(command(Command::Reply {
+        scope: scope.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![action("old")]
+        }),
+    })));
+    screen.command_palette_handles_input(&None, b"zz-no-native", false, CLIENT);
+    assert!(!screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening: scope.opening,
+        revision: scope.revision + 1,
+    }));
+    let Message::Discover { scope, .. } = next().message else {
+        panic!()
+    };
+    assert!(screen.plugin_palette_instruction(command(Command::Reply {
+        scope: scope.clone(),
+        result: Ok(Reply::Actions {
+            actions: vec![action("new")]
+        }),
+    })));
+    let releases: Vec<_> = requests
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                Message::Release { handles } => Some(handles),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(releases, vec![vec!["old".to_owned()]]);
+    screen.command_palette_handles_input(&None, b"retry", false, CLIENT);
+    assert!(!screen.plugin_palette_instruction(Instruction::Discover {
+        client: CLIENT,
+        opening: scope.opening,
+        revision: scope.revision + 1,
+    }));
+    let Message::Discover { scope, .. } = next().message else {
+        panic!()
+    };
+    assert!(screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Err("discovery failed".into()),
+    })));
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { scope, handle, .. } = next().message else {
+        panic!()
+    };
+    assert_eq!(handle, "new");
+    assert!(screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::View {
+            view: View::Actions {
+                title: "Nested".into(),
+                actions: vec![action("nested")],
+                source: Some("source".into()),
+            }
+        }),
+    })));
+    let nested_request = next();
+    let Message::Discover { scope, .. } = nested_request.message else {
+        panic!()
+    };
+    assert!(screen.plugin_palette_instruction(Instruction::Timeout {
+        owner: owner.clone(),
+        client: CLIENT,
+        scope,
+    }));
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { scope, handle, .. } = next().message else {
+        panic!()
+    };
+    assert_eq!(handle, "nested");
+    // Finishing execution without a new view leaves the retained list available.
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Err("retry".into()),
+    }));
+    palette_key(&mut screen, BareKey::Esc);
+    palette_key(&mut screen, BareKey::Enter);
+    let Message::Execute { scope, handle, .. } = next().message else {
+        panic!()
+    };
+    assert_eq!(handle, "new");
+    screen.plugin_palette_instruction(command(Command::Reply {
+        scope,
+        result: Ok(Reply::View {
+            view: View::Actions {
+                title: "Nested again".into(),
+                actions: vec![action("nested2")],
+                source: Some("source2".into()),
+            },
+        }),
+    }));
+    let pending = next();
+    unavailable.store(true, Ordering::Release);
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!pending.active.unwrap().load(Ordering::Acquire));
+    let releases: Vec<_> = requests
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                Message::Release { handles } => Some(handles),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(releases.contains(&vec!["new".to_owned()]));
+    assert!(releases.contains(&vec!["nested2".to_owned(), "source2".to_owned()]));
+    assert!(releases.iter().all(|handles| !handles.is_empty()));
+}
+
+#[test]
+fn root_palette_escape_cancels_discovery_and_debounce() {
+    for debounce in [false, true] {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use yinz_bus::command_palette::{Delivery, Instruction, Owner};
+        use yinz_runtime::channels::{unbounded, SenderWithContext};
+        use yinz_types::command_palette::{Action, Command, Message, Reply};
+        use yinz_types::internal_ids::PluginId;
+
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let (sender, requests) = unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        let owner = Owner {
+            plugin_id: PluginId::new(50),
+            generation: 9,
+            client_id: Some(CLIENT),
+        };
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let command = |command| Instruction::Command {
+            owner: owner.clone(),
+            client: CLIENT,
+            unavailable: unavailable.clone(),
+            command,
+        };
+        screen.plugin_palette_instruction(command(Command::Register {
+            id: "remote".into(),
+            title: "Remote".into(),
+            registration: "1".into(),
+        }));
+        screen.toggle_command_palette(CLIENT);
+        let next = || {
+            requests
+                .try_iter()
+                .find_map(|(request, _)| match request {
+                    PluginInstruction::DenoPalette(
+                        delivery @ Delivery {
+                            message: Message::Discover { .. } | Message::Execute { .. },
+                            ..
+                        },
+                    ) => Some(delivery),
+                    _ => None,
+                })
+                .expect("private request")
+        };
+        let request = next();
+        let Message::Discover { scope, .. } = request.message else {
+            panic!()
+        };
+        if debounce {
+            screen.command_palette_handles_input(&None, b"query", false, CLIENT);
+        }
+        palette_key(&mut screen, BareKey::Esc);
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!request.active.unwrap().load(Ordering::Acquire));
+        assert!(requests.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PluginInstruction::DenoPalette(Delivery {
+                message: Message::Cancel { .. },
+                ..
+            })
+        )));
+        assert!(receiver
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction,
+        ServerInstruction::SetCommandPaletteOpen(client, false) if client == CLIENT)));
+        assert!(!screen.command_palette_handles_input(&None, b"unlocked", false, CLIENT));
+        screen.plugin_palette_instruction(Instruction::Discover {
+            client: CLIENT,
+            opening: scope.opening,
+            revision: scope.revision + u64::from(debounce),
+        });
+        screen.plugin_palette_instruction(command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions {
+                actions: vec![Action {
+                    id: "late".into(),
+                    label: "Late".into(),
+                    description: String::new(),
+                    handle: "late".into(),
+                }],
+            }),
+        }));
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert!(!requests.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PluginInstruction::DenoPalette(Delivery {
+                message: Message::Discover { .. },
+                ..
+            })
+        )));
+    }
+}

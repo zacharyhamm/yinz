@@ -571,6 +571,13 @@ impl DenoPlugin {
         })
     }
 
+    pub fn palette(&mut self, message: &yinz_types::command_palette::Message) -> Result<bool> {
+        self.lifecycle(
+            "palette",
+            serde_json::to_value(message).context("encoding private palette message")?,
+        )
+    }
+
     pub fn pipe(&mut self, message: &PipeMessage) -> Result<bool> {
         if self.is_disposed() {
             return Ok(false);
@@ -679,6 +686,16 @@ impl DenoPlugin {
                     .forget(self.generation);
             }
         }
+        self.env()
+            .senders
+            .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
+                yinz_bus::command_palette::Instruction::Dispose {
+                    plugin_id: self.env().plugin_id,
+                    generation: self.generation,
+                },
+            ))
+            .context("removing disposed palette providers")
+            .non_fatal();
         self.env().clear_agent_providers();
         self.wake.stopped.store(true, Ordering::Release);
         self.terminate.terminate_execution();
@@ -2260,6 +2277,7 @@ mod sdk_tests {
     include!("unit/completion_sdk.rs");
     include!("unit/consumer_sdk.rs");
     include!("unit/host_sdk.rs");
+    include!("unit/palette_sdk.rs");
     mod bar_parity {
         include!("unit/bar_parity.rs");
     }

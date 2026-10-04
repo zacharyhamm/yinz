@@ -115,7 +115,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
         for (row, result) in layout.result_rows.iter().enumerate() {
             match result {
                 ResultRow::Heading(label) => {
-                    parent = Some(*label);
+                    parent = Some(label.as_str());
                     assert!(lines[layout.options_y + row - layout.rect.y].contains(label));
                     assert!(matches!(
                         layout.result_rows.get(row + 1),
@@ -127,6 +127,7 @@ fn grouped_results_preserve_order_and_share_scrolled_click_geometry() {
                     );
                     assert_eq!(palette.selected, selected);
                 },
+                ResultRow::Status(_, _) => panic!("native entries have no plugin status"),
                 ResultRow::Entry(index) => {
                     let kind = palette.entries[palette.matches[*index]].kind;
                     if let Some(label) = kind.parent_label() {
@@ -527,7 +528,7 @@ fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
         for (row, result) in layout.result_rows.iter().enumerate() {
             match result {
                 ResultRow::Heading(label) => {
-                    group = Some(*label);
+                    group = Some(label.as_str());
                     assert!(lines[layout.options_y + row - layout.rect.y].contains(label));
                     palette.click(
                         &layout,
@@ -535,6 +536,7 @@ fn session_picker_groups_search_results_and_keeps_selection_on_refresh() {
                     );
                     assert_eq!(palette.selected, selected);
                 },
+                ResultRow::Status(_, _) => panic!("native entries have no plugin status"),
                 ResultRow::Entry(index) => {
                     let expected =
                         if palette.entries[palette.matches[*index]].kind == EntryKind::Session {
@@ -581,7 +583,9 @@ fn project_picker_restores_search_and_clips_unicode_in_every_view() {
     palette.current_project = Some(name.clone());
     let mut project = entry("project", &name, EntryKind::Project);
     project.description = "Current".into();
-    palette.entries.push(project);
+    let mut entries = palette.native_entries.clone();
+    entries.push(project);
+    palette.set_entries(entries);
     palette.insert_text("New");
     key(&mut palette, BareKey::Down);
     let selected = palette.selected_entry().unwrap().id.clone();
@@ -616,4 +620,280 @@ fn project_picker_restores_search_and_clips_unicode_in_every_view() {
     assert!(rendered_lines(&palette, &palette.layout(surface))
         .iter()
         .any(|line| line.contains("No projects")));
+}
+
+#[test]
+fn plugin_sections_keep_semantic_order_and_selection() {
+    let mut palette = palette();
+    palette.insert_text("new");
+    let section = |ids: &[&str]| PluginSection {
+        title: "Remote".into(),
+        entries: ids
+            .iter()
+            .map(|id| entry(id, id, EntryKind::Plugin))
+            .collect(),
+        semantic: true,
+        status: None,
+    };
+    palette.set_sections(vec![section(&["unrelated", "also unrelated"])]);
+    assert_eq!(ids(&palette), ["new", "tab", "unrelated", "also unrelated"]);
+    key(&mut palette, BareKey::Down);
+    key(&mut palette, BareKey::Down);
+    palette.set_sections(vec![section(&["inserted", "unrelated", "also unrelated"])]);
+    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    key(&mut palette, BareKey::Char('x'));
+    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    palette.insert_text("pasted");
+    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    palette.push_view(1, "Static".into());
+    let mut static_section = section(&["apple", "banana"]);
+    static_section.semantic = false;
+    palette.set_sections(vec![static_section]);
+    palette.insert_text("ban");
+    assert_eq!(ids(&palette), ["banana"]);
+    palette.back();
+    assert_eq!(palette.query(), "newxpasted");
+    assert_eq!(palette.selected_entry().unwrap().id, "unrelated");
+    palette.set_sections(vec![section(&["replacement"])]);
+    assert_eq!(palette.selected_entry().unwrap().id, "replacement");
+}
+
+#[test]
+fn provider_statuses_are_reachable_and_never_activate_entries() {
+    for (next, previous) in [
+        (
+            KeyWithModifier::new(BareKey::Down),
+            KeyWithModifier::new(BareKey::Up),
+        ),
+        (
+            KeyWithModifier::new(BareKey::Char('n')).with_ctrl_modifier(),
+            KeyWithModifier::new(BareKey::Char('p')).with_ctrl_modifier(),
+        ),
+    ] {
+        for entry_count in [0, 9] {
+            let mut palette = CommandPalette::default();
+            palette.set_entries(
+                (0..entry_count)
+                    .map(|i| entry(&i.to_string(), &format!("Command {i}"), EntryKind::Command))
+                    .collect(),
+            );
+            let statuses = ["Loading…", "No actions", "Provider failed"];
+            palette.set_sections(
+                statuses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, status)| PluginSection {
+                        title: format!("Provider {i}"),
+                        entries: vec![],
+                        semantic: true,
+                        status: Some((*status).into()),
+                    })
+                    .collect(),
+            );
+            for _ in 0..entry_count {
+                assert_eq!(palette.handle_key(next.clone()), Outcome::None);
+            }
+            for (section, key) in [
+                (0, &next),
+                (1, &next),
+                (2, &next),
+                (2, &previous),
+                (1, &previous),
+                (0, &previous),
+            ] {
+                assert_eq!(palette.selected_status, Some(section));
+                assert!(palette.selected_entry().is_none());
+                assert_eq!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::None
+                );
+                for rows in [4, 7, 24] {
+                    let layout = palette.layout(Viewport {
+                        cols: 80,
+                        rows,
+                        ..Default::default()
+                    });
+                    let lines = rendered_lines(&palette, &layout);
+                    let row = layout
+                        .result_rows
+                        .iter()
+                        .position(|row| matches!(row, ResultRow::Status(i, _) if *i == section))
+                        .expect("focused status must be visible");
+                    let y = layout.options_y + row - layout.rect.y;
+                    assert!(lines[y].contains(statuses[section]));
+                    assert!(!lines.iter().any(|line| line.contains('›')));
+                    if layout.options_rows >= 2 {
+                        assert!(lines
+                            .iter()
+                            .any(|line| line.contains(&format!("Provider {section}"))));
+                    }
+                    let style = Style::default();
+                    let chunks = palette.chunks(&layout, &style);
+                    assert_eq!(
+                        chunks[y].terminal_characters[layout.border]
+                            .styles
+                            .background,
+                        Some(style.colors.text_selected.background.into())
+                    );
+                }
+                assert_eq!(palette.handle_key(key.clone()), Outcome::None);
+            }
+            if entry_count == 0 {
+                assert_eq!(palette.selected_status, Some(0));
+            } else {
+                assert_eq!(palette.selected_status, None);
+                assert_eq!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::Activate((entry_count - 1).to_string())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_status_focus_shares_mouse_geometry_and_survives_view_history() {
+    let mut palette = CommandPalette::default();
+    palette.set_sections(vec![
+        PluginSection {
+            title: "First".into(),
+            entries: vec![entry("first", "First command", EntryKind::Plugin)],
+            semantic: true,
+            status: Some("Loading…".into()),
+        },
+        PluginSection {
+            title: "Second".into(),
+            entries: vec![entry("second", "Second command", EntryKind::Plugin)],
+            semantic: true,
+            status: Some("No more actions".into()),
+        },
+    ]);
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_status, Some(0));
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_entry().unwrap().id, "second");
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_status, Some(1));
+    let layout = palette.layout(surface);
+    for (row, result) in layout.result_rows.iter().enumerate() {
+        palette.click(
+            &layout,
+            Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+        );
+        match result {
+            ResultRow::Entry(index) => {
+                assert_eq!(
+                    palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                    Outcome::Activate(palette.entries[palette.matches[*index]].id.clone())
+                );
+            },
+            ResultRow::Status(section, _) => {
+                assert_eq!(palette.selected_status, Some(*section));
+                key(&mut palette, BareKey::Enter);
+            },
+            ResultRow::Heading(_) => {},
+        }
+    }
+    assert_eq!(palette.selected_status, Some(1));
+    palette.set_sections(palette.sections.clone());
+    assert_eq!(palette.selected_status, Some(1));
+    palette.push_view(1, "Nested".into());
+    palette.back();
+    assert_eq!(palette.selected_status, Some(1));
+    key(&mut palette, BareKey::Enter);
+
+    let mut sections = palette.sections.clone();
+    sections[0]
+        .entries
+        .insert(0, entry("inserted", "Inserted", EntryKind::Plugin));
+    sections[1].status = None;
+    palette.set_sections(sections);
+    assert_eq!(palette.selected_status, None);
+    assert_eq!(palette.selected_entry().unwrap().id, "second");
+    key(&mut palette, BareKey::Up);
+    assert_eq!(palette.selected_status, Some(0));
+    palette.insert_text("Second");
+    assert_eq!(palette.selected_status, None);
+    key(&mut palette, BareKey::Down);
+    key(&mut palette, BareKey::Down);
+    assert_eq!(palette.selected_status, Some(0));
+    palette.open_picker(EntryKind::Pane);
+    assert_eq!(palette.selected_status, None);
+    key(&mut palette, BareKey::Enter);
+}
+
+#[test]
+fn plugin_form_history_busy_and_text_scroll() {
+    let mut palette = palette();
+    palette.push_view(1, "Form".into());
+    palette.open_form(Form::new(
+        "submit".into(),
+        "Form".into(),
+        vec![Field::text("Name", "")],
+        "Submit",
+        false,
+    ));
+    palette.insert_text("retained");
+    key(&mut palette, BareKey::Tab);
+    palette.busy = true;
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::None
+    );
+    palette.insert_text("ignored");
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Esc)),
+        Outcome::Cancel
+    );
+    palette.busy = false;
+    palette.push_view(2, "Output".into());
+    palette.open_text((0..50).map(|i| format!("Row {i}\n")).collect());
+    let surface = Viewport {
+        x: 0,
+        y: 0,
+        cols: 80,
+        rows: 24,
+    };
+    let layout = palette.layout(surface);
+    assert!(rendered_lines(&palette, &layout)
+        .iter()
+        .any(|s| s.contains("Row 0")));
+    key(&mut palette, BareKey::End);
+    let layout = palette.layout(surface);
+    assert!(rendered_lines(&palette, &layout)
+        .iter()
+        .any(|s| s.contains("Row 49")));
+    key(&mut palette, BareKey::Up);
+    assert!(palette.text_offset < 50);
+    key(&mut palette, BareKey::Home);
+    assert_eq!(palette.text_offset, 0);
+    palette.back();
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Submit {
+            id: "submit".into(),
+            values: vec!["retained".into()]
+        }
+    );
+}
+
+#[test]
+fn root_discovery_dismisses_but_nested_discovery_and_execution_cancel() {
+    let mut palette = palette();
+    palette.pending = true;
+    assert_eq!(palette.back(), Outcome::Dismiss);
+    palette.busy = true;
+    assert_eq!(palette.back(), Outcome::Cancel);
+    palette.busy = false;
+    palette.push_view(1, "Nested".into());
+    palette.pending = true;
+    assert_eq!(palette.back(), Outcome::Cancel);
+    palette.pending = false;
+    assert_eq!(palette.back(), Outcome::None);
+    assert!(palette.is_root());
 }

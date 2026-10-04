@@ -401,6 +401,70 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
     let err_context = || format!("failed to run plugin command {}", plugin_command);
     match check_command_permission(env, &command) {
         (PermissionStatus::Granted, _) => match command {
+            PluginCommand::CommandPalette(mut command) => {
+                let generation = env
+                    .deno_generation
+                    .context("Command palettes require a Deno plugin")?;
+                anyhow::ensure!(
+                    env.deno_workers
+                        .as_ref()
+                        .is_none_or(|w| w.parent_generation == generation),
+                    "Background workers cannot register palette providers"
+                );
+                anyhow::ensure!(
+                    !env.unavailable.load(atomic::Ordering::Acquire)
+                        && !env.cancel.load(atomic::Ordering::Acquire),
+                    "Palette plugin is no longer available"
+                );
+                match &mut command {
+                    yinz_types::command_palette::Command::Register {
+                        id,
+                        title,
+                        registration,
+                    } => {
+                        for value in [id, title, registration] {
+                            yinz_types::command_palette::label(value).map_err(|e| anyhow!(e))?;
+                        }
+                        anyhow::ensure!(
+                            serde_json::to_vec(&command)
+                                .context("encoding palette registration")?
+                                .len()
+                                <= yinz_types::command_palette::MAX_DISPLAY_BYTES,
+                            "Palette registration exceeds 256 KiB"
+                        );
+                    },
+                    yinz_types::command_palette::Command::Reply { result, .. } => {
+                        if let Ok(reply) = result {
+                            if let Err(error) = reply.validate() {
+                                *result = Err(error);
+                            }
+                        }
+                        if let Err(error) = result {
+                            *error = error
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .take(2048)
+                                .collect();
+                        }
+                    },
+                    _ => {},
+                }
+                env.senders
+                    .send_to_screen(ScreenInstruction::CommandPalette(
+                        yinz_bus::command_palette::Instruction::Command {
+                            owner: yinz_bus::command_palette::Owner {
+                                plugin_id: env.plugin_id,
+                                generation,
+                                client_id: (!env.plugin_config.is_shared())
+                                    .then_some(env.owner_client_id),
+                            },
+                            client: env.client_id,
+                            unavailable: env.unavailable.clone(),
+                            command,
+                        },
+                    ))
+                    .context("sending palette command")?;
+            },
             PluginCommand::RegisterAgentProvider(provider) => {
                 let typescript = env.plugin_config.is_builtin_deno()
                     || matches!(
@@ -9061,7 +9125,8 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         | CommandType::GetTabInfo
         | CommandType::GetSessionList
         | CommandType::ListNotifications
-        | CommandType::ListOrphanedPanes => PermissionType::ReadApplicationState,
+        | CommandType::ListOrphanedPanes
+        | CommandType::CommandPalette => PermissionType::ReadApplicationState,
         // One permission covers reading and writing the plugin's *own* namespace. Reaching a
         // `shared:` namespace additionally needs `SharedPluginData`, which is checked in the
         // handlers — this match sees only the command, not the namespace it names.

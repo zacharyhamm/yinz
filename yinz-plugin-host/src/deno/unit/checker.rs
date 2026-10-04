@@ -5,6 +5,8 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
     use strum::IntoEnumIterator;
     use yinz_types::data::{CommandType, EventType, PermissionType};
     let commands = CommandType::iter()
+        // Private bridge transport has no public command helper.
+        .filter(|kind| *kind != CommandType::CommandPalette)
         .map(|name| format!("{name:?}"))
         .collect::<Vec<_>>()
         .join(" | ");
@@ -17,6 +19,8 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
         .collect::<Vec<_>>()
         .join(" | ");
     let replies = CommandType::iter()
+        // Private bridge transport has no public command helper.
+        .filter(|kind| *kind != CommandType::CommandPalette)
         .filter(|command| super::super::super::response::decode_response(*command, &[]).is_some())
         .map(|name| format!("{name:?}"))
         .collect::<Vec<_>>()
@@ -31,6 +35,8 @@ fn sdk_inventories_match_rust_commands_events_permissions_and_decoded_replies() 
     };
     // The host namespace lowercases the first character; TS Uncapitalize must agree with the SDK.
     let host = CommandType::iter()
+        // Private bridge transport has no public command helper.
+        .filter(|kind| *kind != CommandType::CommandPalette)
         .map(|name| {
             let name = format!("{name:?}");
             let mut chars = name.chars();

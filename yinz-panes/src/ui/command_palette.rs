@@ -1,5 +1,7 @@
 //! Native command palette. The screen owns its lifetime and input capture.
 
+use std::cell::Cell;
+
 use nucleo_matcher::{
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
     Matcher, Utf32Str,
@@ -20,6 +22,7 @@ use crate::ui::damage::CellRect;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     Command,
+    Plugin,
     Pane,
     Tab,
     Session,
@@ -31,7 +34,7 @@ impl EntryKind {
     fn parent_label(self) -> Option<&'static str> {
         match self {
             Self::Project => Some("Switch current project"),
-            Self::Command => None,
+            Self::Command | Self::Plugin => None,
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
             Self::Session => Some("Switch session"),
@@ -54,6 +57,7 @@ pub struct Entry {
 pub enum Outcome {
     None,
     Dismiss,
+    Cancel,
     Activate(String),
     Submit { id: String, values: Vec<String> },
 }
@@ -131,12 +135,33 @@ impl Form {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginSection {
+    pub title: String,
+    pub entries: Vec<Entry>,
+    pub semantic: bool,
+    pub status: Option<String>,
+}
+
 #[derive(Default)]
 pub struct CommandPalette {
+    pub view: u64,
+    pub busy: bool,
+    pub pending: bool,
+    history: Vec<CommandPalette>,
+    native_entries: Vec<Entry>,
+    sections: Vec<PluginSection>,
+    title: Option<String>,
+    text: Option<String>,
+    text_offset: usize,
+    text_rows: Cell<usize>,
+    page_rows: Cell<usize>,
     pub current_project: Option<String>,
     input: TextInput,
     selected: usize,
+    selected_status: Option<usize>,
     entries: Vec<Entry>,
+    entry_sections: Vec<Option<usize>>,
     matches: Vec<usize>,
     matcher: Matcher,
     picker: Option<EntryKind>,
@@ -155,27 +180,102 @@ pub struct CommandPaletteLayout {
     footer_y: Option<usize>,
     picker_heading_y: Option<usize>,
     result_rows: Vec<ResultRow>,
+    text_lines: Vec<String>,
 }
 
 enum ResultRow {
-    Heading(&'static str),
+    Heading(String),
+    Status(usize, String),
     Entry(usize),
 }
 
 impl CommandPalette {
+    pub fn query(&self) -> &str {
+        self.input.get_text()
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.view == 0 && self.picker.is_none() && self.form.is_none()
+    }
+
     pub fn set_entries(&mut self, entries: Vec<Entry>) {
-        if entries == self.entries {
+        if self.view != 0 || self.native_entries == entries {
             return;
         }
-        let selected = self.selected_entry().map(|entry| entry.id.clone());
-        self.entries = entries;
+        self.native_entries = entries;
+        self.rebuild_entries();
+    }
+
+    pub fn set_sections(&mut self, sections: Vec<PluginSection>) {
+        if self.sections == sections {
+            return;
+        }
+        self.sections = sections;
+        self.rebuild_entries();
+    }
+
+    fn rebuild_entries(&mut self) {
+        let selected = {
+            self.matches
+                .get(self.selected)
+                .map(|i| self.entries[*i].id.clone())
+        };
+        self.entries = self
+            .native_entries
+            .iter()
+            .chain(self.sections.iter().flat_map(|s| &s.entries))
+            .cloned()
+            .collect();
+        self.entry_sections = std::iter::repeat_n(None, self.native_entries.len())
+            .chain(
+                self.sections
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, section)| std::iter::repeat_n(Some(i), section.entries.len())),
+            )
+            .collect();
         self.rematch();
-        self.selected = selected
-            .and_then(|id| self.matches.iter().position(|i| self.entries[*i].id == id))
-            .unwrap_or(0);
+        if let Some(id) = selected {
+            if let Some(index) = self.matches.iter().position(|i| self.entries[*i].id == id) {
+                self.selected = index;
+            } else {
+                self.selected = 0;
+            }
+        } else {
+            self.selected = 0;
+        }
+    }
+
+    pub fn push_view(&mut self, id: u64, title: String) {
+        let mut history = std::mem::take(&mut self.history);
+        let mut previous = std::mem::take(self);
+        previous.busy = false;
+        previous.pending = false;
+        self.current_project.clone_from(&previous.current_project);
+        history.push(previous);
+        self.history = history;
+        self.view = id;
+        self.title = Some(title);
+    }
+
+    pub fn open_text(&mut self, text: String) {
+        self.text = Some(text);
+    }
+
+    pub fn reset_to_root(&mut self) {
+        while self.view != 0 {
+            self.busy = false;
+            self.pending = false;
+            self.back();
+        }
+        self.busy = false;
+        self.pending = false;
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
+        if self.selected_status.is_some() {
+            return None;
+        }
         self.matches.get(self.selected).map(|i| &self.entries[*i])
     }
 
@@ -200,6 +300,9 @@ impl CommandPalette {
                     })
             })
             .filter_map(|(index, entry)| {
+                if self.entry_sections[index].is_some_and(|i| self.sections[i].semantic) {
+                    return Some((index, 0));
+                }
                 std::iter::once(&entry.label)
                     .chain(entry.aliases.iter())
                     .filter_map(|text| {
@@ -210,7 +313,9 @@ impl CommandPalette {
             })
             .collect();
         matches.sort_by_key(|(index, score)| {
+            let section = self.entry_sections[*index];
             let group = match self.entries[*index].kind {
+                EntryKind::Plugin => 3 + section.unwrap_or(0),
                 EntryKind::Session => 1,
                 EntryKind::ExitedSession => 2,
                 _ => 0,
@@ -219,6 +324,13 @@ impl CommandPalette {
         });
         self.matches = matches.into_iter().map(|(index, _)| index).collect();
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
+        self.selected_status = if self.matches.is_empty() && self.picker.is_none() {
+            self.sections
+                .iter()
+                .position(|section| section.status.is_some())
+        } else {
+            None
+        };
     }
 
     pub fn open_picker(&mut self, kind: EntryKind) {
@@ -235,12 +347,24 @@ impl CommandPalette {
         self.error = None;
     }
 
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+
     pub fn set_error(&mut self, error: String) {
         self.error = Some(error);
     }
 
     pub fn back(&mut self) -> Outcome {
         self.error = None;
+        if self.busy || (self.pending && !self.is_root()) {
+            return Outcome::Cancel;
+        }
+        if let Some(mut previous) = self.history.pop() {
+            previous.history = std::mem::take(&mut self.history);
+            *self = previous;
+            return Outcome::None;
+        }
         if self.form.take().is_some() {
             return Outcome::None;
         }
@@ -269,6 +393,26 @@ impl CommandPalette {
         };
         if key.bare_key == BareKey::Esc {
             return self.back();
+        }
+        if self.busy {
+            return Outcome::None;
+        }
+        if self.text.is_some() {
+            let page = self.page_rows.get().max(1);
+            let end = self.text_rows.get().saturating_sub(page);
+            self.text_offset = self.text_offset.min(end);
+            match key.bare_key {
+                BareKey::Up => self.text_offset = self.text_offset.saturating_sub(1),
+                BareKey::Down => self.text_offset = (self.text_offset + 1).min(end),
+                BareKey::PageUp => self.text_offset = self.text_offset.saturating_sub(page),
+                BareKey::PageDown => {
+                    self.text_offset = self.text_offset.saturating_add(page).min(end)
+                },
+                BareKey::Home => self.text_offset = 0,
+                BareKey::End => self.text_offset = end,
+                _ => {},
+            }
+            return Outcome::None;
         }
         // TextInput's Alt-letter fallback inserts text. These are shortcuts here.
         if matches!(key.bare_key, BareKey::Char(_))
@@ -318,11 +462,20 @@ impl CommandPalette {
             return Outcome::None;
         }
         match key.bare_key {
-            BareKey::Up if key.has_no_modifiers() => {
-                self.selected = self.selected.saturating_sub(1)
-            },
-            BareKey::Down if key.has_no_modifiers() => {
-                self.selected = (self.selected + 1).min(self.matches.len().saturating_sub(1))
+            BareKey::Up | BareKey::Down if key.has_no_modifiers() => {
+                let rows = self.result_rows(1);
+                let selected = rows
+                    .iter()
+                    .position(|row| self.row_selected(row))
+                    .unwrap_or(0);
+                let next = if key.bare_key == BareKey::Up {
+                    selected.saturating_sub(1)
+                } else {
+                    (selected + 1).min(rows.len().saturating_sub(1))
+                };
+                if let Some(row) = rows.get(next) {
+                    self.select_row(row);
+                }
             },
             BareKey::Enter if key.has_no_modifiers() => {
                 if let Some(entry) = self.selected_entry() {
@@ -333,9 +486,7 @@ impl CommandPalette {
                 let before = self.input.get_text().to_owned();
                 self.input.handle_key(key);
                 if self.input.get_text() != before {
-                    self.selected = 0;
-                    self.error = None;
-                    self.rematch();
+                    self.rematch_query();
                 }
             },
         }
@@ -343,6 +494,9 @@ impl CommandPalette {
     }
 
     pub fn insert_text(&mut self, text: &str) {
+        if self.busy || self.text.is_some() {
+            return;
+        }
         let text: String = text
             .chars()
             .map(|c| if c.is_whitespace() { ' ' } else { c })
@@ -357,9 +511,20 @@ impl CommandPalette {
             }
         } else {
             self.input.insert_text(&text);
-            self.selected = 0;
-            self.error = None;
-            self.rematch();
+            self.rematch_query();
+        }
+    }
+
+    fn rematch_query(&mut self) {
+        let selected = self.matches.get(self.selected).copied().filter(|index| {
+            self.selected_status.is_none()
+                && self.entry_sections[*index].is_some_and(|i| self.sections[i].semantic)
+        });
+        self.selected = 0;
+        self.error = None;
+        self.rematch();
+        if let Some(index) = selected {
+            self.selected = self.matches.iter().position(|i| *i == index).unwrap_or(0);
         }
     }
 
@@ -369,52 +534,121 @@ impl CommandPalette {
             .map_or(self.selected, |form| form.selected)
     }
 
+    fn row_selected(&self, row: &ResultRow) -> bool {
+        match row {
+            ResultRow::Entry(index) => self.selected_status.is_none() && *index == self.selected,
+            ResultRow::Status(section, _) => self.selected_status == Some(*section),
+            ResultRow::Heading(_) => false,
+        }
+    }
+
+    fn select_row(&mut self, row: &ResultRow) {
+        match row {
+            ResultRow::Entry(index) => {
+                self.selected = *index;
+                self.selected_status = None;
+            },
+            ResultRow::Status(section, _) => self.selected_status = Some(*section),
+            ResultRow::Heading(_) => (),
+        }
+    }
+
     fn result_rows(&self, capacity: usize) -> Vec<ResultRow> {
-        if capacity == 0 || self.matches.is_empty() || self.form.is_some() {
+        if capacity == 0 || self.form.is_some() || self.text.is_some() {
             return vec![];
         }
-        let heading = |index: usize| {
-            let kind = self.entries[self.matches[index]].kind;
+        let mut rows = Vec::new();
+        let mut previous = None;
+        for (index, entry_index) in self.matches.iter().enumerate() {
+            let entry = &self.entries[*entry_index];
+            if entry.kind == EntryKind::Plugin {
+                continue;
+            }
             let label = if self.picker == Some(EntryKind::Session) {
-                match kind {
+                match entry.kind {
                     EntryKind::Session => Some("Live sessions"),
                     EntryKind::ExitedSession => Some("Exited sessions"),
                     _ => None,
                 }
             } else if self.picker.is_none() {
-                kind.parent_label()
+                entry.kind.parent_label()
             } else {
                 None
             };
-            label.filter(|_| capacity >= 2)
-        };
-        // Walk back from the selection, charging one extra row for each parent group.
-        let mut start = self.selected;
-        let mut used = 1 + usize::from(heading(start).is_some());
-        while start > 0 {
-            let previous = heading(start - 1);
-            let cost = 1 + usize::from(previous.is_some() && previous != heading(start));
-            if used + cost > capacity {
-                break;
-            }
-            used += cost;
-            start -= 1;
-        }
-        let mut rows = Vec::new();
-        let mut previous = None;
-        for index in start..self.matches.len() {
-            let parent = heading(index);
-            let new_heading = parent.filter(|_| parent != previous);
-            if rows.len() + 1 + usize::from(new_heading.is_some()) > capacity {
-                break;
-            }
-            if let Some(label) = new_heading {
-                rows.push(ResultRow::Heading(label));
+            if label != previous && capacity >= 2 {
+                if let Some(label) = label {
+                    rows.push(ResultRow::Heading(label.into()));
+                }
             }
             rows.push(ResultRow::Entry(index));
-            previous = parent;
+            previous = label;
+        }
+        if self.picker.is_none() {
+            for (section_index, section) in self.sections.iter().enumerate() {
+                if capacity >= 2 {
+                    rows.push(ResultRow::Heading(section.title.clone()));
+                }
+                for (index, entry) in self.matches.iter().enumerate() {
+                    if self.entry_sections[*entry] == Some(section_index) {
+                        rows.push(ResultRow::Entry(index));
+                    }
+                }
+                if let Some(status) = &section.status {
+                    rows.push(ResultRow::Status(section_index, status.clone()));
+                }
+            }
         }
         rows
+    }
+
+    fn visible_result_rows(&self, capacity: usize) -> Vec<ResultRow> {
+        let rows = self.result_rows(capacity);
+        if rows.is_empty() {
+            return rows;
+        }
+        let selected = rows
+            .iter()
+            .position(|row| self.row_selected(row))
+            .unwrap_or(0);
+        let mut start = (selected + 1).saturating_sub(capacity);
+        let sticky_heading = |start: usize| {
+            if let Some(ResultRow::Status(section, _)) = rows.get(start) {
+                return Some(self.sections[*section].title.clone());
+            }
+            let Some(ResultRow::Entry(index)) = rows.get(start) else {
+                return None;
+            };
+            let entry = &self.entries[self.matches[*index]];
+            if entry.kind == EntryKind::Plugin {
+                self.entry_sections[self.matches[*index]].map(|i| self.sections[i].title.clone())
+            } else if self.picker == Some(EntryKind::Session) {
+                match entry.kind {
+                    EntryKind::Session => Some("Live sessions".into()),
+                    EntryKind::ExitedSession => Some("Exited sessions".into()),
+                    _ => None,
+                }
+            } else if self.picker.is_none() {
+                entry.kind.parent_label().map(String::from)
+            } else {
+                None
+            }
+        };
+        // Account for a repeated section heading before choosing the visible entry window.
+        if capacity >= 2 && sticky_heading(start).is_some() && selected >= start + capacity - 1 {
+            start += 1;
+        }
+        let mut visible = Vec::new();
+        if capacity >= 2 {
+            if let Some(heading) = sticky_heading(start) {
+                visible.push(ResultRow::Heading(heading));
+            }
+        }
+        let remaining = capacity - visible.len();
+        visible.extend(rows.into_iter().skip(start).take(remaining));
+        if matches!(visible.last(), Some(ResultRow::Heading(_))) {
+            visible.pop();
+        }
+        visible
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
@@ -436,6 +670,18 @@ impl CommandPalette {
         let options_rows = footer_y
             .unwrap_or(rect.y + rows - border)
             .saturating_sub(options_y);
+        let text_lines = self
+            .text
+            .as_ref()
+            .map(|text| {
+                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
+            })
+            .unwrap_or_default();
+        self.text_rows.set(text_lines.len());
+        self.page_rows.set(options_rows);
+        let offset = self
+            .text_offset
+            .min(text_lines.len().saturating_sub(options_rows));
         CommandPaletteLayout {
             rect,
             border,
@@ -446,7 +692,12 @@ impl CommandPalette {
             footer_y,
             picker_heading_y: (self.picker.is_some() && self.form.is_none() && rows >= 6)
                 .then_some(input_y + 1),
-            result_rows: self.result_rows(options_rows),
+            result_rows: self.visible_result_rows(options_rows),
+            text_lines: text_lines
+                .into_iter()
+                .skip(offset)
+                .take(options_rows)
+                .collect(),
         }
     }
 
@@ -463,16 +714,14 @@ impl CommandPalette {
                 if index < form.rows() {
                     form.selected = index;
                 }
-            } else if let Some(ResultRow::Entry(index)) =
-                layout.result_rows.get(y - layout.options_y)
-            {
-                self.selected = *index;
+            } else if let Some(row) = layout.result_rows.get(y - layout.options_y) {
+                self.select_row(row);
             }
         }
     }
 
     pub fn cursor(&self, layout: &CommandPaletteLayout) -> Option<(usize, usize)> {
-        if layout.rect.is_empty() {
+        if layout.rect.is_empty() || self.text.is_some() || self.busy {
             return None;
         }
         if let Some(form) = &self.form {
@@ -550,7 +799,13 @@ impl CommandPalette {
                     let (text, styles) = if y == layout.input_y {
                         (
                             self.form.as_ref().map_or_else(
-                                || self.input_line(layout).0,
+                                || {
+                                    if self.text.is_some() {
+                                        self.title.clone().unwrap_or_default()
+                                    } else {
+                                        self.input_line(layout).0
+                                    }
+                                },
                                 |form| form.title.clone(),
                             ),
                             fill.clone(),
@@ -566,7 +821,11 @@ impl CommandPalette {
                     } else if Some(y) == layout.footer_y {
                         (
                             self.error.clone().unwrap_or_else(|| {
-                                if self.form.is_some() {
+                                if self.busy {
+                                    "Working…  Esc Cancel"
+                                } else if self.text.is_some() {
+                                    "↑↓ Scroll  PgUp/PgDn Page  Home/End  Esc Back"
+                                } else if self.form.is_some() {
                                     "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
                                 } else if self.picker.is_some() {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
@@ -592,7 +851,18 @@ impl CommandPalette {
                         } else {
                             usize::MAX
                         };
-                        let text = if let Some(form) = &self.form {
+                        let is_selected = if self.form.is_some() {
+                            index == self.selection()
+                        } else {
+                            row.is_some_and(|row| self.row_selected(row))
+                        };
+                        let text = if self.text.is_some() {
+                            layout
+                                .text_lines
+                                .get(y - layout.options_y)
+                                .cloned()
+                                .unwrap_or_default()
+                        } else if let Some(form) = &self.form {
                             if let Some(field) = form.fields.get(index) {
                                 match &field.value {
                                     FieldValue::Text(input) => {
@@ -615,14 +885,17 @@ impl CommandPalette {
                             } else {
                                 String::new()
                             }
-                        } else if let Some(ResultRow::Heading(label)) = row {
-                            (*label).into()
+                        } else if let Some(
+                            ResultRow::Heading(label) | ResultRow::Status(_, label),
+                        ) = row
+                        {
+                            label.clone()
                         } else if let Some(entry) =
                             self.matches.get(index).map(|i| &self.entries[*i])
                         {
                             let label = format!(
                                 "{} {}{}",
-                                if index == self.selected { '›' } else { ' ' },
+                                if is_selected { '›' } else { ' ' },
                                 entry.label,
                                 if entry.description.is_empty() {
                                     String::new()
@@ -654,10 +927,13 @@ impl CommandPalette {
                         };
                         (
                             text,
-                            if matches!(row, Some(ResultRow::Heading(_))) {
-                                heading.clone()
-                            } else if index == self.selection() {
+                            if is_selected {
                                 selected.clone()
+                            } else if matches!(
+                                row,
+                                Some(ResultRow::Heading(_) | ResultRow::Status(_, _))
+                            ) {
+                                heading.clone()
                             } else {
                                 fill.clone()
                             },
@@ -665,7 +941,14 @@ impl CommandPalette {
                     } else {
                         (String::new(), fill.clone())
                     };
-                    let text = fit(&text, width, ' ');
+                    let text = fit(
+                        &text
+                            .chars()
+                            .map(|c| if c.is_control() { ' ' } else { c })
+                            .collect::<String>(),
+                        width,
+                        ' ',
+                    );
                     let subtle: RcCharacterStyles = styles.dim(Some(AnsiCode::On)).into();
                     let mut characters = Vec::new();
                     if layout.border == 1 {

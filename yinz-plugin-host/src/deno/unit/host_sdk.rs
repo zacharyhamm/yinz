@@ -28,6 +28,8 @@ fn host_sugar_covers_the_rust_command_inventory_and_is_frozen() {
     use strum::IntoEnumIterator;
     use yinz_types::data::CommandType;
     let mut expected = CommandType::iter()
+        // Private bridge transport has no public command helper.
+        .filter(|kind| *kind != CommandType::CommandPalette)
         .map(|name| camel(&format!("{name:?}")))
         .collect::<Vec<_>>();
     expected.sort();

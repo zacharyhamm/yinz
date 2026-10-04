@@ -675,6 +675,7 @@ pub(crate) struct Screen {
     context_menus: HashMap<ClientId, ContextMenuState>,
     command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
     command_palette_mouse_captures: HashSet<ClientId>,
+    palette_providers: command_palette::plugins::Registry,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
     next_context_menu_request_id: ContextMenuRequestId,
     /// The items a right-click menu offers before its hook plugin has had its say.
@@ -1349,6 +1350,7 @@ impl Screen {
             context_menus: HashMap::new(),
             command_palettes: HashMap::new(),
             command_palette_mouse_captures: HashSet::new(),
+            palette_providers: command_palette::plugins::Registry::default(),
             next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
@@ -2213,6 +2215,7 @@ impl Screen {
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);
         self.close_command_palette(client_id);
+        self.disconnect_palette_client(client_id);
         self.command_palette_mouse_captures.remove(&client_id);
         self.client_projects.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
