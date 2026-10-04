@@ -49,13 +49,16 @@ use {
 /// screen and tell the plugin that asked for it.
 fn finish_pane_spawn(
     pty: &mut Pty,
-    pending: PendingPaneSpawn,
+    mut pending: PendingPaneSpawn,
     result: Result<(TerminalId, bool)>,
 ) -> Result<()> {
     let client_or_tab_index = pending.client_or_tab_index;
     let err_context = move || format!("failed to spawn terminal for {client_or_tab_index:?}");
     match result.with_context(err_context) {
         Ok((terminal_id, starts_held)) => {
+            if let Some(completion) = pending.completion_tx.as_mut() {
+                completion.set_affected_pane_id(PaneId::Terminal(terminal_id));
+            }
             let hold_for_command = starts_held.then(|| pending.run_command.clone()).flatten();
             pty.announce_pane_opened(
                 terminal_id,
@@ -69,6 +72,16 @@ fn finish_pane_spawn(
                 .with_context(err_context)
         },
         Err(err) => {
+            if let Some(completion) = pending
+                .completion_tx
+                .as_mut()
+                .filter(|c| c.wait_for_agent_start)
+            {
+                completion.set_error_message(format!("agent process failed to start: {err:#}"));
+                if let Some((terminal_id, _)) = pane_start_failure(&err) {
+                    completion.set_affected_pane_id(PaneId::Terminal(terminal_id));
+                }
+            }
             let run_command = pending.run_command.clone();
             report_pane_start_failure(pty, err, run_command, Some(pending), err_context)
         },
@@ -580,6 +593,8 @@ pub struct Pty {
     /// transport back yet. Closing the pane removes its id, so a late result
     /// can only be torn down, never bring the pane back.
     pending_remote_spawns: HashSet<TerminalId>,
+    /// Agent control must report process failure, not success from a placeholder's ID.
+    pending_agent_spawns: HashMap<TerminalId, PendingPaneSpawn>,
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
     reruns: HashMap<TerminalId, RerunState>,
     next_rerun_generation: u64,
@@ -1279,6 +1294,7 @@ impl Pty {
             adopted_tabs: HashMap::new(),
             spawn_workers: vec![],
             pending_remote_spawns: HashSet::new(),
+            pending_agent_spawns: HashMap::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
         }
@@ -1578,6 +1594,31 @@ impl Pty {
                     .non_fatal();
             }
             return Ok(());
+        }
+        if let Some(agent) = self.pending_agent_spawns.remove(&terminal_id) {
+            let result = match spawned {
+                Ok(spawned) => {
+                    // Clear buffered loading messages before the reader can send command output.
+                    self.bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::PtyBytes(
+                            terminal_id,
+                            b"\x1b[3J\x1b[2J\x1b[H".to_vec(),
+                        ))
+                        .context("clear agent startup progress")?;
+                    self.start_spawned_terminal(&pending.terminal_action, spawned);
+                    Ok((terminal_id, false))
+                },
+                Err(error) => {
+                    if pane_start_failure(&error).is_none() {
+                        self.close_pane(PaneId::Terminal(terminal_id))
+                            .context("release failed agent startup reservation")
+                            .non_fatal();
+                    }
+                    Err(error)
+                },
+            };
+            return finish_pane_spawn(self, agent, result);
         }
         let TerminalAction::RunCommand(command) = pending.terminal_action.clone() else {
             return Err(anyhow!("a remote spawn must run a command"));
@@ -2016,7 +2057,10 @@ impl Pty {
                 // Screen may already own panes moved into this pending tab.
                 self.bus
                     .senders
-                    .send_to_screen(ScreenInstruction::LayoutSpawnFailed(tab_index))
+                    .send_to_screen(ScreenInstruction::LayoutSpawnFailed(
+                        tab_index,
+                        completion_tx.as_ref().and_then(|c| c.agent_tab.clone()),
+                    ))
                     .context("failed to recover a tab whose layout could not spawn")
                     .non_fatal();
                 return Err(error);
@@ -2468,7 +2512,7 @@ impl Pty {
     fn spawn_pane(
         &mut self,
         terminal_action: Option<TerminalAction>,
-        pending: PendingPaneSpawn,
+        mut pending: PendingPaneSpawn,
     ) -> Result<()> {
         let client_or_tab_index = pending.client_or_tab_index;
         if pending
@@ -2479,11 +2523,35 @@ impl Pty {
             let terminal_action =
                 self.prepare_terminal_action(terminal_action, client_or_tab_index);
             let terminal_id = self.reserve_terminal_id()?;
-            finish_pane_spawn(self, pending, Ok((terminal_id, false)))?;
-            return self.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
+            let wait_for_start = pending
+                .completion_tx
+                .as_ref()
+                .is_some_and(|c| c.wait_for_agent_start);
+            if wait_for_start {
+                if let Some(completion) = pending.completion_tx.as_mut() {
+                    completion.set_affected_pane_id(PaneId::Terminal(terminal_id));
+                }
+                self.pending_agent_spawns.insert(terminal_id, pending);
+            } else {
+                finish_pane_spawn(self, pending, Ok((terminal_id, false)))?;
+            }
+            let deferred = self.defer_spawn(SpawnJob::Terminal(PendingRemoteSpawn {
                 terminal_id,
                 terminal_action,
             }));
+            if let Err(error) = deferred {
+                if let Some(mut agent) = self.pending_agent_spawns.remove(&terminal_id) {
+                    if let Some(completion) = agent.completion_tx.as_mut() {
+                        completion
+                            .set_error_message(format!("cannot dispatch agent startup: {error:#}"));
+                    }
+                    self.close_pane(PaneId::Terminal(terminal_id))
+                        .context("release undispatched agent reservation")
+                        .non_fatal();
+                }
+                return Err(error);
+            }
+            return Ok(());
         }
         let result = self.spawn_terminal(terminal_action, client_or_tab_index);
         finish_pane_spawn(self, pending, result)
@@ -2771,6 +2839,11 @@ impl Pty {
         match id {
             PaneId::Terminal(id) => {
                 self.pending_remote_spawns.remove(&id);
+                if let Some(mut agent) = self.pending_agent_spawns.remove(&id) {
+                    if let Some(completion) = agent.completion_tx.as_mut() {
+                        completion.set_error_message("pane closed during agent startup".into());
+                    }
+                }
                 // Dropping a queued rerun's completion notifies its waiter; the
                 // pane it asked about is gone.
                 self.reruns.remove(&id);

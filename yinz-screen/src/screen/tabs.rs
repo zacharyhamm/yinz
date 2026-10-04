@@ -862,7 +862,8 @@ impl Screen {
                         pending.destinations.values().any(|id| *id == tab.id)
                     })
                     && (self.deferred_tab_closes.contains(&tab.id)
-                        || (!tab.has_selectable_panes()
+                        || (!tab.agent_tab_waiting_for_pane
+                            && !tab.has_selectable_panes()
                             && (!tab.has_live_terminal()
                                 || usable.is_empty()
                                 || (self.replacement_pending && !another_destination))))

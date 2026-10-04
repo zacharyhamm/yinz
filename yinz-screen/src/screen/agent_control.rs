@@ -974,6 +974,12 @@ impl Screen {
                 self.agent_reply(&client, response);
                 return;
             },
+            SpawnPlacementSupport => {
+                let mut response = AgentResponse::new(AgentOutcome::Ok);
+                response.output = Some("agent-tab-placement-v1".into());
+                self.agent_reply(&client, response);
+                return;
+            },
             List { .. } => {
                 let mut response = AgentResponse::new(AgentOutcome::Ok);
                 response.agents = self
@@ -1663,7 +1669,7 @@ impl Screen {
                 });
                 self.refresh_agent_controls();
             },
-            SetControlAgent { .. } | List { .. } | Spawn { .. } => {},
+            SetControlAgent { .. } | List { .. } | Spawn { .. } | SpawnPlacementSupport => {},
         }
     }
 

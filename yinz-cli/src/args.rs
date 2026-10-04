@@ -643,6 +643,14 @@ pub enum Agent {
     /// Preserve keyboard focus, including when the worker needs another tab.
     /// Refresh existing Claude hooks with `yinz hocus hooks install --agent claude` to prevent duplicate reports.
     Spawn {
+        /// Initial destination: stable numeric tab ID, including zero, not tab-bar position.
+        /// Does not assign a project or change focus. Requires a matching running server.
+        #[clap(long, conflicts_with = "new_tab", value_name = "ID")]
+        tab: Option<usize>,
+        /// Create an unfocused tab, optionally named. Later moves or arrangement may relocate the pane.
+        /// --project selects the checkout; tab assignments still take precedence in project listings.
+        #[clap(long, num_args = 0..=1, value_name = "NAME")]
+        new_tab: Option<Option<String>>,
         #[clap(long, help = format!("Agent kind (native: {}; loaded TypeScript plugins add more). Overrides the JSON kind", yinz_types::agent::KINDS.join(", ")))]
         kind: Option<String>,
         /// Read a JSON launch object from a file, or '-' for stdin. Flags override JSON fields.

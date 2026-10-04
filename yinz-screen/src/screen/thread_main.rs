@@ -1848,7 +1848,16 @@ pub fn screen_thread_main(
                     )?;
                     screen.render()?;
                 },
-                ScreenInstruction::LayoutSpawnFailed(tab_id) => {
+                ScreenInstruction::LayoutSpawnFailed(tab_id, destination) => {
+                    if destination.is_some_and(|target| {
+                        !screen.tabs.get(&tab_id).is_some_and(|tab| {
+                            target
+                                .lifetime
+                                .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                        })
+                    }) {
+                        break 'instruction;
+                    }
                     screen.recover_pending_tab(tab_id).non_fatal();
                     screen.replay_events_waiting_for_layout(&mut pending);
                     if !screen.has_pending_tabs() {
@@ -3325,6 +3334,19 @@ pub fn screen_thread_main(
                         },
                     }
                     screen.render()?;
+                },
+                ScreenInstruction::ResolveAgentTab {
+                    placement,
+                    invoked_with,
+                    client_id,
+                    reply,
+                } => {
+                    let result = screen.resolve_agent_tab(placement, invoked_with, client_id);
+                    // If the receiver disappeared, retain the tab: the outcome is unknown.
+                    let _ = reply.send(result);
+                },
+                ScreenInstruction::CleanupAgentTab(placement, reply) => {
+                    let _ = reply.send(screen.cleanup_agent_tab(&placement));
                 },
                 ScreenInstruction::AgentSpawned(agent) => {
                     screen.agent_launches.insert(agent.pane_id, agent);

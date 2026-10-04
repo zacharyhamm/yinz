@@ -32,6 +32,7 @@ fn pi_launch_resolves_extension_and_correlates_a_prompt_end_to_end() {
     let cwd = tempfile::tempdir().unwrap();
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+            placement: Default::default(),
             spec: AgentSpawnSpec {
                 kind: Some("pi".into()),
                 allow_outside_worktree: Some(true),

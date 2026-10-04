@@ -13,20 +13,25 @@ use yinz_integration_tests::{
 };
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
 use yinz_types::agent::{
-    control::{AgentOutcome, AgentRequest},
+    control::{AgentOutcome, AgentPlacement, AgentRequest},
     AgentSpawnSpec,
 };
 
 #[test]
 fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
+    use yinz_types::internal_ids::TabId;
     let cases = [
-        ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; } }", 1, 0),
-        ("agent_pane_min_columns 50\nagent_pane_min_rows 20", "layout { tab name=\"original\" focus=true { pane; pane; }; tab name=\"spare\" { pane; }; }", 3, 1),
-        ("", "layout { tab name=\"original\" { pane; } }", 1, 1),
+        ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; } }", 1, 0, AgentPlacement::Automatic, false),
+        ("agent_pane_min_columns 50\nagent_pane_min_rows 20", "layout { tab name=\"original\" focus=true { pane; pane; }; tab name=\"spare\" { pane; }; }", 3, 1, AgentPlacement::Automatic, false),
+        ("", "layout { tab name=\"original\" { pane; } }", 1, 1, AgentPlacement::Automatic, true),
+        ("", "layout { tab name=\"original\" { pane; }; }", 1, 0, AgentPlacement::Tab(TabId::new(0)), false),
+        ("", "layout { tab name=\"original\" focus=true { pane; }; tab name=\"spare\" { pane; }; }", 2, 1, AgentPlacement::Tab(TabId::new(1)), false),
+        ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; }; }", 1, 1, AgentPlacement::NewTab(None), true),
+        ("agent_pane_min_columns 0", "layout { tab name=\"original\" { pane; }; }", 1, 1, AgentPlacement::NewTab(Some("review".into())), true),
     ];
-    for (config, layout, pane_count, expected_tab) in cases {
+    for (config, layout, pane_count, expected_tab, placement, created) in cases {
         let mut yinz = TestRunner::new(TERMINAL_SIZE)
-            .with_config("load_plugins clear-defaults=true {}")
+            .with_config("load_plugins clear-defaults=true {}\nmirror_session false")
             .with_config(config)
             .with_layout(yinz_integration_tests::LayoutInfo::Stringified(
                 layout.into(),
@@ -34,14 +39,33 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
             .start();
         let original = yinz.expect_pty_spawn();
         original.output(b"originalprompt$ ");
+        let mut other_original = None;
         for _ in 1..pane_count {
-            yinz.expect_pty_spawn().output(PROMPT);
+            let pane = yinz.expect_pty_spawn();
+            pane.output(b"otherprompt$ ");
+            other_original = Some(pane);
         }
         yinz.wait_until("original pane is rendered", |snapshot| {
             snapshot.text.contains("originalprompt$")
         });
         yinz.run_cli_action(CliAction::FocusPaneId {
             pane_id: yinz_types::pane_id::PaneId::Terminal(original.terminal_id()).to_string(),
+        });
+
+        let other_pane = other_original.as_ref().unwrap_or(&original);
+        let other_marker = if other_original.is_some() {
+            "otherprompt$"
+        } else {
+            "originalprompt$"
+        };
+        let other_client = yinz.attach_client_with_focus(
+            TERMINAL_SIZE,
+            Some(yinz_types::pane_id::PaneId::Terminal(
+                other_pane.terminal_id(),
+            )),
+        );
+        other_client.wait_until("second client sees its original pane", |snapshot| {
+            snapshot.text.contains(other_marker)
         });
 
         // A CLI connection has no attached screen, so placement uses the attached-client fallback.
@@ -57,6 +81,7 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
         let cwd = tempfile::tempdir().unwrap();
         sender
             .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+                placement,
                 spec: AgentSpawnSpec {
                     kind: Some("claude".into()),
                     allow_outside_worktree: Some(true),
@@ -73,6 +98,12 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
             panic!("expected agent spawn response");
         };
         assert_eq!(response.outcome, AgentOutcome::Ok, "{response:?}");
+        let spawned = response.spawned.as_ref().unwrap();
+        assert_eq!(spawned.tab_id, Some(TabId::new(expected_tab)));
+        assert_eq!(
+            spawned.created_tab_id,
+            created.then_some(TabId::new(expected_tab))
+        );
         let agent = yinz.expect_pty_spawn();
         agent.output(b"workerprompt$ ");
         let probe = b"originalkeyboard";
@@ -88,6 +119,17 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
             .stdin_bytes()
             .windows(probe.len())
             .any(|window| window == probe));
+        let other_probe = b"secondkeyboard";
+        other_client.send_stdin(other_probe);
+        other_pane.wait_for_stdin("second client's focus is preserved", |bytes| {
+            bytes
+                .windows(other_probe.len())
+                .any(|window| window == other_probe)
+        });
+        assert!(!agent
+            .stdin_bytes()
+            .windows(other_probe.len())
+            .any(|window| window == other_probe));
         let (code, listed) = yinz.run_cli_action_reporting(CliAction::ListPanes {
             tab: true,
             command: false,
@@ -107,6 +149,7 @@ fn cli_agent_spawn_preserves_keyboard_focus_in_current_existing_and_new_tabs() {
         assert_eq!(worker["tab_id"], expected_tab, "{listed}");
         drop(sender);
         drop(receiver);
+        other_client.quit();
         yinz.quit();
     }
 }

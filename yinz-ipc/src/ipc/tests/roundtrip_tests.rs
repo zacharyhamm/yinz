@@ -238,6 +238,7 @@ fn test_client_messages() {
                 expected_session_id: expected_session_id.clone(),
             },
             AgentRequest::Spawn {
+                placement: Default::default(),
                 automatic_firecracker_vm: false,
                 spec: yinz_types::agent::AgentSpawnSpec {
                     kind: Some("codex".into()),
@@ -4631,6 +4632,8 @@ fn test_server_messages() {
                 requested_branch: Some("review-auth".into()),
                 reused: true,
                 occupied_by: vec![pane_id],
+                tab_id: Some(TabId::new(7)),
+                created_tab_id: Some(TabId::new(7)),
             }),
             output: Some("Ready\n>".into()),
             launch_resources: None,
@@ -5425,4 +5428,40 @@ fn global_background_opacity_wire_range_and_roundtrip() {
         })
         .is_err());
     }
+}
+
+#[test]
+fn agent_spawn_placement_and_failure_resources_roundtrip() {
+    use yinz_types::agent::control::{AgentOutcome, AgentPlacement, AgentRequest, AgentResponse};
+    use yinz_types::internal_ids::TabId;
+    for placement in [
+        AgentPlacement::Automatic,
+        AgentPlacement::Tab(TabId::new(0)),
+        AgentPlacement::Tab(TabId::new(7)),
+        AgentPlacement::NewTab(None),
+        AgentPlacement::NewTab(Some("review".into())),
+    ] {
+        test_client_roundtrip!(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+            placement,
+            spec: Default::default(),
+            cwd: None,
+            project: None,
+            remote_host: None,
+            automatic_firecracker_vm: false,
+        }));
+    }
+    test_client_roundtrip!(ClientToServerMsg::AgentControl(
+        AgentRequest::SpawnPlacementSupport
+    ));
+    test_server_roundtrip!(ServerToClientMsg::AgentControl(AgentResponse {
+        outcome: AgentOutcome::Failed,
+        launch_resources: Some(yinz_types::agent::AgentLaunchResources {
+            tab_id: Some(TabId::new(7)),
+            created_tab_id: Some(TabId::new(7)),
+            branch: Some("review".into()),
+            cwd: Some("/repo/review".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }));
 }

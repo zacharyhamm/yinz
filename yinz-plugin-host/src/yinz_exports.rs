@@ -3091,6 +3091,8 @@ impl PreparedAgent {
             PaneTarget::Firecracker { worktree: None, .. }
         );
         AgentLaunchResources {
+            tab_id: None,
+            created_tab_id: None,
             cwd: (!guest_only).then(|| self.cwd.clone()),
             branch: self.branch.clone(),
             requested_branch: self.requested_branch.clone(),
@@ -3200,6 +3202,8 @@ fn prepare_agent(
         None => error.into(),
     })?;
     let resources = AgentLaunchResources {
+        tab_id: None,
+        created_tab_id: None,
         cwd: (!guest_only).then(|| prepared.path.clone()),
         branch: prepared.branch.clone(),
         requested_branch: requested_branch
@@ -3284,6 +3288,7 @@ pub fn spawn_agent_for_cli(
     data_access: &DataAccess,
 ) -> SpawnAgentResponse {
     spawn_agent_for_control(
+        yinz_types::agent::control::AgentPlacement::Automatic,
         spec,
         cwd,
         project,
@@ -3297,6 +3302,7 @@ pub fn spawn_agent_for_cli(
 }
 
 fn spawn_agent_for_control(
+    placement: yinz_types::agent::control::AgentPlacement,
     mut spec: AgentSpawnSpec,
     cwd: Option<PathBuf>,
     project: Option<String>,
@@ -3306,11 +3312,27 @@ fn spawn_agent_for_control(
     senders: &ThreadSenders,
     data_access: &DataAccess,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
+    let started = Instant::now();
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
         return Err(
             "spawn does not accept prompt or reuse_prompt; spawn, wait, then prompt".into(),
         );
     }
+    use yinz_types::agent::control::AgentPlacement;
+    placement.validate()?;
+    let mut destination = match &placement {
+        AgentPlacement::Tab(tab_id) => Some(
+            resolve_agent_tab(senders, placement.clone(), None, client_id).map_err(|error| {
+                let mut failure = AgentSpawnError::from(error);
+                failure.0.launch_resources = Some(AgentLaunchResources {
+                    tab_id: Some(*tab_id),
+                    ..Default::default()
+                });
+                failure
+            })?,
+        ),
+        _ => None,
+    };
     let prepared = agent_control::prepare_automation_agent(
         &mut spec,
         cwd,
@@ -3318,8 +3340,19 @@ fn spawn_agent_for_control(
         remote_host,
         automatic_firecracker_vm,
         data_access,
-    )?;
-    let resources = prepared.resources();
+    )
+    .map_err(|mut failure| {
+        if let Some(destination) = &destination {
+            failure
+                .0
+                .launch_resources
+                .get_or_insert_with(Default::default)
+                .tab_id = Some(destination.tab_id);
+        }
+        failure
+    })?;
+    let mut resources = prepared.resources();
+    resources.tab_id = destination.as_ref().map(|target| target.tab_id);
     let command = prepared.command;
     let title = agent_pane_title(&spec);
     let action = RunCommandAction {
@@ -3331,39 +3364,93 @@ fn spawn_agent_for_control(
         remote_default_shell: command.remote_default_shell,
         ..Default::default()
     };
+    let action: RunCommand = action.into();
+    if matches!(placement, AgentPlacement::NewTab(_)) {
+        destination = Some(
+            resolve_agent_tab(
+                senders,
+                placement,
+                Some(Run::Command(action.clone())),
+                client_id,
+            )
+            .map_err(|error| AgentSpawnError::failed(error, Some(resources.clone())))?,
+        );
+        resources.tab_id = destination.as_ref().map(|target| target.tab_id);
+        resources.created_tab_id = resources.tab_id;
+    }
     let (completion_tx, completion_rx) = oneshot::channel();
+    let mut completion = NotificationEnd::new(completion_tx);
+    completion.wait_for_agent_start = true;
+    completion.agent_tab = destination.clone();
+    completion.created_tab_id = resources.created_tab_id;
+    let target = destination.as_ref().map_or(
+        ClientTabIndexOrPaneId::ClientIdNoFocus(client_id),
+        |destination| ClientTabIndexOrPaneId::TabIndexNoFocus(destination.tab_id),
+    );
     senders
         .send_to_pty(PtyInstruction::SpawnTerminal(
-            Some(TerminalAction::RunCommand(action.into())),
+            Some(TerminalAction::RunCommand(action)),
             title,
             NewPanePlacement::Tiled {
                 direction: None,
                 borderless: None,
             },
             false,
-            ClientTabIndexOrPaneId::ClientIdNoFocus(client_id),
-            Some(NotificationEnd::new(completion_tx)),
+            target,
+            Some(completion),
             false,
         ))
         .map_err(|error| {
             AgentSpawnError::failed(
-                format!("failed to request agent pane: {error:#}"),
+                format!(
+                    "failed to request agent pane: {error:#}{}",
+                    cleanup_agent_tab(senders, destination.as_ref(), &mut resources)
+                ),
                 Some(resources.clone()),
             )
         })?;
-    let result = wait_for_action_completion(completion_rx, "agent spawn", true);
-    if let Some(error) = result.error_message {
-        let mut failure = AgentSpawnError::failed(error, Some(resources.clone()));
+    let result = wait_for_agent_placement(
+        completion_rx,
+        &resources,
+        Duration::from_secs(120).saturating_sub(started.elapsed()),
+    )?;
+    destination = destination.or(result.agent_tab);
+    resources.tab_id = resources
+        .tab_id
+        .or(destination.as_ref().map(|target| target.tab_id));
+    resources.created_tab_id = resources.created_tab_id.or(result.created_tab_id);
+    let definitive_failure = result.error_message.is_some();
+    let error = result.error_message.or_else(|| {
+        if result.affected_pane_id.is_none() {
+            Some("agent pane creation outcome is unknown".into())
+        } else if result.affected_tab_id.is_none() {
+            Some("agent destination outcome is unknown".into())
+        } else {
+            None
+        }
+    });
+    if let Some(error) = error {
+        let cleanup = if definitive_failure {
+            cleanup_agent_tab(senders, destination.as_ref(), &mut resources)
+        } else {
+            String::new()
+        };
+        let mut failure =
+            AgentSpawnError::failed(format!("{error}{cleanup}"), Some(resources.clone()));
         if let Some(pane_id) = result.affected_pane_id {
             failure.0.spawned = Some(SpawnedAgent {
                 pane_id,
-                branch: resources.branch,
-                cwd: resources.cwd,
-                requested_branch: resources.requested_branch,
+                tab_id: result.affected_tab_id,
+                created_tab_id: resources.created_tab_id,
+                branch: resources.branch.clone(),
+                cwd: resources.cwd.clone(),
+                requested_branch: resources.requested_branch.clone(),
                 reused: resources.reused,
                 occupied_by: Vec::new(),
             });
-            failure.0.launch_resources = None;
+            if resources.tab_id.is_none() && resources.created_tab_id.is_none() {
+                failure.0.launch_resources = None;
+            }
         }
         return Err(failure);
     }
@@ -3373,10 +3460,18 @@ fn spawn_agent_for_control(
             Some(resources.clone()),
         )
     })?;
+    let tab_id = result.affected_tab_id.ok_or_else(|| {
+        AgentSpawnError::failed(
+            "agent destination outcome is unknown",
+            Some(resources.clone()),
+        )
+    })?;
     if let Some(cwd) = &resources.cwd {
         prewarm_agent_workflows(cwd.clone());
     }
     Ok(SpawnedAgent {
+        tab_id: Some(tab_id),
+        created_tab_id: resources.created_tab_id,
         pane_id,
         branch: resources.branch,
         cwd: resources.cwd,
@@ -3384,6 +3479,80 @@ fn spawn_agent_for_control(
         reused: resources.reused,
         occupied_by: Vec::new(),
     })
+}
+
+/// A timeout ends the caller's wait, not a process or layout that may still complete.
+fn wait_for_agent_placement(
+    receiver: oneshot::Receiver<yinz_bus::route::ActionCompletionResult>,
+    resources: &AgentLaunchResources,
+    timeout: Duration,
+) -> Result<yinz_bus::route::ActionCompletionResult, AgentSpawnError> {
+    match get_tokio_runtime().block_on(async { tokio::time::timeout(timeout, receiver).await }) {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(_)) => Err(AgentSpawnError::failed(
+            "agent placement outcome is unknown",
+            Some(resources.clone()),
+        )),
+        Err(_) => {
+            let mut failure = AgentSpawnError::failed(
+                "agent launch timed out; outcome is unknown and a late placement may still complete",
+                Some(resources.clone()),
+            );
+            failure.0.outcome = AgentOutcome::TimedOut;
+            Err(failure)
+        },
+    }
+}
+
+/// Resolve existing destinations before checkout preparation; create new ones afterwards.
+fn resolve_agent_tab(
+    senders: &ThreadSenders,
+    placement: yinz_types::agent::control::AgentPlacement,
+    invoked_with: Option<Run>,
+    client_id: crate::ClientId,
+) -> Result<yinz_bus::route::AgentTabPlacement, String> {
+    let (reply, receiver) = std::sync::mpsc::channel();
+    senders
+        .send_to_screen(ScreenInstruction::ResolveAgentTab {
+            placement,
+            invoked_with,
+            client_id,
+            reply,
+        })
+        .map_err(|error| format!("cannot request agent destination: {error:#}"))?;
+    receiver.recv().map_err(|error| {
+        format!("agent destination outcome unknown: {error}; inspect tabs before retrying")
+    })?
+}
+
+fn cleanup_agent_tab(
+    senders: &ThreadSenders,
+    destination: Option<&yinz_bus::route::AgentTabPlacement>,
+    resources: &mut AgentLaunchResources,
+) -> String {
+    let Some(destination) = destination.filter(|target| target.created) else {
+        return if resources.created_tab_id.is_some() {
+            "; created tab retained; inspect it before retrying".into()
+        } else {
+            String::new()
+        };
+    };
+    let (reply, receiver) = std::sync::mpsc::channel();
+    let cleaned = senders
+        .send_to_screen(ScreenInstruction::CleanupAgentTab(
+            destination.clone(),
+            reply,
+        ))
+        .is_ok()
+        && receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or(false);
+    if cleaned {
+        resources.created_tab_id = None;
+        "; launch-created tab is closed".into()
+    } else {
+        "; launch-created tab retained or cleanup uncertain; inspect it before retrying".into()
+    }
 }
 
 /// Read saved defaults only for a new worktree with no launch override. Fetching all
@@ -3623,6 +3792,8 @@ fn prepare_git_checkout_in_tracked(
 ) -> Result<PreparedCheckout, String> {
     let mut before_git_write = |path: &Path, branch: &str, requested: &str| {
         *attempted = Some(AgentLaunchResources {
+            tab_id: None,
+            created_tab_id: None,
             cwd: Some(path.to_owned()),
             branch: Some(branch.to_owned()),
             requested_branch: (branch != requested).then(|| requested.to_owned()),

@@ -144,6 +144,9 @@ impl Screen {
     /// Pending tabs can already hold panes moved or adopted before their layout arrives.
     pub(super) fn recover_pending_tab(&mut self, tab_id: TabId) -> Result<()> {
         if let Some(tab) = self.tabs.get_mut(&tab_id).filter(|tab| tab.is_pending()) {
+            tab.fail_pending_agent_placements(
+                "destination layout failed; inspect the retained pane and tab before retrying",
+            );
             if tab.get_all_pane_ids().is_empty() {
                 self.close_tab_by_id(tab_id)?;
             } else {
@@ -231,6 +234,32 @@ impl Screen {
             "ScreenInstruction::ApplyLayout: applying layout for tab {}",
             tab_id
         );
+        if completion_tx
+            .as_ref()
+            .and_then(|c| c.agent_tab.as_ref())
+            .is_some_and(|target| {
+                !self.tabs.get(&tab_id).is_some_and(|tab| {
+                    target
+                        .lifetime
+                        .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                })
+            })
+        {
+            let panes = new_pane_pids
+                .iter()
+                .chain(&new_floating_pane_pids)
+                .map(|(id, _)| PaneId::Terminal(*id))
+                .chain(
+                    new_plugin_ids
+                        .values()
+                        .flatten()
+                        .copied()
+                        .map(PaneId::Plugin),
+                )
+                .collect();
+            self.discard_spawned_layout_panes(panes, pending);
+            return Ok(());
+        }
         // tab_id is a stable identifier from NewTab instruction
         if let Some(first_terminal_pane) = new_pane_pids.first() {
             if let Some(c) = completion_tx.as_mut() {

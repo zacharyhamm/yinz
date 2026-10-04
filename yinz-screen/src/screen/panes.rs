@@ -284,7 +284,31 @@ impl Screen {
             c.set_affected_pane_id(pid)
         }
 
-        let blocking_notification = if set_blocking { completion_tx } else { None };
+        if let Some(c) = completion_tx.as_mut().filter(|_| !set_blocking) {
+            c.wait_for_placement();
+            if let Some(target) = &c.agent_tab {
+                let live = !self.deferred_tab_closes.contains(&target.tab_id)
+                    && self.tabs.get(&target.tab_id).is_some_and(|tab| {
+                        target
+                            .lifetime
+                            .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                    });
+                if !live {
+                    c.set_error_message("destination tab closed during agent launch".into());
+                    pending.waiting_for_pane.remove(&pid);
+                    self.forget_unplaced_pane(
+                        pid,
+                        "destination tab closed during agent launch".into(),
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        let blocking_notification = if set_blocking {
+            completion_tx.take()
+        } else {
+            None
+        };
 
         // Resolve a plugin-pane target first: when the plugin has not been placed yet,
         // agent placement must reason from the client's current tab instead.
@@ -296,6 +320,7 @@ impl Screen {
         let AgentPlacement {
             target: client_or_tab_index,
             focus_after_placing,
+            created_tab_id,
         } = self.agent_pane_target(
             invoked_with.as_ref(),
             &mut new_pane_placement,
@@ -305,13 +330,35 @@ impl Screen {
         // The tab the pane went into, so that holding it for its command below reaches the
         // same tab whichever way it was chosen - including a tab whose layout has not landed,
         // which queues both the placement and the hold.
+        if let Some(c) = completion_tx.as_mut() {
+            c.created_tab_id = c.created_tab_id.or(created_tab_id);
+            let tab_id = match client_or_tab_index {
+                ClientTabIndexOrPaneId::TabIndex(id)
+                | ClientTabIndexOrPaneId::TabIndexNoFocus(id) => Some(id),
+                ClientTabIndexOrPaneId::ClientId(id)
+                | ClientTabIndexOrPaneId::ClientIdNoFocus(id) => {
+                    self.tab_a_client_is_looking_at(id)
+                },
+                ClientTabIndexOrPaneId::PaneId(id)
+                | ClientTabIndexOrPaneId::PaneIdOrClient(id, _) => self.tab_id_containing_pane(id),
+            };
+            if let Some(tab) = tab_id.and_then(|id| self.tabs.get(&id)) {
+                c.agent_tab
+                    .get_or_insert_with(|| yinz_bus::route::AgentTabPlacement {
+                        tab_id: tab.id,
+                        lifetime: std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
+                        created: c.created_tab_id == Some(tab.id),
+                    });
+            }
+        }
         let mut placed_in: Option<TabId> = None;
-        match client_or_tab_index {
-            ClientTabIndexOrPaneId::ClientId(client_id)
-            | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
-                let should_focus_pane =
-                    matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
-                active_tab_and_connected_client_id_with_first_tab_fallback!(self, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
+        let insertion = (|| -> Result<()> {
+            match client_or_tab_index {
+                ClientTabIndexOrPaneId::ClientId(client_id)
+                | ClientTabIndexOrPaneId::ClientIdNoFocus(client_id) => {
+                    let should_focus_pane =
+                        matches!(client_or_tab_index, ClientTabIndexOrPaneId::ClientId(_));
+                    active_tab_and_connected_client_id_with_first_tab_fallback!(self, client_id, |tab: &mut Tab, client_id: Option<ClientId>| {
                 placed_in = Some(tab.id);
                 tab.new_pane(pid,
                    initial_pane_title,
@@ -323,109 +370,133 @@ impl Screen {
                    blocking_notification
                )
             }, ?);
-                if should_focus_pane {
-                    self.sync_scroll_mode_on_focus(client_id)?;
-                }
-            },
-            ClientTabIndexOrPaneId::TabIndex(tab_index)
-            | ClientTabIndexOrPaneId::TabIndexNoFocus(tab_index) => {
-                let should_focus_pane =
-                    matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_));
-                // Some placements (directional split, stacked without a
-                // target pane) need a client_id to know which pane to
-                // split relative to. Only resolve one when required.
-                let needs_client_id = matches!(
-                    new_pane_placement,
-                    NewPanePlacement::Tiled {
-                        direction: Some(_),
-                        ..
-                    } | NewPanePlacement::Stacked {
-                        pane_id_to_stack_under: None,
-                        ..
+                    if should_focus_pane {
+                        self.sync_scroll_mode_on_focus(client_id)?;
                     }
-                );
-                let client_id = if needs_client_id {
-                    self.active_tab_ids
-                        .iter()
-                        .find(|(_, tid)| **tid == tab_index)
-                        .map(|(cid, _)| *cid)
-                        .or_else(|| self.active_tab_ids.keys().next().copied())
-                } else {
-                    None
-                };
-                if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
-                    active_tab.new_pane(
-                        pid,
-                        initial_pane_title,
-                        invoked_with,
-                        start_suppressed,
-                        should_focus_pane,
+                },
+                ClientTabIndexOrPaneId::TabIndex(tab_index)
+                | ClientTabIndexOrPaneId::TabIndexNoFocus(tab_index) => {
+                    let should_focus_pane =
+                        matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_));
+                    // Some placements (directional split, stacked without a
+                    // target pane) need a client_id to know which pane to
+                    // split relative to. Only resolve one when required.
+                    let needs_client_id = matches!(
                         new_pane_placement,
-                        client_id,
-                        blocking_notification,
-                    )?;
-                    placed_in = Some(tab_index);
-                } else {
-                    self.forget_unplaced_pane(pid, format!("tab index {tab_index:?} not found"));
-                }
-            },
-            ClientTabIndexOrPaneId::PaneId(pane_id)
-            | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
-                // The second spelling cannot reach here - it was resolved above - but
-                // an arm for it keeps the match exhaustive without a catch-all.
-                let mut found = false;
-                let all_tabs = self.get_tabs_mut();
-                let should_focus_pane = false;
-                for tab in all_tabs.values_mut() {
-                    if tab.has_pane_with_pid(&pane_id) {
-                        match new_pane_placement {
-                            NewPanePlacement::Tiled {
-                                direction: Some(direction),
-                                borderless,
-                            } => {
-                                if direction == Direction::Left || direction == Direction::Right {
-                                    tab.vertical_split_of_pane_id(
-                                        pid,
-                                        initial_pane_title,
-                                        invoked_with,
-                                        pane_id,
-                                        blocking_notification,
-                                        borderless,
-                                    )?;
-                                } else {
-                                    tab.horizontal_split_of_pane_id(
-                                        pid,
-                                        initial_pane_title,
-                                        invoked_with,
-                                        pane_id,
-                                        blocking_notification,
-                                        borderless,
-                                    )?;
-                                }
-                            },
-                            _ => {
-                                tab.new_pane(
-                                    pid,
-                                    initial_pane_title,
-                                    invoked_with,
-                                    start_suppressed,
-                                    should_focus_pane,
-                                    new_pane_placement,
-                                    None,
-                                    blocking_notification,
-                                )?;
-                            },
+                        NewPanePlacement::Tiled {
+                            direction: Some(_),
+                            ..
+                        } | NewPanePlacement::Stacked {
+                            pane_id_to_stack_under: None,
+                            ..
                         }
-                        placed_in = Some(tab.id);
-                        found = true;
-                        break;
+                    );
+                    let client_id = if needs_client_id {
+                        self.active_tab_ids
+                            .iter()
+                            .find(|(_, tid)| **tid == tab_index)
+                            .map(|(cid, _)| *cid)
+                            .or_else(|| self.active_tab_ids.keys().next().copied())
+                    } else {
+                        None
+                    };
+                    if let Some(active_tab) = self.tabs.get_mut(&tab_index) {
+                        active_tab.new_pane(
+                            pid,
+                            initial_pane_title,
+                            invoked_with,
+                            start_suppressed,
+                            should_focus_pane,
+                            new_pane_placement,
+                            client_id,
+                            blocking_notification,
+                        )?;
+                        placed_in = Some(tab_index);
+                    } else {
+                        self.forget_unplaced_pane(
+                            pid,
+                            format!("tab index {tab_index:?} not found"),
+                        );
                     }
+                },
+                ClientTabIndexOrPaneId::PaneId(pane_id)
+                | ClientTabIndexOrPaneId::PaneIdOrClient(pane_id, _) => {
+                    // The second spelling cannot reach here - it was resolved above - but
+                    // an arm for it keeps the match exhaustive without a catch-all.
+                    let mut found = false;
+                    let all_tabs = self.get_tabs_mut();
+                    let should_focus_pane = false;
+                    for tab in all_tabs.values_mut() {
+                        if tab.has_pane_with_pid(&pane_id) {
+                            match new_pane_placement {
+                                NewPanePlacement::Tiled {
+                                    direction: Some(direction),
+                                    borderless,
+                                } => {
+                                    if direction == Direction::Left || direction == Direction::Right
+                                    {
+                                        tab.vertical_split_of_pane_id(
+                                            pid,
+                                            initial_pane_title,
+                                            invoked_with,
+                                            pane_id,
+                                            blocking_notification,
+                                            borderless,
+                                        )?;
+                                    } else {
+                                        tab.horizontal_split_of_pane_id(
+                                            pid,
+                                            initial_pane_title,
+                                            invoked_with,
+                                            pane_id,
+                                            blocking_notification,
+                                            borderless,
+                                        )?;
+                                    }
+                                },
+                                _ => {
+                                    tab.new_pane(
+                                        pid,
+                                        initial_pane_title,
+                                        invoked_with,
+                                        start_suppressed,
+                                        should_focus_pane,
+                                        new_pane_placement,
+                                        None,
+                                        blocking_notification,
+                                    )?;
+                                },
+                            }
+                            placed_in = Some(tab.id);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        self.forget_unplaced_pane(pid, format!("no tab contains pane {pane_id:?}"));
+                    }
+                },
+            };
+            Ok(())
+        })();
+        if let Err(error) = insertion {
+            if let Some(completion) = completion_tx.as_mut() {
+                completion.set_error_message(format!("cannot place agent pane: {error:#}"));
+            }
+            if !self.tabs.values().any(|tab| tab.has_pane_with_pid(&pid)) {
+                self.forget_unplaced_pane(pid, format!("cannot place pane: {error:#}"));
+            }
+            return Err(error);
+        }
+        if let Some(completion) = completion_tx.take() {
+            if let Some(tab) = placed_in.and_then(|id| self.tabs.get_mut(&id)) {
+                if tab.has_pane_with_pid(&pid) {
+                    tab.complete_agent_placement(pid, completion);
+                } else {
+                    self.forget_unplaced_pane(pid, "destination could not accept the pane".into());
                 }
-                if !found {
-                    self.forget_unplaced_pane(pid, format!("no tab contains pane {pane_id:?}"));
-                }
-            },
-        };
+            }
+        }
         if let (Some(hold_for_command), Some(tab_id)) = (hold_for_command, placed_in) {
             if let Some(tab) = self.tabs.get_mut(&tab_id) {
                 let is_first_run = true;

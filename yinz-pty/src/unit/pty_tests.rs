@@ -2023,7 +2023,7 @@ fn a_failing_layout_closes_the_panes_it_already_spawned() {
     )));
     assert!(screen_rx.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        ScreenInstruction::LayoutSpawnFailed(id) if id == TabId::new(0)
+        ScreenInstruction::LayoutSpawnFailed(id, _) if id == TabId::new(0)
     )));
     let mut cleared = os_api.cleared_terminal_ids.lock().unwrap().clone();
     cleared.sort_unstable();
@@ -4454,4 +4454,161 @@ fn warp_adoption_failure_cleans_up_held_reservations() {
     assert_eq!(mock.cleared_terminal_ids.lock().unwrap().len(), 1);
     assert!(mock.release_attempts().is_empty());
     assert!(mock.rerun_commands().is_empty());
+}
+
+fn pending_control_agent(command: RunCommand, completion: NotificationEnd) -> PendingPaneSpawn {
+    PendingPaneSpawn {
+        run_command: Some(command.clone()),
+        pane_title: None,
+        open_file_payload: None,
+        invoked_with: Some(Run::Command(command)),
+        client_or_tab_index: ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7)),
+        completion_tx: Some(completion),
+        placement: PanePlacement::New {
+            new_pane_placement: NewPanePlacement::default(),
+            start_suppressed: false,
+            set_blocking: false,
+        },
+    }
+}
+
+#[test]
+fn direct_agent_remote_startup_waits_before_placement_and_late_cancelled_starts_are_closed() {
+    for target in [
+        PaneTarget::Ssh {
+            host: "host".into(),
+        },
+        PaneTarget::Firecracker {
+            vm: "review".into(),
+            image: None,
+            worktree: None,
+        },
+    ] {
+        for cancel in [false, true] {
+            let mut os_api = MockOsApi::new();
+            os_api.spawn_started = Arc::new(Barrier::new(2));
+            os_api.spawn_release = Arc::new(Barrier::new(2));
+            let (mut pty, _plugins, screen) = make_pty_with_screen_receiver(os_api.clone());
+            let (pty_tx, pty_rx) = channels::unbounded();
+            pty.bus.senders.to_pty = Some(SenderWithContext::new(pty_tx));
+            let command = RunCommand {
+                command: "claude".into(),
+                target: target.clone(),
+                ..Default::default()
+            };
+            let (tx, mut rx) = tokio::sync::oneshot::channel();
+            let mut completion = NotificationEnd::new(tx);
+            completion.wait_for_agent_start = true;
+            let lifetime = Arc::new(());
+            completion.agent_tab = Some(yinz_bus::route::AgentTabPlacement {
+                tab_id: TabId::new(7),
+                lifetime: Arc::downgrade(&lifetime),
+                created: false,
+            });
+            pty.spawn_pane(
+                Some(TerminalAction::RunCommand(command.clone())),
+                pending_control_agent(command, completion),
+            )
+            .unwrap();
+            os_api.spawn_started.wait();
+            assert!(matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(!screen
+                .try_iter()
+                .any(|(instruction, _)| matches!(instruction, ScreenInstruction::NewPane(..))));
+            if cancel {
+                pty.close_pane(PaneId::Terminal(TerminalId::new(0)))
+                    .unwrap();
+            }
+            os_api.spawn_release.wait();
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnResolved(PendingSpawn::Terminal(pending, spawned)) =
+                instruction
+            else {
+                panic!("expected resolved spawn");
+            };
+            pty.handle_remote_spawned(pending, spawned).unwrap();
+            let mut placed = false;
+            for (instruction, _) in screen.try_iter() {
+                if let ScreenInstruction::NewPane(
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    destination,
+                    Some(mut completion),
+                    _,
+                ) = instruction
+                {
+                    assert!(!cancel);
+                    assert_eq!(
+                        destination,
+                        ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7))
+                    );
+                    assert!(completion
+                        .agent_tab
+                        .as_ref()
+                        .unwrap()
+                        .lifetime
+                        .ptr_eq(&Arc::downgrade(&lifetime)));
+                    completion.complete_pane_placement(TabId::new(7));
+                    placed = true;
+                }
+            }
+            assert_eq!(placed, !cancel);
+            let result = rx.blocking_recv().unwrap();
+            assert_eq!(result.error_message.is_some(), cancel);
+            assert_eq!(result.affected_tab_id, (!cancel).then_some(TabId::new(7)));
+            if cancel {
+                assert!(os_api
+                    .cleared_terminal_ids
+                    .lock()
+                    .unwrap()
+                    .contains(&TerminalId::new(0)));
+            }
+            assert!(pty.pending_agent_spawns.is_empty());
+        }
+    }
+}
+
+#[test]
+fn agent_process_start_failure_is_not_success_even_when_a_placeholder_is_placed() {
+    let (mut pty, _, screen) = make_pty_with_screen_receiver(MockOsApi::new());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.wait_for_agent_start = true;
+    let command = RunCommand {
+        command: "missing-agent".into(),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    finish_pane_spawn(
+        &mut pty,
+        pending_control_agent(command, completion),
+        Err(YinzError::CommandNotFound {
+            terminal_id: TerminalId::new(41),
+            command: "missing-agent".into(),
+        }
+        .into()),
+    )
+    .unwrap();
+    for (instruction, _) in screen.try_iter() {
+        if let ScreenInstruction::NewPane(_, _, _, _, _, _, _, Some(mut completion), _) =
+            instruction
+        {
+            completion.wait_for_placement();
+            completion.complete_pane_placement(TabId::new(7));
+        }
+    }
+    let result = rx.blocking_recv().unwrap();
+    assert!(result.error_message.unwrap().contains("failed to start"));
+    assert_eq!(
+        result.affected_pane_id,
+        Some(PaneId::Terminal(TerminalId::new(41)))
+    );
+    assert_eq!(result.affected_tab_id, Some(TabId::new(7)));
 }

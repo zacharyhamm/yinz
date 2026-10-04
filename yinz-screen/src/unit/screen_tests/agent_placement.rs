@@ -853,3 +853,270 @@ fn through_the_screen_thread_a_focus_on_the_new_pane_waits_for_the_tab_layout() 
     assert_eq!(completed.exit_status, None, "{completed:?}");
     mock_screen.teardown(vec![screen_thread]);
 }
+
+fn place_reserved_agent(
+    screen: &mut Screen,
+    pid: u32,
+    destination: yinz_bus::route::AgentTabPlacement,
+) -> tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.wait_for_agent_start = true;
+    completion.created_tab_id = destination.created.then_some(destination.tab_id);
+    let tab_id = destination.tab_id;
+    completion.agent_tab = Some(destination);
+    screen
+        .place_new_pane(
+            PaneId::Terminal(crate::TerminalId::new(pid)),
+            None,
+            None,
+            Some(run("claude")),
+            tiled(),
+            false,
+            ClientTabIndexOrPaneId::TabIndexNoFocus(tab_id),
+            Some(completion),
+            false,
+            &mut Default::default(),
+        )
+        .unwrap();
+    rx
+}
+
+#[test]
+fn explicit_agent_tab_survives_reordering_but_not_close_and_id_reuse() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    tab_with_panes(&mut screen, TabId::new(1), 10, 4);
+    let first = screen
+        .resolve_agent_tab(AgentPlacement::Tab(TabId::new(1)), None, CLIENT)
+        .unwrap();
+    let delayed = first.clone();
+    screen.tabs.get_mut(&TabId::new(1)).unwrap().position = TabPosition::new(0);
+    let result = place_reserved_agent(&mut screen, 20, first)
+        .blocking_recv()
+        .unwrap();
+    assert_eq!(result.affected_tab_id, Some(TabId::new(1)));
+    assert!(result.error_message.is_none());
+    assert!(result.created_tab_id.is_none());
+    screen.close_tab_by_id(TabId::new(1)).unwrap();
+    assert_eq!(screen.get_new_tab_id(), TabId::new(1));
+    tab_with_panes(&mut screen, TabId::new(1), 30, 1);
+    let result = place_reserved_agent(&mut screen, 21, delayed)
+        .blocking_recv()
+        .unwrap();
+    assert!(result.error_message.unwrap().contains("closed"));
+    assert!(result.affected_tab_id.is_none());
+    assert!(!screen
+        .tabs
+        .values()
+        .any(|tab| tab.has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(21)))));
+    assert!(screen
+        .resolve_agent_tab(AgentPlacement::Tab(TabId::new(99)), None, CLIENT)
+        .is_err());
+}
+
+#[test]
+fn new_agent_tab_completion_waits_for_layout_and_does_not_change_focus() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let focus = screen.active_tab_ids.clone();
+    let target = screen
+        .resolve_agent_tab(
+            AgentPlacement::NewTab(Some("review".into())),
+            Some(run("claude")),
+            CLIENT,
+        )
+        .unwrap();
+    let tab_id = target.tab_id;
+    assert_eq!(screen.tabs[&tab_id].name, "review");
+    let mut completion = place_reserved_agent(&mut screen, 20, target.clone());
+    assert!(matches!(
+        completion.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(
+        !screen.cleanup_agent_tab(&target),
+        "pending work prevents cleanup"
+    );
+    screen
+        .tabs
+        .get_mut(&tab_id)
+        .unwrap()
+        .finish_pending_layout();
+    let result = completion.blocking_recv().unwrap();
+    assert!(result.error_message.is_none());
+    assert_eq!(result.affected_tab_id, Some(tab_id));
+    assert_eq!(result.created_tab_id, Some(tab_id));
+    assert_eq!(screen.active_tab_ids, focus);
+    assert!(
+        !screen.cleanup_agent_tab(&target),
+        "populated tabs must survive"
+    );
+}
+
+#[test]
+fn closing_pending_agent_destination_fails_all_launches_and_cleanup_cannot_delete_replacement() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::NewTab(None), Some(run("claude")), CLIENT)
+        .unwrap();
+    let first = place_reserved_agent(&mut screen, 20, target.clone());
+    let second = place_reserved_agent(&mut screen, 21, target.clone());
+    screen.close_tab_by_id(target.tab_id).unwrap();
+    for completion in [first, second] {
+        let result = completion.blocking_recv().unwrap();
+        assert!(result.error_message.is_some());
+        assert!(result.affected_tab_id.is_none());
+    }
+    tab_with_panes(&mut screen, target.tab_id, 30, 1);
+    assert!(
+        screen.cleanup_agent_tab(&target),
+        "the launch-owned incarnation is already gone"
+    );
+    assert!(screen.tabs.contains_key(&target.tab_id));
+}
+
+#[test]
+fn only_drained_empty_launch_created_tabs_are_cleaned_up() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::NewTab(None), None, CLIENT)
+        .unwrap();
+    assert!(!screen.cleanup_agent_tab(&target));
+    screen
+        .tabs
+        .get_mut(&target.tab_id)
+        .unwrap()
+        .finish_pending_layout();
+    assert!(screen.cleanup_agent_tab(&target));
+    assert!(!screen.tabs.contains_key(&target.tab_id));
+    let existing = screen
+        .resolve_agent_tab(AgentPlacement::Tab(TabId::new(0)), None, CLIENT)
+        .unwrap();
+    assert!(!screen.cleanup_agent_tab(&existing));
+}
+
+#[test]
+fn late_agent_layout_cannot_land_in_recreated_tab() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::NewTab(None), Some(run("claude")), CLIENT)
+        .unwrap();
+    screen.close_tab_by_id(target.tab_id).unwrap();
+    tab_with_panes(&mut screen, target.tab_id, 30, 1);
+    let before = screen.tabs[&target.tab_id].get_all_pane_ids();
+    screen
+        .land_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(crate::TerminalId::new(40), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            target.tab_id,
+            false,
+            CLIENT,
+            Some(NotificationEnd::for_agent_layout(target)),
+            None,
+            &mut Default::default(),
+        )
+        .unwrap();
+    assert_eq!(screen.tabs[&TabId::new(1)].get_all_pane_ids(), before);
+}
+
+#[test]
+fn failed_pending_agent_layout_reports_failure_without_deleting_the_pane() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::NewTab(None), Some(run("claude")), CLIENT)
+        .unwrap();
+    let completion = place_reserved_agent(&mut screen, 20, target.clone());
+    screen.recover_pending_tab(target.tab_id).unwrap();
+    let result = completion.blocking_recv().unwrap();
+    assert!(result.error_message.unwrap().contains("layout failed"));
+    assert!(result.affected_tab_id.is_none());
+    assert!(screen.tabs[&target.tab_id]
+        .has_pane_with_pid(&PaneId::Terminal(crate::TerminalId::new(20))));
+    assert!(!screen.cleanup_agent_tab(&target));
+}
+
+#[test]
+fn empty_new_agent_tab_survives_layout_before_delayed_startup() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let _plugins = plugin_capture(&mut screen);
+    let target = screen
+        .resolve_agent_tab(
+            AgentPlacement::NewTab(Some("review".into())),
+            Some(run("claude")),
+            CLIENT,
+        )
+        .unwrap();
+    screen
+        .land_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            HashMap::new(),
+            target.tab_id,
+            false,
+            CLIENT,
+            Some(NotificationEnd::for_agent_layout(target.clone())),
+            None,
+            &mut Default::default(),
+        )
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    assert!(screen.tabs.contains_key(&target.tab_id));
+    let result = place_reserved_agent(&mut screen, 20, target.clone())
+        .blocking_recv()
+        .unwrap();
+    assert!(result.error_message.is_none(), "{result:?}");
+    assert_eq!(result.affected_tab_id, Some(target.tab_id));
+    assert_eq!(screen.tabs[&target.tab_id].name, "review");
+    assert!(screen.tabs[&target.tab_id].is_user_named());
+}
+
+#[test]
+fn a_deferred_tab_close_already_rejects_agent_arrivals() {
+    use yinz_types::agent::control::AgentPlacement;
+    let mut screen = screen_with_floor();
+    tab_with_panes(&mut screen, TabId::new(0), 1, 1);
+    let target = screen
+        .resolve_agent_tab(AgentPlacement::Tab(TabId::new(0)), None, CLIENT)
+        .unwrap();
+    screen
+        .new_tab(TabId::new(1), (vec![], vec![]), None, None)
+        .unwrap();
+    screen.close_tab_by_id(TabId::new(0)).unwrap();
+    assert!(
+        screen.tabs.contains_key(&TabId::new(0)),
+        "close waits for the other pending layout"
+    );
+    assert!(screen
+        .resolve_agent_tab(AgentPlacement::Tab(TabId::new(0)), None, CLIENT)
+        .is_err());
+    let result = place_reserved_agent(&mut screen, 20, target)
+        .blocking_recv()
+        .unwrap();
+    assert!(result.error_message.unwrap().contains("closed"));
+    assert!(result.affected_tab_id.is_none());
+}

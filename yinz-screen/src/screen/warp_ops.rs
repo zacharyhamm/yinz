@@ -1467,7 +1467,23 @@ impl Screen {
         self.new_tab(tab_index, swap_layouts, None, client_for_tab)?;
         let (mut tiled_panes_layout, floating_panes_layout) = default_layout.new_tab();
         tiled_panes_layout.ignore_run_instruction(invoked_with);
-        self.bus
+        if let Some(tab) = self.tabs.get_mut(&tab_index) {
+            tab.agent_tab_cleanup_allowed = !should_change_focus_to_new_tab;
+        }
+        let lifetime = self
+            .tabs
+            .get(&tab_index)
+            .context("missing new agent tab")?
+            .agent_tab_lifetime
+            .clone();
+        let completion =
+            crate::route::NotificationEnd::for_agent_layout(yinz_bus::route::AgentTabPlacement {
+                tab_id: tab_index,
+                lifetime: std::sync::Arc::downgrade(&lifetime),
+                created: true,
+            });
+        let dispatched = self
+            .bus
             .senders
             .send_to_plugin(PluginInstruction::NewTab(
                 None,
@@ -1479,9 +1495,16 @@ impl Screen {
                 false,
                 should_change_focus_to_new_tab,
                 client_id,
-                None,
+                Some(completion),
             ))
-            .with_context(err_context)?;
+            .with_context(err_context);
+        if let Err(error) = dispatched {
+            // Nothing was dispatched, so no layout or process can arrive later.
+            self.close_tab_by_id(tab_index)
+                .context("remove undispatched agent tab")
+                .non_fatal();
+            return Err(error);
+        }
         Ok(tab_index)
     }
 

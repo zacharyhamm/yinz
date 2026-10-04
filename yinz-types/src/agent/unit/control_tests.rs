@@ -1585,3 +1585,41 @@ fn plugin_prompt_observation_requires_the_acknowledged_turn_and_matches_input_qu
     );
     assert!(!unsupported.acknowledged());
 }
+
+#[test]
+fn spawn_placement_validates_flat_fields_and_direct_requests() {
+    use super::super::control::AgentPlacement;
+    use serde_json::json;
+    for (tab, new_tab) in [
+        (json!(-1), json!(null)),
+        (json!(1.5), json!(null)),
+        (json!("7"), json!(null)),
+        (json!(true), json!(null)),
+        (json!(null), json!(7)),
+        (json!(0), json!(true)),
+        (json!(null), json!("")),
+        (json!(null), json!("  ")),
+        (json!(null), json!("review\n")),
+        (json!(null), json!("review\u{7f}")),
+    ] {
+        assert!(
+            AgentPlacement::from_launch_fields(&tab, &new_tab).is_err(),
+            "{tab} {new_tab}"
+        );
+    }
+    let direct: AgentPlacement = serde_json::from_value(json!({"new_tab":"\t"})).unwrap();
+    assert!(direct.validate().is_err());
+    assert!(serde_json::from_value::<AgentPlacement>(json!({"tab":-1})).is_err());
+    assert!(serde_json::from_value::<AgentPlacement>(json!({"tab":1,"new_tab":null})).is_err());
+    let old: AgentRequest = serde_json::from_value(json!({"Spawn": {
+        "spec": {}, "cwd":null,"project":null,"remote_host":null
+    }}))
+    .unwrap();
+    assert!(matches!(
+        old,
+        AgentRequest::Spawn {
+            placement: AgentPlacement::Automatic,
+            ..
+        }
+    ));
+}
