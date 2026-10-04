@@ -78,6 +78,18 @@ They now use the shared launch planner, which supplies Claude's state hooks on l
 Firecracker launches continue to use the hooks installed in the guest.
 See [Firecracker VMs](FIRECRACKER.md) for installation, images, launch, sync, and recovery.
 
+Run `yinz agent control register` from a live tracked agent's pane to make it a control agent.
+Run `yinz agent control unregister` from that pane to remove the registration. Both commands accept `--json`.
+They resolve the calling pane through inherited `YINZ_PANE_REF`. An explicit `--session` must match its current owner.
+Registration grants no additional permissions. Repeating either command is safe, including unregistration after automatic cleanup.
+
+Choose **Focus control agent** in the command palette to find registered agents across all live sessions on this host.
+Search by pane title, pane ID, session, or tab. The current project does not filter this list.
+Press Enter to focus the pane, switching tabs or sessions as needed. Peer session updates can take time to appear.
+
+Registration ends when the agent exits, its conversation changes or clears, or its pane closes or leaves the session.
+A replacement agent must register again. Session resurrection does not restore registrations.
+
 `yinz agent spawn` preserves the attached client's active pane and tab.
 Workers use tiled placement. When space is insufficient, the worker uses another tab or creates a tab in the background.
 

@@ -286,6 +286,11 @@ pub(crate) fn apply_pane_agent_report(
         && agent
             .as_ref()
             .is_some_and(|agent| agent.kind == "muse" && agent.session_id.is_some());
+    if provisional_muse_bind {
+        if let PaneId::Terminal(id) = pane_id {
+            screen.control_agents.remove(&id);
+        }
+    }
     if !provisional_muse_bind
         && (previous
             .as_ref()

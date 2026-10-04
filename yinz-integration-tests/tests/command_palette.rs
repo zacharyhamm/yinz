@@ -615,3 +615,146 @@ fn command_palette_switches_to_an_exited_session() {
     assert!(connection.cwd.is_none());
     source.quit();
 }
+
+#[test]
+fn command_palette_focuses_a_registered_control_agent_across_tabs_and_removes_it_live() {
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+    use yinz_types::agent::control::{AgentOutcome, AgentRequest};
+    use yinz_types::pane_id::PaneId;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false\nsession_serialization true")
+        .with_layout(LayoutInfo::Stringified("layout { tab name=\"original\" focus=true { pane; }; tab name=\"controller\" { pane; }; }".into()))
+        .start();
+    let original = yinz.expect_pty_spawn();
+    let controller = yinz.expect_pty_spawn();
+    original.output(b"originalprompt$ ");
+    controller.output(b"controllerprompt$ ");
+    yinz.wait_until("original tab is ready", |snapshot| {
+        snapshot.contains("originalprompt$")
+    });
+    let pane = PaneId::Terminal(controller.terminal_id());
+    assert_eq!(
+        yinz.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(pane.to_string()),
+            kind: Some("codex".into()),
+            state: Some("idle".into()),
+            detail: None,
+            cwd: None,
+            hook_json: false,
+            clear: false,
+            run_id: None,
+        }),
+        0
+    );
+    let session_name = yinz.session_name().to_owned();
+    let register = |enabled| {
+        let socket =
+            yinz_ipc::consts::ipc_connect(&yinz_runtime::consts::YINZ_SOCK_DIR.join(&session_name))
+                .unwrap();
+        let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
+        let mut receiver = sender.get_receiver::<ServerToClientMsg>().unwrap();
+        receiver
+            .set_recv_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        sender
+            .send_client_msg(ClientToServerMsg::AgentControl(
+                AgentRequest::SetControlAgent {
+                    pane_id: pane,
+                    enabled,
+                },
+            ))
+            .unwrap();
+        let response = loop {
+            match receiver.recv_server_msg() {
+                IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => break response,
+                IpcRecv::Msg(ServerToClientMsg::UnblockInputThread, _) => {},
+                IpcRecv::Msg(other, _) => panic!("expected control-agent reply, got {other:?}"),
+                _ => panic!("control-agent reply connection ended or timed out"),
+            }
+        };
+        assert_eq!(response.outcome, AgentOutcome::Ok);
+        sender
+            .send_client_msg(ClientToServerMsg::ClientExited)
+            .unwrap();
+    };
+    register(true);
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette opened", |snapshot| {
+        snapshot.contains("Switch session")
+    });
+    yinz.send_stdin(b"Focus control agent");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("control-agent picker opened", |snapshot| {
+        snapshot.contains("Focus control agent") && snapshot.contains(&pane.to_string())
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("controller tab focused", |snapshot| {
+        snapshot.contains("controllerprompt$") && !snapshot.contains("Esc Close")
+    });
+    yinz.send_stdin(b"control-probe");
+    controller.wait_for_stdin("input reaches the controller", |bytes| {
+        bytes
+            .windows(b"control-probe".len())
+            .any(|part| part == b"control-probe")
+    });
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette reopened", |snapshot| {
+        snapshot.contains("Switch session")
+    });
+    yinz.send_stdin(b"Focus control agent");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("control-agent picker reopened", |snapshot| {
+        snapshot.contains(&pane.to_string()) && snapshot.contains("Focus control agent")
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(pane.to_string()),
+            kind: Some("codex".into()),
+            state: None,
+            detail: None,
+            cwd: None,
+            hook_json: false,
+            clear: true,
+            run_id: None,
+        }),
+        0
+    );
+    yinz.wait_until("cleared agent disappears without input", |snapshot| {
+        snapshot.contains("No control agents")
+    });
+    assert_eq!(
+        yinz.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(pane.to_string()),
+            kind: Some("codex".into()),
+            state: Some("idle".into()),
+            detail: None,
+            cwd: None,
+            hook_json: false,
+            clear: false,
+            run_id: None,
+        }),
+        0
+    );
+    register(true);
+    yinz.save_session();
+    yinz.wait_for_serialized_session();
+    let checkpoint = yinz_runtime::session_checkpoint::SessionCheckpoint::read(
+        &yinz_runtime::consts::YINZ_SESSION_INFO_CACHE_DIR.join(&session_name),
+    )
+    .unwrap();
+    let metadata = std::fs::read_to_string(checkpoint.metadata_path()).unwrap();
+    assert!(metadata.contains("control_agents"));
+    yinz.quit();
+    yinz.resurrect(TERMINAL_SIZE);
+    for _ in 0..2 {
+        yinz.expect_pty_spawn().output(b"restoredprompt$ ");
+    }
+    yinz.wait_until("restored session accepts input", |snapshot| {
+        snapshot.contains("restoredprompt$")
+    });
+    palette_query(&yinz, "Focus control agent");
+    yinz.wait_until("resurrection does not restore registrations", |snapshot| {
+        snapshot.contains("No control agents")
+    });
+    yinz.quit();
+}

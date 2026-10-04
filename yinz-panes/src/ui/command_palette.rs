@@ -21,6 +21,7 @@ use crate::ui::damage::CellRect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
+    ControlAgent,
     Command,
     Plugin,
     Pane,
@@ -35,6 +36,7 @@ impl EntryKind {
         match self {
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
+            Self::ControlAgent => Some("Focus control agent"),
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
             Self::Session => Some("Switch session"),
@@ -292,12 +294,14 @@ impl CommandPalette {
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
-                self.picker
-                    .map_or(entry.kind != EntryKind::Project, |kind| {
+                self.picker.map_or(
+                    !matches!(entry.kind, EntryKind::Project | EntryKind::ControlAgent),
+                    |kind| {
                         entry.kind == kind
                             || (kind == EntryKind::Session
                                 && entry.kind == EntryKind::ExitedSession)
-                    })
+                    },
+                )
             })
             .filter_map(|(index, entry)| {
                 if self.entry_sections[index].is_some_and(|i| self.sections[i].semantic) {
@@ -919,6 +923,13 @@ impl CommandPalette {
                                 && !self.entries.iter().any(|e| e.kind == EntryKind::Project)
                             {
                                 "No projects".into()
+                            } else if self.picker == Some(EntryKind::ControlAgent)
+                                && !self
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.kind == EntryKind::ControlAgent)
+                            {
+                                "No control agents".into()
                             } else {
                                 "No matches".into()
                             }

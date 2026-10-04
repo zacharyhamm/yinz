@@ -31,6 +31,10 @@ pub fn validate_submission_id(value: &str) -> Result<(), &'static str> {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
+    SetControlAgent {
+        pane_id: PaneId,
+        enabled: bool,
+    },
     List {
         project: Option<String>,
     },

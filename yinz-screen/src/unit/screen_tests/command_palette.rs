@@ -2343,3 +2343,130 @@ fn root_palette_escape_cancels_discovery_and_debounce() {
         )));
     }
 }
+
+#[test]
+fn control_agent_picker_uses_live_local_state_and_rejects_removed_registration() {
+    use yinz_types::agent::control::AgentRequest;
+    use yinz_types::agent::{AgentInfo, AgentState};
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        pane,
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: yinz_types::agent::AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("conversation".into()),
+            run_id: None,
+        }),
+    );
+    screen.agent_control(
+        AgentRequest::SetControlAgent {
+            pane_id: pane,
+            enabled: true,
+        },
+        CLIENT,
+    );
+    // Stale discovery data for this session cannot erase live registration.
+    screen
+        .peer_sessions_cache
+        .get_mut(&screen.session_name)
+        .unwrap()
+        .control_agents
+        .clear();
+    let receiver = palette_actions_receiver(&mut screen);
+    palette_search(&mut screen, "Focus control agent");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        enqueued_palette_action(&receiver),
+        Action::FocusPaneByPaneId { pane_id: pane }
+    );
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    palette_search(&mut screen, "Focus control agent");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.control_agents.clear(); // Lose registration between render and activation.
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(receiver.try_recv().is_err());
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+}
+
+#[test]
+fn control_agent_picker_qualifies_peer_ids_filters_panes_and_targets_other_sessions() {
+    use yinz_types::agent::{AgentInfo, AgentState};
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let agent = AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Idle,
+        source: yinz_types::agent::AgentSource::Reported,
+        detail: None,
+        waiting_on: None,
+        wait_needs_a_person: false,
+        cwd: None,
+        session_id: Some("conversation".into()),
+        run_id: None,
+    };
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(pane, Some(agent));
+    screen.control_agents.insert(TerminalId::new(1));
+    screen.log_and_report_session_state().unwrap();
+    // A real local discovery entry is required before switching sessions.
+    std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let socket = tempfile::NamedTempFile::new_in(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let name = SessionName::new(socket.path().file_name().unwrap().to_str().unwrap());
+    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    peer.name = name.clone();
+    peer.is_current_session = false;
+    for panes in peer.panes.panes.values_mut() {
+        for pane in panes {
+            pane.title = "remote-controller".into();
+        }
+    }
+    screen.peer_sessions_cache.insert(name.clone(), peer);
+    let receiver = palette_actions_receiver(&mut screen);
+    for excluded in [
+        "suppressed",
+        "unselectable",
+        "exited",
+        "unregistered",
+        "missing",
+    ] {
+        let original = screen.peer_sessions_cache[&name].clone();
+        let peer = screen.peer_sessions_cache.get_mut(&name).unwrap();
+        match excluded {
+            "unregistered" => peer.control_agents.clear(),
+            "missing" => peer.panes.panes.clear(),
+            _ => {
+                for pane in peer.panes.panes.values_mut().flatten() {
+                    match excluded {
+                        "suppressed" => pane.is_suppressed = true,
+                        "unselectable" => pane.is_selectable = false,
+                        _ => pane.exited = true,
+                    }
+                }
+            },
+        }
+        palette_search(&mut screen, "Focus control agent");
+        palette_key(&mut screen, BareKey::Enter);
+        screen.command_palette_handles_input(&None, b"remote-controller", false, CLIENT);
+        palette_key(&mut screen, BareKey::Enter);
+        assert!(receiver.try_recv().is_err(), "{excluded}");
+        screen.close_command_palette(CLIENT);
+        screen.peer_sessions_cache.insert(name.clone(), original);
+    }
+    palette_search(&mut screen, "Focus control agent");
+    palette_key(&mut screen, BareKey::Enter);
+    screen.command_palette_handles_input(&None, b"remote-controller", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(
+        matches!(enqueued_palette_action(&receiver), Action::SwitchSession { name: target, pane_id: Some(id), .. } if target == name && id == pane)
+    );
+}

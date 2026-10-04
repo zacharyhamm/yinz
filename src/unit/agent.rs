@@ -525,3 +525,13 @@ fn clear_draft_request_preserves_authorized_revision_and_deadline() {
         interrupted: true, timeout_ms: 7000, ..
     } if expected_session_id == "conversation"));
 }
+
+#[test]
+fn control_registration_rejects_a_conflicting_session() {
+    validate_control_session(None, "owner").unwrap();
+    validate_control_session(Some("owner"), "owner").unwrap();
+    assert!(validate_control_session(Some("other"), "owner")
+        .unwrap_err()
+        .to_string()
+        .contains("conflicts"));
+}

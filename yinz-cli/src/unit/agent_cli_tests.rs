@@ -377,3 +377,20 @@ fn clear_draft_requires_explicit_guards_and_valid_numbers() {
         assert!(AgentCli::try_parse_from(args.into_iter().chain(["--timeout", timeout])).is_err());
     }
 }
+
+#[test]
+fn control_agent_commands_take_no_target_and_support_json() {
+    use clap::Parser;
+    for operation in ["register", "unregister"] {
+        let command = AgentCli::try_parse_from(["agent", "control", operation, "--json"])
+            .unwrap()
+            .command;
+        assert!(command.json());
+        assert!(matches!(command, Agent::Control(_)));
+        assert!(AgentCli::try_parse_from(["agent", "control", operation, "7"]).is_err());
+        assert!(!AgentCli::try_parse_from(["agent", "control", operation])
+            .unwrap()
+            .command
+            .json());
+    }
+}

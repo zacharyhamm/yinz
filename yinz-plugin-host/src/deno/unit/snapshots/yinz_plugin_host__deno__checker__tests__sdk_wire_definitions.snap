@@ -2176,6 +2176,7 @@ repeated PluginInfo plugins = 7;
 repeated ClientTabHistory tab_history = 10;
 repeated ClientPaneHistory pane_history = 11;
 uint64 creation_time = 12;
+repeated uint32 control_agents = 14;
 }
 message ClientTabHistory {
 uint32 client_id = 1;
