@@ -29,6 +29,7 @@ fn every_field_changed() -> ScreenConfig {
         simplified_ui: true,
         pane_animations: false,
         styled_underlines: false,
+        background_opacity: 40,
         osc8_hyperlinks: false,
         default_mode: Some(InputMode::Locked),
         default_shell: Some(PathBuf::from("/bin/fish")),
@@ -119,6 +120,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
         simplified_ui,
         pane_animations,
         styled_underlines,
+        background_opacity,
         osc8_hyperlinks,
         default_mode,
         default_shell,
@@ -176,6 +178,7 @@ fn a_reload_applies_every_field_of_the_screen_config() {
     assert_eq!(screen.arrow_fonts, !simplified_ui);
     assert_eq!(screen.pane_animations, pane_animations);
     assert_eq!(screen.styled_underlines, styled_underlines);
+    assert_eq!(screen.background_opacity, background_opacity);
     assert_eq!(screen.osc8_hyperlinks, osc8_hyperlinks);
     assert_eq!(screen.default_mode_info.base_mode, default_mode);
     assert_eq!(Some(screen.default_shell.clone()), default_shell);

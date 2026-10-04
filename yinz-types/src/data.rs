@@ -2496,7 +2496,8 @@ pub struct OverlayPlacement {
     /// Where on the surface. `None` centres it at a default size.
     #[serde(default)]
     pub coordinates: Option<FloatingPaneCoordinates>,
-    /// Background opacity in percent (0..=100). Unspecified overlays are opaque.
+    /// Values below 100 opt into global background_opacity; the requested percentage
+    /// does not override it. Unspecified or explicit 100 keeps the overlay opaque.
     #[serde(default)]
     pub background_opacity: Option<u8>,
 }

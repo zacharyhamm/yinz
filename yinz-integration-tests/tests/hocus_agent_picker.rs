@@ -58,11 +58,7 @@ load_plugins clear-defaults=true {
 // These agent-membership tests assert whitespace between columns. Keep the underlying pane's
 // divider out of those cells; translucency itself is exercised below.
 fn opaque_hocus_config(config: &str) -> String {
-    config.replacen(
-        "shared true",
-        "shared true\n    background_opacity \"100%\"",
-        1,
-    )
+    format!("background_opacity \"100%\"\n{config}")
 }
 
 /// No sidebar at all to begin with: the binding has to build the whole strip.
@@ -1416,11 +1412,7 @@ fn hocus_translucency_reveals_live_text_across_panel_tabs_and_configuration_relo
     use yinz_cli::args::CliAction;
     use yinz_types::multipane::MultipaneInfo;
     let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config(&HOCUS_CONFIG.replacen(
-            "shared true",
-            "shared true\n    background_opacity \"75%\"",
-            1,
-        ))
+        .with_config(&format!("background_opacity \"85%\"\n{HOCUS_CONFIG}"))
         .with_config_dir(
             yinz_integration_tests::test_env::init()
                 .join("config")
@@ -1497,11 +1489,15 @@ fn hocus_translucency_reveals_live_text_across_panel_tabs_and_configuration_relo
             && grid.cell_foreground(sample.0, sample.1) != clear
     });
     let tint = tinted.cell_foreground(sample.0, sample.1);
-    for (opacity, visible) in [(100, false), (0, true), (75, true)] {
-        assert_eq!(yinz.run_cli_action(CliAction::Reconfigure {
-            kdl: Some(format!("plugins {{\n hocus location=\"yinz:hocus\" {{\n shared true\n background_opacity \"{opacity}%\"\n }}\n}}")),
-            file: None, write: true,
-        }), 0);
+    for (opacity, visible) in [(100, false), (85, true), (0, true), (85, true)] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::Reconfigure {
+                kdl: Some(format!("background_opacity \"{opacity}%\"")),
+                file: None,
+                write: true,
+            }),
+            0
+        );
         yinz.wait_until(
             &format!("opacity reload to {opacity}% changes blank cells (tint {tint:?})"),
             |grid| {

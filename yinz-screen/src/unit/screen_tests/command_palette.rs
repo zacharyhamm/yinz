@@ -1574,3 +1574,109 @@ fn vanished_project_selection_stays_open_with_an_error() {
     let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(rendered.contains("Project no longer exists"), "{rendered}");
 }
+
+#[test]
+fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let paint = (1..=SIZE.rows)
+        .map(|row| format!("\x1b[{row};1H{}", "w".repeat(SIZE.cols)))
+        .collect::<String>();
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            format!("\x1b[?7l\x1b[38;2;200;100;0m{paint}").into_bytes(),
+        )
+        .unwrap();
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    screen.toggle_command_palette(CLIENT);
+    let mut tinted = None;
+    let mut control = None;
+    for (index, opacity) in [85, 100, 85, 0, 85].into_iter().enumerate() {
+        let mut config = test_screen_config();
+        config.background_opacity = opacity;
+        screen
+            .reconfigure(config, Keybinds::default(), CLIENT)
+            .unwrap();
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("New pane"), "{frame}");
+        let cells = grid.as_character_lines();
+        assert_eq!(*control.get_or_insert(cells[6][11].clone()), cells[6][11]);
+        // Sample blank palette space, away from the input, choices and border.
+        let (x, y) = (60, 5);
+        let cell = cells[y][x].clone();
+        assert_eq!(cell.character, 'w');
+        if opacity == 100 {
+            // The compositor hides backing glyphs by blending foreground and background to the same tint.
+            assert_eq!(cell.styles.foreground, cell.styles.background);
+        }
+        if opacity == 85 {
+            assert_eq!(*tinted.get_or_insert(cell.clone()), cell);
+        } else if opacity == 0 {
+            assert_ne!(
+                tinted.as_ref().unwrap().styles.foreground,
+                cell.styles.foreground
+            );
+        }
+        screen.close_command_palette(CLIENT);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        // Tabs created after a reload inherit it too.
+        let terminal = u32::try_from(index + 3).unwrap();
+        new_tab(&mut screen, terminal, TabId::new(index + 1));
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(terminal),
+                format!("\x1b[?7l\x1b[38;2;200;100;0m{paint}").into_bytes(),
+            )
+            .unwrap();
+        // A plugin's percentage opts in; a newly created overlay uses the same global tint.
+        let overlay = PaneId::Terminal(TerminalId::new(2));
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .new_pane(
+                overlay,
+                None,
+                None,
+                false,
+                true,
+                yinz_types::data::NewPanePlacement::Overlay(yinz_types::data::OverlayPlacement {
+                    background_opacity: Some(1),
+                    coordinates: Some(yinz_types::geometry::FloatingPaneCoordinates {
+                        x: Some(yinz_types::geometry::PercentOrFixed::Fixed(8)),
+                        y: Some(yinz_types::geometry::PercentOrFixed::Fixed(3)),
+                        width: Some(yinz_types::geometry::PercentOrFixed::Fixed(64)),
+                        height: Some(yinz_types::geometry::PercentOrFixed::Fixed(11)),
+                        borderless: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                Some(CLIENT),
+                None,
+            )
+            .unwrap();
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let overlay_cell = grid.as_character_lines()[y][x].clone();
+        assert_eq!(
+            overlay_cell.character,
+            if opacity == 100 { ' ' } else { 'w' }
+        );
+        if opacity < 100 {
+            assert_eq!(overlay_cell.styles.foreground, cell.styles.foreground);
+            assert_eq!(overlay_cell.styles.background, cell.styles.background);
+        }
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .close_pane(overlay, false, None);
+        screen.toggle_command_palette(CLIENT);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(grid.as_character_lines()[y][x], cell);
+    }
+}

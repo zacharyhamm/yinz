@@ -1224,36 +1224,7 @@ fn a_malformed_split_is_refused_and_sends_nothing() {
 }
 
 #[test]
-fn background_opacity_accepts_whole_percentages_and_warns_on_invalid_values() {
-    for (value, expected) in [("0", 0), (" 75 % ", 75), ("100%", 100), ("50", 50)] {
-        assert_eq!(parse_background_opacity(value), Some(expected));
-        assert!(geometry_warnings(&config(&[("background_opacity", value)])).is_empty());
-    }
-    for value in [
-        "",
-        "-1",
-        "101%",
-        "1.5%",
-        "clear",
-        "999999999999999999999999999",
-    ] {
-        let mut state = placed_state();
-        state.handle(Event::PluginConfigurationChanged(config(&[(
-            "background_opacity",
-            value,
-        )])));
-        assert_eq!(state.background_opacity(), 75);
-        assert!(state
-            .messages
-            .last()
-            .unwrap()
-            .content
-            .contains("background_opacity"));
-    }
-}
-
-#[test]
-fn opacity_is_carried_on_create_and_reload_without_reclaiming_user_geometry() {
+fn global_transparency_opt_in_ignores_old_config_without_reclaiming_user_geometry() {
     let mut state = placed_state();
     for opacity in [0, 75, 100] {
         let outer = state.reported_panel().unwrap();
@@ -1265,7 +1236,7 @@ fn opacity_is_carried_on_create_and_reload_without_reclaiming_user_geometry() {
         else {
             panic!("update")
         };
-        assert_eq!(update.background_opacity, Some(opacity));
+        assert_eq!(update.background_opacity, Some(0));
         assert!(!update.override_user_placement);
         assert_eq!(update.split, None);
         assert_eq!(state.reported_panel(), Some(outer));
@@ -1277,7 +1248,7 @@ fn opacity_is_carried_on_create_and_reload_without_reclaiming_user_geometry() {
     else {
         panic!("create")
     };
-    assert_eq!(create.placement.background_opacity, Some(100));
+    assert_eq!(create.placement.background_opacity, Some(0));
     state.own_is_floating = Some(false);
     assert!(state
         .placement_command(state.panel_rect().unwrap(), false)

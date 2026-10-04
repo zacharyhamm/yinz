@@ -354,7 +354,6 @@ plugins {
         cwd "/"
     }
     hocus location="yinz:hocus" {
-        background_opacity "75%"
         shared true
     }
     hocus-agentd location="yinz:hocus-agentd" {
@@ -671,6 +670,10 @@ context_menu {
 // also default to the scrollback size. This does nothing if `serialize_pane_viewport` is not true.
 // 
 // scrollback_lines_to_serialize 10000
+
+// Background opacity for Hocus, the command palette and translucent overlays (default: 85%).
+// Text and controls remain opaque. 0 is clear; 100 is solid.
+background_opacity "85%"
  
 // Enable or disable the rendering of styled and colored underlines (undercurl).
 // May need to be disabled for certain unsupported terminals

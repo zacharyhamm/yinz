@@ -451,7 +451,7 @@ export type Mouse = Tagged<{ScrollUp: Integer; ScrollDown: Integer; ScrollLeft: 
 export type HttpVerb = 'Get' | 'Post' | 'Put' | 'Delete' | 'Patch';
 export type PercentOrFixed = {Percent: Integer} | {Fixed: Integer};
 export interface FloatingPaneCoordinates {x: PercentOrFixed | null; y: PercentOrFixed | null; width: PercentOrFixed | null; height: PercentOrFixed | null; pinned: boolean | null; borderless: boolean | null;}
-export interface OverlayPlacement {kind: 'Dismissible' | 'Modal'; coordinates?: FloatingPaneCoordinates | null; /** 0..100; omitted means opaque. */ background_opacity?: number | null;}
+export interface OverlayPlacement {kind: 'Dismissible' | 'Modal'; coordinates?: FloatingPaneCoordinates | null; /** Below 100 opts into global background_opacity; the percentage does not override it. 100 or omitted means opaque. */ background_opacity?: number | null;}
 export interface ResizeStrategy {resize: Resize; direction: Direction | null; invert_on_boundaries: boolean;}
 export type PaneTarget = 'Local' | {Ssh: {host: string}} | {Firecracker: {vm: string; image: string | null; worktree: string | null}};
 export interface CommandToRun {path?: string; args?: string[]; cwd?: string | null; target?: PaneTarget | null; remote_host?: string | null; firecracker_vm?: string | null; firecracker_image?: string | null; firecracker_worktree?: string | null; remote_default_shell?: boolean;}
@@ -498,7 +498,7 @@ export interface MultipaneSplit { direction: "LeftRight" | "TopBottom"; ratio: n
 export type MultipaneChild = { Existing: PaneId } | { Terminal: CommandToRun } | { Plugin: { url: string; configuration: StringMap } };
 export interface MultipaneInfo { id: MultipaneId; children: [PaneId, PaneId]; x: number; y: number; rows: number; columns: number; split: MultipaneSplit; }
 export interface CreateMultipane { children: [MultipaneChild, MultipaneChild]; placement: OverlayPlacement; split: MultipaneSplit; focus?: 0 | 1 | null; /** Fewest cells either half keeps along the split; the halves share evenly when two do not fit. Default 0. */ min_cells?: number; }
-export interface UpdateMultipane { id: MultipaneId; coordinates?: FloatingPaneCoordinates | null; split?: MultipaneSplit | null; override_user_placement: boolean; /** 0..100; omitted preserves the current opacity. */ background_opacity?: number | null; }
+export interface UpdateMultipane { id: MultipaneId; coordinates?: FloatingPaneCoordinates | null; split?: MultipaneSplit | null; override_user_placement: boolean; /** Below 100 opts into global background_opacity; the percentage does not override it. 100 means opaque; omitted preserves eligibility. */ background_opacity?: number | null; }
 export interface ReplaceMultipaneChild { id: MultipaneId; slot: 0 | 1; child: MultipaneChild; }
 
 export interface PaneInfo {

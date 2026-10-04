@@ -65,6 +65,7 @@ fn every_option_set() -> Config {
             serialize_pane_viewport: Some(true),
             scrollback_lines_to_serialize: Some(500),
             styled_underlines: Some(false),
+            background_opacity: Some(40),
             support_kitty_keyboard_protocol: Some(false),
             support_kitty_graphics_protocol: Some(false),
             stacked_resize: Some(false),
@@ -114,6 +115,7 @@ fn defaults_match_the_documented_fallbacks() {
         simplified_ui,
         pane_animations,
         styled_underlines,
+        background_opacity,
         osc8_hyperlinks,
         default_mode,
         default_shell,
@@ -162,6 +164,7 @@ fn defaults_match_the_documented_fallbacks() {
     assert!(!simplified_ui);
     assert!(pane_animations);
     assert!(styled_underlines);
+    assert_eq!(background_opacity, 85);
     assert!(osc8_hyperlinks);
     assert_eq!(default_mode, None);
     assert_eq!(default_shell, None);
@@ -226,6 +229,7 @@ fn every_option_reaches_its_field() {
         simplified_ui,
         pane_animations,
         styled_underlines,
+        background_opacity,
         osc8_hyperlinks,
         default_mode,
         default_shell,
@@ -274,6 +278,7 @@ fn every_option_reaches_its_field() {
     assert!(simplified_ui);
     assert!(!pane_animations);
     assert!(!styled_underlines);
+    assert_eq!(background_opacity, 40);
     assert!(!osc8_hyperlinks);
     assert_eq!(default_mode, Some(InputMode::Locked));
     assert_eq!(default_shell, Some(PathBuf::from("/bin/fish")));

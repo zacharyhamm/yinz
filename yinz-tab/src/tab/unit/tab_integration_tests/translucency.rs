@@ -98,10 +98,12 @@ fn translucent_overlay_refreshes_both_layers_and_restores_old_bounds() {
     let hidden = frame(&mut tab, &mut history);
     assert!(!hidden.contains("LABEL"));
     tab.show_overlay_pane(overlay);
-    tab.set_overlay_background_opacity(overlay, 100).unwrap();
+    tab.update_background_opacity(100);
     let opaque = frame(&mut tab, &mut history);
     assert!(opaque.contains("LABEL                    "), "{opaque}");
-    tab.set_overlay_background_opacity(overlay, 0).unwrap();
+    tab.update_background_opacity(85);
+    assert!(frame(&mut tab, &mut history).contains("LABELbbbbbbbb"));
+    tab.update_background_opacity(0);
     assert!(frame(&mut tab, &mut history).contains("LABELbbbbbbbb"));
 }
 

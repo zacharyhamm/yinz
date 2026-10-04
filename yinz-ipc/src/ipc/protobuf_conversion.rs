@@ -961,6 +961,7 @@ impl From<yinz_types::input::options::Options>
             agent_double_escape: options.agent_double_escape,
             pane_frames: options.pane_frames,
             pane_animations: options.pane_animations,
+            background_opacity: options.background_opacity.map(u32::from),
             mirror_session: options.mirror_session,
             on_force_close: options.on_force_close.map(|o| match o {
                 yinz_types::input::options::OnForceClose::Quit => ProtoOnForceClose::Quit as i32,
@@ -1085,6 +1086,10 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             host_id: None,
             pane_frames: options.pane_frames,
             pane_animations: options.pane_animations,
+            background_opacity: options.background_opacity.map(|value| {
+                u8::try_from(value).ok().filter(|v| *v <= 100)
+                    .ok_or_else(|| anyhow!("background_opacity must be from 0 to 100"))
+            }).transpose()?,
             pane_frame_style: options.pane_frame_style.as_deref().and_then(|s| match s {
                 "full" => Some(yinz_types::input::options::PaneFrameStyle::Full),
                 "titles" => Some(yinz_types::input::options::PaneFrameStyle::Titles),

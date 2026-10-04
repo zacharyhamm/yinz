@@ -2455,6 +2455,8 @@ pub struct Options {
     pub agent_double_escape: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="77")]
     pub pane_animations: ::core::option::Option<bool>,
+    #[prost(uint32, optional, tag="78")]
+    pub background_opacity: ::core::option::Option<u32>,
 }
 /// Pane-targeting action messages
 #[allow(clippy::derive_partial_eq_without_eq)]

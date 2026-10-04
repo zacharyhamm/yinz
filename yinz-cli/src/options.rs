@@ -393,6 +393,7 @@ impl From<CliOptions> for Options {
                 .map(yinz_types::units::ElapsedSeconds::new),
             pane_frames: value.pane_frames,
             pane_animations: None,
+            background_opacity: None,
             pane_frame_style: value.pane_frame_style,
             notification_position: value.notification_position,
             notification_timeout: value
@@ -670,6 +671,7 @@ pub fn merge_from_cli(base: &Options, other: Options) -> Options {
         firecracker_provider_timeout_secs,
         pane_frames,
         pane_animations: other.pane_animations.or(base.pane_animations),
+        background_opacity: other.background_opacity.or(base.background_opacity),
         pane_frame_style,
         notification_position,
         notification_timeout,
