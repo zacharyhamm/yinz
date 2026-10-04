@@ -47,6 +47,10 @@ pub enum AgentArchive {
     #[clap(name = "history-search")]
     AgentHistorySearch {
         query: String,
+        /// Use case-sensitive Rust regex syntax (inline flags supported), scanning newest entries first.
+        #[clap(long)]
+        #[serde(default)]
+        regex: bool,
         #[clap(long)]
         run_id: Option<String>,
         #[clap(long)]

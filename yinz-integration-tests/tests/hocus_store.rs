@@ -256,6 +256,16 @@ fn store_pipes_ignore_eof_but_reject_invalid_payloads() {
             }
         }
     }
+    for (pattern, ok) in [("[", false), ("(?i)panic|ERROR", true)] {
+        let request = json!({"op":"agent_history_search", "args":{"query":pattern,"regex":true}, "structured_reply":true});
+        let (_, output) =
+            yinz.run_cli_action_reporting(store_pipe("store_query", Some(request.to_string())));
+        let reply: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(reply["ok"], ok, "{reply}");
+        if !ok {
+            assert!(reply["error"].as_str().unwrap().contains("invalid regex"));
+        }
+    }
     // Invalid requests must leave the plugin able to answer valid requests.
     for args in [None, Some(json!(null)), Some(json!({}))] {
         let mut request = json!({"op": "project_list", "structured_reply": true});

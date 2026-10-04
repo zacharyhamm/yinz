@@ -1548,6 +1548,7 @@ pub fn specs() -> Value {
                 "type": "object",
                 "properties": with_run_filter(json!({
                     "query": { "type": "string" },
+                    "regex": { "type": "boolean", "description": "Default false: keyword search. True: case-sensitive Rust regex, inline flags supported; anchors/newlines apply to each complete entry. Invalid patterns error. Limits: 4 KiB pattern, 1 MiB compiled/cache, 4,000 rows or 8 MiB text, newest stored first. truncated can mean older entries remain unsearched; narrow scope." },
                     "run_id": { "type": "string", "description": "Search one run." },
                     "limit": { "type": "integer", "description": "Default 25, max 50." },
                 })),
@@ -2658,6 +2659,7 @@ pub struct Args {
     pub seconds: Option<f64>,
     pub prompt: Option<String>,
     pub query: Option<String>,
+    pub regex: bool,
     pub job_id: Option<u64>,
     pub show: bool,
     pub auto_confirm: bool,

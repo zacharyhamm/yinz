@@ -690,7 +690,8 @@ fn scope_runs(backend: &impl Backend, filter: &Filter) -> Result<(Vec<String>, b
 /// - **Narrowed**: resolve the candidate runs first and search within them, so a filter that
 ///   matches four runs cannot be starved by five hundred hits that all belong to others.
 ///
-/// The FTS index is tried first and a substring pass is the fallback, exactly as
+/// With `regex`, scan bounded pages of complete entries, newest stored first.
+/// Otherwise the FTS index is tried first and a substring pass is the fallback, exactly as
 /// `notes::search` does it — a query FTS5 tokenizes into nothing still finds the entries that
 /// literally contain it.
 pub fn search(
@@ -698,9 +699,26 @@ pub fn search(
     filter: &Filter,
     run_id: Option<&str>,
     query: &str,
+    regex: bool,
     limit: usize,
 ) -> Result<Found, String> {
-    let query = query.trim();
+    let pattern = if regex {
+        if query.is_empty() || query.contains('\0') || query.len() > 4096 {
+            return Err(
+                "regex pattern must be nonempty, contain no NUL, and be at most 4 KiB".into(),
+            );
+        }
+        Some(
+            regex::RegexBuilder::new(query)
+                .size_limit(1024 * 1024)
+                .dfa_size_limit(1024 * 1024)
+                .build()
+                .map_err(|error| format!("invalid regex: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let query = if regex { query } else { query.trim() };
     if query.is_empty() {
         return Ok(Found::default());
     }
@@ -712,28 +730,43 @@ pub fn search(
         None => {
             let (ids, cut) = scope_runs(backend, filter)?;
             if ids.is_empty() {
-                return Ok(Found::default());
+                return Ok(Found {
+                    truncated: cut,
+                    ..Found::default()
+                });
             }
             partial_scope = cut;
             Some(ids)
         },
     };
-    let hits = match scope {
-        Some(ids) => {
-            let mut hits = Vec::new();
-            for chunk in ids.chunks(IN_CHUNK) {
-                hits.extend(hits_for(
-                    backend,
-                    query,
-                    Some(Pred::is_in("run_id", chunk.to_vec())),
-                    limit,
-                )?);
-            }
-            hits
-        },
-        None => hits_for(backend, query, None, limit)?,
+    let (hits, scan_cut) = if let Some(pattern) = pattern {
+        regex_hits(
+            backend,
+            &pattern,
+            scope.map(|ids| Pred::is_in("run_id", ids)),
+            limit,
+        )?
+    } else {
+        (
+            match scope {
+                Some(ids) => {
+                    let mut hits = Vec::new();
+                    for chunk in ids.chunks(IN_CHUNK) {
+                        hits.extend(hits_for(
+                            backend,
+                            query,
+                            Some(Pred::is_in("run_id", chunk.to_vec())),
+                            limit,
+                        )?);
+                    }
+                    hits
+                },
+                None => hits_for(backend, query, None, limit)?,
+            },
+            false,
+        )
     };
-    let truncated = hits.len() > limit || partial_scope;
+    let truncated = hits.len() > limit || partial_scope || scan_cut;
     let hits: Vec<Hit> = hits.into_iter().take(limit).collect();
     let ids: BTreeSet<String> = hits.iter().map(|hit| hit.run_id.clone()).collect();
     let runs = headers_by_id(backend, &ids)?;
@@ -742,6 +775,122 @@ pub fn search(
         runs,
         truncated,
     })
+}
+
+const REGEX_SCAN_ROWS: usize = 4_000;
+const REGEX_SCAN_BYTES: usize = 8 * 1024 * 1024;
+
+fn regex_hits(
+    backend: &impl Backend,
+    pattern: &regex::Regex,
+    scope: Option<Pred>,
+    limit: usize,
+) -> Result<(Vec<Hit>, bool), String> {
+    use yinz_tile::prelude::DataValue;
+    let mut request = FetchRequest::entity(rows::ENTRY_ENTITY)
+        .select(["id", "run_id", "revision", "kind", "created_at_ms", "text"])
+        .sort_by("id", SortDir::Desc)
+        .limit(100);
+    if let Some(scope) = scope {
+        request = request.filter(scope);
+    }
+    let mut last_id = None;
+    let mut scanned = 0;
+    let mut bytes = 0;
+    let mut hits = Vec::new();
+    let truncated = 'scan: loop {
+        let mut page_request = request.clone();
+        if let Some(id) = last_id {
+            page_request = page_request.filter(Pred::lt("id", id));
+        }
+        let page = backend.fetch(&page_request)?;
+        for row in &page.rows {
+            if scanned == REGEX_SCAN_ROWS {
+                break 'scan true;
+            }
+            let Some(DataValue::Int(id)) = page.get(row, "id") else {
+                return Err("history entry has no database id".into());
+            };
+            last_id = Some(*id);
+            scanned += 1;
+            let Some(DataValue::Text(text)) = page.get(row, "text") else {
+                continue;
+            };
+            if text.len() > REGEX_SCAN_BYTES - bytes {
+                break 'scan true;
+            }
+            bytes += text.len();
+            let Some(found) = pattern.find(text) else {
+                continue;
+            };
+            let (
+                Some(DataValue::Text(run_id)),
+                Some(DataValue::Int(revision)),
+                Some(DataValue::Text(kind)),
+            ) = (
+                page.get(row, "run_id"),
+                page.get(row, "revision"),
+                page.get(row, "kind"),
+            )
+            else {
+                continue;
+            };
+            let (Ok(revision), Some(kind)) =
+                (u64::try_from(*revision), RunEntryKind::from_label(kind))
+            else {
+                continue;
+            };
+            hits.push(Hit {
+                run_id: run_id.clone(),
+                revision,
+                kind,
+                created_at_ms: match page.get(row, "created_at_ms") {
+                    Some(DataValue::Int(at)) => Some(*at),
+                    _ => None,
+                },
+                snippet: regex_snippet(text, found.start()),
+            });
+            if hits.len() > limit {
+                break 'scan true;
+            }
+        }
+        if !page.truncated {
+            break false;
+        }
+        if page.is_empty() || scanned == REGEX_SCAN_ROWS || bytes == REGEX_SCAN_BYTES {
+            break true;
+        }
+    };
+    // Retain the newest stored matches, then present them chronologically like keyword hits.
+    hits.truncate(limit);
+    hits.sort_by(|a, b| {
+        b.created_at_ms
+            .cmp(&a.created_at_ms)
+            .then_with(|| b.revision.cmp(&a.revision))
+    });
+    Ok((hits, truncated))
+}
+
+fn regex_snippet(text: &str, at: usize) -> String {
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .nth(SNIPPET_CHARS / 3)
+        .map_or(0, |(index, _)| index);
+    let end = text[start..]
+        .char_indices()
+        .nth(SNIPPET_CHARS)
+        .map_or(text.len(), |(index, _)| start + index);
+    let window = text[start..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{}{}{}",
+        if start > 0 { "…" } else { "" },
+        window,
+        if end < text.len() { "…" } else { "" }
+    )
 }
 
 /// Search the panel's distinct runs, retaining one representative entry per valid run.
@@ -928,7 +1077,12 @@ fn cut(text: &str, chars: usize) -> String {
 pub use agents::short_age;
 
 #[cfg(test)]
+#[path = "unit/run_history_regex.rs"]
+mod regex_tests;
+
+#[cfg(test)]
 mod tests {
+
     /// The machine these runs were recorded on.
     const HOST: &str = "host-a";
 
@@ -987,7 +1141,7 @@ mod tests {
         }
     }
 
-    fn backend() -> store::Local {
+    pub(super) fn backend() -> store::Local {
         let backend = store::Local::shared("hocus");
         backend
             .define_all(&shared_defs())
@@ -995,7 +1149,7 @@ mod tests {
         backend
     }
 
-    fn entry(revision: u64, kind: RunEntryKind, text: &str, at: i64) -> RunEntry {
+    pub(super) fn entry(revision: u64, kind: RunEntryKind, text: &str, at: i64) -> RunEntry {
         RunEntry {
             revision,
             event_id: Some(format!("event-{revision}")),
@@ -1016,7 +1170,7 @@ mod tests {
             .build()
     }
 
-    fn run(id: &str, kind: &str, session: &str, started_at_ms: i64) -> AgentRun {
+    pub(super) fn run(id: &str, kind: &str, session: &str, started_at_ms: i64) -> AgentRun {
         AgentRun {
             id: id.to_owned(),
             pane_id: 7,
@@ -1040,13 +1194,13 @@ mod tests {
         }
     }
 
-    fn write(backend: &impl Backend, run: &AgentRun) {
+    pub(super) fn write(backend: &impl Backend, run: &AgentRun) {
         backend
             .apply(rows::run_mutations(run))
             .expect("wrote the run");
     }
 
-    fn seeded() -> store::Local {
+    pub(super) fn seeded() -> store::Local {
         let backend = backend();
         let mut first = run("claude:one", "claude", "main", 1_000);
         first.entries = vec![
@@ -1160,7 +1314,7 @@ mod tests {
         recorded.summarized_revision = 2;
         recorded.outcome = RunOutcome::Completed;
         write(&backend, &recorded);
-        let found = search(&backend, &Filter::default(), None, "lexer", 10).unwrap();
+        let found = search(&backend, &Filter::default(), None, "lexer", false, 10).unwrap();
         assert_eq!(found.hits.len(), 2);
         assert_eq!(found.hits[1].kind, RunEntryKind::Message);
         let page = entry_page(&backend, &recorded.id, Some(1), 1).unwrap();
@@ -1179,7 +1333,7 @@ mod tests {
     #[test]
     fn an_entry_is_found_by_a_word_it_contains() {
         let backend = seeded();
-        let found = search(&backend, &Filter::default(), None, "flaky", 10).unwrap();
+        let found = search(&backend, &Filter::default(), None, "flaky", false, 10).unwrap();
         assert_eq!(found.hits.len(), 1);
         assert_eq!(found.hits[0].run_id, "claude:one");
         assert_eq!(found.hits[0].revision, 1);
@@ -1191,7 +1345,7 @@ mod tests {
     #[test]
     fn a_search_reaches_every_session_by_default() {
         let backend = seeded();
-        let found = search(&backend, &Filter::default(), None, "parser", 10).unwrap();
+        let found = search(&backend, &Filter::default(), None, "parser", false, 10).unwrap();
         let sessions: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
         assert_eq!(
             sessions,
@@ -1208,7 +1362,7 @@ mod tests {
             yinz_session_name: Some("other".to_owned().into()),
             ..Filter::default()
         };
-        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        let found = search(&backend, &filter, None, "parser", false, 10).unwrap();
         assert_eq!(found.hits.len(), 1);
         assert_eq!(found.hits[0].run_id, "codex:two");
     }
@@ -1221,6 +1375,7 @@ mod tests {
             &Filter::default(),
             Some("codex:two"),
             "parser",
+            false,
             10,
         )
         .unwrap();
@@ -1235,7 +1390,7 @@ mod tests {
             root: Some(RootScope::new("/work/hocus", HostId::new(HOST))),
             ..Filter::default()
         };
-        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        let found = search(&backend, &filter, None, "parser", false, 10).unwrap();
         assert_eq!(found.hits.len(), 1);
         assert_eq!(found.hits[0].run_id, "claude:one");
     }
@@ -1285,7 +1440,7 @@ mod tests {
         );
 
         // A search narrows through the same pass, so it inherits the scoping.
-        let found = search(&backend, &filter, None, "parser", 10).unwrap();
+        let found = search(&backend, &filter, None, "parser", false, 10).unwrap();
         let hits: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
         assert_eq!(
             hits,
@@ -1296,7 +1451,7 @@ mod tests {
 
         // Unnarrowed, every machine's history is the answer — which is the whole point of a
         // shared store, and what "have I had an agent look at this before" is really asking.
-        let every = search(&backend, &Filter::default(), None, "parser", 10).unwrap();
+        let every = search(&backend, &Filter::default(), None, "parser", false, 10).unwrap();
         assert_eq!(every.hits.len(), 3, "{:?}", every.hits);
     }
 
@@ -1345,7 +1500,7 @@ mod tests {
         );
 
         // A search narrows through the same predicate.
-        let found = search(&backend, &this_session, None, "parser", 10).unwrap();
+        let found = search(&backend, &this_session, None, "parser", false, 10).unwrap();
         let hits: BTreeSet<&str> = found.hits.iter().map(|hit| hit.run_id.as_str()).collect();
         assert_eq!(
             hits,
@@ -1382,7 +1537,7 @@ mod tests {
     #[test]
     fn a_fragment_falls_back_to_a_substring_pass() {
         let backend = seeded();
-        let found = search(&backend, &Filter::default(), None, "snapsh", 10).unwrap();
+        let found = search(&backend, &Filter::default(), None, "snapsh", false, 10).unwrap();
         assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
         assert_eq!(found.hits[0].revision, 2);
     }
@@ -1421,7 +1576,15 @@ mod tests {
             .define_all(&shared_defs())
             .expect("migrated to the indexed definition");
 
-        let found = search(&backend, &Filter::default(), None, "archaeological", 10).unwrap();
+        let found = search(
+            &backend,
+            &Filter::default(),
+            None,
+            "archaeological",
+            false,
+            10,
+        )
+        .unwrap();
         assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
         assert_eq!(found.hits[0].run_id, "claude:old");
     }
@@ -1463,14 +1626,14 @@ mod tests {
             .expect("a foreign owner may add an index");
         assert!(info.full_text_rebuilt, "the index was built");
 
-        let found = search(&other, &Filter::default(), None, "foreign", 10).unwrap();
+        let found = search(&other, &Filter::default(), None, "foreign", false, 10).unwrap();
         assert_eq!(found.hits.len(), 1, "{:?}", found.hits);
     }
 
     #[test]
     fn an_empty_query_finds_nothing_rather_than_everything() {
         let backend = seeded();
-        let found = search(&backend, &Filter::default(), None, "   ", 10).unwrap();
+        let found = search(&backend, &Filter::default(), None, "   ", false, 10).unwrap();
         assert!(found.hits.is_empty());
     }
 
@@ -1599,7 +1762,7 @@ mod tests {
             kind: Some("claude".to_owned()),
             ..Filter::default()
         };
-        let found = search(&backend, &by_kind, None, "zalgo", 10).unwrap();
+        let found = search(&backend, &by_kind, None, "zalgo", false, 10).unwrap();
         assert_eq!(
             found
                 .hits

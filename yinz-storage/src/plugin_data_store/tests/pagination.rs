@@ -97,3 +97,47 @@ fn count_respects_the_filter_and_the_search() {
         2
     );
 }
+
+#[test]
+fn descending_id_continuation_preserves_filters_across_byte_limited_pages() {
+    let (store, _dir) = defined();
+    let heavy = "x".repeat(yinz_types::plugin_data::MAX_FETCH_BYTES / 2 + 1);
+    for i in 0..6 {
+        put(&store, if i % 2 == 0 { "keep" } else { "skip" }, &heavy, i);
+    }
+    let request = FetchRequest::entity("agent")
+        .filter(Pred::eq("project", "keep"))
+        .sort_by("id", SortDir::Desc)
+        .select(["id", "summary", "updated_at_ms"])
+        .limit(100);
+    let mut last = None;
+    let mut times = Vec::new();
+    loop {
+        let page = store
+            .fetch(
+                NS,
+                &match last {
+                    Some(id) => request.clone().filter(Pred::lt("id", id)),
+                    None => request.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        let Some(DataValue::Int(id)) = page.get(&page.rows[0], "id") else {
+            panic!("id")
+        };
+        if let Some(previous) = last {
+            assert!(*id < previous);
+        }
+        last = Some(*id);
+        times.extend(column(&page, "updated_at_ms"));
+        if !page.truncated {
+            break;
+        }
+        assert!(times.len() < 3);
+    }
+    assert_eq!(
+        times,
+        vec![DataValue::Int(4), DataValue::Int(2), DataValue::Int(0)]
+    );
+}

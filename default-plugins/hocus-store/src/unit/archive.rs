@@ -105,3 +105,44 @@ fn run_pages_can_be_followed_with_structured_revision_cursors() {
     assert_eq!(last["more"], false);
     assert!(last["next_revision"].is_null());
 }
+
+#[test]
+fn regex_requests_preserve_patterns_and_reject_invalid_arguments() {
+    let backend = store::Local::shared("hocus");
+    backend.define_all(&store::shared_defs()).unwrap();
+    for regex in [json!(null), json!("true"), json!(1)] {
+        assert_eq!(
+            query(
+                &backend,
+                "agent_history_search",
+                &json!({"query":"x", "regex":regex})
+            )
+            .unwrap_err(),
+            "regex must be a boolean"
+        );
+    }
+    for pattern in ["[", "(?=x)", "", "\0"] {
+        assert!(query(
+            &backend,
+            "agent_history_search",
+            &json!({"query":pattern, "regex":true})
+        )
+        .is_err());
+    }
+    let reply: Value = serde_json::from_str(
+        &query(
+            &backend,
+            "agent_history_search",
+            &json!({"query":" x ", "regex":true}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["query"], " x ");
+    assert_eq!(reply["count"], 0);
+    let reply: Value = serde_json::from_str(
+        &query(&backend, "agent_history_search", &json!({"query":" x "})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["query"], "x");
+}

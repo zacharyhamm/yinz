@@ -128,3 +128,28 @@ For `runs`, continue with `--offset NEXT_OFFSET` while `more` is true. For `run`
 Use both `--host-id HOST` and `--run-session SESSION` for one server's records. The root `--session` selects the server handling the query; it does not filter the archive.
 Live `agent list --json` entries include `host_id` and `session`; archive run headers include them too. Use those values rather than substituting a hostname or provider conversation ID.
 Workflow runs are separate from agent turns and agent archive runs.
+
+Keyword search remains the default: full-text search runs first, with substring
+fallback only when it finds no rows. Add `--regex` for Rust regex syntax:
+
+```sh
+yinz agent history-search 'panic|ERROR' --regex --project work
+yinz agent history-search '(?i)rollback\s+failed' --regex --run-id RUN_ID
+```
+
+Regex matching is case-sensitive. Inline flags such as `(?i)`, `(?m)`, and `(?s)`
+control case, line anchors, and matching across newlines. Each complete entry is
+matched independently. Anchors refer to the entry unless multiline mode is set.
+Surrounding pattern whitespace is significant. Empty patterns, NUL, invalid
+syntax, look-around, and backreferences return errors, without keyword fallback.
+
+Patterns are limited to 4 KiB, with 1 MiB limits for compiled regexes and the DFA
+cache. Each search scans at most 4,000 candidate rows or 8 MiB of entry text,
+newest stored entries first. Entries that exceed the remaining text budget are
+not partially matched. These limits bound matching work, not database or network
+latency. The existing fetch transport can return one oversized row.
+
+Results retain the maximum of 50 hits. `truncated: true` can mean older entries
+remain unsearched, the scope is incomplete, or more hits exist. Narrow the scope
+to search further. There are no tuning flags or continuation cursor. Hocus's
+`agent_history_search` tool accepts the same mode as `"regex": true`.

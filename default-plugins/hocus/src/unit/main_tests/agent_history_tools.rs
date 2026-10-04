@@ -505,3 +505,27 @@ fn a_search_hit_addresses_a_run_that_agent_run_reads() {
         .iter()
         .any(|entry| entry["revision"].as_u64() == Some(revision)));
 }
+
+#[test]
+fn regex_history_errors_leave_tools_responsive() {
+    let mut state = state_with_runs();
+    assert!(error(
+        &mut state,
+        "agent_history_search",
+        r#"{"query":"[","regex":true}"#
+    )
+    .contains("invalid regex"));
+    let found = tool(
+        &mut state,
+        "agent_history_search",
+        r#"{"query":"(?i)BENCHMARK|impossible","regex":true}"#,
+    );
+    assert_eq!(found["count"], 1);
+    assert_eq!(found["matches"][0]["run_id"], "codex:two");
+    let found = tool(
+        &mut state,
+        "agent_history_search",
+        r#"{"query":" benchmark ","regex":true}"#,
+    );
+    assert_eq!(found["query"], " benchmark ");
+}

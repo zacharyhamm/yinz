@@ -102,18 +102,25 @@ pub fn query(backend: &impl Backend, op: &str, args: &Value) -> Result<String, S
             }
         },
         "agent_history_search" => {
-            let found = run_history::search(
-                backend,
-                &filter,
-                text("run_id"),
-                text("query").ok_or("query is required")?,
-                limit,
-            )?;
+            let regex = match args.get("regex") {
+                None => false,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => return Err("regex must be a boolean".into()),
+            };
+            let query = args
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or("query is required")?;
+            let query = if regex { query } else { query.trim() };
+            if query.is_empty() {
+                return Err("query is required".into());
+            }
+            let found = run_history::search(backend, &filter, text("run_id"), query, regex, limit)?;
             let hits: Vec<_> = found.hits.iter().map(|hit| {
                 let run = found.runs.get(&hit.run_id);
                 json!({"run_id":hit.run_id,"revision":hit.revision,"kind":hit.kind.label(),"created_at_ms":hit.created_at_ms,"age":hit.created_at_ms.map(|at|agents::short_age(now,at)),"snippet":hit.snippet,"run_title":run.map(|r|&r.title),"agent":run.map(|r|&r.kind)})
             }).collect();
-            json!({"query":text("query"),"scope":scope,"count":hits.len(),"matches":hits,"truncated":found.truncated})
+            json!({"query":query,"scope":scope,"count":hits.len(),"matches":hits,"truncated":found.truncated})
         },
         _ => return Err(format!("unknown archive operation {op}")),
     };
