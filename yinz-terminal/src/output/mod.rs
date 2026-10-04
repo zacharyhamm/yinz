@@ -1016,7 +1016,7 @@ impl Output {
         client_id: ClientId,
         vte_instruction: &str,
     ) {
-        // A deferred tab can still send a bell or OSC 7 without rendering any panes.
+        // Control-only output needs a client entry even when no panes rendered.
         self.client_character_chunks.entry(client_id).or_default();
         let entry = self.post_vte_instructions.entry(client_id).or_default();
         entry.push(String::from(vte_instruction));

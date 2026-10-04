@@ -482,7 +482,7 @@ impl Pane for TerminalPane {
         if self
             .pane_frame_color_override
             .as_ref()
-            .is_some_and(|color| color.client_id == Some(client_id))
+            .is_some_and(|color| color.is_cleared_by(Some(client_id)))
         {
             self.pane_frame_color_override = None;
         }
@@ -1245,8 +1245,7 @@ impl Pane for TerminalPane {
         // A command that failed is a fact about the pane, so every client sees it.
         let override_ =
             FrameColorOverride::new(self.style.colors.exit_code_error.base, error_text, None);
-        if self.pane_frame_color_override.as_ref() != Some(&override_) {
-            self.pane_frame_color_override = Some(override_);
+        if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }
     }
@@ -1260,8 +1259,7 @@ impl Pane for TerminalPane {
             text,
             client_id,
         );
-        if self.pane_frame_color_override.as_ref() != Some(&override_) {
-            self.pane_frame_color_override = Some(override_);
+        if FrameColorOverride::set_if_changed(&mut self.pane_frame_color_override, override_) {
             self.set_should_render(true);
         }
     }

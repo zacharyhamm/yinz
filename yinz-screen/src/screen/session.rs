@@ -7,11 +7,10 @@ use yinz_types::internal_ids::TabNumber;
 use super::thread_main::{replay_pending_pane_event, PendingEvents};
 use super::Screen;
 use crate::panes::PaneId;
-use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
 use crate::session_layout_metadata::SessionLayoutMetadata;
-use crate::{ClientId, ServerInstruction};
+use crate::ClientId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::ServerToClientMsg;
@@ -220,56 +219,19 @@ impl Screen {
             "attach trace: screen client_id={client_id} AddClient begin size={client_size:?}"
         );
         let departed = self.departed_follow_source();
-        self.set_client_size(client_id, client_size);
-        log::info!(
-        "attach trace: screen client_id={client_id} client size recorded after {:?}; Screen::add_client begin",
-        attach_started_at.elapsed()
-        );
-        // the new client can shrink the shared surface, so every tab is reflowed - but
-        // only the reflow: this handler reports and renders on its own way out.
-        // Reject a client whose size leaves nothing to lay out: keeping its size in the
-        // shared minimum would make every later render fail for all clients.
-        // Queue plugin registration before client-specific updates. The screen cannot
-        // consume plugin replies until this attachment has committed.
-        let attach_result = self
-            .bus
-            .senders
-            .send_to_plugin(PluginInstruction::AddClient(client_id))
-            .context("adding the attaching client to the plugins")
-            .and_then(|_| self.register_client(client_id));
-        log::info!(
-        "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
-        attach_started_at.elapsed(),
-        if attach_result.is_ok() { "ok" } else { "error" }
-        );
-        let attach_result = attach_result.and_then(|_| {
-            log::info!("attach trace: screen client_id={client_id} reflow_all_tabs begin");
-            let result = self.reflow_all_tabs();
-            log::info!(
-            "attach trace: screen client_id={client_id} reflow_all_tabs finished after {:?} ({})",
-            attach_started_at.elapsed(),
-            if result.is_ok() { "ok" } else { "error" }
-        );
-            result
-        });
-        if let Err(error) = attach_result {
-            Err::<(), _>(error)
-                .context("failed to attach client at its reported size")
-                .non_fatal();
-            self.rollback_client_registration(client_id, departed);
-            self.resize_to_clients().non_fatal();
-            self.bus
-                .senders
-                .send_to_server(ServerInstruction::ClientExit(client_id, None))
-                .non_fatal();
-            attach_traces_waiting_for_first_render.remove(&client_id);
-            return Ok(());
-        }
-        self.commit_following_client(client_id, departed);
-        if !self.watcher_clients.contains_key(&client_id) {
-            if let Some((source, _)) = departed {
-                pending.remove_client_plugin_output(source);
-            }
+        let retired_source =
+            match self.register_client_transaction(client_id, departed, Some(client_size)) {
+                Ok(source) => source,
+                Err(error) => {
+                    Err::<(), _>(error)
+                        .context("failed to attach client at its reported size")
+                        .non_fatal();
+                    attach_traces_waiting_for_first_render.remove(&client_id);
+                    return Ok(());
+                },
+            };
+        if let Some(source) = retired_source {
+            pending.remove_client_plugin_output(source);
         }
         if let Some(pane_id) = pane_id_to_focus {
             log::info!(

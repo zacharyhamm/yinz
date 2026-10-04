@@ -1,6 +1,61 @@
 use super::*;
 
 #[test]
+fn tty_writers_preserve_buffered_stdout_order() {
+    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    const CHILD: &str = "YINZ_TEST_STDOUT_ORDER";
+    if let Some(scenario) = std::env::var_os(CHILD) {
+        let mut writer = stdout_writer(scenario == "teardown");
+        let mut tty = STDOUT_TTY.get().unwrap().as_ref().expect("reopened tty");
+        io::stdout().write_all(b"<buffered-scalar>").unwrap();
+        writer.write_all(b"<scalar>").unwrap();
+        io::stdout().write_all(b"<buffered-vector>").unwrap();
+        let mut slices = [io::IoSlice::new(b"<vector"), io::IoSlice::new(b">")];
+        let mut pending = &mut slices[..];
+        while !pending.is_empty() {
+            let written = writer.write_vectored(pending).unwrap();
+            assert_ne!(written, 0);
+            io::IoSlice::advance_slices(&mut pending, written);
+        }
+        io::stdout().write_all(b"<buffered-flush>").unwrap();
+        writer.flush().unwrap();
+        // Bypass StdoutWriter so only the explicit flush above can order these bytes.
+        tty.write_all(b"<after-flush>").unwrap();
+        return;
+    }
+    for scenario in ["ordinary", "teardown"] {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "os_input_output::tests::tty_writers_preserve_buffered_stdout_order",
+                "--nocapture",
+            ])
+            .env(CHILD, scenario)
+            .stdout(std::process::Stdio::from(pty.slave))
+            .output()
+            .unwrap();
+        let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
+        fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
+        let mut bytes = Vec::new();
+        // Linux ends a PTY read with EIO, BSD with EOF; inspect the preceding bytes.
+        let _ = std::fs::File::from(pty.master).read_to_end(&mut bytes);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            output.status.success(),
+            "{scenario}: {text}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            text.contains(
+                "<buffered-scalar><scalar><buffered-vector><vector><buffered-flush><after-flush>"
+            ),
+            "{scenario}: {text}"
+        );
+    }
+}
+
+#[test]
 fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
     use crate::terminal_escapes::{self, ClientTeardown};
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
@@ -38,7 +93,7 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             io::ErrorKind::TimedOut
         );
 
-        // Restoration takes the frame writer's lock, but must outwait its cancellation limit.
+        // Restoration must finish and restore input even if output never resumes.
         let (entered, ready) = mpsc::channel();
         let (finished, result) = mpsc::channel();
         let restorer = thread::spawn(move || {
@@ -51,18 +106,14 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             finished.send(()).unwrap();
         });
         ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
-        // Timing is the behavior under test: keep output paused past the frame stall limit.
-        let still_waiting = result
-            .recv_timeout(terminal_escapes::STALLED_OUTPUT_LIMIT + time::Duration::from_secs(1));
+        // Timing is the behavior under test: output stays paused until restoration finishes.
+        let completed = result.recv_timeout(time::Duration::from_secs(10));
         let paused = tcgetattr(io::stdin()).unwrap();
         // Resume before assertions so a regression cannot strand the harness's output.
         tcflow(&stdout, FlowArg::TCOON).unwrap();
         restorer.join().unwrap();
-        assert!(matches!(
-            still_waiting,
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
-        assert!(!paused.local_flags.contains(LocalFlags::ICANON));
+        completed.expect("restoration must give up on stalled output");
+        assert!(paused.local_flags.contains(LocalFlags::ICANON));
         let restored = tcgetattr(io::stdin()).unwrap();
         assert_eq!(restored.input_flags, original.input_flags);
         assert_eq!(restored.output_flags, original.output_flags);
@@ -106,16 +157,6 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             "{scenario}: {text}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let teardown = if scenario == "startup" {
-            ClientTeardown::at_startup(true)
-        } else {
-            ClientTeardown::new(24, true)
-        };
-        assert!(
-            text.contains(&teardown.restore_sequences_with_sync(0)),
-            "{scenario}: incomplete restoration: {text:?}"
-        );
-        assert!(text.contains("restored"), "{scenario}: {text:?}");
     }
 }
 

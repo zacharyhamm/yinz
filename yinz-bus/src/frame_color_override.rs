@@ -42,6 +42,15 @@ pub struct FrameColorOverride {
 }
 
 impl FrameColorOverride {
+    /// Replace the pane's override only when it changes, returning whether it needs rendering.
+    pub fn set_if_changed(slot: &mut Option<Self>, value: Self) -> bool {
+        if slot.as_ref() == Some(&value) {
+            return false;
+        }
+        *slot = Some(value);
+        true
+    }
+
     pub fn new(color: PaletteColor, text: Option<String>, client_id: Option<ClientId>) -> Self {
         FrameColorOverride {
             color,
@@ -110,6 +119,22 @@ mod tests {
 
     fn at(start: Instant, millis: u64) -> Instant {
         start + Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn setting_an_override_only_reports_actual_changes() {
+        let mut slot = None;
+        for value in [
+            FrameColorOverride::new(COLOR, None, None),
+            FrameColorOverride::new(COLOR, Some("error".into()), None),
+            FrameColorOverride::new(COLOR, Some("error".into()), Some(ClientId::new(1))),
+            FrameColorOverride::new(PaletteColor::EightBit(1), None, None),
+            FrameColorOverride::flashing(COLOR, Instant::now()),
+        ] {
+            assert!(FrameColorOverride::set_if_changed(&mut slot, value.clone()));
+            assert_eq!(slot.as_ref(), Some(&value));
+            assert!(!FrameColorOverride::set_if_changed(&mut slot, value));
+        }
     }
 
     #[test]

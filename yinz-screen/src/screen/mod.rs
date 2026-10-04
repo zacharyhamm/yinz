@@ -34,7 +34,7 @@ mod pane_tabs;
 
 use crate::ui::loading_indication::DOT_PERIOD;
 use crate::ui::notification::{ENTER_DURATION, ENTER_EASING};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -794,9 +794,11 @@ pub(crate) struct Screen {
     cached_layouts: Vec<LayoutInfo>,
     cached_layout_errors: Vec<LayoutWithError>,
     pane_render_subscribers: HashMap<ClientId, PaneRenderSubscription>,
-    /// Direct snapshots follow new render requests, not retries of a deferred frame.
+    /// General render requests invalidate all snapshots; output invalidates individual panes.
     pane_subscriber_snapshots_dirty: bool,
+    pane_subscriber_dirty_panes: HashSet<PaneId>,
     deferred_render_tabs: HashSet<TabId>,
+    render_writer_ready: OnceCell<yinz_bus::os_input_output::RenderReady>,
     deferred_subscriber_renders: bool,
     /// What each plugin wants said, and decided, when the session is about to end.
     ///
@@ -1416,7 +1418,9 @@ impl Screen {
             cached_layout_errors: vec![],
             pane_render_subscribers: HashMap::new(),
             pane_subscriber_snapshots_dirty: true,
+            pane_subscriber_dirty_panes: HashSet::new(),
             deferred_render_tabs: HashSet::new(),
+            render_writer_ready: OnceCell::new(),
             deferred_subscriber_renders: false,
             quit_notices: BTreeMap::new(),
             replacement_tab: None,
@@ -1857,6 +1861,7 @@ impl Screen {
         tab_name.is_some_and(|name| !name.is_empty())
             && layout.is_none_or(|layout| layout.user_named)
     }
+    /// Returns the committed departed source whose pending plugin output must be discarded.
     pub fn apply_layout(
         &mut self,
         layout: TiledPaneLayout,
@@ -1868,7 +1873,8 @@ impl Screen {
         should_change_client_focus: bool,
         client_id: ClientId,
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
-    ) -> Result<()> {
+    ) -> Result<Option<ClientId>> {
+        let departed = self.departed_follow_source();
         let applied = (|| {
             if !self.tabs.contains_key(&tab_id) {
                 let message = format!("Tab with index {tab_id} not found. Cannot apply layout!");
@@ -2089,9 +2095,11 @@ impl Screen {
                 })
                 .with_context(err_context)?;
 
+            let mut retired_source = None;
             if !self.active_tab_ids.contains_key(&client_id) {
-                // this means this is a new client and we need to add it to our state properly
-                self.add_client(client_id)
+                // Capture the departed source before the layout provisionally connects this id.
+                self.register_client_transaction(client_id, departed, None)
+                    .map(|source| retired_source = source)
                     .with_context(err_context)
                     .non_fatal();
             }
@@ -2119,7 +2127,7 @@ impl Screen {
                 .and_then(|_| self.render())
                 .with_context(err_context)
                 .non_fatal();
-            Ok(())
+            Ok(retired_source)
         })();
         if let Err(error) = &applied {
             if let Some((_, completion)) = blocking_terminal.as_mut() {
@@ -2130,20 +2138,53 @@ impl Screen {
         applied
     }
 
+    #[cfg(test)]
     pub fn add_client(&mut self, client_id: ClientId) -> Result<()> {
         let departed = self.departed_follow_source();
-        let result = self.register_client(client_id);
-        if result.is_ok() {
-            self.commit_following_client(client_id, departed);
-        } else {
-            self.rollback_client_registration(client_id, departed);
+        self.register_client_transaction(client_id, departed, None)
+            .map(|_| ())
+    }
+
+    /// Register before sending client-specific plugin updates, then commit only after reflow.
+    /// Returns the departed source whose queued plugin output must be discarded before replay.
+    fn register_client_transaction(
+        &mut self,
+        client_id: ClientId,
+        departed: Option<(ClientId, Option<TabId>)>,
+        client_size: Option<Size>,
+    ) -> Result<Option<ClientId>> {
+        if let Some(size) = client_size {
+            self.set_client_size(client_id, size);
+        }
+        let result = (|| {
             self.bus
                 .senders
-                .send_to_server(ServerInstruction::ClientExit(client_id, None))
-                .context("disconnecting client after failed registration")
-                .non_fatal();
+                .send_to_plugin(PluginInstruction::AddClient(client_id))
+                .context("adding the registering client to the plugins")?;
+            self.register_client(client_id)
+                .context("registering the client with the screen")?;
+            if client_size.is_some() {
+                // Attachment can shrink the shared surface; reflow every tab before committing.
+                self.reflow_all_tabs()
+                    .context("reflowing tabs for the attaching client")?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(self.commit_following_client(client_id, departed)),
+            Err(error) => {
+                self.rollback_client_registration(client_id, departed);
+                if client_size.is_some() {
+                    self.resize_to_clients().non_fatal();
+                }
+                self.bus
+                    .senders
+                    .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                    .context("disconnecting client after failed registration")
+                    .non_fatal();
+                Err(error)
+            },
         }
-        result
     }
 
     fn departed_follow_source(&self) -> Option<(ClientId, Option<TabId>)> {
@@ -2176,28 +2217,15 @@ impl Screen {
         &mut self,
         client_id: ClientId,
         departed: Option<(ClientId, Option<TabId>)>,
-    ) {
+    ) -> Option<ClientId> {
         if self.watcher_clients.contains_key(&client_id)
             || (departed.is_none() && self.followed_client_id.is_some())
         {
-            return;
+            return None;
         }
-        if let Some((source, _)) = departed {
+        if let Some((source, _)) = departed.filter(|(source, _)| *source != client_id) {
             for tab in self.tabs.values_mut() {
                 tab.remove_client_pane_state(source);
-            }
-            if source == client_id {
-                if let Some(tab) = self
-                    .active_tab_ids
-                    .get(&client_id)
-                    .and_then(|id| self.tabs.get_mut(id))
-                {
-                    for pane_id in tab.get_all_pane_ids() {
-                        if let Some(pane) = tab.get_pane_with_id_mut(pane_id) {
-                            pane.add_client(client_id);
-                        }
-                    }
-                }
             }
         }
         self.followed_client_id = Some(client_id);
@@ -2206,6 +2234,7 @@ impl Screen {
         for watcher in self.watcher_clients.values_mut() {
             watcher.set_force_render();
         }
+        departed.map(|(source, _)| source)
     }
 
     fn register_client(&mut self, client_id: ClientId) -> Result<()> {
@@ -4812,6 +4841,7 @@ impl Screen {
                 }
             }
             if found_plugin {
+                self.mark_subscriber_pane_dirty(PaneId::Plugin(plugin_id));
                 handled_render_assets.push(plugin_render_asset);
             } else {
                 plugin_render_asset.bytes = vte_bytes.take().unwrap();
@@ -4819,7 +4849,7 @@ impl Screen {
             }
         }
         if !handled_render_assets.is_empty() {
-            self.render()?;
+            self.schedule_render()?;
         }
         Ok(unhandled_render_assets)
     }

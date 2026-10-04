@@ -221,7 +221,7 @@ pub fn abandon_stalled_output() {
     ABANDON_STALLED_OUTPUT.store(true, Ordering::SeqCst);
 }
 
-fn stalled_output_abandoned() -> bool {
+pub(crate) fn stalled_output_abandoned() -> bool {
     ABANDON_STALLED_OUTPUT.load(Ordering::SeqCst)
 }
 
@@ -427,7 +427,8 @@ impl ClientTeardown {
     /// that was never entered, and an empty kitty keyboard stack, are both no-ops.
     #[cfg(test)]
     pub fn restore_sequences(&self) -> String {
-        self.restore_sequences_with_sync(OPEN_SYNC_OUTPUT.load(Ordering::SeqCst))
+        // Tests without an explicit open frame must not depend on other tests' writes.
+        self.restore_sequences_with_sync(0)
     }
 
     #[cfg(test)]

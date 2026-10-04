@@ -1184,13 +1184,7 @@ fn menu_selection_repaints_only_the_menu_for_a_healthy_watcher() {
     let receiver = screen_wired_to_server(&mut screen);
     let fake_os = FakeInputOutput::default();
     *fake_os.render_backlog.lock().unwrap() = vec![
-        (
-            followed,
-            RenderBacklog {
-                queued_renders: 1,
-                in_flight_for: None,
-            },
-        ),
+        (followed, RenderBacklog { queued_renders: 1 }),
         (watcher, RenderBacklog::default()),
     ];
     screen.bus.os_input = Some(Box::new(fake_os));

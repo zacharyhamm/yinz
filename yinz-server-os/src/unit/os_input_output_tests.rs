@@ -1487,7 +1487,6 @@ mod coalescing_send_queue {
             assert!(matches!(queue.push(message), SendQueuePush::Queued));
         }
         assert_eq!(queue.render_backlog().queued_renders, 3);
-        assert_eq!(queue.render_backlog().in_flight_for, None);
         assert!(matches!(
             queue.push(pane_render(
                 DataPaneId::Terminal(TerminalId::new(1)),
@@ -1497,9 +1496,7 @@ mod coalescing_send_queue {
         ));
         assert_eq!(queue.render_backlog().queued_renders, 3);
         assert_eq!(queue.pop(), Some(render("first")));
-        let backlog = queue.render_backlog();
-        assert_eq!(backlog.queued_renders, 2);
-        assert!(backlog.in_flight_for.is_some());
+        assert_eq!(queue.render_backlog().queued_renders, 2);
         queue.finish_send();
         assert_eq!(queue.pop(), Some(control("notice")));
         assert_eq!(queue.render_backlog().queued_renders, 2);
