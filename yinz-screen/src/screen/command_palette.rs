@@ -26,6 +26,7 @@ pub(super) struct CommandPaletteState {
     plugins: plugins::State,
     context: PaletteContext,
     actions: HashMap<String, Builtin>,
+    warp_source: Option<SessionName>,
     painted: Option<CellRect>,
     shortcut_keybinds: KeybindsVec,
     shortcuts: HashMap<String, CachedShortcut>,
@@ -104,6 +105,7 @@ impl Screen {
                     current_project: None,
                 },
                 actions: HashMap::new(),
+                warp_source: None,
                 painted: None,
                 shortcut_keybinds: Vec::new(),
                 shortcuts: HashMap::new(),
@@ -336,6 +338,15 @@ enum Builtin {
     Picker(EntryKind),
     Project(String),
     Form(FormKind),
+    WarpSource(SessionName, EntryKind),
+    Warp(SessionName, WarpTarget),
+}
+
+#[derive(Clone)]
+enum WarpTarget {
+    Pane(PaneId),
+    Tab(TabId),
+    AllTabs,
 }
 
 #[derive(Clone, Copy)]
@@ -496,6 +507,23 @@ impl Screen {
         ] {
             command(id, label, &[], Builtin::Action(action));
         }
+        for (id, label, kind) in [
+            ("warp-tab", "Warp tab…", EntryKind::WarpTabSession),
+            ("warp-pane", "Warp pane…", EntryKind::WarpPaneSession),
+        ] {
+            entries.push((
+                Entry {
+                    id: id.into(),
+                    label: label.into(),
+                    description: "Bring from another session into this session".into(),
+                    shortcut: String::new(),
+                    aliases: vec![],
+                    kind: EntryKind::Command,
+                },
+                Builtin::Picker(kind),
+            ));
+        }
+        entries.extend(self.warp_palette_entries(state.warp_source.as_ref()));
         for name in &self.projects {
             entries.push((
                 Entry {
@@ -715,6 +743,173 @@ impl Screen {
         entries
     }
 
+    fn warp_palette_entries(&self, source: Option<&SessionName>) -> Vec<(Entry, Builtin)> {
+        let mut entries = Vec::new();
+        let mut add = |id, label, description, kind, action| {
+            entries.push((
+                Entry {
+                    id,
+                    label,
+                    description,
+                    kind,
+                    shortcut: String::new(),
+                    aliases: vec![],
+                },
+                action,
+            ));
+        };
+        for session in self
+            .peer_sessions_cache
+            .values()
+            .filter(|s| s.name != self.session_name)
+        {
+            for (prefix, kind, target) in [
+                ("warp-tab", EntryKind::WarpTabSession, EntryKind::WarpTab),
+                ("warp-pane", EntryKind::WarpPaneSession, EntryKind::WarpPane),
+            ] {
+                add(
+                    format!("{prefix}:session:{}", session.name),
+                    session.name.to_string(),
+                    String::new(),
+                    kind,
+                    Builtin::WarpSource(session.name.clone(), target),
+                );
+            }
+            if source != Some(&session.name) {
+                continue;
+            }
+            let mut tabs: Vec<_> = session.tabs.iter().collect();
+            tabs.sort_by_key(|tab| tab.position);
+            for tab in &tabs {
+                add(
+                    format!("warp-tab:tab:{}:{}", session.name, tab.tab_id),
+                    format!("{} (tab {})", tab.name, tab.position.get() + 1),
+                    session.name.to_string(),
+                    EntryKind::WarpTab,
+                    Builtin::Warp(session.name.clone(), WarpTarget::Tab(tab.tab_id)),
+                );
+                for pane in session
+                    .panes
+                    .panes
+                    .get(&tab.position)
+                    .into_iter()
+                    .flatten()
+                    .filter(|pane| pane.is_selectable && !pane.is_suppressed)
+                {
+                    add(
+                        format!("warp-pane:pane:{}:{}", session.name, pane.id),
+                        format!("{} ({}) · {}", pane.title, pane.id, tab.name),
+                        session.name.to_string(),
+                        EntryKind::WarpPane,
+                        Builtin::Warp(session.name.clone(), WarpTarget::Pane(pane.id)),
+                    );
+                }
+            }
+            if !tabs.is_empty() {
+                add(
+                    format!("warp-tab:all:{}", session.name),
+                    "All tabs".into(),
+                    session.name.to_string(),
+                    EntryKind::WarpTab,
+                    Builtin::Warp(session.name.clone(), WarpTarget::AllTabs),
+                );
+            }
+        }
+        entries
+    }
+
+    fn run_palette_warp(&mut self, client: ClientId, source: SessionName, target: WarpTarget) {
+        use yinz_bus::warp::{warp_pane_from_session, warp_tab_from_session, WARP_PULL_TIMEOUT};
+        let Some(session) = self
+            .peer_sessions_cache
+            .get(&source)
+            .filter(|s| s.name != self.session_name)
+        else {
+            if let Some(state) = self.command_palettes.get_mut(&client) {
+                state
+                    .widget
+                    .set_error("Source session no longer exists".into());
+            }
+            return;
+        };
+        let mut tabs: Vec<_> = session.tabs.iter().collect();
+        tabs.sort_by_key(|tab| tab.position);
+        let valid = match target {
+            WarpTarget::Tab(id) => tabs.iter().any(|tab| tab.tab_id == id),
+            WarpTarget::AllTabs => !tabs.is_empty(),
+            WarpTarget::Pane(id) => tabs.iter().any(|tab| {
+                session
+                    .panes
+                    .panes
+                    .get(&tab.position)
+                    .into_iter()
+                    .flatten()
+                    .any(|pane| pane.id == id && pane.is_selectable && !pane.is_suppressed)
+            }),
+        };
+        if !valid {
+            if let Some(state) = self.command_palettes.get_mut(&client) {
+                state
+                    .widget
+                    .set_error("Warp target no longer exists".into());
+            }
+            return;
+        }
+        let tab_ids: Vec<_> = match target {
+            WarpTarget::Tab(id) => vec![id],
+            WarpTarget::AllTabs => tabs.iter().map(|tab| tab.tab_id).collect(),
+            WarpTarget::Pane(_) => vec![],
+        };
+        let destination = self.session_name.clone();
+        let senders = self.bus.senders.clone();
+        self.close_command_palette(client);
+        let spawned = std::thread::Builder::new()
+            .name("palette_warp".into())
+            .spawn(move || {
+                let result = if let WarpTarget::Pane(id) = target {
+                    warp_pane_from_session(
+                        &destination,
+                        &source,
+                        id,
+                        yinz_types::data::WarpPlacement::NewTab,
+                        WARP_PULL_TIMEOUT,
+                    )
+                } else {
+                    let total = tab_ids.len();
+                    tab_ids
+                        .into_iter()
+                        .enumerate()
+                        .try_for_each(|(completed, id)| {
+                            warp_tab_from_session(&destination, &source, id, WARP_PULL_TIMEOUT)
+                                .map(|_| ())
+                                .map_err(|error| {
+                                    format!(
+                                        "Warp tab {id} failed ({completed}/{total} completed): {error}"
+                                    )
+                                })
+                        })
+                        .map(|()| format!("Brought {total} tab(s) from session '{source}'"))
+                };
+                let message = result.unwrap_or_else(|error| error);
+                senders
+                    .send_to_screen(ScreenInstruction::Notify(message, None, None, None))
+                    .context("failed to report palette warp result")
+                    .non_fatal();
+            });
+        if let Err(error) = spawned {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::Notify(
+                    format!("Failed to start palette warp: {error}"),
+                    None,
+                    None,
+                    None,
+                ))
+                .context("failed to report palette warp worker failure")
+                .non_fatal();
+        }
+    }
+
     fn control_agent_entries(&self) -> Vec<(Entry, Action)> {
         let mut entries = Vec::new();
         let mut add = |session: &SessionName, tab: &str, pane: &yinz_types::data::PaneInfo| {
@@ -886,6 +1081,27 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::WarpSource(source, kind) => {
+                let valid =
+                    source != self.session_name && self.peer_sessions_cache.contains_key(&source);
+                if let Some(state) = self.command_palettes.get_mut(&client) {
+                    if valid {
+                        state.warp_source = Some(source);
+                        state.widget.open_picker(kind);
+                    } else {
+                        state
+                            .widget
+                            .set_error("Source session no longer exists".into());
+                    }
+                }
+                self.refresh_command_palettes();
+                self.refresh_plugin_palette(client, false);
+                return;
+            },
+            Builtin::Warp(source, target) => {
+                self.run_palette_warp(client, source, target);
+                return;
+            },
             Builtin::Project(name) => {
                 if self.projects.contains(&name) {
                     self.client_projects.entry(client).or_default().current = Some(name);

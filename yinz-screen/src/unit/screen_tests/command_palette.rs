@@ -1,5 +1,6 @@
 use super::*;
-use yinz_types::internal_ids::{SessionName, TabNumber};
+use std::time::Duration;
+use yinz_types::internal_ids::{PluginId, SessionName, TabNumber};
 use yinz_types::keys::{BareKey, KeyWithModifier};
 
 const CLIENT: ClientId = ClientId::new(1);
@@ -2469,4 +2470,264 @@ fn control_agent_picker_qualifies_peer_ids_filters_panes_and_targets_other_sessi
     assert!(
         matches!(enqueued_palette_action(&receiver), Action::SwitchSession { name: target, pane_id: Some(id), .. } if target == name && id == pane)
     );
+}
+
+fn warp_peer(screen: &mut Screen, name: &str) -> SessionName {
+    screen.log_and_report_session_state().unwrap();
+    let name = SessionName::new(name);
+    let mut peer = screen.peer_sessions_cache[&screen.session_name].clone();
+    peer.name = name.clone();
+    peer.is_current_session = false;
+    peer.tabs[0].tab_id = TabId::new(42);
+    peer.tabs[0].name = "Remote tab".into();
+    screen.peer_sessions_cache.insert(name.clone(), peer);
+    name
+}
+
+#[test]
+fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
+    let mut screen = screen();
+    let source = warp_peer(&mut screen, "warp-peer");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen
+        .resurrectable_sessions_cache
+        .insert(SessionName::new("exited-peer"), Duration::ZERO);
+    for command in ["Warp tab", "Warp pane"] {
+        palette_search(&mut screen, command);
+        palette_key(&mut screen, BareKey::Enter);
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(snapshot.contains("warp-peer"), "{snapshot}");
+        assert!(!snapshot.contains("exited-peer"), "{snapshot}");
+        for unavailable in [screen.session_name.to_string(), "exited-peer".into()] {
+            screen.command_palette_handles_input(&None, unavailable.as_bytes(), false, CLIENT);
+            let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert!(snapshot.contains("No matches"), "{snapshot}");
+            palette_key(&mut screen, BareKey::Enter);
+            screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+                &[],
+                false,
+                CLIENT,
+            );
+        }
+        // Only the peer is offered; the current session cannot be activated here.
+        palette_key(&mut screen, BareKey::Enter);
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(snapshot.contains("Remote tab"), "{snapshot}");
+        let saved = screen.peer_sessions_cache.remove(&source).unwrap();
+        palette_key(&mut screen, BareKey::Enter);
+        assert!(screen.command_palettes.contains_key(&CLIENT));
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(
+            snapshot.contains("Source session no longer exists"),
+            "{snapshot}"
+        );
+        screen.close_command_palette(CLIENT);
+        screen.peer_sessions_cache.insert(source.clone(), saved);
+    }
+    for (suppressed, selectable, held, plugin, eligible) in [
+        (true, true, false, false, false),
+        (false, false, false, false, false),
+        (false, true, true, false, true),
+        (false, true, false, true, true),
+    ] {
+        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        let pane = peer.panes.panes.values_mut().flatten().next().unwrap();
+        pane.title = "Candidate".into();
+        pane.is_suppressed = suppressed;
+        pane.is_selectable = selectable;
+        pane.is_held = held;
+        pane.id = if plugin {
+            PaneId::Plugin(PluginId::new(9))
+        } else {
+            PaneId::Terminal(TerminalId::new(1))
+        };
+        palette_search(&mut screen, "Warp pane");
+        palette_key(&mut screen, BareKey::Enter);
+        palette_key(&mut screen, BareKey::Enter);
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(snapshot.contains("Candidate"), eligible, "{snapshot}");
+        // Remove it after rendering but before activation.
+        screen
+            .peer_sessions_cache
+            .get_mut(&source)
+            .unwrap()
+            .panes
+            .panes
+            .values_mut()
+            .flatten()
+            .next()
+            .unwrap()
+            .is_selectable = false;
+        palette_key(&mut screen, BareKey::Enter);
+        assert!(screen.command_palettes.contains_key(&CLIENT));
+        screen.close_command_palette(CLIENT);
+    }
+}
+
+#[test]
+fn warp_palette_worker_captures_ordered_ids_and_stops_after_failure() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+    for mode in ["batch", "tab", "pane"] {
+        std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+        let directory = tempfile::tempdir_in(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+        let name = directory.path().file_name().unwrap().to_str().unwrap();
+        // A unique sibling path is a session socket, while the directory reserves its name.
+        let name = format!("{name}-warp");
+        let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+        let listener = ListenerOptions::new()
+            .name(path.to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let mut screen = screen();
+        let source = warp_peer(&mut screen, &name);
+        let destination = screen.session_name.clone();
+        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        let mut second = peer.tabs[0].clone();
+        second.position = yinz_types::internal_ids::TabPosition::new(1);
+        second.tab_id = TabId::new(7);
+        let mut third = second.clone();
+        third.position = yinz_types::internal_ids::TabPosition::new(2);
+        third.tab_id = TabId::new(99);
+        peer.tabs = vec![second, peer.tabs[0].clone()];
+        let notifications = palette_actions_receiver(&mut screen);
+        palette_search(
+            &mut screen,
+            if mode == "pane" {
+                "Warp pane"
+            } else {
+                "Warp tab"
+            },
+        );
+        palette_key(&mut screen, BareKey::Enter);
+        palette_key(&mut screen, BareKey::Enter);
+        if mode == "batch" {
+            screen.command_palette_handles_input(&None, b"All tabs", false, CLIENT);
+            // Capture the latest metadata at activation, including a tab discovered after rendering.
+            screen
+                .peer_sessions_cache
+                .get_mut(&source)
+                .unwrap()
+                .tabs
+                .insert(0, third);
+        }
+        palette_key(&mut screen, BareKey::Enter);
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        // Execution returned before any server reply: screen remains available for adoption.
+        screen
+            .peer_sessions_cache
+            .get_mut(&source)
+            .unwrap()
+            .tabs
+            .clear();
+        for (index, expected) in (if mode == "batch" {
+            vec![42, 7]
+        } else {
+            vec![42]
+        })
+        .into_iter()
+        .enumerate()
+        {
+            let stream = listener.accept().unwrap();
+            let mut sender: IpcSenderWithContext<ServerToClientMsg> =
+                IpcSenderWithContext::new(stream);
+            let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+            let IpcRecv::Msg(message, _) = receiver.recv_client_msg() else {
+                panic!("missing warp request");
+            };
+            if mode == "pane" {
+                assert!(matches!(message, ClientToServerMsg::Action {
+                action: Action::WarpPane { pane_id: Some(PaneId::Terminal(id)), to_session,
+                    placement: yinz_types::data::WarpPlacement::NewTab }, ..
+            } if id == TerminalId::new(1) && to_session == destination));
+            } else {
+                assert!(matches!(message, ClientToServerMsg::Action {
+                action: Action::WarpTab { tab_id: Some(id), to_session }, ..
+            } if id == TabId::new(expected) && to_session == destination));
+            }
+            sender
+                .send_server_msg(if index == 0 {
+                    ServerToClientMsg::Log {
+                        lines: vec!["done".into()],
+                    }
+                } else {
+                    ServerToClientMsg::LogError {
+                        lines: vec!["back in this session".into()],
+                    }
+                })
+                .unwrap();
+        }
+        let (notification, _) = notifications.recv_timeout(Duration::from_secs(10)).unwrap();
+        let ScreenInstruction::Notify(message, ..) = notification else {
+            panic!("expected notification");
+        };
+        if mode == "batch" {
+            assert!(
+                message.contains("1/3 completed")
+                    && message.contains("tab 7")
+                    && message.contains("back in this session"),
+                "{message}"
+            );
+        } else {
+            assert!(message.contains("Brought"), "{message}");
+        }
+        listener
+            .set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Accept)
+            .unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "later tabs must not be requested"
+        );
+    }
+}
+
+#[test]
+fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
+    let mut screen = screen();
+    let source = warp_peer(&mut screen, "session");
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "Warp tab");
+    palette_key(&mut screen, BareKey::Enter);
+    // Inserting an earlier session must not move the selection off the chosen source.
+    let earlier = warp_peer(&mut screen, "42");
+    screen.peer_sessions_cache.get_mut(&earlier).unwrap().tabs[0].name = "Wrong peer".into();
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    palette_key(&mut screen, BareKey::Enter);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("› Remote tab"), "{snapshot}");
+    assert!(!snapshot.contains("Wrong peer"), "{snapshot}");
+    let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+    let mut inserted = peer.tabs[0].clone();
+    inserted.name = "Earlier tab".into();
+    inserted.tab_id = TabId::new(8);
+    peer.tabs[0].position = TabPosition::new(1);
+    peer.tabs[0].name = "Renamed tab".into();
+    peer.tabs.push(inserted);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("› Renamed tab (tab 2)"), "{snapshot}");
+    assert!(snapshot.find("Earlier tab").unwrap() < snapshot.find("Renamed tab").unwrap());
+    assert!(snapshot.find("Renamed tab").unwrap() < snapshot.find("All tabs").unwrap());
+    screen
+        .peer_sessions_cache
+        .get_mut(&source)
+        .unwrap()
+        .tabs
+        .retain(|tab| tab.tab_id != TabId::new(42));
+    palette_key(&mut screen, BareKey::Enter);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        snapshot.contains("Warp target no longer exists"),
+        "{snapshot}"
+    );
+    screen.peer_sessions_cache.get_mut(&source).unwrap().tabs[0].tab_id = TabId::new(42);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    palette_key(&mut screen, BareKey::Esc);
+    palette_key(&mut screen, BareKey::Up);
+    // Source "42" must not collide with tab 42 in source "session".
+    palette_key(&mut screen, BareKey::Enter);
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Wrong peer"), "{snapshot}");
 }

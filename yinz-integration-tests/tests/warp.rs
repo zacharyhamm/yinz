@@ -1296,3 +1296,167 @@ fn adopted_local_and_remote_panes_redraw_in_each_destination_layer() {
         }
     }
 }
+
+fn palette_sessions() -> ((TestSession, FakePtyHandle), (TestSession, FakePtyHandle)) {
+    let start = || {
+        let session = TestRunner::new(TERMINAL_SIZE)
+            .with_config(&format!(
+                "{NO_BACKGROUND_PLUGINS}disable_session_metadata false"
+            ))
+            .skip_concurrency_slot()
+            .start();
+        let shell = session.expect_pty_spawn();
+        shell.output(PROMPT);
+        session.wait_for_app_load();
+        (session, shell)
+    };
+    let receiver = start();
+    let sender = start();
+    (sender, receiver)
+}
+
+fn palette_pull(receiver: &TestSession, sender: &TestSession, command: &str, target: &str) {
+    receiver.send_stdin(b"\x1b[112;7u");
+    receiver.wait_until("palette opens", |grid| grid.contains("Switch session"));
+    receiver.send_stdin(command.as_bytes());
+    receiver.send_stdin(&keys::ENTER);
+    receiver.wait_until("source picker opens", |grid| {
+        grid.contains("Source session")
+    });
+    receiver.send_stdin(sender.session_name().as_bytes());
+    receiver.wait_until("source discovered", |grid| {
+        grid.contains(&format!("› {}", sender.session_name()))
+    });
+    receiver.send_stdin(&keys::ENTER);
+    receiver.send_stdin(target.as_bytes());
+    receiver.wait_until("warp target discovered", |grid| {
+        !grid.contains("Source session") && grid.contains(target) && !grid.contains("No matches")
+    });
+    receiver.send_stdin(&keys::ENTER);
+}
+
+#[test]
+fn palette_pulls_one_tab_and_all_tabs_through_source_shutdown() {
+    for all in [false, true] {
+        let ((mut sender, first), (receiver, _)) = palette_sessions();
+        type_and_confirm(&sender, &first, b"first-before-palette");
+        sender.send_stdin(&keys::ctrl('t'));
+        sender.send_stdin(&keys::key('n'));
+        let second = sender.expect_pty_spawn();
+        second.output(b"PALETTE_SECOND_TAB\r\n");
+        sender.wait_until("second tab ready", |grid| {
+            grid.contains("PALETTE_SECOND_TAB")
+        });
+        type_and_confirm(&sender, &second, b"second-before-palette");
+        palette_pull(
+            &receiver,
+            &sender,
+            "Warp tab",
+            if all { "All tabs" } else { "Tab #2" },
+        );
+        let adopted: Vec<_> = (0..if all { 2 } else { 1 })
+            .map(|_| receiver.expect_adopted_pty())
+            .collect();
+        let second = adopted_with_marker(&adopted, b"second-before-palette");
+        receiver.wait_until("last pulled tab focused", |grid| {
+            grid.contains("PALETTE_SECOND_TAB")
+        });
+        type_and_confirm(&receiver, second, b"second-after-palette");
+        if all {
+            let first = adopted_with_marker(&adopted, b"first-before-palette");
+            assert!(!first.is_exited());
+            sender.wait_for_exit();
+        }
+        assert!(!second.is_exited());
+    }
+}
+
+#[test]
+fn palette_pulls_a_visible_stack_with_its_hidden_editor_subject() {
+    let ((sender, _), (receiver, _)) = palette_sessions();
+    let first = split_off_a_pane(&sender, "PALETTE_STACK_FIRST");
+    type_and_confirm(&sender, &first, b"stack-first-before");
+    sender.send_stdin(&keys::ctrl('p'));
+    sender.send_stdin(&keys::key('s'));
+    let subject = sender.expect_pty_spawn();
+    subject.output(b"PALETTE_STACK_SUBJECT\r\n");
+    sender.wait_until("stack subject ready", |grid| {
+        grid.contains("PALETTE_STACK_SUBJECT")
+    });
+    type_and_confirm(&sender, &subject, b"stack-subject-before");
+    sender.send_stdin(&keys::ctrl('s'));
+    sender.send_stdin(&keys::key('e'));
+    let editor = sender.expect_pty_spawn();
+    sender.wait_until("editor ready", |grid| grid.contains("EDITING SCROLLBACK"));
+    type_and_confirm(&sender, &editor, b"stack-editor-before");
+    let entries = stack_list_entries(&sender);
+    palette_pull(&receiver, &sender, "Warp pane", "EDITING SCROLLBACK");
+    let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    let first = adopted_with_marker(&adopted, b"stack-first-before");
+    let subject = adopted_with_marker(&adopted, b"stack-subject-before");
+    let editor = adopted_with_marker(&adopted, b"stack-editor-before");
+    receiver.wait_until("editor arrives", |grid| grid.contains("EDITING SCROLLBACK"));
+    let arrived_entries = stack_list_entries(&receiver);
+    assert_eq!(arrived_entries.len(), entries.len());
+    assert_eq!(arrived_entries.last().unwrap(), "> EDITING SCROLLBACK");
+    type_and_confirm(&receiver, editor, b"stack-editor-after");
+    editor.exit(Some(0));
+    receiver.wait_until("hidden subject restored", |grid| {
+        grid.contains("PALETTE_STACK_SUBJECT")
+    });
+    type_and_confirm(&receiver, subject, b"stack-subject-after");
+    receiver.send_stdin(&keys::alt('k'));
+    receiver.wait_until("hidden stack member restored", |grid| {
+        grid.contains("PALETTE_STACK_FIRST")
+    });
+    type_and_confirm(&receiver, first, b"stack-first-after");
+}
+
+#[test]
+fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
+    let ((sender, first), (receiver, _)) = palette_sessions();
+    type_and_confirm(&sender, &first, b"batch-first-before");
+    let mut panes = Vec::new();
+    for marker in ["BATCH_FAILING", "BATCH_UNATTEMPTED"] {
+        sender.send_stdin(&keys::ctrl('t'));
+        sender.send_stdin(&keys::key('n'));
+        let pane = sender.expect_pty_spawn();
+        pane.output(format!("{marker}\r\n").as_bytes());
+        sender.wait_until("batch tab ready", |grid| grid.contains(marker));
+        panes.push(pane);
+    }
+    panes[0].fail_warp(WarpFailure::UnadoptableOnce);
+    palette_pull(&receiver, &sender, "Warp tab", "All tabs");
+    let arrived = receiver.expect_adopted_pty();
+    assert!(arrived
+        .stdin_bytes()
+        .windows(b"batch-first-before".len())
+        .any(|bytes| bytes == b"batch-first-before"));
+    receiver.wait_until("batch failure reported", |grid| {
+        grid.contains("1/3 completed")
+    });
+    assert_departed(&sender, &[&first]);
+    let (code, listed) = sender.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: true,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{listed}");
+    let listed: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|pane| pane["is_plugin"] == false)
+            .count(),
+        2
+    );
+    assert!(listed
+        .iter()
+        .any(|pane| pane["id"] == panes[1].terminal_id().get()));
+    receiver.send_stdin(&keys::ESC);
+    type_and_confirm(&receiver, &arrived, b"batch-first-after");
+    assert!(!panes[1].is_exited());
+}
