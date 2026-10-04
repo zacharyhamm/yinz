@@ -199,9 +199,22 @@ fn hooks_fired_by_until(steps: Vec<ScreenInstruction>, expected: HookPoint) -> V
     let instructions = Watched::new(vec![]);
     let plugin_thread =
         log_actions_in_thread!(instructions, PluginInstruction::Exit, plugin_receiver);
+    // Adoption queues the pane and its serialized record on the screen thread itself.
+    // Hold this consumer until the test has queued the same complete batch.
+    let (response_channel, release) = crossbeam::channel::bounded(0);
+    mock_screen
+        .to_screen
+        .send(ScreenInstruction::ListPanes {
+            show_all: true,
+            response_channel,
+        })
+        .unwrap();
     for step in steps {
         let _ = mock_screen.to_screen.send(step);
     }
+    release
+        .recv_timeout(yinz_test_support::default_timeout())
+        .expect("the screen reached the queued adoption batch");
     instructions.wait_until(
         "the buffered agent report to reach its adopted pane",
         yinz_test_support::default_timeout(),
