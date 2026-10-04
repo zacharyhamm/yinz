@@ -657,7 +657,7 @@ fn embedded_deno_context_menu_hook_filters_and_dispatches_selection() {
             r#"
 mouse_mode true
 context_menu_on_right_click true
-load_plugins clear-defaults=true {}
+load_plugins clear-defaults=true { "yinz:context-menu"; }
 hooks { context_menu "yinz:context-menu"; }
 context_menu {
     "Copy" { Copy; }
@@ -668,6 +668,22 @@ context_menu {
         )
         .start();
     yinz_integration_tests::claim_first_terminal_and_wait_for_prompt(&yinz);
+    // Pipe completion waits for this background instance to finish loading before the
+    // right-click starts the production menu fallback deadline.
+    let (code, output) = yinz.run_cli_action_reporting(CliAction::Pipe {
+        name: Some("ready".into()),
+        payload: Some(String::new()),
+        args: None,
+        plugin: Some("yinz:context-menu".into()),
+        plugin_configuration: None,
+        force_launch_plugin: false,
+        skip_plugin_cache: false,
+        floating_plugin: None,
+        in_place_plugin: None,
+        plugin_cwd: None,
+        plugin_title: None,
+    });
+    assert_eq!(code, 0, "{output}");
     yinz.send_stdin(b"\x1b[<2;5;5M\x1b[<2;5;5m");
     yinz.wait_until("embedded hook filters Copy from the menu", |grid| {
         grid.contains("Deno menu action") && !grid.contains("Copy")
