@@ -29,12 +29,64 @@ pub fn validate_submission_id(value: &str) -> Result<(), &'static str> {
     }
 }
 
+/// Initial placement only; project selection and later pane moves remain independent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPlacement {
+    #[default]
+    Automatic,
+    Tab(crate::internal_ids::TabId),
+    NewTab(Option<String>),
+}
+
+impl AgentPlacement {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Self::NewTab(Some(name)) = self {
+            if name.trim().is_empty() || name.chars().any(char::is_control) {
+                return Err("new tab name must be nonblank and contain no control characters");
+            }
+        }
+        Ok(())
+    }
+
+    /// Normalize the flat launch-file fields before sending the typed request.
+    pub fn from_launch_fields(
+        tab: &serde_json::Value,
+        new_tab: &serde_json::Value,
+    ) -> Result<Self, &'static str> {
+        let existing =
+            if tab.is_null() {
+                None
+            } else {
+                Some(tab.as_u64().and_then(|id| usize::try_from(id).ok()).ok_or(
+                    "tab must be a nonnegative stable numeric ID (names are not supported)",
+                )?)
+            };
+        let new = match new_tab {
+            serde_json::Value::Null | serde_json::Value::Bool(false) => None,
+            serde_json::Value::Bool(true) => Some(None),
+            serde_json::Value::String(name) => Some(Some(name.clone())),
+            _ => return Err("new_tab must be true, false, null, or a tab name"),
+        };
+        let placement = match (existing, new) {
+            (Some(_), Some(_)) => return Err("tab and new_tab are mutually exclusive"),
+            (Some(id), None) => Self::Tab(crate::internal_ids::TabId::new(id)),
+            (None, Some(name)) => Self::NewTab(name),
+            (None, None) => Self::Automatic,
+        };
+        placement.validate()?;
+        Ok(placement)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum AgentRequest {
     SetControlAgent {
         pane_id: PaneId,
         enabled: bool,
     },
+    /// Read-only feature negotiation before sending placement to an older server.
+    SpawnPlacementSupport,
     List {
         project: Option<String>,
     },
@@ -43,6 +95,8 @@ pub enum AgentRequest {
         expected_session_id: Option<String>,
     },
     Spawn {
+        #[serde(default)]
+        placement: AgentPlacement,
         spec: AgentSpawnSpec,
         cwd: Option<PathBuf>,
         project: Option<String>,

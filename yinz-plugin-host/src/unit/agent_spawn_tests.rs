@@ -34,6 +34,7 @@ fn failed_spawn_retains_checkout_created_before_the_pane_request() {
     let (_directory, root, data) = launch_failure_repository();
     let response = agent_control::control_agent(
         yinz_types::agent::control::AgentRequest::Spawn {
+            placement: Default::default(),
             spec: AgentSpawnSpec {
                 kind: Some("codex".into()),
                 branch: Some("review".into()),
@@ -67,6 +68,7 @@ fn git_spawn_failures_distinguish_validation_from_attempted_checkout_changes() {
     ] {
         let response = agent_control::control_agent(
             yinz_types::agent::control::AgentRequest::Spawn {
+                placement: Default::default(),
                 spec: AgentSpawnSpec {
                     kind: Some("codex".into()),
                     branch: Some(branch.into()),
@@ -109,12 +111,14 @@ fn failed_or_unknown_pane_completion_keeps_known_launch_resources() {
                 panic!("expected spawn");
             };
             if failed_pane {
+                completion.set_affected_tab_id(yinz_types::internal_ids::TabId::new(0));
                 completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
                 completion.set_error_message("provider failed after creating the pane".into());
             }
         });
         let response = agent_control::control_agent(
             yinz_types::agent::control::AgentRequest::Spawn {
+                placement: Default::default(),
                 spec: AgentSpawnSpec {
                     kind: Some("codex".into()),
                     branch: Some(branch.into()),
@@ -176,6 +180,7 @@ fn guest_only_spawn_does_not_report_a_fabricated_host_directory() {
             command.target,
             PaneTarget::Firecracker { worktree: None, .. }
         ));
+        completion.set_affected_tab_id(yinz_types::internal_ids::TabId::new(0));
         completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
     });
     let spawned = spawn_agent_for_cli(
@@ -233,6 +238,7 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
     for (worktree, firecracker) in [(false, None), (true, None), (true, Some("unprepared-vm"))] {
         let response = agent_control::control_agent(
             yinz_types::agent::control::AgentRequest::Spawn {
+                placement: Default::default(),
                 spec: AgentSpawnSpec {
                     kind: Some("codex".into()),
                     branch: Some("rejected".into()),
@@ -302,6 +308,7 @@ fn cli_agent_spawn_returns_actual_pane_checkout_and_collision_branch() {
                 yinz_types::agent::agent_kind_of(&command.command, &command.args).as_deref(),
                 Some("codex")
             );
+            completion.set_affected_tab_id(yinz_types::internal_ids::TabId::new(0));
             completion.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(pane)));
         }
     });
@@ -492,6 +499,7 @@ fn plugin_agent_control_resolves_only_local_relative_directories() {
         (Some(PathBuf::from(".")), Some("server".to_owned()), None),
     ] {
         let request = AgentRequest::Spawn {
+            placement: Default::default(),
             spec: AgentSpawnSpec {
                 kind: Some("codex".into()),
                 allow_outside_worktree: Some(true),
@@ -532,6 +540,7 @@ fn plugin_agent_control_resolves_only_local_relative_directories() {
                     None => yinz_types::command::PaneTarget::Local,
                 }
             );
+            completion.set_affected_tab_id(yinz_types::internal_ids::TabId::new(0));
             completion.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(7)));
         }
         let (instruction, _) = plugin_rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -667,4 +676,270 @@ fn agent_provider_registration_is_permissioned_owned_and_released() {
         .unwrap_err()
         .contains("no longer available"));
     assert!(provider(&definition.kind).is_none());
+}
+
+#[test]
+fn invalid_or_missing_agent_tab_is_rejected_before_checkout_preparation() {
+    use yinz_types::agent::control::AgentPlacement;
+    let (_directory, root, data) = launch_failure_repository();
+    let (to_screen, screen_rx) = channels::unbounded();
+    let senders = ThreadSenders {
+        to_screen: Some(SenderWithContext::new(to_screen)),
+        ..Default::default()
+    };
+    let worker = thread::spawn(move || {
+        let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let ScreenInstruction::ResolveAgentTab {
+            placement, reply, ..
+        } = instruction
+        else {
+            panic!("expected tab resolution before checkout");
+        };
+        assert_eq!(
+            placement,
+            AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(42))
+        );
+        reply.send(Err("tab 42 does not exist".into())).unwrap();
+        assert!(screen_rx.try_recv().is_err());
+    });
+    for placement in [
+        AgentPlacement::NewTab(Some("\n".into())),
+        AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(42)),
+    ] {
+        let response = agent_control::control_agent(
+            yinz_types::agent::control::AgentRequest::Spawn {
+                placement,
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    branch: Some("review".into()),
+                    ..Default::default()
+                },
+                cwd: Some(root.clone()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: false,
+            },
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        );
+        assert_eq!(response.outcome, AgentOutcome::Rejected, "{response:?}");
+        assert!(!root.join(".worktrees/review").exists());
+    }
+    worker.join().unwrap();
+}
+
+#[test]
+fn agent_destination_is_carried_for_local_ssh_and_guest_only_vm_spawns() {
+    use yinz_types::agent::control::AgentPlacement;
+    use yinz_types::internal_ids::TabId;
+    for target in ["local", "ssh", "vm"] {
+        let (_directory, root, data) = launch_failure_repository();
+        for def in hocus_data::store::shared_defs() {
+            data.plugin_data()
+                .define_entity(hocus_data::store::SHARED, "test", &def, false)
+                .unwrap();
+        }
+        let project = hocus_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+        data.plugin_data()
+            .apply(
+                hocus_data::store::SHARED,
+                &[hocus_data::projects::to_mutation(&project)],
+            )
+            .unwrap();
+        let (to_screen, screen_rx) = channels::unbounded();
+        let (to_pty, pty_rx) = channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            to_pty: Some(SenderWithContext::new(to_pty)),
+            ..Default::default()
+        };
+        let worker = thread::spawn(move || {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::ResolveAgentTab {
+                reply,
+                invoked_with,
+                ..
+            } = instruction
+            else {
+                panic!("expected resolution");
+            };
+            assert!(invoked_with.is_none());
+            let lifetime = std::sync::Arc::new(());
+            reply
+                .send(Ok(yinz_bus::route::AgentTabPlacement {
+                    tab_id: TabId::new(7),
+                    lifetime: std::sync::Arc::downgrade(&lifetime),
+                    created: false,
+                }))
+                .unwrap();
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(
+                Some(TerminalAction::RunCommand(command)),
+                _,
+                _,
+                _,
+                destination,
+                Some(mut completion),
+                false,
+            ) = instruction
+            else {
+                panic!("expected nonblocking spawn");
+            };
+            assert_eq!(
+                destination,
+                ClientTabIndexOrPaneId::TabIndexNoFocus(TabId::new(7))
+            );
+            assert!(completion
+                .agent_tab
+                .as_ref()
+                .unwrap()
+                .lifetime
+                .upgrade()
+                .is_some());
+            match target {
+                "ssh" => assert!(matches!(command.target, PaneTarget::Ssh { .. })),
+                "vm" => assert!(matches!(command.target, PaneTarget::Firecracker { .. })),
+                _ => assert!(matches!(command.target, PaneTarget::Local)),
+            }
+            completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+            completion.set_affected_tab_id(TabId::new(7));
+        });
+        let result = spawn_agent_for_control(
+            AgentPlacement::Tab(TabId::new(7)),
+            AgentSpawnSpec {
+                kind: Some("codex".into()),
+                allow_outside_worktree: Some(true),
+                firecracker: (target == "vm").then(|| "review".into()),
+                ..Default::default()
+            },
+            (target == "ssh").then(|| root.clone()),
+            (target == "local").then(|| "work".into()),
+            (target == "ssh").then(|| "host".into()),
+            false,
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        )
+        .unwrap();
+        assert_eq!(result.tab_id, Some(TabId::new(7)));
+        assert_eq!(result.cwd.is_none(), target == "vm");
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn created_agent_tab_failure_preserves_resources_and_unknown_completion_does_not_cleanup() {
+    use yinz_types::agent::control::AgentPlacement;
+    use yinz_types::internal_ids::TabId;
+    for (definitive, cleaned) in [(true, true), (true, false), (false, false)] {
+        let (_directory, root, data) = launch_failure_repository();
+        let checkout = root.join(".worktrees/review");
+        let (to_screen, screen_rx) = channels::unbounded();
+        let (to_pty, pty_rx) = channels::unbounded();
+        let senders = ThreadSenders {
+            to_screen: Some(SenderWithContext::new(to_screen)),
+            to_pty: Some(SenderWithContext::new(to_pty)),
+            ..Default::default()
+        };
+        let worker = thread::spawn(move || {
+            let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let ScreenInstruction::ResolveAgentTab {
+                reply,
+                invoked_with,
+                ..
+            } = instruction
+            else {
+                panic!("expected new tab request");
+            };
+            assert!(
+                checkout.join(".git").exists(),
+                "checkout must precede new tab creation"
+            );
+            assert!(invoked_with.is_some());
+            let lifetime = std::sync::Arc::new(());
+            reply
+                .send(Ok(yinz_bus::route::AgentTabPlacement {
+                    tab_id: TabId::new(7),
+                    lifetime: std::sync::Arc::downgrade(&lifetime),
+                    created: true,
+                }))
+                .unwrap();
+            let (instruction, _) = pty_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+            let PtyInstruction::SpawnTerminal(_, _, _, _, _, Some(mut completion), _) = instruction
+            else {
+                panic!("expected spawn");
+            };
+            if definitive {
+                completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+                completion.set_error_message("destination closed during startup".into());
+            }
+            drop(completion);
+            if definitive {
+                let (instruction, _) = screen_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                let ScreenInstruction::CleanupAgentTab(target, reply) = instruction else {
+                    panic!("expected cleanup");
+                };
+                assert_eq!(target.tab_id, TabId::new(7));
+                reply.send(cleaned).unwrap();
+            }
+        });
+        let response = spawn_agent_for_control(
+            AgentPlacement::NewTab(Some("review".into())),
+            AgentSpawnSpec {
+                kind: Some("codex".into()),
+                branch: Some("review".into()),
+                ..Default::default()
+            },
+            Some(root.clone()),
+            None,
+            None,
+            false,
+            crate::ClientId::new(1),
+            &senders,
+            &data,
+        )
+        .unwrap_err()
+        .into_response();
+        assert_eq!(response.outcome, AgentOutcome::Failed);
+        let resources = response.launch_resources.unwrap();
+        assert_eq!(resources.tab_id, Some(TabId::new(7)));
+        assert_eq!(
+            resources.created_tab_id,
+            (!cleaned).then_some(TabId::new(7))
+        );
+        assert_eq!(resources.cwd, Some(root.join(".worktrees/review")));
+        assert!(root.join(".worktrees/review/.git").exists());
+        if definitive {
+            assert_eq!(response.spawned.unwrap().tab_id, None);
+        } else {
+            assert!(response.spawned.is_none());
+            assert!(response.message.unwrap().contains("unknown"));
+        }
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn agent_placement_timeout_preserves_known_tab_and_checkout_without_cancelling_the_launch() {
+    use yinz_types::internal_ids::TabId;
+    let resources = AgentLaunchResources {
+        tab_id: Some(TabId::new(7)),
+        created_tab_id: Some(TabId::new(7)),
+        cwd: Some("/repo/review".into()),
+        branch: Some("review".into()),
+        ..Default::default()
+    };
+    let (tx, rx) = oneshot::channel();
+    let mut completion = NotificationEnd::new(tx);
+    completion.wait_for_agent_start = true;
+    let response = wait_for_agent_placement(rx, &resources, Duration::ZERO)
+        .unwrap_err()
+        .into_response();
+    assert_eq!(response.outcome, AgentOutcome::TimedOut);
+    assert_eq!(response.launch_resources, Some(resources));
+    assert!(response.message.unwrap().contains("late placement"));
+    // The pending startup/layout still owns its notification and can finish after this reply.
+    completion.set_affected_pane_id(PaneId::Terminal(TerminalId::new(17)));
+    completion.complete_pane_placement(TabId::new(7));
 }

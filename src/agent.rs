@@ -164,6 +164,8 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             json,
         ),
         Agent::Spawn {
+            tab,
+            new_tab,
             kind,
             file,
             project,
@@ -222,6 +224,21 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             if allow_outside_worktree {
                 fields.insert("allow_outside_worktree".into(), true.into());
             }
+            if tab.is_some() || new_tab.is_some() {
+                fields.remove("tab");
+                fields.remove("new_tab");
+                if let Some(tab) = tab {
+                    fields.insert("tab".into(), tab.into());
+                }
+                if let Some(name) = new_tab {
+                    fields.insert("new_tab".into(), name.map_or(true.into(), Into::into));
+                }
+            }
+            let placement = yinz_types::agent::control::AgentPlacement::from_launch_fields(
+                &input["tab"],
+                &input["new_tab"],
+            )
+            .map_err(|error| anyhow!(error))?;
             let mut spec: AgentSpawnSpec =
                 serde_json::from_value(input.clone()).context("parse launch options")?;
             if allow_yinz {
@@ -252,6 +269,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             timeout = Duration::from_secs(120);
             (
                 AgentRequest::Spawn {
+                    placement,
                     automatic_firecracker_vm: false,
                     spec,
                     cwd,
@@ -466,6 +484,22 @@ fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<A
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()
         .context("cannot set up agent reply")?;
+    if matches!(&request, AgentRequest::Spawn { placement, .. } if *placement != yinz_types::agent::control::AgentPlacement::Automatic)
+    {
+        receiver
+            .set_recv_timeout(Some(Duration::from_secs(5)))
+            .context("bound placement support check")?;
+        sender
+            .send_client_msg(ClientToServerMsg::AgentControl(
+                AgentRequest::SpawnPlacementSupport,
+            ))
+            .context("check server tab placement support")?;
+        if !matches!(receiver.recv_server_msg(), IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _)
+            if response.output.as_deref() == Some("agent-tab-placement-v1"))
+        {
+            bail!("tab placement requires a matching running server; restart the session with this Yinz version (spawn was not sent)");
+        }
+    }
     // The server's deadline determines the outcome. Allow its timeout result to arrive.
     let deadline = Instant::now()
         .checked_add(timeout)
@@ -558,6 +592,18 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
                 .unwrap_or_else(|| "-".into())
         )
         .context("cannot write spawned agent")?;
+        if let Some(tab) = spawned.tab_id {
+            writeln!(
+                out,
+                "Tab: {tab}{}",
+                if spawned.created_tab_id == Some(tab) {
+                    " (created)"
+                } else {
+                    ""
+                }
+            )
+            .context("cannot write spawned tab")?;
+        }
     }
     if let Some(resources) = &response.launch_resources {
         writeln!(
@@ -572,6 +618,13 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             resources.reused,
         )
         .context("cannot write partial launch resources")?;
+        if let Some(tab) = resources.tab_id {
+            writeln!(out, "Requested tab: {tab}").context("cannot write requested tab")?;
+        }
+        if let Some(tab) = resources.created_tab_id {
+            writeln!(out, "Created tab retained or uncertain: {tab}")
+                .context("cannot write retained tab")?;
+        }
     }
     for status in &response.agents {
         writeln!(

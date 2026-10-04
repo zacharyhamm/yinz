@@ -221,6 +221,12 @@ pub struct AgentSpawnSpec {
 /// re-derived from the request, because the request no longer knows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnedAgent {
+    /// Observed destination on success; a known/requested destination on failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<crate::internal_ids::TabId>,
+    /// A launch-created tab, retained or uncertain on failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_tab_id: Option<crate::internal_ids::TabId>,
     pub pane_id: PaneId,
     /// The branch the agent is on, when git work was done. `None` for a spawn that made no
     /// checkout.
@@ -244,6 +250,12 @@ pub struct SpawnedAgent {
 /// its pane is known. Creation may be incomplete; inspect before retrying a failed spawn.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentLaunchResources {
+    /// Observed destination on success; a known/requested destination on failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<crate::internal_ids::TabId>,
+    /// A launch-created tab, retained or uncertain on failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_tab_id: Option<crate::internal_ids::TabId>,
     pub cwd: Option<PathBuf>,
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

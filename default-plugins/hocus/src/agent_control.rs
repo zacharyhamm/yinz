@@ -54,6 +54,7 @@ impl State {
                 .flatten()
             });
             return Ok(AgentRequest::Spawn {
+                placement: Default::default(),
                 spec,
                 cwd,
                 project,

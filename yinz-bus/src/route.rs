@@ -3,11 +3,21 @@ use crate::PaneId;
 use tokio::sync::oneshot;
 use yinz_types::{data::UnblockCondition, internal_ids::TabId};
 
+/// A weak reference pins a tab incarnation without keeping a closed tab alive.
+#[derive(Debug, Clone)]
+pub struct AgentTabPlacement {
+    pub tab_id: TabId,
+    pub lifetime: std::sync::Weak<()>,
+    pub created: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActionCompletionResult {
+    pub agent_tab: Option<AgentTabPlacement>,
     pub exit_status: Option<i32>,
     pub affected_pane_id: Option<PaneId>,
     pub affected_tab_id: Option<TabId>,
+    pub created_tab_id: Option<TabId>,
     pub error_message: Option<String>,
     pub stdout_message: Option<String>,
 }
@@ -20,6 +30,11 @@ pub struct ActionCompletionResult {
 // that it can be included in various other larger structs - DO NOT RELY ON CLONING IT!
 pub struct NotificationEnd {
     channel: Option<oneshot::Sender<ActionCompletionResult>>,
+    /// Direct agent control waits for remote startup before placing its pane.
+    pub wait_for_agent_start: bool,
+    placement_pending: bool,
+    pub agent_tab: Option<AgentTabPlacement>,
+    pub created_tab_id: Option<TabId>,
     requires_input_barrier: bool,
     exit_status: Option<i32>,
     unblock_condition: Option<UnblockCondition>,
@@ -55,6 +70,10 @@ impl Clone for NotificationEnd {
         // Always clone as None - only the original holder should signal completion
         NotificationEnd {
             channel: None,
+            wait_for_agent_start: self.wait_for_agent_start,
+            placement_pending: self.placement_pending,
+            agent_tab: self.agent_tab.clone(),
+            created_tab_id: self.created_tab_id,
             requires_input_barrier: self.requires_input_barrier,
             exit_status: self.exit_status,
             unblock_condition: self.unblock_condition,
@@ -71,6 +90,10 @@ impl NotificationEnd {
     pub fn new(sender: oneshot::Sender<ActionCompletionResult>) -> Self {
         NotificationEnd {
             channel: Some(sender),
+            wait_for_agent_start: false,
+            placement_pending: false,
+            agent_tab: None,
+            created_tab_id: None,
             requires_input_barrier: false,
             exit_status: None,
             unblock_condition: None,
@@ -80,6 +103,14 @@ impl NotificationEnd {
             stdout_message: None,
             followers: vec![],
         }
+    }
+
+    pub fn for_agent_layout(placement: AgentTabPlacement) -> Self {
+        let (sender, _) = oneshot::channel();
+        let mut notification = Self::new(sender);
+        notification.channel = None;
+        notification.agent_tab = Some(placement);
+        notification
     }
 
     pub fn new_client_input(sender: oneshot::Sender<ActionCompletionResult>) -> Self {
@@ -98,6 +129,10 @@ impl NotificationEnd {
     ) -> Self {
         NotificationEnd {
             channel: Some(sender),
+            wait_for_agent_start: false,
+            placement_pending: false,
+            agent_tab: None,
+            created_tab_id: None,
             requires_input_barrier: false,
             exit_status: None,
             unblock_condition: Some(unblock_condition),
@@ -119,6 +154,19 @@ impl NotificationEnd {
 
     pub fn set_affected_tab_id(&mut self, tab_id: TabId) {
         self.affected_tab_id = Some(tab_id);
+        self.placement_pending = false;
+    }
+
+    pub fn complete_pane_placement(&mut self, tab_id: TabId) {
+        self.placement_pending = false;
+        // General new-pane actions print a pane ID. Adding a tab ID changes their output.
+        if self.wait_for_agent_start {
+            self.set_affected_tab_id(tab_id);
+        }
+    }
+
+    pub fn wait_for_placement(&mut self) {
+        self.placement_pending = true;
     }
 
     pub fn set_error_message(&mut self, message: String) {
@@ -155,8 +203,13 @@ impl NotificationEnd {
 
 impl Drop for NotificationEnd {
     fn drop(&mut self) {
+        if self.placement_pending && self.error_message.is_none() {
+            self.error_message = Some("pane was not placed in a live destination; the destination may have closed before its layout completed".into());
+        }
         // Followers are fields, dropped after this body: each sends the copy it is given here.
         for follower in self.followers.iter_mut() {
+            follower.agent_tab = self.agent_tab.clone();
+            follower.created_tab_id = self.created_tab_id;
             follower.exit_status = self.exit_status;
             follower.affected_pane_id = self.affected_pane_id;
             follower.affected_tab_id = self.affected_tab_id;
@@ -165,9 +218,11 @@ impl Drop for NotificationEnd {
         }
         if let Some(tx) = self.channel.take() {
             let result = ActionCompletionResult {
+                agent_tab: self.agent_tab.clone(),
                 exit_status: self.exit_status,
                 affected_pane_id: self.affected_pane_id,
                 affected_tab_id: self.affected_tab_id,
+                created_tab_id: self.created_tab_id,
                 error_message: self.error_message.take(),
                 stdout_message: self.stdout_message.take(),
             };
@@ -207,9 +262,11 @@ mod tests {
     #[test]
     fn test_action_completion_result_includes_tab_id() {
         let result = ActionCompletionResult {
+            agent_tab: None,
             exit_status: None,
             affected_pane_id: None,
             affected_tab_id: Some(TabId::new(123)),
+            created_tab_id: None,
             error_message: None,
             stdout_message: None,
         };

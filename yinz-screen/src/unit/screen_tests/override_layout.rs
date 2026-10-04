@@ -644,7 +644,7 @@ fn layout_spawn_failure_preserves_moved_panes_and_releases_navigation() {
         // FIFO queries observe the queued switch before and after failure recovery.
         assert_eq!(focused_tab(), TabId::new(0));
         mock.to_screen
-            .send(ScreenInstruction::LayoutSpawnFailed(pending_tab))
+            .send(ScreenInstruction::LayoutSpawnFailed(pending_tab, None))
             .unwrap();
         assert_eq!(
             focused_tab(),

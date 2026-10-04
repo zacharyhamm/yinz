@@ -265,6 +265,8 @@ pub enum ScreenContext {
     SetPaneColor,
     AgentControl,
     AgentControlReply,
+    ResolveAgentTab,
+    CleanupAgentTab,
     AgentSpawned,
     AgentReport,
     SetPaneAgent,

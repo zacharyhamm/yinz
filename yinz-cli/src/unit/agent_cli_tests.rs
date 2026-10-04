@@ -394,3 +394,40 @@ fn control_agent_commands_take_no_target_and_support_json() {
             .json());
     }
 }
+
+#[test]
+fn spawn_tab_flags_accept_stable_zero_and_optional_new_tab_name() {
+    use clap::Parser;
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "spawn", "--tab", "0", "--project", "work"])
+            .unwrap()
+            .command,
+        Agent::Spawn {
+            tab: Some(0),
+            project: Some(_),
+            ..
+        }
+    ));
+    for args in [
+        vec!["--tab", "review"],
+        vec!["--tab", "-1"],
+        vec!["--tab", "18446744073709551616"],
+        vec!["--tab", "0", "--new-tab"],
+    ] {
+        assert!(AgentCli::try_parse_from(["agent", "spawn"].into_iter().chain(args)).is_err());
+    }
+    assert!(matches!(
+        AgentCli::try_parse_from(["agent", "spawn", "--new-tab", "--json"])
+            .unwrap()
+            .command,
+        Agent::Spawn {
+            new_tab: Some(None),
+            json: true,
+            ..
+        }
+    ));
+    assert!(
+        matches!(AgentCli::try_parse_from(["agent", "spawn", "--new-tab", "review"]).unwrap().command,
+        Agent::Spawn { new_tab: Some(Some(name)), .. } if name == "review")
+    );
+}

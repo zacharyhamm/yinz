@@ -35,6 +35,7 @@ use {yinz_types::data::NewPanePlacement, yinz_types::data::HOCUS_AGENT_PANE_CONT
 /// be brought to it afterwards.
 pub(super) struct AgentPlacement {
     pub target: ClientTabIndexOrPaneId,
+    pub created_tab_id: Option<TabId>,
     /// A client to focus on the pane once it is placed. Set when the pane was sent to a tab
     /// that already exists and the spawn wanted focus: a `TabIndex` target places without a
     /// client, so nothing else would move one. A tab made for the pane needs no such step -
@@ -49,6 +50,7 @@ impl AgentPlacement {
         AgentPlacement {
             target,
             focus_after_placing: None,
+            created_tab_id: None,
         }
     }
 }
@@ -239,6 +241,7 @@ impl Screen {
                 })
             })
             .collect();
+        let mut created_tab_id = None;
         let (destination, focus_after_placing) = match choose_tab(&candidates, floor) {
             Some(tab_id) => (tab_id, wants_focus.then_some(client_id)),
             None => {
@@ -248,7 +251,10 @@ impl Screen {
                         "failed to open a tab for an agent pane; it goes where it was asked for",
                     );
                 match made {
-                    Ok(tab_id) => (tab_id, None),
+                    Ok(tab_id) => {
+                        created_tab_id = Some(tab_id);
+                        (tab_id, None)
+                    },
                     Err(error) => {
                         Err::<(), _>(error).non_fatal();
                         return AgentPlacement::unchanged(target);
@@ -271,6 +277,84 @@ impl Screen {
                 ClientTabIndexOrPaneId::TabIndexNoFocus(destination)
             },
             focus_after_placing,
+            created_tab_id,
         }
+    }
+}
+
+impl Screen {
+    pub(super) fn resolve_agent_tab(
+        &mut self,
+        placement: yinz_types::agent::control::AgentPlacement,
+        invoked_with: Option<Run>,
+        client_id: ClientId,
+    ) -> Result<yinz_bus::route::AgentTabPlacement, String> {
+        use yinz_types::agent::control::AgentPlacement;
+        placement.validate().map_err(str::to_owned)?;
+        let (tab_id, created) = match placement {
+            AgentPlacement::Tab(id) => {
+                if let Some(tab) = self.tabs.get_mut(&id) {
+                    tab.agent_tab_cleanup_allowed = false;
+                }
+                (id, false)
+            },
+            AgentPlacement::NewTab(name) => {
+                let id = self
+                    .new_tab_for_adopted_pane(invoked_with, client_id, false)
+                    .map_err(|error| format!("cannot create agent tab: {error:#}"))?;
+                if let Some(tab) = self.tabs.get_mut(&id) {
+                    tab.agent_tab_waiting_for_pane = true;
+                }
+                if let Some(name) = name {
+                    if let Some(tab) = self.tabs.get_mut(&id) {
+                        tab.name = name;
+                        tab.set_user_named(true);
+                    }
+                }
+                (id, true)
+            },
+            AgentPlacement::Automatic => {
+                return Err("automatic placement does not reserve a tab".into())
+            },
+        };
+        if self.deferred_tab_closes.contains(&tab_id) {
+            return Err(format!("tab {tab_id} is closing"));
+        }
+        let tab = self
+            .tabs
+            .get(&tab_id)
+            .ok_or_else(|| format!("tab {tab_id} does not exist"))?;
+        Ok(yinz_bus::route::AgentTabPlacement {
+            tab_id,
+            lifetime: std::sync::Arc::downgrade(&tab.agent_tab_lifetime),
+            created,
+        })
+    }
+
+    pub(super) fn cleanup_agent_tab(
+        &mut self,
+        placement: &yinz_bus::route::AgentTabPlacement,
+    ) -> bool {
+        if placement.lifetime.upgrade().is_none() {
+            return true;
+        }
+        let owned_empty = placement.created
+            && self.tabs.get(&placement.tab_id).is_some_and(|tab| {
+                placement
+                    .lifetime
+                    .ptr_eq(&std::sync::Arc::downgrade(&tab.agent_tab_lifetime))
+                    && tab.agent_tab_cleanup_allowed
+                    && !tab.is_pending()
+                    && tab.get_all_pane_ids().is_empty()
+            });
+        owned_empty
+            && self
+                .close_tab_by_id(placement.tab_id)
+                .map_err(|error| {
+                    log::error!("cannot remove empty agent tab: {error:#}");
+                    error
+                })
+                .is_ok()
+            && !self.tabs.contains_key(&placement.tab_id)
     }
 }

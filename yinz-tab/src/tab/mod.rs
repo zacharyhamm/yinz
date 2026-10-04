@@ -268,6 +268,12 @@ enum PaneMove {
 }
 
 pub struct Tab {
+    /// Only this tab owns the strong reference; delayed launches hold weak references.
+    pub agent_tab_lifetime: std::sync::Arc<()>,
+    pub agent_tab_cleanup_allowed: bool,
+    /// Keep an empty default layout alive until its reserved agent pane arrives.
+    pub agent_tab_waiting_for_pane: bool,
+    pending_agent_placements: Vec<(PaneId, NotificationEnd)>,
     pub agent_double_escape: bool,
     pub pending_agent_escapes: HashMap<(ClientId, PaneId), Instant>,
     pub id: TabId,
@@ -591,6 +597,10 @@ impl Tab {
             pids_waiting_resize: HashSet::new(),
             pending_command_respawns: HashMap::new(),
             host_cursor_state: HashMap::new(),
+            agent_tab_lifetime: std::sync::Arc::new(()),
+            agent_tab_cleanup_allowed: false,
+            agent_tab_waiting_for_pane: false,
+            pending_agent_placements: vec![],
             is_pending: true, // will be switched to false once the layout is applied
             pending_instructions: vec![],
             swap_layouts,
@@ -1544,6 +1554,12 @@ impl Tab {
         client_id: ClientId,
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
+        if !new_terminal_ids.is_empty()
+            || !new_floating_terminal_ids.is_empty()
+            || new_plugin_ids.values().any(|ids| !ids.is_empty())
+        {
+            self.agent_tab_cleanup_allowed = false;
+        }
         if let Err(error) = self.validate_layout(
             &layout,
             &floating_panes_layout,
@@ -1577,6 +1593,7 @@ impl Tab {
         self.tiled_panes.reapply_pane_frames();
         self.is_pending = false;
         self.apply_buffered_instructions().non_fatal();
+        self.complete_pending_agent_placements();
         self.refresh_overlay_expansion();
         if let Some(supported) = self.kitty_host_support {
             self.tiled_panes.update_pane_kitty_host_support(supported);
@@ -1607,6 +1624,7 @@ impl Tab {
         client_id: ClientId,
         mut blocking_terminal: Option<(TerminalId, NotificationEnd)>,
     ) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         if let Err(error) = self.validate_override_layout(
             &layout,
             &floating_panes_layout,
@@ -1662,6 +1680,7 @@ impl Tab {
         );
         self.refresh_overlay_expansion();
         self.apply_buffered_instructions().non_fatal();
+        self.complete_pending_agent_placements();
         Ok(())
     }
     pub fn swap_layout_info(&self) -> (Option<String>, bool) {
@@ -1785,11 +1804,13 @@ impl Tab {
         layout: &TiledPaneLayout,
         order: &[PaneId],
     ) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         self.tiled_panes.unset_fullscreen();
         self.layout_applier(None)
             .apply_tiled_panes_layout_in_order(layout, Some(order))?;
         self.is_pending = false;
         self.apply_buffered_instructions()?;
+        self.complete_pending_agent_placements();
         self.tiled_panes.reapply_pane_frames();
         self.resize_all_stack_list_hidden_members();
         self.swap_layouts.set_is_tiled_damaged();
@@ -2082,6 +2103,7 @@ impl Tab {
     /// A name the user asked for. An empty one hands the tab back to automatic naming,
     /// under the "Tab #N" it started with, rather than leaving it blank.
     pub fn rename_by_user(&mut self, name: String) {
+        self.agent_tab_cleanup_allowed = false;
         if name.is_empty() {
             self.name = self.default_name.clone();
             self.user_named = false;
@@ -2092,12 +2114,14 @@ impl Tab {
     }
     /// Rename mode is beginning: remember what an undo goes back to.
     pub fn start_rename(&mut self) {
+        self.agent_tab_cleanup_allowed = false;
         self.prev_name = self.name.clone();
         self.prev_user_named = self.user_named;
     }
     /// A keystroke in rename mode. The tab is the user's from the first one, so the bar
     /// shows what is being typed rather than the project it would otherwise wear.
     pub fn edit_name_by_user(&mut self, edit: impl FnOnce(&mut String)) {
+        self.agent_tab_cleanup_allowed = false;
         edit(&mut self.name);
         self.user_named = true;
     }
@@ -2109,6 +2133,7 @@ impl Tab {
     }
     /// Returns whether anything changed.
     pub fn undo_rename(&mut self) -> bool {
+        self.agent_tab_cleanup_allowed = false;
         let changed = self.name != self.prev_name || self.user_named != self.prev_user_named;
         self.name = self.prev_name.clone();
         self.user_named = self.prev_user_named;
@@ -2214,6 +2239,7 @@ impl Tab {
         Ok(())
     }
     pub fn add_client(&mut self, client_id: ClientId, mode_info: Option<ModeInfo>) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         // Client ids are recycled, and a client arriving in a tab that already has clients does
         // not go through `visible(true)`. Whatever the id's previous holder was told about its
         // cursor says nothing about this one's terminal, so start it from scratch.
@@ -2985,6 +3011,28 @@ impl Tab {
     }
 
     /// A failed layout still leaves any panes already in the tab usable.
+    pub fn complete_agent_placement(&mut self, pane_id: PaneId, mut completion: NotificationEnd) {
+        self.agent_tab_waiting_for_pane = false;
+        if self.is_pending {
+            completion.wait_for_placement();
+            self.pending_agent_placements.push((pane_id, completion));
+        } else if self.has_pane_with_pid(&pane_id) {
+            completion.complete_pane_placement(self.id);
+        }
+    }
+
+    pub fn fail_pending_agent_placements(&mut self, message: &str) {
+        for (_, mut completion) in std::mem::take(&mut self.pending_agent_placements) {
+            completion.set_error_message(message.to_owned());
+        }
+    }
+
+    fn complete_pending_agent_placements(&mut self) {
+        for (pane_id, completion) in std::mem::take(&mut self.pending_agent_placements) {
+            self.complete_agent_placement(pane_id, completion);
+        }
+    }
+
     pub fn finish_pending_layout(&mut self) {
         self.is_pending = false;
         // The rejected initial layout never supplied final geometry for arriving panes.
@@ -2992,6 +3040,7 @@ impl Tab {
         self.apply_buffered_instructions()
             .context("failed to replay retained pane output")
             .non_fatal();
+        self.complete_pending_agent_placements();
         self.set_force_render();
     }
 
@@ -9319,6 +9368,7 @@ impl Tab {
     /// Nothing brings it back on its own - it has to be asked for by name (a plugin's
     /// `show_self`, selecting a stack-list member).
     pub fn park_pane(&mut self, mut pane: Box<dyn Pane>) {
+        self.agent_tab_cleanup_allowed = false;
         self.retain_pane_tabs_transfer(&mut pane);
         self.suppressed_panes
             .insert(pane.pid(), SuppressedPane::parked(pane));
@@ -9381,6 +9431,7 @@ impl Tab {
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         self.retain_pane_tabs_transfer(&mut pane);
         let err_context = || "failed to add overlay pane".to_string();
         placement.validate().map_err(|error| anyhow!(error))?;
@@ -9425,6 +9476,7 @@ impl Tab {
         should_focus_new_pane: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         self.retain_pane_tabs_transfer(&mut pane);
         let err_context = || "failed to add floating pane".to_string();
         // A pane that is an overlay by configuration is one wherever it came from, including the
@@ -9513,6 +9565,7 @@ impl Tab {
         without_relayout: bool,
         client_id: Option<ClientId>,
     ) -> Result<()> {
+        self.agent_tab_cleanup_allowed = false;
         self.retain_pane_tabs_transfer(&mut pane);
         if self.tiled_panes.fullscreen_is_active() {
             self.tiled_panes.unset_fullscreen();
@@ -9577,6 +9630,7 @@ impl Tab {
         pane: Box<dyn Pane>,
         placement: ExtractedPanePlacement,
     ) -> AcceptedPane {
+        self.agent_tab_cleanup_allowed = false;
         let id = pane.pid();
         match placement {
             ExtractedPanePlacement::Tiled => self.tiled_panes.add_pane_with_existing_geom(id, pane),

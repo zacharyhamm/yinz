@@ -535,3 +535,39 @@ fn control_registration_rejects_a_conflicting_session() {
         .to_string()
         .contains("conflicts"));
 }
+
+#[test]
+fn spawn_tab_file_forms_and_cli_placement_precedence() {
+    for (flags, input, expected) in [
+        (vec![], json!({}), json!("automatic")),
+        (vec![], json!({"tab": 0}), json!({"tab": 0})),
+        (vec![], json!({"new_tab": true}), json!({"new_tab": null})),
+        (
+            vec![],
+            json!({"new_tab": "review"}),
+            json!({"new_tab": "review"}),
+        ),
+        (
+            vec![],
+            json!({"tab": null, "new_tab": false}),
+            json!("automatic"),
+        ),
+        (
+            vec!["--tab", "7"],
+            json!({"new_tab": "review"}),
+            json!({"tab": 7}),
+        ),
+        (
+            vec!["--new-tab"],
+            json!({"tab": 7}),
+            json!({"new_tab": null}),
+        ),
+        (
+            vec!["--new-tab", "review"],
+            json!({"tab": "invalid", "new_tab": 42}),
+            json!({"new_tab": "review"}),
+        ),
+    ] {
+        assert_eq!(spawn_args(&flags, input)["placement"], expected);
+    }
+}

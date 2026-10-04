@@ -284,7 +284,7 @@ pub enum ScreenInstruction {
         Option<NotificationEnd>,               // regular completion signal
         Option<(TerminalId, NotificationEnd)>, // blocking_terminal (terminal_id, completion_tx)
     ),
-    LayoutSpawnFailed(TabId),
+    LayoutSpawnFailed(TabId, Option<crate::route::AgentTabPlacement>),
     SwitchTabNext(ClientId, Option<NotificationEnd>),
     SwitchTabPrev(ClientId, Option<NotificationEnd>),
     ToggleActiveSyncTab(ClientId, Option<NotificationEnd>),
@@ -870,6 +870,16 @@ pub enum ScreenInstruction {
     AgentControlReply(
         yinz_types::agent::control::AgentRequest,
         std::sync::mpsc::Sender<yinz_types::agent::control::AgentResponse>,
+    ),
+    ResolveAgentTab {
+        placement: yinz_types::agent::control::AgentPlacement,
+        invoked_with: Option<Run>,
+        client_id: ClientId,
+        reply: std::sync::mpsc::Sender<Result<crate::route::AgentTabPlacement, String>>,
+    },
+    CleanupAgentTab(
+        crate::route::AgentTabPlacement,
+        std::sync::mpsc::Sender<bool>,
     ),
     AgentSpawned(yinz_types::agent::SpawnedAgent),
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),

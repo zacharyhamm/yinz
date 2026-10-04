@@ -27,9 +27,11 @@ pub fn control_agent(
             project,
             remote_host,
             automatic_firecracker_vm,
+            placement,
         } = request
         {
             let mut spawned = match spawn_agent_for_control(
+                placement,
                 spec,
                 cwd,
                 project,

@@ -39,8 +39,9 @@ Claude Haiku launch example:
 yinz agent spawn --kind claude --model haiku --cwd . --branch review-auth --base main --json
 ```
 
-Use the actual `spawned.pane_id`, `spawned.cwd`, and `spawned.branch` returned by spawn.
-If spawn fails, inspect `spawned` and `launch_resources`: a pane, branch, or worktree may already exist. Reconcile those resources before retrying. Guest-only VM launches can return `cwd: null`; inspect the guest rather than treating a host path as its directory.
+Use the actual `spawned.pane_id`, `spawned.tab_id`, `spawned.cwd`, and `spawned.branch` returned by spawn.
+`spawned.created_tab_id` identifies a tab created by this launch, including automatic overflow.
+If spawn fails, inspect `spawned` and `launch_resources`: a pane, tab, branch, or worktree may already exist. Reconcile those resources before retrying. Guest-only VM launches can return `cwd: null`; inspect the guest rather than treating a host path as its directory.
 The idle wait already returns status in `agents`; use its `agent.session_id` as the conversation guard and check `ready`, `status_available`, and `prompt_supported` before prompting.
 Completed prompt responses include the answer in `message` when the provider reports it. Use `status` for a fresh observation and `read` to diagnose missing readiness, dialogs, or missing output; neither is an automatic extra step.
 If startup remains `Spawned` or reports `status_unavailable`, read the pane and check hooks. Answer a visible startup dialog deliberately with `send-keys`, within the user's authorization, then wait again. A Codex worktree trust prompt accepts `y Enter`; do not approve trust without authorization.
@@ -101,7 +102,36 @@ When a worker is done, close its pane: `yinz action close-pane --pane-id termina
 Closing the pane leaves its branch and worktree in place. Remove them only when the work is merged or
 deliberately discarded and no pane still runs there: `git worktree remove PATH`, then `git branch -d BRANCH`.
 
+Choose the initial destination with `--tab ID` or `--new-tab [NAME]`. These options are mutually exclusive.
+`--tab 0` is valid. IDs identify tabs in the selected Yinz session, not tab-bar positions.
+Existing-tab names are not supported. A missing or closed destination fails without fallback, even if another tab receives the same ID.
+`--new-tab` creates an unfocused tab. An optional name must be nonblank and contain no control characters.
+Without either option, automatic placement can use a roomier tab or create one.
+All forms preserve keyboard focus for every attached client. Explicit tiled insertion can end fullscreen in the destination tab.
+A matching running server is required. The CLI checks support before sending explicit placement.
+
+`--project` selects checkout settings independently of the destination tab. Spawn does not assign or change the tab's project.
+For `agent list --project`, an assigned tab project still takes precedence over checkout discovery.
+Thus, a pane launched from one project's checkout can appear under another project's assigned tab.
+Placement is temporary. A later pane move or `arrange-panes-by-project` can relocate the pane.
+
+```sh
+yinz agent spawn --kind claude --project work --branch review --tab 7 --json
+yinz agent spawn --kind claude --cwd . --branch review --new-tab review --json
+```
+
+On failure, `launch_resources.tab_id` is a known destination, not proof that a live pane exists there.
+`launch_resources.created_tab_id` identifies a created tab that remains or whose cleanup is uncertain.
+Yinz removes only an unused, empty, launch-created tab after pending layout work has finished.
+Tabs with layout content, other activity, or uncertain ownership remain. The failure message describes cleanup.
+Branches and worktrees remain for recovery. After a timeout, inspect the session before retrying. A late launch can still complete.
+The existing create-tab, spawn, then `pane-move-to-tab` sequence remains available for recovery.
+Wasm and Deno `SpawnAgent` APIs retain automatic placement.
+
 `agent spawn --file PATH` or `--file -` reads launch options from JSON. CLI options override file values.
+JSON placement accepts `"tab": 7`, `"new_tab": true`, or `"new_tab": "review"`.
+Null means unspecified. `"new_tab": false` does not request a tab.
+A CLI placement option replaces the file's entire placement choice.
 Spawn rejects `prompt` and `reuse_prompt`, including fields in JSON. Use spawn, wait, then prompt.
 Use `--reuse` only when the existing branch or worktree is the intended target.
 Otherwise collisions produce a fresh branch and worktree. Spawn then reports `requested_branch` beside the actual `branch`.
