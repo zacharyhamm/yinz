@@ -28,7 +28,19 @@ fn setup_on_target(
     CapturedClientMessages,
     Receiver<(PtyWriteInstruction, ErrorContext)>,
 ) {
-    let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+    setup_with_size(command, target, Size { cols: 80, rows: 24 })
+}
+
+fn setup_with_size(
+    command: &str,
+    target: PaneTarget,
+    size: Size,
+) -> (
+    Screen,
+    CapturedClientMessages,
+    Receiver<(PtyWriteInstruction, ErrorContext)>,
+) {
+    let mut screen = create_non_mirrored_screen(size);
     let os = FakeInputOutput::default();
     let messages = os.server_to_client_messages.clone();
     screen.bus.os_input = Some(Box::new(os));
@@ -6440,4 +6452,556 @@ fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
         }
     }
     unregister_owner(owner);
+}
+
+fn draft_request(screen: &Screen) -> AgentRequest {
+    AgentRequest::ClearDraft {
+        pane_id: PANE,
+        expected_session_id: "conversation".into(),
+        input_revision: screen.tabs[&TabId::new(0)].agent_input_revision(PANE),
+        confirm_discard: true,
+        interrupted: false,
+        timeout_ms: 30_000,
+    }
+}
+
+fn draft_frame(screen: &mut Screen, kind: &str, text: &str, cursor: usize, now: Instant) {
+    let pane = screen.tabs[&TabId::new(0)].get_pane_with_id(PANE).unwrap();
+    let border = "─".repeat(pane.get_content_columns());
+    let border = if kind == "pi" {
+        format!("\x1b[38;5;6m{border}\x1b[m")
+    } else {
+        border
+    };
+    // Historical labels must not affect either stage of composer verification.
+    let history = "Previous response: [Image #1] [Pasted text #1] [Attached file]\r\n\r\n";
+    let frame = match kind {
+        "claude" => format!(
+            "\x1b[2J\x1b[H{history}{border}\r\n❯ {text}\r\n{border}\r\n  auto mode on\x1b[4;{}H",
+            cursor + 3
+        ),
+        "pi" => format!(
+            "\x1b[2J\x1b[H{history}{border}\r\n{text}\r\n{border}\r\n/work\r\n0% (openai) gpt-5.5\x1b[4;{}H",
+            cursor + 1
+        ),
+        _ => format!(
+            "\x1b[2J\x1b[H{history}\r\n› {text}\r\n\r\n  GPT-6-Astra medium · /work\x1b[4;{}H",
+            cursor + 3
+        ),
+    };
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), format!("{frame}\x1b[?25h").into_bytes())
+        .unwrap();
+    screen.pane_output_activity.insert(PANE, now);
+}
+
+#[test]
+fn clear_draft_verifies_marker_then_stable_empty_before_recovery() {
+    for kind in ["claude", "codex", "pi"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, kind, "old draft", 3, now);
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        let bytes = finish_paste(&writes);
+        let marker = std::str::from_utf8(&bytes)
+            .unwrap()
+            .strip_prefix("\x1b[200~")
+            .unwrap()
+            .strip_suffix("\x1b[201~")
+            .unwrap();
+        screen.agent_control(
+            AgentRequest::Status {
+                pane_id: PANE,
+                expected_session_id: None,
+            },
+            CLIENT,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT)[0].agents[0].not_ready_reason,
+            Some(NotReadyReason::ClearingDraft)
+        );
+        // Delivery alone and a hidden cursor during redraw cannot authorize Ctrl+C.
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), b"\x1b[?25l".to_vec())
+            .unwrap();
+        screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+        assert!(finish_paste(&writes).is_empty());
+        draft_frame(
+            &mut screen,
+            kind,
+            &format!("old{marker} draft"),
+            3 + marker.len(),
+            now + Duration::from_millis(2),
+        );
+        screen.refresh_agent_controls_at(now + Duration::from_millis(3));
+        assert_eq!(finish_paste(&writes), [3]);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(4));
+        assert!(replies(&messages, CLIENT).is_empty());
+        draft_frame(&mut screen, kind, "", 0, now + Duration::from_millis(5));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(6));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(255));
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.refresh_agent_controls_at(now + Duration::from_millis(256));
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, AgentOutcome::Ok, "{kind}");
+        assert!(response.agents[0].ready);
+        assert_eq!(
+            response.agents[0].agent.session_id.as_deref(),
+            Some("conversation")
+        );
+        screen.agent_control(prompt(false), CLIENT);
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    }
+}
+
+#[test]
+fn clear_draft_rejects_guards_without_writing() {
+    for reason in [
+        "confirmation",
+        "revision",
+        "conversation",
+        "timeout",
+        "layout",
+        "busy",
+        "typing",
+        "paste",
+    ] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, "codex", "draft", 5, now);
+        let mut request = draft_request(&screen);
+        match reason {
+            "confirmation" => {
+                if let AgentRequest::ClearDraft {
+                    confirm_discard, ..
+                } = &mut request
+                {
+                    *confirm_discard = false;
+                }
+            },
+            "revision" => {
+                if let AgentRequest::ClearDraft { input_revision, .. } = &mut request {
+                    *input_revision += 1;
+                }
+            },
+            "conversation" => {
+                if let AgentRequest::ClearDraft {
+                    expected_session_id,
+                    ..
+                } = &mut request
+                {
+                    *expected_session_id = "other".into();
+                }
+            },
+            "timeout" => {
+                if let AgentRequest::ClearDraft { timeout_ms, .. } = &mut request {
+                    *timeout_ms = 0;
+                }
+            },
+            "layout" | "paste" => {
+                screen
+                    .tabs
+                    .get_mut(&TabId::new(0))
+                    .unwrap()
+                    .handle_pty_bytes(
+                        TerminalId::new(7),
+                        if reason == "layout" {
+                            b"\x1b[?25l".to_vec()
+                        } else {
+                            b"\x1b[?2004l".to_vec()
+                        },
+                    )
+                    .unwrap();
+            },
+            "busy" => report(&mut screen, hook("UserPromptSubmit")),
+            "typing" => {
+                screen.agent_control(send_keys(vec![BareKey::Char('x')]), CLIENT);
+                replies(&messages, CLIENT);
+                finish_paste(&writes);
+                request = draft_request(&screen);
+            },
+            _ => unreachable!(),
+        }
+        screen.agent_control(request, CLIENT);
+        assert_ne!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Ok,
+            "{reason}"
+        );
+        assert!(finish_paste(&writes).is_empty(), "{reason}");
+    }
+}
+
+#[test]
+fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
+    for race in ["typing", "report", "disconnect", "timeout", "replacement"] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, "codex", "draft", 5, now);
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        match race {
+            "typing" => {
+                screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2));
+            },
+            "report" => report(&mut screen, hook("UserPromptSubmit")),
+            "disconnect" => screen.detach_agent_controls(CLIENT),
+            "replacement" => screen.invalidate_agent_lifecycle(PANE),
+            _ => {},
+        }
+        let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
+        screen.refresh_agent_controls_at(later);
+        assert!(
+            screen.agent_draft_clears.contains_key(&PANE),
+            "queued writes keep ownership: {race}"
+        );
+        screen.agent_control(recover(), ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2)).last().unwrap().outcome,
+            AgentOutcome::Rejected
+        );
+        finish_paste(&writes);
+        screen.refresh_agent_controls_at(later);
+        assert!(screen.agent_draft_clears.is_empty());
+        assert!(
+            finish_paste(&writes).is_empty(),
+            "no destructive stage after {race}"
+        );
+        assert!(!screen.agent_status_for_test().ready, "{race}");
+    }
+}
+
+#[test]
+fn clear_draft_never_treats_suggestions_or_continuation_rows_as_empty() {
+    for kind in ["claude", "codex", "pi"] {
+        for text in [
+            "Try writing a test",
+            "[Pasted text #1]",
+            "[Image #1]",
+            "[Attached file]",
+            "\r\n  remaining text",
+        ] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            let now = Instant::now();
+            draft_frame(&mut screen, kind, text, 0, now);
+            screen.agent_control_at(
+                draft_request(&screen),
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            assert!(!finish_paste(&writes).is_empty());
+            screen.refresh_agent_controls_at(now + Duration::from_secs(31));
+            assert_eq!(
+                replies(&messages, CLIENT)[0].outcome,
+                AgentOutcome::TimedOut
+            );
+            assert!(!screen.agent_status_for_test().ready);
+        }
+    }
+}
+
+#[test]
+fn clear_draft_attachment_areas_prevent_empty_verification() {
+    for (kind, text, row, attachment) in [
+        ("codex", "", 2, "  [Image #1]"),
+        (
+            "codex",
+            "\x1b[2mAsk Codex to do anything\x1b[m",
+            2,
+            "  [Image #1]",
+        ),
+        ("claude", "", 7, "[Attached file]"),
+        ("claude", "\x1b[2mTry \"a test\"\x1b[m", 7, "[Image #1]"),
+        ("pi", "", 7, "[Attached file]"),
+    ] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, kind, text, 0, now);
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(
+                TerminalId::new(7),
+                format!("\x1b7\x1b[{row};1H\x1b[2K{attachment}\x1b8").into_bytes(),
+            )
+            .unwrap();
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        assert!(!finish_paste(&writes).is_empty(), "{kind}: {text}");
+        screen.refresh_agent_controls_at(now + Duration::from_millis(250));
+        assert!(replies(&messages, CLIENT).is_empty());
+        assert!(!screen.agent_status_for_test().ready);
+    }
+}
+
+#[test]
+fn clear_draft_empty_composer_needs_stability_but_no_keys() {
+    for kind in ["claude", "codex", "pi"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, kind, "", 0, now);
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        screen.refresh_agent_controls_at(now + Duration::from_millis(249));
+        assert!(replies(&messages, CLIENT).is_empty());
+        // A partial redraw temporarily restores draft content: restart the stability window.
+        draft_frame(
+            &mut screen,
+            kind,
+            "draft",
+            0,
+            now + Duration::from_millis(249),
+        );
+        screen.refresh_agent_controls_at(now + Duration::from_millis(250));
+        draft_frame(&mut screen, kind, "", 0, now + Duration::from_millis(251));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(251));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(500));
+        assert!(replies(&messages, CLIENT).is_empty());
+        screen.refresh_agent_controls_at(now + Duration::from_millis(501));
+        assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        assert!(finish_paste(&writes).is_empty());
+        assert!(screen.agent_status_for_test().ready);
+    }
+}
+
+#[test]
+fn clear_draft_partial_writer_failure_never_sends_ctrl_c() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let now = Instant::now();
+    draft_frame(&mut screen, "codex", "draft", 5, now);
+    screen.agent_control_at(
+        draft_request(&screen),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    for (instruction, _) in writes.try_iter() {
+        if let PtyWriteInstruction::Write(_, _, Some(mut completion)) = instruction {
+            completion.set_error_message("partial write failed".into());
+        }
+    }
+    screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+    let response = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(response.outcome, AgentOutcome::Failed);
+    assert!(response.message.unwrap().contains("partial clearing"));
+    assert!(!response.agents[0].ready);
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn clear_draft_codex_placeholder_requires_captured_dim_style() {
+    for dim in [false, true] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        let text = if dim {
+            "\x1b[2mAsk Codex to do anything\x1b[m"
+        } else {
+            "Ask Codex to do anything"
+        };
+        draft_frame(&mut screen, "codex", text, 0, now);
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        let written = finish_paste(&writes);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(250));
+        if dim {
+            assert!(written.is_empty());
+            assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
+        } else {
+            assert!(!written.is_empty(), "typed placeholder is a real draft");
+            assert!(replies(&messages, CLIENT).is_empty());
+        }
+    }
+}
+
+#[test]
+fn clear_draft_captured_default_composers_do_not_confuse_suggestions_with_input() {
+    for raw in [
+        include_str!("../fixtures/agent-composers/claude-empty.json"),
+        include_str!("../fixtures/agent-composers/claude-colored-empty.json"),
+        include_str!("../fixtures/agent-composers/codex-empty.json"),
+        include_str!("../fixtures/agent-composers/pi-empty.json"),
+        include_str!("../fixtures/agent-composers/claude-multiline-draft.json"),
+        include_str!("../fixtures/agent-composers/codex-multiline-draft.json"),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let kind = fixture["provider"].as_str().unwrap();
+        let (mut screen, messages, writes) = setup_with_size(
+            kind,
+            PaneTarget::Local,
+            Size {
+                cols: fixture["width"].as_u64().unwrap() as usize,
+                rows: (fixture["height"].as_u64().unwrap() as usize + 2) * 2,
+            },
+        );
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        let cursor = fixture["cursor"]
+            .as_array()
+            .map(|pair| (pair[0].as_u64().unwrap(), pair[1].as_u64().unwrap()));
+        let mut frame = format!(
+            "\x1b[2J\x1b[H{}",
+            fixture["ansi"].as_str().unwrap().replace('\n', "\r\n")
+        );
+        if let Some((x, y)) = cursor {
+            frame += &format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1);
+        } else {
+            frame += "\x1b[?25l";
+        }
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .handle_pty_bytes(TerminalId::new(7), frame.into_bytes())
+            .unwrap();
+        let now = Instant::now();
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        let written = finish_paste(&writes);
+        screen.refresh_agent_controls_at(now + Duration::from_millis(250));
+        let responses = replies(&messages, CLIENT);
+        match kind {
+            _ if fixture["draft"] == true => {
+                assert!(!written.is_empty(), "{kind}: {responses:?}");
+                assert!(responses.is_empty());
+            },
+            "codex" | "claude" if kind == "codex" || fixture["color"] == true => {
+                assert!(written.is_empty());
+                assert_eq!(
+                    responses[0].outcome,
+                    AgentOutcome::Ok,
+                    "{kind}: {responses:?}"
+                );
+            },
+            "claude" => {
+                assert!(!written.is_empty(), "{responses:?}");
+                assert!(responses.is_empty());
+            },
+            "pi" => {
+                assert!(written.is_empty());
+                assert_eq!(responses[0].outcome, AgentOutcome::Rejected);
+            },
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn clear_draft_interrupted_recovery_finishes_the_abandoned_submission() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    let mut request = prompt(true);
+    if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+        *submission_id = Some("abandoned".into());
+    }
+    screen.agent_control(request, CLIENT);
+    finish_paste(&writes);
+    report_kind(&mut screen, "claude", hook("UserPromptSubmit"));
+    screen.agent_control(send_keys(vec![BareKey::Esc]), ClientId::new(2));
+    finish_paste(&writes);
+    screen.refresh_agent_controls();
+    replies(&messages, CLIENT);
+    let now = Instant::now() + Duration::from_secs(4);
+    draft_frame(&mut screen, "claude", "", 0, now);
+    let mut request = draft_request(&screen);
+    screen.agent_control_at(
+        request.clone(),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+    if let AgentRequest::ClearDraft { interrupted, .. } = &mut request {
+        *interrupted = true;
+    }
+    screen.agent_control_at(
+        request,
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    screen.refresh_agent_controls_at(now + Duration::from_millis(250));
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Ok);
+    assert!(result.agents[0].ready);
+    assert_eq!(result.agents[0].agent.state, AgentState::Idle);
+    screen.agent_control(
+        AgentRequest::WaitTurn {
+            pane_id: PANE,
+            expected_session_id: Some("conversation".into()),
+            submission_id: "abandoned".into(),
+            timeout_ms: 1000,
+        },
+        CLIENT,
+    );
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::Interrupted);
+    assert!(result.message.unwrap().contains("not verified"));
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn clear_draft_pi_draft_rules_cannot_hide_earlier_input() {
+    let (mut screen, messages, writes) = setup("pi");
+    report_kind(&mut screen, "pi", hook("SessionStart"));
+    let width = screen.tabs[&TabId::new(0)]
+        .get_pane_with_id(PANE)
+        .unwrap()
+        .get_content_columns();
+    let now = Instant::now();
+    draft_frame(
+        &mut screen,
+        "pi",
+        &format!("draft\r\n{}\r\n", "─".repeat(width)),
+        0,
+        now,
+    );
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), b"\x1b[6;1H".to_vec())
+        .unwrap();
+    screen.agent_control_at(
+        draft_request(&screen),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    assert_eq!(
+        replies(&messages, CLIENT)[0].outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(finish_paste(&writes).is_empty());
 }

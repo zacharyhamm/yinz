@@ -73,6 +73,15 @@ pub enum AgentRequest {
         expected_session_id: Option<String>,
         lines: usize,
     },
+    ClearDraft {
+        pane_id: PaneId,
+        expected_session_id: String,
+        input_revision: u64,
+        confirm_discard: bool,
+        #[serde(default)]
+        interrupted: bool,
+        timeout_ms: u64,
+    },
     Recover {
         pane_id: PaneId,
         expected_session_id: String,
@@ -146,6 +155,7 @@ impl AgentResponse {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum NotReadyReason {
+    ClearingDraft,
     PromptUnsupported,
     NotIdle,
     PendingSubmission,
@@ -173,6 +183,10 @@ pub struct AgentStatus {
     pub not_ready_reason: Option<NotReadyReason>,
     pub status_available: bool,
     pub prompt_supported: bool,
+    #[serde(default)]
+    pub input_revision: Option<u64>,
+    #[serde(default)]
+    pub clear_draft_supported: bool,
     /// Claude background tasks whose `<task-notification>` turn has not finished.
     #[serde(default)]
     pub background_tasks: Vec<String>,

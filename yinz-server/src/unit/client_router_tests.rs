@@ -428,8 +428,17 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
             wait: true,
             timeout_ms: 60_000,
         };
+        let clear = AgentRequest::ClearDraft {
+            pane_id: PaneId::Terminal(TerminalId::new(2)),
+            expected_session_id: "conversation-7".into(),
+            input_revision: 42,
+            confirm_discard: true,
+            interrupted: false,
+            timeout_ms: 30_000,
+        };
         for request in [
             prompt.clone(),
+            clear.clone(),
             AgentRequest::Spawn {
                 automatic_firecracker_vm: false,
                 spec: AgentSpawnSpec {
@@ -476,11 +485,19 @@ fn agent_control_routes_explicit_targets_replies_and_removes_the_client_once() {
         if ready {
             assert!(matches!(threads.screen_receiver.try_recv().unwrap().0,
                 ScreenInstruction::AgentControl(queued, CLIENT_99) if queued == prompt));
+            assert!(matches!(threads.screen_receiver.try_recv().unwrap().0,
+                ScreenInstruction::AgentControl(queued, CLIENT_99) if queued == clear));
         }
         assert!(threads.screen_receiver.is_empty());
         let replies = os.server_to_client_messages.lock().unwrap();
         let replies = replies.get(&CLIENT_99).unwrap();
         let mut expected = Vec::new();
+        if !ready {
+            expected.push(ServerToClientMsg::AgentControl(AgentResponse::new(
+                AgentOutcome::StatusUnavailable,
+            )));
+        }
+        expected.push(ServerToClientMsg::UnblockInputThread);
         if !ready {
             expected.push(ServerToClientMsg::AgentControl(AgentResponse::new(
                 AgentOutcome::StatusUnavailable,

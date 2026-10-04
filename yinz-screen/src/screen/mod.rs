@@ -561,6 +561,7 @@ type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
     agent_controls: Vec<agent_control::Pending>,
+    agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
     agent_launches: HashMap<PaneId, yinz_types::agent::SpawnedAgent>,
     agent_lifecycle: HashMap<PaneId, agent_control::Lifecycle>,
@@ -1302,6 +1303,7 @@ impl Screen {
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
             agent_controls: Vec::new(),
+            agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
             agent_launches: HashMap::new(),
             agent_lifecycle: HashMap::new(),

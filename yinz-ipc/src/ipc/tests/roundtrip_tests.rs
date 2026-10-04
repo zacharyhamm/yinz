@@ -265,6 +265,14 @@ fn test_client_messages() {
                 expected_session_id: expected_session_id.clone(),
                 lines: 80,
             },
+            AgentRequest::ClearDraft {
+                pane_id,
+                expected_session_id: "conversation-7".into(),
+                input_revision: 42,
+                confirm_discard: true,
+                interrupted: true,
+                timeout_ms: 30_000,
+            },
             AgentRequest::Recover {
                 pane_id,
                 expected_session_id: "conversation-7".into(),
@@ -4584,6 +4592,8 @@ fn test_server_messages() {
         not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::NotIdle),
         status_available: true,
         prompt_supported: true,
+        input_revision: None,
+        clear_draft_supported: false,
         background_tasks: vec!["bj30txqod".into()],
     };
     for outcome in [

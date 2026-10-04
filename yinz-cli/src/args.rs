@@ -560,6 +560,7 @@ impl Agent {
             | Agent::Wait { json, .. }
             | Agent::Read { json, .. }
             | Agent::Recover { json, .. }
+            | Agent::ClearDraft { json, .. }
             | Agent::SendKeys { json, .. } => *json,
         }
     }
@@ -748,6 +749,26 @@ pub enum Agent {
         /// padding at both ends. Trailing blank rows do not count toward the limit.
         #[clap(long, default_value_t = 80, value_parser = clap::value_parser!(u32).range(1..=100_000))]
         lines: u32,
+        #[clap(long)]
+        json: bool,
+    },
+    /// Discard the inspected composer draft and restore readiness only after verification.
+    ClearDraft {
+        #[clap(value_parser = parse_agent_target)]
+        target: yinz_types::pane_id::PaneId,
+        #[clap(long)]
+        conversation: String,
+        /// Exact input revision from the inspected status. Never refresh and retry automatically.
+        #[clap(long)]
+        input_revision: u64,
+        /// Explicitly authorize discarding the inspected draft.
+        #[clap(long, required = true)]
+        confirm_discard: bool,
+        /// Confirm work stopped despite a stale busy or waiting report.
+        #[clap(long)]
+        interrupted: bool,
+        #[clap(long, default_value = "30s", value_parser = parse_agent_timeout)]
+        timeout: std::time::Duration,
         #[clap(long)]
         json: bool,
     },

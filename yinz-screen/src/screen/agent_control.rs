@@ -442,6 +442,12 @@ impl Screen {
     }
 
     pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
+        if let Some(operation) = self.agent_draft_clears.get_mut(&pane) {
+            operation.failure = Some((
+                AgentOutcome::TargetChanged,
+                "agent identity invalidated".into(),
+            ));
+        }
         self.agent_lifecycle.remove(&pane);
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
@@ -695,7 +701,9 @@ impl Screen {
                 .map(|p| p.to_string_lossy().into_owned()),
             _ => None,
         });
-        let not_ready_reason = if !prompt_supported {
+        let not_ready_reason = if self.agent_draft_clears.contains_key(&pane_id) {
+            Some(NotReadyReason::ClearingDraft)
+        } else if !prompt_supported {
             Some(NotReadyReason::PromptUnsupported)
         } else if agent.state != AgentState::Idle {
             Some(NotReadyReason::NotIdle)
@@ -741,6 +749,9 @@ impl Screen {
             not_ready_reason,
             status_available,
             prompt_supported,
+            input_revision: Some(self.agent_input_revision(pane_id)),
+            clear_draft_supported: prompt_supported
+                && self.draft_composer(pane_id, &agent.kind).is_some(),
             background_tasks: self
                 .agent_lifecycle
                 .get(&pane_id)
@@ -784,6 +795,8 @@ impl Screen {
             not_ready_reason: Some(NotReadyReason::Unmanaged),
             status_available: false,
             prompt_supported: false,
+            input_revision: Some(self.agent_input_revision(pane_id)),
+            clear_draft_supported: false,
             background_tasks: Vec::new(),
             agent: AgentInfo {
                 kind: kind.to_owned(),
@@ -919,7 +932,12 @@ impl Screen {
                 self.agent_reply(&client, AgentResponse::new(AgentOutcome::Rejected));
                 return;
             },
-            Recover {
+            ClearDraft {
+                pane_id,
+                expected_session_id,
+                ..
+            }
+            | Recover {
                 pane_id,
                 expected_session_id,
                 ..
@@ -1048,7 +1066,20 @@ impl Screen {
             );
             return;
         }
+        if self.agent_draft_clears.contains_key(&pane)
+            && matches!(request, Prompt { .. } | Recover { .. } | ClearDraft { .. })
+        {
+            reject(
+                self,
+                AgentOutcome::Rejected,
+                "the composer is being cleared",
+            );
+            return;
+        }
         match request {
+            request @ ClearDraft { .. } => {
+                self.start_draft_clear(pane, status, client, request, now)
+            },
             Recover {
                 expected_session_id,
                 confirm_empty,
@@ -1101,49 +1132,7 @@ impl Screen {
                     reject(self, AgentOutcome::Rejected, &message);
                     return;
                 }
-                if state != AgentState::Idle {
-                    let mut idle = status.agent.clone();
-                    idle.state = AgentState::Idle;
-                    idle.detail = None;
-                    idle.waiting_on = None;
-                    idle.wait_needs_a_person = false;
-                    self.agent_worker_waits.remove(&pane);
-                    super::thread_main::apply_pane_agent_report(self, pane, Some(idle))
-                        .context("reset an interrupted agent to idle")
-                        .non_fatal();
-                    self.broadcast_interrupt(pane, &status.agent)
-                        .context("announce an interrupted turn to plugins")
-                        .non_fatal();
-                }
-                if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
-                    for submission in submissions
-                        .iter_mut()
-                        .filter(|submission| submission.result.is_none())
-                    {
-                        submission.result = Some(SubmissionResult {
-                            outcome: AgentOutcome::Interrupted,
-                            message: Some("Observation ended by explicit recovery; the task's completion was not verified.".into()),
-                            background_tasks: Vec::new(),
-                        });
-                    }
-                }
-                self.agent_controls
-                    .retain(|pending| pending.pane != pane || pending.prompt.is_none());
-                self.agent_dialog_inputs.remove(&pane);
-                self.agent_clear_inputs.remove(&pane);
-                let revision = self.agent_input_revision(pane);
-                if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
-                    lifecycle.input_revision = Some(revision);
-                    lifecycle.background_tasks.clear();
-                    lifecycle.claude_notifications.clear();
-                    lifecycle.claude_overtaken = None;
-                    if lifecycle.kind == "claude" {
-                        lifecycle.claude_confirmation = Some(true);
-                    }
-                    if lifecycle.kind == "agy" {
-                        lifecycle.agy_confirmation = Some(true);
-                    }
-                }
+                self.finalize_agent_recovery(pane, &status.agent, self.agent_input_revision(pane));
                 self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Ok, None));
             },
             Status { .. } => {
@@ -1320,6 +1309,7 @@ impl Screen {
                 }
                 if let Some(reason) = status.not_ready_reason {
                     let (outcome, message) = match reason {
+                        NotReadyReason::ClearingDraft => (AgentOutcome::Rejected, "the composer is being cleared"),
                         NotReadyReason::PromptUnsupported => (AgentOutcome::StatusUnavailable,
                             "prompt requires lifecycle hooks and a live supported agent command pane with bracketed paste enabled"),
                         NotReadyReason::NotIdle => (AgentOutcome::Rejected, "agent is not idle"),
@@ -1616,6 +1606,53 @@ impl Screen {
         }
     }
 
+    fn finalize_agent_recovery(&mut self, pane: PaneId, agent: &AgentInfo, revision: u64) {
+        let state = agent.state;
+        if state != AgentState::Idle {
+            let mut idle = agent.clone();
+            idle.state = AgentState::Idle;
+            idle.detail = None;
+            idle.waiting_on = None;
+            idle.wait_needs_a_person = false;
+            self.agent_worker_waits.remove(&pane);
+            super::thread_main::apply_pane_agent_report(self, pane, Some(idle))
+                .context("reset an interrupted agent to idle")
+                .non_fatal();
+            self.broadcast_interrupt(pane, agent)
+                .context("announce an interrupted turn to plugins")
+                .non_fatal();
+        }
+        if let Some(submissions) = self.agent_submissions.get_mut(&pane) {
+            for submission in submissions
+                .iter_mut()
+                .filter(|submission| submission.result.is_none())
+            {
+                submission.result = Some(SubmissionResult {
+                            outcome: AgentOutcome::Interrupted,
+                            message: Some("Observation ended by explicit recovery; the task's completion was not verified.".into()),
+                            background_tasks: Vec::new(),
+                        });
+            }
+        }
+        self.agent_controls
+            .retain(|pending| pending.pane != pane || pending.prompt.is_none());
+        self.agent_dialog_inputs.remove(&pane);
+        self.agent_clear_inputs.remove(&pane);
+
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            lifecycle.input_revision = Some(revision);
+            lifecycle.background_tasks.clear();
+            lifecycle.claude_notifications.clear();
+            lifecycle.claude_overtaken = None;
+            if lifecycle.kind == "claude" {
+                lifecycle.claude_confirmation = Some(true);
+            }
+            if lifecycle.kind == "agy" {
+                lifecycle.agy_confirmation = Some(true);
+            }
+        }
+    }
+
     fn agent_write_key(&mut self, pane: PaneId, key: KeyWithModifier) -> Result<()> {
         self.tab_containing_pane_mut(pane)
             .context("agent pane no longer exists")?
@@ -1729,6 +1766,7 @@ impl Screen {
     }
 
     pub(crate) fn refresh_agent_controls_at(&mut self, now: Instant) {
+        self.refresh_draft_clears(now);
         self.agent_clear_inputs
             .retain(|_, input| now < input.deadline);
         if !self
@@ -2424,10 +2462,21 @@ impl Screen {
                     .values()
                     .map(|input| input.deadline.saturating_duration_since(now)),
             )
+            .chain(
+                self.agent_draft_clears
+                    .values()
+                    .map(|_| Duration::from_millis(10)),
+            )
             .min()
     }
 
     pub(super) fn detach_agent_controls(&mut self, client: ClientId) {
+        for operation in self.agent_draft_clears.values_mut() {
+            if matches!(operation.client, Some(Reply::Client(id)) if id == client) {
+                operation.client = None;
+                operation.failure = Some((AgentOutcome::Interrupted, "caller disconnected".into()));
+            }
+        }
         self.agent_controls.retain_mut(|pending| {
             if matches!(pending.client, Some(Reply::Client(id)) if id == client) {
                 pending.client = None;
@@ -2442,4 +2491,416 @@ fn deadline(timeout_ms: u64) -> Option<Instant> {
     (1..=MAX_TIMEOUT_MS)
         .contains(&timeout_ms)
         .then(|| Instant::now() + Duration::from_millis(timeout_ms))
+}
+
+pub(super) struct DraftClear {
+    client: Option<Reply>,
+    agent: AgentInfo,
+    revision: u64,
+    report: Instant,
+    deadline: Instant,
+    marker: String,
+    stage: DraftStage,
+    wrote_at: Option<Instant>,
+    delivery: Option<tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>>,
+    failure: Option<(AgentOutcome, String)>,
+}
+
+enum DraftStage {
+    Marker,
+    Empty { since: Option<Instant> },
+}
+
+struct Composer {
+    empty: bool,
+    before_cursor: String,
+}
+
+impl Screen {
+    /// Recognize only a fully bounded editor at the live cursor. Suggestions and
+    /// collapsed paste/attachment labels are input, never evidence of emptiness.
+    fn draft_composer(&self, pane: PaneId, kind: &str) -> Option<Composer> {
+        let pane = self.tab_containing_pane(pane)?.get_pane_with_id(pane)?;
+        let contents = pane.pane_contents(None, false, None);
+        let (x, y) = contents.cursor?.into_tuple();
+        if contents.is_scrolled || y >= contents.viewport.len() {
+            return None;
+        }
+        let rows = &contents.viewport;
+        let separator = |row: &String| {
+            row.chars().count() == pane.get_content_columns() && row.chars().all(|c| c == '─')
+        };
+        let (top, bottom, prefix) = match kind {
+            "claude" | "pi" => {
+                let top = rows[..y].iter().rposition(separator)? + 1;
+                let bottom = y + 1 + rows[y + 1..].iter().position(separator)?;
+                let prefix = if kind == "claude" { 2 } else { 0 };
+                if kind == "pi" {
+                    // Pi has no prompt prefix. Its cyan borders distinguish the
+                    // editor from full-width rules typed into a multiline draft.
+                    let ansi = pane.pane_contents_with_ansi(None, false, None);
+                    let top_rule = ansi.viewport.get(top - 1)?;
+                    if !top_rule.starts_with("\x1b[38;5;6m")
+                        || ansi.viewport.get(bottom) != Some(top_rule)
+                    {
+                        return None;
+                    }
+                }
+                if kind == "claude"
+                    && !rows[top].starts_with("❯\u{a0}")
+                    && !rows[top].starts_with("❯ ")
+                {
+                    return None;
+                }
+                // Extra panels below the composer are not an editor footer.
+                if rows[bottom + 1..]
+                    .iter()
+                    .filter(|row| !row.trim().is_empty())
+                    .count()
+                    > 2
+                {
+                    return None;
+                }
+                (top, bottom, prefix)
+            },
+            "codex" => {
+                let top = rows[..=y].iter().rposition(|row| row.starts_with("› "))?;
+                let bottom = y
+                    + 1
+                    + rows[y + 1..].iter().position(|row| {
+                        row.starts_with("  ") && row.contains(" · ") && !row.trim().is_empty()
+                    })?;
+                if top == 0
+                    || !rows[top - 1].trim().is_empty()
+                    || bottom <= y + 1
+                    || !rows[bottom - 1].trim().is_empty()
+                    || rows[bottom + 1..].iter().any(|row| !row.trim().is_empty())
+                    || rows[top + 1..bottom]
+                        .iter()
+                        .any(|row| !row.is_empty() && !row.starts_with("  "))
+                {
+                    return None;
+                }
+                (top, bottom, 2)
+            },
+            _ => return None,
+        };
+        if (y == top && x < prefix) || rows[top..bottom].iter().any(separator) {
+            return None;
+        }
+        // Only the editor and its validated footer belong to this composer.
+        // Codex also renders remote image rows immediately above the blank row
+        // preceding its prompt. Local images and pastes are inline editor text.
+        let remote_image = kind == "codex"
+            && top.checked_sub(2).is_some_and(|row| {
+                rows[row]
+                    .trim_end()
+                    .strip_prefix("  [Image #")
+                    .and_then(|label| label.strip_suffix(']'))
+                    .is_some_and(|number| {
+                        !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+                    })
+            });
+        let indicators = remote_image
+            || rows[top..].iter().any(|row| {
+                row.contains("[Image") || row.contains("[Pasted") || row.contains("[Attached")
+            });
+        // Captured Codex 0.160.0 and Claude 2.1.289 placeholders are dim;
+        // identically spelled typed drafts are not. Unstyled suggestions fail closed.
+        let hint: String = rows[top].chars().skip(prefix).collect();
+        let hint = hint.trim_end();
+        let known_hint = match kind {
+            "codex" => hint == "Ask Codex to do anything",
+            "claude" => hint.starts_with("Try \"") && hint.ends_with('"'),
+            _ => false,
+        };
+        let placeholder = known_hint
+            && pane
+                .pane_contents_with_ansi(None, false, None)
+                .viewport
+                .get(top)
+                .is_some_and(|row| row.ends_with(&format!("\x1b[2m\x1b[23m{hint}\x1b[m")));
+        let empty = !indicators
+            && y == top
+            && x == prefix
+            && (rows[top].chars().skip(prefix).all(char::is_whitespace) || placeholder)
+            && rows[top + 1..bottom]
+                .iter()
+                .all(|row| row.trim().is_empty());
+        let mut before_cursor = String::new();
+        for (index, row) in rows.iter().enumerate().take(y + 1).skip(top) {
+            let row = if index < y {
+                row.trim_end()
+            } else {
+                row.as_str()
+            };
+            let mut column = 0;
+            for character in row.chars() {
+                let width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+                if index == y && column + width > x {
+                    break;
+                }
+                if column >= prefix {
+                    before_cursor.push(character);
+                }
+                column += width;
+            }
+        }
+        Some(Composer {
+            empty,
+            before_cursor,
+        })
+    }
+
+    fn start_draft_clear(
+        &mut self,
+        pane: PaneId,
+        status: AgentStatus,
+        client: Reply,
+        request: AgentRequest,
+        now: Instant,
+    ) {
+        let AgentRequest::ClearDraft {
+            expected_session_id,
+            input_revision,
+            confirm_discard,
+            interrupted,
+            timeout_ms,
+            ..
+        } = request
+        else {
+            return;
+        };
+        let refusal = if !confirm_discard || expected_session_id.is_empty() {
+            Some("clearing requires --conversation and --confirm-discard")
+        } else if input_revision != self.agent_input_revision(pane) {
+            Some("input revision changed; inspect the draft and obtain fresh discard authorization")
+        } else if !(1..=MAX_TIMEOUT_MS).contains(&timeout_ms) {
+            Some("timeout must be between 1ms and 24h")
+        } else if !status.prompt_supported {
+            Some("clearing requires a managed live agent with terminal input and bracketed paste enabled")
+        } else if !matches!(status.agent.kind.as_str(), "claude" | "codex" | "pi") {
+            Some("provider does not support clearing; clear the composer manually, then use recover --confirm-empty")
+        } else if self.agent_controls.iter().any(|pending| {
+            pending.pane == pane
+                && pending.prompt.is_some()
+                && (!pending.abandoned || pending.delivery.is_some())
+        }) {
+            Some("a submission or paste write is still in flight")
+        } else if !status.background_tasks.is_empty() || self.claude_background_pending(pane) {
+            Some("background work is still running")
+        } else if self
+            .agent_input_at(pane)
+            .is_some_and(|at| now.saturating_duration_since(at) < RECOVER_QUIET)
+        {
+            Some("clearing requires three seconds without terminal input; inspect again before retrying")
+        } else if self.agent_input_at(pane).is_some_and(|at| {
+            self.pane_output_activity
+                .get(&pane)
+                .is_none_or(|output| *output <= at)
+        }) {
+            Some("no fresh composer output after the latest input; inspect again before retrying")
+        } else if status.agent.state != AgentState::Idle
+            && (!interrupted
+                || !matches!(status.agent.state, AgentState::Busy | AgentState::Waiting))
+        {
+            Some("clearing requires idle state, or --interrupted after verifying that work stopped")
+        } else if status.agent.state != AgentState::Idle
+            && !self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                self.agent_input_at(pane)
+                    .is_some_and(|at| at > lifecycle.last_report)
+            })
+        {
+            Some("interrupted recovery requires input after the last lifecycle report and three seconds of quiet")
+        } else {
+            None
+        };
+        if let Some(message) = refusal {
+            self.agent_reply(
+                &client,
+                self.agent_result(pane, AgentOutcome::Rejected, Some(message.into())),
+            );
+            return;
+        }
+        let Some(composer) = self.draft_composer(pane, &status.agent.kind) else {
+            self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Rejected, Some("unsupported or hidden composer layout; inspect and clear manually, then use recover --confirm-empty".into())));
+            return;
+        };
+        let Some(lifecycle) = self.agent_lifecycle.get(&pane) else {
+            return;
+        };
+        let mut operation = DraftClear {
+            client: Some(client),
+            agent: status.agent,
+            revision: input_revision,
+            report: lifecycle.last_report,
+            deadline: now + Duration::from_millis(timeout_ms),
+            marker: format!("yz{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+            stage: if composer.empty {
+                DraftStage::Empty { since: Some(now) }
+            } else {
+                DraftStage::Marker
+            },
+            wrote_at: None,
+            delivery: None,
+            failure: None,
+        };
+        if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+            lifecycle.input_revision = None;
+        }
+        if !composer.empty {
+            let bytes = format!("\x1b[200~{}\x1b[201~", operation.marker).into_bytes();
+            self.write_draft_stage(pane, &mut operation, bytes, now);
+        }
+        self.agent_draft_clears.insert(pane, operation);
+    }
+
+    fn write_draft_stage(
+        &mut self,
+        pane: PaneId,
+        operation: &mut DraftClear,
+        bytes: Vec<u8>,
+        now: Instant,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        operation.delivery = Some(rx);
+        operation.wrote_at = Some(now);
+        // One queued write owns the entire bracketed paste, including its closing delimiter.
+        if let Err(error) = self.write_to_pane_id(
+            &None,
+            bytes,
+            false,
+            pane,
+            None,
+            Some(yinz_bus::route::NotificationEnd::new(tx)),
+        ) {
+            operation.failure = Some((AgentOutcome::Failed, error.to_string()));
+        }
+        operation.revision = self.agent_input_revision(pane);
+    }
+
+    fn refresh_draft_clears(&mut self, now: Instant) {
+        for pane in self.agent_draft_clears.keys().copied().collect::<Vec<_>>() {
+            let Some(mut operation) = self.agent_draft_clears.remove(&pane) else {
+                continue;
+            };
+            if let Some(delivery) = &mut operation.delivery {
+                match delivery.try_recv() {
+                    Ok(result) => {
+                        operation.delivery = None;
+                        if let Some(message) = result.error_message {
+                            operation.failure = Some((AgentOutcome::Failed, message));
+                        }
+                    },
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {},
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        operation.delivery = None;
+                        operation.failure =
+                            Some((AgentOutcome::Failed, "writer disconnected".into()));
+                    },
+                }
+            }
+            let status = self.agent_status(pane, None);
+            let failure = if self.get_pane_info(pane).is_none() {
+                Some((AgentOutcome::TargetClosed, "pane closed"))
+            } else if status.as_ref().is_none_or(|status| {
+                status.agent.kind != operation.agent.kind
+                    || status.agent.session_id != operation.agent.session_id
+                    || status.agent.run_id != operation.agent.run_id
+            }) {
+                Some((AgentOutcome::TargetChanged, "agent identity changed"))
+            } else if self.agent_input_revision(pane) != operation.revision {
+                Some((
+                    AgentOutcome::Interrupted,
+                    "new terminal input cancelled clearing",
+                ))
+            } else if status.as_ref().is_none_or(|status| {
+                !status.prompt_supported
+                    || self.claude_background_pending(pane)
+                    || status.agent.state != operation.agent.state
+                    || !status.background_tasks.is_empty()
+            }) || self
+                .agent_lifecycle
+                .get(&pane)
+                .is_none_or(|lifecycle| lifecycle.last_report != operation.report)
+            {
+                Some((
+                    AgentOutcome::Interrupted,
+                    "agent activity changed during clearing",
+                ))
+            } else if now >= operation.deadline {
+                Some((AgentOutcome::TimedOut, "composer verification timed out"))
+            } else {
+                None
+            };
+            if operation.failure.is_none() {
+                operation.failure = failure.map(|(outcome, message)| (outcome, message.into()));
+            }
+            if operation.failure.is_none() && operation.delivery.is_none() {
+                let composer = self.draft_composer(pane, &operation.agent.kind);
+                let fresh = operation.wrote_at.is_none_or(|at| {
+                    self.pane_output_activity
+                        .get(&pane)
+                        .is_some_and(|output| *output > at)
+                });
+                match (&mut operation.stage, composer) {
+                    // A provider can hide its cursor between chunks of a redraw.
+                    // Do not write or count stability until a complete layout returns.
+                    (DraftStage::Empty { since }, None) => *since = None,
+                    (DraftStage::Marker, None) => {},
+                    (DraftStage::Marker, Some(composer))
+                        if fresh && composer.before_cursor.ends_with(&operation.marker) =>
+                    {
+                        operation.stage = DraftStage::Empty { since: None };
+                        self.write_draft_stage(pane, &mut operation, vec![3], now);
+                    },
+                    (DraftStage::Empty { since }, Some(composer)) if fresh && composer.empty => {
+                        let since = since.get_or_insert(now);
+                        // Any new output restarts stability, even if this snapshot is still empty.
+                        let stable = self
+                            .pane_output_activity
+                            .get(&pane)
+                            .copied()
+                            .unwrap_or(*since)
+                            .max(*since);
+                        if now.saturating_duration_since(stable) >= Duration::from_millis(250) {
+                            self.finalize_agent_recovery(
+                                pane,
+                                &operation.agent,
+                                operation.revision,
+                            );
+                            if let Some(client) = &operation.client {
+                                self.agent_reply(client, self.agent_result(pane, AgentOutcome::Ok, Some("Composer verified empty; task completion remains unverified.".into())));
+                            }
+                            continue;
+                        }
+                    },
+                    (DraftStage::Empty { since }, _) => *since = None,
+                    _ => {},
+                }
+            }
+            if let Some((outcome, message)) = &operation.failure {
+                if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
+                    if lifecycle.input_revision == Some(operation.revision) {
+                        lifecycle.input_revision = None;
+                    }
+                }
+                if let Some(client) = operation.client.take() {
+                    let mut response = self.agent_result(pane, *outcome, Some(format!("{message}; partial clearing may have occurred. Inspect the composer before manual recovery.")));
+                    if operation.delivery.is_some() {
+                        for status in &mut response.agents {
+                            status.ready = false;
+                            status.not_ready_reason = Some(NotReadyReason::ClearingDraft);
+                        }
+                    }
+                    self.agent_reply(&client, response);
+                }
+                // Keep ownership until every queued byte has been acknowledged, even on timeout.
+                if operation.delivery.is_none() {
+                    continue;
+                }
+            }
+            self.agent_draft_clears.insert(pane, operation);
+        }
+    }
 }

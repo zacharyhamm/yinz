@@ -949,10 +949,12 @@ export type AgentRequest =
   | {Prompt: {pane_id: PaneId; expected_session_id?: string | null; prompt: string; wait: boolean; timeout_ms: number}}
   | {Wait: {pane_id: PaneId; expected_session_id?: string | null; until: AgentState; timeout_ms: number}}
   | {Read: {pane_id: PaneId; expected_session_id?: string | null; lines: number}}
+  | {ClearDraft: {pane_id: PaneId; expected_session_id: string; input_revision: number; confirm_discard: boolean; interrupted?: boolean; timeout_ms: number}}
   | {Recover: {pane_id: PaneId; expected_session_id: string; confirm_empty: boolean; interrupted?: boolean}}
   | {SendKeys: {pane_id: PaneId; expected_session_id?: string | null; keys: KeyWithModifier[]}};
 export type AgentOutcome = "ok" | "submitted" | "completed" | "needs_input" | "failed" | "interrupted" | "timed_out" | "target_changed" | "target_closed" | "status_unavailable" | "rejected" | "target_not_found" | "not_agent" | "target_exited";
 export interface AgentStatus {
+  input_revision?: number | null; clear_draft_supported?: boolean;
   pane_id: string; session: string; host_id: string; tab_id: Integer | null; target: PaneTarget; agent: AgentInfo;
   cwd: string | null; branch: string | null; ready: boolean; not_ready_reason?: string | null; status_available: boolean;
   prompt_supported: boolean; background_tasks?: string[];

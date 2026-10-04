@@ -340,3 +340,40 @@ fn history_regex_preserves_pattern_and_serializes_filters() {
     assert_eq!(request["args"]["query"], " (?i)panic|ERROR ");
     assert_eq!(request["structured_reply"], true);
 }
+
+#[test]
+fn clear_draft_requires_explicit_guards_and_valid_numbers() {
+    use clap::Parser;
+    let args = [
+        "agent",
+        "clear-draft",
+        "terminal_7",
+        "--conversation",
+        "id",
+        "--input-revision",
+        "42",
+        "--confirm-discard",
+        "--interrupted",
+        "--json",
+    ];
+    assert!(matches!(AgentCli::try_parse_from(args).unwrap().command,
+        Agent::ClearDraft { input_revision: 42, confirm_discard: true, interrupted: true, json: true, timeout, .. }
+        if timeout == std::time::Duration::from_secs(30)));
+    for missing in ["--conversation", "--input-revision", "--confirm-discard"] {
+        let mut reduced = args.to_vec();
+        let index = reduced.iter().position(|arg| *arg == missing).unwrap();
+        reduced.remove(index);
+        if missing != "--confirm-discard" {
+            reduced.remove(index);
+        }
+        assert!(AgentCli::try_parse_from(reduced).is_err(), "{missing}");
+    }
+    for revision in ["-1", "no", "18446744073709551616"] {
+        let mut invalid = args;
+        invalid[6] = revision;
+        assert!(AgentCli::try_parse_from(invalid).is_err());
+    }
+    for timeout in ["0s", "25h", "bad"] {
+        assert!(AgentCli::try_parse_from(args.into_iter().chain(["--timeout", timeout])).is_err());
+    }
+}

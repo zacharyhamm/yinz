@@ -1,0 +1,12 @@
+{
+  "provider": "claude",
+  "version": "2.1.289",
+  "width": 50,
+  "height": 10,
+  "cursor": [
+    2,
+    7
+  ],
+  "ansi": "\n\u001b[m ▐▛███▛█   Claude Code v2.1.289\n\u001b[m▝▜██████▀  Sonnet 5.5 · Claude Max\n\u001b[m ▝▝   ▝▝   ~/…/clear-drafts-in-agent-composer\n\n\n\u001b[m──────────────────────────────────────────────────\n\u001b[m❯ Try \"how do I log an error?\"\n\u001b[m──────────────────────────────────────────────────\n\u001b[m  ⏵⏵ auto mode on (shift+tab to cycle) · ← for …\u001b[m\n",
+  "cursor_coordinates": "zero-based content coordinates, excluding pane title"
+}

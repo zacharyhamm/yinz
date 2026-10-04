@@ -162,3 +162,22 @@ redacted arguments, output, and errors. Search retained names or payload text wi
 Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
 See [the agent CLI guide](../../../docs/AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
 and adapter refresh commands. No historical import is performed.
+
+For explicit draft discard, obtain the user's authorization before calling `agent clear-draft`.
+A rejected prompt never implies authorization. Inspect `agent status TARGET --json` and the composer.
+Pass the exact `input_revision` and conversation from that inspection:
+
+```sh
+yinz agent clear-draft TARGET --conversation ID --input-revision REV --confirm-discard --json
+```
+
+Never substitute zero for an absent revision. Never refresh a stale revision and retry automatically.
+Wait for three seconds without input before the request. Only `ok` with refreshed `ready: true` permits a guarded prompt.
+Default timeout is 30 seconds. Add `--interrupted` only after verifying that work stopped despite stale Busy/Waiting state.
+That flag also requires input after the last lifecycle report and three seconds of quiet.
+
+Clearing recognizes Claude Code, Codex, and Pi default composers with visible cursors and default bindings.
+Muse, AGY, custom editors, hidden cursors, and unfamiliar layouts require manual clearing and `recover --confirm-empty`.
+Ambiguous suggestions, attachments, and paste labels do not prove emptiness.
+Pi needs its existing `PI_HARDWARE_CURSOR=1` setting for cursor verification. Verification can fail after partial clearing.
+Inspect failures instead of retrying. Clearing preserves the conversation but does not verify task completion or remove provider history.
