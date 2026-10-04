@@ -19,3 +19,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
+regex = { workspace = true, features = ["unicode-case"] }

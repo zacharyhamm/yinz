@@ -293,3 +293,50 @@ fn spawn_help_describes_every_option_and_all_recognized_kinds() {
         assert!(AgentCli::try_parse_from(["agent", "spawn", "--kind", alias]).is_ok());
     }
 }
+
+#[test]
+fn history_regex_preserves_pattern_and_serializes_filters() {
+    use clap::Parser;
+    let parsed = AgentCli::try_parse_from([
+        "agent",
+        "history-search",
+        " (?i)panic|ERROR ",
+        "--regex",
+        "--run-id",
+        "run-1",
+        "--project",
+        "work",
+        "--host-id",
+        "host-a",
+        "--run-session",
+        "main",
+    ])
+    .unwrap();
+    let Agent::Archive(archive) = parsed.command else {
+        panic!("archive command")
+    };
+    let value = serde_json::to_value(&archive).unwrap();
+    assert_eq!(value["args"]["regex"], true);
+    assert_eq!(value["args"]["query"], " (?i)panic|ERROR ");
+    assert_eq!(value["args"]["run_id"], "run-1");
+    assert_eq!(value["args"]["project"], "work");
+    assert_eq!(value["args"]["host_id"], "host-a");
+    assert_eq!(value["args"]["run_session"], "main");
+    let mut legacy = value;
+    legacy["args"].as_object_mut().unwrap().remove("regex");
+    let legacy: crate::agent_archive::AgentArchive = serde_json::from_value(legacy).unwrap();
+    assert_eq!(
+        serde_json::to_value(legacy).unwrap()["args"]["regex"],
+        false
+    );
+    let yinz_types::input::actions::Action::CliPipe { name, payload, .. } =
+        archive.action().unwrap()
+    else {
+        panic!("store pipe")
+    };
+    assert_eq!(name.as_deref(), Some("store_query"));
+    let request: serde_json::Value = serde_json::from_str(payload.as_deref().unwrap()).unwrap();
+    assert_eq!(request["args"]["regex"], true);
+    assert_eq!(request["args"]["query"], " (?i)panic|ERROR ");
+    assert_eq!(request["structured_reply"], true);
+}

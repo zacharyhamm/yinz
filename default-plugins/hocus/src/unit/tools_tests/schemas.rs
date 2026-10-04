@@ -75,6 +75,9 @@ fn the_agent_history_tools_require_only_what_they_cannot_default() {
             .unwrap_or_else(|| panic!("{name} is not advertised"))["function"]["parameters"]
             .clone();
         assert_eq!(parameters["required"], required, "{name}");
+        if name == "agent_history_search" {
+            assert_eq!(parameters["properties"]["regex"]["type"], "boolean");
+        }
     }
 }
 

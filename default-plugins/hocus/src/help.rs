@@ -326,7 +326,7 @@ const TOOL_HELP: &[(&str, &str)] = &[
     ),
     (
         "agent_history_search",
-        "Search what the agents in this archive were asked, and what they answered. Take the run_id and the revision of a hit to agent_run, to read the text around it. With this_session, the tool answers with an error until the daemon knows the name of this session.",
+        "Search what the agents in this archive were asked, and what they answered. Keyword search is the default. regex=true uses case-sensitive Rust regex syntax with inline flags, per-entry anchors and newlines, and errors for invalid patterns. Patterns: 4 KiB; compiled regex/cache: 1 MiB each. Scans newest stored entries first, up to 4,000 rows or 8 MiB of text. truncated can mean older entries remain unsearched; narrow scope. Take the run_id and the revision of a hit to agent_run, to read the text around it. With this_session, the tool answers with an error until the daemon knows the name of this session.",
     ),
     (
         "agent_spawn",

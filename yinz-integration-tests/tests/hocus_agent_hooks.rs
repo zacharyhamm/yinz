@@ -362,6 +362,19 @@ fn assistant_messages_reach_the_timeline_and_history_search() {
         grid.contains("Checking the lexer") && grid.contains("message")
     });
     clear(&yinz, "Checking the lexer");
+    submit(&yinz, r#"/agent_history_search {"query":"[","regex":true}"#);
+    yinz.wait_until("invalid regex is reported", |grid| {
+        grid.contains("invalid regex")
+    });
+    clear(&yinz, "invalid regex");
+    submit(
+        &yinz,
+        r#"/agent_history_search {"query":"(?i)LEXER|impossible","regex":true}"#,
+    );
+    yinz.wait_until("regex search works after a rejected pattern", |grid| {
+        grid.contains("Checking the lexer")
+    });
+    clear(&yinz, "Checking the lexer");
     // Replay after persistence, as duplicate installed hooks can do. The completed
     // message has the same source identity as MessageDisplay above.
     send_hook(

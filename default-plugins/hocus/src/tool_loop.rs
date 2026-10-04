@@ -2746,7 +2746,7 @@ impl State {
         let Some(query) = args
             .query
             .as_deref()
-            .map(str::trim)
+            .map(|query| if args.regex { query } else { query.trim() })
             .filter(|q| !q.is_empty())
         else {
             return "query is required".to_owned();
@@ -2765,6 +2765,7 @@ impl State {
             &filter,
             run_id,
             query,
+            args.regex,
             args.limit.unwrap_or(25),
         ) {
             Ok(found) => found,

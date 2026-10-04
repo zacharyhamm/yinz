@@ -2082,6 +2082,7 @@ name = "hocus-proto"
 version = "0.1.0"
 dependencies = [
  "hocus-data",
+ "regex",
  "serde",
  "serde_json",
  "swamp-lab",
