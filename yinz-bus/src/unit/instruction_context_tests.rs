@@ -222,6 +222,7 @@ pin_context_to_instruction! {
         "UnsubscribePaneOutput",
         "RemotePaneReady",
         "ClearAllPluginHighlights",
+        "CommandPalette",
     ];
     only_special: [
         "HandlePtyBytes",
@@ -237,6 +238,11 @@ pin_context_to_instruction! {
         "ResizeDecreaseRight",
     ];
     targets: [
+        (
+            "CommandPalette",
+            ScreenInstruction::CommandPalette(crate::command_palette::Instruction::Discover { client: ClientId::new(1), opening: 1, revision: 1 }),
+            "ToggleCommandPalette"
+        ),
         (
             "Resize",
             ScreenInstruction::Resize(
@@ -359,7 +365,7 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoPalette", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
         "DataRequest",
@@ -378,6 +384,13 @@ pin_context_to_instruction! {
             vec![],
         ),
         "PostMessageToPluginWorker"
+    ), (
+        "DenoPalette",
+        PluginInstruction::DenoPalette(crate::command_palette::Delivery {
+            owner: crate::command_palette::Owner { plugin_id: PluginId::new(1), generation: 1, client_id: None },
+            client: ClientId::new(1), message: yinz_types::command_palette::Message::Disconnect, active: None,
+        }),
+        "Update"
     ), (
         "DenoTick",
         PluginInstruction::DenoTick(PluginId::new(1), ClientId::new(1), 1),

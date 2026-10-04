@@ -56,3 +56,5 @@ pub use yinz_process::pty_host;
 pub use yinz_runtime::channels;
 pub use yinz_types::internal_ids::{ClientId, PluginId, TerminalId};
 pub use yinz_types::pane_id::PaneId;
+
+pub mod command_palette;

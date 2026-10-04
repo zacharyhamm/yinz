@@ -202,6 +202,7 @@ pub enum ScreenInstruction {
     ToggleActiveTerminalNoUiFullscreen(ClientId, Option<NotificationEnd>),
     TogglePaneFrames(Option<NotificationEnd>),
     ToggleCommandPalette(ClientId, Option<NotificationEnd>),
+    CommandPalette(crate::command_palette::Instruction),
     SetPaneFrameStyle(PaneFrameStyle, Option<NotificationEnd>),
     SetSelectable(PaneId, bool),
     ShowPluginCursor(PluginId, ClientId, Option<(usize, usize)>),
@@ -926,6 +927,7 @@ impl From<&ScreenInstruction> for ScreenContext {
         // here, which is a stronger guarantee than the exhaustive match this replaced: it also
         // catches the two names silently drifting apart.
         match screen_instruction {
+            ScreenInstruction::CommandPalette(..) => ScreenContext::ToggleCommandPalette,
             // The one instruction whose context is chosen by payload rather than by name.
             ScreenInstruction::Resize(.., strategy, _) => match strategy {
                 ResizeStrategy {

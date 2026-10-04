@@ -3646,6 +3646,7 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
     type Error = &'static str;
     fn try_from(plugin_command: PluginCommand) -> Result<Self, &'static str> {
         match plugin_command {
+            PluginCommand::CommandPalette(..) => Err("Command palettes are Deno-only"),
             PluginCommand::Subscribe(subscriptions) => {
                 let subscriptions: ProtobufEventNameList = subscriptions.try_into()?;
                 Ok(ProtobufPluginCommand {
@@ -8027,6 +8028,7 @@ mod tests {
         /// everywhere else, and a field the payload *does* carry going missing still fails.
         fn as_the_plugin_wire_carries_it(command: PluginCommand) -> Option<PluginCommand> {
             Some(match command {
+                PluginCommand::CommandPalette(..) => return None,
                 carried @ (PluginCommand::Subscribe(_)
                 | PluginCommand::PaneTabs(..)
                 | PluginCommand::CreateMultipane(..)

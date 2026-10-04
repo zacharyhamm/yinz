@@ -42,6 +42,7 @@ pub mod tab_bar;
 
 pub mod agent;
 pub mod command;
+pub mod command_palette;
 
 #[cfg(test)]
 #[path = "unit/model_contracts.rs"]

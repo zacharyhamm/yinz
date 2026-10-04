@@ -2747,6 +2747,8 @@ pub struct NotifyClick {
 #[strum_discriminants(name(CommandType))]
 #[allow(clippy::large_enum_variant)]
 pub enum PluginCommand {
+    /// Private Deno palette transport; has no Wasm wire representation.
+    CommandPalette(crate::command_palette::Command),
     PaneTabs(crate::pane_tabs::PaneTabsCommand),
     CreateMultipane(crate::multipane::CreateMultipane),
     UpdateMultipane(crate::multipane::UpdateMultipane),

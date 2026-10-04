@@ -110,6 +110,9 @@
     let value = typeof name === "string"
       ? (args.length ? { [name]: args[0] } : name)
       : name;
+    if (value === "CommandPalette" || (value !== null && typeof value === "object" && Object.hasOwn(value, "CommandPalette"))) {
+      throw new TypeError("Use yinz.commandPalette for palette commands");
+    }
     validateCommand(value);
     if (Array.isArray(value?.RunCommand) && value.RunCommand.length === 5) {
       value = { ...value, RunCommand: [...value.RunCommand, null] };
@@ -1384,7 +1387,169 @@
     };
     return request;
   }
-  const api = { testPlugin,
+  const paletteProviders = new Map(), paletteHandles = new Map(), paletteTasks = new Map();
+  let nextPaletteHandle = 0;
+  const paletteCommand = value => {
+    const command = {CommandPalette: value};
+    validateCommand(command);
+    return dispatch(command, client);
+  };
+  const paletteKey = scope => JSON.stringify([client, scope.registration, scope.opening, scope.view, scope.revision]);
+  function paletteString(value, name, nonempty = true, multiline = false) {
+    if (typeof value !== "string" || (nonempty && !value.trim()) ||
+        (multiline ? /[\x00-\x08\x0b-\x1f\x7f-\x9f]/ : /[\x00-\x1f\x7f-\x9f]/).test(value)) {
+      throw new TypeError(`${name} must be ${nonempty ? "nonempty " : ""}text without terminal controls`);
+    }
+    return value;
+  }
+  function paletteBound(value) {
+    validate(value);
+    if (encodeUtf8(JSON.stringify(value)).length > 256 * 1024) {
+      throw new RangeError("Palette display data exceeds 256 KiB");
+    }
+    return value;
+  }
+  function paletteHandle(callback, task) {
+    if (typeof callback !== "function") throw new TypeError("Palette callback must be a function");
+    const handle = String(++nextPaletteHandle);
+    paletteHandles.set(handle, {callback, registration: task.scope.registration, opening: task.scope.opening, client});
+    task.handles.push(handle);
+    return handle;
+  }
+  function paletteActions(actions, task) {
+    if (!Array.isArray(actions) || actions.length > 100) throw new TypeError("Palette replies require at most 100 actions");
+    const ids = new Set();
+    return actions.map(action => {
+      const id = paletteString(action.id, "Action ID");
+      if (ids.has(id)) throw new TypeError("Palette action IDs must be unique");
+      ids.add(id);
+      return {id, label: paletteString(action.label, "Action label"),
+        description: paletteString(action.description ?? "", "Action description", false, true),
+        handle: paletteHandle(action.run, task)};
+    });
+  }
+  function paletteView(view, task) {
+    const title = paletteString(view.title, "View title");
+    if (view.type === "actions") {
+      return {type: "actions", title, actions: typeof view.actions === "function" ? [] : paletteActions(view.actions, task),
+        source: typeof view.actions === "function" ? paletteHandle(view.actions, task) : null};
+    }
+    if (view.type === "text") return {type: "text", title, text: paletteString(view.text, "View text", false, true)};
+    if (view.type !== "form") throw new TypeError("Unknown palette view type");
+    if (!Array.isArray(view.fields) || view.fields.length > 16) throw new TypeError("Palette forms require at most 16 fields");
+    const ids = new Set();
+    const fields = view.fields.map(field => {
+      const id = paletteString(field.id, "Field ID"), label = paletteString(field.label, "Field label");
+      if (ids.has(id)) throw new TypeError("Palette field IDs must be unique");
+      ids.add(id);
+      if (field.type === "text") return {type: "text", id, label,
+        initialValue: paletteString(field.initialValue ?? "", "Initial value", false, true)};
+      if (field.type !== "choice" || !Array.isArray(field.options) || !field.options.length) {
+        throw new TypeError("Palette choices require options");
+      }
+      const options = field.options.map(option => paletteString(option, "Choice option"));
+      const initialValue = field.initialValue ?? options[0];
+      if (!options.includes(initialValue)) throw new TypeError("Invalid palette choice default");
+      return {type: "choice", id, label, options, initialValue};
+    });
+    return {type: "form", title, fields, submitLabel: paletteString(view.submitLabel ?? "Submit", "Submit label"),
+      handle: paletteHandle(view.onSubmit, task)};
+  }
+  function cancelPaletteTask(task, preserveClosed = false) {
+    if (task.cancelled || (preserveClosed && task.closed)) return;
+    task.cancelled = true;
+    paletteTasks.delete(task.key);
+    const previous = client; client = task.client;
+    try {
+      for (const callback of task.cancellations) {
+        try { callback(); } catch (error) { logLine("Palette cancellation failed:", error); }
+      }
+    } finally { client = previous; }
+    task.cancellations.clear();
+  }
+  const commandPalette = Object.freeze({registerProvider(provider) {
+    if (worker !== null) throw new Error("Background workers cannot register palette providers");
+    const id = paletteString(provider.id, "Provider ID"), title = paletteString(provider.title, "Provider title");
+    if (typeof provider.provideActions !== "function") throw new TypeError("provideActions must be a function");
+    if (paletteProviders.has(id)) throw new Error(`Palette provider ${id} is already registered`);
+    const registration = String(++nextPaletteHandle);
+    const release = retainEvent("BeforeClose");
+    try { paletteCommand(paletteBound({type: "register", id, title, registration})); }
+    catch (error) { release(); throw error; }
+    paletteProviders.set(id, {registration, callback: provider.provideActions});
+    const origin = client;
+    return () => {
+      if (paletteProviders.get(id)?.registration !== registration) return;
+      const previous = client; client = origin;
+      try {
+        paletteCommand({type: "unregister", registration});
+        paletteProviders.delete(id); release();
+        for (const task of paletteTasks.values()) if (task.scope.registration === registration) cancelPaletteTask(task);
+        for (const [handle, entry] of paletteHandles) if (entry.registration === registration) paletteHandles.delete(handle);
+      } finally { client = previous; }
+    };
+  }});
+  function paletteMessage(message) {
+    if (message.type === "release") {
+      for (const handle of message.handles) if (paletteHandles.get(handle)?.client === client) paletteHandles.delete(handle);
+      return;
+    }
+    if (message.type === "dismiss" || message.type === "disconnect") {
+      for (const task of paletteTasks.values()) if (task.client === client && (message.type === "disconnect" || task.scope.opening === message.opening)) cancelPaletteTask(task, message.type === "dismiss");
+      for (const [handle, entry] of paletteHandles) if (entry.client === client && (message.type === "disconnect" || entry.opening === message.opening)) paletteHandles.delete(handle);
+      return;
+    }
+    const key = paletteKey(message.scope);
+    if (message.type === "cancel") { const task = paletteTasks.get(key); if (task) cancelPaletteTask(task); return; }
+    const task = {key, scope: message.scope, client, cancelled: false, closed: false, cancellations: new Set(), handles: []};
+    paletteTasks.set(key, task);
+    const context = Object.freeze({...message.context,
+      get cancelled() { return task.cancelled; },
+      onCancel(callback) {
+        if (typeof callback !== "function") throw new TypeError("onCancel requires a function");
+        if (task.cancelled) callback(); else task.cancellations.add(callback);
+        return () => task.cancellations.delete(callback);
+      },
+      ...(message.type === "discover" ? {query: message.query} : {close() {
+        if (task.cancelled || task.closed || !paletteTasks.has(key)) return;
+        paletteCommand({type: "close", scope: task.scope});
+        task.closed = true;
+      }}),
+    });
+    const finish = (value, error, failed = false) => {
+      paletteTasks.delete(key);
+      task.cancellations.clear();
+      if (task.cancelled) return;
+      try {
+        if (failed) throw error;
+        const isView = value !== null && typeof value === "object" && ["actions", "form", "text"].includes(value.type);
+        const reply = task.closed ? {type: "close"} : message.type === "discover"
+          ? {type: "actions", actions: paletteActions(value, task)}
+          : isView ? {type: "view", view: paletteView(value, task)} : {type: "close"};
+        paletteCommand({type: "reply", scope: task.scope, result: {Ok: paletteBound(reply)}});
+      } catch (failure) {
+        for (const handle of task.handles) paletteHandles.delete(handle);
+        const error = String(failure?.message ?? failure ?? "Palette callback failed").replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 2048) || "Palette callback failed";
+        if (task.closed) logLine(`Palette callback failed after close: ${error}`);
+        paletteCommand({type: "reply", scope: task.scope, result: {Err: error}});
+      }
+    };
+    try {
+      const entry = message.type === "discover" && message.source === null
+        ? [...paletteProviders.values()].find(provider => provider.registration === message.scope.registration)
+        : paletteHandles.get(message.type === "discover" ? message.source : message.handle);
+      if (!entry || entry.registration !== message.scope.registration ||
+          (entry.client !== undefined && (entry.client !== client || entry.opening !== message.scope.opening))) {
+        throw new Error("Palette callback is no longer available");
+      }
+      const result = message.type === "execute" && message.values !== null
+        ? entry.callback(message.values, context) : entry.callback(context);
+      // Observe, never await on the executor. Other providers and native input remain usable.
+      Promise.resolve(result).then(value => finish(value), error => finish(undefined, error, true));
+    } catch (error) { finish(undefined, error, true); }
+  }
+
+  const api = { testPlugin, commandPalette,
     get serverBinary() { return metadata.serverBinary; },
     get serverSession() { return metadata.serverSession; },
     get serverIncarnation() { return metadata.serverIncarnation; },
@@ -1499,6 +1664,10 @@
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;
     if (type === "PaneUpdate") {
       agentPanes = new Map(Object.values(payload.panes).flat().filter(p => !p.is_plugin).map(p => [p.id, {...p, agent:p.agent && {...p.agent}}]));
+    }
+    if (type === "BeforeClose") {
+      for (const task of paletteTasks.values()) cancelPaletteTask(task);
+      paletteHandles.clear(); paletteProviders.clear();
     }
     const listeners = [...(handlers.get(type) ?? [])];
     const waiters = name === "pipe" ? [...pipeWaiters] : [];
@@ -1624,7 +1793,8 @@
           return worker(...arg);
         }).catch(error => logLine(`worker failed: ${error?.stack ?? error}`));
         track(workerQueue, () => {});
-      } else if (action === "permissionResult") permissionResult(arg);
+      } else if (action === "palette") paletteMessage(arg);
+      else if (action === "permissionResult") permissionResult(arg);
       else if (action === "render") return render(...arg);
       else if (action === "peek") return dirty;
       else if (action === "status") { const requested = dirty; dirty = false; return requested; }

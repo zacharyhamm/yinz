@@ -85,6 +85,11 @@ pub fn notification_lines(text: &str, width: usize) -> Vec<String> {
     notification_lines_capped(text, width, MAX_NOTIFICATION_TEXT_ROWS)
 }
 
+/// Wrap plain text to an exact content width without truncating rows.
+pub fn wrapped_text_lines(text: &str, width: usize) -> Vec<String> {
+    notification_lines_capped(text, width.saturating_add(CHROME_COLS), usize::MAX)
+}
+
 /// [`notification_lines`] with a caller-chosen row cap instead of [`MAX_NOTIFICATION_TEXT_ROWS`].
 ///
 /// The notification browser uses it both ways: a collapsed entry is cut shorter than a toast, and

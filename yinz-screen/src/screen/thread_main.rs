@@ -687,6 +687,11 @@ pub fn screen_thread_main(
                         completion.set_stdout_message(handled.to_string());
                     }
                 },
+                ScreenInstruction::CommandPalette(instruction) => {
+                    if screen.plugin_palette_instruction(instruction) {
+                        screen.render()?;
+                    }
+                },
                 ScreenInstruction::ToggleCommandPalette(client_id, _completion) => {
                     screen.toggle_command_palette(client_id);
                     screen.render()?;

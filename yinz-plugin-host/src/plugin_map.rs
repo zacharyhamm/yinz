@@ -1040,6 +1040,13 @@ impl RunningPlugin {
             || matches!(&self.backend, PluginBackend::Deno(deno) if deno.is_disposed())
     }
 
+    pub fn deno_palette(&mut self, message: &yinz_types::command_palette::Message) -> Result<bool> {
+        match &mut self.backend {
+            PluginBackend::Deno(deno) => deno.palette(message),
+            _ => Ok(false),
+        }
+    }
+
     pub fn deno_tick(&mut self) -> Result<bool> {
         match &mut self.backend {
             PluginBackend::Deno(deno) => deno.tick(),

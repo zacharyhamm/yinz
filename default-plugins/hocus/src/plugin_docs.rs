@@ -32,7 +32,7 @@ const EXAMPLE_WEATHER_EXTENSION: &str =
 /// Served in parts, cut at its own `// ---- section:` markers, so that none is more than a
 /// tool call should cost.
 const SDK: &str = include_str!("../../../yinz-plugin-host/src/deno/sdk.d.ts");
-const SDK_SECTIONS: [&str; 8] = [
+const SDK_SECTIONS: [&str; 9] = [
     "sdk_core",
     "sdk_commands",
     "sdk_replies",
@@ -41,6 +41,7 @@ const SDK_SECTIONS: [&str; 8] = [
     "sdk_actions",
     "sdk_helpers",
     "sdk_agents",
+    "sdk_palette",
 ];
 
 fn sdk_marker(name: &str) -> String {
@@ -60,7 +61,7 @@ fn sdk_part(name: &str) -> Option<&'static str> {
 }
 
 /// The section names the schema advertises, and the only ones `section` accepts.
-pub const SECTIONS: [&str; 59] = [
+pub const SECTIONS: [&str; 61] = [
     "index",
     "quickstart",
     "overview",
@@ -104,9 +105,11 @@ pub const SECTIONS: [&str; 59] = [
     "sdk_actions",
     "sdk_helpers",
     "sdk_agents",
+    "sdk_palette",
     "example_clock",
     "example_capabilities",
     "example_forms",
+    "example_palette",
     "example_keybindings",
     "example_weather_extension",
     "example_agent_harness",
@@ -258,6 +261,10 @@ fn index() -> String {
             "sdk_actions" => "declarations: Action",
             "sdk_helpers" => "declarations: fs, data, rpc, hocus, ui, sequences",
             "sdk_agents" => "declarations: agent providers, launch, control and hooks",
+            "sdk_palette" => "declarations: async command palette providers and views",
+            "example_palette" => {
+                "example: remote palette actions, forms, text and immediate closure"
+            },
             "example_clock" => "example: the small one",
             "example_capabilities" => "example: most of what a plugin can do, in one pane",
             "example_forms" => "example: shared forms, confirmation and scrollable Markdown",
@@ -300,6 +307,7 @@ pub fn section(name: &str) -> Option<String> {
         "example_clock" => Some(fenced(EXAMPLE_CLOCK)),
         "example_capabilities" => Some(fenced(EXAMPLE_CAPABILITIES)),
         "example_forms" => Some(fenced(EXAMPLE_FORMS)),
+        "example_palette" => Some(fenced(include_str!("../../../example-plugins/command-palette.ts"))),
         "example_keybindings" => Some(fenced(EXAMPLE_KEYBINDINGS)),
         "example_weather_extension" => Some(fenced(EXAMPLE_WEATHER_EXTENSION)),
         "example_agent_harness" => Some(fenced(EXAMPLE_AGENT_HARNESS)),

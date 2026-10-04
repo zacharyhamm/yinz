@@ -1171,3 +1171,217 @@ layout {{
     peer.quit();
     yinz.quit();
 }
+
+#[test]
+fn deno_palette_network_discovery_is_async_and_obsolete_replies_are_ignored() {
+    use yinz_integration_tests::keys;
+    const TOGGLE: &[u8] = b"\x1b[112;7u";
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("palette.ts");
+    fs::write(&plugin, format!(r#"
+import {{definePlugin,yinz}} from 'yinz:plugin';
+let state = 'starting', received = 0;
+export default definePlugin({{
+  async load() {{
+    await yinz.waitForPermissions(['ReadApplicationState','WebAccess']);
+    yinz.on('WebRequestResult', () => {{ received++; return true; }});
+    yinz.commandPalette.registerProvider({{id:'remote',title:'Remote',async provideActions(context) {{
+      state = 'request:' + context.query; yinz.requestRender();
+      if (!context.query) return [];
+      if (!context.query.startsWith('http')) return await new Promise(() => {{}});
+      const request = yinz.webRequest({{url:'http://{address}/?q=' + encodeURIComponent(context.query)}});
+      const remove = context.onCancel(() => request.cancel());
+      try {{
+        const response = await request;
+        if (yinz.getPluginIds().client_id !== context.clientId) throw Error('wrong client');
+        return [{{id:'result',label:yinz.decodeUtf8(response.body),run:()=>({{type:'actions',title:'Nested',actions:[
+          {{id:'form',label:'Form',run:()=>({{type:'form',title:'Input',fields:[{{type:'text',id:'name',label:'Name'}}],onSubmit(values) {{
+            if (!values.name) throw Error('Name required');
+            return {{type:'text',title:'Output',text:values.name}};
+          }}}})}},
+          {{id:'close',label:'Close now',async run(execution) {{ execution.close(); await yinz.sleep(10); state='closed operation finished'; yinz.requestRender(); }}}}
+        ]}})}}];
+      }} finally {{ remove(); }}
+    }}}});
+    state = 'palette ready'; yinz.requestRender();
+  }},
+  render() {{ return state + '\nreceived:' + received; }}
+}});
+"#)).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane {{ plugin location=\"file:{}\"; }}; }}",
+            plugin.display()
+        )))
+        .start();
+    yinz.wait_until("palette permission prompt", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("provider registered", |grid| grid.contains("palette ready"));
+    yinz.send_stdin(TOGGLE);
+    yinz.send_stdin(b"Rename pane");
+    yinz.wait_until("delayed provider leaves native match usable", |grid| {
+        grid.contains("request:Rename pane") && grid.contains("Rename pane")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("native form while discovery awaits", |grid| {
+        grid.contains("Name:")
+    });
+    yinz.send_stdin(b"native rename");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("native action completes", |grid| {
+        !grid.contains("Do · Project")
+    });
+
+    yinz.send_stdin(TOGGLE);
+    yinz.send_stdin(b"http old");
+    let mut old = receive_http(&listener);
+    yinz.send_stdin(&[21]); // Ctrl+u replaces the query.
+    yinz.send_stdin(b"http new");
+    let mut new = receive_http(&listener);
+    new.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nRemote result",
+    )
+    .unwrap();
+    yinz.wait_until("semantic result survives host matching", |grid| {
+        grid.contains("Remote result")
+    });
+    let _ = old.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nStale result",
+    );
+    yinz.wait_until("old host reply has been dispatched", |grid| {
+        grid.contains("received:2")
+            && grid.contains("Remote result")
+            && !grid.contains("Stale result")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("nested action list", |grid| {
+        grid.contains("Nested") && grid.contains("Form")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("plugin form", |grid| {
+        grid.contains("Input") && grid.contains("Name:")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("inline validation error", |grid| {
+        grid.contains("Name required")
+    });
+    yinz.send_stdin(b"\x1b[A");
+    yinz.send_stdin(b"retained value");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("text output", |grid| {
+        grid.contains("Output") && grid.contains("retained value")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("back retains form values", |grid| {
+        grid.contains("Input") && grid.contains("retained value")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("back to nested actions", |grid| {
+        grid.contains("Nested") && grid.contains("Close now")
+    });
+    yinz.send_stdin(b"\x1b[B");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("callback continues after immediate close", |grid| {
+        grid.contains("closed operation finished") && !grid.contains("Do · Project")
+    });
+    yinz.quit();
+}
+
+#[test]
+fn deno_palette_shared_clients_reload_and_unload_keep_separate_views() {
+    use yinz_integration_tests::keys;
+    const TOGGLE: &[u8] = b"\x1b[112;7u";
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("shared-palette.js");
+    let source = r#"
+const version = 'original';
+let state = 'starting';
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState']);
+    yinz.commandPalette.registerProvider({id:'shared',title:'Shared',async provideActions(context) {
+      await Promise.resolve();
+      if (yinz.getPluginIds().client_id !== context.clientId) throw Error('client changed');
+      if (!context.query) return [];
+      return [{id:'item',label:version + ':' + context.query,run:async execution => {
+        await Promise.resolve();
+        if (yinz.getPluginIds().client_id !== execution.clientId) throw Error('execution client changed');
+        return {type:'text',title:'Private ' + context.query,text:'client ' + execution.clientId};
+      }}];
+    }});
+    state = version + ' ready'; yinz.requestRender();
+  },
+  render() { return state; }
+};
+"#;
+    fs::write(&plugin, source).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_frames false")
+        .with_layout(LayoutInfo::Stringified(format!("layout {{ pane; pane focus=true {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}", plugin.display())))
+        .start();
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"terminal ready\r\n");
+    yinz.wait_until("shared palette permission", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("shared provider ready", |grid| {
+        grid.contains("original ready")
+    });
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("second client ready", |grid| {
+        grid.contains("terminal ready")
+    });
+    yinz.send_stdin(TOGGLE);
+    yinz.send_stdin(b"alpha");
+    other.send_stdin(TOGGLE);
+    other.send_stdin(b"beta");
+    yinz.wait_until("first client results", |grid| {
+        grid.contains("original:alpha") && !grid.contains("original:beta")
+    });
+    other.wait_until("second client results", |grid| {
+        grid.contains("original:beta") && !grid.contains("original:alpha")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("first private view", |grid| grid.contains("Private alpha"));
+    other.wait_until("second remains at root", |grid| {
+        grid.contains("original:beta") && !grid.contains("Private alpha")
+    });
+    fs::write(&plugin, source.replace("'original'", "'replacement'")).unwrap();
+    assert_eq!(
+        yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+            url: format!("file:{}", plugin.display()),
+            configuration: None
+        }),
+        0
+    );
+    yinz.wait_until("reload returns nested client to root", |grid| {
+        grid.contains("replacement:alpha")
+            && grid.contains("removed or reloaded")
+            && !grid.contains("Private alpha")
+    });
+    other.wait_until("reload refreshes second client", |grid| {
+        grid.contains("replacement:beta") && !grid.contains("original:beta")
+    });
+    // Closing the focused plugin leaves the terminal and both clients' palettes alive.
+    assert_eq!(
+        yinz.run_cli_action(CliAction::ClosePane { pane_id: None }),
+        0
+    );
+    yinz.wait_until("unload removes first client's provider entries", |grid| {
+        grid.contains("terminal ready") && !grid.contains("replacement:alpha")
+    });
+    other.wait_until("unload removes second client's provider entries", |grid| {
+        !grid.contains("replacement:beta")
+    });
+    yinz.quit();
+}

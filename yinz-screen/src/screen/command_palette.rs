@@ -1,3 +1,6 @@
+#[path = "palette_plugins.rs"]
+pub(super) mod plugins;
+
 use std::collections::HashMap;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::ServerInstruction;
@@ -20,6 +23,7 @@ use crate::ClientId;
 
 pub(super) struct CommandPaletteState {
     widget: CommandPalette,
+    plugins: plugins::State,
     context: PaletteContext,
     actions: HashMap<String, Builtin>,
     painted: Option<CellRect>,
@@ -93,6 +97,7 @@ impl Screen {
             client_id,
             CommandPaletteState {
                 widget: CommandPalette::default(),
+                plugins: plugins::State::default(),
                 context: PaletteContext {
                     tab_id,
                     pane_id,
@@ -109,6 +114,7 @@ impl Screen {
             },
         );
         self.refresh_command_palettes();
+        self.open_plugin_palette(client_id);
         if self.command_palettes.len() == 1 {
             self.bus
                 .senders
@@ -120,9 +126,10 @@ impl Screen {
     }
 
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
-        if self.command_palettes.remove(&client_id).is_none() {
+        let Some(mut state) = self.command_palettes.remove(&client_id) else {
             return false;
-        }
+        };
+        self.dismiss_plugin_palette(client_id, &mut state);
         self.bus
             .senders
             .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
@@ -179,6 +186,11 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
+        let before = (
+            state.widget.view,
+            state.widget.query().to_owned(),
+            state.widget.is_root(),
+        );
         let outcome = if toggle {
             Outcome::Dismiss
         } else if let Some(key) = key {
@@ -190,6 +202,16 @@ impl Screen {
             }
             Outcome::None
         };
+        let changed = before
+            != (
+                state.widget.view,
+                state.widget.query().to_owned(),
+                state.widget.is_root(),
+            );
+        let query_changed = before.1 != state.widget.query();
+        if changed {
+            self.refresh_plugin_palette(client_id, query_changed);
+        }
         self.handle_palette_outcome(client_id, outcome);
         for tab in self.tabs.values_mut() {
             tab.pending_agent_escapes
@@ -234,6 +256,7 @@ impl Screen {
     }
 
     pub(super) fn prepare_command_palette_render(&mut self, output: &mut Output) {
+        self.remove_unavailable_palette_providers();
         self.refresh_command_palettes();
         output.set_input_overlay_clients(self.command_palettes.keys().copied());
         let layouts: Vec<_> = self
@@ -759,6 +782,9 @@ impl Screen {
     }
 
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
+        if self.plugin_palette_outcome(client, &outcome) {
+            return;
+        }
         if outcome == Outcome::Dismiss {
             self.close_command_palette(client);
             return;
@@ -792,12 +818,14 @@ impl Screen {
                 } else if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.set_error("Project no longer exists".into());
                 }
+                self.refresh_plugin_palette(client, false);
                 return;
             },
             Builtin::Picker(kind) => {
                 if let Some(state) = self.command_palettes.get_mut(&client) {
                     state.widget.open_picker(kind);
                 }
+                self.refresh_plugin_palette(client, false);
                 return;
             },
             Builtin::Form(kind) => {
@@ -816,6 +844,7 @@ impl Screen {
                             }
                         },
                     }
+                    self.refresh_plugin_palette(client, false);
                     return;
                 }
             },

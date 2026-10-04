@@ -349,6 +349,9 @@ pub fn plugin_thread_main(
             PluginInstruction::InputBarrier(plugin_id, completion) => {
                 wasm_bridge.input_barrier(plugin_id, completion);
             },
+            PluginInstruction::DenoPalette(delivery) => {
+                wasm_bridge.deno_palette(delivery, shutdown_send.clone());
+            },
             PluginInstruction::DenoTick(plugin_id, _client_id, generation) => {
                 wasm_bridge.deno_tick(plugin_id, generation, shutdown_send.clone());
             },
