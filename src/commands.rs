@@ -1080,6 +1080,13 @@ fn attach_with_session_name(
     }
 }
 
+fn handle_client_outcome(outcome: yinz_client::ClientOutcome) -> Option<SessionConnection> {
+    if outcome.exit_status != 0 {
+        std::process::exit(outcome.exit_status);
+    }
+    outcome.reconnect_to_session
+}
+
 pub(crate) fn start_client(opts: CliArgs) {
     let (
         config,
@@ -1243,7 +1250,7 @@ pub(crate) fn start_client(opts: CliArgs) {
 
             let tab_number_to_focus = reconnect_to_session.as_ref().and_then(|r| r.tab_position);
             let pane_id_to_focus = reconnect_to_session.as_ref().and_then(|r| r.pane_id);
-            reconnect_to_session = start_client_impl(
+            reconnect_to_session = handle_client_outcome(start_client_impl(
                 Box::new(os_input),
                 opts,
                 config,
@@ -1253,11 +1260,11 @@ pub(crate) fn start_client(opts: CliArgs) {
                 pane_id_to_focus,
                 is_a_reconnect,
                 should_create_detached,
-            );
+            ));
         } else {
             if let Some(session_name) = opts.session.clone().map(SessionName::new) {
                 start_client_plan(session_name.clone());
-                reconnect_to_session = start_client_impl(
+                reconnect_to_session = handle_client_outcome(start_client_impl(
                     Box::new(os_input),
                     opts,
                     config,
@@ -1267,7 +1274,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     None,
                     is_a_reconnect,
                     should_create_detached,
-                );
+                ));
             } else {
                 if let Some(session_name) = config_options.session_name.as_ref() {
                     if let Some(val) = current_session() {
@@ -1291,7 +1298,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 true,
                                 None,
                             );
-                            reconnect_to_session = start_client_impl(
+                            reconnect_to_session = handle_client_outcome(start_client_impl(
                                 Box::new(os_input),
                                 opts,
                                 config,
@@ -1301,11 +1308,11 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 None,
                                 is_a_reconnect,
                                 should_create_detached,
-                            );
+                            ));
                         },
                         _ => {
                             start_client_plan(session_name.clone());
-                            reconnect_to_session = start_client_impl(
+                            reconnect_to_session = handle_client_outcome(start_client_impl(
                                 Box::new(os_input),
                                 opts,
                                 config,
@@ -1315,7 +1322,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                                 None,
                                 is_a_reconnect,
                                 should_create_detached,
-                            );
+                            ));
                         },
                     }
                     if reconnect_to_session.is_some() {
@@ -1328,7 +1335,7 @@ pub(crate) fn start_client(opts: CliArgs) {
 
                 let session_name = generate_unique_session_name_or_exit();
                 start_client_plan(session_name.clone());
-                reconnect_to_session = start_client_impl(
+                reconnect_to_session = handle_client_outcome(start_client_impl(
                     Box::new(os_input),
                     opts,
                     config,
@@ -1338,7 +1345,7 @@ pub(crate) fn start_client(opts: CliArgs) {
                     None,
                     is_a_reconnect,
                     should_create_detached,
-                );
+                ));
             }
         }
         if reconnect_to_session.is_none() {
@@ -1441,7 +1448,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
     let os_input = get_os_input(get_client_os_input);
 
     // Start the watcher client
-    start_client_impl(
+    handle_client_outcome(start_client_impl(
         Box::new(os_input),
         opts,
         config,
@@ -1451,7 +1458,7 @@ pub(crate) fn watch_session(session_name: Option<String>, opts: CliArgs) {
         None,  // pane_id_to_focus
         false, // is_a_reconnect
         false, // should_create_detached
-    );
+    ));
 }
 
 fn reload_config_from_disk(

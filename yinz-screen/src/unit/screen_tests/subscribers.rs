@@ -737,7 +737,9 @@ fn subscriber_removed_on_remove_client() {
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));
 
-    let _ = screen.remove_client(crate::ClientId::new(100));
+    screen.pane_subscriber_snapshots_dirty = false;
+    screen.remove_client(crate::ClientId::new(100)).unwrap();
+    assert!(!screen.pane_subscriber_snapshots_dirty);
     assert!(!screen
         .pane_render_subscribers
         .contains_key(&ClientId::new(100)));

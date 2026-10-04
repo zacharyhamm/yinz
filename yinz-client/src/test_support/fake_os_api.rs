@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use yinz_types::diagnostics::ErrorContext;
@@ -20,9 +21,11 @@ use {yinz_ipc::ipc::ClientToServerMsg, yinz_ipc::ipc::IpcRecv, yinz_ipc::ipc::Se
 /// opts into the behaviour it actually asserts on.
 #[derive(Clone)]
 pub struct FakeClientOsApi {
+    raw_mode: Arc<AtomicBool>,
     terminal_size: Size,
     stdout: Option<Arc<Mutex<Vec<u8>>>>,
     stdout_error: Option<io::ErrorKind>,
+    stdout_error_on: Option<Vec<u8>>,
     stdin: Option<Vec<u8>>,
     sent_to_server: Arc<Mutex<Vec<ClientToServerMsg>>>,
     from_server: Arc<Mutex<VecDeque<IpcRecv<ServerToClientMsg>>>>,
@@ -33,9 +36,11 @@ pub struct FakeClientOsApi {
 impl Default for FakeClientOsApi {
     fn default() -> Self {
         Self {
+            raw_mode: Arc::new(AtomicBool::new(false)),
             terminal_size: Size { rows: 24, cols: 80 },
             stdout: None,
             stdout_error: None,
+            stdout_error_on: None,
             stdin: None,
             sent_to_server: Arc::new(Mutex::new(Vec::new())),
             from_server: Arc::new(Mutex::new(VecDeque::new())),
@@ -55,6 +60,10 @@ impl std::fmt::Debug for FakeClientOsApi {
 // a constructor going unused for a while is the toolkit being complete, not code going stale.
 #[allow(dead_code)]
 impl FakeClientOsApi {
+    pub fn raw_mode(&self) -> bool {
+        self.raw_mode.load(Ordering::SeqCst)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -73,6 +82,13 @@ impl FakeClientOsApi {
 
     pub fn with_stdout_error(mut self, error: io::ErrorKind) -> Self {
         self.stdout_error = Some(error);
+        self
+    }
+
+    /// Fail only the selected write, allowing startup and restoration to complete.
+    pub fn with_stdout_error_on(mut self, error: io::ErrorKind, bytes: Vec<u8>) -> Self {
+        self.stdout_error = Some(error);
+        self.stdout_error_on = Some(bytes);
         self
     }
 
@@ -126,12 +142,18 @@ impl FakeClientOsApi {
 }
 
 /// Writes into the fake's stdout buffer, or discards when not capturing.
-struct FakeStdout(Option<Arc<Mutex<Vec<u8>>>>, Option<io::ErrorKind>);
+struct FakeStdout(
+    Option<Arc<Mutex<Vec<u8>>>>,
+    Option<io::ErrorKind>,
+    Option<Vec<u8>>,
+);
 
 impl Write for FakeStdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if let Some(error) = self.1 {
-            return Err(error.into());
+            if self.2.as_deref().is_none_or(|bytes| bytes == buf) {
+                return Err(error.into());
+            }
         }
         if let Some(sink) = &self.0 {
             sink.lock().unwrap().extend_from_slice(buf);
@@ -178,8 +200,11 @@ impl TtyControl for FakeClientOsApi {
     fn get_terminal_size(&self) -> Size {
         self.terminal_size
     }
-    fn set_raw_mode(&mut self) {}
+    fn set_raw_mode(&mut self) {
+        self.raw_mode.store(true, Ordering::SeqCst);
+    }
     fn unset_raw_mode(&self) -> Result<(), std::io::Error> {
+        self.raw_mode.store(false, Ordering::SeqCst);
         Ok(())
     }
     fn load_palette(&self) -> Palette {
@@ -195,7 +220,11 @@ impl TtyControl for FakeClientOsApi {
 
 impl StdioAccess for FakeClientOsApi {
     fn get_stdout_writer(&self) -> Box<dyn Write> {
-        Box::new(FakeStdout(self.stdout.clone(), self.stdout_error))
+        Box::new(FakeStdout(
+            self.stdout.clone(),
+            self.stdout_error,
+            self.stdout_error_on.clone(),
+        ))
     }
     fn get_stdin_reader(&self) -> Box<dyn io::BufRead> {
         Box::new(io::Cursor::new(self.stdin.clone().unwrap_or_default()))
@@ -204,7 +233,7 @@ impl StdioAccess for FakeClientOsApi {
         self.stdin.is_none()
     }
     fn read_from_stdin(&mut self) -> Result<Vec<u8>, &'static str> {
-        Ok(Vec::new())
+        Err("Session ended")
     }
     fn get_async_stdin_reader(&self) -> Box<dyn AsyncStdin> {
         match &self.stdin_rx {
@@ -253,6 +282,9 @@ impl SignalSource for FakeClientOsApi {
 }
 
 impl ClientOsApi for FakeClientOsApi {
+    fn should_install_panic_hook(&self) -> bool {
+        false
+    }
     fn box_clone(&self) -> Box<dyn ClientOsApi> {
         Box::new(self.clone())
     }

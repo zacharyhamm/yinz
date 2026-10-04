@@ -220,7 +220,7 @@ impl Screen {
         );
         let departed = self.departed_follow_source();
         let retired_source =
-            match self.register_client_transaction(client_id, departed, Some(client_size)) {
+            match self.register_client_transaction(client_id, departed, Some(client_size), true) {
                 Ok(source) => source,
                 Err(error) => {
                     Err::<(), _>(error)
