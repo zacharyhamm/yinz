@@ -1,6 +1,6 @@
 ---
 name: yinz-agents
-description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, and inspect their durable archives.
+description: Launch, inspect, and coordinate Yinz agents with guarded prompts and correlated outcomes, register control agents, and inspect their durable archives.
 ---
 
 Inside a Yinz pane, inherited `YINZ_PANE_REF` resolves the current session and caller. Start with `yinz agent list --json`.
@@ -143,6 +143,14 @@ SSH launches cannot use local project, branch, worktree, or VM options. General 
 Register an existing pane with `agent register PANE_ID KIND --json` for tracking. Registration alone does not enable guarded prompts or turn a shell-launched agent into a managed command pane.
 `agent list` also shows an agent started by hand in a shell as source `detected` with `not_ready_reason: unmanaged`.
 Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
+
+To mark yourself as a control agent, run `yinz agent control register --json` from your own pane. `yinz agent control unregister --json` removes the mark.
+Both act on the calling pane's live tracked agent through inherited `YINZ_PANE_REF`, take no pane argument, and fail outside a pane. An explicit `--session` must match the pane's owning session.
+This is separate from `agent register PANE_ID KIND`: control registration goes to the live server and does not need `hocus-agentd`.
+Registration grants no additional permissions. Repeating either command is safe, including unregistration after automatic cleanup.
+Users find control agents through the command palette's **Focus control agent** entry, which spans all live sessions on this host, searches pane title, pane ID, session, or tab, and ignores the current project.
+Registration ends when the agent exits, its conversation changes or clears (including `/clear` or `/new`), or its pane closes or leaves the session. A replacement agent must register again; session resurrection does not restore registrations.
+Plugins see registered terminal pane IDs in `SessionInfo.control_agents`.
 
 ```sh
 yinz agent runs --project work --limit 20 --offset 0
