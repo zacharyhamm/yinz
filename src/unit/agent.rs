@@ -213,6 +213,8 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         not_ready_reason: None,
         status_available: true,
         prompt_supported: true,
+        input_revision: None,
+        clear_draft_supported: false,
         background_tasks: Vec::new(),
     });
     for (text, expected) in [
@@ -499,4 +501,27 @@ fn spawn_json_keeps_command_arguments_environment_and_flag_overrides() {
     assert_eq!(launch["spec"]["env"]["TEST"], "value");
     assert_eq!(launch["spec"]["hooks"], false);
     assert_eq!(launch["spec"]["model"], "from-flag");
+}
+
+#[test]
+fn clear_draft_request_preserves_authorized_revision_and_deadline() {
+    let (request, json, timeout) = request(
+        Agent::ClearDraft {
+            target: PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+            conversation: "conversation".into(),
+            input_revision: 42,
+            confirm_discard: true,
+            interrupted: true,
+            timeout: Duration::from_secs(7),
+            json: true,
+        },
+        &mut &b""[..],
+    )
+    .unwrap();
+    assert!(json);
+    assert_eq!(timeout, Duration::from_secs(7));
+    assert!(matches!(request, AgentRequest::ClearDraft {
+        expected_session_id, input_revision: 42, confirm_discard: true,
+        interrupted: true, timeout_ms: 7000, ..
+    } if expected_session_id == "conversation"));
 }

@@ -20,6 +20,7 @@ missing or stale pane context requires an explicit `--session`.
 | `agent wait TARGET --submission ID` | Original prompt's outcome, including failure, after a timeout or dialog |
 | `agent wait TARGET --until idle` | Observation of the requested state |
 | `agent read TARGET --lines 80` | Last 80 terminal lines, including internal blank rows |
+| `agent clear-draft TARGET --conversation ID --input-revision REV --confirm-discard` | Discard an inspected draft and verify the empty composer |
 | `agent recover TARGET --conversation ID --confirm-empty [--interrupted]` | Restore readiness after inspecting and clearing the draft |
 | `agent send-keys TARGET Esc` | Deliberate input to the agent's terminal UI |
 
@@ -281,6 +282,7 @@ When several conditions block readiness, the first matching reason applies:
 | `prompt_unsupported` | Lifecycle, process or terminal evidence does not permit prompt submission |
 | `not_idle` | The agent is busy, waiting or exited |
 | `pending_submission` | An earlier submission still owns the input and has not been acknowledged |
+| `clearing_draft` | Draft clearing owns the composer until verification or queued writes finish |
 | `unresolved_turn` | An accepted turn still owns the input after an interruption or an unconfirmed outcome; inspect the pane and recover only after it has stopped and its draft is empty |
 | `unconsumed_input` | Terminal input is newer than the last confirmed consumed input revision |
 
@@ -710,3 +712,50 @@ exercise registration, aliases, launch arguments, input bytes, custom Enter timi
 turn correlation, and status-only capabilities. Host unit tests also cover
 validation, conflicting registrations, unload, restart refusal, input interruption,
 timeouts, and hook-file ownership.
+
+
+## Explicit draft clearing
+
+Obtain authorization to discard the current draft. A rejected prompt does not authorize deletion.
+Read status, inspect the composer, and use the exact revision you inspected:
+
+```sh
+yinz agent status terminal_7 --json
+yinz agent clear-draft terminal_7 --conversation CONVERSATION_ID \
+  --input-revision REVISION --confirm-discard --json
+yinz agent prompt terminal_7 --conversation CONVERSATION_ID --file prompt.md
+```
+
+Run the prompt only after clearing returns `ok` and `ready: true`.
+`input_revision` is optional for older servers. An absent revision is unknown, not zero.
+`clear_draft_supported` defaults to false when an older server omits it.
+It describes the current recognized layout, not a guarantee that verification will succeed.
+
+The command requires three seconds without terminal input. Recent input causes immediate rejection.
+A revision conflict requires new inspection and discard authorization. Never refresh the revision and retry automatically.
+`--timeout` defaults to `30s`. `--interrupted` confirms that work stopped despite a stale Busy or Waiting report.
+Interrupted recovery also requires input after the last lifecycle report and three seconds of quiet.
+Background work and active submissions prevent clearing.
+
+| Provider | Recognized layout |
+|---|---|
+| Claude Code | Default bordered composer with visible cursor. Placeholder text requires distinguishable dim styling. |
+| Codex | Default `› ` composer and model footer with visible cursor |
+| Pi | Built-in bordered editor with visible cursor (`PI_HARDWARE_CURSOR=1`) |
+| Muse, AGY, custom providers/editors | Unsupported. Clear manually and use `recover --confirm-empty`. |
+
+Recognition requires the live viewport and default editing bindings. Scrolled views, hidden cursors, dialogs,
+and unfamiliar layouts fail closed. Ambiguous suggestion text, paste labels, attachments, and continuation rows never prove emptiness.
+Codex 0.160.0’s fixed placeholder and Claude 2.1.289’s `Try "…"` placeholder require their captured dim style.
+Identically spelled typed text remains a draft.
+Claude suggestions and Pi's default hidden cursor can therefore prevent verified clearing.
+Pi's existing `PI_HARDWARE_CURSOR=1` setting enables cursor verification.
+
+For a nonempty composer, Yinz pastes an inert marker without Enter. After delivery and visible marker verification,
+it sends exactly one Ctrl+C. Readiness returns only after a fresh, recognized empty composer remains stable for 250 milliseconds.
+An already empty composer receives no editing input.
+
+Human input cancels subsequent stages. Lifecycle changes, replacement, process exit, delivery failure, timeout,
+and client disconnection also stop clearing. Queued writes retain ownership until they finish.
+Failure can leave a partially cleared draft. Inspect the terminal before manual recovery.
+Clearing preserves the conversation and does not verify task completion or promise deletion from provider history.

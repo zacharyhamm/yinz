@@ -305,6 +305,28 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
             },
             json,
         ),
+        Agent::ClearDraft {
+            target,
+            conversation,
+            input_revision,
+            confirm_discard,
+            interrupted,
+            timeout: requested,
+            json,
+        } => {
+            timeout = requested;
+            (
+                AgentRequest::ClearDraft {
+                    pane_id: target,
+                    expected_session_id: conversation,
+                    input_revision,
+                    confirm_discard,
+                    interrupted,
+                    timeout_ms: timeout_millis(timeout)?,
+                },
+                json,
+            )
+        },
         Agent::Recover {
             target,
             conversation,
@@ -542,6 +564,16 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             status.ready, status.status_available, status.prompt_supported
         )
         .context("cannot write agent readiness")?;
+        writeln!(
+            out,
+            "  input_revision: {}  clear_draft_supported: {}",
+            status
+                .input_revision
+                .map(|revision| revision.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            status.clear_draft_supported
+        )
+        .context("cannot write draft clearing status")?;
         if let Some(reason) = status.not_ready_reason {
             writeln!(out, "  not_ready_reason: {reason}")
                 .context("cannot write readiness reason")?;

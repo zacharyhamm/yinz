@@ -127,3 +127,35 @@ Final validation: `cargo x ci check` passed with 16 test workers, including
 formatting, lint, doctests, all 9,665 workspace tests and all 478 whole-app
 integration tests. The Git-plugin fixture also passed ten consecutive isolated
 runs after its readiness fix. Both bundled skills passed `quick_validate.py`.
+
+
+## Guarded draft clearing, 2026-10-04
+
+`agent clear-draft` requires a conversation, the exact inspected input revision, and explicit discard confirmation.
+The screen thread owns the composer across marker delivery, one Ctrl+C, and stable-empty verification.
+Manual recovery and verified clearing share submission finalization. Clearing never consumes newer input.
+Unsupported layouts fail closed. Partial redraws pause verification without sending keys or counting empty-frame stability.
+
+Disposable live panes validated these installed versions with default editing bindings:
+
+| Provider | Layout requirement | Result |
+|---|---|---|
+| Claude Code 2.1.289 | Visible cursor and distinguishable dim placeholder styling | Clear preserved the conversation and restored readiness. The guarded new prompt completed with `CLEAR_DRAFT_NEW_ONLY`. Multiline and wrapped drafts also cleared with the cursor at the start of the last row. |
+| Codex CLI 0.160.0 | Visible cursor and the captured fixed, dim placeholder | Clear preserved the conversation and restored readiness. The guarded new prompt completed with `CLEAR_DRAFT_NEW_ONLY`. Multiline clearing passed after verification was made tolerant of transient hidden cursors during redraw. |
+| Pi 1.0.0 | Existing `PI_HARDWARE_CURSOR=1` setting and matching default cyan editor borders | Clear returned `ok`, preserved the conversation, and restored readiness. The provider acknowledged exactly the new prompt. Its model request failed with HTTP 401, so model completion was not verified. |
+
+Claude's unstyled suggestion text remains ambiguous and does not count as empty.
+The colored Claude check used `TERM=xterm-256color`, `FORCE_COLOR=1`, and empty `NO_COLOR`.
+Pi's default hidden cursor is rejected. Its border check prevents rules typed into a draft from hiding earlier input.
+Muse, AGY, and custom providers/editors are explicitly unsupported.
+
+Captured empty and multiline frames, including dimensions, cursor coordinates, and provider versions, are in
+`yinz-screen/src/unit/fixtures/agent-composers/`. Tests distinguish typed placeholder lookalikes from dim UI hints.
+Controller tests cover exact revisions, confirmation, quiet time, interrupted recovery and abandoned submissions,
+concurrent commands, lifecycle changes, disconnection, write failure, deadlines, partial redraws, and stable emptiness.
+Disposable validation sessions were removed after testing.
+
+Final validation: `cargo x ci check` passed formatting, lint, doctests, all 9,781 workspace tests,
+and all 492 whole-app integration tests. The bundled agent skill passed `quick_validate.py`.
+Two failures in an earlier full run (Git-plugin CLI reload and the TypeScript agent harness) passed in isolation
+and in the final full run.
