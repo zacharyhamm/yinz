@@ -224,6 +224,14 @@ fn test_client_messages() {
     let pane_id = PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7));
     for expected_session_id in [None, Some("conversation-7".to_owned())] {
         for request in [
+            AgentRequest::SetControlAgent {
+                pane_id,
+                enabled: true,
+            },
+            AgentRequest::SetControlAgent {
+                pane_id,
+                enabled: false,
+            },
             AgentRequest::List { project: None },
             AgentRequest::Status {
                 pane_id,

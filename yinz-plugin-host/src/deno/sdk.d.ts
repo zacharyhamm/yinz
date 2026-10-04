@@ -529,6 +529,7 @@ export interface ModeInfo {
   nested_ascend_keys: KeyWithModifier[]; session_ascended: boolean | null; nested_descend_keys: KeyWithModifier[];
 }
 export interface SessionInfo {
+  control_agents: number[];
   name: string; tabs: TabInfo[]; panes: PaneManifest; connected_clients: Integer; is_current_session: boolean;
   available_layouts: LayoutInfo[]; plugins: Record<string, {location: string; configuration: StringMap}>;
   tab_history: Record<string, number[]>; pane_history: Record<string, PaneId[]>; creation_time: Duration;
@@ -943,6 +944,7 @@ export interface AgentInput {
 }
 export interface AgentHookArtifact {base?: "config" | "home"; path: string; content: string; marker: string; executable?: boolean;}
 export type AgentRequest =
+  | {SetControlAgent: {pane_id: PaneId; enabled: boolean}}
   | {List: {project?: string | null}}
   | {Status: {pane_id: PaneId; expected_session_id?: string | null}}
   | {Spawn: {spec: AgentSpawnSpec; cwd?: string | null; project?: string | null; remote_host?: string | null; automatic_firecracker_vm?: boolean}}

@@ -331,6 +331,7 @@ impl Screen {
 
 #[derive(Clone)]
 enum Builtin {
+    ControlAgent(Action),
     Action(Action),
     Picker(EntryKind),
     Project(String),
@@ -414,6 +415,12 @@ impl Screen {
             "Switch session…",
             &["find session"],
             Builtin::Picker(EntryKind::Session),
+        );
+        command(
+            "focus-control-agent",
+            "Focus control agent",
+            &["controller agent"],
+            Builtin::Picker(EntryKind::ControlAgent),
         );
         command(
             "floating",
@@ -539,6 +546,11 @@ impl Screen {
                 ));
             }
         }
+        entries.extend(
+            self.control_agent_entries()
+                .into_iter()
+                .map(|(entry, action)| (entry, Builtin::ControlAgent(action))),
+        );
         let mut sessions: Vec<_> = self.peer_sessions_cache.values().collect();
         sessions.sort_by_key(|session| (session.creation_time, &session.name));
         for session in sessions {
@@ -703,6 +715,71 @@ impl Screen {
         entries
     }
 
+    fn control_agent_entries(&self) -> Vec<(Entry, Action)> {
+        let mut entries = Vec::new();
+        let mut add = |session: &SessionName, tab: &str, pane: &yinz_types::data::PaneInfo| {
+            if pane.exited
+                || pane.is_suppressed
+                || !pane.is_selectable
+                || pane
+                    .agent
+                    .as_ref()
+                    .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited)
+            {
+                return;
+            }
+            let action = if session == &self.session_name {
+                Action::FocusPaneByPaneId { pane_id: pane.id }
+            } else {
+                Action::SwitchSession {
+                    name: session.clone(),
+                    pane_id: Some(pane.id),
+                    tab_position: None,
+                    layout: None,
+                    cwd: None,
+                }
+            };
+            entries.push((
+                Entry {
+                    id: format!("control-agent:{session}:{}", pane.id),
+                    label: format!("{} ({})", pane.title, pane.id),
+                    description: format!("{session} · {tab}"),
+                    aliases: vec![
+                        pane.title.clone(),
+                        pane.id.to_string(),
+                        session.to_string(),
+                        tab.to_owned(),
+                    ],
+                    shortcut: String::new(),
+                    kind: EntryKind::ControlAgent,
+                },
+                action,
+            ));
+        };
+        for tab in self.tabs.values() {
+            for pane in tab.pane_infos() {
+                if matches!(pane.id, PaneId::Terminal(id) if self.control_agents.contains(&id)) {
+                    add(&self.session_name, &tab.name, &pane);
+                }
+            }
+        }
+        for session in self
+            .peer_sessions_cache
+            .values()
+            .filter(|session| session.name != self.session_name)
+        {
+            for tab in &session.tabs {
+                for pane in session.panes.panes.get(&tab.position).into_iter().flatten() {
+                    if matches!(pane.id, PaneId::Terminal(id) if session.control_agents.contains(&id))
+                    {
+                        add(&session.name, &tab.name, pane);
+                    }
+                }
+            }
+        }
+        entries
+    }
+
     fn refresh_command_palettes(&mut self) {
         self.reconcile_project_contexts();
         let clients: Vec<_> = self
@@ -846,6 +923,18 @@ impl Screen {
                     }
                     self.refresh_plugin_palette(client, false);
                     return;
+                }
+            },
+            Builtin::ControlAgent(action) => {
+                if self
+                    .control_agent_entries()
+                    .iter()
+                    .any(|(entry, _)| entry.id == id)
+                    && self.palette_target_exists(pane, tab, &action)
+                {
+                    Ok(action)
+                } else {
+                    Err("Control agent is no longer available".into())
                 }
             },
             Builtin::Action(action) => {

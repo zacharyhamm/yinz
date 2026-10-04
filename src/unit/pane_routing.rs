@@ -114,6 +114,11 @@ impl Session {
                     warp_companions: true,
                     warp_held_terminals: true,
                 },
+                ClientToServerMsg::AgentControl(_) => {
+                    ServerToClientMsg::AgentControl(yinz_types::agent::control::AgentResponse::new(
+                        yinz_types::agent::control::AgentOutcome::Ok,
+                    ))
+                },
                 ClientToServerMsg::AgentReport(report) => ServerToClientMsg::AgentReportAccepted {
                     report_id: report.report_id.clone(),
                 },
@@ -377,4 +382,65 @@ fn implicit_streams_and_layouts_require_a_pane_reference() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn control_agent_registration_uses_inherited_owner_and_never_falls_back() {
+    use yinz_types::agent::control::AgentRequest;
+    let dir = tempfile::tempdir().unwrap();
+    let owner = Session::new(dir.path(), "owner");
+    let old = Session::new(dir.path(), "old");
+    let supervisor = Supervisor::new(dir.path(), "owner", 42);
+    for operation in ["register", "unregister"] {
+        for explicit in [false, true] {
+            let mut cmd = command(dir.path());
+            if explicit {
+                cmd.args(["--session", "owner"]);
+            }
+            let output = cmd
+                .args(["agent", "control", operation, "--json"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(
+                matches!(owner.receive(), ClientToServerMsg::AgentControl(AgentRequest::SetControlAgent { pane_id, enabled })
+                if pane_id == PaneId::Terminal(TerminalId::new(42)) && enabled == (operation == "register"))
+            );
+        }
+        for reference in [Some("abcdef012345"), Some("invalid"), None] {
+            let mut cmd = command(dir.path());
+            match reference {
+                Some(value) => {
+                    cmd.env("YINZ_PANE_REF", value);
+                },
+                None => {
+                    cmd.env_remove("YINZ_PANE_REF");
+                },
+            }
+            let output = cmd
+                .args(["--session", "old", "agent", "control", operation, "--json"])
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(reply["outcome"], "rejected");
+            assert!(owner.messages.try_recv().is_err());
+            assert!(old.messages.try_recv().is_err());
+        }
+    }
+    supervisor.status.lock().unwrap().session_name = Some("old".into());
+    let output = command(dir.path())
+        .args(["agent", "control", "register", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(matches!(
+        old.receive(),
+        ClientToServerMsg::AgentControl(AgentRequest::SetControlAgent { enabled: true, .. })
+    ));
+    assert!(owner.messages.try_recv().is_err());
 }

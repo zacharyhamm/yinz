@@ -966,6 +966,8 @@ impl ModeInfo {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SessionInfo {
+    #[serde(default)]
+    pub control_agents: Vec<crate::internal_ids::TerminalId>,
     pub name: SessionName,
     pub tabs: Vec<TabInfo>,
     pub panes: PaneManifest,

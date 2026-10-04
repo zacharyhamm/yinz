@@ -897,3 +897,54 @@ fn root_discovery_dismisses_but_nested_discovery_and_execution_cancel() {
     assert_eq!(palette.back(), Outcome::None);
     assert!(palette.is_root());
 }
+
+#[test]
+fn control_agent_picker_is_scoped_and_preserves_navigation_and_project() {
+    let mut palette = palette();
+    palette.current_project = Some("project".into());
+    let mut entries = palette.native_entries.clone();
+    entries.extend([
+        entry("control:a:1", "agent one", EntryKind::ControlAgent),
+        entry("control:b:1", "agent two", EntryKind::ControlAgent),
+    ]);
+    palette.set_entries(entries.clone());
+    assert!(!ids(&palette).contains(&"control:a:1"));
+    palette.insert_text("New");
+    let selected = palette.selected_entry().unwrap().id.clone();
+    palette.open_picker(EntryKind::ControlAgent);
+    assert_eq!(ids(&palette), vec!["control:a:1", "control:b:1"]);
+    palette.push_view(42, "Plugin view".into());
+    palette.set_sections(vec![PluginSection {
+        title: "Plugin".into(),
+        entries: vec![entry("plugin-child", "child", EntryKind::Plugin)],
+        semantic: false,
+        status: None,
+    }]);
+    assert_eq!(ids(&palette), vec!["plugin-child"]);
+    assert_eq!(palette.current_project.as_deref(), Some("project"));
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(ids(&palette), vec!["control:a:1", "control:b:1"]);
+    key(&mut palette, BareKey::Down);
+    entries.reverse();
+    palette.set_entries(entries);
+    assert_eq!(palette.selected_entry().unwrap().id, "control:b:1");
+    let surface = Viewport {
+        cols: 80,
+        rows: 24,
+        ..Default::default()
+    };
+    palette.insert_text("absent");
+    assert!(rendered_lines(&palette, &palette.layout(surface))
+        .join("\n")
+        .contains("No matches"));
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.query(), "New");
+    assert_eq!(palette.selected_entry().unwrap().id, selected);
+    palette.open_picker(EntryKind::ControlAgent);
+    palette.set_entries(vec![entry("pane", "ordinary", EntryKind::Pane)]);
+    let text = rendered_lines(&palette, &palette.layout(surface)).join("\n");
+    assert!(text.contains("No control agents"));
+    assert!(text.contains("Project: project"));
+    assert_eq!(palette.back(), Outcome::None);
+    assert_eq!(palette.query(), "New");
+}

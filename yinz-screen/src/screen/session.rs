@@ -159,6 +159,7 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
+            control_agents: self.control_agents.iter().copied().collect(),
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,

@@ -470,6 +470,7 @@ impl Screen {
                 .unwrap_or_default()
         };
         let session_info = SessionInfo {
+            control_agents: vec![],
             name: self.session_name.clone(),
             tabs: tab_infos,
             panes: pane_manifest,
@@ -492,7 +493,18 @@ impl Screen {
         self.report_session_info(session_info)
     }
 
-    fn report_session_info(&mut self, session_info: SessionInfo) -> Result<()> {
+    fn report_session_info(&mut self, mut session_info: SessionInfo) -> Result<()> {
+        self.control_agents.retain(|id| {
+            session_info.panes.panes.values().flatten().any(|pane| {
+                pane.id == PaneId::Terminal(*id)
+                    && !pane.exited
+                    && pane
+                        .agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.state != yinz_types::agent::AgentState::Exited)
+            })
+        });
+        session_info.control_agents = self.control_agents.iter().copied().collect();
         let err_context = || "Failed to report session info".to_string();
 
         self.bus
