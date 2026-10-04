@@ -120,9 +120,11 @@ escalation on the first attempt.
 ### Failures and test timing
 
 - Use `-j 16` for integration tests. Reduce to `-j 4` on smaller or busy machines.
-  Check for competing runs in other worktrees and rerun failures alone before
-  attributing timeouts to regressions. There are no known pre-existing
-  integration failures.
+  Check for competing runs in other worktrees before starting.
+- Treat every test flake or timeout as a defect. Record the failure and investigate
+  it in a separate branch/worktree dedicated to that defect. Diagnostic reruns
+  help identify the cause; a passing rerun does not resolve the failure. Keep
+  unrelated flake fixes out of the current change.
 - Use `yinz-test-support`'s `Watched<T>::wait_until(what, timeout, predicate)`
   instead of sleeps. Screen and plugin instruction logs already use it.
 - Wait for render **content**, not `snapshots.last()` or a render count. See
