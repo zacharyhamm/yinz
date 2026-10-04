@@ -898,24 +898,25 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 // pane's whole scrollback — moves into the Screen instruction
                 // instead of being cloned.
                 let result = match pty.adopt_terminal(&payload) {
-                    Ok(adopted) => {
-                        let _ =
-                            pty.bus
-                                .senders
-                                .send_to_screen(ScreenInstruction::AdoptedPaneReady {
-                                    terminal_id: adopted.terminal_id,
-                                    payload,
-                                    placement,
-                                    client_id,
-                                    cmd: adopted.cmd,
-                                    buffered: adopted.buffered,
-                                    child_exit_status: adopted.child_exit_status,
-                                });
-                        Ok(())
-                    },
+                    Ok(adopted) => pty
+                        .bus
+                        .senders
+                        .send_to_screen(ScreenInstruction::AdoptedPaneReady {
+                            response_channel: response_channel.clone(),
+                            terminal_id: adopted.terminal_id,
+                            payload,
+                            placement,
+                            client_id,
+                            cmd: adopted.cmd,
+                            buffered: adopted.buffered,
+                            child_exit_status: adopted.child_exit_status,
+                        })
+                        .context("failed to place adopted pane"),
                     Err(e) => Err(e),
                 };
-                let _ = response_channel.send(result);
+                if let Err(error) = result {
+                    let _ = response_channel.send(Err(error));
+                }
             },
             PtyInstruction::ReleaseTerminalsForWarp {
                 held,

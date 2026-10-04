@@ -234,6 +234,8 @@ pub enum ScreenContext {
     PaneReleasedForWarp,
     RequestPaneRedraw,
     AdoptedPaneReady,
+    AdoptedPaneFinished,
+    PaneWarpFinished,
     WarpTab,
     TabReleasedForWarp,
     AdoptedTabReady,

@@ -587,9 +587,11 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
                     None,
                 ))
                 .expect("TEST");
+            let (adopted_tx, adopted_rx) = crossbeam::channel::unbounded();
             mock_screen
                 .to_screen
                 .send(ScreenInstruction::AdoptedPaneReady {
+                    response_channel: adopted_tx,
                     terminal_id: crate::TerminalId::new(50),
                     payload: Box::default(),
                     placement: yinz_types::data::WarpPlacement::FocusedTab,
@@ -602,6 +604,10 @@ fn an_adopted_focused_tab_pane_gets_focus_and_leaves_scroll_mode() {
                     child_exit_status: None,
                 })
                 .expect("TEST");
+            adopted_rx
+                .recv_timeout(yinz_test_support::default_timeout())
+                .expect("Screen acknowledged adoption")
+                .expect("adoption succeeded");
             mock_screen.received_background_jobs.wait_until(
                 "the adopted agent to be focused in the selected tab",
                 yinz_test_support::default_timeout(),
@@ -989,28 +995,80 @@ fn a_pane_a_plugin_hid_cannot_be_warped() {
 }
 
 #[test]
-fn a_pane_and_the_editor_open_on_it_cannot_be_the_last_two_panes_warped_group_refused() {
+fn the_sessions_last_pane_and_its_editor_can_be_warped() {
     let mut screen = screen_with_a_scrollback_editor_open();
     screen.tabs.retain(|id, _| *id == TabId::new(0));
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
-    assert!(screen
+    let (_, terminals, _) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(9))), ClientId::new(1))
-        .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+        .expect("the last companion group can leave the session")
+        .expect("companions");
+    assert_eq!(terminals.len(), 2);
 }
 
 #[test]
-fn the_sessions_only_pane_cannot_be_warped() {
+fn the_sessions_only_pane_can_be_warped() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
     new_tab(&mut screen, 1, TabId::new(0));
+    let (to_pty, pty): ChannelWithContext<PtyInstruction> = channels::unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(to_pty));
+    let (to_server, server): ChannelWithContext<ServerInstruction> = channels::unbounded();
+    screen.bus.senders.to_server = Some(SenderWithContext::new(to_server));
+    let (response_tx, response_rx) = crossbeam::channel::unbounded();
 
-    assert_eq!(
-        screen.check_pane_can_be_warped(
-            Some(PaneId::Terminal(crate::TerminalId::new(1))),
-            crate::ClientId::new(1)
-        ),
-        Err("this is the session's only pane; moving it would close the session".to_owned())
+    screen
+        .warp_pane(
+            true,
+            true,
+            Some(PaneId::Terminal(TerminalId::new(1))),
+            yinz_types::internal_ids::SessionName::new("destination"),
+            yinz_types::data::WarpPlacement::NewTab,
+            ClientId::new(1),
+            response_tx,
+            warp_deadline(),
+        )
+        .expect("start warp");
+    assert!(pty.try_iter().any(|(instruction, _)| matches!(
+        instruction,
+        PtyInstruction::ReleaseTerminalForWarp { terminal_id, .. }
+            if terminal_id == TerminalId::new(1)
+    )));
+    screen.pane_released_for_warp(
+        TerminalId::new(1),
+        Ok(ReleasedPane::Local(ReleasedPtyHost {
+            host_id: SupervisorId::new("host-1"),
+            host_pid: ProcessId::new(1),
+            control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
+        })),
     );
+    let payload = response_rx
+        .try_recv()
+        .expect("warp response")
+        .expect("warped pane");
+    assert_eq!(payload.host_id, SupervisorId::new("host-1"));
+    screen.in_flight_pane_warps = 1;
+    screen
+        .settle_tabs()
+        .expect("retain the rollback destination");
+    assert_eq!(screen.tabs.len(), 1);
+    assert_eq!(screen.active_tab_ids[&ClientId::new(1)], TabId::new(0));
+    assert!(!server
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+    screen.in_flight_pane_warps = 0;
+    screen
+        .settle_tabs()
+        .expect("close the emptied source session");
+    assert!(screen.tabs.is_empty());
+    assert!(server
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))));
+    for (instruction, _) in pty.try_iter() {
+        match instruction {
+            PtyInstruction::ClosePane(_, _) => panic!("the warped process must stay alive"),
+            PtyInstruction::CloseTab(panes) => assert!(panes.is_empty()),
+            _ => {},
+        }
+    }
 }
 
 #[test]
@@ -1893,14 +1951,17 @@ fn warping_a_visible_stack_member_removes_the_whole_list() {
 }
 
 #[test]
-fn warping_a_stack_list_counts_all_members_for_last_pane_refusal() {
+fn the_sessions_last_stack_list_can_be_warped() {
     let mut screen = screen_with_a_stack_list();
     screen.tabs.retain(|id, _| *id == TabId::new(0));
-    let before = screen.tabs[&TabId::new(0)].get_all_pane_ids();
-    assert!(screen
+    let (_, _, prepared) = screen
         .prepare_pane_group(Some(PaneId::Terminal(TerminalId::new(3))), ClientId::new(1))
-        .is_err());
-    assert_eq!(screen.tabs[&TabId::new(0)].get_all_pane_ids(), before);
+        .expect("the last stack can leave the session")
+        .expect("companions");
+    assert_eq!(
+        prepared.slots.len(),
+        screen.tabs[&TabId::new(0)].get_all_pane_ids().len()
+    );
 }
 
 #[test]
@@ -4284,4 +4345,168 @@ fn pane_and_tab_warp_capture_actual_paste_mode() {
             assert_eq!(payload.bracketed_paste, enabled);
         }
     }
+}
+
+#[test]
+fn overlapping_pane_warps_keep_the_last_tab_until_both_finish() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let pty = mock.pty_receiver.take().unwrap();
+    let server = mock.server_receiver.take().unwrap();
+    let client_id = mock.main_client_id;
+    let thread = mock.run(None, vec![]);
+    let (reply, released) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::WarpPane {
+            supports_companions: true,
+            supports_held: true,
+            pane_id: Some(PaneId::Terminal(TerminalId::new(0))),
+            to_session: "destination".into(),
+            placement: yinz_types::data::WarpPlacement::FocusedTab,
+            client_id,
+            response_channel: reply,
+            deadline: warp_deadline(),
+        })
+        .unwrap();
+    loop {
+        if matches!(
+            pty.recv_timeout(yinz_test_support::default_timeout())
+                .unwrap()
+                .0,
+            PtyInstruction::ReleaseTerminalForWarp { .. }
+        ) {
+            break;
+        }
+    }
+    let (reply, refused) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::WarpPane {
+            supports_companions: true,
+            supports_held: true,
+            pane_id: Some(PaneId::Terminal(TerminalId::new(999))),
+            to_session: "destination".into(),
+            placement: yinz_types::data::WarpPlacement::FocusedTab,
+            client_id,
+            response_channel: reply,
+            deadline: warp_deadline(),
+        })
+        .unwrap();
+    assert!(refused
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .is_err());
+    mock.to_screen
+        .send(ScreenInstruction::PaneReleasedForWarp {
+            terminal_id: TerminalId::new(0),
+            to_session: "destination".into(),
+            placement: yinz_types::data::WarpPlacement::FocusedTab,
+            client_id,
+            released: Ok(ReleasedPane::Local(ReleasedPtyHost {
+                host_id: SupervisorId::new("host-1"),
+                host_pid: ProcessId::new(1),
+                control_socket: Some(PathBuf::from("/tmp/warp-test.sock")),
+            })),
+        })
+        .unwrap();
+    released
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    for remaining in [2, 1, 0] {
+        if remaining < 2 {
+            mock.to_screen
+                .send(ScreenInstruction::PaneWarpFinished)
+                .unwrap();
+        }
+        let (reply, tab) = crossbeam::channel::unbounded();
+        mock.to_screen
+            .send(ScreenInstruction::GetTabInfo {
+                tab_id: TabId::new(0),
+                response_channel: reply,
+            })
+            .unwrap();
+        assert_eq!(
+            tab.recv_timeout(yinz_test_support::default_timeout())
+                .unwrap()
+                .is_some(),
+            remaining > 0
+        );
+        assert_eq!(
+            server
+                .try_iter()
+                .any(|(instruction, _)| matches!(instruction, ServerInstruction::Render(None))),
+            remaining == 0
+        );
+    }
+    mock.teardown(vec![thread]);
+}
+
+#[test]
+fn warp_adoption_acknowledges_restored_held_state_and_scrollback() {
+    let mut mock = MockScreen::new(Size { cols: 80, rows: 24 });
+    let client_id = mock.main_client_id;
+    let thread = mock.run(None, vec![]);
+    let (reply, adopted) = crossbeam::channel::unbounded();
+    let cmd = RunCommand {
+        command: "/usr/bin/true".into(),
+        hold_on_close: true,
+        ..Default::default()
+    };
+    let pane_id = PaneId::Terminal(TERMINAL_50);
+    mock.to_screen
+        .send(ScreenInstruction::AdoptedPaneReady {
+            response_channel: reply,
+            terminal_id: TERMINAL_50,
+            payload: Box::new(WarpedPane {
+                held: Some(yinz_types::data::HeldTerminal {
+                    command: cmd.clone(),
+                    first_run: false,
+                    exit_status: Some(17),
+                }),
+                contents: Some("RESTORED BEFORE ACK\r\n".into()),
+                ..Default::default()
+            }),
+            placement: yinz_types::data::WarpPlacement::FocusedTab,
+            client_id,
+            cmd,
+            buffered: vec![],
+            child_exit_status: Some(Some(17)),
+        })
+        .unwrap();
+    adopted
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    let (reply, info) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::GetPaneInfo {
+            pane_id,
+            response_channel: reply,
+        })
+        .unwrap();
+    let info = info
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap()
+        .unwrap();
+    assert!(info.is_held);
+    assert_eq!(info.exit_status, Some(17));
+    let (reply, scrollback) = crossbeam::channel::unbounded();
+    mock.to_screen
+        .send(ScreenInstruction::GetPaneScrollback {
+            pane_id,
+            client_id,
+            get_full_scrollback: true,
+            response_channel: reply,
+        })
+        .unwrap();
+    let scrollback = scrollback
+        .recv_timeout(yinz_test_support::default_timeout())
+        .unwrap();
+    let yinz_types::data::PaneScrollbackResponse::Ok(scrollback) = scrollback else {
+        panic!("missing restored scrollback")
+    };
+    assert!(scrollback
+        .viewport
+        .join("\n")
+        .contains("RESTORED BEFORE ACK"));
+    mock.teardown(vec![thread]);
 }

@@ -884,6 +884,9 @@ impl Screen {
             })
             .map(|tab| tab.id)
             .collect();
+        if usable.is_empty() && self.in_flight_pane_warps > 0 {
+            return Ok(());
+        }
         let another_destination = usable.iter().any(|id| Some(*id) != self.replacement_tab);
         let doomed: Vec<TabId> = self
             .tabs

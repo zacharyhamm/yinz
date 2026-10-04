@@ -364,6 +364,13 @@ impl TiledPanes {
         self.add_pane(pane_id, pane, should_relayout, client_id)
     }
     pub fn has_room_for_new_pane(&mut self) -> bool {
+        if self
+            .panes
+            .values()
+            .all(|pane| !is_inside_viewport(&self.viewport.borrow(), pane))
+        {
+            return true;
+        }
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
         let pane_grid = TiledPaneGrid::new(
             &mut self.panes,
@@ -453,11 +460,28 @@ impl TiledPanes {
     fn add_pane(
         &mut self,
         pane_id: PaneId,
-        pane: Box<dyn Pane>,
+        mut pane: Box<dyn Pane>,
         should_relayout: bool,
         client_id: Option<ClientId>,
     ) -> Option<Box<dyn Pane>> {
         if self.panes.is_empty() {
+            self.panes.insert(pane_id, pane);
+            return None;
+        }
+        if self
+            .panes
+            .values()
+            .all(|pane| !is_inside_viewport(&self.viewport.borrow(), pane))
+        {
+            // The last content pane can leave UI panes behind during a warp.
+            let viewport = *self.viewport.borrow();
+            let mut geom = PaneGeom::from(&Size {
+                rows: viewport.rows,
+                cols: viewport.cols,
+            });
+            geom.x = viewport.x;
+            geom.y = viewport.y;
+            pane.set_geom(geom);
             self.panes.insert(pane_id, pane);
             return None;
         }
