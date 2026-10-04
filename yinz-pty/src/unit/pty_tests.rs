@@ -3897,69 +3897,101 @@ fn an_in_place_command_pane_that_cannot_start_tells_its_plugin_it_exited() {
 
 #[test]
 fn a_layout_marks_all_adopted_terminals_even_without_agent_records() {
-    let os_api = MockOsApi::new();
-    let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
-    let command = |name: &str| RunCommand {
-        command: PathBuf::from(name),
-        args: vec!["--resume".into()],
-        cwd: Some(PathBuf::from("/work")),
-        hold_on_close: true,
-        workflow_owner: Some("adopted-workflow".into()),
-        ..Default::default()
-    };
-    let tiled_command = command("codex");
-    let floating_command = command("claude");
-    let adopted = |terminal_id, cmd| AdoptedTabTerminal {
-        terminal_id,
-        cmd,
-        held: None,
-        agent: None,
-        child_exit_status: None,
-        replay: vec![],
-        caption: None,
-    };
-    pty.adopted_tabs.insert(
-        TabId::new(7),
-        (
-            vec![adopted(TERMINAL_3, tiled_command.clone())],
-            vec![adopted(TERMINAL_41, floating_command.clone())],
-        ),
-    );
+    for state in ["live", "held", "exited"] {
+        let os_api = MockOsApi::new();
+        let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(os_api.clone());
+        let command = |name: &str| RunCommand {
+            command: PathBuf::from(name),
+            args: vec!["--resume".into()],
+            cwd: Some(PathBuf::from("/work")),
+            hold_on_close: true,
+            workflow_owner: Some("adopted-workflow".into()),
+            ..Default::default()
+        };
+        let tiled_command = command("codex");
+        let floating_command = command("claude");
+        let adopted = |terminal_id, cmd: RunCommand| AdoptedTabTerminal {
+            terminal_id,
+            held: (state == "held").then(|| yinz_types::data::HeldTerminal {
+                command: cmd.clone(),
+                first_run: true,
+                exit_status: None,
+            }),
+            cmd,
+            agent: None,
+            child_exit_status: (state == "exited").then_some(Some(0)),
+            replay: b"replayed screen".to_vec(),
+            caption: None,
+        };
+        pty.adopted_tabs.insert(
+            TabId::new(7),
+            (
+                vec![adopted(TERMINAL_3, tiled_command.clone())],
+                vec![adopted(TERMINAL_41, floating_command.clone())],
+            ),
+        );
 
-    pty.spawn_terminals_for_layout(
-        None,
-        TiledPaneLayout::default(),
-        vec![FloatingPaneLayout::default()],
-        Some(TerminalAction::RunCommand(RunCommand::default())),
-        HashMap::new(),
-        None,
-        TabId::new(7),
-        false,
-        true,
-        CLIENT_1,
-        None,
-    )
-    .unwrap();
+        pty.spawn_terminals_for_layout(
+            None,
+            TiledPaneLayout::default(),
+            vec![FloatingPaneLayout::default()],
+            Some(TerminalAction::RunCommand(RunCommand::default())),
+            HashMap::new(),
+            None,
+            TabId::new(7),
+            false,
+            true,
+            CLIENT_1,
+            None,
+        )
+        .unwrap();
 
-    let (tiled, floating, adopted) = drain_screen(&screen_rx)
-        .into_iter()
-        .find_map(|instruction| match instruction {
-            ScreenInstruction::ApplyLayout(_, _, tiled, floating, adopted, ..) => {
-                Some((tiled, floating, adopted))
-            },
-            _ => None,
-        })
-        .expect("adopted terminals are handed to Screen");
-    assert_eq!(tiled, vec![(TERMINAL_3, None)]);
-    assert_eq!(floating, vec![(TERMINAL_41, None)]);
-    assert_eq!(
-        adopted,
-        vec![
-            (TERMINAL_3, tiled_command, None),
-            (TERMINAL_41, floating_command, None),
-        ]
-    );
-    assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
+        let instructions = drain_screen(&screen_rx);
+        if state == "live" {
+            assert!(matches!(
+                instructions.as_slice(),
+                [
+                    ScreenInstruction::ApplyLayout(..),
+                    ScreenInstruction::PtyBytes(TERMINAL_3, _),
+                    ScreenInstruction::RequestPaneRedraw(TERMINAL_3),
+                    ScreenInstruction::PtyBytes(TERMINAL_41, _),
+                    ScreenInstruction::RequestPaneRedraw(TERMINAL_41),
+                ]
+            ));
+        } else {
+            assert!(!instructions
+                .iter()
+                .any(|instruction| matches!(instruction, ScreenInstruction::RequestPaneRedraw(_))));
+        }
+        let (tiled, floating, adopted) = instructions
+            .into_iter()
+            .find_map(|instruction| match instruction {
+                ScreenInstruction::ApplyLayout(_, _, tiled, floating, adopted, ..) => {
+                    Some((tiled, floating, adopted))
+                },
+                _ => None,
+            })
+            .expect("adopted terminals are handed to Screen");
+        assert_eq!(
+            tiled,
+            vec![(TERMINAL_3, (state != "live").then(|| tiled_command.clone()))]
+        );
+        assert_eq!(
+            floating,
+            vec![(
+                TERMINAL_41,
+                (state != "live").then(|| floating_command.clone())
+            )]
+        );
+        assert_eq!(
+            adopted,
+            vec![
+                (TERMINAL_3, tiled_command, None),
+                (TERMINAL_41, floating_command, None),
+            ]
+        );
+        assert!(os_api.cleared_terminal_ids.lock().unwrap().is_empty());
+    }
 }
 
 /// The two layout paths spawn the same panes for the same layout.

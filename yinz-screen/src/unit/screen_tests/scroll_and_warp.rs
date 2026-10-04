@@ -658,11 +658,14 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
     screen
         .place_adopted_pane(
             crate::TerminalId::new(50),
-            WarpedPane::default(),
+            WarpedPane {
+                contents: Some("transferred screen".into()),
+                ..Default::default()
+            },
             yinz_types::data::WarpPlacement::FocusedTab,
             crate::ClientId::new(7),
             RunCommand::default(),
-            vec![],
+            b"buffered output".to_vec(),
             None,
         )
         .expect("TEST");
@@ -682,7 +685,11 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
             ClientTabIndexOrPaneId::TabIndex(TAB_0),
             _,
             _
-        )]
+        ),
+        ScreenInstruction::PtyBytes(TERMINAL_50, contents),
+        ScreenInstruction::PtyBytes(TERMINAL_50, buffered),
+        ScreenInstruction::RequestPaneRedraw(TERMINAL_50)]
+        if contents == b"transferred screen" && buffered == b"buffered output"
     ));
 }
 
@@ -717,6 +724,9 @@ fn an_adopted_pane_that_already_exited_is_held_or_closed_as_its_command_says() {
             .try_iter()
             .map(|(instruction, _)| instruction)
             .collect();
+        assert!(!instructions
+            .iter()
+            .any(|instruction| matches!(instruction, ScreenInstruction::RequestPaneRedraw(_))));
         let held_on_arrival = instructions
             .iter()
             .find_map(|instruction| match instruction {
@@ -3639,6 +3649,9 @@ fn warp_adopted_agent_exit_takes_precedence_over_transferred_state() {
             for (instruction, _) in receiver.try_iter() {
                 let tab = screen.tabs.get_mut(&TAB_0).unwrap();
                 match instruction {
+                    ScreenInstruction::RequestPaneRedraw(_) => {
+                        panic!("held or exited transfer requested redraw")
+                    },
                     ScreenInstruction::SetPaneAgent(id, agent, _) => {
                         tab.set_pane_agent(id, agent);
                     },

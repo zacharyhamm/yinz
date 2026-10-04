@@ -225,6 +225,7 @@ pub enum ScreenContext {
     BreakPaneLeft,
     WarpPane,
     PaneReleasedForWarp,
+    RequestPaneRedraw,
     AdoptedPaneReady,
     WarpTab,
     TabReleasedForWarp,

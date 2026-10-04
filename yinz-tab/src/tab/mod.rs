@@ -218,6 +218,7 @@ pub enum ExtractedPanePlacement {
 }
 
 enum BufferedTabInstruction {
+    RequestPaneRedraw(TerminalId),
     SetPaneSelectable(PaneId, bool),
     HandlePtyBytes(TerminalId, VteBytes),
     HoldPane(PaneId, Option<i32>, bool, RunCommand), // Option<i32> is the exit status, bool is is_first_run
@@ -1847,11 +1848,50 @@ impl Tab {
         }
         Ok(())
     }
+    pub fn request_pane_redraw(&mut self, terminal_id: TerminalId) -> Result<()> {
+        if self.is_pending {
+            self.pending_instructions
+                .push(BufferedTabInstruction::RequestPaneRedraw(terminal_id));
+            return Ok(());
+        }
+        let Some(pane) = self.get_pane_with_id(PaneId::Terminal(terminal_id)) else {
+            return Ok(());
+        };
+        let columns = pane.get_content_columns() as u16;
+        let rows = pane.get_content_rows() as u16;
+        if pane.is_held() || pane.exited() || columns == 0 || rows == 0 {
+            return Ok(());
+        }
+        // An unchanged winsize does not trigger SIGWINCH. Flush the resize batch
+        // so it cannot coalesce this nudge with the exact size restored below.
+        self.senders
+            .send_to_pty_writer(PtyWriteInstruction::ApplyCachedResizes)
+            .context("failed to flush resizes before pane redraw")?;
+        self.senders
+            .send_to_pty_writer(PtyWriteInstruction::ResizePty(
+                terminal_id,
+                if columns == 1 { 2 } else { columns - 1 },
+                rows,
+                None,
+                None,
+            ))
+            .context("failed to nudge pane size for redraw")?;
+        resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
+            .context("failed to restore pane size after redraw nudge")
+    }
+
     pub fn apply_buffered_instructions(&mut self) -> Result<()> {
         let buffered_instructions: Vec<BufferedTabInstruction> =
             std::mem::take(&mut self.pending_instructions);
         for buffered_instruction in buffered_instructions {
             match buffered_instruction {
+                BufferedTabInstruction::RequestPaneRedraw(terminal_id) => {
+                    // Finish the whole layout event, including group relocation, first.
+                    self.senders
+                        .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal_id))
+                        .context("failed to requeue adopted pane redraw")
+                        .non_fatal();
+                },
                 BufferedTabInstruction::SetPaneSelectable(pane_id, selectable) => {
                     self.set_pane_selectable(pane_id, selectable);
                 },

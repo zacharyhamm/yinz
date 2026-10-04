@@ -72,6 +72,20 @@ fn type_and_confirm(session: &TestSession, pane: &FakePtyHandle, marker: &[u8]) 
     });
 }
 
+fn assert_redrawn(session: &TestSession, pane: &FakePtyHandle) {
+    session.wait_until(
+        "adopted process to receive a redraw nudge and its final size",
+        |_| {
+            pane.size_history().windows(3).any(|sizes| {
+                let (cols, rows) = sizes[0];
+                sizes[1] == (if cols == 1 { 2 } else { cols - 1 }, rows)
+                    && sizes[2] == sizes[0]
+                    && pane.size() == Some(sizes[2])
+            })
+        },
+    );
+}
+
 fn adopted_with_marker<'a>(panes: &'a [FakePtyHandle], marker: &[u8]) -> &'a FakePtyHandle {
     let matching: Vec<_> = panes
         .iter()
@@ -311,6 +325,7 @@ fn an_individual_warp_to_a_new_tab_preserves_the_terminal_header() {
     });
     assert_eq!(code, 0, "the warp was refused: {reported}");
     let arrived = receiver.expect_adopted_pty();
+    assert_redrawn(&receiver, &arrived);
     receiver.wait_until("the terminal to arrive in its new tab", |grid| {
         grid.contains("before transfer") && grid.tab_bar_appears() && grid.status_bar_appears()
     });
@@ -350,6 +365,7 @@ fn a_pane_keeps_its_process_when_it_moves_between_sessions() {
     warp_focused_pane_expecting_success(&sender, &receiver, false);
 
     let arrived = receiver.expect_adopted_pty();
+    assert_redrawn(&receiver, &arrived);
     assert!(
         !arrived.is_exited(),
         "the pane's process was killed rather than handed over",
@@ -448,6 +464,7 @@ fn a_remote_pane_keeps_its_process_when_it_moves_between_sessions() {
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
 
     let arrived = receiver.expect_adopted_pty();
+    assert_redrawn(&receiver, &arrived);
     assert!(
         !arrived.is_exited(),
         "the remote pane's process was killed rather than handed over",
@@ -505,6 +522,7 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     report_waiting_agent(&sender, local.terminal_id());
     assert_waiting_agent(&sender, Some(local.terminal_id()));
 
+    let original_sizes = [_sender_shell.size(), local.size(), remote.size()];
     let (exit_code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
         to_session: Some(receiver.session_name().to_owned()),
         from_session: None,
@@ -518,6 +536,18 @@ fn a_tab_of_local_and_remote_panes_warps_whole() {
     sender.wait_until("both panes to leave", |grid_snapshot| {
         !grid_snapshot.contains("local pane") && !grid_snapshot.contains("remote pane")
     });
+    let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    for pane in &adopted {
+        assert_redrawn(&receiver, pane);
+    }
+    let mut arrived_sizes: Vec<_> = adopted.iter().map(FakePtyHandle::size).collect();
+    let mut original_sizes = original_sizes.to_vec();
+    arrived_sizes.sort();
+    original_sizes.sort();
+    assert_eq!(
+        arrived_sizes, original_sizes,
+        "same-size tab adoption must still redraw"
+    );
     assert_waiting_agent(&receiver, None);
 
     // Exactly one of the tab's panes went by the broker and the rest did not,
@@ -801,6 +831,9 @@ fn warping_a_visible_editor_carries_its_subject_and_restores_it_on_close() {
     let (exit_code, reported) = warp_pane_by_id(&sender, &receiver, editor.terminal_id());
     assert_eq!(exit_code, 0, "the warp was refused: {reported}");
     let adopted = [receiver.expect_adopted_pty(), receiver.expect_adopted_pty()];
+    for pane in &adopted {
+        assert_redrawn(&receiver, pane);
+    }
     let arrived_editor = adopted_with_marker(&adopted, b"editor-before");
     let arrived_subject = adopted_with_marker(&adopted, b"subject-before");
     assert_departed(&sender, &[&editor, &being_edited]);
@@ -959,6 +992,9 @@ fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
     }
     warp_focused_pane_expecting_success(&sender, &receiver, true);
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
+    for pane in &adopted {
+        assert_redrawn(&receiver, pane);
+    }
     let first = adopted_with_marker(&adopted, b"first-before");
     let second = adopted_with_marker(&adopted, b"SECOND_FLOATING_MEMBER");
     let third = adopted_with_marker(&adopted, b"THIRD_FLOATING_MEMBER");
@@ -1205,6 +1241,57 @@ fn held_warp_preserves_state_until_explicit_restart() {
             started.output(b"EXPLICIT RESTART\r\n");
             focused.wait_until("explicit restart output", |grid| {
                 grid.contains("EXPLICIT RESTART")
+            });
+        }
+    }
+}
+
+#[test]
+fn adopted_local_and_remote_panes_redraw_in_each_destination_layer() {
+    for remote in [false, true] {
+        for placement in ["new tab", "focused tab", "floating"] {
+            let receiver = TestRunner::new(yinz_types::pane_size::Size {
+                cols: 140,
+                rows: 40,
+            })
+            .with_config(NO_BACKGROUND_PLUGINS)
+            .skip_concurrency_slot()
+            .start();
+            receiver.expect_pty_spawn().output(PROMPT);
+            receiver.wait_for_app_load();
+            let (sender, _shell) = start_with_a_shell();
+            let travelling = if remote {
+                split_off_a_remote_pane(&sender, "preparing transfer")
+            } else {
+                split_off_a_pane(&sender, "preparing transfer")
+            };
+            // Keep the marker at the bottom so a shorter floating destination
+            // retains it in the viewport instead of moving it into scrollback.
+            travelling.output(b"\x1b[2J\x1b[999;1HREDRAW_TRANSFER");
+            sender.wait_until("source contents ready", |grid| {
+                grid.contains("REDRAW_TRANSFER")
+            });
+            let old_size = travelling.size();
+            let (code, reported) = sender.run_cli_action_reporting(CliAction::WarpPane {
+                to_session: receiver.session_name().to_owned(),
+                pane_id: Some(format!("terminal_{}", travelling.terminal_id())),
+                focused_tab: placement == "focused tab",
+                floating: placement == "floating",
+            });
+            assert_eq!(code, 0, "{reported}");
+            let arrived = receiver.expect_adopted_pty();
+            assert_redrawn(&receiver, &arrived);
+            assert_ne!(
+                arrived.size(),
+                old_size,
+                "different-size destination: {placement}"
+            );
+            receiver.wait_until("transferred contents to render", |grid| {
+                grid.contains("REDRAW_TRANSFER")
+            });
+            arrived.output(b"\r\nREDRAW_LIVE_OUTPUT\r\n");
+            receiver.wait_until("live contents to render", |grid| {
+                grid.contains("REDRAW_LIVE_OUTPUT")
             });
         }
     }
