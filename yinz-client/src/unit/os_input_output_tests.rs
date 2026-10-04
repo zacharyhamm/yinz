@@ -308,7 +308,7 @@ fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
     let (mut slave, master) = nonblocking_pty();
     // A tty with room is ready at once.
     let started = time::Instant::now();
-    wait_until_writable(&slave, NEVER).unwrap();
+    assert!(wait_until_writable(&slave, NEVER).unwrap());
     assert!(started.elapsed() < PROMPTLY);
 
     let deadline = time::Instant::now() + PROMPTLY;
@@ -317,9 +317,7 @@ fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
             Ok(_) => {},
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {},
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let started = time::Instant::now();
-                wait_until_writable(&slave, time::Duration::from_millis(200)).unwrap();
-                if started.elapsed() >= time::Duration::from_millis(150) {
+                if !wait_until_writable(&slave, time::Duration::from_millis(200)).unwrap() {
                     break;
                 }
                 // The kernel can move bytes between the tty's internal queues
@@ -353,10 +351,10 @@ fn a_full_tty_is_waited_on_and_a_closed_one_fails_the_write() {
             while master.read(&mut drained).is_ok_and(|read| read > 0) {}
         })
     };
-    woken
+    assert!(woken
         .recv_timeout(PROMPTLY)
         .expect("the wait outlasted the drain")
-        .unwrap();
+        .unwrap());
     waiter.join().unwrap();
     drop(slave);
     drop(master);
