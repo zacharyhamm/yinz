@@ -401,18 +401,6 @@ impl Screen {
         self.session_size()
     }
 
-    /// How much of a watcher's viewport the followed client's frame covers, so
-    /// `serialize_with_size` clears only what is beyond it.
-    pub(super) fn followed_frame_size(&self, tab_id: TabId) -> Option<Size> {
-        if !self.tabs.contains_key(&tab_id) {
-            return None;
-        }
-        Some(
-            self.tab_surface_size(tab_id)
-                .unwrap_or_else(|| self.surface_size()),
-        )
-    }
-
     /// Lay every tab out over the shared session surface, and record that surface as the one the
     /// tabs now sit on.
     ///

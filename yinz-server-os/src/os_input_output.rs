@@ -314,14 +314,13 @@ impl CoalescingSendQueue {
             state
         })
     }
-    fn push(&self, msg: ServerToClientMsg) -> SendQueuePush {
+    /// Returns readiness work for the caller to run after releasing the sender registry.
+    fn push_deferred(&self, msg: ServerToClientMsg) -> (SendQueuePush, Option<RenderReady>) {
         let mut state = self.recover_state(self.state.lock());
         if state.closed {
             // the writer is gone; pretend-queue so late senders don't error
             let ready = state.take_render_ready();
-            drop(state);
-            notify(ready);
-            return SendQueuePush::Queued;
+            return (SendQueuePush::Queued, ready);
         }
         let outcome = match slot_for(&msg) {
             SendQueueSlot::PaneRender(pane_id) => {
@@ -332,17 +331,26 @@ impl CoalescingSendQueue {
             },
             SendQueueSlot::Control => {
                 if state.control.len() >= SEND_QUEUE_CONTROL_CAPACITY {
-                    return SendQueuePush::ControlQueueFull(state.overflow("message_count", &msg));
+                    return (
+                        SendQueuePush::ControlQueueFull(state.overflow("message_count", &msg)),
+                        None,
+                    );
                 }
                 if let ServerToClientMsg::Render { content } = &msg {
                     if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY {
-                        return SendQueuePush::ControlQueueFull(
-                            state.overflow("single_oversized_render", &msg),
+                        return (
+                            SendQueuePush::ControlQueueFull(
+                                state.overflow("single_oversized_render", &msg),
+                            ),
+                            None,
                         );
                     }
                     if content.capacity() > SEND_QUEUE_RENDER_BYTE_CAPACITY - state.render_bytes {
-                        return SendQueuePush::ControlQueueFull(
-                            state.overflow("render_allocation_bytes", &msg),
+                        return (
+                            SendQueuePush::ControlQueueFull(
+                                state.overflow("render_allocation_bytes", &msg),
+                            ),
+                            None,
                         );
                     }
                     state.render_bytes += content.capacity();
@@ -359,7 +367,11 @@ impl CoalescingSendQueue {
         };
         self.message_available.notify_one();
         let ready = state.take_render_ready();
-        drop(state);
+        (outcome, ready)
+    }
+    #[cfg(test)]
+    fn push(&self, msg: ServerToClientMsg) -> SendQueuePush {
+        let (outcome, ready) = self.push_deferred(msg);
         notify(ready);
         outcome
     }
@@ -661,16 +673,15 @@ impl ClientSender {
     }
 }
 
-/// Queue `msg` for `client_id`'s writer. Takes the queue rather than its `ClientSender`, so
-/// callers can release the sender registry first: a push can run a render-ready callback.
-fn send_or_buffer(
+/// Finish an enqueue after releasing the sender registry, including readiness callbacks.
+fn finish_enqueue(
     client_id: ClientId,
-    queue: &CoalescingSendQueue,
-    msg: ServerToClientMsg,
+    (outcome, ready): (SendQueuePush, Option<RenderReady>),
 ) -> Result<()> {
+    notify(ready);
     let err_context = || format!("failed to send or buffer message for client {client_id}");
 
-    match queue.push(msg) {
+    match outcome {
         SendQueuePush::Queued | SendQueuePush::CoalescedRender => Ok(()),
         SendQueuePush::ControlQueueFull(overflow) => {
             let in_flight = overflow
@@ -1341,14 +1352,14 @@ impl ServerOsApi for ServerOsInputOutput {
     fn send_to_client(&self, client_id: ClientId, msg: ServerToClientMsg) -> Result<()> {
         let err_context = || format!("failed to send message to client {client_id}");
 
-        // Pushed after the registry is released: a push can run a render-ready callback,
-        // which may itself consult the registry.
-        let queue = self
+        // Keep lookup and enqueue atomic with replacement/removal. Callbacks may
+        // reenter the registry, so run them only after releasing its guard.
+        let pending = self
             .lock_client_senders()
             .get(&client_id)
-            .map(|sender| sender.queue.clone());
-        match queue {
-            Some(queue) => send_or_buffer(client_id, &queue, msg).with_context(err_context),
+            .map(|sender| sender.queue.push_deferred(msg));
+        match pending {
+            Some(pending) => finish_enqueue(client_id, pending).with_context(err_context),
             None => Ok(()),
         }
     }

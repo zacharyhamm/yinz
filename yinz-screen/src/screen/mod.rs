@@ -2137,6 +2137,11 @@ impl Screen {
             self.commit_following_client(client_id, departed);
         } else {
             self.rollback_client_registration(client_id, departed);
+            self.bus
+                .senders
+                .send_to_server(ServerInstruction::ClientExit(client_id, None))
+                .context("disconnecting client after failed registration")
+                .non_fatal();
         }
         result
     }
@@ -2285,6 +2290,8 @@ impl Screen {
 
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
+        // `and` evaluates every cleanup step while retaining the first error.
+        let mut result = Ok(());
 
         self.notification_mouse_captures.remove(&client_id);
         self.close_notification_browser(client_id);
@@ -2334,8 +2341,10 @@ impl Screen {
             // If no regular client remains but we have watchers, keep the old followed_client_id
             // and its tab as the watchers' render source.
             if let Some(next_client) = next_client {
-                self.set_followed_client(next_client)
-                    .with_context(err_context)?;
+                result = result.and(
+                    self.set_followed_client(next_client)
+                        .with_context(err_context),
+                );
             } else if self.watcher_clients.is_empty() {
                 self.followed_client_id = None;
                 self.departed_followed_tab_id = None;
@@ -2352,7 +2361,7 @@ impl Screen {
             }
             tab.remove_client(client_id);
             if tab.has_no_connected_clients() {
-                tab.visible(false).with_context(err_context)?;
+                result = result.and(tab.visible(false).with_context(err_context));
             }
         }
 
@@ -2408,8 +2417,10 @@ impl Screen {
         // this whole map into each new one.
         self.mode_info.remove(&client_id);
         if let Some(prev_tab_id) = previously_active_tab_id {
-            self.recompute_tab_size(prev_tab_id)
-                .with_context(err_context)?;
+            result = result.and(
+                self.recompute_tab_size(prev_tab_id)
+                    .with_context(err_context),
+            );
         }
         if self.nested_via_client_id == Some(client_id) {
             self.nested_via_client_id = None;
@@ -2425,7 +2436,7 @@ impl Screen {
         // connection cost the session two extra full-manifest broadcasts.
         self.pane_subscriber_snapshots_dirty = true;
         self.resume_deferred_render();
-        Ok(())
+        result
     }
 
     /// Whether this client id belongs to a connection the screen actually knows —

@@ -656,12 +656,12 @@ fn watcher_client_functionality() {
 }
 
 #[test]
-fn watcher_larger_than_the_followed_content_is_padded_to_its_own_size() {
+fn watcher_larger_than_the_followed_content_has_blank_margins_without_padding() {
     let mut yinz = start_yinz();
     let first_terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
-    first_terminal.output(b"\r\nWATCHER_PADDING\r\n");
+    first_terminal.output(b"\r\nWATCHER_MARGINS\r\n");
     yinz.wait_until("followed client rendered", |grid_snapshot| {
-        grid_snapshot.contains("WATCHER_PADDING")
+        grid_snapshot.contains("WATCHER_MARGINS")
     });
 
     let followed_size = Size {
@@ -672,7 +672,7 @@ fn watcher_larger_than_the_followed_content_is_padded_to_its_own_size() {
     yinz.wait_until(
         "followed client re-rendered at its new size",
         move |snapshot| {
-            snapshot.contains("WATCHER_PADDING") && snapshot.row_count() == followed_size.rows
+            snapshot.contains("WATCHER_MARGINS") && snapshot.row_count() == followed_size.rows
         },
     );
 
@@ -680,17 +680,29 @@ fn watcher_larger_than_the_followed_content_is_padded_to_its_own_size() {
         cols: TERMINAL_SIZE.cols + 20,
         rows: TERMINAL_SIZE.rows + 6,
     });
-    watcher.wait_until("watcher connected and sees the output", |grid_snapshot| {
-        grid_snapshot.contains("Ctrl +") && grid_snapshot.contains("WATCHER_PADDING")
+    let snapshot = watcher.wait_until("watcher connected and sees the output", |grid_snapshot| {
+        grid_snapshot.contains("Ctrl +") && grid_snapshot.contains("WATCHER_MARGINS")
     });
+    for (row, line) in snapshot.text.lines().enumerate() {
+        let content_cols = if row < followed_size.rows {
+            followed_size.cols
+        } else {
+            0
+        };
+        assert!(
+            line.chars().skip(content_cols).all(|c| c == ' '),
+            "{line:?}"
+        );
+    }
 
     let clear_below_content = format!("\u{1b}[{};1H\u{1b}[m\u{1b}[J", followed_size.rows + 1);
     let clear_to_end_of_content_line =
         format!("\u{1b}[1;{}H\u{1b}[m\u{1b}[K", followed_size.cols + 1);
-    watcher.wait_until_raw_output("watcher output padded to its own size", move |bytes| {
-        let output = String::from_utf8_lossy(bytes);
-        output.contains(&clear_below_content) && output.contains(&clear_to_end_of_content_line)
-    });
+    let bytes = watcher.raw_bytes();
+    let output = String::from_utf8_lossy(&bytes);
+    assert!(output.contains("\x1b[2J"));
+    assert!(!output.contains(&clear_below_content));
+    assert!(!output.contains(&clear_to_end_of_content_line));
 
     watcher.quit();
     yinz.quit();

@@ -80,7 +80,6 @@ impl Screen {
 
     /// Check and arm each queue before deciding which tabs can consume dirty state.
     pub(super) fn deferred_tabs(&mut self) -> HashSet<TabId> {
-        let followed_tab = self.watched_tab_id();
         // One notifier for the pass, cloned only into the queues of clients that are behind.
         let ready: RenderReady = {
             let to_screen = self.bus.senders.to_screen.clone();
@@ -94,11 +93,25 @@ impl Screen {
             })
         };
         let mut known = HashMap::new();
+        let connected_clients = self.connected_clients.borrow();
+        if connected_clients.len() == 1
+            && self.watcher_clients.is_empty()
+            && self.pane_render_subscribers.is_empty()
+        {
+            if let Some(&client) = connected_clients.iter().next() {
+                let blocked = self.client_render_is_blocked(client, &ready);
+                if !blocked {
+                    self.deferred_render_tabs.clear();
+                    self.deferred_subscriber_renders = false;
+                    return HashSet::new();
+                }
+                known.insert(client, blocked);
+            }
+        }
+        let followed_tab = self.watched_tab_id();
         let mut blocked = HashSet::new();
         for (tab_id, tab) in &self.tabs {
-            let recipients: Vec<_> = self
-                .connected_clients
-                .borrow()
+            let recipients = connected_clients
                 .iter()
                 .filter(|client| {
                     tab.has_connected_client(client) && !self.watcher_clients.contains_key(client)
@@ -109,9 +122,8 @@ impl Screen {
                         .keys()
                         .copied()
                         .filter(|_| followed_tab == Some(*tab_id)),
-                )
-                .collect();
-            if self.recipients_are_blocked(recipients.into_iter(), &mut known, &ready) {
+                );
+            if self.recipients_are_blocked(recipients, &mut known, &ready) {
                 blocked.insert(*tab_id);
             }
         }
@@ -537,9 +549,6 @@ impl Screen {
                 watcher_output
                     .set_host_presents_frames_atomically(every_watcher_presents_frames_atomically);
 
-                let followed_content_size =
-                    self.followed_frame_size(focused_tab_index_of_followed_client_id);
-
                 let any_watcher_needs_force_render = self
                     .watcher_clients
                     .values()
@@ -644,11 +653,7 @@ impl Screen {
 
                 // Send the rendered output to all watcher clients
                 if watcher_output.is_dirty() {
-                    self.render_watcher_output(
-                        &watcher_output,
-                        followed_client_id,
-                        followed_content_size,
-                    )?;
+                    self.render_watcher_output(&watcher_output, followed_client_id)?;
                 }
             }
         }
@@ -668,7 +673,6 @@ impl Screen {
         &mut self,
         watcher_output: &Output,
         followed_client_id: ClientId,
-        followed_content_size: Option<yinz_types::pane_size::Size>,
     ) -> Result<()> {
         let err_context = "failed to render watcher output";
         let mut watcher_render_output: HashMap<ClientId, String> = HashMap::new();
@@ -682,9 +686,9 @@ impl Screen {
         for (watcher_id, watcher_state) in &self.watcher_clients {
             let mut watcher_specific_output = watcher_output.clone();
 
-            // Serialize this watcher's output with size constraints (cropping and padding handled inside)
+            // Serialize this watcher's output cropped to its viewport
             let mut serialized_output = watcher_specific_output
-                .serialize_with_size(Some(watcher_state.size()), followed_content_size)
+                .serialize_with_size(Some(watcher_state.size()))
                 .context(err_context)?;
 
             // Get the output for the followed client and map it to this watcher

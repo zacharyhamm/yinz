@@ -11,6 +11,7 @@ use crate::os_input_output::{StdioAccess, TtyControl, DISABLE_MOUSE_SUPPORT};
 use crate::stdin_ansi_parser::SyncOutput;
 use std::io::{IoSlice, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::mpsc::TrySendError;
 use std::time::{Duration, Instant};
 use yinz_ipc::nested_session;
 use yinz_runtime::errors::prelude::*;
@@ -356,8 +357,13 @@ impl PixelSizeQueries {
 
     /// Ask for a query without waiting for it to be written.
     pub fn request(&self) {
-        // Full means a query is already waiting to be written, which answers this one too.
-        let _ = self.0.try_send(());
+        match self.0.try_send(()) {
+            // Full means a query is already waiting to be written, which answers this one too.
+            Ok(()) | Err(TrySendError::Full(())) => {},
+            Err(e @ TrySendError::Disconnected(())) => Err::<(), _>(e)
+                .context("the pixel-size query thread has stopped")
+                .non_fatal(),
+        }
     }
 }
 
@@ -512,7 +518,6 @@ impl ClientTeardown {
             }
         }
         log::error!("{}", message);
-        abandon_stalled_output();
         match teardown {
             Some(teardown) => teardown.restore_startup(Some(&message)),
             None => eprintln!("{}", message),
