@@ -610,23 +610,24 @@ impl Write for StdoutWriter {
 /// Pause while the terminal is full, then let HostWriter retry. A timeout is temporary
 /// backpressure, not an error.
 fn wait_until_stdout_is_writable(stdout: &impl std::os::fd::AsFd) -> io::Result<()> {
-    wait_until_writable(stdout, time::Duration::from_millis(100))
+    wait_until_writable(stdout, time::Duration::from_millis(100)).map(|_| ())
 }
 
-/// Wait until `fd` can take output, or `timeout` passes.
+/// Wait until `fd` can take output, returning false if `timeout` passes.
 ///
 /// `select`, not `poll`: macOS `poll` does not support ttys and answers `POLLNVAL`, which
 /// would turn ordinary backpressure into a failed write. tmux waits on ttys the same way.
 /// A closed terminal still reports ready, and the retried write then returns its error.
-fn wait_until_writable(fd: &impl std::os::fd::AsFd, timeout: time::Duration) -> io::Result<()> {
+fn wait_until_writable(fd: &impl std::os::fd::AsFd, timeout: time::Duration) -> io::Result<bool> {
     use nix::sys::select::{select, FdSet};
     use nix::sys::time::{TimeVal, TimeValLike};
     let mut writable = FdSet::new();
     writable.insert(fd.as_fd());
     let micros = i64::try_from(timeout.as_micros()).unwrap_or(i64::MAX);
     let mut timeout = TimeVal::microseconds(micros);
-    select(None, None, Some(&mut writable), None, Some(&mut timeout)).map_err(io::Error::from)?;
-    Ok(())
+    select(None, None, Some(&mut writable), None, Some(&mut timeout))
+        .map(|ready| ready > 0)
+        .map_err(io::Error::from)
 }
 
 #[cfg(test)]
