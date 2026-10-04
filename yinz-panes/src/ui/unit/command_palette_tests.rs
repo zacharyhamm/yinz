@@ -948,3 +948,47 @@ fn control_agent_picker_is_scoped_and_preserves_navigation_and_project() {
     assert_eq!(palette.back(), Outcome::None);
     assert_eq!(palette.query(), "New");
 }
+
+#[test]
+fn nested_warp_pickers_restore_search_selection_and_hide_destinations_at_root() {
+    for (sessions, targets) in [
+        (EntryKind::WarpTabSession, EntryKind::WarpTab),
+        (EntryKind::WarpPaneSession, EntryKind::WarpPane),
+    ] {
+        let mut palette = CommandPalette::default();
+        let entries = vec![
+            entry("warp", "Warp", EntryKind::Command),
+            entry("source-a", "Alpha", sessions),
+            entry("source-b", "Beta", sessions),
+            entry("target-a", "First target", targets),
+            entry("target-b", "Second target", targets),
+        ];
+        palette.set_entries(entries.clone());
+        assert_eq!(ids(&palette), vec!["warp"]);
+        palette.insert_text("wp");
+        palette.open_picker(sessions);
+        assert_eq!(ids(&palette), vec!["source-a", "source-b"]);
+        palette.insert_text("bt");
+        assert_eq!(ids(&palette), vec!["source-b"]);
+        palette.open_picker(targets);
+        palette.insert_text("sctg");
+        assert_eq!(ids(&palette), vec!["target-b"]);
+        // A discovery refresh preserves the surviving selection.
+        palette.set_entries(
+            entries
+                .into_iter()
+                .filter(|entry| entry.id != "target-a")
+                .collect(),
+        );
+        assert_eq!(palette.selected_entry().unwrap().id, "target-b");
+        key(&mut palette, BareKey::Esc);
+        assert_eq!(palette.query(), "bt");
+        assert_eq!(palette.selected_entry().unwrap().id, "source-b");
+        key(&mut palette, BareKey::Esc);
+        assert_eq!(palette.query(), "wp");
+        assert_eq!(palette.selected_entry().unwrap().id, "warp");
+        palette.open_picker(targets);
+        palette.set_entries(vec![]);
+        key(&mut palette, BareKey::Enter);
+    }
+}

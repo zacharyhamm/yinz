@@ -28,12 +28,20 @@ pub enum EntryKind {
     Tab,
     Session,
     ExitedSession,
+    WarpTabSession,
+    WarpPaneSession,
+    WarpTab,
+    WarpPane,
     Project,
 }
 
 impl EntryKind {
     fn parent_label(self) -> Option<&'static str> {
         match self {
+            Self::WarpTabSession => Some("Warp tab · Source session"),
+            Self::WarpPaneSession => Some("Warp pane · Source session"),
+            Self::WarpTab => Some("Warp tab"),
+            Self::WarpPane => Some("Warp pane"),
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
             Self::ControlAgent => Some("Focus control agent"),
@@ -167,7 +175,7 @@ pub struct CommandPalette {
     matches: Vec<usize>,
     matcher: Matcher,
     picker: Option<EntryKind>,
-    saved_search: Option<(TextInput, Option<String>)>,
+    saved_search: Vec<(Option<EntryKind>, TextInput, Option<String>)>,
     form: Option<Form>,
     error: Option<String>,
 }
@@ -295,7 +303,15 @@ impl CommandPalette {
             .enumerate()
             .filter(|(_, entry)| {
                 self.picker.map_or(
-                    !matches!(entry.kind, EntryKind::Project | EntryKind::ControlAgent),
+                    !matches!(
+                        entry.kind,
+                        EntryKind::Project
+                            | EntryKind::ControlAgent
+                            | EntryKind::WarpTabSession
+                            | EntryKind::WarpPaneSession
+                            | EntryKind::WarpTab
+                            | EntryKind::WarpPane
+                    ),
                     |kind| {
                         entry.kind == kind
                             || (kind == EntryKind::Session
@@ -339,7 +355,8 @@ impl CommandPalette {
 
     pub fn open_picker(&mut self, kind: EntryKind) {
         let selected = self.selected_entry().map(|entry| entry.id.clone());
-        self.saved_search = Some((std::mem::take(&mut self.input), selected));
+        self.saved_search
+            .push((self.picker, std::mem::take(&mut self.input), selected));
         self.picker = Some(kind);
         self.selected = 0;
         self.error = None;
@@ -372,9 +389,9 @@ impl CommandPalette {
         if self.form.take().is_some() {
             return Outcome::None;
         }
-        if let Some((input, selected)) = self.saved_search.take() {
+        if let Some((picker, input, selected)) = self.saved_search.pop() {
             self.input = input;
-            self.picker = None;
+            self.picker = picker;
             self.rematch();
             self.selected = selected
                 .and_then(|id| self.matches.iter().position(|i| self.entries[*i].id == id))
