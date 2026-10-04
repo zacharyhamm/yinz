@@ -285,6 +285,17 @@ pub fn warp_pane_to_session(
         })
         .map_err(|e| format!("{e:#}"))?;
 
+    struct PaneWarpGuard<'a>(&'a ThreadSenders);
+    impl Drop for PaneWarpGuard<'_> {
+        fn drop(&mut self) {
+            self.0
+                .send_to_screen(ScreenInstruction::PaneWarpFinished)
+                .context("failed to finish pane warp")
+                .non_fatal();
+        }
+    }
+    let _warp_guard = PaneWarpGuard(senders);
+
     let payload = match response_receiver.recv_timeout(timeout) {
         Ok(Ok(payload)) => payload,
         Ok(Err(reason)) => return Err(reason),

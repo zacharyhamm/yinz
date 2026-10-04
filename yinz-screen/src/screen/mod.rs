@@ -729,6 +729,8 @@ pub(crate) struct Screen {
     /// listening, the pane is already gone and its process unwatched. Comparing
     /// against this before starting is the only chance to notice in time.
     pending_warps: HashMap<TerminalId, (WarpReplySender<WarpedPane>, std::time::Instant)>,
+    /// Keep the last tab and its clients until adoption or rollback finishes.
+    in_flight_pane_warps: usize,
     /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
     /// because a tab's release is answered once for the whole tab — and carrying
     /// the arrangement, which was worked out before the release so that a tab
@@ -1403,6 +1405,7 @@ impl Screen {
             agent_double_escape,
             serialize_pane_viewport,
             scrollback_lines_to_serialize,
+            in_flight_pane_warps: 0,
             pending_warps: HashMap::new(),
             pending_tab_warps: HashMap::new(),
             pending_warp_relationships: HashMap::new(),

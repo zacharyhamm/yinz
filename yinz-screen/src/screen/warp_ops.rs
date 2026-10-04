@@ -622,18 +622,6 @@ impl Screen {
         if ids.len() == 1 && matches!(pane_id, PaneId::Terminal(_)) {
             return Ok(None);
         }
-        let leaving = ids
-            .iter()
-            .filter(|id| {
-                tab.get_pane_with_id(**id)
-                    .is_some_and(|pane| pane.selectable())
-            })
-            .count();
-        if self.selectable_warp_pane_count()? <= leaving {
-            return Err(
-                "these are the session's last panes; moving them would close the session".into(),
-            );
-        }
         let mut slots = vec![pane_id];
         slots.extend(ids.into_iter().filter(|id| *id != pane_id));
         let root = tab
@@ -775,37 +763,8 @@ impl Screen {
             .values()
             .find(|tab| tab.get_pane_with_id(pane_id).is_some())
             .ok_or_else(|| format!("there is no pane {terminal_id} in this session"))?;
-        let panes_leaving = tab.warp_pane_ids(Some(pane_id))?.len();
-
-        // Warping the session's last pane would end the session, which is not what
-        // moving a pane should mean. A tab's last pane is fine — the render pass
-        // sweeps tabs with nothing selectable left in them.
-        if self.selectable_warp_pane_count()? <= panes_leaving {
-            return Err(if panes_leaving > 1 {
-                "this pane and the scrollback editor open on it are the session's last panes; \
-                 moving it would close the session"
-                    .to_owned()
-            } else {
-                "this is the session's only pane; moving it would close the session".to_owned()
-            });
-        }
+        tab.warp_pane_ids(Some(pane_id))?;
         Ok(terminal_id)
-    }
-
-    /// Count the same selectable content that pane and tab transfers discover.
-    /// Independent background plugins are excluded, while companions count.
-    fn selectable_warp_pane_count(&self) -> Result<usize, String> {
-        self.tabs.values().try_fold(0, |count, tab| {
-            Ok(count
-                + tab
-                    .warp_pane_ids(None)?
-                    .iter()
-                    .filter(|id| {
-                        tab.get_pane_with_id(**id)
-                            .is_some_and(|pane| pane.selectable())
-                    })
-                    .count())
-        })
     }
 
     /// How a released pane says where its process can be picked up.
@@ -928,12 +887,6 @@ impl Screen {
     /// the checks above. Only the two things that genuinely cannot be known yet
     /// are left for later: which socket each supervisor ended up on, and what was
     /// on each pane's screen once its reader had stopped.
-    ///
-    /// The pane version of this also refuses the session's last pane, on the
-    /// grounds that moving it would end the session. There is deliberately no
-    /// equivalent here: a session whose only tab is asked for has been asked to
-    /// give up everything, and answering "no" would leave the user with no way to
-    /// say what they meant.
     ///
     /// `tab_index` is a **stable tab id**, not a display position — `self.tabs` is
     /// keyed by id, and the focused-tab default below reads `active_tab_ids`. The

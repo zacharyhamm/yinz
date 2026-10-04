@@ -141,9 +141,8 @@ fn sender_and_receiver() -> ((TestSession, FakePtyHandle), (TestSession, FakePty
 
 /// Split off a second pane and give it something of its own to say.
 ///
-/// A warp needs a pane the session can spare — the session's last pane is
-/// refused — and the test needs to be able to tell that pane from the shell it
-/// was split off, at both ends of the trip.
+/// The test needs to distinguish this pane from the shell it was split off,
+/// at both ends of the trip.
 fn split_off_a_pane(yinz: &TestSession, says: &str) -> FakePtyHandle {
     yinz.send_stdin(&keys::ctrl('p'));
     yinz.send_stdin(&keys::key('r'));
@@ -692,34 +691,22 @@ fn two_idle_agents_keep_their_records_after_a_whole_tab_warp_and_source_shutdown
 }
 
 #[test]
-fn the_sessions_last_pane_is_refused_and_the_session_survives() {
-    // Moving a pane should not be a way to end a session by accident. A tab's
-    // last pane is fine — the render pass sweeps a tab with nothing left in it —
-    // but the session's last one is not.
-    let ((sender, sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
-    // Every other test here focuses a pane by splitting one off. This one has
-    // nothing to split - one pane is the subject - so the focus is established on
-    // its own, or the warp is refused for having no pane to move rather than for
-    // the reason being tested.
+fn the_sessions_last_pane_warps_and_the_source_session_closes() {
+    let ((mut sender, sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
     focus_and_confirm(&sender, &keys::alt('h'), &sender_shell);
 
-    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
-    assert_ne!(
-        exit_code, 0,
-        "warping the session's only pane should have been refused",
-    );
-    assert!(
-        reported.contains("only pane"),
-        "refused, but for the wrong reason: {reported}",
-    );
-    assert!(
-        !sender_shell.is_exited(),
-        "the session's only pane was moved",
-    );
+    warp_focused_pane_expecting_success(&sender, &receiver, false);
+    let arrived = receiver.expect_adopted_pty();
+    sender.wait_for_exit();
 
-    sender_shell.output(b"the session is still here\r\n");
-    sender.wait_until("the session to still be running", |grid_snapshot| {
-        grid_snapshot.contains("the session is still here")
+    assert!(
+        !arrived.is_exited(),
+        "source shutdown killed the warped pane"
+    );
+    type_and_confirm(&receiver, &arrived, b"after-warp");
+    arrived.output(b"still running after source shutdown\r\n");
+    receiver.wait_until("the transferred process to keep writing", |grid| {
+        grid.contains("still running after source shutdown")
     });
 }
 
@@ -940,8 +927,8 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
 
 #[test]
 fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships() {
-    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
-    let subject = split_off_a_pane(&sender, "ROLLBACK_SUBJECT");
+    let ((sender, subject), (receiver, _receiver_shell)) = sender_and_receiver();
+    focus_and_confirm(&sender, &keys::alt('h'), &subject);
     type_and_confirm(&sender, &subject, b"rollback-subject-before");
     for index in 0..2 {
         sender.send_stdin(&keys::ctrl('s'));
@@ -1712,4 +1699,114 @@ fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization(
             );
         }
     }
+}
+
+#[test]
+fn warp_adoption_failure_restores_the_sessions_only_live_pane() {
+    let ((sender, subject), (receiver, _)) = sender_and_receiver();
+    focus_and_confirm(&sender, &keys::alt('h'), &subject);
+    subject.fail_warp(WarpFailure::UnadoptableOnce);
+    let (code, output) = warp_focused_pane_to(&sender, &receiver, false);
+    assert_ne!(code, 0);
+    assert!(output.contains("back in this session"), "{output}");
+    let restored = sender.expect_adopted_pty();
+    restored.output(b"SOLE PANE RESTORED\r\n");
+    sender.wait_until("rollback output", |grid| {
+        grid.contains("SOLE PANE RESTORED")
+    });
+    type_and_confirm(&sender, &restored, b"rollback-input");
+    assert!(!restored.is_exited());
+}
+
+#[test]
+fn warp_disconnected_destination_restores_the_only_held_pane() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_ipc::ipc::{
+        ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
+    };
+
+    let name = format!("warp-disconnect-{}", std::process::id());
+    std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+    let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    let listener = ListenerOptions::new()
+        .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+        .create_sync()
+        .unwrap();
+    let destination = std::thread::spawn(move || {
+        let probe = listener.accept().unwrap();
+        let mut reply: IpcSenderWithContext<ServerToClientMsg> = IpcSenderWithContext::new(probe);
+        let mut request: IpcReceiverWithContext<ClientToServerMsg> = reply.get_receiver().unwrap();
+        assert!(matches!(
+            request.recv_client_msg().msg(),
+            Some((ClientToServerMsg::ConnStatus, _))
+        ));
+        reply
+            .send_server_msg(ServerToClientMsg::Connected {
+                warp_companions: true,
+                warp_held_terminals: true,
+            })
+            .unwrap();
+        let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
+            IpcReceiverWithContext::new(listener.accept().unwrap());
+        assert!(matches!(
+            adoption.recv_client_msg().msg(),
+            Some((
+                ClientToServerMsg::Action {
+                    action: yinz_types::input::actions::Action::AdoptPane { .. },
+                    ..
+                },
+                _
+            ))
+        ));
+        // Drop the adoption connection after accepting the request, without a reply.
+    });
+    let sender = start(Some(
+        r#"layout { pane name="sole held task" command="codex" cwd="/tmp"; }"#,
+    ));
+    let subject = sender.expect_pty_spawn();
+    subject.output(b"SOLE HELD SCROLLBACK\r\n");
+    sender.wait_until("held output before exit", |grid| {
+        grid.contains("SOLE HELD SCROLLBACK")
+    });
+    subject.exit(Some(17));
+    let held_state = || {
+        let (code, output) = sender.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        serde_json::from_str::<Vec<serde_json::Value>>(&output)
+            .unwrap()
+            .into_iter()
+            .find(|pane| pane["is_plugin"] == false)
+            .unwrap()
+    };
+    sender.wait_until("held exit before transfer", |_| {
+        held_state()["is_held"] == true
+    });
+    let before = held_state();
+    let (code, output) = sender.run_cli_action_reporting(CliAction::WarpPane {
+        to_session: name,
+        pane_id: Some(format!("terminal_{}", subject.terminal_id())),
+        floating: false,
+        focused_tab: true,
+    });
+    assert_ne!(code, 0);
+    assert!(output.contains("back in this session"), "{output}");
+    destination.join().unwrap();
+    sender.wait_until("held rollback state", |grid| {
+        grid.contains("SOLE HELD SCROLLBACK")
+    });
+    let after = held_state();
+    for field in ["is_held", "exited", "exit_status"] {
+        assert_eq!(after[field], before[field], "{field}: {after}");
+    }
+    sender.send_stdin(b"\r");
+    let restarted = sender.expect_pty_spawn();
+    restarted.wait_for_command("codex");
+    assert_eq!(restarted.run_command().cwd, Some("/tmp".into()));
 }

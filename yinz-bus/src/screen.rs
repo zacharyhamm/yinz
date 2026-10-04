@@ -578,6 +578,10 @@ pub enum ScreenInstruction {
         /// When the caller stops waiting. See [`WarpTab`](Self::WarpTab).
         deadline: Instant,
     },
+    /// A pane transfer has completed, including any rollback attempt.
+    PaneWarpFinished,
+    /// Acknowledged only after queued pane creation and restoration have run.
+    AdoptedPaneFinished(crossbeam::channel::Sender<Result<()>>),
     /// The pty thread has let a pane's supervisor go. Serializing the pane *here*
     /// rather than when the warp was requested is what makes the screen that
     /// travels match the one the user was looking at: by now the reader task is
@@ -595,6 +599,7 @@ pub enum ScreenInstruction {
     /// The pty thread has taken a supervisor over and this session now owns
     /// `terminal_id`. All that is left is to give it a pane and paint it.
     AdoptedPaneReady {
+        response_channel: crossbeam::channel::Sender<Result<()>>,
         terminal_id: TerminalId,
         payload: Box<WarpedPane>,
         placement: WarpPlacement,

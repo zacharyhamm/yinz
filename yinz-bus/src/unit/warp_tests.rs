@@ -488,3 +488,100 @@ fn a_local_pane_is_recovered_by_its_supervisor_id() {
 fn warp_pull_budget_covers_probe_release_adoption_and_rollback() {
     assert_eq!(WARP_PULL_TIMEOUT, WARP_TIMEOUT * 4 + Duration::from_secs(1));
 }
+
+#[test]
+fn pane_warp_guard_finishes_after_preparation_and_rollback_failures() {
+    for failure in ["preparation", "rollback"] {
+        let harness = harness();
+        let session = SessionName::new(format!("warp-guard-{}-{failure}", std::process::id()));
+        std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
+        let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&session);
+        let listener = ListenerOptions::new()
+            .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+            .create_sync()
+            .unwrap();
+        let destination = std::thread::spawn(move || {
+            let mut probe: IpcSenderWithContext<ServerToClientMsg> =
+                IpcSenderWithContext::new(listener.accept().unwrap());
+            let mut request: IpcReceiverWithContext<ClientToServerMsg> =
+                probe.get_receiver().unwrap();
+            assert!(matches!(
+                request.recv_client_msg().msg(),
+                Some((ClientToServerMsg::ConnStatus, _))
+            ));
+            probe
+                .send_server_msg(ServerToClientMsg::Connected {
+                    warp_companions: true,
+                    warp_held_terminals: true,
+                })
+                .unwrap();
+            let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
+                IpcReceiverWithContext::new(listener.accept().unwrap());
+            let _ = adoption.recv_client_msg();
+        });
+        let senders = harness.senders.clone();
+        let caller = std::thread::spawn(move || {
+            warp_pane_to_session(
+                &senders,
+                crate::ClientId::new(1),
+                None,
+                &SessionName::new("source"),
+                &session,
+                WarpPlacement::FocusedTab,
+                Duration::from_secs(5),
+            )
+        });
+        let (
+            ScreenInstruction::WarpPane {
+                response_channel, ..
+            },
+            _,
+        ) = harness.screen.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected warp")
+        };
+        assert!(harness.screen.try_recv().is_err());
+        if failure == "preparation" {
+            response_channel
+                .send(Err("preparation refused".into()))
+                .unwrap();
+        } else {
+            response_channel.send(Ok(Box::default())).unwrap();
+            let (
+                PtyInstruction::AdoptTerminal {
+                    response_channel, ..
+                },
+                _,
+            ) = harness.pty.recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                panic!("expected rollback")
+            };
+            assert!(
+                harness.screen.try_recv().is_err(),
+                "guard must cover rollback"
+            );
+            response_channel
+                .send(Err(anyhow!("rollback refused")))
+                .unwrap();
+        }
+        assert!(matches!(
+            harness
+                .screen
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .0,
+            ScreenInstruction::PaneWarpFinished
+        ));
+        let error = caller.join().unwrap().unwrap_err();
+        assert!(
+            error.contains(if failure == "preparation" {
+                "preparation refused"
+            } else {
+                "rollback refused"
+            }),
+            "{error}"
+        );
+        assert!(harness.screen.try_recv().is_err());
+        destination.join().unwrap();
+    }
+}

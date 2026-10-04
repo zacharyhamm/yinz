@@ -3070,6 +3070,7 @@ pub fn screen_thread_main(
                     response_channel,
                     deadline,
                 } => {
+                    screen.in_flight_pane_warps += 1;
                     screen.warp_pane(
                         supports_companions,
                         supports_held,
@@ -3080,6 +3081,12 @@ pub fn screen_thread_main(
                         response_channel,
                         deadline,
                     )?;
+                },
+                ScreenInstruction::PaneWarpFinished => {
+                    screen.in_flight_pane_warps -= 1;
+                },
+                ScreenInstruction::AdoptedPaneFinished(response_channel) => {
+                    let _ = response_channel.send(Ok(()));
                 },
                 ScreenInstruction::PaneReleasedForWarp {
                     terminal_id,
@@ -3101,6 +3108,7 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::AdoptedPaneReady {
+                    response_channel,
                     terminal_id,
                     payload,
                     placement,
@@ -3109,15 +3117,28 @@ pub fn screen_thread_main(
                     buffered,
                     child_exit_status,
                 } => {
-                    screen.place_adopted_pane(
-                        terminal_id,
-                        *payload,
-                        placement,
-                        client_id,
-                        cmd,
-                        buffered,
-                        child_exit_status,
-                    )?;
+                    let result = screen
+                        .place_adopted_pane(
+                            terminal_id,
+                            *payload,
+                            placement,
+                            client_id,
+                            cmd,
+                            buffered,
+                            child_exit_status,
+                        )
+                        .and_then(|_| {
+                            screen
+                                .bus
+                                .senders
+                                .send_to_screen(ScreenInstruction::AdoptedPaneFinished(
+                                    response_channel.clone(),
+                                ))
+                                .context("failed to acknowledge adopted pane")
+                        });
+                    if let Err(error) = result {
+                        let _ = response_channel.send(Err(error));
+                    }
                     screen.log_and_report_session_state().non_fatal();
                     screen.render()?;
                 },
