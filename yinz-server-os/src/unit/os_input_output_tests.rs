@@ -1129,6 +1129,123 @@ mod coalescing_send_queue {
         }
     }
 
+    #[test]
+    fn enqueue_holds_the_registry_until_the_message_is_stored() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::TryLockError;
+
+        let server = make_server();
+        let client = ClientId::new(1);
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        server.client_senders.lock().unwrap().insert(
+            client,
+            ClientSender {
+                queue: queue.clone(),
+                stream_fd: socket.into(),
+            },
+        );
+        // Stop the send inside enqueue. Replacement must not acquire the registry
+        // until this queue lock is released and the message has been stored.
+        let state = queue.state.lock().unwrap();
+        let sending = {
+            let server = server.clone();
+            std::thread::spawn(move || server.send_to_client(client, control("before replacement")))
+        };
+        let started = Instant::now();
+        loop {
+            match server.client_senders.try_lock() {
+                Err(TryLockError::WouldBlock) => break,
+                Err(TryLockError::Poisoned(_)) => panic!("registry poisoned"),
+                Ok(_) => {},
+            }
+            assert!(
+                started.elapsed() < AMPLE_TIMEOUT,
+                "enqueue released the registry before storing the message"
+            );
+            std::thread::yield_now();
+        }
+        let replacement = Arc::new(CoalescingSendQueue::new());
+        let (checked, was_checked) = std::sync::mpsc::channel();
+        let replacing = {
+            let server = server.clone();
+            let replacement = replacement.clone();
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            std::thread::spawn(move || {
+                checked
+                    .send(matches!(
+                        server.client_senders.try_lock(),
+                        Err(TryLockError::WouldBlock)
+                    ))
+                    .unwrap();
+                let old = server.lock_client_senders().insert(
+                    client,
+                    ClientSender {
+                        queue: replacement,
+                        stream_fd: socket.into(),
+                    },
+                );
+                drop(old);
+            })
+        };
+        assert!(
+            was_checked.recv_timeout(AMPLE_TIMEOUT).unwrap(),
+            "replacement acquired the registry before enqueue completed"
+        );
+        drop(state);
+        sending.join().unwrap().unwrap();
+        replacing.join().unwrap();
+        assert_eq!(queue.pop(), Some(control("before replacement")));
+        assert_eq!(queue.pop(), None);
+        assert_eq!(replacement.len(), 0);
+        server
+            .send_to_client(client, control("after replacement"))
+            .unwrap();
+        assert_eq!(replacement.pop(), Some(control("after replacement")));
+    }
+
+    #[test]
+    fn enqueue_runs_poison_recovery_callback_outside_the_registry() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        let server = make_server();
+        let client = ClientId::new(1);
+        let queue = Arc::new(CoalescingSendQueue::new());
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        server.client_senders.lock().unwrap().insert(
+            client,
+            ClientSender {
+                queue: queue.clone(),
+                stream_fd: socket.into(),
+            },
+        );
+        queue.push(render("frame"));
+        let (called, was_called) = mpsc::channel();
+        let ready: RenderReady = {
+            let server = server.clone();
+            Arc::new(move || {
+                let _ = server.client_queue(client);
+                called.send(()).unwrap();
+            })
+        };
+        server.client_render_backlog_and_notify(client, 1, &ready);
+        let poisoned = queue.clone();
+        assert!(std::thread::spawn(move || {
+            let _state = poisoned.state.lock().unwrap();
+            panic!("poison writer queue with an armed callback");
+        })
+        .join()
+        .is_err());
+        let sending = std::thread::spawn(move || server.send_to_client(client, render("late")));
+        was_called
+            .recv_timeout(AMPLE_TIMEOUT)
+            .expect("enqueue callback deadlocked on the registry");
+        sending.join().unwrap().unwrap();
+        assert!(queue.state.lock().unwrap().closed);
+        assert_eq!(queue.len(), 0);
+    }
+
     /// A render-ready callback consults the sender registry again (the screen's next pass
     /// does), so the paths that close a queue must not run it while holding the registry.
     #[test]
@@ -1918,12 +2035,11 @@ mod client_writer_flush {
         .unwrap();
 
         // What every break in the server main loop does on its way out.
-        crate::os_input_output::send_or_buffer(
+        crate::os_input_output::finish_enqueue(
             crate::ClientId::new(1),
-            &sender.queue,
-            ServerToClientMsg::Exit {
+            sender.queue.push_deferred(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Normal,
-            },
+            }),
         )
         .expect("queueing the exit failed");
         sender.close();
@@ -1979,12 +2095,11 @@ mod client_writer_flush {
         .unwrap();
         let queue = sender.queue.clone();
         drop(client_end);
-        crate::os_input_output::send_or_buffer(
+        crate::os_input_output::finish_enqueue(
             crate::ClientId::new(1),
-            &sender.queue,
-            ServerToClientMsg::Render {
+            sender.queue.push_deferred(ServerToClientMsg::Render {
                 content: "x".to_owned(),
-            },
+            }),
         )
         .unwrap();
         sender.close();
@@ -2040,12 +2155,11 @@ mod client_writer_flush {
             server_fd,
         )
         .unwrap();
-        crate::os_input_output::send_or_buffer(
+        crate::os_input_output::finish_enqueue(
             crate::ClientId::new(1),
-            &sender.queue,
-            ServerToClientMsg::Exit {
+            sender.queue.push_deferred(ServerToClientMsg::Exit {
                 exit_reason: ExitReason::Normal,
-            },
+            }),
         )
         .expect("queueing the exit failed");
         sender.close();

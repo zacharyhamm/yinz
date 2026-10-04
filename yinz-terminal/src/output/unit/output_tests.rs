@@ -112,7 +112,7 @@ fn vte_only_clients_are_serialized_without_pane_registration() {
         assert!(output.is_dirty());
         assert!(!output.has_rendered_assets());
         let serialized = if sized {
-            output.serialize_with_size(None, None).unwrap()
+            output.serialize_with_size(None).unwrap()
         } else {
             output.serialize().unwrap()
         };
@@ -398,7 +398,7 @@ fn test_serialize_with_pre_and_post_vte_instructions() {
 
     let sized_result = output
         .clone()
-        .serialize_with_size(Some(Size { rows: 1, cols: 4 }), None)
+        .serialize_with_size(Some(Size { rows: 1, cols: 4 }))
         .unwrap();
     let result = output.serialize().unwrap();
     assert_eq!(result, sized_result);
@@ -456,7 +456,7 @@ fn test_serialize_with_size_no_constraints() {
         .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
         .unwrap();
 
-    let result = output.serialize_with_size(None, None).unwrap();
+    let result = output.serialize_with_size(None).unwrap();
     assert_eq!(result.len(), 1, "Should have one client in result");
 
     let client_output = result.get(&ClientId::new(1)).unwrap();
@@ -484,7 +484,7 @@ fn test_serialize_with_size_crops_chunks_below_visible_area() {
         .add_character_chunks_to_client(ClientId::new(1), vec![chunk_visible], None)
         .unwrap();
 
-    let result = output.serialize_with_size(max_size, None).unwrap();
+    let result = output.serialize_with_size(max_size).unwrap();
     let client_output = result.get(&ClientId::new(1)).unwrap();
 
     assert!(
@@ -518,7 +518,7 @@ fn test_serialize_with_size_crops_chunks_outside_cols() {
         .add_character_chunks_to_client(ClientId::new(1), vec![chunk_visible], None)
         .unwrap();
 
-    let result = output.serialize_with_size(max_size, None).unwrap();
+    let result = output.serialize_with_size(max_size).unwrap();
     let client_output = result.get(&ClientId::new(1)).unwrap();
 
     assert!(
@@ -546,7 +546,7 @@ fn test_serialize_with_size_crops_characters_within_chunk() {
         .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
         .unwrap();
 
-    let result = output.serialize_with_size(max_size, None).unwrap();
+    let result = output.serialize_with_size(max_size).unwrap();
     let client_output = result.get(&ClientId::new(1)).unwrap();
 
     // Should only render first 5 characters (cols 15-19)
@@ -561,56 +561,12 @@ fn test_serialize_with_size_crops_characters_within_chunk() {
 }
 
 #[test]
-fn test_serialize_with_size_adds_padding_instructions() {
-    let mut output = create_test_output();
-    let client_ids = create_test_clients(1);
-    let link_handler = Rc::new(RefCell::new(LinkHandler::new()));
-    output.add_clients(&client_ids, link_handler, None);
-
-    let max_size = Some(Size {
-        rows: 30,
-        cols: 100,
-    });
-    let content_size = Some(Size { rows: 20, cols: 80 });
-
-    let chunk = create_character_chunk_from_str("Test", 0, 0);
-    output
-        .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
-        .unwrap();
-
-    let result = output.serialize_with_size(max_size, content_size).unwrap();
-    let client_output = result.get(&ClientId::new(1)).unwrap();
-
-    // Verify padding/clearing instructions are present
-    // Should contain clear line instructions: \u{1b}[y;xH\u{1b}[m\u{1b}[K
-    assert!(
-        client_output.contains("\u{1b}[K"),
-        "Should contain clear line instructions"
-    );
-    // Should contain clear below instruction: \u{1b}[21;1H\u{1b}[m\u{1b}[J
-    assert!(
-        client_output.contains("\u{1b}[21;1H\u{1b}[m\u{1b}[J"),
-        "Should contain clear below instruction at line 21"
-    );
-}
-
-#[test]
-fn test_serialize_with_size_pads_only_extra_watcher_space() {
-    let content_size = Size { rows: 2, cols: 4 };
-    for (watcher_size, padding) in [
-        (
-            Size { rows: 1, cols: 6 },
-            "\x1b[s\x1b[1;5H\x1b[m\x1b[K\x1b[u",
-        ),
-        (
-            Size { rows: 3, cols: 2 },
-            "\x1b[s\x1b[3;1H\x1b[m\x1b[J\x1b[u",
-        ),
-        (
-            Size { rows: 3, cols: 6 },
-            "\x1b[s\x1b[1;5H\x1b[m\x1b[K\x1b[2;5H\x1b[m\x1b[K\x1b[3;1H\x1b[m\x1b[J\x1b[u",
-        ),
-        (content_size, ""),
+fn test_serialize_with_size_adds_no_padding() {
+    for watcher_size in [
+        Size { rows: 1, cols: 6 },
+        Size { rows: 3, cols: 2 },
+        Size { rows: 3, cols: 6 },
+        Size { rows: 2, cols: 4 },
     ] {
         let mut output = create_test_output();
         let client = ClientId::new(1);
@@ -628,12 +584,9 @@ fn test_serialize_with_size_pads_only_extra_watcher_space() {
             )
             .unwrap();
         output.add_post_vte_instruction_to_client(client, "\x1b[6 q");
-        let result = output
-            .serialize_with_size(Some(watcher_size), Some(content_size))
-            .unwrap();
+        let result = output.serialize_with_size(Some(watcher_size)).unwrap();
         assert_eq!(
-            result[&client],
-            format!("\x1b[?25l{padding}\x1b[1;1H\x1b[mHi\x1b[6 q"),
+            result[&client], "\x1b[?25l\x1b[1;1H\x1b[mHi\x1b[6 q",
             "watcher size: {watcher_size:?}"
         );
     }
@@ -656,7 +609,7 @@ fn test_serialize_with_size_hides_cursor_when_cropped() {
         .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
         .unwrap();
 
-    let result = output.serialize_with_size(max_size, None).unwrap();
+    let result = output.serialize_with_size(max_size).unwrap();
     let client_output = result.get(&ClientId::new(1)).unwrap();
 
     // Verify hide cursor instruction is added
@@ -696,7 +649,7 @@ fn test_serialize_with_size_crops_each_client_against_its_own_cursor() {
         }
 
         let result = output
-            .serialize_with_size(Some(Size { rows: 10, cols: 20 }), None)
+            .serialize_with_size(Some(Size { rows: 10, cols: 20 }))
             .unwrap();
         assert!(
             result
@@ -2650,7 +2603,7 @@ fn cursor_is_cropped_for_agrees_with_what_serialization_emits() {
         output
             .add_character_chunks_to_client(ClientId::new(1), vec![chunk], None)
             .unwrap();
-        let result = output.serialize_with_size(Some(max_size), None).unwrap();
+        let result = output.serialize_with_size(Some(max_size)).unwrap();
         let client_output = result.get(&ClientId::new(1)).unwrap();
         assert_eq!(
             client_output.ends_with("\u{1b}[?25l"),
@@ -2942,7 +2895,7 @@ fn each_tabs_links_resolve_against_that_tabs_link_table() {
     for serialized in [
         output.clone().serialize().unwrap(),
         output
-            .serialize_with_size(Some(Size { rows: 2, cols: 5 }), None)
+            .serialize_with_size(Some(Size { rows: 2, cols: 5 }))
             .unwrap(),
     ] {
         let first = &serialized[&first_client];
@@ -3194,7 +3147,7 @@ fn serializers_omit_empty_clients_but_preserve_control_only_output() {
         );
         output.add_post_vte_instruction_to_client(notified, "\x1b]9;hello\x1b\\");
         let frames = if sized {
-            output.serialize_with_size(None, None).unwrap()
+            output.serialize_with_size(None).unwrap()
         } else {
             output.serialize().unwrap()
         };

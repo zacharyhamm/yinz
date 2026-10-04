@@ -132,10 +132,7 @@ pub trait Pane {
     /// Forget state only when a client leaves the session, not when it changes tabs.
     fn remove_client(&mut self, _client_id: ClientId) {}
     /// Replay consumed content for a watcher without invalidating frame caches.
-    fn prepare_content_replay(&mut self, _client_id: ClientId) {
-        self.set_should_render(true);
-        self.render_full_viewport();
-    }
+    fn prepare_content_replay(&mut self, client_id: ClientId);
     /// Replay a frame without dirtying the pane's contents.
     fn invalidate_frame(&mut self, _client_id: ClientId) {}
     fn reset_size_and_position_override(&mut self);

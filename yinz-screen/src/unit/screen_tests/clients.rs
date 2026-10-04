@@ -545,9 +545,7 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
     // A stream for another client must not change the followed client's crop state.
     output.add_post_vte_instruction_to_client(ClientId::new(3), "\x1b[?25l");
     assert!(output.is_dirty());
-    screen
-        .render_watcher_output(&output, followed, None)
-        .unwrap();
+    screen.render_watcher_output(&output, followed).unwrap();
     assert!(screen.watcher_clients[&watcher].cursor_was_cropped);
     assert!(!screen.watcher_clients[&watcher].should_force_render());
     assert!(receiver.try_recv().is_err());
@@ -557,16 +555,12 @@ fn watcher_crop_state_changes_only_for_a_delivered_stream() {
     // tab still deliver its bell and OSC 7 (see `render_pacing`).
     output.add_post_vte_instruction_to_client(followed, "\x1b[?25l");
     output.set_cursor_coordinates(followed, 2, 2);
-    screen
-        .render_watcher_output(&output, followed, None)
-        .unwrap();
+    screen.render_watcher_output(&output, followed).unwrap();
     assert!(!screen.watcher_clients[&watcher].cursor_was_cropped);
     assert!(!screen.watcher_clients[&watcher].should_force_render());
     assert!(receiver.try_recv().is_ok());
     output.set_cursor_coordinates(followed, 60, 2);
-    screen
-        .render_watcher_output(&output, followed, None)
-        .unwrap();
+    screen.render_watcher_output(&output, followed).unwrap();
     assert!(screen.watcher_clients[&watcher].cursor_was_cropped);
     assert!(!screen.watcher_clients[&watcher].should_force_render());
 }
@@ -593,7 +587,55 @@ fn watcher_frame(
 }
 
 #[test]
-fn a_wider_shorter_watchers_padding_preserves_unchanged_rows() {
+fn watcher_full_repaints_clear_outside_the_session_surface() {
+    let client = ClientId::new(1);
+    let watcher = ClientId::new(3);
+    let size = Size {
+        cols: 123,
+        rows: 24,
+    };
+    let mut screen = create_fixed_size_screen();
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(2)).unwrap();
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, size);
+    screen.set_followed_client(client).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(size);
+
+    for change in [
+        "attach",
+        "watcher resize",
+        "session shrink",
+        "followed client",
+        "followed tab",
+    ] {
+        match change {
+            "watcher resize" => screen.set_watcher_size(
+                watcher,
+                Size {
+                    cols: 122,
+                    rows: 23,
+                },
+            ),
+            "session shrink" => screen
+                .resize_to_screen(Size { cols: 80, rows: 12 })
+                .unwrap(),
+            "followed client" => screen.set_followed_client(ClientId::new(2)).unwrap(),
+            "followed tab" => new_tab(&mut screen, 2, TabId::new(1)),
+            _ => {},
+        }
+        // Seed both the right and bottom margins of the watcher's host terminal.
+        take_snapshot_and_cursor_coordinates("\x1b[1;122H X\x1b[23;1Hstale", &mut grid);
+        let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
+        assert!(bytes.contains("\x1b[2J"), "{change}: {bytes:?}");
+        assert!(!grid.dump_screen(false).contains('X'), "{change}");
+        assert!(!grid.dump_screen(false).contains("stale"), "{change}");
+    }
+}
+
+#[test]
+fn a_wider_shorter_watchers_incremental_output_preserves_unchanged_rows() {
     let watcher = ClientId::new(2);
     let watcher_size = Size {
         cols: 123,
@@ -630,6 +672,8 @@ fn a_wider_shorter_watchers_padding_preserves_unchanged_rows() {
         .unwrap();
     let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
     assert!(bytes.contains("updated-row"), "{bytes:?}");
+    assert!(!bytes.contains("\x1b[K"), "{bytes:?}");
+    assert!(!bytes.contains("\x1b[J"), "{bytes:?}");
     assert!(
         !bytes.contains("unchanged-tenth-row"),
         "only dirty rows are replayed: {bytes:?}"
@@ -643,7 +687,7 @@ fn a_wider_shorter_watchers_padding_preserves_unchanged_rows() {
 }
 
 #[test]
-fn a_larger_watchers_padding_preserves_cursor_on_shape_only_updates() {
+fn a_larger_watchers_shape_only_update_preserves_content_and_cursor() {
     let watcher = ClientId::new(2);
     let watcher_size = Size {
         cols: 123,
@@ -677,7 +721,11 @@ fn a_larger_watchers_padding_preserves_cursor_on_shape_only_updates() {
         .handle_pty_bytes(TerminalId::new(1), b"\x1b[6 q".to_vec())
         .unwrap();
     let bytes = watcher_frame(&mut screen, &receiver, watcher, &mut grid);
-    assert!(bytes.contains("\x1b[6 q"), "{bytes:?}");
+    assert_eq!(bytes, "\x1b[6 q");
+    assert_eq!(
+        grid.dump_screen(false).lines().next(),
+        Some("unchanged-content")
+    );
     assert!(!bytes.contains("unchanged-content"), "{bytes:?}");
     assert!(
         !bytes.contains("\x1b[4;7H"),
@@ -978,4 +1026,281 @@ fn failed_attach_preserves_retained_plugin_state_until_successful_commit() {
                 .contains("retained-content"));
         }
     }
+}
+
+#[test]
+fn failed_new_tab_registration_rolls_back_and_disconnects_once() {
+    let client = ClientId::new(1);
+    let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, true, true);
+    let receiver = screen_wired_to_server(&mut screen);
+    screen
+        .new_tab(TabId::new(0), (vec![], vec![]), None, Some(client))
+        .unwrap();
+    // Layout can complete at the original size, then registration must reflow it.
+    screen.set_client_size(client, Size { cols: 79, rows: 24 });
+    let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
+    tab.senders.should_silently_fail = false;
+    tab.senders.to_pty_writer = None;
+    screen
+        .apply_layout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(1), None)],
+            vec![],
+            HashMap::new(),
+            TabId::new(0),
+            true,
+            client,
+            None,
+        )
+        .unwrap();
+    assert!(!screen.connected_clients.borrow().contains(&client));
+    assert!(!screen.active_tab_ids.contains_key(&client));
+    assert!(!screen.tab_history.contains_key(&client));
+    assert!(!screen.client_sizes.contains_key(&client));
+    assert!(screen.tabs[&TabId::new(0)].has_no_connected_clients());
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|(instruction, _)| matches!(
+                instruction, ServerInstruction::ClientExit(id, None) if *id == client
+            ))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn removal_finishes_after_follow_render_visibility_or_resize_failure() {
+    let client = ClientId::new(1);
+    let remaining = ClientId::new(2);
+    let size = Size { cols: 80, rows: 24 };
+    for failure in ["follow", "visibility", "resize"] {
+        let (mut screen, _capture) = create_new_screen_with_theme_capture(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        new_tab(&mut screen, 2, TabId::new(1));
+        screen.set_followed_client(client).unwrap();
+        screen.add_watcher_client(ClientId::new(3)).unwrap();
+        if failure != "visibility" {
+            screen.add_client(remaining).unwrap();
+        }
+        add_pane_to_tab(&mut screen, TabId::new(1), PaneId::Plugin(PLUGIN_2), false);
+        screen
+            .tabs
+            .get_mut(&TabId::new(1))
+            .unwrap()
+            .handle_plugin_bytes(PLUGIN_2, client, b"retained".to_vec())
+            .unwrap();
+        screen.show_plugin_cursor(PLUGIN_2, client, Some((1, 1)));
+        screen.nested_via_client_id = Some(client);
+        screen.nested_ancestry = vec!["parent".into()];
+        screen.host_descended = true;
+        screen
+            .mode_info
+            .insert(client, screen.default_mode_info.clone());
+        screen
+            .kitty_host_capabilities
+            .borrow_mut()
+            .insert(client, true);
+        screen
+            .sixel_host_capabilities
+            .borrow_mut()
+            .insert(client, true);
+        screen
+            .synchronized_output_capabilities
+            .borrow_mut()
+            .insert(client, true);
+        match failure {
+            "follow" => {
+                // Force the follow switch's render to publish a changed pane-tabs list.
+                screen
+                    .reported_pane_tabs
+                    .push(yinz_types::pane_tabs::PaneTabsInfo {
+                        id: yinz_types::pane_tabs::PaneTabsId(1),
+                        pane_id: PaneId::Terminal(TerminalId::new(1)),
+                        tabs: vec![],
+                        active: 0,
+                        bar_focused: vec![],
+                    });
+                screen.bus.senders.should_silently_fail = false;
+                screen.bus.senders.to_plugin = None;
+                // Later cleanup also fails: keep the render error, but attempt it all.
+                screen.set_client_size(remaining, Size { cols: 90, rows: 24 });
+                for tab in screen.tabs.values_mut() {
+                    tab.senders.should_silently_fail = false;
+                    tab.senders.to_plugin = None;
+                    tab.senders.to_pty_writer = None;
+                }
+            },
+            "visibility" => {
+                for tab in screen.tabs.values_mut() {
+                    tab.senders.should_silently_fail = false;
+                    tab.senders.to_plugin = None;
+                }
+            },
+            "resize" => {
+                screen.set_client_size(remaining, Size { cols: 90, rows: 24 });
+                let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+                tab.senders.should_silently_fail = false;
+                tab.senders.to_pty_writer = None;
+            },
+            _ => unreachable!(),
+        }
+        let error = screen.remove_client(client).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains(match failure {
+                "follow" => "failed to report pane tabs",
+                "visibility" => "failed to set visibility",
+                _ => "failed to recompute size",
+            }),
+            "{failure}: {error}"
+        );
+        assert!(!screen.connected_clients.borrow().contains(&client));
+        assert!(!screen.active_tab_ids.contains_key(&client));
+        assert!(!screen.tab_history.contains_key(&client));
+        assert!(!screen.client_sizes.contains_key(&client));
+        assert!(!screen.mode_info.contains_key(&client));
+        assert!(!screen
+            .kitty_host_capabilities
+            .borrow()
+            .contains_key(&client));
+        assert!(!screen
+            .sixel_host_capabilities
+            .borrow()
+            .contains_key(&client));
+        assert!(!screen
+            .synchronized_output_capabilities
+            .borrow()
+            .contains_key(&client));
+        let pane = screen.tabs[&TabId::new(1)]
+            .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+            .unwrap();
+        assert_eq!(
+            pane.cursor_coordinates(Some(client)),
+            (failure == "visibility").then_some((1, 1, true))
+        );
+        assert_eq!(
+            pane.pane_contents(Some(client), false, None)
+                .viewport
+                .concat()
+                .contains("retained"),
+            failure == "visibility"
+        );
+        assert_eq!(screen.nested_via_client_id, None);
+        assert!(screen.nested_ancestry.is_empty());
+        assert!(!screen.host_descended);
+        assert!(screen.host_descend_keys.is_empty());
+        for tab in screen.tabs.values() {
+            assert!(!tab.has_connected_client(&client));
+        }
+        assert_eq!(
+            screen.followed_client_id,
+            Some(if failure == "visibility" {
+                client
+            } else {
+                remaining
+            })
+        );
+    }
+}
+
+#[test]
+fn reattach_registers_plugins_before_updates_and_preserves_immediate_output() {
+    use crate::screen::thread_main::PendingEvents;
+    let size = Size { cols: 80, rows: 24 };
+    let source = ClientId::new(1);
+    for returning in [source, ClientId::new(3)] {
+        let (mut screen, capture) = create_new_screen_with_theme_capture(size);
+        new_tab(&mut screen, 1, TabId::new(0));
+        add_pane_to_tab(&mut screen, TabId::new(0), PaneId::Plugin(PLUGIN_2), false);
+        screen.set_followed_client(source).unwrap();
+        screen.add_watcher_client(ClientId::new(2)).unwrap();
+        screen.remove_client(source).unwrap();
+        capture.drain_plugin_events();
+        let (reply_tx, reply_rx) = channels::unbounded();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let (first, _) = capture.plugin_rx.recv().unwrap();
+                assert!(matches!(first, PluginInstruction::AddClient(id) if id == returning));
+                // Plugin replies queue while the screen is still handling attachment.
+                reply_tx
+                    .send(ScreenInstruction::PluginBytes(vec![
+                        PluginRenderAsset::new(PLUGIN_2, returning, b"immediate-output".to_vec()),
+                    ]))
+                    .unwrap();
+                reply_tx
+                    .send(ScreenInstruction::ShowPluginCursor(
+                        PLUGIN_2,
+                        returning,
+                        Some((1, 1)),
+                    ))
+                    .unwrap();
+            });
+            screen
+                .attach_client(
+                    returning,
+                    size,
+                    None,
+                    None,
+                    &mut HashMap::new(),
+                    &mut PendingEvents::default(),
+                )
+                .unwrap();
+        });
+        assert!(capture
+            .drain_plugin_updates()
+            .iter()
+            .any(|(_, client, _)| *client == Some(returning)));
+        for event in reply_rx.try_iter() {
+            match event {
+                ScreenInstruction::PluginBytes(assets) => {
+                    assert!(screen
+                        .handle_plugin_render_assets(assets)
+                        .unwrap()
+                        .is_empty());
+                },
+                ScreenInstruction::ShowPluginCursor(plugin, client, cursor) => {
+                    assert!(screen.show_plugin_cursor(plugin, client, cursor));
+                },
+                _ => unreachable!(),
+            }
+        }
+        let pane = screen.tabs[&TabId::new(0)]
+            .get_pane_with_id(PaneId::Plugin(PLUGIN_2))
+            .unwrap();
+        assert!(pane
+            .pane_contents(Some(returning), false, None)
+            .viewport
+            .concat()
+            .contains("immediate-output"));
+        assert_eq!(pane.cursor_coordinates(Some(returning)), Some((1, 1, true)));
+    }
+}
+
+#[test]
+fn failed_plugin_registration_rejects_attachment_once() {
+    use crate::screen::thread_main::PendingEvents;
+    let size = Size { cols: 80, rows: 24 };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    let client = ClientId::new(2);
+    let receiver = screen_wired_to_server(&mut screen);
+    screen.bus.senders.should_silently_fail = false;
+    screen.bus.senders.to_plugin = None;
+    let mut traces = HashMap::new();
+    screen
+        .attach_client(
+            client,
+            size,
+            None,
+            None,
+            &mut traces,
+            &mut PendingEvents::default(),
+        )
+        .unwrap();
+    assert!(!screen.connected_clients.borrow().contains(&client));
+    assert!(!screen.client_sizes.contains_key(&client));
+    assert!(traces.is_empty());
+    assert_eq!(receiver.try_iter().filter(|(instruction, _)| matches!(instruction, ServerInstruction::ClientExit(id, None) if *id == client)).count(), 1);
 }

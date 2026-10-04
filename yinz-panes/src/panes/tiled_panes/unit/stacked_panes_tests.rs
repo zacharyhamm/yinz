@@ -1064,6 +1064,9 @@ impl Pane for MockPane {
     fn reset_size_and_position_override(&mut self) {
         unimplemented!()
     }
+    fn prepare_content_replay(&mut self, _client_id: ClientId) {
+        unimplemented!()
+    }
     fn set_geom(&mut self, position_and_size: PaneGeom) {
         self.pane_geom = position_and_size;
     }

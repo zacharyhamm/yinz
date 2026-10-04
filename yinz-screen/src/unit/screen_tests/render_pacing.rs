@@ -91,6 +91,26 @@ fn a_client_with_a_queued_frame_holds_back_rendering() {
 }
 
 #[test]
+fn single_ready_client_clears_stale_deferrals() {
+    let mut paced = screen_with_backlog();
+    assert!(paced.screen.deferred_tabs().is_empty());
+    *paced.backlog.lock().unwrap() = vec![(CLIENT, behind())];
+    assert_eq!(
+        paced.screen.deferred_tabs(),
+        [TabId::new(0)].into_iter().collect()
+    );
+    assert!(paced.ready.lock().unwrap().contains_key(&CLIENT));
+
+    // A removed subscriber or tab can leave deferral state until the next pass.
+    paced.screen.deferred_subscriber_renders = true;
+    paced.screen.deferred_render_tabs.insert(TabId::new(99));
+    paced.backlog.lock().unwrap().clear();
+    assert!(paced.screen.deferred_tabs().is_empty());
+    assert!(paced.screen.deferred_render_tabs.is_empty());
+    assert!(!paced.screen.deferred_subscriber_renders);
+}
+
+#[test]
 fn deferred_panes_still_deliver_bells_and_directory_updates_once() {
     for visual_bell in [false, true] {
         let mut paced = screen_with_backlog();

@@ -1330,14 +1330,6 @@ pub fn start_server_impl(
                     ))
                     .context("adding the attaching client to the screen")
                     .non_fatal();
-                log::info!(
-                    "attach trace: server main client_id={client_id} enqueue Plugin AddClient"
-                );
-                session_data
-                    .senders
-                    .send_to_plugin(PluginInstruction::AddClient(client_id))
-                    .context("adding the attaching client to the plugins")
-                    .non_fatal();
                 let default_mode = config.options.default_mode.unwrap_or_default();
                 // ModeUpdate broadcast is handled by the screen thread via
                 // change_mode() -> update_input_modes()

@@ -7,6 +7,7 @@ use yinz_types::internal_ids::TabNumber;
 use super::thread_main::{replay_pending_pane_event, PendingEvents};
 use super::Screen;
 use crate::panes::PaneId;
+use crate::plugins::PluginInstruction;
 use crate::pty::PtyInstruction;
 use crate::route::NotificationEnd;
 use crate::session_layout_metadata::SessionLayoutMetadata;
@@ -228,7 +229,14 @@ impl Screen {
         // only the reflow: this handler reports and renders on its own way out.
         // Reject a client whose size leaves nothing to lay out: keeping its size in the
         // shared minimum would make every later render fail for all clients.
-        let attach_result = self.register_client(client_id);
+        // Queue plugin registration before client-specific updates. The screen cannot
+        // consume plugin replies until this attachment has committed.
+        let attach_result = self
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::AddClient(client_id))
+            .context("adding the attaching client to the plugins")
+            .and_then(|_| self.register_client(client_id));
         log::info!(
         "attach trace: screen client_id={client_id} Screen::add_client finished after {:?} ({})",
         attach_started_at.elapsed(),
