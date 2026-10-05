@@ -290,3 +290,21 @@ fn the_shipped_typescript_examples_are_quiet_and_the_builtins_analyse() {
     }
     assert!(checked >= 20, "{checked} files checked");
 }
+
+#[test]
+fn notification_observation_infers_read_state_but_policy_decisions_need_no_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    for source in [
+        "yinz.subscribe(['NotificationReceived']);",
+        "import z from 'yinz:plugin'; z.on('NotificationResolved', () => {});",
+    ] {
+        let report = check(
+            &dir.path().join("observer.ts"),
+            source,
+            PluginCheckMode::Syntax,
+        );
+        assert_eq!(report.permissions, [PermissionType::ReadApplicationState]);
+    }
+    let report = check(&dir.path().join("policy.ts"), "yinz.subscribe(['NotificationRequested']); yinz.host.resolveNotification({id: 1, decision: 'Pass'});", PluginCheckMode::Syntax);
+    assert!(report.permissions.is_empty());
+}

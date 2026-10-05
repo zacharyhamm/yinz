@@ -2369,6 +2369,13 @@ pub fn list_recordings() -> Vec<RecordingSummary> {
 /// List every toast received by the current live session, oldest first.
 ///
 /// Requires the `ReadApplicationState` permission.
+pub fn resolve_notification(
+    id: yinz_types::internal_ids::NotificationId,
+    decision: yinz_types::notifications::NotificationDecision,
+) {
+    send(PluginCommand::ResolveNotification { id, decision });
+}
+
 pub fn list_notifications() -> Result<Vec<NotificationInfo>, String> {
     let plugin_command = PluginCommand::ListNotifications;
     let response: ProtobufListNotificationsResponse = call(plugin_command)?;

@@ -655,6 +655,17 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
             PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
             PluginCommand::ListRecordings => list_recordings(env),
+            PluginCommand::ResolveNotification { id, decision } => {
+                env.senders
+                    .send_to_screen(ScreenInstruction::ResolveNotification {
+                        id,
+                        decision,
+                        plugin_id: env.plugin_id,
+                        instance_id: env.instance_id,
+                    })
+                    .context("resolve notification")
+                    .non_fatal();
+            },
             PluginCommand::ListNotifications => list_notifications(env),
             PluginCommand::SearchRecordings { query, limit } => {
                 search_recordings(env, query, limit)
@@ -5830,11 +5841,6 @@ fn rename_session(env: &PluginEnv, new_session_name: SessionName) {
 
 fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>, click: Option<NotifyClick>) {
     let error_msg = || format!("failed to show notification from plugin {}", env.name());
-    let Some(pane_id) = pane_id else {
-        let action = Action::Notify(text);
-        apply_action!(action, error_msg, env);
-        return;
-    };
     // Stamped here rather than carried up from the plugin: a toast may only ever call back the
     // plugin that raised it, so the id is the host's to supply. `owner_client_id` and not
     // `client_id`, because this names an *instance* rather than a turn - it is the key the plugin
@@ -5847,12 +5853,13 @@ fn notify(env: &PluginEnv, text: String, pane_id: Option<PaneId>, click: Option<
         payload: click.payload,
     });
     env.senders
-        .send_to_screen(ScreenInstruction::Notify(
+        .send_to_screen(ScreenInstruction::PluginNotify {
             text,
-            Some(pane_id),
+            pane_id,
             on_click,
-            None,
-        ))
+            plugin_id: env.plugin_id,
+            completion: None,
+        })
         .with_context(error_msg)
         .non_fatal();
 }
@@ -9102,7 +9109,8 @@ pub(crate) fn check_command_permission(
 fn command_permission(kind: CommandType) -> Option<PermissionType> {
     Some(match kind {
         // Bootstrap and the plugin's own pane: nothing here reaches outside the plugin.
-        CommandType::RequestPluginPermissions
+        CommandType::ResolveNotification
+        | CommandType::RequestPluginPermissions
         | CommandType::Subscribe
         | CommandType::Unsubscribe
         | CommandType::SetSelectable
@@ -9715,6 +9723,7 @@ mod permission_tests {
     fn the_commands_that_need_no_permission_are_exactly_these() {
         use strum::IntoEnumIterator;
         let ungated = [
+            CommandType::ResolveNotification,
             CommandType::RequestPluginPermissions,
             CommandType::Subscribe,
             CommandType::Unsubscribe,

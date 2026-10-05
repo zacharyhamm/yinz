@@ -655,7 +655,31 @@ pub enum ScreenInstruction {
         Option<NotificationClick>,
         Option<NotificationEnd>,
     ), // message, click target, what to tell the raising plugin on click, completion
-    DismissNotification(NotificationId),                           // u64 -> the notification's id
+    PluginNotify {
+        text: String,
+        pane_id: Option<PaneId>,
+        on_click: Option<NotificationClick>,
+        plugin_id: PluginId,
+        completion: Option<NotificationEnd>,
+    },
+    NotificationPolicy(Option<PluginId>, Option<String>),
+    NotificationPolicyUnavailable {
+        plugin_id: PluginId,
+        reason: String,
+        disable: bool,
+    },
+    BindNotificationRequest {
+        id: NotificationId,
+        plugin_id: PluginId,
+        instance_id: crate::plugins::PluginInstanceId,
+    },
+    ResolveNotification {
+        id: NotificationId,
+        decision: yinz_types::notifications::NotificationDecision,
+        plugin_id: PluginId,
+        instance_id: crate::plugins::PluginInstanceId,
+    },
+    DismissNotification(NotificationId), // u64 -> the notification's id
     AnimationTick,
     /// A context menu's hook plugin did not answer in time; show the configured items.
     ContextMenuTimedOut(ContextMenuRequestId, ClientId), // u64 -> the menu's request id

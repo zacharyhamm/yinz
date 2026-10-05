@@ -611,3 +611,129 @@ fn a_notification_does_not_steal_the_cursor() {
 
     yinz.quit();
 }
+
+#[test]
+fn a_shared_typescript_notification_policy_and_independent_observer_survive_detach() {
+    use yinz_integration_tests::LayoutInfo;
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("policy.ts");
+    let observer = dir.path().join("observer.ts");
+    std::fs::write(&policy, r#"
+import z from 'yinz:plugin';
+let count = 0;
+export default {
+  load() {
+    z.subscribe(['NotificationRequested']);
+    z.on('NotificationRequested', notification => {
+      count++;
+      z.host.resolveNotification({id: notification.id, decision: notification.body === 'hide'
+        ? 'Suppress' : {Replace: {title: 'policy', body: `decision-${count}`, delivery: notification.body === 'desktop' ? 'Desktop' : 'Both'}}});
+    });
+  }
+};
+"#).unwrap();
+    std::fs::write(&observer, r#"
+import z from 'yinz:plugin';
+let state = 'starting observer';
+const arrivals = new Map();
+const results = [];
+export default {
+  async load() {
+    await z.waitForPermissions(['ReadApplicationState']);
+    z.subscribe(['NotificationReceived', 'NotificationResolved', 'ModeUpdate']);
+    z.on('ModeUpdate', () => true);
+    z.on('NotificationReceived', notification => { arrivals.set(notification.id, notification); });
+    z.on('NotificationResolved', result => {
+      const original = arrivals.get(result.original.id);
+      if (!original || original.body !== result.original.body || original.source !== result.original.source) throw Error('arrival correlation');
+      if (result.fallback_reason !== null) throw Error('unexpected fallback: ' + result.fallback_reason);
+      results.push(`${result.original.body}:${result.suppressed ? 'suppressed' : result.body}:${result.delivery}`);
+      const history = z.host.listNotifications();
+      const latest = history[history.length - 1];
+      if (latest.id !== result.original.id || latest.outcome.suppressed !== result.suppressed) throw Error('history metadata');
+      state = results.join('\n');
+      return true;
+    });
+    state = 'observer ready';
+  },
+  render() { return state; }
+};
+"#).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(dir.path().to_owned())
+        .with_config(&format!("load_plugins clear-defaults=true {{}}\nhost_notification_protocol \"osc99\"\nhooks {{ notification \"file:{}\"; }}", policy.display()))
+        .with_layout(LayoutInfo::Stringified(format!("layout {{ pane {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}", observer.display())))
+        .start();
+    yinz.wait_until("observer's read-state permission", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("observer subscribed", |grid| {
+        grid.contains("observer ready")
+    });
+    notify(&yinz, "first");
+    yinz.wait_until(
+        "rewritten outcome reached the independent observer",
+        |grid| grid.contains("first:decision-1:Both"),
+    );
+    yinz.wait_until_raw_output("rewritten desktop notification", |raw| {
+        String::from_utf8_lossy(raw).contains("i=yinz-notification-0")
+    });
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("second client shares observer state", |grid| {
+        grid.contains("first:decision-1:Both")
+    });
+    notify(&yinz, "hide");
+    other.wait_until("one suppression decision across both clients", |grid| {
+        grid.contains("hide:suppressed:Toast")
+    });
+    notify(&yinz, "desktop");
+    yinz.wait_until("desktop-only outcome is recorded", |grid| {
+        grid.contains("desktop:decision-3:Desktop")
+    });
+    other.quit();
+    yinz.detach_main_client();
+    notify(&yinz, "detached");
+    let reattached = yinz.attach_client(TERMINAL_SIZE);
+    reattached.wait_until(
+        "the retained policy and observer handled the detached arrival",
+        |grid| grid.contains("detached:decision-4:Both"),
+    );
+    assert!(
+        !String::from_utf8_lossy(&reattached.raw_bytes()).contains("i=yinz-notification-3"),
+        "desktop deliveries are not replayed on attach"
+    );
+    reattached.quit();
+    yinz.quit();
+}
+
+#[test]
+fn missing_failed_and_unresponsive_typescript_policies_deliver_original_notifications() {
+    for source in [
+        None,
+        Some("throw Error('policy failed to load');"),
+        Some("export default {load() { yinz.subscribe(['NotificationRequested']); }};"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = directory.path().join("policy.ts");
+        if let Some(source) = source {
+            std::fs::write(&policy, source).unwrap();
+        }
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_config(&format!(
+                "load_plugins clear-defaults=true {{}}\nhooks {{ notification \"file:{}\"; }}",
+                policy.display()
+            ))
+            .start();
+        claim_first_terminal_and_wait_for_prompt(&yinz);
+        notify(&yinz, "original after policy fallback");
+        yinz.wait_until(
+            "original delivery after failed or missing policy decision",
+            |grid| {
+                grid.contains("original after policy fallback") && a_toast_is_fully_revealed(grid)
+            },
+        );
+        yinz.quit();
+    }
+}

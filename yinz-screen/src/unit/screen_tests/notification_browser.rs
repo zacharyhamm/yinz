@@ -31,6 +31,7 @@ fn record(
             id: NotificationId::new(id),
             message: text.to_owned(),
             received_at_unix_ms: yinz_types::units::UnixMillis::new(0),
+            outcome: None,
         },
         pane_id,
         on_click,

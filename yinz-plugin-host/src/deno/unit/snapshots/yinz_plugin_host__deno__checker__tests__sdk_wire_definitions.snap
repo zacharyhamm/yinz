@@ -1,6 +1,6 @@
 ---
 source: yinz-plugin-host/src/deno/unit/checker.rs
-assertion_line: 1023
+assertion_line: 1029
 expression: wire
 ---
 commands
@@ -280,6 +280,7 @@ CreateMultipane = 292;
 UpdateMultipane = 293;
 ReplaceMultipaneChild = 294;
 SetProjectContext = 299;
+ResolveNotification = 300;
 }
 message PluginCommand {
 reserved 213;
@@ -287,6 +288,7 @@ reserved "check_lua_plugin_payload";
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
 CommandName name = 1;
 oneof payload {
+ResolveNotificationPayload resolve_notification_payload = 242;
 string pane_tabs_payload = 236;
 string agent_control_payload = 237;
 string register_agent_provider_payload = 238;
@@ -1452,10 +1454,15 @@ string text = 7;
 message ListRecordingsResponse {
 repeated RecordingSummary recordings = 1;
 }
+message ResolveNotificationPayload {
+uint64 id = 1;
+string decision_json = 2;
+}
 message NotificationInfo {
 uint64 id = 1;
 string message = 2;
 uint64 received_at_unix_ms = 3;
+optional string outcome_json = 4;
 }
 message ListNotificationsResponse {
 repeated NotificationInfo notifications = 1;
@@ -1827,6 +1834,9 @@ PaneOutput = 61;
 PaneTabsUpdate = 62;
 AgentProvidersChanged = 63;
 ClientGridReset = 64;
+NotificationReceived = 65;
+NotificationRequested = 66;
+NotificationResolved = 67;
 }
 message EventNameList {
 repeated EventType event_types = 1;
@@ -1888,6 +1898,9 @@ ModifiersHeldPayload modifiers_held_payload = 53;
 RunCommandOutputPayload run_command_output_payload = 54;
 PaneOutputPayload pane_output_payload = 55;
 uint32 client_grid_reset_payload = 61;
+string notification_received_payload = 62;
+string notification_requested_payload = 63;
+string notification_resolved_payload = 64;
 }
 }
 message PaneOutputPayload {

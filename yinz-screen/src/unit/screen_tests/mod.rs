@@ -2028,6 +2028,7 @@ mod nested_sessions;
 mod new_pane_placement;
 mod notification_animation;
 mod notification_browser;
+mod notification_policy;
 mod osc7;
 mod overlays;
 mod override_layout;

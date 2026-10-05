@@ -31,6 +31,7 @@ export interface EventPayloads {
   PaneRenderReport: Record<`terminal_${number}` | `plugin_${number}`, PaneContents>; ActionComplete: [Action, PaneId | null, StringMap];
   CwdChanged: [PaneId, string, number[]]; CommandChanged: [PaneId, string[], boolean, number[]]; AvailableLayoutInfo: [LayoutInfo[], LayoutWithError[]];
   PluginConfigurationChanged: StringMap; HighlightClicked: {pane_id: PaneId; pattern: string; matched_string: string; context: StringMap};
+  NotificationReceived: NotificationData; NotificationRequested: NotificationData; NotificationResolved: NotificationResolution;
   ContextMenuRequested: ContextMenuContext; ContextMenuItemSelected: {label: string; item_context: StringMap; context: ContextMenuContext};
   InitialKeybinds: Keybinds; HostTerminalThemeChanged: 'Dark' | 'Light'; HintText: Record<string, {text: string; indices: Integer[][]}>;
   ActivePaneScroll: [Integer, Integer] | null; PluginDataChanged: {watch_id: Integer; rows: DataRows; truncated: boolean};
@@ -44,8 +45,7 @@ export type UnitEvent = "SystemClipboardFailure" | "InputReceived" | "ConfigWasW
 export type EventType = keyof EventPayloads | UnitEvent;
 export type Event = UnitEvent | { [K in keyof EventPayloads]: { [P in K]: EventPayloads[K] } }[keyof EventPayloads];
 export type EventPayload<K extends EventType> = K extends keyof EventPayloads ? EventPayloads[K] : undefined;
-/** Named, byte-decoded forms of the events whose raw shape is positional or bytes. Every other
- * event keeps its payload in `value` alone; struct payloads are not spread. */
+/** Positional/byte events gain named fields. Other payloads stay in `value`; structs are not spread. */
 export interface DecodedFields {
   RunCommandResult: {exitCode: number | null; stdout: Uint8Array; stderr: Uint8Array; context: StringMap};
   WebRequestResult: {status: number; headers: StringMap; body: Uint8Array; context: StringMap};
@@ -158,9 +158,8 @@ export interface Yinz {
   on<K extends EventType>(type: K, handler: (payload: EventPayload<K>, event: Event) => boolean | void | Promise<boolean | void>): () => void;
   /** on(), handing the handler the decoded event. Same ordering and return contract; the raw payload stays as `event.value`. */
   onEvent<K extends EventType>(type: K, handler: (event: DecodedEventOf<K>) => boolean | void | Promise<boolean | void>): () => void;
-  /** The event as a discriminated union: `type`, its untouched payload as `value`, and named camelCase
-   * fields (bytes as Uint8Array, `key` as keyName spells it, Mouse flattened) for the events whose raw
-   * shape is positional or bytes. Throws TypeError for a value that is not an Event. */
+  /** Union of `type`, original `value`, and camelCase fields for positional/byte events.
+   * Bytes use Uint8Array, keys use keyName, Mouse is flattened. Invalid Events throw TypeError. */
   event(raw: Event): DecodedEvent;
   sleep(milliseconds: number): CancellablePromise<void>;
   after(milliseconds: number, callback: TimerCallback): TimerHandle;
@@ -326,7 +325,7 @@ export interface CommandArgs {
   SetContextMenu: {request_id: Integer; items: ContextMenuItem[]}; ClearPaneHighlights: PaneId;
   OpenPluginPaneFloating: {plugin_url: string; configuration: StringMap; floating_pane_coordinates: FloatingPaneCoordinates | null; context: StringMap};
   GetSessionList: undefined; KillSessionsAndReply: string[]; DeleteDeadSessionAndReply: string; DeleteAllDeadSessionsAndReply: undefined;
-  FocusHostSession: undefined; ListRecordings: undefined; ListNotifications: undefined; SearchRecordings: {query: string; limit: Integer};
+  FocusHostSession: undefined; ListRecordings: undefined; ListNotifications: undefined; ResolveNotification: {id: Integer; decision: NotificationDecision}; SearchRecordings: {query: string; limit: Integer};
   WarpPaneToSession: {pane_id: PaneId; to_session: string; placement: WarpPlacement};
   WarpPaneFromSession: {pane_id: PaneId; from_session: string; placement: WarpPlacement};
   WarpTabToSession: {tab_id: number; to_session: string}; WarpTabFromSession: {tab_id: number; from_session: string};
@@ -538,7 +537,12 @@ export interface SessionListSnapshot {live_sessions: SessionInfo[]; resurrectabl
 export interface PaneGitProbe {host: string; cwd: string; exit_code: number | null; metadata: number[]; config: number[];}
 export interface OrphanedPane {host_id: string; session_name: string | null; command: string; cwd: string | null; child_pid: number | null; started_at_unix: Integer; exit_status: number | null; buffered_bytes: Integer;}
 export interface ClientInfo {client_id: number; pane_id: PaneId; running_command: string; is_current_client: boolean;}
-export interface NotificationInfo {id: Integer; message: string; received_at_unix_ms: Integer;}
+export type NotificationSource = "Toast" | "Osc9" | "Osc99" | "Osc777";
+export type NotificationDelivery = "Toast" | "Desktop" | "Both";
+export interface NotificationData {id: Integer; received_at_unix_ms: Integer; source: NotificationSource; pane_id: PaneId | null; plugin_id: Integer | null; title: string; body: string; delivery: NotificationDelivery;}
+export type NotificationDecision = "Pass" | "Suppress" | {Replace: {title?: string | null; body?: string | null; delivery?: NotificationDelivery | null}};
+export interface NotificationResolution {original: NotificationData; title: string; body: string; delivery: NotificationDelivery; suppressed: boolean; fallback_reason: string | null;}
+export interface NotificationInfo {id: Integer; message: string; received_at_unix_ms: Integer; outcome?: NotificationResolution | null;}
 export interface PaneInNewTab {tab_id: number | null; pane_id: PaneId | null;}
 export interface RecordingSummary {id: Integer; session_name: string; tab_name: string; terminal_id: number; pane_title: string; started_at_us: Integer; duration_us: Integer; is_running: boolean; capture_input: boolean; error: string | null;}
 export interface SearchHit {recording_id: Integer; session_name: string; tab_name: string; pane_title: string; elapsed_us: Integer; started_at_us: Integer; text: string;}
@@ -571,7 +575,7 @@ export interface AgentSpawnSpec {
 }
 export interface SpawnedAgent {pane_id: PaneId; branch: string | null; cwd: string | null;}
 export interface AgentEvent {pane_id: number; kind: string; hook: string; session_id: string | null; state: AgentState | null; detail: string | null; prompt: string | null; last_message: string | null; tool_name: string | null; cwd: string | null; raw: string;}
-export type HookPoint = 'agent_exit' | 'agent_start' | 'agent_waiting' | 'agent_idle' | 'pane_exit' | 'session_start' | 'context_menu';
+export type HookPoint = 'agent_exit' | 'agent_start' | 'agent_waiting' | 'agent_idle' | 'pane_exit' | 'session_start' | 'context_menu' | 'notification';
 export type HookPayload = {pane_id: number; agent: AgentInfo; previous_state: AgentState | null; command: string | null}
   | {pane_id: number; exit_code: number | null; cwd: string | null; command: string | null; held: boolean}
   | {session_name: string; client_id: number};

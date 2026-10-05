@@ -783,6 +783,13 @@ impl WasmBridge {
         pid: PluginId,
         plugin_map_deadline: Option<Instant>,
     ) -> Result<()> {
+        let _ = self
+            .senders
+            .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
+                plugin_id: pid,
+                reason: "policy_unloaded".into(),
+                disable: true,
+            });
         info!("Bye from plugin {}", pid);
         // The screen may exit before plugins during shutdown; cleanup must still complete.
         let _ = self
@@ -1041,6 +1048,19 @@ impl WasmBridge {
                 });
             }
         }
+        self.senders
+            .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
+                plugin_id,
+                reason: if failed_to_load {
+                    "policy_load_failed"
+                } else {
+                    "policy_crashed"
+                }
+                .into(),
+                disable: true,
+            })
+            .context("resolve notifications after policy failure")
+            .non_fatal();
         self.finish_pipe_requests();
         let recorded = self.queues.lock().unwrap().record_outcome(
             plugin_id,
@@ -1229,6 +1249,14 @@ impl WasmBridge {
             ));
     }
     pub fn reload_plugin_with_id(&mut self, plugin_id: PluginId) -> Result<()> {
+        self.senders
+            .send_to_screen(ScreenInstruction::NotificationPolicyUnavailable {
+                plugin_id,
+                reason: "policy_reloaded".into(),
+                disable: false,
+            })
+            .context("invalidate notification requests on reload")
+            .non_fatal();
         // Configuration is cached outside the guest mutex. Interrupt Deno before any
         // getter waits on an entrypoint, and give the replacement its own uncancelled token.
         if self
@@ -3917,6 +3945,7 @@ pub(crate) fn check_event_permission(
         EventType::AgentProvidersChanged => PermissionType::RunCommands,
         // Other plugins' jobs are session state. A plugin's own jobs' Started/Finished events
         // need nothing more than the permission it enqueued with.
+        EventType::NotificationReceived | EventType::NotificationResolved => PermissionType::ReadApplicationState,
         EventType::QueueChanged => PermissionType::ReadApplicationState,
         EventType::PaneOutput | EventType::PaneRenderReport => PermissionType::ReadPaneContents,
         EventType::UserAction => PermissionType::InterceptInput,
@@ -3945,6 +3974,7 @@ pub(crate) fn check_event_permission(
         | EventType::HostFolderChanged
         | EventType::FailedToChangeHostFolder
         | EventType::ConfigWasWrittenToDisk
+        | EventType::NotificationRequested
         | EventType::ContextMenuRequested
         | EventType::ContextMenuItemSelected
         // Never broadcast: `deliver_to_headless_hook` addresses it to the one instance of the
@@ -4062,6 +4092,16 @@ pub fn apply_events_to_plugin(
                         // Legacy plugin — send full keybindings as before
                         mode_info.keybinds = running_plugin.env().keybinds.to_keybinds_vec();
                     }
+                }
+                if let Event::NotificationRequested(notification) = &event {
+                    senders
+                        .send_to_screen(ScreenInstruction::BindNotificationRequest {
+                            id: notification.id,
+                            plugin_id,
+                            instance_id: running_plugin.env().instance_id,
+                        })
+                        .context("bind notification policy request")
+                        .non_fatal();
                 }
                 handled_any = true;
                 let updated = running_plugin.update(&event).with_context(err_context);

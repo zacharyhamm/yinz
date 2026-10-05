@@ -743,6 +743,30 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for QueueJobStarted Event"),
             },
+            Ok(ProtobufEventType::NotificationReceived) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::NotificationReceivedPayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::NotificationReceived)
+                        .map_err(|_| "Malformed NotificationReceived payload")
+                },
+                _ => Err("Missing NotificationReceived payload"),
+            },
+            Ok(ProtobufEventType::NotificationRequested) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::NotificationRequestedPayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::NotificationRequested)
+                        .map_err(|_| "Malformed NotificationRequested payload")
+                },
+                _ => Err("Missing NotificationRequested payload"),
+            },
+            Ok(ProtobufEventType::NotificationResolved) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::NotificationResolvedPayload(json)) => {
+                    serde_json::from_str(&json)
+                        .map(Event::NotificationResolved)
+                        .map_err(|_| "Malformed NotificationResolved payload")
+                },
+                _ => Err("Missing NotificationResolved payload"),
+            },
             Ok(ProtobufEventType::Hook) => match protobuf_event.payload {
                 Some(ProtobufEventPayload::HookPayload(p)) => {
                     let point = HookPoint::from_str(&p.point)
@@ -1544,6 +1568,27 @@ impl TryFrom<Event> for ProtobufEvent {
                         plugin_id: plugin_id.get(),
                         context: context_to_items(context),
                     },
+                )),
+            }),
+            Event::NotificationReceived(notification) => Ok(ProtobufEvent {
+                name: ProtobufEventType::NotificationReceived as i32,
+                payload: Some(event::Payload::NotificationReceivedPayload(
+                    serde_json::to_string(&notification)
+                        .map_err(|_| "Cannot encode NotificationReceived")?,
+                )),
+            }),
+            Event::NotificationRequested(notification) => Ok(ProtobufEvent {
+                name: ProtobufEventType::NotificationRequested as i32,
+                payload: Some(event::Payload::NotificationRequestedPayload(
+                    serde_json::to_string(&notification)
+                        .map_err(|_| "Cannot encode NotificationRequested")?,
+                )),
+            }),
+            Event::NotificationResolved(notification) => Ok(ProtobufEvent {
+                name: ProtobufEventType::NotificationResolved as i32,
+                payload: Some(event::Payload::NotificationResolvedPayload(
+                    serde_json::to_string(&notification)
+                        .map_err(|_| "Cannot encode NotificationResolved")?,
                 )),
             }),
             Event::Hook { point, payload } => {
@@ -2817,6 +2862,9 @@ impl TryFrom<ProtobufEventType> for EventType {
             ProtobufEventType::QueueJobStarted => EventType::QueueJobStarted,
             ProtobufEventType::QueueJobFinished => EventType::QueueJobFinished,
             ProtobufEventType::QueueChanged => EventType::QueueChanged,
+            ProtobufEventType::NotificationReceived => EventType::NotificationReceived,
+            ProtobufEventType::NotificationRequested => EventType::NotificationRequested,
+            ProtobufEventType::NotificationResolved => EventType::NotificationResolved,
             ProtobufEventType::Hook => EventType::Hook,
             ProtobufEventType::AgentEvent => EventType::AgentEvent,
             ProtobufEventType::AgentProvidersChanged => EventType::AgentProvidersChanged,
@@ -2885,6 +2933,9 @@ impl TryFrom<EventType> for ProtobufEventType {
             EventType::QueueJobStarted => ProtobufEventType::QueueJobStarted,
             EventType::QueueJobFinished => ProtobufEventType::QueueJobFinished,
             EventType::QueueChanged => ProtobufEventType::QueueChanged,
+            EventType::NotificationReceived => ProtobufEventType::NotificationReceived,
+            EventType::NotificationRequested => ProtobufEventType::NotificationRequested,
+            EventType::NotificationResolved => ProtobufEventType::NotificationResolved,
             EventType::Hook => ProtobufEventType::Hook,
             EventType::AgentEvent => ProtobufEventType::AgentEvent,
             EventType::AgentProvidersChanged => ProtobufEventType::AgentProvidersChanged,
@@ -4620,3 +4671,61 @@ fn multipane_manifest_metadata_roundtrips_and_rejects_invalid_ratios() {
 #[cfg(test)]
 #[path = "unit/control_agents.rs"]
 mod control_agents_tests;
+
+#[cfg(test)]
+#[test]
+fn notification_events_and_decisions_round_trip_through_wasm_wire() {
+    use yinz_types::internal_ids::{NotificationId, PluginId, TerminalId};
+    use yinz_types::notifications::*;
+    let notification = NotificationData {
+        id: NotificationId::new(7),
+        received_at_unix_ms: yinz_types::units::UnixMillis::new(123),
+        source: NotificationSource::Osc99,
+        pane_id: Some(PaneId::Terminal(TerminalId::new(3))),
+        plugin_id: Some(PluginId::new(9)),
+        title: "title".into(),
+        body: "original body".into(),
+        delivery: NotificationDelivery::Desktop,
+    };
+    for decision in [
+        NotificationDecision::Pass,
+        NotificationDecision::Suppress,
+        NotificationDecision::Replace {
+            title: None,
+            body: Some("rewritten".into()),
+            delivery: Some(NotificationDelivery::Both),
+        },
+    ] {
+        let outcome = NotificationResolution::from_decision(
+            notification.clone(),
+            decision.clone(),
+            Some("example".into()),
+        );
+        for event in [
+            Event::NotificationReceived(notification.clone()),
+            Event::NotificationRequested(notification.clone()),
+            Event::NotificationResolved(outcome.clone()),
+        ] {
+            let wire: ProtobufEvent = event.clone().try_into().unwrap();
+            assert_eq!(Event::try_from(wire).unwrap(), event);
+        }
+        let command = yinz_types::data::PluginCommand::ResolveNotification {
+            id: notification.id,
+            decision,
+        };
+        let wire: crate::plugin_command::ProtobufPluginCommand =
+            command.clone().try_into().unwrap();
+        assert_eq!(
+            yinz_types::data::PluginCommand::try_from(wire).unwrap(),
+            command
+        );
+        let info = yinz_types::data::NotificationInfo {
+            id: notification.id,
+            received_at_unix_ms: notification.received_at_unix_ms,
+            message: outcome.message(),
+            outcome: Some(outcome),
+        };
+        let wire: crate::plugin_command::ProtobufNotificationInfo = info.clone().into();
+        assert_eq!(yinz_types::data::NotificationInfo::from(wire), info);
+    }
+}

@@ -185,6 +185,9 @@ pub struct StyledText {
 #[strum_discriminants(name(EventType))]
 #[non_exhaustive]
 pub enum Event {
+    NotificationReceived(NotificationData),
+    NotificationRequested(NotificationData),
+    NotificationResolved(NotificationResolution),
     ModeUpdate(ModeInfo),
     TabUpdate(Vec<TabInfo>),
     PaneUpdate(PaneManifest),
@@ -1381,12 +1384,37 @@ pub struct PaneListEntry {
 pub type ListPanesResponse = Vec<PaneListEntry>;
 pub type ListTabsResponse = Vec<TabInfo>;
 
-/// A toast notification received by the current live session.
+pub use crate::notifications::{
+    NotificationData, NotificationDecision, NotificationDelivery, NotificationResolution,
+    NotificationSource,
+};
+
+/// A notification outcome retained by the current live session.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct NotificationInfo {
     pub id: NotificationId,
     pub message: String,
     pub received_at_unix_ms: UnixMillis,
+    #[serde(default)]
+    pub outcome: Option<NotificationResolution>,
+}
+
+impl NotificationInfo {
+    pub fn browser_message(&self) -> String {
+        match &self.outcome {
+            Some(outcome) => format!(
+                "[{:?}{}] {}",
+                outcome.original.source,
+                if outcome.suppressed {
+                    ", suppressed"
+                } else {
+                    ""
+                },
+                self.message
+            ),
+            None => self.message.clone(),
+        }
+    }
 }
 
 pub use crate::recording::{RecordingSummary, SearchHit};
@@ -3192,6 +3220,10 @@ pub enum PluginCommand {
     FocusHostSession,
     ListRecordings,
     ListNotifications,
+    ResolveNotification {
+        id: NotificationId,
+        decision: NotificationDecision,
+    },
     SearchRecordings {
         query: String,
         limit: usize,

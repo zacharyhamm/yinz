@@ -126,7 +126,10 @@ impl Notifications {
             let mut cells = vec![
                 Text::new(relative_age((notification.received_at_unix_ms).get()))
                     .color_range(2, ..),
-                Text::new(truncate(&preview(&notification.message), preview_width)),
+                Text::new(truncate(
+                    &preview(&notification.browser_message()),
+                    preview_width,
+                )),
             ];
             if Some(index) == self.selected_index {
                 cells = cells.into_iter().map(Text::selected).collect();
@@ -154,7 +157,10 @@ impl Notifications {
         );
         let available = rows.saturating_sub(4);
         self.page_size = available;
-        let lines = wrap(&sanitize(&notification.message, true), columns.max(1));
+        let lines = wrap(
+            &sanitize(&notification.browser_message(), true),
+            columns.max(1),
+        );
         let max_scroll = lines.len().saturating_sub(available);
         let scroll = self.detail_scroll.unwrap_or(0).min(max_scroll);
         self.detail_scroll = Some(scroll);
@@ -256,6 +262,7 @@ mod tests {
             id: yinz_tile::prelude::NotificationId::new(id),
             message: message.to_owned(),
             received_at_unix_ms: yinz_tile::prelude::UnixMillis::new(id),
+            outcome: None,
         }
     }
 

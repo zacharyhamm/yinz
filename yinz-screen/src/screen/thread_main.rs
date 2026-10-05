@@ -1,11 +1,7 @@
 use yinz_runtime::errors::prelude::*;
-use yinz_types::internal_ids::NotificationId;
 use yinz_types::internal_ids::TabId;
 
-use super::{
-    active_tab, active_tab_and_connected_client_id, Notification, NotificationRecord, Screen,
-    ScreenInstruction,
-};
+use super::{active_tab, active_tab_and_connected_client_id, Screen, ScreenInstruction};
 use crate::background_jobs::BackgroundJob;
 use crate::notifications::denormalize_notification_response;
 use crate::os_input_output::ResizeCache;
@@ -35,8 +31,8 @@ use yinz_types::{
 };
 use {
     yinz_types::data::EventType, yinz_types::data::GetFocusedPaneInfoResponse,
-    yinz_types::data::InputMode, yinz_types::data::NotificationInfo,
-    yinz_types::data::PaneScrollbackResponse, yinz_types::data::PluginCapabilities,
+    yinz_types::data::InputMode, yinz_types::data::PaneScrollbackResponse,
+    yinz_types::data::PluginCapabilities,
 };
 
 pub(super) fn apply_queued_agent_report(
@@ -525,7 +521,15 @@ pub fn screen_thread_main(
             screen.render()?;
             screen.sync_animation_clock(Instant::now())?;
         }
-        let (event, mut err_ctx) = if let Some(timeout) = screen.agent_control_deadline() {
+        screen.expire_notification_requests(Instant::now())?;
+        let deadline = [
+            screen.agent_control_deadline(),
+            screen.notification_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let (event, mut err_ctx) = if let Some(timeout) = deadline {
             match screen.bus.recv_timeout(timeout) {
                 Ok(event) => event,
                 Err(yinz_runtime::channels::RecvTimeoutError::Timeout) => continue,
@@ -3238,46 +3242,42 @@ pub fn screen_thread_main(
                 ScreenInstruction::SaveSession(_client_id, completion_tx) => {
                     screen.save_session(completion_tx)?;
                 },
-                ScreenInstruction::Notify(
+                ScreenInstruction::Notify(text, pane_id, on_click, completion) => {
+                    screen.receive_toast(text, pane_id, on_click, None, completion)?;
+                },
+                ScreenInstruction::PluginNotify {
                     text,
                     pane_id,
                     on_click,
-                    _completion_tx, // the action ends here, dropping this will release anything
-                                    // waiting for it
-                ) => {
-                    let now = Instant::now();
-                    let id = screen.next_notification_id;
-                    screen.next_notification_id =
-                        NotificationId::new(screen.next_notification_id.get() + 1);
-                    let received_at_unix_ms = yinz_types::units::UnixMillis::try_from(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis(),
-                    )
-                    .unwrap_or_else(|_| yinz_types::units::UnixMillis::new(u64::MAX));
-                    screen.notification_history.push(NotificationRecord {
-                        info: NotificationInfo {
-                            id,
-                            message: text.clone(),
-                            received_at_unix_ms,
-                        },
-                        pane_id,
-                        on_click: on_click.clone(),
-                    });
-                    screen.notification_browsers_saw_arrival();
-                    // the survivors are about to be pushed away from the corner - bracketing the
-                    // insert is what glides them there instead of letting them jump
-                    screen.with_notification_stack_change(now, |screen| {
-                        screen
-                            .notifications
-                            .insert(0, Notification::new(id, text, pane_id, on_click, now));
-                    });
-                    screen.bus.senders.send_to_background_jobs(
-                        BackgroundJob::DismissNotification(id, screen.notification_timeout_secs),
-                    )?;
-                    screen.sync_animation_clock(now)?;
-                    screen.render()?;
+                    plugin_id,
+                    completion,
+                } => {
+                    screen.receive_toast(text, pane_id, on_click, Some(plugin_id), completion)?;
+                },
+                ScreenInstruction::NotificationPolicy(plugin_id, reason) => {
+                    screen.set_notification_policy(plugin_id, reason)?;
+                },
+                ScreenInstruction::NotificationPolicyUnavailable {
+                    plugin_id,
+                    reason,
+                    disable,
+                } => {
+                    screen.notification_policy_unavailable(plugin_id, reason, disable)?;
+                },
+                ScreenInstruction::BindNotificationRequest {
+                    id,
+                    plugin_id,
+                    instance_id,
+                } => {
+                    screen.bind_notification_request(id, plugin_id, instance_id);
+                },
+                ScreenInstruction::ResolveNotification {
+                    id,
+                    decision,
+                    plugin_id,
+                    instance_id,
+                } => {
+                    screen.resolve_notification(id, decision, plugin_id, instance_id)?;
                 },
                 ScreenInstruction::ContextMenuTimedOut(request_id, client_id) => {
                     screen.context_menu_timed_out(request_id, client_id);
@@ -4064,7 +4064,9 @@ pub fn screen_thread_main(
                     screen.render()?;
                 },
                 ScreenInstruction::DesktopNotificationResponse(raw_bytes, client_id) => {
-                    if let Some(response) = denormalize_notification_response(&raw_bytes) {
+                    if screen.activate_policy_desktop(&raw_bytes, client_id) {
+                        screen.render()?;
+                    } else if let Some(response) = denormalize_notification_response(&raw_bytes) {
                         let pane_id = PaneId::Terminal(response.terminal_id);
                         if response.forward_to_pane {
                             if let Some(tab) = screen.tab_containing_pane_mut(pane_id) {
