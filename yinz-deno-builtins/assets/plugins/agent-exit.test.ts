@@ -71,6 +71,17 @@ async function confirmDeletion(
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
 }
 
+async function cleanCheckout(plugin: Awaited<ReturnType<typeof loadPlugin>>): Promise<void> {
+  assert(
+    JSON.stringify(plugin.commands.at(-1)).includes(
+      '"status","--porcelain","--untracked-files=all"',
+    ),
+  );
+  await reply(plugin, "");
+  assert(JSON.stringify(plugin.commands.at(-1)).includes('"rev-list","--max-count=1"'));
+  await reply(plugin, "");
+}
+
 for (const [key, commands] of [
   ["Enter", ["RerunCommandPane", "CloseSelf"]],
   ["Esc", ["CloseTerminalPane", "CloseSelf"]],
@@ -165,14 +176,59 @@ test("agent-exit revalidates then removes the worktree and branch", async () => 
   const plugin = await checkout();
   await confirmDeletion(plugin);
   await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   await reply(plugin, "");
   const commands = JSON.stringify(plugin.commands);
-  assert(commands.includes('"worktree","remove","--force","--","/repo/topic"'));
+  assert(commands.includes('"worktree","remove","--","/repo/topic"'));
   assert(commands.includes(`"update-ref","-d","refs/heads/topic","${head}"`));
   assertEquals(plugin.commands.at(-2), { CloseTerminalPane: 7 });
   assertEquals(plugin.commands.at(-1), "CloseSelf");
 });
+for (const target of ["local", "firecracker"]) {
+  for (const changes of [" M tracked\n", "?? untracked\n", "M  staged\n"]) {
+    test(`agent-exit preserves ${target} dirty worktree and branch: ${changes.trim()}`, async () => {
+      const plugin = await checkout({
+        agent_target: target,
+        agent_firecracker_vm: "review",
+        agent_session: "work",
+        agent_yinz_executable: "/bin/yinz",
+      });
+      await confirmDeletion(plugin);
+      await reply(plugin, listing());
+      await reply(plugin, changes);
+      assert((await plugin.render(24, 200)).includes("uncommitted changes"));
+      const commands = JSON.stringify(plugin.commands);
+      assert(!commands.includes('"worktree","remove"'));
+      assert(!commands.includes('"update-ref"'));
+      assert(!commands.includes('"firecracker","close"'));
+      assert(!plugin.commands.includes("CloseSelf"));
+    });
+  }
+  test(`agent-exit preserves ${target} commits not merged into the configured base`, async () => {
+    const plugin = await checkout({
+      agent_target: target,
+      agent_firecracker_vm: "review",
+      agent_session: "work",
+      agent_yinz_executable: "/bin/yinz",
+    });
+    plugin.stub("ProjectConfigRead", {
+      config: { workflow: null, default_branch: "trunk" },
+      error: null,
+    });
+    await confirmDeletion(plugin);
+    await reply(plugin, listing());
+    await reply(plugin, "");
+    assert(JSON.stringify(plugin.commands.at(-1)).includes(`refs/heads/trunk..${head}`));
+    await reply(plugin, head + "\n");
+    assert((await plugin.render(24, 200)).includes("not merged into trunk"));
+    const commands = JSON.stringify(plugin.commands);
+    assert(!commands.includes('"worktree","remove"'));
+    assert(!commands.includes('"update-ref"'));
+    assert(!commands.includes('"firecracker","close"'));
+    assert(!plugin.commands.includes("CloseSelf"));
+  });
+}
 test("agent-exit refuses branch deletion when the worktree disappeared externally", async () => {
   const plugin = await checkout();
   await confirmDeletion(plugin);
@@ -184,6 +240,7 @@ test("agent-exit keeps diagnostics visible and retries after partial cleanup", a
   const plugin = await checkout();
   await confirmDeletion(plugin);
   await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   await reply(plugin, "", 1, "branch is locked");
   const failure = await plugin.render();
@@ -204,6 +261,7 @@ test("agent-exit treats an already absent branch as completed", async () => {
   const plugin = await checkout();
   await confirmDeletion(plugin);
   await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   await reply(plugin, "");
   assertEquals(plugin.commands.at(-1), "CloseSelf");
@@ -212,6 +270,7 @@ test("agent-exit refuses a branch whose head changed", async () => {
   const plugin = await checkout();
   await confirmDeletion(plugin);
   await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   await reply(plugin, "", 128, "cannot lock ref: is at another head but expected original");
   assert((await plugin.render()).includes("cannot lock ref"));
@@ -230,6 +289,8 @@ test("agent-exit closes a guarded Firecracker VM before Git deletion", async () 
   await prepareDeletion(plugin);
   assert((await plugin.render(24, 200)).includes("VM: review"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, listing());
+  await cleanCheckout(plugin);
   const first = plugin.commands.at(-1);
   assert(typeof first === "object" && first != null && "RunCommand" in first);
   assert(Array.isArray(first.RunCommand));
@@ -261,6 +322,8 @@ test("agent-exit refuses Git deletion while another VM lease remains", async () 
     agent_yinz_executable: "/bin/yinz",
   });
   await confirmDeletion(plugin);
+  await reply(plugin, listing());
+  await cleanCheckout(plugin);
   const vm = {
     session: "work",
     name: "review",
@@ -282,6 +345,8 @@ test("agent-exit refuses a named Firecracker VM that moved to another worktree",
     agent_yinz_executable: "/bin/yinz",
   });
   await confirmDeletion(plugin);
+  await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(
     plugin,
     JSON.stringify({
@@ -316,6 +381,8 @@ test("agent-exit retries only branch cleanup after guarded Firecracker removal",
     metrics: { generation: "42:100" },
   };
   await confirmDeletion(plugin);
+  await reply(plugin, listing());
+  await cleanCheckout(plugin);
   await reply(plugin, JSON.stringify({ vms: [vm], recoveries: [] }));
   await reply(plugin, "");
   await reply(plugin, "", 1, "branch is locked");
@@ -553,6 +620,7 @@ for (const state of ["absent", "starting", "running", "question", "completed", "
     await confirmDeletion(plugin);
     await rpcReply(plugin, "cleanup_prepare", { ready: true });
     await reply(plugin, listing());
+    await cleanCheckout(plugin);
     await reply(plugin, "");
     await reply(plugin, "");
     assertEquals(plugin.commands.at(-1), "CloseSelf");
@@ -566,6 +634,7 @@ test("agent-exit removes a detached secondary checkout without deleting a branch
   assert((await plugin.render()).includes("detached HEAD"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   await reply(plugin, detached);
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   assertEquals(plugin.commands.at(-1), "CloseSelf");
   assert(!JSON.stringify(plugin.commands).includes("update-ref"));
@@ -599,9 +668,10 @@ test("agent-exit refreshes a changed checkout before confirming its exact revisi
   const confirmation = await plugin.render();
   assert(confirmation.includes(next));
   assert(confirmation.includes("Branch: rebased"));
-  assert(confirmation.includes("unmerged commits"));
+  assert(confirmation.includes("commits merged into the base branch"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
   await reply(plugin, changed);
+  await cleanCheckout(plugin);
   await reply(plugin, "");
   await reply(plugin, "");
   assert(JSON.stringify(plugin.commands).includes(`"refs/heads/rebased","${next}"`));
