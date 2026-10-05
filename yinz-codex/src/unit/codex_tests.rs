@@ -685,7 +685,8 @@ fn launcher_reports_an_unresolvable_working_directory() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", TEST])
         .env(CHILD_ENV, "1")
-        .env("YINZ_PANE_ID", "15")
+        .env("YINZ_PANE_REF", "abcdef012345")
+        .env_remove("YINZ_REMOTE_PANE_TOKEN")
         .current_dir(root.path())
         .output()
         .unwrap();
