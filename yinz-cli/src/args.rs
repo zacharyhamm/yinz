@@ -732,7 +732,8 @@ pub enum Agent {
         #[clap(long)]
         json: bool,
     },
-    /// Submit to an idle, ready agent and wait for acknowledgement or the resulting turn.
+    /// Submit to an idle agent, replacing its draft, and wait for acknowledgement or the resulting turn.
+    /// Automatically clears verified Claude, Codex, and Pi composers. Does not interrupt work or answer dialogs.
     /// Claude delivery removes U+200B and U+202E; other characters and Codex text are preserved.
     Prompt {
         /// Terminal pane ID, such as terminal_7 or 7.

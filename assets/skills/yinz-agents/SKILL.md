@@ -77,7 +77,7 @@ When Claude runs a command or subagent in the background, `completed` carries on
 Use a separate `wait --until idle --conversation ID` for that background work's final text. A long-running background server keeps the state wait pending until its timeout.
 
 To start a fresh conversation in the same pane, prompt exactly `/clear` (Claude) or `/new` (Codex or Pi).
-The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` leaves the pane needing `recover`.
+The reply is `target_changed`; wait for idle, then use the new conversation ID. Other slash commands need `send-keys`, and typing `/clear` or `/new` through `send-keys` does not establish readiness.
 
 `agent read --lines N` returns at most N terminal lines, including internal blank rows.
 Trailing blank rows do not count toward the limit. Blank rows at both ends are removed.
@@ -201,8 +201,14 @@ Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on r
 See [the agent CLI guide](../../../docs/AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
 and adapter refresh commands. No historical import is performed.
 
-For explicit draft discard, obtain the user's authorization before calling `agent clear-draft`.
-A rejected prompt never implies authorization. Inspect `agent status TARGET --json` and the composer.
+An authorized `agent prompt` already authorizes replacing an idle draft. Do not ask for separate discard permission.
+Submit the guarded prompt directly. Claude, Codex, and Pi default composers support automatic clearing.
+The command verifies that the composer is empty before delivery. It does not interrupt active work or answer dialogs.
+One timeout covers clearing and submission. Inspect failures with `wait --submission`; clearing failures have acknowledgement false.
+Unsupported providers or layouts return a clearing limitation. Status and idle waits are read-only.
+
+For standalone draft discard without a prompt, obtain authorization before calling `agent clear-draft`.
+Inspect `agent status TARGET --json` and the composer.
 Pass the exact `input_revision` and conversation from that inspection:
 
 ```sh
