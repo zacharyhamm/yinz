@@ -505,7 +505,7 @@ fn link_and_completion_conflicts_ask_for_a_reload() {
 #[test]
 fn a_long_note_is_answered_with_its_id_inside_one_tool_result() {
     let mut state = state_with_project();
-    let body = "x".repeat(12 * 1024);
+    let body = "x".repeat(4 * 1024 * 1024);
     assert!(body.len() > crate::api::TOOL_RESULT_BYTES);
     let arguments = serde_json::json!({ "title": "long", "body": body }).to_string();
     let raw = note_result(&mut state, "note_add", &arguments).expect("answered");
@@ -516,14 +516,15 @@ fn a_long_note_is_answered_with_its_id_inside_one_tool_result() {
     );
     let added: serde_json::Value = serde_json::from_str(&raw).expect("json");
     let id = added["id"].as_u64().expect("id");
-    assert_eq!(added["body_bytes"], 12 * 1024);
+    assert_eq!(added["body_bytes"], 4 * 1024 * 1024);
     assert!(added.get("body").is_none());
     assert_eq!(
         note(&mut state, "note_get", &format!(r#"{{"id":{id}}}"#))["title"],
         "long"
     );
 
-    let arguments = serde_json::json!({ "id": id, "body": "y".repeat(12 * 1024) }).to_string();
+    let arguments =
+        serde_json::json!({ "id": id, "body": "y".repeat(4 * 1024 * 1024) }).to_string();
     let raw = note_result(&mut state, "note_edit", &arguments).expect("answered");
     assert!(
         raw.len() < crate::api::TOOL_RESULT_BYTES,
@@ -532,6 +533,30 @@ fn a_long_note_is_answered_with_its_id_inside_one_tool_result() {
     );
     let edited: serde_json::Value = serde_json::from_str(&raw).expect("json");
     assert_eq!(edited["id"], id);
+    assert_eq!(edited["body_bytes"], 4 * 1024 * 1024);
     assert!(edited["rev"].as_i64() > added["rev"].as_i64());
     assert!(edited.get("body").is_none());
+}
+
+#[test]
+fn note_search_discloses_large_note_fetch_truncation() {
+    let mut state = state_with_project();
+    let body = format!("rebase {}", "x".repeat(4 * 1024 * 1024));
+    for _ in 0..2 {
+        note(
+            &mut state,
+            "note_add",
+            &serde_json::json!({ "title": "large", "body": body }).to_string(),
+        );
+    }
+    for query in ["rebase", "rebas"] {
+        let found = note(
+            &mut state,
+            "note_search",
+            &serde_json::json!({ "query": query }).to_string(),
+        );
+        assert_eq!(found["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(found["truncated"], true);
+        assert!(found["matches"][0].get("body").is_none());
+    }
 }

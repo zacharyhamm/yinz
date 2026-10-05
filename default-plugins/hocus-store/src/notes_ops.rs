@@ -285,6 +285,7 @@ pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
             let scope = where_arg(&projects, args, false)?;
             let found = notes::search(backend, scope.scope(), query)?;
             let matches: Vec<Value> = found
+                .notes
                 .iter()
                 .map(|note| {
                     let mut value = reply(&projects, note, now);
@@ -297,7 +298,7 @@ pub fn run_query(backend: &impl Backend, op: &str, args: &Value) -> OpResult {
                 "query": query,
                 "scope": scope.label(),
                 "matches": matches,
-                "truncated": found.len() >= notes::MAX_MATCHES,
+                "truncated": found.truncated,
             })
             .to_string())
         },
@@ -819,6 +820,27 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(scoped["matches"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn search_discloses_large_note_fetch_truncation() {
+        let backend = backend();
+        let body = format!("rebase {}", "x".repeat(4 * 1024 * 1024));
+        for _ in 0..2 {
+            run_mutate(
+                &backend,
+                "note_add",
+                &json!({ "global": true, "title": "large", "body": body }),
+            )
+            .unwrap();
+        }
+        for query in ["rebase", "rebas"] {
+            let found =
+                parsed(&run_query(&backend, "note_search", &json!({ "query": query })).unwrap());
+            assert_eq!(found["matches"].as_array().unwrap().len(), 1);
+            assert_eq!(found["truncated"], true);
+            assert!(found["matches"][0].get("body").is_none());
+        }
     }
 
     #[test]

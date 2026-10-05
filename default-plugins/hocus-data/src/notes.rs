@@ -26,9 +26,9 @@ use yinz_tile::prelude::{DataRows, DataValue, FetchRequest, Mutation, Pred, Sort
 pub const MAX_NOTES_PER_SCOPE: usize = 1000;
 /// The most characters in a title. A title is one line; a longer thought is a body.
 pub const MAX_TITLE_CHARS: usize = 200;
-/// The most bytes in a body. Bounds a fetch that selects it: fifty search hits
-/// at this size are well under the store's byte cap.
-pub const MAX_BODY_BYTES: usize = 16 * 1024;
+/// The most UTF-8 bytes in a cleaned body (8 MiB), inclusive.
+/// Searches remain bounded by the store's fetch budget.
+pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// The most tags on one note.
 pub const MAX_TAGS: usize = 16;
 /// The most characters in one tag.
@@ -182,7 +182,7 @@ pub fn clean_body(body: &str) -> Result<String, String> {
         crate::todos::clean_text(body).map_err(|_| "body must contain visible characters")?;
     if body.len() > MAX_BODY_BYTES {
         return Err(format!(
-            "body is longer than {MAX_BODY_BYTES} bytes; split it into more than one note"
+            "body is longer than 8 MiB ({MAX_BODY_BYTES} bytes); split it into more than one note"
         ));
     }
     Ok(body)
@@ -574,16 +574,23 @@ pub fn require_todos(backend: &impl Backend, todo_ids: &[u64]) -> Result<Vec<Mut
     Ok(assertions)
 }
 
+/// A bounded search and whether more matches may exist.
+#[derive(Debug, Default)]
+pub struct SearchResult {
+    pub notes: Vec<Note>,
+    pub truncated: bool,
+}
+
 /// The notes whose title or body matches the query, most relevant first.
 ///
 /// Two passes, as `todos::search`: full-text for whole words ranked by
 /// relevance, then a substring pass only when the index found nothing, so a
 /// fragment still finds the word it is part of. Archived notes match too: a
 /// search is the way back to one.
-pub fn search(backend: &impl Backend, scope: Scope, query: &str) -> Result<Vec<Note>, String> {
+pub fn search(backend: &impl Backend, scope: Scope, query: &str) -> Result<SearchResult, String> {
     let query = query.trim();
     if query.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SearchResult::default());
     }
     let scoped = |request: FetchRequest| match scope.pred() {
         Some(pred) => request.filter(pred),
@@ -606,7 +613,10 @@ pub fn search(backend: &impl Backend, scope: Scope, query: &str) -> Result<Vec<N
     }
     let mut notes = from_rows(&hits);
     attach(backend, &mut notes)?;
-    Ok(notes)
+    Ok(SearchResult {
+        truncated: hits.truncated || notes.len() >= MAX_MATCHES,
+        notes,
+    })
 }
 
 /// The start of a body, on one line, for a search result.
@@ -972,6 +982,72 @@ mod tests {
         assert!(clean_title(&long_title).unwrap_err().contains("characters"));
         let long_body = "y".repeat(MAX_BODY_BYTES + 1);
         assert!(clean_body(&long_body).unwrap_err().contains("bytes"));
+    }
+
+    #[test]
+    fn body_limit_counts_cleaned_utf8_bytes() {
+        for body in ["x".repeat(MAX_BODY_BYTES), "é".repeat(MAX_BODY_BYTES / 2)] {
+            assert_eq!(clean_body(&body).unwrap(), body);
+            assert_eq!(clean_body(&format!(" \u{1b}{body}\u{7}\n")).unwrap(), body);
+            assert!(clean_body(&format!("{body}x"))
+                .unwrap_err()
+                .contains("8 MiB"));
+        }
+        // Tabs expand to four spaces before the size check.
+        let body = format!("x\t{}", "y".repeat(MAX_BODY_BYTES - 5));
+        assert_eq!(clean_body(&body).unwrap().len(), MAX_BODY_BYTES);
+        assert!(clean_body(&format!("{body}y")).is_err());
+    }
+
+    #[test]
+    fn large_notes_round_trip_and_edits_remain_guarded() {
+        let backend = backend();
+        let body = "é".repeat(MAX_BODY_BYTES / 2);
+        let id = add(&backend, None, "large", &body, &[], &[]);
+        let before = fetch_note(&backend, id).unwrap().unwrap();
+        assert_eq!(before.body, body);
+        assert!(plan_edit(&before, None, Some(&format!("{body}x")), None).is_err());
+        assert_eq!(fetch_note(&backend, id).unwrap().unwrap(), before);
+        let replacement = "y".repeat(MAX_BODY_BYTES);
+        backend
+            .apply(
+                plan_edit(&before, None, Some(&replacement), Some(before.rev))
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        let after = fetch_note(&backend, id).unwrap().unwrap();
+        assert_eq!(after.body, replacement);
+        assert!(after.rev > before.rev);
+        assert!(backend
+            .apply(
+                plan_edit(&before, None, Some("stale"), Some(before.rev))
+                    .unwrap()
+                    .0
+            )
+            .unwrap_err()
+            .is_conflict());
+        assert_eq!(fetch_note(&backend, id).unwrap().unwrap(), after);
+    }
+
+    #[test]
+    fn search_discloses_byte_and_match_limits() {
+        let backend = backend();
+        let body = format!("rebase {}", "x".repeat(MAX_BODY_BYTES - 7));
+        for _ in 0..2 {
+            add(&backend, None, "large", &body, &[], &[]);
+        }
+        for query in ["rebase", "rebas"] {
+            let found = search(&backend, Scope::Global, query).unwrap();
+            assert_eq!(found.notes.len(), 1);
+            assert!(found.truncated, "{query}");
+        }
+        for _ in 0..MAX_MATCHES {
+            add(&backend, Some("/small"), "small", "needle", &[], &[]);
+        }
+        let found = search(&backend, Scope::Project("/small"), "needle").unwrap();
+        assert_eq!(found.notes.len(), MAX_MATCHES);
+        assert!(found.truncated);
     }
 
     #[test]
@@ -1375,16 +1451,17 @@ mod tests {
         );
         add(&backend, Some("/other"), "Rebase", "elsewhere", &[], &[]);
         let word = search(&backend, Scope::All, "rebase").unwrap();
-        assert_eq!(word.len(), 2, "title and body both match");
+        assert_eq!(word.notes.len(), 2, "title and body both match");
+        assert!(!word.truncated);
         assert!(
-            word.iter().all(|note| !note.body.is_empty()),
+            word.notes.iter().all(|note| !note.body.is_empty()),
             "search reads bodies"
         );
         let scoped = search(&backend, Scope::Project("/work"), "rebase").unwrap();
-        assert_eq!(titles(&scoped), vec!["Plan"]);
+        assert_eq!(titles(&scoped.notes), vec!["Plan"]);
         let fragment = search(&backend, Scope::All, "merg").unwrap();
-        assert_eq!(titles(&fragment), vec!["Plan"]);
-        assert!(search(&backend, Scope::All, "  ").unwrap().is_empty());
+        assert_eq!(titles(&fragment.notes), vec!["Plan"]);
+        assert!(search(&backend, Scope::All, "  ").unwrap().notes.is_empty());
     }
 
     #[test]

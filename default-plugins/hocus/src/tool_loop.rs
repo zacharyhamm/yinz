@@ -2190,6 +2190,7 @@ impl State {
             Err(error) => return error,
         };
         let matches: Vec<serde_json::Value> = found
+            .notes
             .iter()
             .map(|note| {
                 let mut value = self.note_reply(note);
@@ -2204,7 +2205,7 @@ impl State {
             "query": query,
             "scope": scope.label(),
             "matches": matches,
-            "truncated": found.len() >= notes::MAX_MATCHES,
+            "truncated": found.truncated,
         })
         .to_string()
     }
