@@ -4379,7 +4379,7 @@ fn readiness_reasons_follow_priority_in_status_list_and_prompt_rejections() {
         ),
         (
             Some(NotReadyReason::UnconsumedInput),
-            "unconsumed terminal input",
+            "unsupported or hidden composer layout",
         ),
         (None, ""),
     ] {
@@ -6875,7 +6875,11 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
             finish_paste(&writes).is_empty(),
             "no destructive stage after {race}"
         );
-        assert!(!screen.agent_status_for_test().ready, "{race}");
+        assert_eq!(
+            screen.agent_status_for_test().ready,
+            matches!(race, "typing" | "disconnect" | "timeout"),
+            "{race}"
+        );
     }
 }
 
@@ -6904,7 +6908,8 @@ fn clear_draft_never_treats_suggestions_or_continuation_rows_as_empty() {
                 replies(&messages, CLIENT)[0].outcome,
                 AgentOutcome::TimedOut
             );
-            assert!(!screen.agent_status_for_test().ready);
+            // A later prompt can retry verified clearing; timeout did not prove emptiness.
+            assert!(screen.agent_status_for_test().ready);
         }
     }
 }
@@ -7002,7 +7007,7 @@ fn clear_draft_partial_writer_failure_never_sends_ctrl_c() {
     let response = replies(&messages, CLIENT).pop().unwrap();
     assert_eq!(response.outcome, AgentOutcome::Failed);
     assert!(response.message.unwrap().contains("partial clearing"));
-    assert!(!response.agents[0].ready);
+    assert!(response.agents[0].ready);
     assert!(finish_paste(&writes).is_empty());
 }
 
@@ -7547,5 +7552,319 @@ fn warp_replay_restores_paste_mode_and_buffered_output_wins() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn prompt_automatically_replaces_idle_drafts() {
+    for kind in ["claude", "codex", "pi"] {
+        for draft in ["recent", "existing", "stale-empty"] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            let now = Instant::now();
+            if draft != "existing" {
+                screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2));
+                finish_paste(&writes);
+            }
+            draft_frame(
+                &mut screen,
+                kind,
+                if draft == "stale-empty" { "" } else { "old" },
+                0,
+                now,
+            );
+            assert!(screen.agent_status_for_test().ready, "{kind}/{draft}");
+            screen.agent_control(wait(AgentState::Idle), ClientId::new(3));
+            assert_eq!(
+                replies(&messages, ClientId::new(3))[0].outcome,
+                AgentOutcome::Ok
+            );
+            assert!(
+                finish_paste(&writes).is_empty(),
+                "status and wait are read-only"
+            );
+            screen.agent_control_at(
+                prompt(false),
+                crate::screen::agent_control::Reply::Client(CLIENT),
+                now,
+            );
+            let bytes = finish_paste(&writes);
+            let marker = std::str::from_utf8(&bytes)
+                .unwrap()
+                .strip_prefix("\x1b[200~")
+                .unwrap()
+                .strip_suffix("\x1b[201~")
+                .unwrap();
+            screen.refresh_agent_controls_at(now + Duration::from_millis(1));
+            assert!(
+                finish_paste(&writes).is_empty(),
+                "stale empty render cannot skip the marker"
+            );
+            draft_frame(
+                &mut screen,
+                kind,
+                marker,
+                marker.len(),
+                now + Duration::from_millis(2),
+            );
+            screen.refresh_agent_controls_at(now + Duration::from_millis(3));
+            assert_eq!(finish_paste(&writes), [3]);
+            draft_frame(&mut screen, kind, "", 0, now + Duration::from_millis(4));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(5));
+            screen.refresh_agent_controls_at(now + Duration::from_millis(255));
+            assert_eq!(
+                finish_paste(&writes),
+                b"\x1b[200~review\x1b[201~",
+                "{kind}/{draft}"
+            );
+            assert!(replies(&messages, CLIENT).is_empty());
+            screen.refresh_agent_controls_at(now + Duration::from_millis(256));
+            screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+            assert_eq!(finish_paste(&writes), b"\r");
+            screen.refresh_agent_controls_at(now + Duration::from_secs(2));
+            assert!(finish_paste(&writes).is_empty());
+            assert!(
+                replies(&messages, CLIENT).is_empty(),
+                "writes do not acknowledge a prompt"
+            );
+            report_kind(
+                &mut screen,
+                kind,
+                HookEvent {
+                    prompt: Some("other".into()),
+                    agent_id: Some("worker".into()),
+                    ..hook("UserPromptSubmit")
+                },
+            );
+            assert!(
+                replies(&messages, CLIENT).is_empty(),
+                "worker hook cannot acknowledge delivery"
+            );
+            report_kind(
+                &mut screen,
+                kind,
+                HookEvent {
+                    prompt: Some("review".into()),
+                    ..hook("UserPromptSubmit")
+                },
+            );
+            let response = replies(&messages, CLIENT).pop().unwrap();
+            assert_eq!(response.outcome, AgentOutcome::Submitted, "{kind}/{draft}");
+            assert!(response.acknowledged);
+        }
+    }
+}
+
+#[test]
+fn automatic_draft_clear_validates_before_writing() {
+    for kind in ["claude", "codex", "pi"] {
+        for invalid in [
+            "empty",
+            "control",
+            "command",
+            "timeout",
+            "id",
+            "conversation",
+        ] {
+            let (mut screen, messages, writes) = setup(kind);
+            report_kind(&mut screen, kind, hook("SessionStart"));
+            draft_frame(&mut screen, kind, "old", 3, Instant::now());
+            let mut request = prompt(false);
+            if let AgentRequest::Prompt {
+                prompt,
+                timeout_ms,
+                submission_id,
+                expected_session_id,
+                ..
+            } = &mut request
+            {
+                match invalid {
+                    "empty" => *prompt = " ".into(),
+                    "control" => *prompt = "\x03".into(),
+                    "command" => *prompt = "/help".into(),
+                    "timeout" => *timeout_ms = 0,
+                    "id" => *submission_id = Some("".into()),
+                    _ => *expected_session_id = Some("other".into()),
+                }
+            }
+            screen.agent_control(request, CLIENT);
+            assert_eq!(replies(&messages, CLIENT).len(), 1, "{kind}/{invalid}");
+            assert!(finish_paste(&writes).is_empty(), "{kind}/{invalid}");
+            assert!(screen.agent_draft_clears.is_empty());
+        }
+    }
+}
+
+#[test]
+fn automatic_draft_clear_cancellation_retains_result_and_drains_writer() {
+    for race in [
+        "typing",
+        "report",
+        "disconnect",
+        "timeout",
+        "replacement",
+        "writer",
+    ] {
+        let (mut screen, messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        draft_frame(&mut screen, "codex", "draft", 5, now);
+        let mut request = prompt(false);
+        if let AgentRequest::Prompt { submission_id, .. } = &mut request {
+            *submission_id = Some("auto-clear".into());
+        }
+        screen.agent_control_at(
+            request.clone(),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        screen.agent_control(request, ClientId::new(2));
+        assert_eq!(
+            replies(&messages, ClientId::new(2))[0].outcome,
+            AgentOutcome::Rejected
+        );
+        match race {
+            "typing" => screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2)),
+            "report" => report(&mut screen, hook("UserPromptSubmit")),
+            "disconnect" => screen.detach_agent_controls(CLIENT),
+            "replacement" => screen.invalidate_agent_lifecycle(PANE, "test"),
+            "writer" => {
+                for (instruction, _) in writes.try_iter() {
+                    if let PtyWriteInstruction::Write(_, _, Some(mut completion)) = instruction {
+                        completion.set_error_message("test writer failure".into());
+                    }
+                }
+            },
+            _ => {},
+        }
+        let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
+        screen.refresh_agent_controls_at(later);
+        if race != "writer" {
+            assert!(screen.agent_draft_clears.contains_key(&PANE), "{race}");
+        }
+        finish_paste(&writes);
+        screen.refresh_agent_controls_at(later);
+        assert!(screen.agent_draft_clears.is_empty());
+        assert!(finish_paste(&writes).is_empty(), "no delivery after {race}");
+        if race != "replacement" {
+            screen.agent_control(
+                AgentRequest::WaitTurn {
+                    pane_id: PANE,
+                    expected_session_id: None,
+                    submission_id: "auto-clear".into(),
+                    timeout_ms: 1000,
+                },
+                ClientId::new(3),
+            );
+            let result = replies(&messages, ClientId::new(3)).pop().unwrap();
+            assert!(!result.acknowledged);
+            assert_eq!(
+                result.outcome,
+                match race {
+                    "timeout" => AgentOutcome::TimedOut,
+                    "writer" => AgentOutcome::Failed,
+                    _ => AgentOutcome::Interrupted,
+                },
+                "{race}"
+            );
+        }
+    }
+}
+
+#[test]
+fn automatic_draft_clear_and_prompt_share_the_deadline_and_submission() {
+    let (mut screen, messages, writes) = setup("claude");
+    report_kind(&mut screen, "claude", hook("SessionStart"));
+    let now = Instant::now();
+    draft_frame(&mut screen, "claude", "old", 3, now);
+    let mut request = prompt(false);
+    if let AgentRequest::Prompt {
+        submission_id,
+        timeout_ms,
+        ..
+    } = &mut request
+    {
+        *submission_id = Some("shared-deadline".into());
+        *timeout_ms = 500;
+    }
+    screen.agent_control_at(
+        request.clone(),
+        crate::screen::agent_control::Reply::Client(CLIENT),
+        now,
+    );
+    let bytes = finish_paste(&writes);
+    let marker = std::str::from_utf8(&bytes)
+        .unwrap()
+        .strip_prefix("\x1b[200~")
+        .unwrap()
+        .strip_suffix("\x1b[201~")
+        .unwrap();
+    draft_frame(
+        &mut screen,
+        "claude",
+        marker,
+        marker.len(),
+        now + Duration::from_millis(1),
+    );
+    screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+    assert_eq!(finish_paste(&writes), [3]);
+    draft_frame(&mut screen, "claude", "", 0, now + Duration::from_millis(3));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(4));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(254));
+    assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+    screen.refresh_agent_controls_at(now + Duration::from_millis(255));
+    screen.refresh_agent_controls_at(now + Duration::from_millis(600));
+    let result = replies(&messages, CLIENT).pop().unwrap();
+    assert_eq!(result.outcome, AgentOutcome::TimedOut);
+    assert_eq!(result.submission_id.as_deref(), Some("shared-deadline"));
+    assert!(!result.acknowledged);
+    assert!(
+        finish_paste(&writes).is_empty(),
+        "deadline prevents Enter after clearing"
+    );
+    screen.agent_control(request, ClientId::new(2));
+    let duplicate = replies(&messages, ClientId::new(2)).pop().unwrap();
+    assert_eq!(duplicate.outcome, AgentOutcome::Rejected);
+    assert!(duplicate.message.unwrap().contains("already retained"));
+    assert!(finish_paste(&writes).is_empty());
+}
+
+#[test]
+fn automatic_draft_clear_reports_provider_and_layout_limitations() {
+    for kind in ["codex", "agy"] {
+        let (mut screen, messages, writes) = setup(kind);
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        screen.agent_control(send_keys(vec![BareKey::Char('x')]), ClientId::new(2));
+        finish_paste(&writes);
+        screen.agent_control(prompt(false), CLIENT);
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Rejected);
+        assert!(result.message.unwrap().contains(if kind == "codex" {
+            "unsupported or hidden composer layout"
+        } else {
+            "provider does not support automatic draft clearing"
+        }));
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn disconnect_before_prompt_delivery_finishes_cancels_enter() {
+    for drained in [false, true] {
+        let (mut screen, _messages, writes) = setup("codex");
+        report(&mut screen, hook("SessionStart"));
+        screen.agent_control(prompt(false), CLIENT);
+        if drained {
+            finish_paste(&writes);
+            screen.refresh_agent_controls();
+        }
+        screen.detach_agent_controls(CLIENT);
+        finish_paste(&writes);
+        screen.refresh_agent_controls_at(Instant::now() + Duration::from_secs(1));
+        assert!(finish_paste(&writes).is_empty(), "disconnect cancels Enter");
+        assert!(
+            !screen.agent_status_for_test().ready,
+            "unconsumed paste retains ownership"
+        );
     }
 }

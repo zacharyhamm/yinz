@@ -285,7 +285,7 @@ When several conditions block readiness, the first matching reason applies:
 | `pending_submission` | An earlier submission still owns the input and has not been acknowledged |
 | `clearing_draft` | Draft clearing owns the composer until verification or queued writes finish |
 | `unresolved_turn` | An accepted turn still owns the input after an interruption or an unconfirmed outcome; inspect the pane and recover only after it has stopped and its draft is empty |
-| `unconsumed_input` | Terminal input is newer than the last confirmed consumed input revision |
+| `unconsumed_input` | Input consumption is unknown and automatic clearing is unavailable |
 
 A ready agent has no reason (`null` in JSON). Older responses without the field
 decode with no reason. An exited agent normally reports `prompt_unsupported`
@@ -897,9 +897,25 @@ validation, conflicting registrations, unload, restart refusal, input interrupti
 timeouts, and hook-file ownership.
 
 
+## Automatic draft replacement
+
+An authorized `agent prompt` also authorizes replacement of an idle draft. Do not request separate discard permission.
+CLI and plugin prompts use the same behavior. No additional flag or recovery command is required.
+Automatic clearing captures the input revision internally and does not require three seconds of quiet.
+Automatic clearing supports Claude Code, Codex, and Pi default composers with visible cursors and default bindings.
+Unsupported providers and unrecognized layouts return a clearing limitation instead of appending text.
+Active work, dialogs, and pending submissions still prevent prompt delivery.
+
+The prompt validates all arguments and reserves its submission ID before writing.
+It verifies a marker and an empty composer before submitting the requested text.
+One timeout covers clearing and submission. Clearing failures are available through `wait --submission`, with acknowledgement false.
+New input, conversation replacement, agent activity, caller disconnection, or writer failure cancels further delivery.
+`ready` is true when automatic clearing can resolve the only obstacle. Status and idle waits remain read-only.
+
 ## Explicit draft clearing
 
-Obtain authorization to discard the current draft. A rejected prompt does not authorize deletion.
+Use `clear-draft` when you want to discard a draft without submitting a prompt.
+Obtain authorization for that standalone discard.
 Read status, inspect the composer, and use the exact revision you inspected:
 
 ```sh

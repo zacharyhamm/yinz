@@ -817,6 +817,15 @@ impl Screen {
         } else {
             None
         };
+        let not_ready_reason = not_ready_reason.filter(|reason| {
+            *reason != NotReadyReason::UnconsumedInput
+                || self.draft_composer(pane_id, &agent.kind).is_none()
+                || self.claude_background_pending(pane_id)
+                || self
+                    .agent_lifecycle
+                    .get(&pane_id)
+                    .is_some_and(|lifecycle| !lifecycle.background_tasks.is_empty())
+        });
         Some(AgentStatus {
             pane_id,
             session: self.session_name.to_string(),
@@ -1199,7 +1208,7 @@ impl Screen {
                     .get(&pane)
                     .filter(|input| input.session_ended && now < input.deadline)
                     .map(|input| input.kind.clone());
-                if let (Some(kind), Some(deadline)) = (clearing, deadline(*timeout_ms)) {
+                if let (Some(kind), Some(deadline)) = (clearing, deadline(now, *timeout_ms)) {
                     self.agent_controls.push(Pending {
                         client: Some(client.clone()),
                         pane,
@@ -1502,7 +1511,10 @@ impl Screen {
                     self.agent_reply(&client, response);
                     return;
                 }
-                if let Some(reason) = status.not_ready_reason {
+                if let Some(reason) = status
+                    .not_ready_reason
+                    .filter(|reason| *reason != NotReadyReason::UnconsumedInput)
+                {
                     let (outcome, message) = match reason {
                         NotReadyReason::ClearingDraft => (AgentOutcome::Rejected, "the composer is being cleared"),
                         NotReadyReason::PromptUnsupported => (AgentOutcome::StatusUnavailable,
@@ -1531,7 +1543,7 @@ impl Screen {
                     reject(self, AgentOutcome::Rejected, "prompt must contain text, be at most 1 MiB, and contain no terminal controls");
                     return;
                 }
-                let Some(deadline) = deadline(timeout_ms) else {
+                let Some(deadline) = deadline(now, timeout_ms) else {
                     reject(
                         self,
                         AgentOutcome::Rejected,
@@ -1601,7 +1613,34 @@ impl Screen {
                     );
                     return;
                 }
-                let (tx, rx) = tokio::sync::oneshot::channel();
+                let needs_clear = status.not_ready_reason == Some(NotReadyReason::UnconsumedInput)
+                    || (matches!(status.agent.kind.as_str(), "claude" | "codex" | "pi")
+                        && self.agent_lifecycle.get(&pane).is_some_and(|lifecycle| {
+                            lifecycle.input_revision != Some(self.agent_input_revision(pane))
+                        }))
+                    || self
+                        .draft_composer(pane, &status.agent.kind)
+                        .is_some_and(|composer| !composer.empty);
+                if needs_clear {
+                    let limitation = if !matches!(
+                        status.agent.kind.as_str(),
+                        "claude" | "codex" | "pi"
+                    ) {
+                        Some("provider does not support automatic draft clearing")
+                    } else if self.draft_composer(pane, &status.agent.kind).is_none() {
+                        Some("unsupported or hidden composer layout for automatic draft clearing")
+                    } else if !status.background_tasks.is_empty()
+                        || self.claude_background_pending(pane)
+                    {
+                        Some("background work is still running")
+                    } else {
+                        None
+                    };
+                    if let Some(message) = limitation {
+                        reject(self, AgentOutcome::Rejected, message);
+                        return;
+                    }
+                }
                 let submissions = self.agent_submissions.entry(pane).or_default();
                 while submissions.len() >= SUBMISSION_HISTORY_LIMIT {
                     submissions.pop_front();
@@ -1615,11 +1654,11 @@ impl Screen {
                     result: None,
                 });
                 // Claim and observe before input; hooks cannot overtake this screen instruction.
-                self.agent_controls.push(Pending {
+                let pending = Pending {
                     client: Some(client.clone()),
                     pane,
                     kind: status.agent.kind.clone(),
-                    conversation: status.agent.session_id,
+                    conversation: status.agent.session_id.clone(),
                     deadline: Some(deadline),
                     input_revision: self.agent_input_revision(pane),
                     prompt: Some(observation),
@@ -1633,11 +1672,11 @@ impl Screen {
                     session_ended: false,
                     abandoned: false,
                     resolved: false,
-                    delivery: Some(rx),
+                    delivery: None,
                     enter_at: None,
                     submit_key,
                     submit_delay,
-                });
+                };
                 // Expose Claude's slash command before its arguments can collapse into a chip,
                 // and type Codex's `/new`: a pasted command is draft text, not a command.
                 // Keep whitespace in the paste: typing a newline or tab would send a key.
@@ -1665,50 +1704,17 @@ impl Screen {
                 } else {
                     (Vec::new(), prompt.into_bytes())
                 };
-                // Codex reads quickly typed text followed by a paste as one burst, and an empty
-                // paste there discards the typed command, so a bare command is only typed.
-                let result =
-                    if paste.is_empty() && matches!(status.agent.kind.as_str(), "codex" | "pi") {
-                        self.write_to_pane_id(
-                            &None,
-                            prefix,
-                            false,
-                            pane,
-                            None,
-                            Some(yinz_bus::route::NotificationEnd::new(tx)),
-                        )
-                        .map(|_| ())
-                    } else {
-                        let typed = (!prefix.is_empty())
-                            .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
-                        match typed {
-                            Some(Err(error)) => Err(error),
-                            _ => self.paste_to_pane_id(
-                                paste,
-                                pane,
-                                None,
-                                Some(yinz_bus::route::NotificationEnd::new(tx)),
-                            ),
-                        }
-                    };
-                let revision = self.agent_input_revision(pane);
-                if let Some(pending) = self.agent_controls.last_mut() {
-                    pending.input_revision = revision;
-                }
-                if let Err(error) = result {
-                    let Some(mut pending) = self.agent_controls.pop() else {
-                        return;
-                    };
-                    self.finish_agent_control(
-                        &pending,
-                        AgentOutcome::Failed,
-                        Some(error.to_string()),
-                        pending.not_ready_reason(),
+                if needs_clear {
+                    self.begin_draft_clear(
+                        pane,
+                        status.agent,
+                        client,
+                        now,
+                        deadline,
+                        Some((pending, prefix, paste)),
                     );
-                    pending.abandoned = true;
-                    pending.client = None;
-                    pending.deadline = None;
-                    self.agent_controls.push(pending);
+                } else {
+                    self.deliver_agent_prompt(pending, prefix, paste);
                 }
             },
             WaitTurn {
@@ -1734,7 +1740,7 @@ impl Screen {
                     );
                     return;
                 }
-                let Some(deadline) = deadline(timeout_ms) else {
+                let Some(deadline) = deadline(now, timeout_ms) else {
                     reject(
                         self,
                         AgentOutcome::Rejected,
@@ -1767,7 +1773,7 @@ impl Screen {
             Wait {
                 until, timeout_ms, ..
             } => {
-                let Some(deadline) = deadline(timeout_ms) else {
+                let Some(deadline) = deadline(now, timeout_ms) else {
                     reject(
                         self,
                         AgentOutcome::Rejected,
@@ -1798,6 +1804,58 @@ impl Screen {
                 self.refresh_agent_controls();
             },
             SetControlAgent { .. } | List { .. } | Spawn { .. } | SpawnPlacementSupport => {},
+        }
+    }
+
+    fn deliver_agent_prompt(&mut self, mut pending: Pending, prefix: Vec<u8>, paste: Vec<u8>) {
+        let pane = pending.pane;
+        let kind = pending.kind.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        pending.delivery = Some(rx);
+        self.agent_controls.push(pending);
+        // Codex reads quickly typed text followed by a paste as one burst, and an empty
+        // paste there discards the typed command, so a bare command is only typed.
+        let result = if paste.is_empty() && matches!(kind.as_str(), "codex" | "pi") {
+            self.write_to_pane_id(
+                &None,
+                prefix,
+                false,
+                pane,
+                None,
+                Some(yinz_bus::route::NotificationEnd::new(tx)),
+            )
+            .map(|_| ())
+        } else {
+            let typed = (!prefix.is_empty())
+                .then(|| self.write_to_pane_id(&None, prefix, false, pane, None, None));
+            match typed {
+                Some(Err(error)) => Err(error),
+                _ => self.paste_to_pane_id(
+                    paste,
+                    pane,
+                    None,
+                    Some(yinz_bus::route::NotificationEnd::new(tx)),
+                ),
+            }
+        };
+        let revision = self.agent_input_revision(pane);
+        if let Some(pending) = self.agent_controls.last_mut() {
+            pending.input_revision = revision;
+        }
+        if let Err(error) = result {
+            let Some(mut pending) = self.agent_controls.pop() else {
+                return;
+            };
+            self.finish_agent_control(
+                &pending,
+                AgentOutcome::Failed,
+                Some(error.to_string()),
+                pending.not_ready_reason(),
+            );
+            pending.abandoned = true;
+            pending.client = None;
+            pending.deadline = None;
+            self.agent_controls.push(pending);
         }
     }
 
@@ -1868,12 +1926,11 @@ impl Screen {
             .and_then(|submission| submission.result.as_ref())
             .is_some_and(|result| result.outcome == AgentOutcome::Interrupted);
         if pending.prompt.is_some()
+            && !pending.resolved
             && (matches!(
                 outcome,
-                AgentOutcome::TimedOut | AgentOutcome::StatusUnavailable
-            ) || (!pending.resolved
-                && (outcome == AgentOutcome::Failed
-                    || (outcome == AgentOutcome::Interrupted && !reported_interrupt))))
+                AgentOutcome::TimedOut | AgentOutcome::StatusUnavailable | AgentOutcome::Failed
+            ) || (outcome == AgentOutcome::Interrupted && !reported_interrupt))
         {
             self.agent_observation_uncertain(pending.pane, pending.submission_id.clone(), outcome);
         }
@@ -1923,6 +1980,7 @@ impl Screen {
                 response.acknowledged = prompt.acknowledged();
                 response.turn_id = prompt.turn_id().map(str::to_owned);
                 let explanation = match outcome {
+                    _ if pending.resolved && !prompt.acknowledged() => "",
                     AgentOutcome::TimedOut if prompt.acknowledged() =>
                         "The agent accepted this turn, but completion was not observed before the timeout. The turn may still be running.",
                     AgentOutcome::TimedOut =>
@@ -2728,20 +2786,38 @@ impl Screen {
                 operation.failure = Some((AgentOutcome::Interrupted, "caller disconnected".into()));
             }
         }
-        self.agent_controls.retain_mut(|pending| {
+        for mut pending in std::mem::take(&mut self.agent_controls) {
             if matches!(pending.client, Some(Reply::Client(id)) if id == client) {
                 pending.client = None;
-                return pending.prompt.is_some();
+                if pending.prompt.is_none() {
+                    continue;
+                }
+                if pending
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|prompt| !prompt.acknowledged())
+                    && (pending.delivery.is_some() || pending.enter_at.is_some())
+                {
+                    self.finish_agent_control(
+                        &pending,
+                        AgentOutcome::Interrupted,
+                        Some("caller disconnected before submission".into()),
+                        pending.not_ready_reason(),
+                    );
+                    pending.abandoned = true;
+                    pending.deadline = None;
+                    pending.enter_at = None;
+                }
             }
-            true
-        });
+            self.agent_controls.push(pending);
+        }
     }
 }
 
-fn deadline(timeout_ms: u64) -> Option<Instant> {
+fn deadline(now: Instant, timeout_ms: u64) -> Option<Instant> {
     (1..=MAX_TIMEOUT_MS)
         .contains(&timeout_ms)
-        .then(|| Instant::now() + Duration::from_millis(timeout_ms))
+        .then(|| now + Duration::from_millis(timeout_ms))
 }
 
 pub(super) struct DraftClear {
@@ -2755,6 +2831,7 @@ pub(super) struct DraftClear {
     wrote_at: Option<Instant>,
     delivery: Option<tokio::sync::oneshot::Receiver<yinz_bus::route::ActionCompletionResult>>,
     failure: Option<(AgentOutcome, String)>,
+    prompt: Option<(Pending, Vec<u8>, Vec<u8>)>,
 }
 
 enum DraftStage {
@@ -2973,21 +3050,46 @@ impl Screen {
             );
             return;
         }
-        let Some(composer) = self.draft_composer(pane, &status.agent.kind) else {
+        let Some(_) = self.draft_composer(pane, &status.agent.kind) else {
             self.agent_reply(&client, self.agent_result(pane, AgentOutcome::Rejected, Some("unsupported or hidden composer layout; inspect and clear manually, then use recover --confirm-empty".into())));
             return;
         };
+        self.begin_draft_clear(
+            pane,
+            status.agent,
+            client,
+            now,
+            now + Duration::from_millis(timeout_ms),
+            None,
+        );
+    }
+
+    fn begin_draft_clear(
+        &mut self,
+        pane: PaneId,
+        agent: AgentInfo,
+        client: Reply,
+        now: Instant,
+        deadline: Instant,
+        prompt: Option<(Pending, Vec<u8>, Vec<u8>)>,
+    ) {
+        let Some(composer) = self.draft_composer(pane, &agent.kind) else {
+            return;
+        };
+        // Automatic clearing always verifies a marker, even when the last render is empty:
+        // recently queued input may not have reached the composer yet.
+        let marker_required = prompt.is_some() || !composer.empty;
         let Some(lifecycle) = self.agent_lifecycle.get(&pane) else {
             return;
         };
         let mut operation = DraftClear {
             client: Some(client),
-            agent: status.agent,
-            revision: input_revision,
+            agent,
+            revision: self.agent_input_revision(pane),
             report: lifecycle.last_report,
-            deadline: now + Duration::from_millis(timeout_ms),
+            deadline,
             marker: format!("yz{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
-            stage: if composer.empty {
+            stage: if !marker_required {
                 DraftStage::Empty { since: Some(now) }
             } else {
                 DraftStage::Marker
@@ -2995,11 +3097,12 @@ impl Screen {
             wrote_at: None,
             delivery: None,
             failure: None,
+            prompt,
         };
         if let Some(lifecycle) = self.agent_lifecycle.get_mut(&pane) {
             lifecycle.input_revision = None;
         }
-        if !composer.empty {
+        if marker_required {
             let bytes = format!("\x1b[200~{}\x1b[201~", operation.marker).into_bytes();
             self.write_draft_stage(pane, &mut operation, bytes, now);
         }
@@ -3115,6 +3218,11 @@ impl Screen {
                             .unwrap_or(*since)
                             .max(*since);
                         if now.saturating_duration_since(stable) >= Duration::from_millis(250) {
+                            if let Some((mut pending, prefix, paste)) = operation.prompt.take() {
+                                pending.input_revision = operation.revision;
+                                self.deliver_agent_prompt(pending, prefix, paste);
+                                continue;
+                            }
                             self.finalize_agent_recovery(
                                 pane,
                                 &operation.agent,
@@ -3135,6 +3243,19 @@ impl Screen {
                     if lifecycle.input_revision == Some(operation.revision) {
                         lifecycle.input_revision = None;
                     }
+                }
+                if let Some((mut pending, _, _)) = operation.prompt.take() {
+                    pending.client = operation.client.take();
+                    pending.resolved = true;
+                    self.finish_agent_control(
+                        &pending,
+                        *outcome,
+                        Some(format!("{message}; prompt was not sent. Partial clearing may have occurred; inspect the composer before manual recovery.")),
+                        operation
+                            .delivery
+                            .is_some()
+                            .then_some(NotReadyReason::ClearingDraft),
+                    );
                 }
                 if let Some(client) = operation.client.take() {
                     let mut response = self.agent_result(pane, *outcome, Some(format!("{message}; partial clearing may have occurred. Inspect the composer before manual recovery.")));
