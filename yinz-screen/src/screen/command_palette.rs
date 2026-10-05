@@ -1,3 +1,5 @@
+#[path = "palette_agents.rs"]
+pub(super) mod agents;
 #[path = "palette_plugins.rs"]
 pub(super) mod plugins;
 
@@ -24,6 +26,7 @@ use crate::ClientId;
 pub(super) struct CommandPaletteState {
     widget: CommandPalette,
     plugins: plugins::State,
+    agents: agents::State,
     context: PaletteContext,
     actions: HashMap<String, Builtin>,
     warp_source: Option<SessionName>,
@@ -88,6 +91,13 @@ impl Screen {
         let Some(pane_id) = self.get_active_pane_id(&client_id) else {
             return;
         };
+        let Some(source) = self
+            .tabs
+            .get(&tab_id)
+            .and_then(|tab| tab.pane_infos().into_iter().find(|pane| pane.id == pane_id))
+        else {
+            return;
+        };
         self.close_context_menu(client_id);
         self.bus
             .senders
@@ -99,6 +109,7 @@ impl Screen {
             CommandPaletteState {
                 widget: CommandPalette::default(),
                 plugins: plugins::State::default(),
+                agents: agents::State::new(source),
                 context: PaletteContext {
                     tab_id,
                     pane_id,
@@ -131,6 +142,7 @@ impl Screen {
         let Some(mut state) = self.command_palettes.remove(&client_id) else {
             return false;
         };
+        state.agents.cancel();
         self.dismiss_plugin_palette(client_id, &mut state);
         self.bus
             .senders
@@ -188,6 +200,7 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client_id) else {
             return false;
         };
+        state.agents.save_form(&state.widget);
         let before = (
             state.widget.view,
             state.widget.query().to_owned(),
@@ -334,6 +347,7 @@ impl Screen {
 #[derive(Clone)]
 enum Builtin {
     ControlAgent(Action),
+    Agent(yinz_bus::command_palette::AgentAction),
     Action(Action),
     Picker(EntryKind),
     Project(String),
@@ -507,6 +521,55 @@ impl Screen {
         ] {
             command(id, label, &[], Builtin::Action(action));
         }
+        for kind in yinz_runtime::agent::launch::offered() {
+            for (suffix, label, aliases, action) in [
+                (
+                    "worktree",
+                    format!("Spawn {kind} agent in worktree…"),
+                    format!("{kind} worktree"),
+                    yinz_bus::command_palette::AgentAction::Start {
+                        kind: kind.clone(),
+                        vm: false,
+                        project: state.context.current_project.clone(),
+                    },
+                ),
+                (
+                    "directory",
+                    format!("Spawn {kind} agent in current directory"),
+                    format!("{kind} current directory cwd"),
+                    yinz_bus::command_palette::AgentAction::Current { kind: kind.clone() },
+                ),
+                (
+                    "firecracker",
+                    format!("Spawn {kind} agent in Firecracker…"),
+                    format!("{kind} firecracker vm"),
+                    yinz_bus::command_palette::AgentAction::Start {
+                        kind: kind.clone(),
+                        vm: true,
+                        project: state.context.current_project.clone(),
+                    },
+                ),
+            ] {
+                command(
+                    &format!("agent:{kind}:{suffix}"),
+                    &label,
+                    &[&aliases],
+                    Builtin::Agent(action),
+                );
+            }
+        }
+        command(
+            "agent:duplicate",
+            "Duplicate focused agent",
+            &["duplicate agent"],
+            Builtin::Agent(yinz_bus::command_palette::AgentAction::Duplicate { kind: None }),
+        );
+        command(
+            "agent:fork",
+            "Fork focused agent…",
+            &["fork agent"],
+            Builtin::Agent(yinz_bus::command_palette::AgentAction::Fork),
+        );
         for (id, label, kind) in [
             ("warp-tab", "Warp tab…", EntryKind::WarpTabSession),
             ("warp-pane", "Warp pane…", EntryKind::WarpPaneSession),
@@ -1054,6 +1117,9 @@ impl Screen {
     }
 
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
+        if self.agent_palette_outcome(client, &outcome) {
+            return;
+        }
         if self.plugin_palette_outcome(client, &outcome) {
             return;
         }
@@ -1081,6 +1147,14 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::Agent(action) => {
+                self.request_palette_agent(
+                    client,
+                    action,
+                    values.and_then(|v| v.into_iter().next()),
+                );
+                return;
+            },
             Builtin::WarpSource(source, kind) => {
                 let valid =
                     source != self.session_name && self.peer_sessions_cache.contains_key(&source);

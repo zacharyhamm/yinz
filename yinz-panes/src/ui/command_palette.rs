@@ -200,6 +200,15 @@ enum ResultRow {
 }
 
 impl CommandPalette {
+    pub fn form_values(&self) -> Option<(&str, Vec<String>)> {
+        self.form.as_ref().map(|form| {
+            (
+                form.id.as_str(),
+                form.fields.iter().map(Field::text_value).collect(),
+            )
+        })
+    }
+
     pub fn query(&self) -> &str {
         self.input.get_text()
     }
@@ -848,7 +857,7 @@ impl CommandPalette {
                                     "↑↓ Scroll  PgUp/PgDn Page  Home/End  Esc Back"
                                 } else if self.form.is_some() {
                                     "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
-                                } else if self.picker.is_some() {
+                                } else if self.picker.is_some() || self.view != 0 {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
                                 } else {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Close"

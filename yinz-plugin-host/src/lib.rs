@@ -127,6 +127,7 @@ pub fn plugin_thread_main(
     // https://tokio.rs/tokio/topics/shutdown#waiting-for-things-to-finish-shutting-down
     let (shutdown_send, mut shutdown_receive) = tokio::sync::mpsc::channel::<()>(1);
 
+    let palette_data = data_access.clone();
     let mut wasm_bridge = WasmBridge::new(
         bus.senders.clone(),
         engine,
@@ -348,6 +349,15 @@ pub fn plugin_thread_main(
             },
             PluginInstruction::InputBarrier(plugin_id, completion) => {
                 wasm_bridge.input_barrier(plugin_id, completion);
+            },
+            PluginInstruction::PaletteAgent(request) => {
+                let senders = bus.senders.clone();
+                let data = palette_data.clone();
+                let shutdown = shutdown_send.clone();
+                yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+                    let _shutdown = shutdown;
+                    yinz_exports::palette_agents::handle(*request, &senders, &data);
+                });
             },
             PluginInstruction::DenoPalette(delivery) => {
                 wasm_bridge.deno_palette(delivery, shutdown_send.clone());

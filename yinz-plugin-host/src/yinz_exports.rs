@@ -1,5 +1,7 @@
 #[path = "agent_control.rs"]
 mod agent_control;
+#[path = "palette_agents.rs"]
+pub(crate) mod palette_agents;
 pub use agent_control::control_agent;
 #[path = "multipanes.rs"]
 mod multipanes;
@@ -3303,7 +3305,7 @@ pub fn spawn_agent_for_cli(
 
 fn spawn_agent_for_control(
     placement: yinz_types::agent::control::AgentPlacement,
-    mut spec: AgentSpawnSpec,
+    spec: AgentSpawnSpec,
     cwd: Option<PathBuf>,
     project: Option<String>,
     remote_host: Option<String>,
@@ -3311,6 +3313,25 @@ fn spawn_agent_for_control(
     client_id: crate::ClientId,
     senders: &ThreadSenders,
     data_access: &DataAccess,
+) -> Result<SpawnedAgent, AgentSpawnError> {
+    spawn_agent_prepared(placement, spec, client_id, senders, |spec| {
+        agent_control::prepare_automation_agent(
+            spec,
+            cwd,
+            project,
+            remote_host,
+            automatic_firecracker_vm,
+            data_access,
+        )
+    })
+}
+
+fn spawn_agent_prepared(
+    placement: yinz_types::agent::control::AgentPlacement,
+    mut spec: AgentSpawnSpec,
+    client_id: crate::ClientId,
+    senders: &ThreadSenders,
+    prepare: impl FnOnce(&mut AgentSpawnSpec) -> Result<PreparedAgent, AgentSpawnError>,
 ) -> Result<SpawnedAgent, AgentSpawnError> {
     let started = Instant::now();
     if spec.prompt.is_some() || spec.reuse_prompt.is_some() {
@@ -3333,15 +3354,7 @@ fn spawn_agent_for_control(
         ),
         _ => None,
     };
-    let prepared = agent_control::prepare_automation_agent(
-        &mut spec,
-        cwd,
-        project,
-        remote_host,
-        automatic_firecracker_vm,
-        data_access,
-    )
-    .map_err(|mut failure| {
+    let prepared = prepare(&mut spec).map_err(|mut failure| {
         if let Some(destination) = &destination {
             failure
                 .0

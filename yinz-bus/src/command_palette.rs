@@ -1,4 +1,4 @@
-//! Private host routing for Deno palettes. Guests cannot supply an owner or a delivery.
+//! Private host routing for native and Deno palettes. Guests cannot supply host requests.
 use std::sync::{atomic::AtomicBool, Arc};
 use yinz_types::command_palette::{Command, Message, Scope};
 use yinz_types::internal_ids::{ClientId, PluginId};
@@ -22,6 +22,12 @@ pub struct Delivery {
 
 #[derive(Clone, Debug)]
 pub enum Instruction {
+    AgentReply {
+        client: ClientId,
+        opening: u64,
+        step: u64,
+        reply: Result<AgentReply, String>,
+    },
     Command {
         owner: Owner,
         client: ClientId,
@@ -42,4 +48,82 @@ pub enum Instruction {
         client: ClientId,
         scope: Scope,
     },
+}
+
+/// Native palette requests never cross the plugin wire boundary.
+#[derive(Clone, Debug)]
+pub struct AgentRequest {
+    pub client: ClientId,
+    pub opening: u64,
+    pub step: u64,
+    pub source: yinz_types::data::PaneInfo,
+    pub action: AgentAction,
+    pub value: Option<String>,
+    pub active: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug)]
+pub enum AgentAction {
+    Start {
+        kind: String,
+        vm: bool,
+        project: Option<String>,
+    },
+    Projects {
+        kind: String,
+        vm: bool,
+    },
+    Worktrees {
+        kind: String,
+        vm: bool,
+        project: AgentProject,
+    },
+    Checkout {
+        kind: String,
+        vm: bool,
+        project: AgentProject,
+        path: Option<std::path::PathBuf>,
+    },
+    Launch {
+        kind: String,
+        vm: bool,
+        project: AgentProject,
+        path: Option<std::path::PathBuf>,
+        branch: Option<String>,
+        image: Option<String>,
+    },
+    Current {
+        kind: String,
+    },
+    Duplicate {
+        kind: Option<String>,
+    },
+    Fork,
+}
+
+#[derive(Clone, Debug)]
+pub enum AgentProject {
+    Registered(String),
+    Repository(std::path::PathBuf),
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentChoice {
+    pub label: String,
+    pub description: String,
+    pub action: AgentAction,
+}
+
+#[derive(Clone, Debug)]
+pub enum AgentReply {
+    Choices {
+        title: String,
+        choices: Vec<AgentChoice>,
+    },
+    Form {
+        title: String,
+        label: String,
+        action: AgentAction,
+    },
+    Launched(yinz_types::agent::control::AgentResponse),
 }

@@ -1029,18 +1029,7 @@ fn command_in_context(pane: &AgentPane, kind: &str) -> Result<CommandToRun, Stri
         image.clone_from(&pane.firecracker_image);
         *worktree = pane.firecracker_worktree.clone().map(Into::into);
     }
-    let (command, _) = launch::plan(&launch::Spec {
-        kind: Some(kind.to_owned()),
-        // Remote targets use installed broker-aware hooks; inline local reporting hooks
-        // cannot reach this session and would duplicate the installed hooks.
-        hooks: Some(target.is_local()),
-        ..Default::default()
-    })?;
-    Ok(CommandToRun {
-        cwd: agent_cwd(pane).map(Into::into),
-        target,
-        ..command
-    })
+    launch::command_in_context(kind, agent_cwd(pane).map(Into::into), target)
 }
 
 /// Start an agent, reusing the held source pane for a workflow fork.

@@ -55,6 +55,24 @@ pub fn offered() -> Vec<String> {
         .collect()
 }
 
+/// Fresh conversation in an existing pane's location, with target-appropriate hooks.
+pub fn command_in_context(
+    kind: &str,
+    cwd: Option<std::path::PathBuf>,
+    target: PaneTarget,
+) -> Result<yinz_types::command::CommandToRun, String> {
+    let (command, _) = plan(&Spec {
+        kind: Some(kind.to_owned()),
+        hooks: Some(target.is_local()),
+        ..Default::default()
+    })?;
+    Ok(yinz_types::command::CommandToRun {
+        cwd,
+        target,
+        ..command
+    })
+}
+
 /// The permission modes `claude --permission-mode` accepts, plus `skip` for
 /// `--dangerously-skip-permissions`.
 pub const CLAUDE_PERMISSION_MODES: &[&str] = &[

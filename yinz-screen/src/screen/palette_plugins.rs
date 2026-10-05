@@ -107,7 +107,11 @@ fn deliver(
 }
 
 impl CommandPaletteState {
-    fn cancel_requests(&mut self, senders: &yinz_bus::thread_bus::ThreadSenders, client: ClientId) {
+    pub(super) fn cancel_requests(
+        &mut self,
+        senders: &yinz_bus::thread_bus::ThreadSenders,
+        client: ClientId,
+    ) {
         self.plugins.revision += 1;
         for pending in self.plugins.pending.drain(..) {
             pending.active.store(false, Ordering::Release);
@@ -151,6 +155,9 @@ impl CommandPaletteState {
     }
 
     fn sections(&mut self, registry: &Registry) {
+        if self.agents.owns_view(self.widget.view) {
+            return;
+        }
         if let Some(nested) = self.plugins.views.get(&self.widget.view) {
             if let View::Actions {
                 title,
@@ -330,6 +337,9 @@ impl Screen {
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
         };
+        if state.agents.owns_view(state.widget.view) || state.agents.pending() {
+            return;
+        }
         state.cancel_requests(&self.bus.senders, client);
         // Discard forward history and its closures when returning to an earlier view.
         let discarded: Vec<_> = state
@@ -509,6 +519,15 @@ impl Screen {
 
     pub(crate) fn plugin_palette_instruction(&mut self, instruction: Instruction) -> bool {
         match instruction {
+            Instruction::AgentReply {
+                client,
+                opening,
+                step,
+                reply,
+            } => {
+                self.agent_palette_reply(client, opening, step, reply);
+                true
+            },
             Instruction::Discover {
                 client,
                 opening,
@@ -702,7 +721,8 @@ impl Screen {
                     );
                     false
                 });
-                state.widget.busy = state.plugins.pending.iter().any(|p| p.execution);
+                state.widget.busy =
+                    state.agents.pending() || state.plugins.pending.iter().any(|p| p.execution);
                 state.widget.pending = state.plugins.pending.iter().any(|p| !p.execution)
                     || state
                         .plugins
