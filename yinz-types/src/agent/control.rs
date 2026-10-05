@@ -225,6 +225,81 @@ pub enum NotReadyReason {
     Unmanaged,
 }
 
+/// The capability checks sampled together by the screen thread. These explain
+/// `prompt_unsupported`; idle state and input consumption are separate checks.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentReadiness {
+    pub kind_supported: bool,
+    pub reported: bool,
+    pub lifecycle_kind: Option<String>,
+    pub lifecycle_session_id: Option<String>,
+    pub lifecycle_matches: bool,
+    pub provisional_lifecycle: bool,
+    /// Includes worker/stateless hooks; age alone cannot establish readiness.
+    pub last_report_age_ms: Option<u64>,
+    pub held: bool,
+    pub exited: bool,
+    pub agent_exited: bool,
+    pub suspended: bool,
+    pub sync_active: bool,
+    pub excluded_from_sync: bool,
+    pub command_present: bool,
+    pub command_kind: Option<String>,
+    pub process_matches: bool,
+    pub bracketed_paste: bool,
+}
+
+impl AgentReadiness {
+    pub fn status_available(&self) -> bool {
+        self.reported && (self.lifecycle_matches || self.provisional_lifecycle)
+    }
+
+    pub fn prompt_supported(&self) -> bool {
+        self.kind_supported
+            && self.status_available()
+            && !self.held
+            && !self.exited
+            && !self.agent_exited
+            && !self.suspended
+            && !(self.sync_active && self.excluded_from_sync)
+            && self.process_matches
+            && self.bracketed_paste
+    }
+
+    /// Return every failed capability check, including failures masked by another.
+    pub fn failures(&self) -> Vec<&'static str> {
+        [
+            (!self.kind_supported, "unsupported_kind"),
+            (!self.reported, "not_reported"),
+            (
+                !self.lifecycle_matches && !self.provisional_lifecycle,
+                if self.lifecycle_kind.is_none() {
+                    "lifecycle_missing"
+                } else {
+                    "lifecycle_mismatch"
+                },
+            ),
+            (self.held, "held"),
+            (self.exited, "pane_exited"),
+            (self.agent_exited, "agent_exited"),
+            (self.suspended, "suspended"),
+            (self.sync_active && self.excluded_from_sync, "sync_excluded"),
+            (
+                !self.process_matches,
+                if self.command_present {
+                    "command_mismatch"
+                } else {
+                    "unmanaged"
+                },
+            ),
+            (!self.bracketed_paste, "bracketed_paste_disabled"),
+        ]
+        .into_iter()
+        .filter_map(|(failed, reason)| failed.then_some(reason))
+        .collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentStatus {
     #[serde(with = "pane_string")]
@@ -241,6 +316,9 @@ pub struct AgentStatus {
     pub not_ready_reason: Option<NotReadyReason>,
     pub status_available: bool,
     pub prompt_supported: bool,
+    /// Absent in responses from older servers.
+    #[serde(default)]
+    pub readiness: Option<AgentReadiness>,
     #[serde(default)]
     pub input_revision: Option<u64>,
     #[serde(default)]

@@ -59,6 +59,10 @@ pub(super) fn apply_queued_agent_report(
             .as_ref()
             .is_some_and(|hook| screen.ignore_claude_confirmation(pane_id, hook))
     {
+        log::debug!(
+            "agent report ignored report={:?} reason=claude_confirmation",
+            report.report_id
+        );
         return Ok(true);
     }
     if report.kind == "agy"
@@ -66,6 +70,10 @@ pub(super) fn apply_queued_agent_report(
             .as_ref()
             .is_some_and(|hook| screen.ignore_agy_confirmation(pane_id, hook))
     {
+        log::debug!(
+            "agent report ignored report={:?} reason=agy_confirmation",
+            report.report_id
+        );
         return Ok(true);
     }
     let mut normalized;
@@ -103,6 +111,10 @@ pub(super) fn apply_queued_agent_report(
                 .as_ref()
                 .and_then(|hook| hook.workflow_owner.as_deref());
             if reported != Some(owner) {
+                log::debug!(
+                    "agent report ignored report={:?} reason=workflow_owner",
+                    report.report_id
+                );
                 return Ok(true); // consumed, but deliberately not applied or broadcast
             }
         }
@@ -115,6 +127,10 @@ pub(super) fn apply_queued_agent_report(
                 && screen.has_agent_lifecycle(pane_id, &report.kind, &hook.session_id)
         })
     {
+        log::debug!(
+            "agent report ignored report={:?} reason=duplicate_codex_bootstrap",
+            report.report_id
+        );
         return Ok(true);
     }
     // The Muse bootstrap is unpinned - it carries no session - so a pane whose
@@ -134,6 +150,10 @@ pub(super) fn apply_queued_agent_report(
                     && agent.session_id.is_some()
             })
     {
+        log::debug!(
+            "agent report ignored report={:?} reason=late_muse_bootstrap",
+            report.report_id
+        );
         return Ok(true);
     }
     // Work finishing after its turn was interrupted must not make the idle agent busy again.
@@ -141,7 +161,10 @@ pub(super) fn apply_queued_agent_report(
         .as_ref()
         .is_some_and(|hook| screen.is_after_ended_turn(pane_id, &report.kind, hook))
     {
-        log::debug!("ignored a late {} hook from an ended turn", report.kind);
+        log::debug!(
+            "agent report ignored report={:?} reason=ended_turn",
+            report.report_id
+        );
         return Ok(true);
     }
     screen.refresh_agent_controls();
@@ -150,6 +173,24 @@ pub(super) fn apply_queued_agent_report(
     trace.record("screen_queue", accepted_at.elapsed(), "ok");
     let started = std::time::Instant::now();
     trace.record("state", Duration::ZERO, "enter");
+    log::debug!(
+        "agent report applying report={:?} session={:?} pane={pane_id:?} kind={:?} hook={:?} conversation={:?}",
+        report.report_id, screen.session_name, report.kind,
+        hook.as_ref().map(|hook| &hook.hook_event_name),
+        hook.as_ref().map(|hook| &hook.session_id),
+    );
+    if let Some(hook) = hook
+        .as_ref()
+        .filter(|hook| hook.hook_event_name == "PermissionRequest")
+    {
+        log::debug!(
+            "agent permission report={:?} mode={:?} reviewer={:?} mapped_state={:?}",
+            report.report_id,
+            hook.permission_mode,
+            hook.approvals_reviewer,
+            yinz_types::agent::hook_state_for(&report.kind, hook),
+        );
+    }
     let result = screen.apply_agent_report_state(report, hook.as_ref());
     trace.record(
         "state",
@@ -159,6 +200,24 @@ pub(super) fn apply_queued_agent_report(
     result?;
     if let Some(event) = &report.event {
         screen.agent_control_event(event, hook.as_ref());
+        if trace.enabled {
+            let lifecycle = screen
+                .get_pane_info(pane_id)
+                .and_then(|info| info.agent)
+                .is_some_and(|agent| {
+                    agent.source == AgentSource::Reported
+                        && (agent.session_id.as_deref().is_some_and(|conversation| {
+                            screen.has_agent_lifecycle(pane_id, &agent.kind, conversation)
+                        }) || (agent.kind == "muse"
+                            && agent.session_id.is_none()
+                            && screen.has_provisional_muse_lifecycle(pane_id)))
+                });
+            trace.record(
+                "lifecycle",
+                Duration::ZERO,
+                if lifecycle { "ok" } else { "unavailable" },
+            );
+        }
     }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
@@ -300,7 +359,22 @@ pub(crate) fn apply_pane_agent_report(
                 .as_ref()
                 .is_none_or(|agent| agent.state == yinz_types::agent::AgentState::Exited))
     {
-        screen.invalidate_agent_lifecycle(pane_id);
+        let reason = if agent.is_none() {
+            "record_cleared"
+        } else if previous.as_ref().map(|agent| &agent.kind)
+            != agent.as_ref().map(|agent| &agent.kind)
+        {
+            "kind_changed"
+        } else if previous
+            .as_ref()
+            .and_then(|agent| agent.session_id.as_ref())
+            != agent.as_ref().and_then(|agent| agent.session_id.as_ref())
+        {
+            "conversation_changed"
+        } else {
+            "agent_exited"
+        };
+        screen.invalidate_agent_lifecycle(pane_id, reason);
     }
     // A report that repeats itself costs nothing; a changed one is news to every reader of the
     // manifest.
@@ -1546,7 +1620,7 @@ pub fn screen_thread_main(
                     screen.log_and_report_session_state()?;
                 },
                 ScreenInstruction::HoldPane(id, exit_status, run_command) => {
-                    screen.invalidate_agent_lifecycle(id);
+                    screen.invalidate_agent_lifecycle(id, "held");
                     let is_first_run = false;
                     let mut found = false;
                     let mut pane_is_agent = false;

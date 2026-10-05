@@ -45,6 +45,62 @@ fn codex_permission_uses_the_newest_matching_turn_and_preserves_the_payload() {
 }
 
 #[test]
+fn codex_permission_finds_the_newest_turn_context_before_the_message_tail() {
+    let line = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"progress\"}}\n";
+    let padding = line.repeat(TAIL_BYTES as usize / line.len() + 2);
+    for reviewer in [Some("auto_review"), Some("user"), None] {
+        let latest = json!({"type":"turn_context", "payload":{
+            "turn_id":"turn", "approvals_reviewer": reviewer,
+        }});
+        let (_file, mut hook) = fixture(&format!("{META}{AUTO}{latest}\n{padding}"));
+        hook.as_object_mut().unwrap().remove("permission_mode");
+        let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
+        assert_eq!(event.approvals_reviewer.as_deref(), reviewer);
+        assert_eq!(
+            yinz_types::agent::waiting_needs_a_person(&event),
+            reviewer != Some("auto_review"),
+        );
+        let broadcast: HookEvent = serde_json::from_str(&raw).unwrap();
+        assert_eq!(broadcast.approvals_reviewer, event.approvals_reviewer);
+        assert!(
+            event.messages_omitted,
+            "reviewer lookup must not expand the message tail"
+        );
+    }
+}
+
+#[test]
+fn codex_permission_without_a_mode_uses_verified_reviewer_evidence() {
+    let (_file, mut hook) = fixture(&format!("{META}{AUTO}"));
+    hook.as_object_mut().unwrap().remove("permission_mode");
+    let (event, raw) = parse_hook_event("codex", hook.to_string()).unwrap();
+    let actions = hook_report_actions(
+        "codex",
+        yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
+        &event,
+        raw,
+    );
+    let [Action::SetPaneAgent {
+        agent: Some(agent), ..
+    }, Action::AgentEvent(broadcast)] = &actions[..]
+    else {
+        panic!("{actions:?}")
+    };
+    assert_eq!(agent.state, AgentState::Busy);
+    assert!(!agent.wait_needs_a_person);
+    assert_eq!(agent.detail.as_deref(), Some("Bash git"));
+    assert_eq!(broadcast.state, Some(AgentState::Busy));
+    // Missing evidence is not proof of automatic approval. Preserve a possible real dialog.
+    hook.as_object_mut().unwrap().remove("transcript_path");
+    let (event, _) = parse_hook_event("codex", hook.to_string()).unwrap();
+    assert_eq!(
+        yinz_types::agent::hook_state_for("codex", &event),
+        Some(AgentState::Waiting)
+    );
+    assert!(yinz_types::agent::waiting_needs_a_person(&event));
+}
+
+#[test]
 fn codex_permission_falls_back_when_transcript_identity_or_context_is_missing() {
     for contents in [
         String::new(),

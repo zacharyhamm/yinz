@@ -51,16 +51,18 @@ fn setup_with_size(
     tab.new_pane(
         PANE,
         Some("codex".into()),
-        Some(Run::Command(RunCommand {
-            command: PathBuf::from("env"),
-            args: vec![
-                format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
-                command.into(),
-            ],
-            cwd: Some(PathBuf::from("/work")),
-            target,
-            ..Default::default()
-        })),
+        (!command.is_empty()).then(|| {
+            Run::Command(RunCommand {
+                command: PathBuf::from("env"),
+                args: vec![
+                    format!("{}=1", yinz_types::agent::AGENT_PANE_ENV),
+                    command.into(),
+                ],
+                cwd: Some(PathBuf::from("/work")),
+                target,
+                ..Default::default()
+            })
+        }),
         false,
         true,
         NewPanePlacement::default(),
@@ -182,6 +184,180 @@ fn send_keys(keys: Vec<BareKey>) -> AgentRequest {
         expected_session_id: None,
         keys: keys.into_iter().map(KeyWithModifier::new).collect(),
     }
+}
+
+#[test]
+fn readiness_reports_each_failed_gate_without_writing_input() {
+    for (case, expected) in [
+        ("unsupported", vec!["unsupported_kind"]),
+        ("unreported", vec!["not_reported"]),
+        ("missing", vec!["lifecycle_missing"]),
+        ("mismatch", vec!["lifecycle_mismatch"]),
+        ("suspended", vec!["suspended"]),
+        ("sync", vec!["sync_excluded"]),
+        ("shell", vec!["command_mismatch"]),
+        ("unmanaged", vec!["unmanaged"]),
+        ("held", vec!["held", "pane_exited", "agent_exited"]),
+        ("paste", vec!["bracketed_paste_disabled"]),
+        (
+            "multiple",
+            vec!["lifecycle_missing", "suspended", "bracketed_paste_disabled"],
+        ),
+    ] {
+        let kind = if case == "unsupported" {
+            "gemini"
+        } else {
+            "codex"
+        };
+        let (mut screen, messages, writes) = setup(match case {
+            "shell" => "bash",
+            "unmanaged" => "",
+            _ => kind,
+        });
+        report_kind(&mut screen, kind, hook("SessionStart"));
+        match case {
+            "missing" | "multiple" => {
+                screen.agent_lifecycle.clear();
+            },
+            "mismatch" | "unreported" => {
+                // Deliberately bypass invalidation to exercise the diagnostic distinction.
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                let mut agent = tab.pane_agent_info(PANE).unwrap();
+                if case == "mismatch" {
+                    agent.session_id = Some("different-conversation".into());
+                } else {
+                    agent.source = yinz_types::agent::AgentSource::Spawned;
+                }
+                tab.set_pane_agent(PANE, Some(agent));
+            },
+            _ => {},
+        }
+        let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+        if case == "held" {
+            tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+        }
+        if matches!(case, "suspended" | "multiple") {
+            tab.get_pane_with_id_mut(PANE).unwrap().set_suspended(true);
+        }
+        if case == "sync" {
+            tab.toggle_sync_panes_is_active();
+            tab.get_pane_with_id_mut(PANE)
+                .unwrap()
+                .set_exclude_from_sync(true);
+        }
+        if matches!(case, "paste" | "multiple") {
+            tab.handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
+                .unwrap();
+        }
+        writes.try_iter().for_each(drop);
+        screen.agent_control(prompt(false), CLIENT);
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        let status = &response.agents[0];
+        let readiness = status.readiness.as_ref().unwrap();
+        assert_eq!(readiness.failures(), expected, "{case}");
+        assert_eq!(
+            readiness.status_available(),
+            status.status_available,
+            "{case}"
+        );
+        assert_eq!(
+            readiness.prompt_supported(),
+            status.prompt_supported,
+            "{case}"
+        );
+        assert_eq!(response.outcome, AgentOutcome::StatusUnavailable, "{case}");
+        for reason in expected {
+            assert!(
+                response.message.as_ref().unwrap().contains(reason),
+                "{case}: {response:?}"
+            );
+        }
+        assert!(!status.ready);
+        let encoded = serde_json::to_value(status).unwrap();
+        assert_eq!(
+            encoded["readiness"]["bracketed_paste"],
+            readiness.bracketed_paste
+        );
+        assert_eq!(
+            serde_json::from_value::<yinz_types::agent::control::AgentStatus>(encoded).unwrap(),
+            *status
+        );
+        assert!(
+            writes
+                .try_iter()
+                .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn missing_lifecycle_requires_a_parent_hook_and_preserves_unknown_input() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    assert!(screen.agent_status_for_test().ready);
+    // A server restart loses this map; the restored pane record is not authority.
+    screen.agent_lifecycle.clear();
+    let status = screen.agent_status_for_test();
+    assert_eq!(
+        status.readiness.unwrap().failures(),
+        vec!["lifecycle_missing"]
+    );
+    for event in [
+        HookEvent {
+            session_id: String::new(),
+            ..hook("Stop")
+        },
+        HookEvent {
+            agent_id: Some("worker".into()),
+            ..hook("Stop")
+        },
+    ] {
+        report(&mut screen, event);
+        assert!(!screen.agent_status_for_test().status_available);
+    }
+    report(&mut screen, hook("Stop"));
+    let status = screen.agent_status_for_test();
+    assert!(status.status_available && status.prompt_supported);
+    assert_eq!(
+        status.not_ready_reason,
+        Some(NotReadyReason::UnconsumedInput)
+    );
+    assert!(status.readiness.unwrap().failures().is_empty());
+    writes.try_iter().for_each(drop);
+    screen.agent_control(prompt(false), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Rejected
+    );
+    assert!(writes
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+}
+
+#[test]
+fn paste_mode_only_gates_prompts_and_sync_exclusion_requires_active_sync() {
+    let (mut screen, messages, _writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+    tab.get_pane_with_id_mut(PANE)
+        .unwrap()
+        .set_exclude_from_sync(true);
+    assert!(screen.agent_status_for_test().ready);
+    screen
+        .tab_containing_pane_mut(PANE)
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), b"\x1b[?2004l".to_vec())
+        .unwrap();
+    assert_eq!(
+        screen.agent_status_for_test().readiness.unwrap().failures(),
+        vec!["bracketed_paste_disabled"]
+    );
+    screen.agent_control(send_keys(vec![BareKey::Esc]), CLIENT);
+    assert_eq!(
+        replies(&messages, CLIENT).pop().unwrap().outcome,
+        AgentOutcome::Ok
+    );
 }
 
 #[test]
@@ -551,7 +727,7 @@ fn dialog_tracking_is_cleared_on_recovery_invalidation_and_closure() {
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
                 screen.agent_write_for_test();
             },
-            "invalidate" => screen.invalidate_agent_lifecycle(PANE),
+            "invalidate" => screen.invalidate_agent_lifecycle(PANE, "test"),
             "close" => screen.close_pane_explicitly(PANE, None),
             "restart" => {
                 report(&mut screen, hook("SessionStart"));
@@ -620,7 +796,7 @@ fn dialog_keys_cannot_consume_manual_input_or_a_failed_batch() {
                 }
                 if interference == "replacement" {
                     if startup {
-                        screen.invalidate_agent_lifecycle(PANE);
+                        screen.invalidate_agent_lifecycle(PANE, "test");
                     } else {
                         let mut replacement = hook("SessionStart");
                         replacement.session_id = "replacement".into();
@@ -2764,7 +2940,7 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
                 assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
                 screen.agent_write_for_test();
             },
-            "invalidate" => screen.invalidate_agent_lifecycle(PANE),
+            "invalidate" => screen.invalidate_agent_lifecycle(PANE, "test"),
             "closed" => screen.close_pane_explicitly(PANE, None),
             "process" => screen.run_command_in_pane_with_id(
                 TerminalId::new(7),
@@ -6662,7 +6838,7 @@ fn clear_draft_cancellation_drains_writes_and_preserves_new_input() {
             },
             "report" => report(&mut screen, hook("UserPromptSubmit")),
             "disconnect" => screen.detach_agent_controls(CLIENT),
-            "replacement" => screen.invalidate_agent_lifecycle(PANE),
+            "replacement" => screen.invalidate_agent_lifecycle(PANE, "test"),
             _ => {},
         }
         let later = now + Duration::from_secs(if race == "timeout" { 31 } else { 1 });
