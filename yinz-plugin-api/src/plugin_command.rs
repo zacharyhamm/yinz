@@ -162,9 +162,9 @@ pub use super::generated_api::api::{
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         ReplacePaneWithExistingPanePayload, RequestPluginPermissionPayload,
         RerunCommandPanePayload, ResizePaneIdWithDirectionPayload, ResizePayload,
-        RevealPaneWithIdPayload, RunActionPayload, RunCommandInPanePayload, RunCommandPayload,
-        RunningCommand as ProtobufRunningCommand, SaveLayoutPayload,
-        SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
+        ResolveNotificationPayload, RevealPaneWithIdPayload, RunActionPayload,
+        RunCommandInPanePayload, RunCommandPayload, RunningCommand as ProtobufRunningCommand,
+        SaveLayoutPayload, SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
         SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
@@ -1335,6 +1335,16 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     return Err("ListRecordings should not have a payload");
                 }
                 Ok(PluginCommand::ListRecordings)
+            },
+            Some(CommandName::ResolveNotification) => match protobuf_plugin_command.payload {
+                Some(Payload::ResolveNotificationPayload(p)) => {
+                    Ok(PluginCommand::ResolveNotification {
+                        id: NotificationId::new(p.id),
+                        decision: serde_json::from_str(&p.decision_json)
+                            .map_err(|_| "Malformed notification decision")?,
+                    })
+                },
+                _ => Err("Missing notification decision"),
             },
             Some(CommandName::ListNotifications) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -4013,6 +4023,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::ListRecordings => Ok(ProtobufPluginCommand {
                 name: CommandName::ListRecordings as i32,
                 payload: None,
+            }),
+            PluginCommand::ResolveNotification { id, decision } => Ok(ProtobufPluginCommand {
+                name: CommandName::ResolveNotification as i32,
+                payload: Some(Payload::ResolveNotificationPayload(
+                    ResolveNotificationPayload {
+                        id: id.get(),
+                        decision_json: serde_json::to_string(&decision)
+                            .map_err(|_| "Cannot encode notification decision")?,
+                    },
+                )),
             }),
             PluginCommand::ListNotifications => Ok(ProtobufPluginCommand {
                 name: CommandName::ListNotifications as i32,
@@ -7271,6 +7291,9 @@ impl From<ProtobufNotificationInfo> for NotificationInfo {
         NotificationInfo {
             id: NotificationId::new(notification.id),
             message: notification.message,
+            outcome: notification
+                .outcome_json
+                .and_then(|json| serde_json::from_str(&json).ok()),
             received_at_unix_ms: yinz_types::units::UnixMillis::new(
                 notification.received_at_unix_ms,
             ),
@@ -7283,6 +7306,10 @@ impl From<NotificationInfo> for ProtobufNotificationInfo {
         ProtobufNotificationInfo {
             id: notification.id.get(),
             message: notification.message,
+            outcome_json: notification
+                .outcome
+                .as_ref()
+                .and_then(|outcome| serde_json::to_string(outcome).ok()),
             received_at_unix_ms: (notification.received_at_unix_ms).get(),
         }
     }
@@ -7798,6 +7825,7 @@ mod tests {
             id: NotificationId::new(7),
             message: "build finished".to_owned(),
             received_at_unix_ms: yinz_types::units::UnixMillis::new(42),
+            outcome: None,
         };
         let protobuf: ProtobufNotificationInfo = notification.clone().into();
         assert_eq!(NotificationInfo::from(protobuf), notification);
@@ -8260,6 +8288,7 @@ mod tests {
                 | PluginCommand::DeleteAllDeadSessionsAndReply
                 | PluginCommand::FocusHostSession
                 | PluginCommand::ListRecordings
+                | PluginCommand::ResolveNotification { .. }
                 | PluginCommand::ListNotifications
                 | PluginCommand::SearchRecordings { .. }
                 | PluginCommand::WarpPaneToSession { .. }

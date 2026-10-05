@@ -1165,3 +1165,26 @@ fn sdk_trace_accepts_only_optional_booleans() {
         .is_err());
     }
 }
+
+#[test]
+fn notification_policy_and_observer_contracts_type_check() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(
+        &dir.path().join("policy.ts"),
+        r#"
+import yinz, {type NotificationDecision} from 'yinz:plugin';
+yinz.on('NotificationRequested', notification => {
+  const id: number | bigint = notification.id;
+  const decision: NotificationDecision = {Replace: {body: notification.body, delivery: 'Both'}};
+  yinz.host.resolveNotification({id, decision});
+});
+yinz.on('NotificationResolved', result => {
+  const source: string = result.original.source;
+  const suppressed: boolean = result.suppressed;
+});
+const history = yinz.host.listNotifications();
+const body: string | undefined = history[0]?.outcome?.body;
+"#,
+    )
+    .unwrap();
+}

@@ -1,5 +1,6 @@
 ---
 source: yinz-config/src/kdl/./unit/config_options.rs
+assertion_line: 381
 expression: fake_config_stringified
 ---
 keybinds clear-defaults=true {
@@ -394,6 +395,7 @@ hooks {
     pane_exit ""
     session_start ""
     context_menu "yinz:context-menu"
+    notification ""
 }
 context_menu {
     Copy {

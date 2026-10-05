@@ -101,18 +101,18 @@ impl Screen {
         let browser = self.notification_browsers.get(&client_id)?;
         let entries = self.browser_entries();
         let selected = Self::browser_selected_index(browser, &entries);
-        let texts: Vec<&str> = if entries.is_empty() {
-            vec![EMPTY_BROWSER_TEXT]
+        let texts: Vec<String> = if entries.is_empty() {
+            vec![EMPTY_BROWSER_TEXT.to_owned()]
         } else {
             entries
                 .iter()
-                .map(|record| record.info.message.as_str())
+                .map(|record| record.info.browser_message())
                 .collect()
         };
         let mut layout = notification_browser_layout(
             viewport,
             self.notification_position,
-            &texts,
+            &texts.iter().map(String::as_str).collect::<Vec<_>>(),
             selected,
             browser.expanded,
             browser.first,

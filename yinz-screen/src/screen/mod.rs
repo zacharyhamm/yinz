@@ -131,6 +131,7 @@ mod input_modes;
 mod mouse;
 mod nested;
 mod notification_browser;
+mod notification_policy;
 mod notifications;
 mod panes;
 mod plugin_state;
@@ -693,6 +694,7 @@ pub(crate) struct Screen {
     /// ponytail: intentionally unbounded because the feature promises "all" notifications;
     /// add a configurable cap only if long-lived sessions show meaningful memory pressure.
     notification_history: Vec<NotificationRecord>,
+    notification_policy: notification_policy::NotificationPolicy,
     /// The open notification browser per client in `Notifications` mode. See
     /// `screen::notification_browser`.
     notification_browsers: HashMap<ClientId, notification_browser::NotificationBrowser>,
@@ -1370,6 +1372,7 @@ impl Screen {
             next_context_menu_request_id: ContextMenuRequestId::new(0),
             context_menu,
             notification_history: vec![],
+            notification_policy: Default::default(),
             notification_browsers: HashMap::new(),
             next_notification_id: NotificationId::new(0),
             notification_position,
@@ -3273,6 +3276,7 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.forget_notification_assemblies(id);
         self.retire_agent_event_pane(id, "pane_closed");
         self.destroyed_panes.insert(id);
         self.invalidate_agent_lifecycle(id, "pane_closed");
@@ -5089,16 +5093,11 @@ impl Screen {
     /// its host speaks: an OSC 99 host gets OSC 99 passed through with the identifier namespaced
     /// to the pane, everything else gets the assembled title and body rendered by its protocol.
     /// All clients in the app are told, not just the ones viewing the pane's tab.
-    fn forward_desktop_notifications(
+    fn deliver_desktop_notifications(
         &mut self,
         notifications: Vec<PendingNotification>,
         pane_id: TerminalId,
     ) {
-        for notification in &notifications {
-            self.report_codex_plan_prompt(notification, pane_id)
-                .context("failed to report a Codex plan prompt")
-                .non_fatal();
-        }
         let all_clients: Vec<ClientId> = self.connected_clients.borrow().iter().copied().collect();
         if all_clients.is_empty() || notifications.is_empty() {
             return;

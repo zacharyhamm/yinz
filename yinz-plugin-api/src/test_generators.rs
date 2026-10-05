@@ -2252,6 +2252,10 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
         CommandType::DeleteAllDeadSessionsAndReply => PluginCommand::DeleteAllDeadSessionsAndReply,
         CommandType::FocusHostSession => PluginCommand::FocusHostSession,
         CommandType::ListRecordings => PluginCommand::ListRecordings,
+        CommandType::ResolveNotification => PluginCommand::ResolveNotification {
+            id: yinz_types::internal_ids::NotificationId::new(1),
+            decision: yinz_types::notifications::NotificationDecision::Pass,
+        },
         CommandType::ListNotifications => PluginCommand::ListNotifications,
         // `SearchRecordingsPayload.limit` is a `uint32`.
         CommandType::SearchRecordings => PluginCommand::SearchRecordings {

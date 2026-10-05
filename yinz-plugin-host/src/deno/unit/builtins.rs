@@ -629,7 +629,7 @@ fn the_shipped_agent_policy_hook_notifies_when_an_agent_waits() {
             receiver
                 .try_iter()
                 .filter_map(|(instruction, _)| match instruction {
-                    ScreenInstruction::Notify(text, pane_id, _, _) => Some((text, pane_id)),
+                    ScreenInstruction::PluginNotify { text, pane_id, .. } => Some((text, pane_id)),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1461,4 +1461,47 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
         .find(|item| item.contains(&codes("x write the test")))
         .unwrap_or_else(|| panic!("no child item in: {rendered}"));
     assert!(child.starts_with('|'), "not indented: {child}");
+}
+
+#[test]
+fn notification_observation_requires_read_application_state_and_requests_are_addressed_consent() {
+    use yinz_types::notifications::*;
+    let mut env = test_env();
+    let original = NotificationData {
+        id: yinz_types::internal_ids::NotificationId::new(0),
+        received_at_unix_ms: yinz_types::units::UnixMillis::new(1),
+        source: NotificationSource::Toast,
+        pane_id: None,
+        plugin_id: None,
+        title: String::new(),
+        body: "body".into(),
+        delivery: NotificationDelivery::Toast,
+    };
+    let received = Event::NotificationReceived(original.clone());
+    let resolved = Event::NotificationResolved(NotificationResolution::from_decision(
+        original.clone(),
+        NotificationDecision::Pass,
+        None,
+    ));
+    env.permissions = Arc::new(Mutex::new(None));
+    for event in [&received, &resolved] {
+        assert_eq!(
+            crate::wasm_bridge::check_event_permission(&env, event),
+            (
+                PermissionStatus::Denied,
+                Some(PermissionType::ReadApplicationState)
+            )
+        );
+    }
+    assert_eq!(
+        crate::wasm_bridge::check_event_permission(&env, &Event::NotificationRequested(original)),
+        (PermissionStatus::Granted, None)
+    );
+    *env.permissions.lock().unwrap() = Some(HashSet::from([PermissionType::ReadApplicationState]));
+    for event in [&received, &resolved] {
+        assert_eq!(
+            crate::wasm_bridge::check_event_permission(&env, event),
+            (PermissionStatus::Granted, None)
+        );
+    }
 }

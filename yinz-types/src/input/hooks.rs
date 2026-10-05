@@ -65,6 +65,8 @@ pub enum HookPoint {
     /// headless, is handed the click as `Event::ContextMenuRequested`, and answers with
     /// `set_context_menu`. The menu itself is drawn by the server and is not a pane.
     ContextMenu,
+    /// One shared headless policy decides notification delivery.
+    Notification,
 }
 
 /// How the plugin bound to a point is run when the point is reached.
@@ -87,6 +89,7 @@ impl HookPoint {
         HookPoint::PaneExit,
         HookPoint::SessionStart,
         HookPoint::ContextMenu,
+        HookPoint::Notification,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -98,6 +101,7 @@ impl HookPoint {
             HookPoint::PaneExit => "pane_exit",
             HookPoint::SessionStart => "session_start",
             HookPoint::ContextMenu => "context_menu",
+            HookPoint::Notification => "notification",
         }
     }
 
@@ -112,7 +116,8 @@ impl HookPoint {
             | HookPoint::AgentIdle
             | HookPoint::PaneExit
             | HookPoint::SessionStart
-            | HookPoint::ContextMenu => HookShape::Headless,
+            | HookPoint::ContextMenu
+            | HookPoint::Notification => HookShape::Headless,
         }
     }
 }
@@ -134,6 +139,7 @@ impl FromStr for HookPoint {
             "pane_exit" | "pane-exit" => Ok(HookPoint::PaneExit),
             "session_start" | "session-start" => Ok(HookPoint::SessionStart),
             "context_menu" | "context-menu" => Ok(HookPoint::ContextMenu),
+            "notification" => Ok(HookPoint::Notification),
             _ => Err(format!(
                 "no such hook point: '{}'. Known hook points: {}",
                 s,

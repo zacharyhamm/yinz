@@ -94,6 +94,9 @@ enum EventType {
     PaneTabsUpdate = 62;
     AgentProvidersChanged = 63;
     ClientGridReset = 64;
+    NotificationReceived = 65;
+    NotificationRequested = 66;
+    NotificationResolved = 67;
 }
 
 message EventNameList {
@@ -157,6 +160,9 @@ message Event {
     RunCommandOutputPayload run_command_output_payload = 54;
     PaneOutputPayload pane_output_payload = 55;
     uint32 client_grid_reset_payload = 61;
+    string notification_received_payload = 62;
+    string notification_requested_payload = 63;
+    string notification_resolved_payload = 64;
   }
 }
 

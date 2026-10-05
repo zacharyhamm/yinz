@@ -431,6 +431,18 @@ impl Analysis<'_> {
             _ => false,
         }
     }
+    fn notification_observation(&mut self, name: &str) {
+        if matches!(name, "NotificationReceived" | "NotificationResolved")
+            && !self
+                .report
+                .permissions
+                .contains(&PermissionType::ReadApplicationState)
+        {
+            self.report
+                .permissions
+                .push(PermissionType::ReadApplicationState);
+        }
+    }
     fn permissions(&mut self, span: Span, expr: Option<&Expr>) {
         let names: Option<Vec<String>> = match expr {
             Some(Expr::Array(array)) => array
@@ -640,6 +652,20 @@ impl Visit for Analysis<'_> {
                             .map(|arg| &*arg.expr)
                     };
                     match property(&member.prop).as_deref() {
+                        Some("subscribe") => {
+                            if let Some(Expr::Array(array)) = argument(0) {
+                                for item in array
+                                    .elems
+                                    .iter()
+                                    .flatten()
+                                    .filter(|item| item.spread.is_none())
+                                {
+                                    if let Some(name) = literal(&item.expr) {
+                                        self.notification_observation(&name);
+                                    }
+                                }
+                            }
+                        },
                         Some("requestPermission" | "waitForPermissions") => {
                             self.permissions(call.span, argument(0))
                         },
@@ -674,6 +700,7 @@ impl Visit for Analysis<'_> {
                         },
                         Some("on" | "onEvent" | "waitForEvent") => {
                             if let Some(name) = argument(0).and_then(literal) {
+                                self.notification_observation(&name);
                                 self.entry(call.span, OutlineKind::Handler, format!("on {name}"));
                             }
                         },

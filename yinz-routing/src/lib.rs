@@ -1806,13 +1806,19 @@ pub fn route_action(
                 .with_context(err_context)?;
         },
         Action::Notify(text) => {
-            senders
-                .send_to_screen(ScreenInstruction::Notify(
+            let completion = Some(NotificationEnd::new(completion_tx));
+            let instruction = match pane_id.filter(|_| !is_client_input) {
+                Some(PaneId::Plugin(plugin_id)) => ScreenInstruction::PluginNotify {
                     text,
-                    None,
-                    None,
-                    Some(NotificationEnd::new(completion_tx)),
-                ))
+                    pane_id: None,
+                    on_click: None,
+                    plugin_id,
+                    completion,
+                },
+                _ => ScreenInstruction::Notify(text, None, None, completion),
+            };
+            senders
+                .send_to_screen(instruction)
                 .with_context(err_context)?;
         },
         Action::CliPipe {

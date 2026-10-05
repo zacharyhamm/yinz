@@ -120,6 +120,7 @@ pub fn plugin_thread_main(
     server_session: ServerSession,
 ) -> Result<()> {
     info!("Wasm main thread starts");
+    let mut notification_policy = None;
     let yinz_data_dir = data_dir.clone();
     layout.populate_plugin_aliases_in_layout(&plugin_aliases);
 
@@ -503,6 +504,15 @@ pub fn plugin_thread_main(
                 );
                 result?;
                 if !session_started {
+                    if hooks.get(HookPoint::Notification).is_some() {
+                        notification_policy = load_notification_policy(
+                            &hooks,
+                            client_id,
+                            &mut wasm_bridge,
+                            &bus,
+                            &plugin_aliases,
+                        );
+                    }
                     session_started = true;
                     // The session is up, in the sense that matters to a plugin: the thread
                     // exists, its background plugins are loading, and there is a client to
@@ -1381,8 +1391,26 @@ pub fn plugin_thread_main(
                 // bound here that is not loaded is not a problem - `run_hook` loads on demand, and
                 // `request_context_menu` answers that one click from the configuration while it
                 // starts.
+                let notification_binding_changed = hooks.get(HookPoint::Notification)
+                    != new_hooks.get(HookPoint::Notification)
+                    || plugin_aliases != new_aliases;
                 plugin_aliases = new_aliases;
                 *wasm_bridge.plugin_aliases.lock().unwrap() = plugin_aliases.clone();
+                if notification_binding_changed
+                    && (hooks.get(HookPoint::Notification).is_some()
+                        || new_hooks.get(HookPoint::Notification).is_some())
+                {
+                    if let Some(plugin_id) = notification_policy.take() {
+                        wasm_bridge.unload_plugin(plugin_id).non_fatal();
+                    }
+                    notification_policy = load_notification_policy(
+                        &new_hooks,
+                        client_id,
+                        &mut wasm_bridge,
+                        &bus,
+                        &plugin_aliases,
+                    );
+                }
                 hooks = new_hooks;
                 context_menu = new_context_menu;
                 wasm_bridge
@@ -1713,6 +1741,43 @@ fn pipe_to_specific_plugins(
         Err(error) => return Err(anyhow!("Failed to parse plugin url: {error}")),
     }
     Ok(())
+}
+
+/// Notification policies always own a dedicated shared headless instance, even if their
+/// entrypoint is also used by a visible plugin or another hook.
+fn load_notification_policy(
+    hooks: &Hooks,
+    client_id: ClientId,
+    bridge: &mut WasmBridge,
+    bus: &Bus<PluginInstruction>,
+    aliases: &PluginAliases,
+) -> Option<PluginId> {
+    let policy = hooks.get(HookPoint::Notification).and_then(|binding| {
+        let mut binding = binding.clone();
+        binding.populate_run_plugin_if_needed(aliases);
+        let mut plugin = binding.get_run_plugin()?;
+        plugin.configuration.insert("shared", "true");
+        plugin
+            .configuration
+            .insert("__yinz_notification_policy", "true");
+        load_background_plugin(
+            RunPluginOrAlias::RunPlugin(plugin),
+            bridge,
+            bus,
+            aliases,
+            client_id,
+        )
+        .map(|(id, _)| id)
+    });
+    bus.senders
+        .send_to_screen(ScreenInstruction::NotificationPolicy(
+            policy,
+            (hooks.get(HookPoint::Notification).is_some() && policy.is_none())
+                .then(|| "policy_load_failed".into()),
+        ))
+        .context("assign notification policy")
+        .non_fatal();
+    policy
 }
 
 /// What the `session_start` hook is told: enough to address the session from a plugin that was
