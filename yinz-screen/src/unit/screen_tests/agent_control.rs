@@ -7336,3 +7336,216 @@ fn control_agents_end_with_the_lifecycle_and_do_not_return_with_replacements() {
 }
 #[path = "agent_events.rs"]
 mod events;
+
+#[test]
+fn warped_codex_consumption_waits_for_parent_and_rejects_new_input() {
+    for whole_tab in [false, true] {
+        for rewarp in [false, true] {
+            for parent_hook in ["Stop", "SessionStart"] {
+                for case in [
+                    "consumed",
+                    "draft",
+                    "unfinished_write",
+                    "destination_input",
+                    "conversation",
+                    "unverified",
+                ] {
+                    // A new conversation's startup establishes its own empty-input lifecycle.
+                    if case == "conversation" && parent_hook == "SessionStart" {
+                        continue;
+                    }
+                    let (mut source, _, source_writes) = setup("codex");
+                    report(&mut source, hook("SessionStart"));
+                    source.agent_control(prompt(false), CLIENT);
+                    if case != "unfinished_write" {
+                        finish_paste(&source_writes);
+                        source.refresh_agent_controls();
+                    }
+                    report(&mut source, hook("UserPromptSubmit"));
+                    if case == "draft" {
+                        source.agent_write_for_test();
+                    }
+                    let before = source.warped_agent_input(PANE);
+                    assert!(source
+                        .take_released_pane_for_warp(
+                            TerminalId::new(7),
+                            Err("destination refused adoption".into())
+                        )
+                        .is_err());
+                    assert_eq!(source.warped_agent_input(PANE), before);
+                    let warp = |source: &mut Screen| {
+                        let expected = source.warped_agent_input(PANE).unwrap();
+                        let command = source
+                            .tab_containing_pane(PANE)
+                            .unwrap()
+                            .pane_run_command(PANE)
+                            .unwrap()
+                            .clone();
+                        let released = |id| {
+                            Ok(ReleasedPane::Local(ReleasedPtyHost {
+                                host_id: yinz_types::internal_ids::SupervisorId::new(format!(
+                                    "codex-warp-{id}"
+                                )),
+                                host_pid: ProcessId::new(1),
+                                control_socket: Some(PathBuf::from(format!(
+                                    "/tmp/codex-warp-{id}.sock"
+                                ))),
+                            }))
+                        };
+                        let payload = if whole_tab {
+                            let (tab, terminals, prepared) = source
+                                .check_tab_can_be_warped(Some(TabId::new(0)), CLIENT)
+                                .unwrap();
+                            let released =
+                                terminals.into_iter().map(|id| (id, released(id))).collect();
+                            source
+                                .take_released_tab_for_warp(tab, released, prepared)
+                                .unwrap()
+                                .tiled_panes
+                                .into_iter()
+                                .find(|pane| pane.agent_input.is_some())
+                                .unwrap()
+                        } else {
+                            *source
+                                .take_released_pane_for_warp(
+                                    TerminalId::new(7),
+                                    released(TerminalId::new(7)),
+                                )
+                                .unwrap()
+                        };
+                        let evidence = payload.agent_input.unwrap();
+                        assert_eq!(evidence, expected);
+                        let (mut destination, messages, writes) = setup("codex");
+                        assert_eq!(
+                            destination
+                                .tab_containing_pane(PANE)
+                                .unwrap()
+                                .pane_run_command(PANE),
+                            Some(command)
+                        );
+                        let replay = crate::screen::warp_ops::warp_replay(
+                            payload.contents,
+                            payload.bracketed_paste,
+                            vec![],
+                        );
+                        destination
+                            .tab_containing_pane_mut(PANE)
+                            .unwrap()
+                            .handle_pty_bytes(TerminalId::new(7), replay)
+                            .unwrap();
+                        crate::screen::thread_main::apply_pane_agent_report(
+                            &mut destination,
+                            PANE,
+                            payload.agent,
+                        )
+                        .unwrap();
+                        destination.restore_warped_agent_input(PANE, evidence);
+                        assert!(!destination.agent_status_for_test().status_available);
+                        report(
+                            &mut destination,
+                            HookEvent {
+                                agent_id: Some("worker".into()),
+                                ..hook("Stop")
+                            },
+                        );
+                        assert!(!destination.agent_status_for_test().status_available);
+                        (destination, messages, writes)
+                    };
+                    let (mut destination, mut messages, mut writes) = warp(&mut source);
+                    assert_eq!(
+                        destination.warped_agent_input(PANE).unwrap().consumed,
+                        !matches!(case, "draft" | "unfinished_write")
+                    );
+                    if case == "destination_input" {
+                        destination.agent_write_for_test();
+                    }
+                    if rewarp {
+                        assert_eq!(
+                            destination.warped_agent_input(PANE).unwrap().consumed,
+                            !matches!(case, "draft" | "unfinished_write" | "destination_input")
+                        );
+                        (destination, messages, writes) = warp(&mut destination);
+                    }
+                    let mut completion = hook(parent_hook);
+                    if case == "conversation" {
+                        completion.session_id = "different".into();
+                    }
+                    if case == "unverified" {
+                        completion.codex_hooks_ready = Some(false);
+                    }
+                    report(&mut destination, completion);
+                    assert_eq!(
+                        destination.agent_status_for_test().ready,
+                        case == "consumed",
+                        "{case}, whole_tab={whole_tab}, rewarp={rewarp}, parent_hook={parent_hook}"
+                    );
+                    if matches!(case, "draft" | "unfinished_write" | "destination_input") {
+                        report(&mut destination, hook("SessionStart"));
+                        assert_eq!(
+                            destination.agent_status_for_test().not_ready_reason,
+                            Some(NotReadyReason::UnconsumedInput)
+                        );
+                    }
+                    if case == "consumed" {
+                        assert_eq!(
+                            destination
+                                .agent_status_for_test()
+                                .agent
+                                .session_id
+                                .as_deref(),
+                            Some("conversation")
+                        );
+                        destination.agent_control(prompt(false), CLIENT);
+                        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+                        destination.refresh_agent_controls();
+                        report(
+                            &mut destination,
+                            HookEvent {
+                                turn_id: Some("next-turn".into()),
+                                ..hook("UserPromptSubmit")
+                            },
+                        );
+                        assert_eq!(
+                            replies(&messages, CLIENT).pop().unwrap().outcome,
+                            AgentOutcome::Submitted
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn warp_replay_restores_paste_mode_and_buffered_output_wins() {
+    for enabled in [false, true] {
+        for contents in [None, Some(String::new()), Some("screen\x1b[?2004h".into())] {
+            for buffered in [None, Some(false), Some(true)] {
+                let (mut screen, _, _) = setup("codex");
+                let bytes = crate::screen::warp_ops::warp_replay(
+                    contents.clone(),
+                    enabled,
+                    match buffered {
+                        None => vec![],
+                        Some(true) => b"\x1b[?2004h".to_vec(),
+                        Some(false) => b"\x1b[?2004l".to_vec(),
+                    },
+                );
+                screen
+                    .tab_containing_pane_mut(PANE)
+                    .unwrap()
+                    .handle_pty_bytes(TerminalId::new(7), bytes)
+                    .unwrap();
+                assert_eq!(
+                    screen
+                        .tab_containing_pane(PANE)
+                        .unwrap()
+                        .get_pane_with_id(PANE)
+                        .unwrap()
+                        .supports_bracketed_paste(),
+                    buffered.unwrap_or(enabled)
+                );
+            }
+        }
+    }
+}

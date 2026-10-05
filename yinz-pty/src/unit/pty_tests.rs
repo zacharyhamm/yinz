@@ -3485,6 +3485,8 @@ fn workflow_signals_refuse_changed_ownership_and_replacement_processes() {
     let process = yinz_types::internal_ids::ProcessId::new(4242);
     let adopted = pty
         .adopt_terminal(&WarpedPane {
+            bracketed_paste: false,
+            agent_input: None,
             held: None,
             group: None,
             host_id: SupervisorId::new("supervisor"),
@@ -3911,6 +3913,7 @@ fn a_layout_marks_all_adopted_terminals_even_without_agent_records() {
         let tiled_command = command("codex");
         let floating_command = command("claude");
         let adopted = |terminal_id, cmd: RunCommand| AdoptedTabTerminal {
+            agent_input: None,
             terminal_id,
             held: (state == "held").then(|| yinz_types::data::HeldTerminal {
                 command: cmd.clone(),

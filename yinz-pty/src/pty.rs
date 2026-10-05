@@ -2150,6 +2150,17 @@ impl Pty {
                         ))
                         .with_context(err_context)?;
                 }
+                if terminal.child_exit_status.is_none() && terminal.held.is_none() {
+                    if let Some(input) = terminal.agent_input {
+                        self.bus
+                            .senders
+                            .send_to_screen(ScreenInstruction::RestoreWarpedAgentInput(
+                                PaneId::Terminal(terminal.terminal_id),
+                                input,
+                            ))
+                            .with_context(err_context)?;
+                    }
+                }
                 if let Some(caption) = terminal.caption {
                     self.bus
                         .senders

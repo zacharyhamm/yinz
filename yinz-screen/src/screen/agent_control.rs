@@ -459,6 +459,7 @@ impl Screen {
     }
 
     fn remove_agent_lifecycle(&mut self, pane: PaneId, reason: &str) {
+        self.warped_agent_inputs.remove(&pane);
         let previous = self.agent_lifecycle.remove(&pane);
         log::debug!(
             "agent lifecycle removed session={:?} pane={pane:?} reason={reason} previous={:?}",
@@ -662,6 +663,69 @@ impl Screen {
             self.agent_worker_waits.insert(pane, workers);
         }
         Ok(result)
+    }
+
+    pub(super) fn warped_agent_input(
+        &self,
+        pane: PaneId,
+    ) -> Option<yinz_types::data::WarpedAgentInput> {
+        let info = self.get_pane_info(pane)?;
+        let agent = info.agent?;
+        let conversation = agent.session_id?;
+        if info.is_held
+            || info.exited
+            || agent.state == AgentState::Exited
+            || agent.kind != "codex"
+            || agent.source != AgentSource::Reported
+            || !self.agent_process_matches(pane, &agent.kind)
+        {
+            return None;
+        }
+        let revision = self.agent_input_revision(pane);
+        let consumed = if let Some(lifecycle) = self.agent_lifecycle.get(&pane) {
+            if lifecycle.kind != agent.kind || lifecycle.conversation != conversation {
+                return None;
+            }
+            lifecycle.input_revision == Some(revision)
+        } else {
+            let (input, input_revision) = self.warped_agent_inputs.get(&pane)?;
+            if input.kind != agent.kind || input.conversation != conversation {
+                return None;
+            }
+            input.consumed && *input_revision == revision
+        };
+        Some(yinz_types::data::WarpedAgentInput {
+            kind: agent.kind,
+            conversation,
+            consumed: consumed
+                && !self.agent_draft_clears.contains_key(&pane)
+                && !self
+                    .agent_controls
+                    .iter()
+                    .any(|pending| pending.pane == pane && pending.delivery.is_some()),
+        })
+    }
+
+    pub(super) fn restore_warped_agent_input(
+        &mut self,
+        pane: PaneId,
+        input: yinz_types::data::WarpedAgentInput,
+    ) {
+        if input.kind == "codex"
+            && self.get_pane_info(pane).is_some_and(|info| {
+                !info.is_held
+                    && !info.exited
+                    && info.agent.is_some_and(|agent| {
+                        agent.source == AgentSource::Reported
+                            && agent.kind == input.kind
+                            && agent.session_id.as_ref() == Some(&input.conversation)
+                    })
+            })
+            && self.agent_process_matches(pane, &input.kind)
+        {
+            self.warped_agent_inputs
+                .insert(pane, (input, self.agent_input_revision(pane)));
+        }
     }
 
     fn agent_input_revision(&self, pane: PaneId) -> u64 {
@@ -2492,6 +2556,18 @@ impl Screen {
                     .and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook))
                     .is_some()
         }) {
+            // Some(None) means a transferred draft: even a startup report cannot
+            // treat the destination's zero input revision as an empty source composer.
+            let transferred = self
+                .warped_agent_inputs
+                .remove(&pane)
+                .map(|(input, revision)| {
+                    (input.kind == event.kind
+                        && input.conversation == *conversation
+                        && input.consumed
+                        && revision == self.agent_input_revision(pane))
+                    .then_some(revision)
+                });
             let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
                 previous.kind == event.kind && previous.conversation == *conversation
             });
@@ -2505,7 +2581,20 @@ impl Screen {
             // with no input can establish consumption; matching evidence is preserved as-is.
             let input_revision = clear_revision
                 .or(dialog_revision)
+                .or(if event.hook == "UserPromptSubmit" && !notification {
+                    accepted_input_revision
+                } else {
+                    None
+                })
+                .or(if previous.is_none() {
+                    transferred.flatten()
+                } else {
+                    None
+                })
                 .or(match event.hook.as_str() {
+                    "SessionStart" if transferred.is_some() && previous.is_none() => {
+                        transferred.flatten()
+                    },
                     "SessionStart" => previous
                         .map(|previous| previous.input_revision)
                         .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)),

@@ -1361,10 +1361,34 @@ fn warp_relationships_from_protobuf(
     }
 }
 
+fn warped_agent_input_to_protobuf(
+    input: &yinz_types::data::WarpedAgentInput,
+) -> crate::client_server_contract::client_server_contract::WarpedAgentInput {
+    crate::client_server_contract::client_server_contract::WarpedAgentInput {
+        kind: input.kind.clone(),
+        conversation: input.conversation.clone(),
+        consumed: input.consumed,
+    }
+}
+fn warped_agent_input_from_protobuf(
+    input: crate::client_server_contract::client_server_contract::WarpedAgentInput,
+) -> yinz_types::data::WarpedAgentInput {
+    yinz_types::data::WarpedAgentInput {
+        kind: input.kind,
+        conversation: input.conversation,
+        consumed: input.consumed,
+    }
+}
+
 fn warped_pane_to_protobuf(
     pane: &yinz_types::data::WarpedPane,
 ) -> crate::client_server_contract::client_server_contract::WarpedPane {
     crate::client_server_contract::client_server_contract::WarpedPane {
+        bracketed_paste: pane.bracketed_paste,
+        agent_input: pane
+            .agent_input
+            .as_ref()
+            .map(warped_agent_input_to_protobuf),
         held: pane.held.as_ref().map(held_to_protobuf),
         group: pane.group.as_deref().map(warped_tab_to_protobuf),
         host_id: pane.host_id.clone().into_string(),
@@ -1382,6 +1406,8 @@ fn warped_pane_from_protobuf(
     pane: crate::client_server_contract::client_server_contract::WarpedPane,
 ) -> Result<yinz_types::data::WarpedPane> {
     Ok(yinz_types::data::WarpedPane {
+        bracketed_paste: pane.bracketed_paste,
+        agent_input: pane.agent_input.map(warped_agent_input_from_protobuf),
         held: pane.held.map(held_from_protobuf).transpose()?,
         group: pane
             .group
@@ -2196,6 +2222,11 @@ impl TryFrom<yinz_types::input::actions::Action>
             }),
             yinz_types::input::actions::Action::AdoptPane { payload, placement } => {
                 ActionType::AdoptPane(AdoptPaneAction {
+                    bracketed_paste: payload.bracketed_paste,
+                    agent_input: payload
+                        .agent_input
+                        .as_ref()
+                        .map(warped_agent_input_to_protobuf),
                     held: payload.held.as_ref().map(held_to_protobuf),
                     group: payload.group.as_deref().map(warped_tab_to_protobuf),
                     host_id: payload.host_id.clone().into_string(),
@@ -3259,6 +3290,11 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
                 Ok(yinz_types::input::actions::Action::AdoptPane {
                     placement: warp_placement_from_i32(adopt_pane_action.placement)?,
                     payload: Box::new(yinz_types::data::WarpedPane {
+                        bracketed_paste: adopt_pane_action.bracketed_paste,
+                        agent_input: adopt_pane_action
+                            .agent_input
+                            .clone()
+                            .map(warped_agent_input_from_protobuf),
                         held: adopt_pane_action
                             .held
                             .clone()

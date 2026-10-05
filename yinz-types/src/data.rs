@@ -2193,6 +2193,11 @@ pub enum WarpPlacement {
 /// server-side agent record attached to that process.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub struct WarpedPane {
+    /// The emulator mode, restored after the ANSI dump and before buffered output.
+    #[serde(default)]
+    pub bracketed_paste: bool,
+    #[serde(default)]
+    pub agent_input: Option<WarpedAgentInput>,
     /// A terminal waiting for explicit user action; no process is started on arrival.
     #[serde(default)]
     pub held: Option<HeldTerminal>,
@@ -2226,6 +2231,14 @@ pub struct WarpedPane {
     /// The agent record belongs to the running process, so it moves with it.
     #[serde(default)]
     pub agent: Option<AgentInfo>,
+}
+
+/// Input evidence from a managed Codex pane, awaiting a fresh parent report.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct WarpedAgentInput {
+    pub kind: String,
+    pub conversation: String,
+    pub consumed: bool,
 }
 
 /// Saved state for a terminal that is not running.

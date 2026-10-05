@@ -202,6 +202,8 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
         &harness.senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            bracketed_paste: false,
+            agent_input: None,
             held: None,
             group: None,
             host_id: SupervisorId::new("abc123".to_owned()),
@@ -249,6 +251,8 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
         &senders,
         crate::ClientId::new(1),
         Box::new(WarpedPane {
+            bracketed_paste: false,
+            agent_input: None,
             held: None,
             group: None,
             host_id: SupervisorId::new("abc123".to_owned()),
@@ -437,6 +441,8 @@ fn a_pty_side_refusal_to_adopt_a_tab_comes_back_verbatim() {
 
 fn remote_pane(host: &str, pane_token: &str) -> WarpedPane {
     WarpedPane {
+        bracketed_paste: false,
+        agent_input: None,
         held: None,
         group: None,
         host_id: SupervisorId::new(String::new()),

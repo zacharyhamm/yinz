@@ -687,9 +687,8 @@ fn an_adopted_focused_tab_pane_without_attached_clients_is_placed_without_focus(
             _
         ),
         ScreenInstruction::PtyBytes(TERMINAL_50, contents),
-        ScreenInstruction::PtyBytes(TERMINAL_50, buffered),
         ScreenInstruction::RequestPaneRedraw(TERMINAL_50)]
-        if contents == b"transferred screen" && buffered == b"buffered output"
+        if contents == b"transferred screen\x1b[?2004lbuffered output"
     ));
 }
 
@@ -4225,4 +4224,64 @@ fn warp_mixed_tab_keeps_terminal_8_distinct_from_status_bar_plugin_8() {
     assert!(closed.contains(&PaneId::Terminal(TerminalId::new(8))));
     assert!(closed.contains(&PaneId::Plugin(crate::PluginId::new(8))));
     assert!(!closed.contains(&PaneId::Terminal(TerminalId::new(1))));
+}
+
+#[test]
+fn pane_and_tab_warp_capture_actual_paste_mode() {
+    for enabled in [false, true] {
+        for whole_tab in [false, true] {
+            let mut screen = create_new_screen(Size { cols: 80, rows: 24 }, false, false);
+            new_tab(&mut screen, 1, TabId::new(0));
+            new_tab(&mut screen, 2, TabId::new(1));
+            screen
+                .tabs
+                .get_mut(&TabId::new(0))
+                .unwrap()
+                .handle_pty_bytes(
+                    TerminalId::new(1),
+                    if enabled {
+                        b"\x1b[?2004h".to_vec()
+                    } else {
+                        b"\x1b[?2004l".to_vec()
+                    },
+                )
+                .unwrap();
+            assert!(screen
+                .take_released_pane_for_warp(TerminalId::new(1), Err("adoption refused".into()))
+                .is_err());
+            assert_eq!(
+                screen.tabs[&TabId::new(0)]
+                    .get_pane_with_id(PaneId::Terminal(TerminalId::new(1)))
+                    .unwrap()
+                    .supports_bracketed_paste(),
+                enabled
+            );
+            let payload = if whole_tab {
+                let (tab, terminals, prepared) = screen
+                    .check_tab_can_be_warped(Some(TabId::new(0)), ClientId::new(1))
+                    .unwrap();
+                let released = terminals
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id,
+                            Ok(ReleasedPane::Local(ReleasedPtyHost {
+                                host_id: SupervisorId::new(format!("host-{id}")),
+                                host_pid: ProcessId::new(1),
+                                control_socket: Some(PathBuf::from(format!("/tmp/warp-{id}.sock"))),
+                            })),
+                        )
+                    })
+                    .collect();
+                screen
+                    .take_released_tab_for_warp(tab, released, prepared)
+                    .unwrap()
+                    .tiled_panes
+                    .remove(0)
+            } else {
+                *released_remote_pane(&mut screen, TerminalId::new(1))
+            };
+            assert_eq!(payload.bracketed_paste, enabled);
+        }
+    }
 }

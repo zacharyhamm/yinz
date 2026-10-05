@@ -112,6 +112,7 @@ pub struct AdoptedTabPanes {
 /// One adopted terminal, waiting for the tab that will hold it.
 #[derive(Debug, Clone)]
 pub struct AdoptedTabTerminal {
+    pub agent_input: Option<yinz_types::data::WarpedAgentInput>,
     pub held: Option<yinz_types::data::HeldTerminal>,
     pub terminal_id: TerminalId,
     pub cmd: RunCommand,

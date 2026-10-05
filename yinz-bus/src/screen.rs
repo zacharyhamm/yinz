@@ -889,6 +889,7 @@ pub enum ScreenInstruction {
     ),
     AgentSpawned(yinz_types::agent::SpawnedAgent),
     AgentReport(yinz_types::agent::report::AgentReport, std::time::Instant),
+    RestoreWarpedAgentInput(PaneId, yinz_types::data::WarpedAgentInput),
     SetPaneAgent(PaneId, Option<AgentInfo>, Option<NotificationEnd>),
     /// Set (or clear) the run id on a pane's existing agent record, leaving every field the
     /// agent itself reports alone. See `AgentInfo::run_id`.

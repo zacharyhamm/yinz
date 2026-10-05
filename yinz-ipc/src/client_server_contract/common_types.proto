@@ -980,6 +980,8 @@ message WarpPaneAction {
 // the supervisor over its own socket, so only the terminal's presentation state
 // travels here.
 message AdoptPaneAction {
+  bool bracketed_paste = 12;
+  optional WarpedAgentInput agent_input = 13;
   optional HeldTerminal held = 11;
   optional AdoptTabAction group = 9;
   string host_id = 1;
@@ -997,11 +999,20 @@ message AdoptPaneAction {
   optional string caption = 10;
 }
 
+// Input evidence awaiting a fresh parent lifecycle report.
+message WarpedAgentInput {
+  string kind = 1;
+  string conversation = 2;
+  bool consumed = 3;
+}
+
 // One pane of a tab moving between sessions: which supervisor to attach to,
 // plus the terminal state that supervisor cannot report. The same shape as the
 // pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
 // its place decided by the layout.
 message WarpedPane {
+  bool bracketed_paste = 11;
+  optional WarpedAgentInput agent_input = 12;
   optional HeldTerminal held = 10;
   optional AdoptTabAction group = 8;
   string host_id = 1;
