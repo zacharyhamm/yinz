@@ -269,6 +269,7 @@ pub enum ScreenContext {
     CleanupAgentTab,
     AgentSpawned,
     AgentReport,
+    RestoreWarpedAgentInput,
     SetPaneAgent,
     SetPaneAgentRun,
     SetRelatedPanes,

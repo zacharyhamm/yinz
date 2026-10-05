@@ -3454,6 +3454,17 @@ pub fn screen_thread_main(
                             .push(ScreenInstruction::AgentReport(report, accepted_at));
                     }
                 },
+                ScreenInstruction::RestoreWarpedAgentInput(pane_id, input) => {
+                    if screen.get_pane_info(pane_id).is_none() {
+                        pending
+                            .waiting_for_pane
+                            .entry(pane_id)
+                            .or_default()
+                            .push(ScreenInstruction::RestoreWarpedAgentInput(pane_id, input));
+                    } else {
+                        screen.restore_warped_agent_input(pane_id, input);
+                    }
+                },
                 ScreenInstruction::SetPaneAgent(pane_id, agent, _completion) => {
                     if !apply_pane_agent_report(&mut screen, pane_id, agent.clone())? {
                         let pending_events = pending.waiting_for_pane.entry(pane_id).or_default();

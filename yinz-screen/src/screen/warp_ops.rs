@@ -495,6 +495,7 @@ impl Screen {
     }
 
     fn notify_warp_departure(&mut self, pane_id: PaneId) {
+        self.invalidate_agent_lifecycle(pane_id, "warped");
         self.bus
             .senders
             .send_to_plugin(PluginInstruction::Update(vec![(
@@ -874,6 +875,7 @@ impl Screen {
         self.validate_held_release(terminal_id, &released)?;
         let address = Self::warp_address(released)?;
         let pane_id = PaneId::Terminal(terminal_id);
+        let agent_input = self.warped_agent_input(pane_id);
         let scrollback_lines = self.scrollback_lines_to_serialize;
         let tab = self
             .tabs
@@ -897,6 +899,8 @@ impl Screen {
                 .serialize(scrollback_lines)
                 .map(Self::fit_to_warp_budget),
             borderless: pane.borderless(),
+            bracketed_paste: pane.supports_bracketed_paste(),
+            agent_input,
             agent: pane.agent_info().cloned(),
         });
         let removed = tab.extract_warp_panes(&[pane_id]);
@@ -1168,6 +1172,10 @@ impl Screen {
                 // default caption cannot ride there: a layout's name is explicit.
                 title: None,
                 caption: tab.get_pane_with_id(*pane_id).and_then(default_caption),
+                bracketed_paste: tab
+                    .get_pane_with_id(*pane_id)
+                    .is_some_and(|pane| pane.supports_bracketed_paste()),
+                agent_input: self.warped_agent_input(*pane_id),
                 borderless: false,
                 // Not gated on `serialize_pane_viewport`: that option governs
                 // automatic session serialization, and a warp is something the
@@ -1377,23 +1385,11 @@ impl Screen {
         // The transferred screen first, then whatever the supervisor caught during
         // the hand-off, then live output. `NewPane` is ahead of these on the same
         // channel, and `pending_events_waiting_for_pane` would buffer them anyway.
-        if let Some(contents) = payload.contents {
-            if !contents.is_empty() {
-                self.bus
-                    .senders
-                    .send_to_screen(ScreenInstruction::PtyBytes(
-                        terminal_id,
-                        contents.into_bytes(),
-                    ))
-                    .with_context(err_context)?;
-            }
-        }
-        if !buffered.is_empty() {
-            self.bus
-                .senders
-                .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, buffered))
-                .with_context(err_context)?;
-        }
+        let replay = warp_replay(payload.contents.take(), payload.bracketed_paste, buffered);
+        self.bus
+            .senders
+            .send_to_screen(ScreenInstruction::PtyBytes(terminal_id, replay))
+            .with_context(err_context)?;
         // A supervisor's replayed exit must override the agent's pre-handoff state.
         // Already-held panes instead restore their metadata after held state below.
         if payload.held.is_none() {
@@ -1429,6 +1425,12 @@ impl Screen {
                 .with_context(err_context)?;
         }
         if request_redraw {
+            if let Some(input) = payload.agent_input {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::RestoreWarpedAgentInput(pane_id, input))
+                    .with_context(err_context)?;
+            }
             self.bus
                 .senders
                 .send_to_screen(ScreenInstruction::RequestPaneRedraw(terminal_id))
@@ -1613,9 +1615,9 @@ impl Screen {
                 // The transferred screen first, then whatever the supervisor
                 // caught during the hand-off — the same order a single adopted
                 // pane is replayed in, and the same order it happened in.
-                let mut replay = pane.contents.map(String::into_bytes).unwrap_or_default();
-                replay.extend(adopted.buffered);
+                let replay = warp_replay(pane.contents, pane.bracketed_paste, adopted.buffered);
                 AdoptedTabTerminal {
+                    agent_input: pane.agent_input,
                     held: pane.held,
                     terminal_id: adopted.terminal_id,
                     cmd: adopted.cmd,
@@ -1627,6 +1629,22 @@ impl Screen {
             })
             .collect()
     }
+}
+
+/// Restore emulator mode after the screen dump; buffered PTY output is newer and wins.
+pub(super) fn warp_replay(
+    contents: Option<String>,
+    bracketed_paste: bool,
+    buffered: Vec<u8>,
+) -> Vec<u8> {
+    let mut replay = contents.unwrap_or_default().into_bytes();
+    replay.extend_from_slice(if bracketed_paste {
+        b"\x1b[?2004h"
+    } else {
+        b"\x1b[?2004l"
+    });
+    replay.extend(buffered);
+    replay
 }
 
 /// The title a warped pane arrives *named*, when the user or its program gave it one.

@@ -1460,3 +1460,248 @@ fn palette_all_tabs_failure_retains_completed_and_unattempted_tabs() {
     type_and_confirm(&receiver, &arrived, b"batch-first-after");
     assert!(!panes[1].is_exited());
 }
+
+fn agent_connection(
+    session: &TestSession,
+) -> (
+    yinz_ipc::ipc::IpcSenderWithContext<yinz_ipc::ipc::ClientToServerMsg>,
+    yinz_ipc::ipc::IpcReceiverWithContext<yinz_ipc::ipc::ServerToClientMsg>,
+) {
+    let socket = yinz_ipc::consts::ipc_connect(
+        &yinz_runtime::consts::YINZ_SOCK_DIR.join(session.session_name()),
+    )
+    .unwrap();
+    let sender = yinz_ipc::ipc::IpcSenderWithContext::new(socket);
+    let receiver = sender.get_receiver().unwrap();
+    receiver
+        .set_recv_timeout(Some(std::time::Duration::from_secs(30)))
+        .unwrap();
+    (sender, receiver)
+}
+
+fn agent_response(
+    receiver: &mut yinz_ipc::ipc::IpcReceiverWithContext<yinz_ipc::ipc::ServerToClientMsg>,
+) -> yinz_types::agent::control::AgentResponse {
+    use yinz_ipc::ipc::{IpcRecv, ServerToClientMsg};
+    loop {
+        match receiver.recv_server_msg() {
+            IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _) => return response,
+            IpcRecv::Msg(_, _) => continue,
+            _ => panic!("agent response disconnected or timed out"),
+        }
+    }
+}
+
+fn codex_report(session: &TestSession, pane: &FakePtyHandle, name: &str, turn: &str, prompt: &str) {
+    use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
+    use yinz_types::agent::{
+        hook_outcome,
+        report::{AgentReport, AgentReportState},
+        AgentEvent, HookEvent, HookOutcome,
+    };
+    let hook = HookEvent {
+        hook_event_name: name.into(),
+        session_id: "warp-conversation".into(),
+        source: (name == "SessionStart").then(|| "startup".into()),
+        turn_id: Some(turn.into()),
+        prompt: (name == "UserPromptSubmit").then(|| prompt.into()),
+        ..Default::default()
+    };
+    let trace = yinz_runtime::agent::report::ReportTrace::new(std::time::Instant::now());
+    let (mut sender, mut receiver) = agent_connection(session);
+    sender
+        .send_client_msg(ClientToServerMsg::AgentReport(AgentReport {
+            report_id: trace.report_id,
+            pane_id: yinz_types::pane_id::PaneId::Terminal(pane.terminal_id()),
+            state: match hook_outcome("codex", &hook) {
+                HookOutcome::Reported(agent) => AgentReportState::Set(agent),
+                HookOutcome::Ended => AgentReportState::Clear,
+                HookOutcome::Nothing => AgentReportState::Unchanged,
+            },
+            event: Some(AgentEvent::from_hook(
+                "codex",
+                pane.terminal_id(),
+                &hook,
+                serde_json::to_string(&hook).unwrap(),
+            )),
+            trace: false,
+            process_id: trace.process_id,
+            kind: "codex".into(),
+        }))
+        .unwrap();
+    assert!(matches!(
+        receiver.recv_server_msg(),
+        IpcRecv::Msg(ServerToClientMsg::AgentReportAccepted { .. }, _)
+    ));
+}
+
+#[test]
+fn codex_control_survives_pane_tab_and_failed_adoption_without_reinitialization() {
+    use yinz_ipc::ipc::ClientToServerMsg;
+    use yinz_types::agent::{
+        control::{AgentOutcome, AgentPlacement, AgentRequest},
+        AgentSpawnSpec,
+    };
+    use yinz_types::pane_id::PaneId;
+    for (whole_tab, enabled, rollback) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (false, true, true),
+        (true, true, true),
+    ] {
+        let (receiver, _receiver_shell) = start_with_a_shell();
+        let sender =
+            start(whole_tab.then_some("layout { tab focus=true { pane; }; tab { pane; }; }"));
+        sender.expect_pty_spawn().output(PROMPT);
+        if whole_tab {
+            sender.expect_pty_spawn().output(PROMPT);
+        }
+        sender.wait_until("source shell is rendered", |grid| grid.contains("$"));
+        let (mut control, mut replies) = agent_connection(&sender);
+        let cwd = tempfile::tempdir().unwrap();
+        control
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Spawn {
+                placement: AgentPlacement::Tab(yinz_types::internal_ids::TabId::new(0)),
+                spec: AgentSpawnSpec {
+                    kind: Some("codex".into()),
+                    allow_outside_worktree: Some(true),
+                    ..Default::default()
+                },
+                cwd: Some(cwd.path().into()),
+                project: None,
+                remote_host: None,
+                automatic_firecracker_vm: false,
+            }))
+            .unwrap();
+        let spawned = agent_response(&mut replies);
+        assert_eq!(spawned.outcome, AgentOutcome::Ok, "{spawned:?}");
+        let travelling = sender.expect_pty_spawn();
+        let command = travelling.run_command();
+        let pane_id = PaneId::Terminal(travelling.terminal_id());
+        sender.run_cli_action(CliAction::FocusPaneId {
+            pane_id: pane_id.to_string(),
+        });
+        travelling.output(if enabled {
+            b"\x1b[?2004hCodex working"
+        } else {
+            b"\x1b[?2004lCodex working"
+        });
+        sender.wait_until("Codex mode output is parsed", |grid| {
+            grid.contains("Codex working")
+        });
+        codex_report(&sender, &travelling, "SessionStart", "", "");
+        control
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+                pane_id,
+                expected_session_id: Some("warp-conversation".into()),
+            }))
+            .unwrap();
+        assert_eq!(agent_response(&mut replies).agents[0].ready, enabled);
+        if enabled {
+            control
+                .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                    submission_id: None,
+                    pane_id,
+                    expected_session_id: Some("warp-conversation".into()),
+                    prompt: "review".into(),
+                    wait: false,
+                    timeout_ms: 30_000,
+                }))
+                .unwrap();
+            travelling.wait_for_stdin("first prompt is delivered", |bytes| {
+                bytes
+                    .windows(b"\x1b[200~review\x1b[201~\r".len())
+                    .any(|bytes| bytes == b"\x1b[200~review\x1b[201~\r")
+            });
+            codex_report(&sender, &travelling, "UserPromptSubmit", "turn-1", "review");
+            assert_eq!(
+                agent_response(&mut replies).outcome,
+                AgentOutcome::Submitted
+            );
+        }
+        if rollback {
+            travelling.fail_warp(WarpFailure::UnadoptableOnce);
+        }
+        let (code, message) = if whole_tab {
+            sender.run_cli_action_reporting(CliAction::WarpTab {
+                to_session: Some(receiver.session_name().into()),
+                from_session: None,
+                tab_id: spawned.spawned.unwrap().tab_id,
+            })
+        } else {
+            warp_pane_by_id(&sender, &receiver, travelling.terminal_id())
+        };
+        assert_eq!(code == 0, !rollback, "{message}");
+        let destination = if rollback { &sender } else { &receiver };
+        let adopted: Vec<_> = (0..if whole_tab { 2 } else { 1 })
+            .map(|_| destination.expect_adopted_pty())
+            .collect();
+        let arrived = adopted
+            .into_iter()
+            .find(|pane| pane.run_command() == command)
+            .unwrap();
+        assert_eq!(arrived.run_command(), command);
+        let pane_id = PaneId::Terminal(arrived.terminal_id());
+        destination.wait_until("the adopted agent record to be installed", |_| {
+            let (mut control, mut replies) = agent_connection(destination);
+            control
+                .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+                    pane_id,
+                    expected_session_id: Some("warp-conversation".into()),
+                }))
+                .unwrap();
+            agent_response(&mut replies)
+                .agents
+                .first()
+                .is_some_and(|status| {
+                    status.agent.session_id.as_deref() == Some("warp-conversation")
+                })
+        });
+        let (mut control, mut replies) = agent_connection(destination);
+        control
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+                pane_id,
+                expected_session_id: Some("warp-conversation".into()),
+            }))
+            .unwrap();
+        assert!(!agent_response(&mut replies).agents[0].status_available);
+        // No repeated SessionStart or terminal initialization: only completion arrives.
+        codex_report(destination, &arrived, "Stop", "turn-1", "");
+        control
+            .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Status {
+                pane_id,
+                expected_session_id: Some("warp-conversation".into()),
+            }))
+            .unwrap();
+        let status = agent_response(&mut replies);
+        assert_eq!(status.agents[0].ready, enabled, "{status:?}");
+        assert_eq!(
+            status.agents[0].agent.session_id.as_deref(),
+            Some("warp-conversation")
+        );
+        if enabled {
+            control
+                .send_client_msg(ClientToServerMsg::AgentControl(AgentRequest::Prompt {
+                    submission_id: None,
+                    pane_id,
+                    expected_session_id: Some("warp-conversation".into()),
+                    prompt: "next".into(),
+                    wait: false,
+                    timeout_ms: 30_000,
+                }))
+                .unwrap();
+            arrived.wait_for_stdin("next prompt reaches the same process", |bytes| {
+                bytes
+                    .windows(b"\x1b[200~next\x1b[201~\r".len())
+                    .any(|bytes| bytes == b"\x1b[200~next\x1b[201~\r")
+            });
+            codex_report(destination, &arrived, "UserPromptSubmit", "turn-2", "next");
+            assert_eq!(
+                agent_response(&mut replies).outcome,
+                AgentOutcome::Submitted
+            );
+        }
+    }
+}

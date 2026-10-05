@@ -1621,6 +1621,10 @@ pub struct WarpPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AdoptPaneAction {
+    #[prost(bool, tag="12")]
+    pub bracketed_paste: bool,
+    #[prost(message, optional, tag="13")]
+    pub agent_input: ::core::option::Option<WarpedAgentInput>,
     #[prost(message, optional, tag="11")]
     pub held: ::core::option::Option<HeldTerminal>,
     #[prost(message, optional, tag="9")]
@@ -1648,6 +1652,17 @@ pub struct AdoptPaneAction {
     #[prost(string, optional, tag="10")]
     pub caption: ::core::option::Option<::prost::alloc::string::String>,
 }
+/// Input evidence awaiting a fresh parent lifecycle report.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WarpedAgentInput {
+    #[prost(string, tag="1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag="2")]
+    pub conversation: ::prost::alloc::string::String,
+    #[prost(bool, tag="3")]
+    pub consumed: bool,
+}
 /// One pane of a tab moving between sessions: which supervisor to attach to,
 /// plus the terminal state that supervisor cannot report. The same shape as the
 /// pane-sized `AdoptPaneAction`, minus the placement — a pane inside a tab has
@@ -1655,6 +1670,10 @@ pub struct AdoptPaneAction {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WarpedPane {
+    #[prost(bool, tag="11")]
+    pub bracketed_paste: bool,
+    #[prost(message, optional, tag="12")]
+    pub agent_input: ::core::option::Option<WarpedAgentInput>,
     #[prost(message, optional, tag="10")]
     pub held: ::core::option::Option<HeldTerminal>,
     #[prost(message, optional, tag="8")]

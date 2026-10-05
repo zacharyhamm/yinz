@@ -170,6 +170,8 @@ fn a_remote_handoff_without_a_command_arrives_as_no_remote_pane() {
 
     let adopt_pane = |cmd| ProtoAction {
         action_type: Some(ActionType::AdoptPane(ProtoAdoptPaneAction {
+            bracketed_paste: false,
+            agent_input: None,
             held: None,
             group: None,
             host_id: String::new(),
@@ -1201,6 +1203,12 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                bracketed_paste: true,
+                agent_input: Some(yinz_types::data::WarpedAgentInput {
+                    kind: "codex".into(),
+                    conversation: "conversation".into(),
+                    consumed: true
+                }),
                 held: None,
                 group: None,
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
@@ -1237,6 +1245,12 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                bracketed_paste: true,
+                agent_input: Some(yinz_types::data::WarpedAgentInput {
+                    kind: "codex".into(),
+                    conversation: "conversation".into(),
+                    consumed: true
+                }),
                 held: None,
                 group: None,
                 host_id: SupervisorId::new(String::new()),
@@ -1273,6 +1287,12 @@ fn test_client_messages() {
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::AdoptPane {
             payload: Box::new(WarpedPane {
+                bracketed_paste: true,
+                agent_input: Some(yinz_types::data::WarpedAgentInput {
+                    kind: "codex".into(),
+                    conversation: "conversation".into(),
+                    consumed: true
+                }),
                 held: None,
                 group: None,
                 host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
@@ -1368,6 +1388,12 @@ fn test_client_messages() {
                 }],
                 tiled_panes: vec![
                     WarpedPane {
+                        bracketed_paste: true,
+                        agent_input: Some(yinz_types::data::WarpedAgentInput {
+                            kind: "codex".into(),
+                            conversation: "conversation".into(),
+                            consumed: true
+                        }),
                         held: None,
                         group: None,
                         host_id: SupervisorId::new("a3f1c2d4e5b6".to_owned()),
@@ -1384,6 +1410,12 @@ fn test_client_messages() {
                     // is warped whole, so both addressing shapes have to survive
                     // the same message.
                     WarpedPane {
+                        bracketed_paste: true,
+                        agent_input: Some(yinz_types::data::WarpedAgentInput {
+                            kind: "codex".into(),
+                            conversation: "conversation".into(),
+                            consumed: true
+                        }),
                         held: None,
                         group: None,
                         host_id: SupervisorId::new(String::new()),
@@ -1411,6 +1443,12 @@ fn test_client_messages() {
                     },
                 ],
                 floating_panes: vec![WarpedPane {
+                    bracketed_paste: true,
+                    agent_input: Some(yinz_types::data::WarpedAgentInput {
+                        kind: "codex".into(),
+                        conversation: "conversation".into(),
+                        consumed: true
+                    }),
                     held: None,
                     group: None,
                     host_id: SupervisorId::new("c5f3e4d6a7b8".to_owned()),
@@ -5477,4 +5515,18 @@ fn agent_spawn_placement_and_failure_resources_roundtrip() {
         }),
         ..Default::default()
     }));
+}
+
+#[test]
+fn legacy_warp_messages_default_to_no_paste_or_input_authority() {
+    use crate::client_server_contract::client_server_contract::{
+        AdoptPaneAction, WarpedPane as ProtoWarpedPane,
+    };
+    use prost::Message;
+    let pane = ProtoWarpedPane::decode(&b""[..]).unwrap();
+    assert!(!pane.bracketed_paste);
+    assert!(pane.agent_input.is_none());
+    let pane = AdoptPaneAction::decode(&b""[..]).unwrap();
+    assert!(!pane.bracketed_paste);
+    assert!(pane.agent_input.is_none());
 }
