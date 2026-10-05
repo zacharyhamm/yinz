@@ -872,7 +872,17 @@ pub(crate) fn route_thread_main(
                                 retry_queue
                             );
                         },
-                        ClientToServerMsg::SubscribeToEvents { ref event_types } => {
+                        ClientToServerMsg::SubscribeToEvents { ref event_types, ref options } => {
+                            let lifecycle = event_types.iter().any(|t| t == "agent_lifecycle");
+                            if !lifecycle && options != &yinz_ipc::ipc::EventSubscription::default() {
+                                os_input.send_to_client(client_id, ServerToClientMsg::LogError { lines: vec!["lifecycle filters require --event-type agent_lifecycle".into()] }).context("reject event filters")?;
+                                return Ok(false);
+                            }
+                            let event_types: Vec<_> = event_types.iter().filter(|t| *t != "agent_lifecycle").cloned().collect();
+                            if lifecycle {
+                                let _ = send_to_screen_or_retry_queue!(senders, ScreenInstruction::SubscribeAgentEvents(client_id, options.clone()), instruction, retry_queue);
+                            }
+                            if lifecycle && event_types.is_empty() { return Ok(false); }
                             if let Some(senders) = senders.as_ref() {
                                 let _ = senders.send_to_plugin(
                                     PluginInstruction::SubscribeCliClientToEvents {

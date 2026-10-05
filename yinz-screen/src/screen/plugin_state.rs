@@ -146,6 +146,7 @@ impl Screen {
         Ok(tab_infos_for_screen_state.values().cloned().collect())
     }
     pub(super) fn generate_and_report_pane_state(&mut self) -> Result<PaneManifest> {
+        self.agent_events.dirty = true;
         let mut pane_manifest = PaneManifest::default();
         for tab in self.tabs.values() {
             pane_manifest.panes.insert(tab.position, tab.pane_infos());

@@ -109,6 +109,46 @@ pub fn control_agent(
     response
 }
 
+pub(crate) fn agent_event_projects(
+    agents: Vec<yinz_types::agent::control::AgentStatus>,
+    projects: Vec<String>,
+    data: &DataAccess,
+    senders: &ThreadSenders,
+) -> yinz_bus::screen::AgentEventProjectMemberships {
+    let mut memberships = yinz_bus::screen::AgentEventProjectMemberships::new();
+    for project in projects {
+        let mut response = AgentResponse::new(AgentOutcome::Ok);
+        response.agents = agents.clone();
+        let result = filter_project(&mut response, &project, data, |pane_id, cwd| {
+            let (reply, receiver) = crossbeam::channel::bounded(1);
+            if let Err(error) = senders.send_to_pty(PtyInstruction::GetPaneGitProbe {
+                pane_id,
+                cwd: cwd.to_owned(),
+                refresh_token: None,
+                response_channel: reply,
+            }) {
+                return yinz_types::data::GetPaneGitProbeResponse::Err(error.to_string());
+            }
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|error| {
+                    yinz_types::data::GetPaneGitProbeResponse::Err(error.to_string())
+                })
+        })
+        .map(|pending| {
+            (!pending).then(|| {
+                response
+                    .agents
+                    .into_iter()
+                    .map(|agent| agent.pane_id)
+                    .collect()
+            })
+        });
+        memberships.insert(project, result);
+    }
+    memberships
+}
+
 pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, String> {
     data.plugin_data()
         .fetch(
@@ -129,12 +169,13 @@ pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, 
         })
 }
 
+// Returns whether any required remote probe is still pending.
 fn filter_project(
     response: &mut AgentResponse,
     name: &str,
     data: &DataAccess,
     mut probe_of: impl FnMut(PaneId, &str) -> yinz_types::data::GetPaneGitProbeResponse,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let rows = projects(data)?;
     let registry = hocus_data::projects::from_rows(&rows);
     let project = registry
@@ -167,6 +208,7 @@ fn filter_project(
             });
         }
     }
+    let mut pending = false;
     response.agents.retain(|status| {
         let rows = assignments
             .get(&(status.host_id.clone(), status.session.clone()))
@@ -191,10 +233,13 @@ fn filter_project(
                 let Some(cwd) = status.cwd.as_deref() else {
                     return false;
                 };
-                let yinz_types::data::GetPaneGitProbeResponse::Ok(probe) =
-                    probe_of(status.pane_id, cwd)
-                else {
-                    return false;
+                let probe = match probe_of(status.pane_id, cwd) {
+                    yinz_types::data::GetPaneGitProbeResponse::Ok(probe) => probe,
+                    yinz_types::data::GetPaneGitProbeResponse::Pending
+                    | yinz_types::data::GetPaneGitProbeResponse::Err(_) => {
+                        pending = true;
+                        return false;
+                    },
                 };
                 if probe.host != *host || probe.cwd != cwd {
                     return false;
@@ -232,7 +277,7 @@ fn filter_project(
                 .is_some_and(|owner| owner.name == project.name)
         })
     });
-    Ok(())
+    Ok(pending)
 }
 
 pub(super) fn prepare_automation_agent(

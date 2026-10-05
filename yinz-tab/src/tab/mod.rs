@@ -1925,17 +1925,16 @@ impl Tab {
                     is_first_run,
                     run_command,
                 ) => {
-                    // No exit hooks are fired for this replay (this is a tab-internal catch-up,
-                    // not the live/buffered-plugin paths in Screen that bracket a hold with
-                    // hooks), so a queued respawn can start immediately as before.
                     if let Some((terminal_pane_id, run_command, keep_scrollback)) =
                         self.hold_pane(terminal_id, exit_status, is_first_run, run_command)
                     {
-                        self.run_command_in_pane_with_id(
-                            terminal_pane_id,
-                            run_command,
-                            keep_scrollback,
-                        );
+                        self.senders
+                            .send_to_screen(ScreenInstruction::RunCommandInPane(
+                                terminal_pane_id,
+                                run_command,
+                                keep_scrollback,
+                            ))
+                            .context("failed to requeue buffered pane respawn")?;
                     }
                 },
             }
@@ -9836,11 +9835,12 @@ impl Tab {
             self.focus_suppressed_pane_for_all_clients(pane_id);
         }
     }
+    /// Returns whether the pane accepted a command for PTY respawn.
     pub fn rerun_terminal_pane_with_id(
         &mut self,
         terminal_pane_id: TerminalId,
         completion_tx: Option<NotificationEnd>,
-    ) {
+    ) -> bool {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         match self.get_pane_with_id_mut(pane_id) {
             Some(pane_to_rerun) => {
@@ -9851,6 +9851,7 @@ impl Tab {
                         command_to_rerun,
                         completion_tx,
                     ));
+                    return true;
                 } else {
                     log::error!("Pane is still running!")
                 }
@@ -9862,17 +9863,19 @@ impl Tab {
                 );
             },
         }
+        false
     }
     /// Run a *different* command in an existing command pane, reusing its pane id. When the
     /// pane's current command is still running — which includes the window between the
     /// command's exit event reaching its originating plugin and the screen processing the
     /// pane's hold — the replacement is stashed and started by `hold_pane` (last write wins).
+    /// Returns true only when the pane accepted a command for PTY respawn.
     pub fn run_command_in_pane_with_id(
         &mut self,
         terminal_pane_id: TerminalId,
         run_command: RunCommand,
         keep_scrollback: bool,
-    ) {
+    ) -> bool {
         let pane_id = PaneId::Terminal(terminal_pane_id);
         match self.get_pane_with_id_mut(pane_id) {
             Some(pane) => {
@@ -9886,6 +9889,7 @@ impl Tab {
                         command_to_run,
                         None,
                     ));
+                    return true;
                 } else {
                     self.pending_command_respawns
                         .insert(pane_id, (run_command, keep_scrollback));
@@ -9898,6 +9902,7 @@ impl Tab {
                 );
             },
         }
+        false
     }
     pub fn resize_pane_with_id(&mut self, strategy: ResizeStrategy, pane_id: PaneId) -> Result<()> {
         self.resize_pane_in_layer(PaneSubject::Pane(pane_id), strategy)

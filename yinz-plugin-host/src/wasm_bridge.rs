@@ -1773,6 +1773,23 @@ impl WasmBridge {
         }
         Ok(())
     }
+    pub(crate) fn resolve_agent_event_projects(
+        &self,
+        version: u64,
+        agents: Vec<yinz_types::agent::control::AgentStatus>,
+        projects: Vec<String>,
+    ) {
+        let data = self.data_access.clone();
+        let senders = self.senders.clone();
+        std::thread::spawn(move || {
+            let result =
+                crate::yinz_exports::agent_event_projects(agents, projects, &data, &senders);
+            senders
+                .send_to_screen(ScreenInstruction::AgentEventProjects(version, result))
+                .non_fatal();
+        });
+    }
+
     /// A `yinz events` client asking for `event_types` by name. A name that is not a
     /// streamable event refuses the whole subscription, told to the client as an error, so a
     /// typo is an exit rather than a silent stream of everything else.

@@ -877,6 +877,8 @@ impl TestSession {
         let (fake_client_os_api, client) = FakeClientOsApi::new(self.size, None);
         let session_name = self.session_name.clone();
         let events_cli = yinz_cli::args::EventsCli {
+            filters: Default::default(),
+            text: false,
             event_type: event_types.iter().map(|t| t.to_string()).collect(),
         };
         let thread = std::thread::Builder::new()

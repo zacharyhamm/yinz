@@ -218,6 +218,10 @@ pub(super) fn apply_queued_agent_report(
                 if lifecycle { "ok" } else { "unavailable" },
             );
         }
+        let submission = hook
+            .as_ref()
+            .and_then(|hook| screen.event_submission(pane_id, hook));
+        screen.observe_agent_event(event, hook.as_ref(), submission);
     }
     let started = std::time::Instant::now();
     trace.record("event_enqueue", Duration::ZERO, "enter");
@@ -479,6 +483,12 @@ pub fn screen_thread_main(
     let mut pending_escape_count = 0;
     'instructions: loop {
         screen.refresh_agent_controls();
+        if screen.agent_events.dirty {
+            screen.refresh_agent_events();
+            screen.refresh_agent_event_projects();
+        }
+        screen.retry_agent_event_projects(Instant::now());
+        screen.flush_agent_events();
         if screen.agent_double_escape {
             // Observe every screen transition, including programmatic focus changes. Keeping the
             // previous focus/mode catches leaving and returning before the next key arrives.
@@ -2255,6 +2265,7 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::RemoveClient(client_id) => {
                     screen.detach_agent_controls(client_id);
+                    screen.agent_events.remove(client_id);
                     attach_traces_waiting_for_first_render.remove(&client_id);
                     // A connection that never attached — a session probe, a one-shot
                     // CLI action client, a hook's `yinz action agent-report` — has
@@ -4078,6 +4089,15 @@ pub fn screen_thread_main(
                     screen.cleanup_closed_pane(pane_id);
                     pending.waiting_for_pane.remove(&pane_id);
                     screen.notify_pane_closed_to_subscribers(pane_id);
+                },
+                ScreenInstruction::InvalidateAgentEventProjects => {
+                    screen.invalidate_agent_event_projects();
+                },
+                ScreenInstruction::AgentEventProjects(version, result) => {
+                    screen.apply_agent_event_projects(version, result);
+                },
+                ScreenInstruction::SubscribeAgentEvents(client, options) => {
+                    screen.subscribe_agent_events(client, options);
                 },
                 ScreenInstruction::SetCliEventSubscribersPresent(present) => {
                     screen.cli_event_subscribers_present = present;

@@ -518,6 +518,7 @@ impl Controller {
                     }
                 }
                 self.send(ClientMsg::SubscribeToEvents {
+                    options: Default::default(),
                     event_types: vec![],
                 })?;
             },

@@ -569,7 +569,8 @@ impl Agent {
             Agent::Control(AgentControl::Register { json } | AgentControl::Unregister { json }) => {
                 *json
             },
-            Agent::Register { json, .. }
+            Agent::Watch { json, .. }
+            | Agent::Register { json, .. }
             | Agent::List { json, .. }
             | Agent::Status { json, .. }
             | Agent::Spawn { json, .. }
@@ -603,11 +604,32 @@ fn parse_submission_id(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+#[derive(Debug, Default, Parser, Clone, Serialize, Deserialize)]
+pub struct AgentWatchFilters {
+    #[clap(long, value_parser = parse_agent_target)]
+    pub pane: Vec<yinz_types::pane_id::PaneId>,
+    #[clap(long)]
+    pub project: Vec<String>,
+    #[clap(long)]
+    pub kind: Vec<String>,
+    #[clap(long)]
+    pub lifecycle_type: Vec<String>,
+    #[clap(long)]
+    pub cursor: Option<String>,
+}
+
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
     /// Register this pane as a control agent, or remove its registration.
     #[clap(subcommand)]
     Control(AgentControl),
+    /// Follow normalized agent lifecycle events in this session.
+    Watch {
+        #[clap(flatten)]
+        filters: AgentWatchFilters,
+        #[clap(long)]
+        json: bool,
+    },
     #[clap(flatten)]
     Archive(crate::agent_archive::AgentArchive),
     /// Register a terminal pane through the persistent agent service.
@@ -994,9 +1016,15 @@ pub enum SubscribeFormat {
 
 #[derive(Debug, Parser, Clone, Serialize, Deserialize)]
 pub struct EventsCli {
+    #[clap(flatten)]
+    #[serde(default)]
+    pub filters: AgentWatchFilters,
+    #[clap(skip)]
+    #[serde(default)]
+    pub text: bool,
     /// Event type(s) to stream, as PaneUpdate or pane_update. Every streamable event when
     /// none is given; an unknown or unstreamable name lists what is.
-    #[clap(short = 't', long = "type", num_args(1..))]
+    #[clap(short = 't', long = "type", visible_alias = "event-type", num_args(1..))]
     pub event_type: Vec<String>,
 }
 
@@ -2922,6 +2950,52 @@ mod tests {
         assert!(try_parse_cli(["yinz", "plugins", "log", "keys", "-l", "5"]).is_ok());
         assert!(try_parse_cli(["yinz", "plugins", "dir"]).is_ok());
         assert!(try_parse_cli(["yinz", "plugins", "write"]).is_err());
+    }
+
+    #[test]
+    fn lifecycle_events_and_watch_share_filters() {
+        let watch = try_parse_cli([
+            "yinz",
+            "agent",
+            "watch",
+            "--pane",
+            "terminal_7",
+            "--kind",
+            "codex",
+            "--kind",
+            "claude",
+            "--project",
+            "yinz",
+            "--lifecycle-type",
+            "turn_completed",
+            "--cursor",
+            "saved",
+            "--json",
+        ])
+        .unwrap();
+        let Some(Command::Agent(Agent::Watch { filters, json })) = watch.command else {
+            panic!("expected watch");
+        };
+        assert!(json);
+        assert_eq!(filters.pane[0].to_string(), "terminal_7");
+        assert_eq!(filters.kind, ["codex", "claude"]);
+        assert_eq!(filters.project, ["yinz"]);
+        assert_eq!(filters.cursor.as_deref(), Some("saved"));
+        let events = try_parse_cli([
+            "yinz",
+            "events",
+            "--event-type",
+            "agent_lifecycle",
+            "--pane",
+            "7",
+        ])
+        .unwrap();
+        let Some(Command::Events(events)) = events.command else {
+            panic!("expected events");
+        };
+        assert_eq!(events.event_type, ["agent_lifecycle"]);
+        assert_eq!(events.filters.pane, filters.pane);
+        assert!(try_parse_cli(["yinz", "agent", "watch", "--pane", "plugin_7"]).is_err());
     }
 
     #[test]

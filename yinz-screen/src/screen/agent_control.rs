@@ -59,6 +59,10 @@ pub(super) struct Lifecycle {
 }
 
 impl Lifecycle {
+    pub(super) fn event_background_tasks(&self) -> Vec<String> {
+        self.background_tasks.iter().cloned().collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn background_tasks_for_test(&self) -> &BTreeSet<String> {
         &self.background_tasks
@@ -159,6 +163,19 @@ impl Pending {
 }
 
 impl Screen {
+    pub(super) fn event_submission(&self, pane: PaneId, hook: &HookEvent) -> Option<String> {
+        self.agent_controls
+            .iter()
+            .find(|pending| {
+                pending.pane == pane
+                    && pending
+                        .prompt
+                        .as_ref()
+                        .is_some_and(|p| p.matches_submission(hook) && p.acknowledges(hook))
+            })
+            .and_then(|pending| pending.submission_id.clone())
+    }
+
     fn submission(&self, pane: PaneId, id: &str) -> Option<&Submission> {
         self.agent_submissions
             .get(&pane)?
@@ -681,7 +698,7 @@ impl Screen {
             )]))
     }
 
-    fn agent_status(
+    pub(super) fn agent_status(
         &self,
         pane_id: PaneId,
         pending_claim: Option<NotReadyReason>,
@@ -811,7 +828,7 @@ impl Screen {
     /// A pane with no agent record whose foreground program is a recognized agent, such as
     /// a `codex` someone started by hand in a shell. Listed so `agent list` agrees with
     /// `action context`, but never promptable: nothing ties its input to its conversation.
-    fn detected_agent_status(&self, pane_id: PaneId) -> Option<AgentStatus> {
+    pub(super) fn detected_agent_status(&self, pane_id: PaneId) -> Option<AgentStatus> {
         let PaneId::Terminal(id) = pane_id else {
             return None;
         };
@@ -1780,6 +1797,22 @@ impl Screen {
         message: Option<String>,
         pending_claim: Option<NotReadyReason>,
     ) {
+        let reported_interrupt = pending
+            .submission_id
+            .as_deref()
+            .and_then(|id| self.submission(pending.pane, id))
+            .and_then(|submission| submission.result.as_ref())
+            .is_some_and(|result| result.outcome == AgentOutcome::Interrupted);
+        if pending.prompt.is_some()
+            && (matches!(
+                outcome,
+                AgentOutcome::TimedOut | AgentOutcome::StatusUnavailable
+            ) || (!pending.resolved
+                && (outcome == AgentOutcome::Failed
+                    || (outcome == AgentOutcome::Interrupted && !reported_interrupt))))
+        {
+            self.agent_observation_uncertain(pending.pane, pending.submission_id.clone(), outcome);
+        }
         let completed = pending.resolved
             || matches!(
                 outcome,
@@ -2595,6 +2628,7 @@ impl Screen {
                     .values()
                     .map(|_| Duration::from_millis(10)),
             )
+            .chain(self.agent_events.deadline())
             .min()
     }
 

@@ -193,6 +193,11 @@ pub enum PluginInstruction {
         Option<HashSet<EventType>>,
     ),
     /// A `yinz events` client asking for the session's state events, by name.
+    ResolveAgentEventProjects {
+        version: u64,
+        agents: Vec<yinz_types::agent::control::AgentStatus>,
+        projects: Vec<String>,
+    },
     SubscribeCliClientToEvents {
         client_id: ClientId,
         event_types: Vec<String>,

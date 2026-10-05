@@ -109,6 +109,16 @@ impl PixelDimensions {
     }
 }
 
+/// Filters for the explicitly selected normalized agent lifecycle stream.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSubscription {
+    pub panes: Vec<String>,
+    pub projects: Vec<String>,
+    pub kinds: Vec<String>,
+    pub lifecycle_types: Vec<String>,
+    pub cursor: Option<String>,
+}
+
 // Types of messages sent from the client to the server
 #[allow(clippy::large_enum_variant)]
 #[derive(
@@ -182,6 +192,8 @@ pub enum ClientToServerMsg {
     /// travel by name (`EventType::from_cli_name`); an empty list is every streamable one.
     SubscribeToEvents {
         event_types: Vec<String>,
+        #[serde(default)]
+        options: EventSubscription,
     },
     DesktopNotificationResponse {
         raw_bytes: Vec<u8>,

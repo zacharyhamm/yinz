@@ -28,6 +28,7 @@ pub fn wait(session: &SessionName, request: Wait) -> Result<serde_json::Value> {
             *pane_id,
             *timeout,
             ClientToServerMsg::SubscribeToEvents {
+                options: Default::default(),
                 event_types: vec!["pane_update".into(), "command_pane_exited".into()],
             },
         ),

@@ -408,6 +408,33 @@ impl PromptObservation {
         }
     }
 
+    /// Observe a provider-acknowledged turn, including human and background turns.
+    /// No prompt text is retained by lifecycle subscribers.
+    pub fn from_accepted_hook(kind: &str, hook: &HookEvent) -> Self {
+        let mut observation = Self::with_input(
+            kind,
+            &hook.session_id,
+            hook.prompt.as_deref().unwrap_or_default(),
+            None,
+        );
+        if let Some(fingerprint) = &hook.prompt_sha256 {
+            observation.prompt_sha256 = fingerprint.clone();
+        }
+        observation.supported = true;
+        observation.acknowledged = true;
+        observation.turn_id = hook.turn_id.clone().filter(|id| !id.is_empty());
+        observation.prompt_id = hook.prompt_id.clone().filter(|id| !id.is_empty());
+        observation
+    }
+
+    /// Whether this is the exact provider turn accepted by this observation.
+    pub fn acknowledges(&self, hook: &HookEvent) -> bool {
+        self.acknowledged
+            && self.conversation_id == hook.session_id
+            && self.turn_id.as_deref() == hook.turn_id.as_deref().filter(|id| !id.is_empty())
+            && self.prompt_id.as_deref() == hook.prompt_id.as_deref().filter(|id| !id.is_empty())
+    }
+
     pub fn supported(&self) -> bool {
         self.supported
     }
