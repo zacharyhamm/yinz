@@ -664,10 +664,14 @@ impl Screen {
                 entries.push((
                     Entry {
                         id: format!("pane:{}", pane.id),
-                        label: format!("{} ({})", pane.title, pane.id),
+                        label: format!("({}) {}", pane.id, pane.title),
                         shortcut: String::new(),
                         description: tab_label.clone(),
-                        aliases: vec![pane.title],
+                        aliases: vec![
+                            pane.title,
+                            pane.id.to_string(),
+                            pane.id.legacy_parts().0.to_string(),
+                        ],
                         kind: EntryKind::Pane,
                     },
                     Builtin::Action(FocusPaneByPaneId { pane_id: pane.id }),

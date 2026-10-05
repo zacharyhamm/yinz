@@ -368,6 +368,54 @@ fn enqueued_palette_action(receiver: &Receiver<(ScreenInstruction, ErrorContext)
 }
 
 #[test]
+fn palette_searches_pane_ids_and_keeps_them_visible_before_long_titles() {
+    for pane in [
+        PaneId::Terminal(TerminalId::new(42)),
+        PaneId::Plugin(PluginId::new(42)),
+    ] {
+        for query in ["42".to_owned(), pane.to_string()] {
+            for picker in [false, true] {
+                let mut screen = create_non_mirrored_screen(SIZE);
+                let (plugin_sender, _plugin_receiver) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+                new_tab(&mut screen, 1, TabId::new(0));
+                let receiver = screen_wired_to_server(&mut screen);
+                let actions = palette_actions_receiver(&mut screen);
+                let mut grid = grid_for_render_snapshot(SIZE);
+                for (id, title) in [
+                    (PaneId::Terminal(TerminalId::new(2)), "build 4--2".into()),
+                    (pane, "界".repeat(80)),
+                ] {
+                    screen
+                        .get_active_tab_mut(CLIENT)
+                        .unwrap()
+                        .new_floating_pane(id, Some(title), None, false, false, None, None)
+                        .unwrap();
+                }
+                if picker {
+                    palette_search(&mut screen, "Focus pane");
+                    palette_key(&mut screen, BareKey::Enter);
+                    screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
+                } else {
+                    palette_search(&mut screen, &query);
+                }
+                let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+                assert!(
+                    frame.contains(&format!("› ({pane}) 界")),
+                    "{query}: {frame}"
+                );
+                palette_key(&mut screen, BareKey::Enter);
+                assert_eq!(
+                    enqueued_palette_action(&actions),
+                    Action::FocusPaneByPaneId { pane_id: pane },
+                    "{query} (picker: {picker})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn palette_builtin_actions_capture_origin_and_close_before_dispatch() {
     for (query, expected) in [
         (
