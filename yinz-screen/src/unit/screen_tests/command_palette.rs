@@ -2346,6 +2346,147 @@ fn root_palette_escape_cancels_discovery_and_debounce() {
 }
 
 #[test]
+fn palette_sets_control_agents_without_changing_focus_or_other_registrations() {
+    let mut screen = control_agent_registration_screen();
+    let source = PaneId::Terminal(TerminalId::new(1));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    let agent = screen
+        .tab_containing_pane(target)
+        .unwrap()
+        .pane_agent_info(target);
+    screen
+        .tab_containing_pane_mut(source)
+        .unwrap()
+        .set_pane_agent(source, agent);
+    for query in [
+        "Set control agent",
+        "Set focused pane as control agent",
+        "Set control agent",
+    ] {
+        palette_search(&mut screen, query);
+        palette_key(&mut screen, BareKey::Enter);
+        if query == "Set control agent" {
+            // Search by tab name for an agent outside the focused tab.
+            screen.command_palette_handles_input(&None, b"controller-tab", false, CLIENT);
+            palette_key(&mut screen, BareKey::Enter);
+        }
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        assert_eq!(screen.get_active_pane_id(&CLIENT), Some(source));
+        assert!(screen.control_agents.contains(&TerminalId::new(2)));
+    }
+    assert_eq!(screen.control_agents.len(), 2);
+    assert_eq!(
+        screen.peer_sessions_cache[&screen.session_name]
+            .control_agents
+            .len(),
+        2
+    );
+}
+
+fn control_agent_registration_screen() -> Screen {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let mut screen = screen();
+    new_tab(&mut screen, 2, TabId::new(1));
+    let target = PaneId::Terminal(TerminalId::new(2));
+    let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+    tab.name = "controller-tab".into();
+    tab.set_pane_agent(
+        target,
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("conversation".into()),
+            run_id: None,
+        }),
+    );
+    screen
+        .focus_pane_with_id(PaneId::Terminal(TerminalId::new(1)), false, false, CLIENT)
+        .unwrap();
+    screen
+}
+
+#[test]
+fn palette_control_agent_registration_filters_invalid_panes_and_revalidates_selection() {
+    use yinz_types::agent::AgentState;
+    for invalid in [
+        "ordinary",
+        "exited",
+        "held",
+        "suppressed",
+        "unselectable",
+        "missing",
+    ] {
+        for stale in [false, true] {
+            let mut screen = control_agent_registration_screen();
+            let receiver = screen_wired_to_server(&mut screen);
+            let mut grid = grid_for_render_snapshot(SIZE);
+            let target = PaneId::Terminal(TerminalId::new(2));
+            if stale {
+                palette_search(&mut screen, "Set control agent");
+                palette_key(&mut screen, BareKey::Enter);
+            }
+            let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
+            match invalid {
+                "ordinary" => {
+                    tab.set_pane_agent(target, None);
+                },
+                "exited" => {
+                    let mut agent = tab.pane_agent_info(target).unwrap();
+                    agent.state = AgentState::Exited;
+                    tab.set_pane_agent(target, Some(agent));
+                },
+                "held" => {
+                    tab.hold_pane(
+                        target,
+                        Some(0),
+                        false,
+                        yinz_types::input::command::RunCommand {
+                            command: "/usr/bin/true".into(),
+                            ..Default::default()
+                        },
+                    );
+                },
+                "suppressed" => tab.suppress_pane(target, None),
+                "unselectable" => tab.set_pane_selectable(target, false),
+                "missing" => {
+                    tab.close_pane(target, false, None);
+                },
+                _ => unreachable!(),
+            }
+            if stale {
+                // Activate the previously rendered candidate before another render refreshes it.
+                palette_key(&mut screen, BareKey::Enter);
+            } else {
+                palette_search(&mut screen, "Set control agent");
+                palette_key(&mut screen, BareKey::Enter);
+            }
+            let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+            assert!(frame.contains("No agent panes"), "{invalid}: {frame}");
+            assert!(screen.control_agents.is_empty(), "{invalid}, stale={stale}");
+            assert!(screen.command_palettes.contains_key(&CLIENT));
+        }
+    }
+}
+
+#[test]
+fn palette_rejects_registering_an_ordinary_focused_pane_with_an_inline_error() {
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "Set focused pane as control agent");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("no tracked agent"), "{frame}");
+    assert!(screen.control_agents.is_empty());
+    assert!(screen.command_palettes.contains_key(&CLIENT));
+}
+
+#[test]
 fn control_agent_picker_uses_live_local_state_and_rejects_removed_registration() {
     use yinz_types::agent::control::AgentRequest;
     use yinz_types::agent::{AgentInfo, AgentState};

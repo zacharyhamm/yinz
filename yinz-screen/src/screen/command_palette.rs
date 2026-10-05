@@ -347,6 +347,7 @@ impl Screen {
 #[derive(Clone)]
 enum Builtin {
     ControlAgent(Action),
+    SetControlAgent(PaneId),
     Agent(yinz_bus::command_palette::AgentAction),
     Action(Action),
     Picker(EntryKind),
@@ -446,6 +447,18 @@ impl Screen {
             "Focus control agent",
             &["controller agent"],
             Builtin::Picker(EntryKind::ControlAgent),
+        );
+        command(
+            "set-control-agent",
+            "Set control agent…",
+            &["mark agent as controller"],
+            Builtin::Picker(EntryKind::SetControlAgent),
+        );
+        command(
+            "set-focused-control-agent",
+            "Set focused pane as control agent",
+            &["mark focused agent as controller"],
+            Builtin::SetControlAgent(pane_id),
         );
         command(
             "floating",
@@ -624,6 +637,30 @@ impl Screen {
                 .into_iter()
                 .filter(|pane| !pane.is_suppressed && pane.is_selectable)
             {
+                if matches!(pane.id, PaneId::Terminal(_))
+                    && !pane.exited
+                    && !pane.is_held
+                    && pane
+                        .agent
+                        .as_ref()
+                        .is_some_and(|agent| agent.state != yinz_types::agent::AgentState::Exited)
+                {
+                    entries.push((
+                        Entry {
+                            id: format!("set-control-agent:{}", pane.id),
+                            label: format!("{} ({})", pane.title, pane.id),
+                            shortcut: String::new(),
+                            description: tab_label.clone(),
+                            aliases: vec![
+                                pane.title.clone(),
+                                pane.id.to_string(),
+                                tab.name.clone(),
+                            ],
+                            kind: EntryKind::SetControlAgent,
+                        },
+                        Builtin::SetControlAgent(pane.id),
+                    ));
+                }
                 entries.push((
                     Entry {
                         id: format!("pane:{}", pane.id),
@@ -1147,6 +1184,30 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::SetControlAgent(target) => {
+                if self
+                    .get_pane_info(target)
+                    .is_some_and(|pane| pane.is_suppressed || !pane.is_selectable)
+                {
+                    if let Some(state) = self.command_palettes.get_mut(&client) {
+                        state
+                            .widget
+                            .set_error("Agent pane is no longer available".into());
+                    }
+                    return;
+                }
+                let response = self.set_control_agent(target, true);
+                if response.outcome == yinz_types::agent::control::AgentOutcome::Ok {
+                    self.close_command_palette(client);
+                } else if let Some(state) = self.command_palettes.get_mut(&client) {
+                    state.widget.set_error(
+                        response
+                            .message
+                            .unwrap_or_else(|| "Could not set control agent".into()),
+                    );
+                }
+                return;
+            },
             Builtin::Agent(action) => {
                 self.request_palette_agent(
                     client,
