@@ -209,12 +209,10 @@ async function closeVm(): Promise<void> {
     configured.env,
   );
 }
+// oxlint-disable-next-line eslint/max-lines-per-function -- Keep identity and preservation checks before both destructive cleanup paths.
 async function deleteCheckout(): Promise<void> {
   const original = required(checkout);
-  if (!removedWorktree && firecracker) {
-    await closeVm();
-    removedWorktree = true;
-  } else if (!removedWorktree) {
+  if (!removedWorktree) {
     const listed = worktrees(
       await command(["git", "-C", original.primary, "worktree", "list", "--porcelain", "-z"]),
     );
@@ -226,16 +224,36 @@ async function deleteCheckout(): Promise<void> {
       found.branch !== original.branch
     )
       throw new Error("The worktree identity changed; deletion was refused.");
-    await command([
+    const config = z.projectConfig.read(original.path);
+    if (config.error) throw new Error(config.error);
+    const base = config.config.default_branch ?? "main";
+    const changes = await command([
+      "git",
+      "-C",
+      original.path,
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+    ]);
+    if (changes.trim())
+      throw new Error(
+        "Worktree has uncommitted changes (including untracked files); worktree and branch preserved.",
+      );
+    const unmerged = await command([
       "git",
       "-C",
       original.primary,
-      "worktree",
-      "remove",
-      "--force",
+      "rev-list",
+      "--max-count=1",
+      `refs/heads/${base}..${original.head}`,
       "--",
-      original.path,
     ]);
+    if (unmerged.trim())
+      throw new Error(
+        `Worktree contains commits not merged into ${base}; worktree and branch preserved.`,
+      );
+    if (firecracker) await closeVm();
+    else await command(["git", "-C", original.primary, "worktree", "remove", "--", original.path]);
     removedWorktree = true;
   }
   if (original.branch) {
@@ -539,7 +557,8 @@ export default definePlugin({
         `Branch: ${checkout.branch ?? "detached HEAD (checkout only)"}`,
         `Revision: ${checkout.head}`,
         ...(firecracker ? [`VM: ${firecracker.name}`] : []),
-        "This cancels the workflow and removes uncommitted work and unmerged commits.",
+        "This cancels the workflow.",
+        "Deletion requires a clean worktree and commits merged into the base branch.",
         "Delete again: confirm deletion. Esc: cancel.",
       ]);
       confirmationVisible = cols > 0 && lines.length <= rows;

@@ -3010,12 +3010,25 @@ fn remove_git_worktree_if_matches(expected: &WorktreeIdentity) -> Result<()> {
     {
         bail!("The worktree identity changed; deletion was refused");
     }
+    let changes = run_capturing(
+        Command::new("git").arg("-C").arg(&expected.path).args([
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ]),
+        "failed to check Git worktree cleanliness",
+    )?;
+    if !changes.trim().is_empty() {
+        bail!(
+            "Worktree has uncommitted changes (including untracked files); worktree and branch preserved."
+        );
+    }
     let primary = &worktrees[0].path;
     run(
         Command::new("git")
             .arg("-C")
             .arg(primary)
-            .args(["worktree", "remove", "--force", "--"])
+            .args(["worktree", "remove", "--"])
             .arg(&expected.path),
         "failed to remove the Git worktree",
     )
@@ -11357,19 +11370,15 @@ mod tests {
         assert_eq!(read_state(&vm.path).unwrap().leases, ["other"]);
     }
 
-    #[test]
-    fn git_worktree_removal_refuses_changed_identity() {
-        let root = tempfile::tempdir().unwrap();
-        let primary = root.path().join("repo");
-        let secondary = root.path().join("topic");
-        fs::create_dir(&primary).unwrap();
+    fn git_worktree_fixture(primary: &Path, secondary: &Path) -> WorktreeIdentity {
+        fs::create_dir(primary).unwrap();
         for args in [
             vec!["init", "-q"],
             vec!["config", "user.name", "fixture"],
             vec!["config", "user.email", "fixture@example.test"],
         ] {
             run(
-                Command::new("git").arg("-C").arg(&primary).args(args),
+                Command::new("git").arg("-C").arg(primary).args(args),
                 "git fixture",
             )
             .unwrap();
@@ -11378,7 +11387,7 @@ mod tests {
         run(
             Command::new("git")
                 .arg("-C")
-                .arg(&primary)
+                .arg(primary)
                 .args(["add", "file"]),
             "git fixture",
         )
@@ -11386,7 +11395,7 @@ mod tests {
         run(
             Command::new("git")
                 .arg("-C")
-                .arg(&primary)
+                .arg(primary)
                 .args(["commit", "-qm", "base"]),
             "git fixture",
         )
@@ -11394,7 +11403,7 @@ mod tests {
         let original = run_capturing(
             Command::new("git")
                 .arg("-C")
-                .arg(&primary)
+                .arg(primary)
                 .args(["rev-parse", "HEAD"]),
             "git fixture",
         )
@@ -11404,12 +11413,112 @@ mod tests {
         run(
             Command::new("git")
                 .arg("-C")
-                .arg(&primary)
+                .arg(primary)
                 .args(["worktree", "add", "-qb", "topic"])
-                .arg(&secondary),
+                .arg(secondary),
             "git fixture",
         )
         .unwrap();
+        WorktreeIdentity {
+            path: secondary.to_owned(),
+            head: original,
+            branch: Some("topic".into()),
+        }
+    }
+
+    #[test]
+    fn guarded_worktree_removal_checks_cleanliness_after_guest_sync() {
+        for changed_path in [None, Some("file"), Some("untracked")] {
+            let root = tempfile::tempdir().unwrap();
+            let root_path = root.path().canonicalize().unwrap();
+            let locked = locked_state_in(&root_path);
+            let config = provider_config(&root_path);
+            let mut guests = FakeGuests::default();
+            let mut vm = LeasedVm::new(&locked, &mut guests, "review", &[("file", "base")]);
+            fs::remove_dir_all(&vm.host).unwrap();
+            let primary = root_path.join("repo");
+            let checkout = git_worktree_fixture(&primary, &vm.host);
+            let live = LiveProcess::spawn();
+            live.attach(&mut vm);
+            let expected = list(&locked, Some("work")).unwrap().remove(0).identity();
+            if let Some(path) = changed_path {
+                fs::write(vm.guest.join(path), "guest change").unwrap();
+            }
+            assert!(run_capturing(
+                Command::new("git").arg("-C").arg(&vm.host).args([
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all"
+                ]),
+                "git fixture",
+            )
+            .unwrap()
+            .is_empty());
+
+            let result = close_and_remove_worktree_if_matches(
+                &locked,
+                &config,
+                &guests,
+                &expected,
+                &checkout,
+                |_, _, _| Ok(()),
+                remove_git_worktree_if_matches,
+            );
+            assert!(
+                !vm.path.exists(),
+                "the lease was released before Git removal"
+            );
+            if let Some(path) = changed_path {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("worktree and branch preserved"));
+                assert_eq!(vm.host_file(path).as_deref(), Some("guest change"));
+                let branch_head = run_capturing(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&primary)
+                        .args(["rev-parse", "refs/heads/topic"]),
+                    "git fixture",
+                )
+                .unwrap();
+                assert_eq!(branch_head.trim(), checkout.head);
+                let retry = || {
+                    close_and_remove_worktree_if_matches(
+                        &locked,
+                        &config,
+                        &guests,
+                        &expected,
+                        &checkout,
+                        |_, _, _| panic!("the lease was already released"),
+                        remove_git_worktree_if_matches,
+                    )
+                };
+                assert!(retry()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("worktree and branch preserved"));
+                assert_eq!(vm.host_file(path).as_deref(), Some("guest change"));
+                if path == "file" {
+                    fs::write(vm.host.join(path), "base").unwrap();
+                } else {
+                    fs::remove_file(vm.host.join(path)).unwrap();
+                }
+                retry().unwrap();
+            } else {
+                result.unwrap();
+            }
+            assert!(!vm.host.exists());
+        }
+    }
+
+    #[test]
+    fn git_worktree_removal_refuses_changed_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let primary = root_path.join("repo");
+        let secondary = root_path.join("topic");
+        let mut expected = git_worktree_fixture(&primary, &secondary);
         fs::write(secondary.join("file"), "changed").unwrap();
         run(
             Command::new("git")
@@ -11420,11 +11529,6 @@ mod tests {
         )
         .unwrap();
 
-        let mut expected = WorktreeIdentity {
-            path: secondary.clone(),
-            head: original,
-            branch: Some("topic".into()),
-        };
         assert!(remove_git_worktree_if_matches(&expected)
             .unwrap_err()
             .to_string()

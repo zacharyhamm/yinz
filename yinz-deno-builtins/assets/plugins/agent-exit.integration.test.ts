@@ -8,7 +8,10 @@ test("agent-exit visible fallback handles keys, resize and reload", async () => 
   session.reload("yinz:agent-exit");
   await session.waitForText("restart agent");
   session.key("Esc");
-  await session.waitFor("fallback pane closes", () => !session.screen.includes("restart agent"));
+  await session.waitFor(
+    "fallback pane closes",
+    () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
+  );
   assert(!session.screen.includes("restart agent"));
 });
 
@@ -16,7 +19,7 @@ const gitFixture = `#!/bin/sh
 set -eu
 git=/usr/bin/git
 if [ ! -d "$HOME/repo/.git" ]; then
-  "$git" init -q "$HOME/repo"
+  "$git" init -qb main "$HOME/repo"
   "$git" -C "$HOME/repo" config user.name fixture
   "$git" -C "$HOME/repo" config user.email fixture@example.test
   printf base > "$HOME/repo/file"
@@ -25,7 +28,15 @@ if [ ! -d "$HOME/repo/.git" ]; then
   "$git" -C "$HOME/repo" worktree add -qb topic "$HOME/topic"
   printf unmerged > "$HOME/topic/file"
   "$git" -C "$HOME/topic" commit -qam topic
-  printf dirty > "$HOME/topic/dirty"
+  if [ ! -e "$HOME/unmerged" ]; then
+    "$git" -C "$HOME/repo" merge -q --ff-only topic
+  fi
+  [ ! -e "$HOME/dirty-tracked" ] || printf dirty > "$HOME/topic/file"
+  [ ! -e "$HOME/dirty-untracked" ] || printf dirty > "$HOME/topic/untracked"
+  if [ -e "$HOME/dirty-staged" ]; then
+    printf staged > "$HOME/topic/file"
+    "$git" -C "$HOME/topic" add file
+  fi
 fi
 if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "worktree" ] && [ "\${4:-}" = "remove" ]; then
   [ ! -e "$HOME/require-vm-close" ] || [ -e "$HOME/vm-closed" ]
@@ -98,7 +109,7 @@ test(
 );
 
 test(
-  "agent-exit confirms before removing a dirty unmerged secondary worktree",
+  "agent-exit removes a clean secondary worktree merged into its base",
   { grants: ["ReadFiles", "RunCommands"] },
   async () => {
     const root = session.fixture({}, { git: gitFixture });
@@ -114,15 +125,57 @@ test(
     session.key("Delete");
     session.resize(30, 100);
     await session.waitForText("Delete again");
-    await session.waitForText("unmerged commits");
+    await session.waitForText("commits merged into the base branch");
     session.key("Delete");
     await session.waitFor(
       "confirmed deletion closes the exit view",
-      () => !session.screen.includes("Delete worktree"),
+      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
     );
+    await session.waitForText("yinz-test>");
     assert(!session.screen.includes("Deletion failed"));
+    session.text(
+      'test ! -d "$HOME/topic" && ! /usr/bin/git -C "$HOME/repo" show-ref --verify --quiet refs/heads/topic && printf "CLEANUP_%s\\n" OK',
+    );
+    session.key("Enter");
+    await session.waitForText("CLEANUP_OK");
   },
 );
+
+for (const [marker, reason] of [
+  ["unmerged", "not merged into main"],
+  ["dirty-tracked", "uncommitted changes"],
+  ["dirty-untracked", "uncommitted changes"],
+  ["dirty-staged", "uncommitted changes"],
+]) {
+  test(
+    `agent-exit preserves worktree and branch with ${marker}`,
+    { grants: ["ReadFiles", "RunCommands"] },
+    async () => {
+      const root = session.fixture({ [marker]: "" }, { git: gitFixture });
+      session.start();
+      session.loadPlugin("yinz:agent-exit", {
+        configuration: { agent_cwd: `${root}/topic`, agent_target: "local" },
+      });
+      await session.waitForText("Delete: Delete worktree & branch and close pane");
+      session.key("Delete");
+      await session.waitForText("Delete again");
+      session.key("Delete");
+      await session.waitForText(reason);
+      assert(session.screen.replace(/\s+/gu, " ").includes("worktree and branch preserved"));
+      session.key("Esc");
+      await session.waitFor(
+        "exit view closes",
+        () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
+      );
+      await session.waitForText("yinz-test>");
+      session.text(
+        'test -d "$HOME/topic" && /usr/bin/git -C "$HOME/repo" show-ref --verify --quiet refs/heads/topic && printf "PRESERVED_%s\\n" OK',
+      );
+      session.key("Enter");
+      await session.waitForText("PRESERVED_OK");
+    },
+  );
+}
 
 test(
   "agent-exit closes a guarded Firecracker lease before removing its worktree",
@@ -151,7 +204,7 @@ test(
     session.key("Delete");
     await session.waitFor(
       "VM close permits Git deletion",
-      () => !session.screen.includes("Delete worktree"),
+      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
     );
     assert(!session.screen.includes("Deletion failed"));
   },
@@ -255,7 +308,7 @@ test(
     );
     await session.waitFor(
       "exit pane closes after cleanup",
-      () => !session.screen.includes("Delete again") && !session.screen.includes("Delete worktree"),
+      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
     );
     assert(!session.screen.includes("Deletion failed"));
   },
