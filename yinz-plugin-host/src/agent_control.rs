@@ -109,12 +109,16 @@ pub fn control_agent(
     response
 }
 
-fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, String> {
+pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, String> {
     data.plugin_data()
         .fetch(
             hocus_data::store::SHARED,
             &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
         )
+        .or_else(|error| match error {
+            DataError::UnknownEntity(_) => Ok(Default::default()),
+            error => Err(error),
+        })
         .map_err(|e| e.to_string())
         .and_then(|rows| {
             if rows.truncated {

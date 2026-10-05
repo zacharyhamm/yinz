@@ -1,0 +1,268 @@
+use super::Screen;
+use crate::ui::command_palette::{Entry, EntryKind, Field, Form, Outcome, PluginSection};
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
+use yinz_bus::command_palette::{AgentAction, AgentReply, AgentRequest};
+use yinz_bus::plugins::PluginInstruction;
+use yinz_runtime::errors::prelude::*;
+use yinz_types::{agent::control::AgentOutcome, data::PaneInfo, internal_ids::ClientId};
+
+static OPENING: AtomicU64 = AtomicU64::new(1);
+const FIRST_VIEW: u64 = 1 << 63;
+
+pub(super) struct State {
+    opening: u64,
+    step: u64,
+    source: PaneInfo,
+    pending: Option<(u64, Arc<AtomicBool>)>,
+    actions: HashMap<String, AgentAction>,
+    submitted: bool,
+    pub(super) values: HashMap<String, String>,
+}
+
+impl State {
+    pub(super) fn new(source: PaneInfo) -> Self {
+        Self {
+            opening: OPENING.fetch_add(1, Ordering::Relaxed),
+            step: 0,
+            source,
+            pending: None,
+            actions: HashMap::new(),
+            submitted: false,
+            values: HashMap::new(),
+        }
+    }
+    pub(super) fn save_form(&mut self, widget: &crate::ui::command_palette::CommandPalette) {
+        if let Some((id, values)) = widget.form_values() {
+            if let (Some(action), Some(value)) = (self.actions.get(id), values.first()) {
+                self.values.insert(format!("{action:?}"), value.clone());
+            }
+        }
+    }
+    pub(super) fn owns_view(&self, view: u64) -> bool {
+        view >= FIRST_VIEW
+    }
+    pub(super) fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub(super) fn cancel(&mut self) {
+        if let Some((_, active)) = self.pending.take() {
+            active.store(false, Ordering::Release);
+        }
+    }
+}
+
+impl Screen {
+    pub(super) fn request_palette_agent(
+        &mut self,
+        client: ClientId,
+        action: AgentAction,
+        value: Option<String>,
+    ) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        if state.agents.pending() {
+            return;
+        }
+        if state.agents.submitted {
+            state.widget.set_error(
+                "Launch already submitted; inspect agents before reopening the palette".into(),
+            );
+            return;
+        }
+        state.cancel_requests(&self.bus.senders, client);
+        state.agents.submitted = matches!(
+            &action,
+            AgentAction::Current { .. }
+                | AgentAction::Duplicate { .. }
+                | AgentAction::Launch { .. }
+        ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || value.is_some());
+        state.agents.step += 1;
+        let active = Arc::new(AtomicBool::new(true));
+        state.agents.pending = Some((state.widget.view, active.clone()));
+        state.widget.busy = true;
+        state.widget.clear_error();
+        let request = AgentRequest {
+            client,
+            opening: state.agents.opening,
+            step: state.agents.step,
+            source: state.agents.source.clone(),
+            action,
+            value,
+            active,
+        };
+        if let Err(error) = self
+            .bus
+            .senders
+            .send_to_plugin(PluginInstruction::PaletteAgent(Box::new(request)))
+        {
+            state.agents.cancel();
+            state.agents.submitted = false;
+            state.widget.busy = false;
+            state
+                .widget
+                .set_error(format!("Could not request agent action: {error}"));
+        }
+    }
+
+    pub(super) fn agent_palette_outcome(&mut self, client: ClientId, outcome: &Outcome) -> bool {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return false;
+        };
+        if *outcome == Outcome::Cancel && state.agents.pending() {
+            state.agents.cancel();
+            state.widget.busy = false;
+            if state.agents.submitted {
+                state.widget.set_error(
+                    "Stopped waiting; launch may still complete. Inspect agents before retrying."
+                        .into(),
+                );
+            }
+            return true;
+        }
+        let (id, value) = match outcome {
+            Outcome::Activate(id) => (id, None),
+            Outcome::Submit { id, values } => (id, values.first().cloned()),
+            _ => return false,
+        };
+        let Some(action) = state.agents.actions.get(id).cloned() else {
+            return false;
+        };
+        self.request_palette_agent(client, action, value);
+        true
+    }
+
+    pub(super) fn agent_palette_reply(
+        &mut self,
+        client: ClientId,
+        opening: u64,
+        step: u64,
+        reply: Result<AgentReply, String>,
+    ) {
+        let Some(state) = self.command_palettes.get_mut(&client) else {
+            return;
+        };
+        if state.agents.opening != opening
+            || state.agents.step != step
+            || !state.agents.pending.as_ref().is_some_and(|(view, active)| {
+                *view == state.widget.view && active.load(Ordering::Acquire)
+            })
+        {
+            return;
+        }
+        state.agents.cancel();
+        state.widget.busy = false;
+        match reply {
+            Err(error) => {
+                state.agents.submitted = false;
+                state.widget.set_error(error);
+            },
+            Ok(AgentReply::Choices { title, choices }) => {
+                state.agents.submitted = false;
+                state.widget.push_view(FIRST_VIEW + step, title.clone());
+                let entries = choices
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, choice)| {
+                        let id = format!("native-agent:{step}:{i}");
+                        state.agents.actions.insert(id.clone(), choice.action);
+                        Entry {
+                            id,
+                            label: choice.label,
+                            description: choice.description.clone(),
+                            aliases: vec![choice.description],
+                            shortcut: String::new(),
+                            // Section rows use the widget’s grouped entry kind.
+                            kind: EntryKind::Plugin,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let status = entries.is_empty().then(|| "No projects available".into());
+                state.widget.set_sections(vec![PluginSection {
+                    title,
+                    entries,
+                    semantic: false,
+                    status,
+                }]);
+            },
+            Ok(AgentReply::Form {
+                title,
+                label,
+                action,
+            }) => {
+                state.agents.submitted = false;
+                state.widget.push_view(FIRST_VIEW + step, title.clone());
+                let id = format!("native-agent:{step}:form");
+                state.agents.actions.insert(id.clone(), action.clone());
+                state.widget.open_form(Form::new(
+                    id,
+                    title,
+                    vec![Field::text(
+                        &label,
+                        state
+                            .agents
+                            .values
+                            .get(&format!("{action:?}"))
+                            .map(String::as_str)
+                            .unwrap_or(""),
+                    )],
+                    "Launch",
+                    false,
+                ));
+            },
+            Ok(AgentReply::Launched(response)) => {
+                if response.outcome == AgentOutcome::Rejected
+                    && response.spawned.is_none()
+                    && response.launch_resources.is_none()
+                {
+                    state.agents.submitted = false;
+                }
+                if response.outcome == AgentOutcome::Ok {
+                    if let Some(spawned) = response.spawned {
+                        self.close_command_palette(client);
+                        self.focus_pane_with_id(spawned.pane_id, false, false, client)
+                            .context("focusing palette agent")
+                            .non_fatal();
+                        self.sync_scroll_mode_on_focus(client)
+                            .context("syncing palette agent focus")
+                            .non_fatal();
+                        self.log_and_report_session_state()
+                            .context("reporting palette agent focus")
+                            .non_fatal();
+                        return;
+                    }
+                }
+                let mut message = response
+                    .message
+                    .unwrap_or_else(|| "Agent launch did not complete".into());
+                let partial = response.launch_resources.is_some() || response.spawned.is_some();
+                if let Some(resources) = response.launch_resources {
+                    if let Some(cwd) = resources.cwd {
+                        message.push_str(&format!("\nCheckout: {}", cwd.display()));
+                    }
+                    if let Some(branch) = resources.branch {
+                        message.push_str(&format!("\nBranch: {branch}"));
+                    }
+                    if let Some(tab) = resources.created_tab_id {
+                        message.push_str(&format!("\nCreated tab: {tab}"));
+                    }
+                }
+                if let Some(spawned) = response.spawned {
+                    message.push_str(&format!("\nCreated pane: {}", spawned.pane_id));
+                }
+                if partial {
+                    state
+                        .widget
+                        .push_view(FIRST_VIEW + step, "Agent launch failed".into());
+                    state.widget.open_text(message);
+                } else {
+                    state.widget.set_error(message);
+                }
+            },
+        }
+    }
+}

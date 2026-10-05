@@ -2731,3 +2731,194 @@ fn warp_palette_live_refresh_preserves_session_and_tab_identity() {
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(snapshot.contains("Wrong peer"), "{snapshot}");
 }
+
+#[test]
+fn native_agent_palette_search_context_cancellation_and_stale_replies() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentChoice, AgentProject, AgentReply, Instruction,
+    };
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::agent::provider::{self, AgentProvider};
+    let registered = AgentProvider {
+        kind: "palette-test-agent".into(),
+        executable: "palette-test-agent".into(),
+        ..Default::default()
+    };
+    provider::register(98981, registered).unwrap();
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.projects = ["current".into(), "other".into()].into_iter().collect();
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    let esc = Some(KeyWithModifier::new(BareKey::Esc));
+    let next = || {
+        rx.try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteAgent(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    };
+    for kind in ["claude", "codex", "palette-test-agent"] {
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(
+            &None,
+            format!("{kind} worktree").as_bytes(),
+            false,
+            CLIENT,
+        );
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let request = next();
+        assert!(
+            matches!(&request.action, AgentAction::Start { kind: selected, vm: false, project: Some(project) } if selected == kind && project == "current")
+        );
+        // Repeated Enter cannot submit the request twice.
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        assert!(!rx
+            .try_iter()
+            .any(|(i, _)| matches!(i, PluginInstruction::PaletteAgent(_))));
+        screen.command_palette_handles_input(&esc, b"", false, CLIENT);
+        assert!(!request.active.load(std::sync::atomic::Ordering::Acquire));
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::Choices {
+                title: "STALE".into(),
+                choices: vec![],
+            }),
+        });
+        let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(!snapshot.contains("STALE"));
+        screen.close_command_palette(CLIENT);
+    }
+    provider::unregister_owner(98981);
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b"claude worktree", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let request = next();
+    let action = AgentAction::Checkout {
+        kind: "claude".into(),
+        vm: false,
+        project: AgentProject::Registered("current".into()),
+        path: None,
+    };
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::Choices {
+            title: "current · Worktrees".into(),
+            choices: vec![AgentChoice {
+                label: "Create new worktree…".into(),
+                description: "".into(),
+                action: action.clone(),
+            }],
+        }),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("current · Worktrees"), "{snapshot}");
+    assert_eq!(
+        snapshot.matches("Create new worktree").count(),
+        1,
+        "{snapshot}"
+    );
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let form = next();
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: form.opening,
+        step: form.step,
+        reply: Ok(AgentReply::Form {
+            title: "Create new worktree".into(),
+            label: "Branch name".into(),
+            action: action.clone(),
+        }),
+    });
+    screen.command_palette_handles_input(&None, b"my-branch", false, CLIENT);
+    screen.command_palette_handles_input(&esc, b"", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let form = next();
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: form.opening,
+        step: form.step,
+        reply: Ok(AgentReply::Form {
+            title: "Create new worktree".into(),
+            label: "Branch name".into(),
+            action,
+        }),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("my-branch"), "{snapshot}");
+}
+
+#[test]
+fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_retry() {
+    use yinz_bus::command_palette::{AgentReply, Instruction};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    use yinz_types::agent::control::{AgentOutcome, AgentResponse};
+    let mut screen = screen();
+    let other = ClientId::new(2);
+    screen.add_client(other).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    screen.toggle_command_palette(CLIENT);
+    screen.toggle_command_palette(other);
+    screen.command_palette_handles_input(&None, b"claude current directory", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let request = rx
+        .try_iter()
+        .find_map(|(i, _)| match i {
+            PluginInstruction::PaletteAgent(r) => Some(r),
+            _ => None,
+        })
+        .unwrap();
+    let failure = || {
+        Ok(AgentReply::Launched(AgentResponse {
+            outcome: AgentOutcome::TimedOut,
+            message: Some("Launch outcome unknown".into()),
+            launch_resources: Some(yinz_types::agent::AgentLaunchResources {
+                cwd: Some("/created/checkout".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+    };
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: other,
+        opening: request.opening,
+        step: request.step,
+        reply: failure(),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, other, &mut grid);
+    assert!(!snapshot.contains("outcome unknown"));
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: failure(),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("Launch outcome unknown"), "{snapshot}");
+    assert!(snapshot.contains("/created/checkout"), "{snapshot}");
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    assert!(!rx
+        .try_iter()
+        .any(|(i, _)| matches!(i, PluginInstruction::PaletteAgent(_))));
+    screen.close_command_palette(CLIENT);
+    screen.toggle_command_palette(CLIENT);
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: failure(),
+    });
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!snapshot.contains("outcome unknown"));
+}

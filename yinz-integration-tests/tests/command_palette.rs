@@ -758,3 +758,79 @@ fn command_palette_focuses_a_registered_control_agent_across_tabs_and_removes_it
     });
     yinz.quit();
 }
+
+#[test]
+fn command_palette_launches_agent_in_selected_worktree_and_focuses_it() {
+    let repository = tempfile::tempdir().unwrap();
+    let root = repository.path().canonicalize().unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        vec![
+            "worktree",
+            "add",
+            ".worktrees/palette",
+            "-b",
+            "palette-branch",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane cwd={:?}; }}",
+            root.to_str().unwrap()
+        )))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    yinz.send_stdin(DO);
+    yinz.wait_until("palette open", |s| s.contains("Switch session"));
+    yinz.send_stdin(b"claude worktree");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("caller repository offered", |s| {
+        s.contains("Caller’s repository")
+    });
+    yinz.send_stdin(b"Caller");
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("searchable worktrees", |s| s.contains("palette-branch"));
+    yinz.send_stdin(b"palette-branch");
+    yinz.send_stdin(&keys::ENTER);
+    let agent = yinz.expect_pty_spawn();
+    let command = agent.run_command();
+    assert_eq!(command.cwd, Some(root.join(".worktrees/palette")));
+    assert!(
+        command.args.iter().any(|arg| arg == "claude"),
+        "{command:?}"
+    );
+    agent.output(b"PALETTE AGENT READY\r\n");
+    yinz.wait_until("palette closes after launch", |s| {
+        s.contains("PALETTE AGENT READY") && !s.contains("Do · Project:")
+    });
+    yinz.send_stdin(b"focused-agent");
+    agent.wait_for_stdin("new agent is focused", |bytes| {
+        bytes.ends_with(b"focused-agent")
+    });
+    assert!(!shell
+        .stdin_bytes()
+        .windows(13)
+        .any(|s| s == b"focused-agent"));
+    yinz.quit();
+}
