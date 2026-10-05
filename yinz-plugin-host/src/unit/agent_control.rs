@@ -119,6 +119,7 @@ fn agent_status(cwd: &std::path::Path) -> AgentStatus {
         not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::PromptUnsupported),
         status_available: false,
         prompt_supported: false,
+        readiness: None,
         input_revision: None,
         clear_draft_supported: false,
         background_tasks: Vec::new(),

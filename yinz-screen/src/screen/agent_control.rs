@@ -8,8 +8,8 @@ use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     claude_prompt_text, claude_task_notification_ids, is_claude_task_notification,
     is_command_prompt, needs_paste_lead_in, pi_prompt_text, supports_prompt,
-    validate_submission_id, AgentOutcome, AgentRequest, AgentResponse, AgentStatus, NotReadyReason,
-    PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
+    validate_submission_id, AgentOutcome, AgentReadiness, AgentRequest, AgentResponse, AgentStatus,
+    NotReadyReason, PromptObservation, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS, PASTE_LEAD_IN,
 };
 use yinz_types::agent::{AgentEvent, AgentInfo, AgentSource, AgentState, HookEvent};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -441,7 +441,18 @@ impl Screen {
             && lifecycle.agy_confirmation == Some(true)
     }
 
-    pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId) {
+    fn remove_agent_lifecycle(&mut self, pane: PaneId, reason: &str) {
+        let previous = self.agent_lifecycle.remove(&pane);
+        log::debug!(
+            "agent lifecycle removed session={:?} pane={pane:?} reason={reason} previous={:?}",
+            self.session_name,
+            previous
+                .as_ref()
+                .map(|record| (&record.kind, &record.conversation)),
+        );
+    }
+
+    pub(super) fn invalidate_agent_lifecycle(&mut self, pane: PaneId, reason: &str) {
         if let Some(operation) = self.agent_draft_clears.get_mut(&pane) {
             operation.failure = Some((
                 AgentOutcome::TargetChanged,
@@ -453,7 +464,7 @@ impl Screen {
                 self.report_pane_state().non_fatal();
             }
         }
-        self.agent_lifecycle.remove(&pane);
+        self.remove_agent_lifecycle(pane, reason);
         self.agent_dialog_inputs.remove(&pane);
         self.agent_clear_inputs.remove(&pane);
         self.agent_worker_waits.remove(&pane);
@@ -682,23 +693,9 @@ impl Screen {
         let provisional_muse = agent.kind == "muse"
             && agent.session_id.is_none()
             && self.has_provisional_muse_lifecycle(pane_id);
-        let status_available = agent.source == AgentSource::Reported
-            && (agent.session_id.as_ref().is_some_and(|conversation| {
-                self.has_agent_lifecycle(pane_id, &agent.kind, conversation)
-            }) || provisional_muse);
-        let live = !info.is_held
-            && !info.exited
-            && agent.state != AgentState::Exited
-            && self.agent_input_enabled(pane_id);
-        let supported = supports_prompt(&agent.kind);
-        let prompt_supported = supported
-            && status_available
-            && live
-            && self.agent_process_matches(pane_id, &agent.kind)
-            && self
-                .tab_containing_pane(pane_id)
-                .and_then(|tab| tab.get_pane_with_id(pane_id))
-                .is_some_and(|pane| pane.supports_bracketed_paste());
+        let readiness = self.agent_readiness(pane_id, &agent, info.is_held, info.exited)?;
+        let status_available = readiness.status_available();
+        let prompt_supported = readiness.prompt_supported();
         let cwd = agent.cwd.clone().or_else(|| match pane_id {
             PaneId::Terminal(id) => self
                 .terminal_cwds
@@ -754,6 +751,7 @@ impl Screen {
             not_ready_reason,
             status_available,
             prompt_supported,
+            readiness: Some(readiness),
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: prompt_supported
                 && self.draft_composer(pane_id, &agent.kind).is_some(),
@@ -767,6 +765,46 @@ impl Screen {
                 .map(|lifecycle| lifecycle.background_tasks.iter().cloned().collect())
                 .unwrap_or_default(),
             agent,
+        })
+    }
+
+    fn agent_readiness(
+        &self,
+        pane_id: PaneId,
+        agent: &AgentInfo,
+        held: bool,
+        exited: bool,
+    ) -> Option<AgentReadiness> {
+        let tab = self.tab_containing_pane(pane_id)?;
+        let pane = tab.get_pane_with_id(pane_id)?;
+        let lifecycle = self.agent_lifecycle.get(&pane_id);
+        let command = tab.pane_run_command(pane_id);
+        Some(AgentReadiness {
+            kind_supported: supports_prompt(&agent.kind),
+            reported: agent.source == AgentSource::Reported,
+            lifecycle_kind: lifecycle.map(|lifecycle| lifecycle.kind.clone()),
+            lifecycle_session_id: lifecycle.map(|lifecycle| lifecycle.conversation.clone()),
+            lifecycle_matches: agent.session_id.as_ref().is_some_and(|conversation| {
+                self.has_agent_lifecycle(pane_id, &agent.kind, conversation)
+            }),
+            provisional_lifecycle: agent.kind == "muse"
+                && agent.session_id.is_none()
+                && self.has_provisional_muse_lifecycle(pane_id),
+            last_report_age_ms: lifecycle.map(|lifecycle| {
+                u64::try_from(lifecycle.last_report.elapsed().as_millis()).unwrap_or(u64::MAX)
+            }),
+            held,
+            exited,
+            agent_exited: agent.state == AgentState::Exited,
+            suspended: pane.is_suspended(),
+            sync_active: tab.is_sync_panes_active(),
+            excluded_from_sync: pane.exclude_from_sync(),
+            command_present: command.is_some(),
+            command_kind: command.and_then(|run| {
+                yinz_types::agent::kind_from_program_and_args(&run.command, &run.args)
+            }),
+            process_matches: self.agent_process_matches(pane_id, &agent.kind),
+            bracketed_paste: pane.supports_bracketed_paste(),
         })
     }
 
@@ -788,6 +826,17 @@ impl Screen {
             .terminal_cwds
             .get(&id)
             .map(|path| path.to_string_lossy().into_owned());
+        let agent = AgentInfo {
+            kind: kind.to_owned(),
+            state: AgentState::Busy,
+            source: AgentSource::Detected,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: cwd.clone(),
+            session_id: None,
+            run_id: None,
+        };
         Some(AgentStatus {
             pane_id,
             session: self.session_name.to_string(),
@@ -803,17 +852,8 @@ impl Screen {
             input_revision: Some(self.agent_input_revision(pane_id)),
             clear_draft_supported: false,
             background_tasks: Vec::new(),
-            agent: AgentInfo {
-                kind: kind.to_owned(),
-                state: AgentState::Busy,
-                source: AgentSource::Detected,
-                detail: None,
-                waiting_on: None,
-                wait_needs_a_person: false,
-                cwd,
-                session_id: None,
-                run_id: None,
-            },
+            readiness: self.agent_readiness(pane_id, &agent, info.is_held, info.exited),
+            agent,
         })
     }
 
@@ -1043,10 +1083,17 @@ impl Screen {
             } => (*pane_id, expected_session_id.as_deref()),
         };
         let reject = |screen: &Self, outcome, message: &str| {
-            screen.agent_reply(
-                &client,
-                screen.agent_result(pane, outcome, Some(message.into())),
-            );
+            let mut response = screen.agent_result(pane, outcome, Some(message.into()));
+            if outcome == AgentOutcome::StatusUnavailable {
+                if let Some(readiness) = response.agents.first().and_then(|s| s.readiness.as_ref())
+                {
+                    let failures = readiness.failures();
+                    if !failures.is_empty() {
+                        response.message = Some(format!("{message}: {}", failures.join(", ")));
+                    }
+                }
+            }
+            screen.agent_reply(&client, response);
         };
         if !matches!(pane, PaneId::Terminal(_)) {
             reject(
@@ -2349,13 +2396,18 @@ impl Screen {
         if !parent {
             return;
         }
+        log::debug!(
+            "agent lifecycle hook session={:?} pane={pane:?} kind={:?} conversation={:?} hook={:?} state={:?}",
+            self.session_name, event.kind, event.session_id, event.hook,
+            hook.and_then(|hook| yinz_types::agent::hook_state_for(&event.kind, hook)),
+        );
         if hook.is_some_and(|hook| {
             hook.codex_hooks_ready == Some(false) || hook.muse_hooks_ready == Some(false)
         }) {
-            self.agent_lifecycle.remove(&pane);
+            self.remove_agent_lifecycle(pane, "hooks_unverified");
             self.agent_dialog_inputs.remove(&pane);
         } else if event.hook == "SessionEnd" {
-            self.agent_lifecycle.remove(&pane);
+            self.remove_agent_lifecycle(pane, "session_end");
             self.agent_dialog_inputs.remove(&pane);
             self.agent_worker_waits.remove(&pane);
         } else if event.kind == "muse"
@@ -2375,6 +2427,9 @@ impl Screen {
                 .agent_lifecycle
                 .get(&pane)
                 .filter(|previous| previous.kind == "muse" && previous.conversation.is_empty());
+            if previous.is_none() {
+                log::debug!("agent lifecycle created pane={pane:?} kind=muse provisional=true");
+            }
             let input_revision = clear_revision.or(dialog_revision).or(previous
                 .map(|previous| previous.input_revision)
                 .unwrap_or_else(|| (self.agent_input_revision(pane) == 0).then_some(0)));
@@ -2407,6 +2462,12 @@ impl Screen {
             let previous = self.agent_lifecycle.get(&pane).filter(|previous| {
                 previous.kind == event.kind && previous.conversation == *conversation
             });
+            if previous.is_none() {
+                log::debug!(
+                    "agent lifecycle created session={:?} pane={pane:?} kind={:?} conversation={conversation:?}",
+                    self.session_name, event.kind,
+                );
+            }
             // Without tracked CLI dialog input, startup cannot consume a draft. Only a pane
             // with no input can establish consumption; matching evidence is preserved as-is.
             let input_revision = clear_revision

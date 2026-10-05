@@ -290,6 +290,60 @@ A ready agent has no reason (`null` in JSON). Older responses without the field
 decode with no reason. An exited agent normally reports `prompt_unsupported`
 because a live process is required.
 
+The additive `readiness` object records every capability check from the same
+screen-thread observation. Older servers omit it. Text output lists all failed
+checks as `readiness_failures`, even when one failure masks another:
+
+| Evidence | Interpretation |
+| --- | --- |
+| `kind_supported` | The provider supports guarded prompt input |
+| `reported`, `lifecycle_matches` | A reported agent has a lifecycle for its current kind and conversation |
+| `lifecycle_kind`, `lifecycle_session_id` | Null means no lifecycle. Different values identify a stale lifecycle |
+| `provisional_lifecycle` | Muse has verified startup hooks but no conversation yet |
+| `held`, `exited`, `agent_exited`, `suspended` | Each must be false for prompt input |
+| `sync_active`, `excluded_from_sync` | Input is disabled only when both are true |
+| `command_present`, `command_kind`, `process_matches` | The stored command must identify the reported provider. Foreground detection alone is insufficient |
+| `bracketed_paste` | The terminal grid has bracketed paste enabled |
+| `last_report_age_ms` | Time since the lifecycle last received a hook, including worker and stateless hooks. This does not prove completion |
+
+For example, `lifecycle_missing, command_mismatch` identifies two independent
+failures. Restoring hooks alone will not make that pane promptable. An agent
+launched inside a shell needs a managed launch with `agent spawn`.
+
+`send-keys` does not require bracketed paste. It still requires process and
+lifecycle evidence, except for supported startup dialog handling.
+
+To investigate missing or stale tracking:
+
+1. Save `yinz --session SESSION agent list --json` and
+   `yinz --session SESSION action list-panes --all --json` before recovery.
+2. Run `yinz hocus hooks status --agent KIND` on the agent's host and in its
+   project directory. For Codex, also inspect hook trust with `/hooks`.
+3. Record the binary versions, session, pane reference, conversation ID, and time.
+   Save provider hook logs and the visible dialog or composer state.
+4. In a disposable reproduction, set `YINZ_HOOK_TRACE=1` in the reporter's
+   environment. Preserve `${TMPDIR:-/tmp}/yinz-$(id -u)/yinz-log/yinz.log`
+   before restarting. The log is bounded and can contain reports from other sessions.
+5. Match report IDs through transport, `screen_queue`, `state`, and `lifecycle`
+   stages. With debug logging enabled, lifecycle entries identify creation,
+   removal reasons, and the affected kind and conversation.
+
+A restart discards in-memory lifecycle and submission records. A fresh parent
+hook can restore lifecycle tracking, but it does not necessarily prove that
+terminal input was consumed. Never infer readiness from a saved `Reported` record.
+Codex's managed launcher can verify hooks and announce an idle selected
+conversation before the first turn. Failed verification leaves it untracked.
+
+For a suspected false `Waiting` state, collect the permission request's
+`permission_mode` and `approvals_reviewer`, then the following tool-progress
+events. The Codex reporter already reads a missing reviewer from the matching
+turn context in a verified transcript. It scans up to 64 MiB backwards in
+4 MiB windows, independently of the assistant-message tail. Missing identity,
+unavailable transcripts, oversized records, or a context outside that budget
+leave the reviewer unknown. Requests without known automatic approval evidence
+still report a human wait. Confirm the visible dialog before sending any answer. A long hook
+silence alone does not mean a person is needed or that the agent has finished.
+
 A launch marker or a manual registration cannot establish lifecycle readiness. Missing
 reports produce `status_unavailable`, rather than an inferred idle state.
 

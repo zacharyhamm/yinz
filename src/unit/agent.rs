@@ -213,6 +213,7 @@ fn successful_read_prints_only_terminal_text_and_json_keeps_metadata() {
         not_ready_reason: None,
         status_available: true,
         prompt_supported: true,
+        readiness: None,
         input_revision: None,
         clear_draft_supported: false,
         background_tasks: Vec::new(),

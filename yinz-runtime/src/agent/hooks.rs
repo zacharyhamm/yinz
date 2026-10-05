@@ -1,13 +1,14 @@
 //! Host-side hook enrichment, before state mapping and broadcast pruning.
 use serde_json::Value;
 use std::{
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
 };
 use yinz_types::agent::HookEvent;
 
 const METADATA_BYTES: u64 = 64 * 1024;
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+const REVIEWER_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Parse a hook on the machine running the agent. Preserve unknown JSON fields when adding
 /// Codex's reviewer and assistant messages. Unreadable transcripts leave reporting functional.
@@ -70,7 +71,7 @@ fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(Ho
         return Ok((event, json));
     }
     let mut raw: Value = serde_json::from_str(&json)?;
-    let Some((start, tail)) = transcript_tail(&raw) else {
+    let Some((start, tail, mut transcript)) = transcript_tail(&raw) else {
         return Ok((event, json));
     };
     let mut changed = start > 0;
@@ -79,7 +80,7 @@ fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(Ho
         raw["messages_omitted"] = true.into();
     }
     if event.hook_event_name == "PermissionRequest" && event.approvals_reviewer.is_none() {
-        if let Some(reviewer) = transcript_reviewer(&raw, &tail) {
+        if let Some(reviewer) = transcript_reviewer(&raw, start, &tail, &mut transcript) {
             raw["approvals_reviewer"] = reviewer.clone().into();
             event.approvals_reviewer = Some(reviewer);
             changed = true;
@@ -119,7 +120,7 @@ fn parse_muse_hook_event(json: String) -> serde_json::Result<(HookEvent, String)
     Ok((event, serde_json::to_string(&raw)?))
 }
 
-fn transcript_tail(hook: &Value) -> Option<(u64, Vec<u8>)> {
+fn transcript_tail(hook: &Value) -> Option<(u64, Vec<u8>, File)> {
     let session = hook["session_id"].as_str().filter(|id| !id.is_empty())?;
     let path = hook["transcript_path"].as_str()?;
     let mut options = OpenOptions::new();
@@ -151,7 +152,8 @@ fn transcript_tail(hook: &Value) -> Option<(u64, Vec<u8>)> {
     let start = metadata.len().saturating_sub(TAIL_BYTES);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut tail = Vec::new();
-    file.take(metadata.len() - start)
+    (&mut file)
+        .take(metadata.len() - start)
         .read_to_end(&mut tail)
         .ok()?;
     if tail.len() as u64 != metadata.len() - start {
@@ -159,28 +161,60 @@ fn transcript_tail(hook: &Value) -> Option<(u64, Vec<u8>)> {
     }
     if start > 0 {
         let first_end = tail.iter().position(|byte| *byte == b'\n')? + 1;
-        return Some((start + first_end as u64, tail[first_end..].to_vec()));
+        return Some((start + first_end as u64, tail[first_end..].to_vec(), file));
     }
-    Some((start, tail))
+    Some((start, tail, file))
 }
 
-fn transcript_reviewer(hook: &Value, tail: &[u8]) -> Option<String> {
+fn transcript_reviewer(hook: &Value, start: u64, tail: &[u8], file: &mut File) -> Option<String> {
     let turn = hook["turn_id"].as_str().filter(|id| !id.is_empty())?;
     if tail.last() != Some(&b'\n') {
         return None;
     }
-    let lines = tail.split_inclusive(|byte| *byte == b'\n');
-    for line in lines.rev() {
-        let record: Value = serde_json::from_slice(line).ok()?;
-        if record["type"] == "turn_context" && record["payload"]["turn_id"].as_str() == Some(turn) {
-            // Do not fall back to an older context if the newest matching one lacks a reviewer.
-            return record["payload"]["approvals_reviewer"]
-                .as_str()
-                .filter(|reviewer| !reviewer.is_empty())
-                .map(str::to_owned);
+    let mut end = start;
+    let mut remaining = REVIEWER_BYTES.saturating_sub(tail.len() as u64);
+    let mut records = std::borrow::Cow::Borrowed(tail);
+    loop {
+        for line in records.split_inclusive(|byte| *byte == b'\n').rev() {
+            let record: Value = serde_json::from_slice(line).ok()?;
+            if record["type"] == "turn_context"
+                && record["payload"]["turn_id"].as_str() == Some(turn)
+            {
+                // The newest matching context is authoritative even when its reviewer is absent.
+                return record["payload"]["approvals_reviewer"]
+                    .as_str()
+                    .filter(|reviewer| !reviewer.is_empty())
+                    .map(str::to_owned);
+            }
         }
+        if end == 0 || remaining == 0 {
+            return None;
+        }
+        // Long turns can outlive the message tail. Scan older complete records on the
+        // same identity-verified file, without expanding the assistant-message tail.
+        // ponytail: scan at most 64 MiB in 4 MiB windows; prefer a native reviewer hook
+        // field if larger transcripts need support. Oversized records fail closed.
+        let bytes = end.min(TAIL_BYTES).min(remaining);
+        let begin = end - bytes;
+        file.seek(SeekFrom::Start(begin)).ok()?;
+        let mut older = Vec::new();
+        (&mut *file).take(bytes).read_to_end(&mut older).ok()?;
+        if older.len() as u64 != bytes || older.last() != Some(&b'\n') {
+            return None;
+        }
+        remaining -= bytes;
+        let first = if begin == 0 {
+            0
+        } else {
+            older.iter().position(|byte| *byte == b'\n')? + 1
+        };
+        if first == older.len() {
+            return None;
+        }
+        end = begin + first as u64;
+        older.drain(..first);
+        records = std::borrow::Cow::Owned(older);
     }
-    None
 }
 
 /// The JSONL format is best-effort: only explicit turn boundaries and assistant output_text.

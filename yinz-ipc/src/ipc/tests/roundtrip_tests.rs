@@ -4601,6 +4601,7 @@ fn test_server_messages() {
         not_ready_reason: Some(yinz_types::agent::control::NotReadyReason::NotIdle),
         status_available: true,
         prompt_supported: true,
+        readiness: None,
         input_revision: None,
         clear_draft_supported: false,
         background_tasks: vec!["bj30txqod".into()],

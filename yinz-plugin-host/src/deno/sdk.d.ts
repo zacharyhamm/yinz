@@ -955,11 +955,23 @@ export type AgentRequest =
   | {Recover: {pane_id: PaneId; expected_session_id: string; confirm_empty: boolean; interrupted?: boolean}}
   | {SendKeys: {pane_id: PaneId; expected_session_id?: string | null; keys: KeyWithModifier[]}};
 export type AgentOutcome = "ok" | "submitted" | "completed" | "needs_input" | "failed" | "interrupted" | "timed_out" | "target_changed" | "target_closed" | "status_unavailable" | "rejected" | "target_not_found" | "not_agent" | "target_exited";
+/** Capability evidence sampled together. Idle state and consumed input are separate gates. */
+export interface AgentReadiness {
+  kind_supported: boolean; reported: boolean;
+  lifecycle_kind: string | null; lifecycle_session_id: string | null;
+  lifecycle_matches: boolean; provisional_lifecycle: boolean;
+  /** Includes worker/stateless hooks. Age alone cannot establish readiness. */
+  last_report_age_ms: number | null;
+  held: boolean; exited: boolean; agent_exited: boolean; suspended: boolean;
+  sync_active: boolean; excluded_from_sync: boolean;
+  command_present: boolean; command_kind: string | null;
+  process_matches: boolean; bracketed_paste: boolean;
+}
 export interface AgentStatus {
   input_revision?: number | null; clear_draft_supported?: boolean;
   pane_id: string; session: string; host_id: string; tab_id: Integer | null; target: PaneTarget; agent: AgentInfo;
   cwd: string | null; branch: string | null; ready: boolean; not_ready_reason?: string | null; status_available: boolean;
-  prompt_supported: boolean; background_tasks?: string[];
+  prompt_supported: boolean; readiness?: AgentReadiness | null; background_tasks?: string[];
 }
 export interface AgentResponse {
   outcome: AgentOutcome; agents: AgentStatus[]; spawned: (Omit<SpawnedAgent,"pane_id"> & {pane_id:string}) | null;

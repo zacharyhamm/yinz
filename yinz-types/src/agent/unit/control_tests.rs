@@ -825,6 +825,7 @@ fn readiness_reason_is_additive_and_uses_snake_case() {
     let status: AgentStatus = serde_json::from_value(old).unwrap();
     assert_eq!(status.not_ready_reason, None);
     assert_eq!(status.input_revision, None);
+    assert_eq!(status.readiness, None);
     assert!(!status.clear_draft_supported);
     for (reason, name) in [
         (NotReadyReason::ClearingDraft, "clearing_draft"),

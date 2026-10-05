@@ -657,6 +657,13 @@ fn write_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
             writeln!(out, "  not_ready_reason: {reason}")
                 .context("cannot write readiness reason")?;
         }
+        if let Some(readiness) = &status.readiness {
+            let failures = readiness.failures();
+            if !failures.is_empty() {
+                writeln!(out, "  readiness_failures: {}", failures.join(", "))
+                    .context("cannot write readiness failures")?;
+            }
+        }
         for (label, value) in [
             ("cwd", status.cwd.as_deref()),
             ("branch", status.branch.as_deref()),
