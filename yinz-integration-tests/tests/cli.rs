@@ -707,3 +707,48 @@ fn watcher_larger_than_the_followed_content_has_blank_margins_without_padding() 
     watcher.quit();
     yinz.quit();
 }
+
+#[test]
+fn normalized_lifecycle_stream_is_opt_in_and_ready_before_live_updates() {
+    let mut yinz = start_yinz();
+    let terminal = claim_first_terminal_and_wait_for_prompt(&yinz);
+    let pane = format!("terminal_{}", terminal.terminal_id());
+    let lifecycle = yinz.stream_events(&["agent_lifecycle"]);
+    let legacy = yinz.stream_events(&[]);
+    legacy.wait_for_event("PaneUpdate");
+    let ready: serde_json::Value = serde_json::from_str(
+        &lifecycle.wait_for_event_matching("agent_lifecycle", |json| {
+            serde_json::from_str::<serde_json::Value>(json).unwrap()["event_type"] == "ready"
+        }),
+    )
+    .unwrap();
+    assert!(ready["cursor"].is_string());
+    let (code, _) = yinz.run_cli_action_reporting(CliAction::AgentReport {
+        pane_id: Some(pane.clone()),
+        kind: Some("codex".into()),
+        state: Some("waiting".into()),
+        detail: Some("private prompt".into()),
+        cwd: None,
+        hook_json: false,
+        clear: false,
+        run_id: None,
+    });
+    assert_eq!(code, 0);
+    let state: serde_json::Value = serde_json::from_str(&lifecycle.wait_for_event_matching(
+        "agent_lifecycle",
+        |json| {
+            let value: serde_json::Value = serde_json::from_str(json).unwrap();
+            value["pane_id"] == pane
+                && value["event_type"] == "state_changed"
+                && value["state"] == "waiting"
+        },
+    ))
+    .unwrap();
+    assert!(state["sequence"].as_u64() > ready["sequence"].as_u64());
+    assert!(!state.to_string().contains("private prompt"));
+    assert!(!legacy
+        .streamed_event_types()
+        .iter()
+        .any(|event| event == "agent_lifecycle"));
+    yinz.quit();
+}

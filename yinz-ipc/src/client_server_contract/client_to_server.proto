@@ -114,6 +114,11 @@ message SubscribeToPaneRendersMsg {
 
 message SubscribeToEventsMsg {
   repeated string event_types = 1;
+  repeated string panes = 2;
+  repeated string projects = 3;
+  repeated string kinds = 4;
+  repeated string lifecycle_types = 5;
+  optional string cursor = 6;
 }
 
 message DesktopNotificationResponseMsg {

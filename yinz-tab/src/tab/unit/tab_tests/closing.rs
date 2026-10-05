@@ -2862,3 +2862,45 @@ fn exiting_fullscreen_editor_restoring_nonselectable_plugin_keeps_usable_focus()
     assert_eq!(tab.get_active_pane_id(client), Some(survivor));
     tab.assert_invariants();
 }
+
+#[test]
+fn buffered_hold_requeues_the_last_replacement_through_screen() {
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+    let id = TerminalId::new(1);
+    let pane = PaneId::Terminal(id);
+    let (tx, rx) = unbounded();
+    tab.senders.to_screen = Some(SenderWithContext::new(tx));
+    let (tx, pty) = unbounded();
+    tab.senders.to_pty = Some(SenderWithContext::new(tx));
+    let command = |name: &str| RunCommand {
+        command: name.into(),
+        ..Default::default()
+    };
+    assert!(!tab.rerun_terminal_pane_with_id(id, None));
+    assert!(!tab.run_command_in_pane_with_id(id, command("first"), false));
+    assert!(!tab.run_command_in_pane_with_id(id, command("last"), true));
+    tab.is_pending = true;
+    assert!(tab
+        .hold_pane(pane, Some(0), false, command("old"))
+        .is_none());
+    tab.is_pending = false;
+    tab.apply_buffered_instructions().unwrap();
+    assert!(pty.try_iter().next().is_none());
+    let queued: Vec<_> = rx.try_iter().collect();
+    assert_eq!(queued.len(), 1);
+    let (ScreenInstruction::RunCommandInPane(queued_id, replacement, keep), _) = &queued[0] else {
+        panic!("expected queued restart");
+    };
+    assert_eq!(*queued_id, id);
+    assert_eq!(*replacement, command("last"));
+    assert!(*keep);
+    assert!(tab.run_command_in_pane_with_id(*queued_id, replacement.clone(), *keep));
+    assert_eq!(
+        pty.try_iter()
+            .filter(|(i, _)| matches!(i, PtyInstruction::ReRunCommandInPane(..)))
+            .count(),
+        1
+    );
+    assert!(!tab.rerun_terminal_pane_with_id(TerminalId::new(999), None));
+    assert!(!tab.run_command_in_pane_with_id(TerminalId::new(999), command("missing"), false));
+}

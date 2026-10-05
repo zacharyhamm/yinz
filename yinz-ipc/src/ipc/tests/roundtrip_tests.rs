@@ -4167,9 +4167,21 @@ fn test_client_messages() {
         is_kitty_keyboard_protocol: false,
     });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
+        event_types: vec!["agent_lifecycle".into(), "PaneUpdate".into()],
+        options: crate::ipc::EventSubscription {
+            panes: vec!["terminal_7".into()],
+            projects: vec!["yinz".into()],
+            kinds: vec!["codex".into(), "claude".into()],
+            lifecycle_types: vec!["turn_completed".into()],
+            cursor: Some("saved".into()),
+        },
+    });
+    test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
+        options: Default::default(),
         event_types: vec![],
     });
     test_client_roundtrip!(ClientToServerMsg::SubscribeToEvents {
+        options: Default::default(),
         event_types: vec!["PaneUpdate".to_owned(), "cwd_changed".to_owned()],
     });
     test_client_roundtrip!(ClientToServerMsg::DataRequest {

@@ -13,6 +13,7 @@ missing or stale pane context requires an explicit `--session`.
 | Command | Result |
 | --- | --- |
 | `agent list` | Live agents, their identities and their reported states |
+| `agent watch --json` | Normalized lifecycle events, with snapshot and resume cursors |
 | `agent status TARGET` | State, reporting source, readiness, conversation and run IDs |
 | `agent spawn --kind KIND` | Actual pane ID, working directory and branch |
 | `agent prompt TARGET TEXT` | Acknowledgement that the agent accepted the prompt |
@@ -558,6 +559,134 @@ The aliases `Ctrl+u`, `ctrl-u`, `C-u`, `Escape`, and `Return` are unsupported.
 Key input does not imply a new prompt acknowledgement. Use `agent status` or
 `agent wait` to observe what happens next. `wait --until` accepts `busy`, `waiting`,
 `idle`, and `exited`.
+
+## Subscribe to agent lifecycle events
+
+These commands use the same session socket, subscription protocol, and NDJSON envelope:
+
+```sh
+yinz --session work events --event-type agent_lifecycle
+yinz --session work agent watch --json
+yinz --session work agent watch --pane terminal_7 --kind codex --json
+yinz --session work agent watch --project yinz --json
+yinz --session work agent watch --cursor "$CURSOR" --json
+```
+
+Without `--json`, `agent watch` prints the pane, event type, and state.
+`events --type` and `events --event-type` are aliases. Each JSON line has this shape:
+
+```json
+{"event":"agent_lifecycle","payload":{"schema_version":1,"event_type":"ready","cursor":"..."}}
+```
+
+The example omits metadata. Each payload includes `host_id`, `session`,
+`server_epoch`, `sequence`, `observed_at_ms`, and `cursor`. Pane records also
+include `pane_id`, `pane_generation`, and `pane_sequence`. Identity fields are
+`kind`, `conversation_id`, `submission_id`, `turn_id`, and `run_id`.
+Unknown identities are null. Human and provider-generated turns have a null
+`submission_id`. Claude and AGY prompt identities appear as `provider_prompt_id`.
+Tracked-turn uncertainty preserves both provider IDs, the submission ID, and the actual
+`outcome`. Submission timeout uncertainty uses that submission's tracked turn. Unknown
+provider IDs are null, even when a newer turn exists in the pane.
+The stream excludes prompt text, transcripts, final answer text, and raw hook JSON.
+
+Use repeated `--pane`, `--project`, `--kind`, and `--lifecycle-type` filters.
+Values within one filter use OR. Different filters use AND. Filters apply only
+to normalized lifecycle events. They are not authorization boundaries.
+Project filtering uses the assignment and repository rules of `agent list --project`.
+Project probes run outside the screen thread. Stale results do not change membership.
+Each fact includes `projects_resolved_for`: the projects covered by a current completed
+probe, or an empty array while membership is unresolved. If any requested project is
+unresolved, matching facts immediately become `observation_uncertain` with reason
+`project_membership_unresolved`. The `observed_event_type` field identifies the original
+fact. Pane, kind, and lifecycle-type filters apply to that original fact.
+
+These uncertainty records preserve identity, sequence, and cursor. Replay uses the
+recorded probe coverage, so historical uncertainty remains explicit after resolution.
+Subscribers without project filters receive the original facts. Completed probes restore
+normal filtering for subsequent facts, including checkpoints for resolved non-members.
+Closure and replacement records retain the previous identity and project membership.
+External database changes require resubscription. Shared Postgres storage does not
+provide cross-session event delivery.
+
+| Event type | Meaning |
+| --- | --- |
+| `state_changed` | Reported state or agent metadata changed |
+| `needs_input` | The agent is Waiting and `wait_needs_a_person` is true |
+| `submission_acknowledged` | A provider acknowledged a turn |
+| `turn_completed`, `turn_failed`, `turn_interrupted` | A correlated provider report established that outcome |
+| `observation_uncertain` | Observation could not establish an outcome |
+| `pane_spawned`, `pane_closed`, `pane_replaced` | A pane appeared, disappeared, or started a replacement process |
+| `conversation_replaced` | Provider or conversation identity changed, including clearing the record |
+| `background_tasks_changed` | Tracked Claude background tasks changed |
+| `project_membership_changed` | A project probe changed membership |
+
+Idle alone does not establish completion. Timeouts, missing confirmations, and
+interrupted observation do not establish a failed or interrupted turn. Provider
+outcome coverage still depends on the installed hooks and runtime confirmation.
+Correlation retains the same 32-turn window as submission history. Evicting an
+unfinished turn produces `observation_uncertain` with reason `turn_tracking_limit`.
+
+### Startup, replay, and loss
+
+A fresh stream starts with `snapshot_begin`, then matching `snapshot` records,
+then `ready`. Snapshot records describe current state even when a lifecycle-type
+filter excludes `state_changed`. Treat the snapshot as one transaction. Save its
+cursor only after `ready`. Live records follow in server application order.
+Provider timestamps do not determine this order.
+
+Pass the last processed cursor through `--cursor` with the same filters.
+Replay starts strictly after that cursor, then emits `ready` and live records.
+The server retains at most 4,096 records and 8 MiB, even without subscribers.
+Individual event payloads are limited to 64 KiB. Oversized payloads produce an
+explicit `observation_uncertain` record with reason `payload_limit`, regardless of filters.
+An oversized snapshot rejects startup. Narrowing filters can exclude that pane.
+History exists only in memory. Expired history or a server restart produces
+`gap`, followed by a fresh snapshot. A wrong owner, future sequence in the same
+epoch, or changed filter set rejects the cursor.
+
+`checkpoint` records advance filtered streams when a fact does not match.
+Sequence gaps caused by filters do not indicate loss. Deduplicate replayed facts
+by `(host_id, session, server_epoch, sequence)`. Snapshot and control records
+share their boundary sequence and are not additional lifecycle facts.
+
+The server sends startup and replay records in bounded batches. A subscriber
+that exceeds its buffer or writer queue is disconnected. Reconnect from the last
+processed cursor. Ctrl-C, broken stdout, EOF, or process exit removes the
+subscription. Subscription loss never cancels agent work.
+
+Existing `events` subscriptions keep their behavior. An empty event-type list
+selects the existing plugin events only. Select `agent_lifecycle` explicitly.
+`agent_event` continues to carry raw provider hooks. Mixed subscriptions have no
+ordering guarantee between event families. Cursors cover only `agent_lifecycle`.
+An older server rejects the unknown family. Upgrade that session before watching.
+
+### Controller sequence
+
+1. Start `agent watch --json` as a managed background command.
+2. Wait for `ready` and retain the snapshot identity.
+3. Submit a guarded prompt with a chosen submission ID:
+
+   ```sh
+   yinz --session work agent prompt terminal_7 --conversation "$CONVERSATION" \
+     --submission review-42 --file task.txt --json
+   ```
+
+4. Match outcomes by pane generation, conversation, and submission ID.
+5. Handle `needs_input` and `observation_uncertain` explicitly.
+6. Save each cursor after processing its record.
+7. On `gap`, reconcile current state before submitting more work.
+
+One connection watches one session. Use separate streams and cursors for multiple
+sessions. A Claude Code Monitor can own the background command where supported.
+No particular Monitor API is required. The execution environment must deliver
+notifications that wake the controller. Exactly-once controller side effects and
+restart-surviving event history are outside this protocol.
+
+Socket permissions are the same as for existing agent commands. Sandboxed Codex
+needs the existing `--allow-yinz` launch option when its sandbox blocks access.
+That option enables workspace sandbox network access. It is not a narrow read-only
+permission. Watch does not change or bypass sandbox settings.
 
 ## Durable archives
 

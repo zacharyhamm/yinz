@@ -127,6 +127,75 @@ fn agent_status(cwd: &std::path::Path) -> AgentStatus {
 }
 
 #[test]
+fn project_event_membership_recovers_after_failed_probes_with_identical_inputs() {
+    use yinz_types::data::{GetPaneGitProbeResponse as Probe, PaneGitProbe};
+
+    let temp = tempfile::tempdir().unwrap();
+    let data = DataAccess::sqlite(temp.path());
+    let store = data.plugin_data();
+    for def in hocus_data::store::shared_defs() {
+        store
+            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .unwrap();
+    }
+    let mut project = hocus_data::projects::validate("work", "/work").unwrap();
+    project.remote = Some("git@example.com:team/repo.git".into());
+    store
+        .apply(
+            hocus_data::store::SHARED,
+            &[hocus_data::projects::to_mutation(&project)],
+        )
+        .unwrap();
+    let remote = AgentStatus {
+        target: PaneTarget::ssh("server").unwrap(),
+        ..agent_status(std::path::Path::new("/work/src"))
+    };
+    let (tx, rx) = yinz_runtime::channels::unbounded();
+    let senders = ThreadSenders {
+        to_pty: Some(yinz_runtime::channels::SenderWithContext::new(tx)),
+        ..Default::default()
+    };
+    let pane = remote.pane_id;
+    let pty = std::thread::spawn(move || {
+        for response in [
+            Some(Probe::Err("unavailable".into())),
+            None,
+            Some(Probe::Ok(PaneGitProbe {
+                host: "server".into(),
+                cwd: "/work/src".into(),
+                exit_code: Some(0),
+                metadata: b"/work\n/work/.git\n/work/.git\nmain\n".to_vec(),
+                config: b"remote.origin.url\nhttps://example.com/team/repo\0".to_vec(),
+            })),
+        ] {
+            let (instruction, _) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            let PtyInstruction::GetPaneGitProbe {
+                pane_id,
+                cwd,
+                response_channel,
+                ..
+            } = instruction
+            else {
+                panic!("expected a git probe");
+            };
+            assert_eq!(pane_id, pane);
+            assert_eq!(cwd, "/work/src");
+            if let Some(response) = response {
+                response_channel.send(response).unwrap();
+            }
+            // A dropped reply exercises the receive-error path without waiting for its deadline.
+        }
+    });
+    for expected in [None, None, Some(vec![pane])] {
+        assert_eq!(
+            agent_event_projects(vec![remote.clone()], vec!["work".into()], &data, &senders),
+            BTreeMap::from([("work".into(), Ok(expected))])
+        );
+    }
+    pty.join().unwrap();
+}
+
+#[test]
 fn project_filter_respects_host_session_assignment_and_remote_paths() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -184,18 +253,21 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
     let remote_listed = |probe: Probe| {
         let mut response = AgentResponse::new(AgentOutcome::Ok);
         response.agents.push(remote.clone());
-        filter_project(&mut response, "work", &data, |pane, cwd| {
+        let pending = filter_project(&mut response, "work", &data, |pane, cwd| {
             assert_eq!(pane, remote.pane_id);
             assert_eq!(cwd, "/work/src");
             probe.clone()
         })
         .unwrap();
-        !response.agents.is_empty()
+        (!response.agents.is_empty(), pending)
     };
-    assert!(remote_listed(Probe::Ok(probe.clone())));
+    assert_eq!(remote_listed(Probe::Ok(probe.clone())), (true, false));
+    assert_eq!(remote_listed(Probe::Pending), (false, true));
+    assert_eq!(
+        remote_listed(Probe::Err("unavailable".into())),
+        (false, true)
+    );
     for unavailable in [
-        Probe::Pending,
-        Probe::Err("unavailable".into()),
         Probe::Ok(yinz_types::data::PaneGitProbe {
             host: "stale".into(),
             ..probe.clone()
@@ -222,7 +294,7 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
             ..probe.clone()
         }),
     ] {
-        assert!(!remote_listed(unavailable));
+        assert_eq!(remote_listed(unavailable), (false, false));
     }
     // An explicit assignment wins in both directions and never needs a probe.
     for (project_id, expected) in [(id.get() + 1, false), (id.get(), true)] {
@@ -241,10 +313,11 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
             .unwrap();
         let mut response = AgentResponse::new(AgentOutcome::Ok);
         response.agents.push(remote.clone());
-        filter_project(&mut response, "work", &data, |_, _| {
+        let pending = filter_project(&mut response, "work", &data, |_, _| {
             panic!("explicit assignment wins")
         })
         .unwrap();
+        assert!(!pending);
         assert_eq!(!response.agents.is_empty(), expected);
     }
     store

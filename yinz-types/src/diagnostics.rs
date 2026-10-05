@@ -322,6 +322,9 @@ pub enum ScreenContext {
     DesktopNotificationResponse,
     SubscribeToPaneRenders,
     NotifyPaneClosedToSubscribers,
+    InvalidateAgentEventProjects,
+    AgentEventProjects,
+    SubscribeAgentEvents,
     SetCliEventSubscribersPresent,
     // Pane-targeting CLI variants
     ScrollUpWithPaneId,
@@ -446,6 +449,7 @@ pub enum PluginContext {
     PostMessageToPlugin,
     NotificationClicked,
     PluginSubscribedToEvents,
+    ResolveAgentEventProjects,
     SubscribeCliClientToEvents,
     ReloadPluginByUrl,
     PermissionRequestResult,

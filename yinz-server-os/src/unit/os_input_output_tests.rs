@@ -1064,6 +1064,27 @@ mod coalescing_send_queue {
     }
 
     #[test]
+    fn lifecycle_records_use_bounded_fifo_without_coalescing() {
+        let queue = CoalescingSendQueue::new();
+        let event = |sequence| ServerToClientMsg::EventUpdate {
+            event_type: "agent_lifecycle".into(),
+            event_json: format!("{{\"sequence\":{sequence}}}"),
+        };
+        for sequence in 0..SEND_QUEUE_CONTROL_CAPACITY {
+            queue.push(event(sequence));
+        }
+        assert_eq!(
+            overflow(&queue, event(SEND_QUEUE_CONTROL_CAPACITY)).reason,
+            "message_count"
+        );
+        queue.close();
+        for sequence in 0..SEND_QUEUE_CONTROL_CAPACITY {
+            assert_eq!(queue.pop(), Some(event(sequence)));
+        }
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
     fn simultaneous_registration_and_drain_leave_no_unnotified_backlog() {
         use std::sync::{
             atomic::{AtomicBool, Ordering},

@@ -2942,14 +2942,18 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
             },
             "invalidate" => screen.invalidate_agent_lifecycle(PANE, "test"),
             "closed" => screen.close_pane_explicitly(PANE, None),
-            "process" => screen.run_command_in_pane_with_id(
-                TerminalId::new(7),
-                RunCommand {
-                    command: "claude".into(),
-                    ..Default::default()
-                },
-                false,
-            ),
+            "process" => {
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                screen.run_command_in_pane_with_id(
+                    TerminalId::new(7),
+                    RunCommand {
+                        command: "claude".into(),
+                        ..Default::default()
+                    },
+                    false,
+                );
+            },
             "held" => {
                 let tab = screen.tab_containing_pane_mut(PANE).unwrap();
                 tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
@@ -2981,6 +2985,9 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
             ),
             _ => {},
         }
+        if reason == "process" {
+            assert!(screen.agent_clear_inputs.is_empty());
+        }
         report_kind(&mut screen, "claude", clear_start());
         assert!(screen.agent_clear_inputs.is_empty(), "{reason}");
         if reason != "closed" {
@@ -2992,7 +2999,8 @@ fn clear_tracking_is_discarded_on_unrelated_lifecycle_or_cleanup() {
                 CLIENT,
             );
             let result = replies(&messages, CLIENT).pop().unwrap();
-            assert!(!result.agents[0].ready, "{reason}");
+            // An accepted process restart also clears the old input draft.
+            assert_eq!(result.agents[0].ready, reason == "process", "{reason}");
         }
     }
 }
@@ -3043,14 +3051,18 @@ fn enter_is_cancelled_on_input_failure_early_acknowledgement_or_replacement() {
             "input" => screen.agent_write_for_test(),
             "failure" => completion.set_error_message("partial write failed".into()),
             "ack" => report(&mut screen, hook("UserPromptSubmit")),
-            "replacement" => screen.run_command_in_pane_with_id(
-                TerminalId::new(7),
-                RunCommand {
-                    command: "codex".into(),
-                    ..Default::default()
-                },
-                false,
-            ),
+            "replacement" => {
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                screen.run_command_in_pane_with_id(
+                    TerminalId::new(7),
+                    RunCommand {
+                        command: "codex".into(),
+                        ..Default::default()
+                    },
+                    false,
+                );
+            },
             "closed" => screen.close_pane_explicitly(PANE, None),
             "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
             _ => unreachable!(),
@@ -6600,14 +6612,18 @@ fn plugin_agent_delayed_submit_preserves_host_input_and_identity_guards() {
             "input" => screen.agent_write_for_test(),
             "failure" => completion.set_error_message("partial write failed".into()),
             "ack" => report_kind(&mut screen, kind, hook("UserPromptSubmit")),
-            "replacement" => screen.run_command_in_pane_with_id(
-                TerminalId::new(7),
-                RunCommand {
-                    command: "bash".into(),
-                    ..Default::default()
-                },
-                false,
-            ),
+            "replacement" => {
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                screen.run_command_in_pane_with_id(
+                    TerminalId::new(7),
+                    RunCommand {
+                        command: "bash".into(),
+                        ..Default::default()
+                    },
+                    false,
+                );
+            },
             "closed" => screen.close_pane_explicitly(PANE, None),
             "timeout" => screen.agent_controls[0].deadline = Some(Instant::now()),
             "unload" => {
@@ -7269,7 +7285,11 @@ fn control_agents_end_with_the_lifecycle_and_do_not_return_with_replacements() {
                 replacement.session_id = "replacement".into();
                 report(&mut screen, replacement);
             },
-            "rerun" => screen.rerun_command_pane_with_id(TerminalId::new(7), None),
+            "rerun" => {
+                let tab = screen.tab_containing_pane_mut(PANE).unwrap();
+                tab.hold_pane(PANE, Some(0), false, tab.pane_run_command(PANE).unwrap());
+                screen.rerun_command_pane_with_id(TerminalId::new(7), None);
+            },
             "close" => screen.close_pane_explicitly(PANE, None),
             "held" => {
                 let tab = screen.tab_containing_pane_mut(PANE).unwrap();
@@ -7314,3 +7334,5 @@ fn control_agents_end_with_the_lifecycle_and_do_not_return_with_replacements() {
         assert_eq!(replies(&messages, CLIENT)[0].outcome, AgentOutcome::Ok);
     }
 }
+#[path = "agent_events.rs"]
+mod events;

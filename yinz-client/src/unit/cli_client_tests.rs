@@ -50,7 +50,11 @@ fn streaming_clients_do_not_treat_a_malformed_message_as_eof() {
             start_events_client(
                 Box::new(os.clone()),
                 &"test".into(),
-                EventsCli { event_type: vec![] },
+                EventsCli {
+                    event_type: vec![],
+                    filters: Default::default(),
+                    text: false,
+                },
             );
         } else {
             start_subscribe_client(
@@ -206,5 +210,48 @@ fn pipe_input_eof_waits_for_the_final_response() {
             .collect();
         assert_eq!(payloads, expected_payloads);
         assert_eq!(os.stdout_bytes(), b"final result");
+    }
+}
+
+#[test]
+fn lifecycle_stream_shares_json_output_and_cleans_up_on_broken_stdout_or_eof() {
+    for text in [false, true] {
+        for broken in [false, true] {
+            let mut os = FakeClientOsApi::default().capturing_stdout();
+            if broken {
+                os = os.with_stdout_error(std::io::ErrorKind::BrokenPipe);
+            }
+            os.queue_from_server(ServerToClientMsg::EventUpdate {
+                event_type: "agent_lifecycle".into(),
+                event_json: r#"{"event_type":"ready"}"#.into(),
+            });
+            os.queue_server_hangup();
+            start_events_client(
+                Box::new(os.clone()),
+                &"test".into(),
+                EventsCli {
+                    event_type: vec!["agent_lifecycle".into()],
+                    text,
+                    filters: Default::default(),
+                },
+            );
+            assert!(
+                matches!(os.sent_messages().first(), Some(ClientToServerMsg::SubscribeToEvents { event_types, .. }) if event_types == &["agent_lifecycle"])
+            );
+            assert!(matches!(
+                os.sent_messages().last(),
+                Some(ClientToServerMsg::ClientExited)
+            ));
+            if !broken {
+                if text {
+                    assert_eq!(os.stdout_bytes(), b"session ready \n");
+                } else {
+                    assert_eq!(
+                        os.stdout_bytes(),
+                        b"{\"event\":\"agent_lifecycle\",\"payload\":{\"event_type\":\"ready\"}}\n"
+                    );
+                }
+            }
+        }
     }
 }

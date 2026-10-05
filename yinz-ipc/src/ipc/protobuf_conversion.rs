@@ -203,11 +203,17 @@ impl TryFrom<ClientToServerMsg> for ProtoClientToServerMsg {
                 scrollback: scrollback.map(|s| s as u32),
                 ansi,
             }),
-            ClientToServerMsg::SubscribeToEvents { event_types } => {
-                client_to_server_msg::Message::SubscribeToEvents(SubscribeToEventsMsg {
-                    event_types,
-                })
-            },
+            ClientToServerMsg::SubscribeToEvents {
+                event_types,
+                options,
+            } => client_to_server_msg::Message::SubscribeToEvents(SubscribeToEventsMsg {
+                event_types,
+                panes: options.panes,
+                projects: options.projects,
+                kinds: options.kinds,
+                lifecycle_types: options.lifecycle_types,
+                cursor: options.cursor,
+            }),
             ClientToServerMsg::DesktopNotificationResponse { raw_bytes } => {
                 client_to_server_msg::Message::DesktopNotificationResponse(
                     DesktopNotificationResponseMsg { raw_bytes },
@@ -422,6 +428,13 @@ impl TryFrom<ProtoClientToServerMsg> for ClientToServerMsg {
             Some(client_to_server_msg::Message::SubscribeToEvents(msg)) => {
                 Ok(ClientToServerMsg::SubscribeToEvents {
                     event_types: msg.event_types,
+                    options: super::EventSubscription {
+                        panes: msg.panes,
+                        projects: msg.projects,
+                        kinds: msg.kinds,
+                        lifecycle_types: msg.lifecycle_types,
+                        cursor: msg.cursor,
+                    },
                 })
             },
             Some(client_to_server_msg::Message::DesktopNotificationResponse(msg)) => {

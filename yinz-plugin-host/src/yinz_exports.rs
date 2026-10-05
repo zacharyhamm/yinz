@@ -2,6 +2,7 @@
 mod agent_control;
 #[path = "palette_agents.rs"]
 pub(crate) mod palette_agents;
+pub(crate) use agent_control::agent_event_projects;
 pub use agent_control::control_agent;
 #[path = "multipanes.rs"]
 mod multipanes;
@@ -6350,6 +6351,13 @@ pub(crate) fn notify_data_watchers(
     namespace: &str,
     touched_entities: &BTreeSet<String>,
 ) {
+    if namespace == hocus_data::store::SHARED
+        && (touched_entities.contains("project") || touched_entities.contains("agent_assignment"))
+    {
+        senders
+            .send_to_screen(ScreenInstruction::InvalidateAgentEventProjects)
+            .non_fatal();
+    }
     // Refresh and recipient lookup must be atomic with registration/unwatch/disposal.
     let generations = watch_generations.lock().unwrap();
     let changed = match store.refresh_watches(namespace, touched_entities) {

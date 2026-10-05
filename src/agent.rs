@@ -11,6 +11,18 @@ use yinz_types::agent::control::{
 use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(mut command: Agent, opts: &CliArgs) -> Result<i32> {
+    if let Agent::Watch { filters, json } = command {
+        crate::commands::stream_session_events(
+            yinz_cli::args::EventsCli {
+                event_type: vec!["agent_lifecycle".into()],
+                filters,
+                text: !json,
+            },
+            opts.session.clone(),
+            None,
+        );
+        return Ok(0);
+    }
     let json = command.json();
     let submission_id = submission_id(&mut command);
     match run_inner(command, opts) {
@@ -149,7 +161,7 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
     let mut timeout = Duration::from_secs(30);
     let (request, json) = match command {
         Agent::List { project, json } => (AgentRequest::List { project }, json),
-        Agent::Control(_) | Agent::Archive(_) | Agent::Register { .. } => {
+        Agent::Control(_) | Agent::Watch { .. } | Agent::Archive(_) | Agent::Register { .. } => {
             bail!("archive and registration use background services")
         },
         Agent::Status {

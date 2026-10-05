@@ -419,10 +419,11 @@ pub fn start_events_client(
         .event_type
         .iter()
         .map(|name| match EventType::from_cli_name(name) {
+            _ if matches!(name.as_str(), "agent_lifecycle" | "AgentLifecycle") => "agent_lifecycle".into(),
             Some(event_type) => event_type.to_string(),
             None => {
                 eprintln!(
-                    "Unknown or unstreamable event type '{}'. Streamable events: {}",
+                    "Unknown or unstreamable event type '{}'. Streamable events: {}, agent_lifecycle",
                     name,
                     EventType::cli_streamable_names().join(", ")
                 );
@@ -435,11 +436,24 @@ pub fn start_events_client(
         eprintln!("{e}");
         process::exit(1);
     }
-    os_input.send_to_server(ClientToServerMsg::SubscribeToEvents { event_types });
+    os_input.send_to_server(ClientToServerMsg::SubscribeToEvents {
+        event_types,
+        options: yinz_ipc::ipc::EventSubscription {
+            panes: events_cli
+                .filters
+                .pane
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            projects: events_cli.filters.project,
+            kinds: events_cli.filters.kind,
+            lifecycle_types: events_cli.filters.lifecycle_type,
+            cursor: events_cli.filters.cursor,
+        },
+    });
 
     // Locked per line rather than for the loop: a lock held while blocking on the server would
     // stop anything else in the process printing, which is one client too many in a test.
-    let mut stdout = io::stdout();
     loop {
         match os_input.recv_from_server() {
             IpcRecv::Msg(
@@ -449,9 +463,27 @@ pub fn start_events_client(
                 },
                 _,
             ) => {
+                let mut stdout = os_input.get_stdout_writer();
                 // The payload is already JSON, so the line is assembled around it rather than
                 // parsed and re-serialized. A write that fails is a reader that went away
                 // (`yinz events | head`), which is how this stream ends.
+                if events_cli.text {
+                    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event_json) {
+                        if writeln!(
+                            stdout,
+                            "{} {} {}",
+                            payload["pane_id"].as_str().unwrap_or("session"),
+                            payload["event_type"].as_str().unwrap_or(&event_type),
+                            payload["state"].as_str().unwrap_or("")
+                        )
+                        .and_then(|_| stdout.flush())
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    continue;
+                }
                 let event_type = serde_json::to_string(&event_type).unwrap_or_default();
                 if writeln!(
                     stdout,

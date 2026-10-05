@@ -525,6 +525,13 @@ pub fn plugin_thread_main(
             PluginInstruction::RemoveClient(client_id) => {
                 wasm_bridge.remove_client(client_id);
             },
+            PluginInstruction::ResolveAgentEventProjects {
+                version,
+                agents,
+                projects,
+            } => {
+                wasm_bridge.resolve_agent_event_projects(version, agents, projects);
+            },
             PluginInstruction::SubscribeCliClientToEvents {
                 client_id,
                 event_types,

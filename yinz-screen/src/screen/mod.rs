@@ -29,6 +29,7 @@
 //! - `tab_history: BTreeMap<ClientId, Vec<TabId>>`: History of tab IDs per client
 
 mod agent_control;
+mod agent_events;
 mod multipanes;
 mod pane_tabs;
 
@@ -560,6 +561,7 @@ type PaneOutputSubscriber = (PluginId, ClientId, Option<u64>);
 type LayoutPanes = Vec<(PaneId, PaneLayoutMetadata)>;
 
 pub(crate) struct Screen {
+    agent_events: agent_events::AgentEvents,
     agent_controls: Vec<agent_control::Pending>,
     agent_draft_clears: HashMap<PaneId, agent_control::DraftClear>,
     agent_submissions: HashMap<PaneId, std::collections::VecDeque<agent_control::Submission>>,
@@ -1303,6 +1305,7 @@ impl Screen {
         let current_pane_group = PaneGroups::new(bus.senders.clone());
         let character_cell_size = Rc::new(RefCell::new(None));
         Screen {
+            agent_events: Default::default(),
             agent_controls: Vec::new(),
             agent_draft_clears: HashMap::new(),
             agent_submissions: HashMap::new(),
@@ -3268,6 +3271,7 @@ impl Screen {
     }
 
     pub(crate) fn cleanup_closed_pane(&mut self, id: PaneId) {
+        self.retire_agent_event_pane(id, "pane_closed");
         self.destroyed_panes.insert(id);
         self.invalidate_agent_lifecycle(id, "pane_closed");
         self.agent_launches.remove(&id);
@@ -3665,13 +3669,13 @@ impl Screen {
         completion_tx: Option<NotificationEnd>,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
-        self.invalidate_agent_lifecycle(pane_id, "rerun");
+        self.refresh_agent_events();
         // Read around the re-run rather than inside it: the pane resets its own record to
         // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
         let previous = self
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
-        match self.tab_containing_pane_mut(pane_id) {
+        let accepted = match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => tab.rerun_terminal_pane_with_id(terminal_pane_id, completion_tx),
             None => {
                 log::error!(
@@ -3680,7 +3684,13 @@ impl Screen {
                 );
                 return;
             },
+        };
+        if !accepted {
+            return;
         }
+        // Retire the cached identity; refreshing after respawn would read the new agent.
+        self.retire_agent_event_pane(pane_id, "pane_replaced");
+        self.invalidate_agent_lifecycle(pane_id, "rerun");
         let current = self
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
@@ -3694,13 +3704,13 @@ impl Screen {
         keep_scrollback: bool,
     ) {
         let pane_id = PaneId::Terminal(terminal_pane_id);
-        self.invalidate_agent_lifecycle(pane_id, "command_replaced");
+        self.refresh_agent_events();
         // Read around the re-run rather than inside it: the pane resets its own record to
         // `busy` when it restarts, and an exited agent coming back is an `agent_start`.
         let previous = self
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));
-        match self.tab_containing_pane_mut(pane_id) {
+        let accepted = match self.tab_containing_pane_mut(pane_id) {
             Some(tab) => {
                 tab.run_command_in_pane_with_id(terminal_pane_id, run_command, keep_scrollback)
             },
@@ -3711,7 +3721,13 @@ impl Screen {
                 );
                 return;
             },
+        };
+        if !accepted {
+            return;
         }
+        // Retire the cached identity; refreshing after respawn would read the new agent.
+        self.retire_agent_event_pane(pane_id, "pane_replaced");
+        self.invalidate_agent_lifecycle(pane_id, "command_replaced");
         let current = self
             .tab_containing_pane(pane_id)
             .and_then(|tab| tab.pane_agent_info(pane_id));

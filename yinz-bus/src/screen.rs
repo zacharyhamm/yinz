@@ -53,6 +53,9 @@ use {
     yinz_types::input::layout::TiledPaneLayout,
 };
 
+/// Project probes finish outside the screen thread and are applied by version.
+pub type AgentEventProjectMemberships = BTreeMap<String, Result<Option<Vec<PaneId>>, String>>;
+
 /// Instructions that can be sent to the [`Screen`].
 ///
 /// `IntoStaticStr` yields the variant name, which is what `From<&ScreenInstruction> for
@@ -865,6 +868,9 @@ pub enum ScreenInstruction {
     NotifyPaneClosedToSubscribers {
         pane_id: yinz_types::data::PaneId,
     },
+    InvalidateAgentEventProjects,
+    AgentEventProjects(u64, AgentEventProjectMemberships),
+    SubscribeAgentEvents(ClientId, yinz_ipc::ipc::EventSubscription),
     SetCliEventSubscribersPresent(bool),
     AgentControl(yinz_types::agent::control::AgentRequest, ClientId),
     AgentControlReply(
