@@ -99,20 +99,41 @@ fn notes_todos_commands_return_json_and_failures_with_redirected_stdin() {
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
+    let prefix = "first\n\nsecond\n";
+    let body = format!(
+        "{prefix}{}",
+        "é".repeat((8 * 1024 * 1024 - prefix.len()) / 2)
+    );
     child
         .stdin
         .take()
         .unwrap()
-        .write_all(b"first\n\nsecond\n")
+        .write_all(body.as_bytes())
         .unwrap();
     let note = success(child.wait_with_output().unwrap());
-    assert_eq!(note["body"], "first\n\nsecond"); // Existing store trims outer whitespace.
+    assert_eq!(note["body"], body);
     let note_id = note["id"].to_string();
     let list = success(session.action(&["todo-list", "--project", "work"]));
     assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    let fetched = success(session.action(&["note-get", &note_id]));
+    assert_eq!(fetched["todo_ids"][0], todo["id"]);
+    assert_eq!(fetched["body"], body);
+    let replacement = "y".repeat(8 * 1024 * 1024);
+    let body_file = dir.join("body.md");
+    std::fs::write(&body_file, &replacement).unwrap();
+    let edited = success(session.action(&[
+        "note-edit",
+        &note_id,
+        "--body-file",
+        body_file.to_str().unwrap(),
+        "--expect-rev",
+        &note["rev"].to_string(),
+    ]));
+    assert_eq!(edited["body"], replacement);
+    assert!(edited["rev"].as_i64() > note["rev"].as_i64());
     assert_eq!(
-        success(session.action(&["note-get", &note_id]))["todo_ids"][0],
-        todo["id"]
+        success(session.action(&["note-get", &note_id]))["body"],
+        replacement
     );
     let error = session.action(&["note-get", "999999"]);
     assert!(!error.status.success());
