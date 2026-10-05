@@ -1028,7 +1028,7 @@ impl Screen {
         response
     }
 
-    fn set_control_agent(&mut self, pane: PaneId, enabled: bool) -> AgentResponse {
+    pub(super) fn set_control_agent(&mut self, pane: PaneId, enabled: bool) -> AgentResponse {
         let PaneId::Terminal(id) = pane else {
             return self.agent_result(
                 pane,

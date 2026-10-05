@@ -22,6 +22,7 @@ use crate::ui::damage::CellRect;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     ControlAgent,
+    SetControlAgent,
     Command,
     Plugin,
     Pane,
@@ -45,6 +46,7 @@ impl EntryKind {
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
             Self::ControlAgent => Some("Focus control agent"),
+            Self::SetControlAgent => Some("Set control agent"),
             Self::Pane => Some("Focus pane"),
             Self::Tab => Some("Switch tab"),
             Self::Session => Some("Switch session"),
@@ -316,6 +318,7 @@ impl CommandPalette {
                         entry.kind,
                         EntryKind::Project
                             | EntryKind::ControlAgent
+                            | EntryKind::SetControlAgent
                             | EntryKind::WarpTabSession
                             | EntryKind::WarpPaneSession
                             | EntryKind::WarpTab
@@ -956,6 +959,13 @@ impl CommandPalette {
                                     .any(|e| e.kind == EntryKind::ControlAgent)
                             {
                                 "No control agents".into()
+                            } else if self.picker == Some(EntryKind::SetControlAgent)
+                                && !self
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.kind == EntryKind::SetControlAgent)
+                            {
+                                "No agent panes".into()
                             } else {
                                 "No matches".into()
                             }

@@ -617,6 +617,62 @@ fn command_palette_switches_to_an_exited_session() {
 }
 
 #[test]
+fn command_palette_registers_control_agents_by_search_and_focused_pane() {
+    use yinz_types::pane_id::PaneId;
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { tab name=\"original\" focus=true { pane; }; tab name=\"controller\" { pane; }; }".into()))
+        .start();
+    let original = yinz.expect_pty_spawn();
+    let controller = yinz.expect_pty_spawn();
+    original.output(b"originalprompt$ ");
+    controller.output(b"controllerprompt$ ");
+    yinz.wait_until("original tab ready", |snapshot| {
+        snapshot.contains("originalprompt$")
+    });
+    for pane in [original.terminal_id(), controller.terminal_id()] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::AgentReport {
+                pane_id: Some(PaneId::Terminal(pane).to_string()),
+                kind: Some("codex".into()),
+                state: Some("idle".into()),
+                detail: None,
+                cwd: None,
+                hook_json: false,
+                clear: false,
+                run_id: None,
+            }),
+            0
+        );
+    }
+    palette_query(&yinz, "Set control agent");
+    let controller_id = PaneId::Terminal(controller.terminal_id()).to_string();
+    yinz.wait_until("registration picker ready", |snapshot| {
+        snapshot.contains("Set control agent") && snapshot.contains(&controller_id)
+    });
+    yinz.send_stdin(controller_id.as_bytes());
+    yinz.wait_until("controller selected", |snapshot| {
+        snapshot.contains(&format!("> {controller_id}"))
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("registration preserves original focus", |snapshot| {
+        snapshot.contains("originalprompt$") && !snapshot.contains("Esc Close")
+    });
+    palette_query(&yinz, "Set focused pane as control agent");
+    yinz.wait_until("focused registration completes", |snapshot| {
+        snapshot.contains("originalprompt$") && !snapshot.contains("Esc Close")
+    });
+    palette_query(&yinz, "Focus control agent");
+    let original_id = PaneId::Terminal(original.terminal_id()).to_string();
+    yinz.wait_until("both agents are registered", |snapshot| {
+        snapshot.contains("Focus control agent")
+            && snapshot.contains(&original_id)
+            && snapshot.contains(&controller_id)
+    });
+    yinz.quit();
+}
+
+#[test]
 fn command_palette_focuses_a_registered_control_agent_across_tabs_and_removes_it_live() {
     use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
     use yinz_types::agent::control::{AgentOutcome, AgentRequest};
