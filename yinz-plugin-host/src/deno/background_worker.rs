@@ -47,7 +47,7 @@ pub(super) fn post_job(
 
 pub(crate) enum Message {
     Job(ClientId, String, String, PostReservation),
-    Event(ClientId, Event),
+    Event(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>),
     Permission(super::permissions::Completion),
     Tick,
     Exit,
@@ -124,7 +124,10 @@ impl Workers {
                                     runtime.needs_render()
                                 })?;
                             },
-                            Message::Event(client, event) => {
+                            Message::Event(client, event, reply) => {
+                                if reply.is_some_and(|reply| reply.claim().is_none()) {
+                                    continue;
+                                }
                                 if crate::wasm_bridge::check_event_permission(plugin.env(), &event)
                                     .0
                                     == PermissionStatus::Granted
@@ -215,7 +218,9 @@ impl Workers {
             .unwrap_or_else(|e| e.into_inner())
             .values()
         {
-            let _ = worker.sender.send(Message::Event(client, event.clone()));
+            let _ = worker
+                .sender
+                .send(Message::Event(client, event.clone(), None));
         }
     }
 

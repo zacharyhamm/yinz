@@ -613,3 +613,85 @@ fn unload_deadline_interrupts_sync_loops_and_unsettled_promises() {
         plugin.dispose();
     }
 }
+
+#[test]
+fn unload_awaits_a_command_completed_before_cleanup() {
+    use yinz_bus::{background_jobs::BackgroundJob, plugins::PluginInstruction, screen::ScreenInstruction};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let (jobs, requests) = unbounded();
+    let (notifications, queued) = unbounded();
+    let (screen, observed) = unbounded();
+    let mut env = crate::test_env::test_env();
+    *env.permissions.lock().unwrap() = Some(std::collections::HashSet::from([
+        yinz_types::data::PermissionType::RunCommands,
+        yinz_types::data::PermissionType::ChangeApplicationState,
+    ]));
+    env.senders.to_background_jobs = Some(SenderWithContext::new(jobs));
+    env.senders.to_plugin = Some(SenderWithContext::new(notifications));
+    env.senders.to_screen = Some(SenderWithContext::new(screen));
+    let senders = env.senders.clone();
+    let mut plugin = DenoPlugin::new(
+        r#"let pending;
+        export default {
+          load() { pending = yinz.runCommand({command: ['/usr/bin/true']}); },
+          async unload() {
+            const result = await pending;
+            if (result.exitCode !== 0) throw Error('command failed');
+            yinz.host.setSelectable(false);
+          }
+        };"#,
+        Path::new("/tmp/unload-completed-command.js"), env,
+        Arc::new(AtomicBool::new(false)),
+    ).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let (plugin_id, client, generation, event) = loop {
+        if let BackgroundJob::RunCommand(id, client, command, args, _, _, context, _, _, generation) = requests.recv_timeout(yinz_test_support::default_timeout()).unwrap().0 {
+            let output = std::process::Command::new(command).args(args).output().unwrap();
+            break (id, client, generation.unwrap(), Event::RunCommandResult(output.status.code(), output.stdout, output.stderr, context));
+        }
+    };
+    senders.send_to_plugin(PluginInstruction::DenoEvent(plugin_id, client, generation, event)).unwrap();
+    let reply = loop {
+        if let PluginInstruction::DenoReply(_, _, _, Event::RunCommandResult(..), reply) = queued.recv_timeout(yinz_test_support::default_timeout()).unwrap().0 { break reply; }
+    };
+    // The command has exited and its notification is held here, outside the executor.
+    plugin.dispose();
+    assert!(observed.try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::SetSelectable(_, false))));
+    assert!(reply.claim().is_none());
+}
+
+#[test]
+fn unload_drains_an_undelivered_timer_before_a_new_cleanup_sleep() {
+    use yinz_bus::{plugins::PluginInstruction, screen::ScreenInstruction};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let (notifications, queued) = unbounded();
+    let (screen, observed) = unbounded();
+    let mut env = crate::test_env::test_env();
+    *env.permissions.lock().unwrap() = Some(std::collections::HashSet::from([
+        yinz_types::data::PermissionType::ChangeApplicationState,
+    ]));
+    env.senders.to_plugin = Some(SenderWithContext::new(notifications));
+    env.senders.to_screen = Some(SenderWithContext::new(screen));
+    let mut plugin = DenoPlugin::new(
+        r#"let pending;
+        export default {
+          load() { pending = yinz.sleep(0); },
+          async unload() {
+            await pending;
+            await yinz.sleep(1);
+            yinz.host.setSelectable(false);
+          }
+        };"#,
+        Path::new("/tmp/unload-pending-timer.js"), env,
+        Arc::new(AtomicBool::new(false)),
+    ).unwrap();
+    plugin.load(&BTreeMap::new()).unwrap();
+    let reply = loop {
+        if let PluginInstruction::DenoReply(_, _, _, Event::Timer(_), reply) = queued.recv_timeout(yinz_test_support::default_timeout()).unwrap().0 { break reply; }
+    };
+    // Channel receipt is the barrier: the first timer is retained but never delivered.
+    plugin.dispose();
+    assert!(observed.try_iter().any(|(instruction, _)| matches!(instruction, ScreenInstruction::SetSelectable(_, false))));
+    assert!(reply.claim().is_none());
+    assert!(!queued.try_iter().any(|(instruction, _)| matches!(instruction, PluginInstruction::DenoReply(..))));
+}

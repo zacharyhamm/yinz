@@ -555,8 +555,8 @@ fn deno_drain_preserves_clients_order_and_each_instruction_boundary() {
         ]);
         let mut queued = None;
         assert_eq!(
-            drain_deno_events(&bus, id, 41, vec![(first, scroll_up(1))], &mut queued),
-            vec![(first, scroll_up(1)), (second, scroll_up(2))],
+            drain_deno_events(&bus, id, 41, vec![(first, scroll_up(1), None)], &mut queued),
+            vec![(first, scroll_up(1), None), (second, scroll_up(2), None)],
         );
         assert_eq!(format!("{:?}", queued.unwrap().0), expected);
         assert!(matches!(
@@ -577,7 +577,13 @@ fn deno_drain_stops_at_its_cap() {
             .collect(),
     );
     let mut queued = None;
-    let events = drain_deno_events(&bus, id, 41, vec![(client, scroll_up(1))], &mut queued);
+    let events = drain_deno_events(
+        &bus,
+        id,
+        41,
+        vec![(client, scroll_up(1), None)],
+        &mut queued,
+    );
     assert_eq!(events.len(), 1 + crate::MAX_UPDATE_DRAIN);
     assert!(queued.is_none());
     assert!(bus.try_recv().is_some());

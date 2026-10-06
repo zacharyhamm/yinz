@@ -20,36 +20,71 @@ use yinz_types::input::options::Options;
 #[path = "unit/thread_bus_tests.rs"]
 mod tests;
 
-// Generations are process-wide Deno identities. During teardown the pinned executor
-// pumps replies itself: the plugin map (and at shutdown the plugin bus) is gone.
-// ponytail: one registry lock per Deno reply; shard if concurrent cleanup traffic contends.
-type UnloadReply = (ClientId, yinz_types::data::Event);
-static UNLOAD_REPLIES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<UnloadReply>>>,
+// Generations are process-wide Deno identities. Replies belong to the isolate,
+// including while notifications wait on the bus or its pinned executor.
+// ponytail: one registry lock per Deno reply; shard if reply traffic contends.
+type DenoReply = (ClientId, yinz_types::data::Event);
+#[derive(Default)]
+struct ReplyMailbox {
+    next_id: u64,
+    pending: std::collections::BTreeMap<u64, DenoReply>,
+    cleanup: Option<std::sync::mpsc::Sender<DenoReply>>,
+}
+static REPLY_MAILBOXES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, ReplyMailbox>>,
 > = std::sync::LazyLock::new(Default::default);
 
-pub struct UnloadReplies {
+/// An internal notification can claim its reply only on the owning executor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DenoReplyId {
     generation: u64,
-    pub receiver: std::sync::mpsc::Receiver<UnloadReply>,
+    id: u64,
 }
 
-impl UnloadReplies {
-    pub fn new(generation: u64) -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        UNLOAD_REPLIES
+impl DenoReplyId {
+    pub fn claim(self) -> Option<DenoReply> {
+        let mut mailboxes = REPLY_MAILBOXES
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(generation, sender);
-        Self {
-            generation,
-            receiver,
+            .unwrap_or_else(|error| error.into_inner());
+        let mailbox = mailboxes.get_mut(&self.generation)?;
+        if mailbox.cleanup.is_some() {
+            return None;
         }
+        mailbox.pending.remove(&self.id)
     }
 }
 
-impl Drop for UnloadReplies {
+pub struct DenoReplies {
+    generation: u64,
+}
+
+impl DenoReplies {
+    pub fn new(generation: u64) -> Self {
+        REPLY_MAILBOXES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(generation, ReplyMailbox::default());
+        Self { generation }
+    }
+
+    pub fn begin_cleanup(&self) -> std::sync::mpsc::Receiver<DenoReply> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut mailboxes = REPLY_MAILBOXES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(mailbox) = mailboxes.get_mut(&self.generation) {
+            for (_, reply) in std::mem::take(&mut mailbox.pending) {
+                let _ = sender.send(reply);
+            }
+            mailbox.cleanup = Some(sender);
+        }
+        receiver
+    }
+}
+
+impl Drop for DenoReplies {
     fn drop(&mut self) {
-        UNLOAD_REPLIES
+        REPLY_MAILBOXES
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&self.generation);
@@ -120,16 +155,36 @@ impl ThreadSenders {
     }
 
     pub fn send_to_plugin(&self, instruction: PluginInstruction) -> Result<()> {
-        if let PluginInstruction::DenoEvent(_, client, generation, event) = &instruction {
-            if let Some(sender) = UNLOAD_REPLIES
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .get(generation)
-            {
-                let _ = sender.send((*client, event.clone()));
-                return Ok(());
-            }
-        }
+        let instruction =
+            if let PluginInstruction::DenoEvent(plugin, client, generation, event) = instruction {
+                let mut mailboxes = REPLY_MAILBOXES
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(mailbox) = mailboxes.get_mut(&generation) {
+                    if let Some(sender) = &mailbox.cleanup {
+                        let _ = sender.send((client, event));
+                        return Ok(());
+                    }
+                    let id = mailbox.next_id;
+                    mailbox.next_id = id.checked_add(1).context("Deno reply IDs exhausted")?;
+                    mailbox.pending.insert(id, (client, event.clone()));
+                    // Enqueue under the routing lock to preserve producer order with cleanup.
+                    return self.send_plugin_notification(PluginInstruction::DenoReply(
+                        plugin,
+                        client,
+                        generation,
+                        event,
+                        DenoReplyId { generation, id },
+                    ));
+                }
+                PluginInstruction::DenoEvent(plugin, client, generation, event)
+            } else {
+                instruction
+            };
+        self.send_plugin_notification(instruction)
+    }
+
+    fn send_plugin_notification(&self, instruction: PluginInstruction) -> Result<()> {
         if self.should_silently_fail {
             let _ = self
                 .to_plugin
