@@ -22,6 +22,12 @@ pub struct Delivery {
 
 #[derive(Clone, Debug)]
 pub enum Instruction {
+    HistoryTick {
+        client: ClientId,
+        opening: u64,
+        view: u64,
+        generation: u64,
+    },
     NoteDiscover {
         client: ClientId,
         token: u64,
@@ -88,6 +94,7 @@ pub struct AgentRequest {
 
 #[derive(Clone, Debug)]
 pub enum AgentAction {
+    History(HistoryAction),
     Start {
         kind: String,
         vm: bool,
@@ -140,6 +147,7 @@ pub struct AgentChoice {
 
 #[derive(Clone, Debug)]
 pub enum AgentReply {
+    History(HistoryReply),
     Choices {
         title: String,
         choices: Vec<AgentChoice>,
@@ -183,4 +191,46 @@ pub struct NoteChoice {
 pub struct NoteResults {
     pub notes: Vec<NoteChoice>,
     pub truncated: bool,
+}
+
+#[path = "palette_query.rs"]
+pub mod query;
+
+#[derive(Clone, Debug)]
+pub enum HistoryAction {
+    Hit {
+        id: String,
+        revision: u64,
+    },
+    Search(query::AgentQuery),
+    Run {
+        id: String,
+        from: Option<u64>,
+        query: String,
+    },
+    Event {
+        id: String,
+        revision: u64,
+    },
+    Resume {
+        id: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct HistoryRow {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub action: HistoryAction,
+}
+
+#[derive(Clone, Debug)]
+pub enum HistoryReply {
+    Rows {
+        metadata: Option<String>,
+        rows: Vec<HistoryRow>,
+        status: String,
+    },
+    Text(String),
 }

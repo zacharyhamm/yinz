@@ -2125,6 +2125,102 @@ fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering(
 }
 
 #[test]
+fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles() {
+    use std::sync::{atomic::AtomicBool, Arc};
+    use yinz_bus::command_palette::{Instruction, Owner};
+    use yinz_types::command_palette::{Action as PaletteAction, Command, Message, Reply};
+
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (sender, requests) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+    let owner = Owner {
+        plugin_id: PluginId::new(50),
+        generation: 9,
+        client_id: Some(CLIENT),
+    };
+    let unavailable = Arc::new(AtomicBool::new(false));
+    let command = |command| Instruction::Command {
+        owner: owner.clone(),
+        client: CLIENT,
+        unavailable: unavailable.clone(),
+        command,
+    };
+    let next = || {
+        requests
+            .try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                    Message::Discover { scope, query, .. } => Some((scope, query)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("plugin discovery")
+    };
+    let reply = |scope, label: &str, handle: &str| {
+        command(Command::Reply {
+            scope,
+            result: Ok(Reply::Actions {
+                actions: vec![PaletteAction {
+                    id: "stable".into(),
+                    label: label.into(),
+                    description: String::new(),
+                    handle: handle.into(),
+                }],
+            }),
+        })
+    };
+    screen.plugin_palette_instruction(command(Command::Register {
+        id: "provider".into(),
+        title: "Provider".into(),
+        registration: "1".into(),
+    }));
+    screen.toggle_command_palette(CLIENT);
+    let (scope, _) = next();
+    assert!(screen.plugin_palette_instruction(reply(scope, "Previous result", "old")));
+    assert!(screen.command_palette_handles_input(&None, b"Agent filters", false, CLIENT));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Previous result"), "{frame}");
+    palette_key(&mut screen, BareKey::Enter);
+    assert!(screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+        &[],
+        false,
+        CLIENT,
+    ));
+    assert!(screen.command_palette_handles_input(&None, b"hello provider:codex", false, CLIENT));
+    // Up wraps from Search to Apply; submit through the normal input handler.
+    palette_key(&mut screen, BareKey::Up);
+    palette_key(&mut screen, BareKey::Enter);
+    let (scope, query) = next();
+    let parsed = yinz_bus::command_palette::query::AgentQuery::parse(
+        &query,
+        yinz_bus::command_palette::query::LIVE_FIELDS,
+    )
+    .unwrap();
+    assert_eq!(parsed.text, "hello provider:codex");
+    assert!(parsed.filters.is_empty());
+    assert_eq!(scope.view, 0);
+    assert!(screen.plugin_palette_instruction(reply(scope, "Replacement result", "new")));
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Replacement result"), "{frame}");
+    assert!(!frame.contains("Previous result"), "{frame}");
+    let releases: Vec<_> = requests
+        .try_iter()
+        .filter_map(|(instruction, _)| match instruction {
+            PluginInstruction::DenoPalette(delivery) => match delivery.message {
+                Message::Release { handles } => Some(handles),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(releases, vec![vec!["old".to_owned()]]);
+}
+
+#[test]
 fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root() {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -3111,6 +3207,584 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
     });
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!snapshot.contains("outcome unknown"));
+}
+
+#[test]
+fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    let agent = AgentInfo {
+        kind: "codex".into(),
+        state: AgentState::Waiting,
+        source: AgentSource::Reported,
+        detail: Some("inspection task".into()),
+        waiting_on: Some("permission".into()),
+        wait_needs_a_person: true,
+        cwd: Some("/work/café space".into()),
+        session_id: None,
+        run_id: None,
+    };
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(pane, Some(agent.clone()));
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "state:waiting directory:\"café space\"");
+    let result = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(result.contains("codex"), "{result}");
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
+    let info = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(
+        info.contains("No recorded history") && info.contains("Focus"),
+        "{info}"
+    );
+    let mut replacement = agent;
+    replacement.session_id = Some("replacement".into());
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .set_pane_agent(pane, Some(replacement));
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Tab)),
+        b"\t",
+        false,
+        CLIENT,
+    );
+    screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
+    let timeline = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(timeline.contains("Agent info · Timeline"), "{timeline}");
+    assert!(!timeline.contains("changed identity"), "{timeline}");
+    // Focus is an action: Enter on the empty timeline must not invoke it.
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Tab)),
+        b"\t",
+        false,
+        CLIENT,
+    );
+    screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
+    let stale = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(stale.contains("changed identity"), "{stale}");
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Esc)),
+        b"\x1b",
+        false,
+        CLIENT,
+    );
+    let restored = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(restored.contains("state:waiting"), "{restored}");
+}
+
+#[test]
+fn archive_queries_discard_stale_replies_and_resume_cannot_be_submitted_twice() {
+    use yinz_bus::command_palette::{
+        AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &yinz_bus::command_palette::AgentRequest, label: &str, action| {
+        Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::History(HistoryReply::Rows {
+                metadata: None,
+                rows: vec![HistoryRow {
+                    id: "run".into(),
+                    label: label.into(),
+                    description: String::new(),
+                    action,
+                }],
+                status: String::new(),
+            })),
+        }
+    };
+    let run = HistoryAction::Run {
+        id: "recorded".into(),
+        from: None,
+        query: String::new(),
+    };
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    palette_search(&mut screen, "Archived agents");
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let old = next();
+    screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+    let current = next();
+    assert!(!old.active.load(std::sync::atomic::Ordering::Acquire));
+    screen.plugin_palette_instruction(reply(&old, "STALE ARCHIVE", run.clone()));
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(!snapshot.contains("STALE ARCHIVE"));
+    screen.plugin_palette_instruction(reply(&current, "Matching run", run));
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Down)),
+        b"",
+        false,
+        CLIENT,
+    );
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let details = next();
+    screen.plugin_palette_instruction(Instruction::AgentReply {
+        client: CLIENT,
+        opening: details.opening,
+        step: details.step,
+        reply: Ok(AgentReply::History(HistoryReply::Rows {
+            metadata: Some("Recorded run".into()),
+            rows: vec![HistoryRow {
+                id: "resume".into(),
+                label: "Resume".into(),
+                description: String::new(),
+                action: HistoryAction::Resume {
+                    id: "recorded".into(),
+                },
+            }],
+            status: String::new(),
+        })),
+    });
+    for _ in 0..2 {
+        screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Tab)),
+            b"",
+            false,
+            CLIENT,
+        );
+    }
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let submitted = next();
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Esc)),
+        b"",
+        false,
+        CLIENT,
+    );
+    let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(snapshot.contains("may still complete"), "{snapshot}");
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    assert!(!submitted.active.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!rx
+        .try_iter()
+        .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+}
+
+#[test]
+fn history_live_run_id_updates_retarget_reads_and_reset_pagination() {
+    use yinz_bus::command_palette::{
+        AgentAction, AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+
+    for session_id in [None, Some("provider-session".to_owned())] {
+        let mut screen = screen();
+        let pane = PaneId::Terminal(TerminalId::new(1));
+        let mut agent = AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id,
+            run_id: None,
+        };
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent.clone()));
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction {
+                break *request;
+            }
+        };
+        let (tick_tx, tick_rx) = channels::unbounded();
+        screen.bus.senders.to_screen = Some(SenderWithContext::new(tick_tx));
+        palette_search(&mut screen, "provider:codex");
+        screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Enter)),
+            b"",
+            false,
+            CLIENT,
+        );
+        if agent.session_id.is_some() {
+            let request = next();
+            assert!(
+                matches!(&request.action, AgentAction::History(HistoryAction::Run { id, .. }) if id == "codex:provider-session")
+            );
+            screen.plugin_palette_instruction(Instruction::AgentReply {
+                client: CLIENT,
+                opening: request.opening,
+                step: request.step,
+                reply: Ok(AgentReply::History(HistoryReply::Rows {
+                    metadata: None,
+                    rows: vec![HistoryRow {
+                        id: "event:90".into(),
+                        label: "Old event".into(),
+                        description: String::new(),
+                        action: HistoryAction::Event {
+                            id: "codex:provider-session".into(),
+                            revision: 90,
+                        },
+                    }],
+                    status: String::new(),
+                })),
+            });
+        }
+        screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        let query = next();
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: query.opening,
+            step: query.step,
+            reply: Ok(AgentReply::History(HistoryReply::Rows {
+                metadata: None,
+                rows: vec![],
+                status: String::new(),
+            })),
+        });
+        agent.run_id = Some("explicit-run".into());
+        screen
+            .tabs
+            .get_mut(&TabId::new(0))
+            .unwrap()
+            .set_pane_agent(pane, Some(agent));
+        loop {
+            let (instruction, _) = tick_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
+                instruction
+            {
+                let Instruction::HistoryTick { generation, .. } = tick else {
+                    unreachable!()
+                };
+                screen.plugin_palette_instruction(tick);
+                if generation == 2 {
+                    break;
+                }
+                assert!(!rx.try_iter().any(|(instruction, _)| matches!(
+                    instruction,
+                    PluginInstruction::PaletteAgent(_)
+                )));
+            }
+        }
+        let updated = next();
+        assert!(
+            matches!(&updated.action, AgentAction::History(HistoryAction::Run { id, from: None, query }) if id == "explicit-run" && query == "needle")
+        );
+    }
+}
+
+#[test]
+fn history_typing_preserves_pending_hit_and_event_replies() {
+    use std::sync::atomic::Ordering;
+    use yinz_bus::command_palette::{
+        AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+
+    for action in [
+        HistoryAction::Hit {
+            id: "recorded".into(),
+            revision: 7,
+        },
+        HistoryAction::Event {
+            id: "recorded".into(),
+            revision: 7,
+        },
+    ] {
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let (tx, rx) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        let next = || loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction {
+                break *request;
+            }
+        };
+        let enter = Some(KeyWithModifier::new(BareKey::Enter));
+        palette_search(&mut screen, "Archived agents");
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let search = next();
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: search.opening,
+            step: search.step,
+            reply: Ok(AgentReply::History(HistoryReply::Rows {
+                metadata: None,
+                rows: vec![HistoryRow {
+                    id: "result".into(),
+                    label: "Result".into(),
+                    description: String::new(),
+                    action: action.clone(),
+                }],
+                status: String::new(),
+            })),
+        });
+        screen.command_palette_handles_input(
+            &Some(KeyWithModifier::new(BareKey::Down)),
+            b"",
+            false,
+            CLIENT,
+        );
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let request = loop {
+            let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let PluginInstruction::PaletteAgent(request) = instruction {
+                break *request;
+            }
+        };
+        screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        assert!(request.active.load(Ordering::Acquire));
+        let loading = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(loading.contains("Loading"), "{loading}");
+        let reply = match action {
+            HistoryAction::Hit { .. } => HistoryReply::Rows {
+                metadata: None,
+                rows: vec![HistoryRow {
+                    id: "event:7".into(),
+                    label: "Loaded history content".into(),
+                    description: String::new(),
+                    action: HistoryAction::Event {
+                        id: "recorded".into(),
+                        revision: 7,
+                    },
+                }],
+                status: String::new(),
+            },
+            _ => HistoryReply::Text("Loaded history content".into()),
+        };
+        screen.plugin_palette_instruction(Instruction::AgentReply {
+            client: CLIENT,
+            opening: request.opening,
+            step: request.step,
+            reply: Ok(AgentReply::History(reply)),
+        });
+        let loaded = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(loaded.contains("Loaded history content"), "{loaded}");
+    }
+}
+
+#[test]
+fn history_poll_generations_reject_ticks_after_search_refresh_and_event_return() {
+    use yinz_bus::command_palette::{
+        AgentReply, HistoryAction, HistoryReply, HistoryRow, Instruction,
+    };
+    use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
+    let mut screen = screen();
+    screen.tabs.get_mut(&TabId::new(0)).unwrap().set_pane_agent(
+        PaneId::Terminal(TerminalId::new(1)),
+        Some(AgentInfo {
+            kind: "codex".into(),
+            state: AgentState::Idle,
+            source: AgentSource::Reported,
+            detail: None,
+            waiting_on: None,
+            wait_needs_a_person: false,
+            cwd: None,
+            session_id: Some("session".into()),
+            run_id: Some("run".into()),
+        }),
+    );
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let (tx, ticks) = channels::unbounded();
+    screen.bus.senders.to_screen = Some(SenderWithContext::new(tx));
+    let next_tick = || loop {
+        let (instruction, _) = ticks.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let ScreenInstruction::CommandPalette(tick @ Instruction::HistoryTick { .. }) =
+            instruction
+        {
+            break tick;
+        }
+    };
+    let reply = |request: &yinz_bus::command_palette::AgentRequest| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(HistoryReply::Rows {
+            metadata: None,
+            status: String::new(),
+            rows: vec![
+                HistoryRow {
+                    id: "latest".into(),
+                    label: "Latest / Refresh".into(),
+                    description: String::new(),
+                    action: HistoryAction::Run {
+                        id: "run".into(),
+                        from: None,
+                        query: String::new(),
+                    },
+                },
+                HistoryRow {
+                    id: "event:1".into(),
+                    label: "Event".into(),
+                    description: String::new(),
+                    action: HistoryAction::Event {
+                        id: "run".into(),
+                        revision: 1,
+                    },
+                },
+            ],
+        })),
+    };
+    palette_search(&mut screen, "provider:codex");
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    screen.plugin_palette_instruction(reply(&next()));
+    let mut obsolete = vec![next_tick()];
+    for operation in ["search", "refresh", "event"] {
+        if operation == "search" {
+            screen.command_palette_handles_input(&None, b"needle", false, CLIENT);
+        } else {
+            // Metadata -> Actions for refresh, then Actions -> Timeline for the event.
+            for _ in 0..2 {
+                screen.command_palette_handles_input(
+                    &Some(KeyWithModifier::new(BareKey::Tab)),
+                    b"",
+                    false,
+                    CLIENT,
+                );
+            }
+            if operation == "refresh" {
+                screen.command_palette_handles_input(
+                    &Some(KeyWithModifier::new(BareKey::End)),
+                    b"",
+                    false,
+                    CLIENT,
+                );
+            }
+            screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        }
+        let request = next();
+        if operation == "event" {
+            screen.plugin_palette_instruction(Instruction::AgentReply {
+                client: CLIENT,
+                opening: request.opening,
+                step: request.step,
+                reply: Ok(AgentReply::History(HistoryReply::Text(
+                    "Event detail".into(),
+                ))),
+            });
+            screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new(BareKey::Esc)),
+                b"",
+                false,
+                CLIENT,
+            );
+            screen.plugin_palette_instruction(reply(&next()));
+        } else {
+            screen.plugin_palette_instruction(reply(&request));
+        }
+        for tick in &obsolete {
+            screen.plugin_palette_instruction(tick.clone());
+        }
+        assert!(!rx
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+        // Wait for the replacement timer before checking the archive channel, so a
+        // wrongly accepted tick has time to pass the request debounce.
+        let current = next_tick();
+        assert!(!rx
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+        screen.plugin_palette_instruction(current.clone());
+        let request = next();
+        // A consumed generation cannot launch a second request after this reply.
+        screen.plugin_palette_instruction(reply(&request));
+        obsolete.push(current);
+        for tick in &obsolete {
+            screen.plugin_palette_instruction(tick.clone());
+        }
+        obsolete.push(next_tick());
+        assert!(!rx
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PluginInstruction::PaletteAgent(_))));
+    }
+}
+
+#[test]
+fn archive_filter_forms_preserve_literal_search_text() {
+    use yinz_bus::command_palette::{
+        query::{AgentQuery, ARCHIVE_FIELDS},
+        AgentAction, AgentReply, HistoryAction, HistoryReply, Instruction,
+    };
+    let mut screen = screen();
+    let (tx, rx) = channels::unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    let next = || loop {
+        let (instruction, _) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if let PluginInstruction::PaletteAgent(request) = instruction {
+            break *request;
+        }
+    };
+    let reply = |request: &yinz_bus::command_palette::AgentRequest| Instruction::AgentReply {
+        client: CLIENT,
+        opening: request.opening,
+        step: request.step,
+        reply: Ok(AgentReply::History(HistoryReply::Rows {
+            metadata: None,
+            rows: vec![],
+            status: String::new(),
+        })),
+    };
+    palette_search(&mut screen, "Archived agents");
+    palette_key(&mut screen, BareKey::Enter);
+    let initial = next();
+    screen.plugin_palette_instruction(reply(&initial));
+    let input = r#""hello provider:codex" provider:claude"#;
+    screen.command_palette_handles_input(&None, input.as_bytes(), false, CLIENT);
+    let request = next();
+    screen.plugin_palette_instruction(reply(&request));
+    let mut expected = AgentQuery::parse(input, ARCHIVE_FIELDS).unwrap();
+    for text in [
+        None,
+        Some("provider:codex"),
+        Some("  café \"quoted\" C:\\work\\  "),
+    ] {
+        // Filters is the first archive action. Opening it preserves the existing query.
+        palette_key(&mut screen, BareKey::Enter);
+        if let Some(text) = text {
+            screen.command_palette_handles_input(
+                &Some(KeyWithModifier::new(BareKey::Char('u')).with_ctrl_modifier()),
+                &[],
+                false,
+                CLIENT,
+            );
+            screen.command_palette_handles_input(&None, text.as_bytes(), false, CLIENT);
+            expected.text = text.into();
+        }
+        // Up wraps from Search to Apply; the first iteration applies without edits.
+        palette_key(&mut screen, BareKey::Up);
+        palette_key(&mut screen, BareKey::Enter);
+        let request = next();
+        let AgentAction::History(HistoryAction::Search(query)) = &request.action else {
+            panic!("expected archive search")
+        };
+        assert_eq!(query, &expected);
+        screen.plugin_palette_instruction(reply(&request));
+    }
 }
 
 #[test]

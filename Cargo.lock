@@ -6545,6 +6545,7 @@ dependencies = [
 name = "yinz-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "anyhow",
  "async-trait",
  "base64",
@@ -6567,6 +6568,7 @@ dependencies = [
  "yinz-runtime",
  "yinz-server",
  "yinz-session",
+ "yinz-storage",
  "yinz-terminal-graphics",
  "yinz-test-support",
  "yinz-types",
@@ -6682,6 +6684,7 @@ dependencies = [
 name = "yinz-plugin-host"
 version = "0.1.0"
 dependencies = [
+ "agent-proto",
  "anyhow",
  "chrono",
  "close_fds",

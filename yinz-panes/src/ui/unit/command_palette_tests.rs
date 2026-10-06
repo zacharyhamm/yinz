@@ -997,3 +997,173 @@ fn nested_warp_pickers_restore_search_selection_and_hide_destinations_at_root() 
         key(&mut palette, BareKey::Enter);
     }
 }
+
+#[test]
+fn live_agent_filters_refresh_selection_and_control_enter() {
+    let mut palette = CommandPalette {
+        agent_metadata: std::collections::BTreeMap::from([
+            (
+                "one".into(),
+                std::collections::BTreeMap::from([
+                    ("state".into(), "idle".into()),
+                    ("directory".into(), "/work/café space".into()),
+                ]),
+            ),
+            (
+                "two".into(),
+                std::collections::BTreeMap::from([("state".into(), "busy".into())]),
+            ),
+        ]),
+        ..Default::default()
+    };
+    palette.set_entries(vec![
+        entry("one", "日本語", EntryKind::Agent),
+        entry("two", "Other", EntryKind::Agent),
+    ]);
+    palette.insert_text("state:idle directory:\"café space\"");
+    assert_eq!(ids(&palette), ["one"]);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter).with_ctrl_modifier()),
+        Outcome::FocusAgent("one".into())
+    );
+    palette.push_view(99, "Agent info".into());
+    palette.metadata = Some((0..100).map(|n| format!("日本語 {n}\n")).collect());
+    for cols in 0..15 {
+        for rows in 0..15 {
+            let layout = palette.layout(Viewport {
+                x: 0,
+                y: 0,
+                cols,
+                rows,
+            });
+            assert!(layout.rect.cols <= cols && layout.rect.rows <= rows);
+            palette.chunks(&layout, &Style::default());
+        }
+    }
+    key(&mut palette, BareKey::End);
+    key(&mut palette, BareKey::Esc);
+    assert_eq!(palette.query(), "state:idle directory:\"café space\"");
+    assert_eq!(ids(&palette), ["one"]);
+    palette
+        .agent_metadata
+        .get_mut("one")
+        .unwrap()
+        .insert("state".into(), "waiting".into());
+    palette.set_entries(vec![
+        entry("one", "Updated title", EntryKind::Agent),
+        entry("two", "Other", EntryKind::Agent),
+    ]);
+    assert!(ids(&palette).is_empty());
+}
+
+#[test]
+fn agent_info_empty_timeline_cannot_activate_resume() {
+    let mut palette = CommandPalette {
+        metadata: Some("Archived run".into()),
+        ..Default::default()
+    };
+    palette.set_entries(vec![entry("resume", "Resume", EntryKind::Command)]);
+    key(&mut palette, BareKey::Enter);
+    key(&mut palette, BareKey::Tab);
+    assert_eq!(palette.metadata_focus, 1);
+    for key_code in [
+        BareKey::Up,
+        BareKey::Down,
+        BareKey::PageUp,
+        BareKey::PageDown,
+        BareKey::Home,
+        BareKey::End,
+    ] {
+        key(&mut palette, key_code);
+        assert!(palette.selected_entry().is_none());
+        assert_eq!(palette.selected, palette.matches.len());
+        assert!(!palette
+            .result_rows(10)
+            .iter()
+            .any(|row| palette.row_selected(row)));
+        key(&mut palette, BareKey::Enter);
+    }
+    // Even a stale programmatic selection cannot cross the focus boundary.
+    palette.select_id("resume");
+    key(&mut palette, BareKey::Enter);
+    assert!(palette.selected_entry().is_none());
+    key(&mut palette, BareKey::Tab);
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("resume".into())
+    );
+    key(&mut palette, BareKey::Tab);
+    key(&mut palette, BareKey::Enter);
+    palette.handle_key(KeyWithModifier::new(BareKey::Tab).with_shift_modifier());
+    assert_eq!(palette.selected_entry().unwrap().id, "resume");
+}
+
+#[test]
+fn agent_info_refresh_and_mouse_selection_respect_regions() {
+    let mut palette = CommandPalette {
+        metadata: Some("Archived run".into()),
+        ..Default::default()
+    };
+    let sections = |events: &[&str]| {
+        vec![PluginSection {
+            title: "Timeline".into(),
+            entries: std::iter::once(entry("resume", "Resume", EntryKind::Plugin))
+                .chain(events.iter().map(|id| entry(id, id, EntryKind::Plugin)))
+                .collect(),
+            semantic: true,
+            status: None,
+        }]
+    };
+    palette.set_sections(sections(&["event:1", "event:2"]));
+    key(&mut palette, BareKey::Tab);
+    assert_eq!(palette.selected_entry().unwrap().id, "event:1");
+    palette.select_id("event:2");
+    palette.set_query("search".into());
+    assert_eq!(palette.selected_entry().unwrap().id, "event:2");
+    palette.set_sections(sections(&["event:1"]));
+    assert_eq!(palette.selected_entry().unwrap().id, "event:1");
+    assert_eq!(
+        palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+        Outcome::Activate("event:1".into())
+    );
+    palette.set_sections(sections(&[]));
+    palette.set_query("another search".into());
+    assert_eq!(palette.metadata_focus, 1);
+    assert!(palette.selected_entry().is_none());
+    key(&mut palette, BareKey::Enter);
+    palette.set_sections(sections(&["event:3"]));
+    assert_eq!(palette.selected_entry().unwrap().id, "event:3");
+    // Non-semantic search can also remove all events while retaining an action.
+    let mut filtered = sections(&["event:3"]);
+    filtered[0].semantic = false;
+    palette.set_sections(filtered);
+    palette.set_query("Resume".into());
+    assert!(palette.selected_entry().is_none());
+    key(&mut palette, BareKey::Enter);
+    palette.set_query(String::new());
+    assert_eq!(palette.selected_entry().unwrap().id, "event:3");
+    let layout = palette.layout(Viewport {
+        cols: 100,
+        rows: 36,
+        ..Default::default()
+    });
+    for (id, focus) in [("resume", 2), ("event:3", 1)] {
+        let row = layout
+            .result_rows
+            .iter()
+            .position(|row| match row {
+                ResultRow::Entry(index) => palette.entries[palette.matches[*index]].id == id,
+                _ => false,
+            })
+            .unwrap();
+        palette.click(
+            &layout,
+            Position::new((layout.options_y + row) as i32, layout.rect.x as u16 + 2),
+        );
+        assert_eq!(palette.metadata_focus, focus);
+        assert_eq!(
+            palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+            Outcome::Activate(id.into())
+        );
+    }
+}

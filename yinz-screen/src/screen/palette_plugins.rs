@@ -568,6 +568,15 @@ impl Screen {
                 self.agent_palette_reply(client, opening, step, reply);
                 true
             },
+            Instruction::HistoryTick {
+                client,
+                opening,
+                view,
+                generation,
+            } => {
+                self.palette_history_tick(client, opening, view, generation);
+                true
+            },
             Instruction::Discover {
                 client,
                 opening,

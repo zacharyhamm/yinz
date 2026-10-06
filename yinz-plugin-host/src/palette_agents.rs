@@ -1,4 +1,6 @@
-//! Blocking native palette work. No Git operation or launch wait runs on screen.
+#[path = "palette_history.rs"]
+mod history;
+// Blocking native palette work. No Git operation or launch wait runs on screen.
 use super::*;
 use yinz_bus::command_palette::{
     AgentAction, AgentChoice, AgentProject, AgentReply, AgentRequest, Instruction,
@@ -9,7 +11,7 @@ use yinz_types::data::PaneInfo;
 pub(crate) fn handle(mut request: AgentRequest, senders: &ThreadSenders, data: &DataAccess) {
     // A newly opened shell can precede the first cwd broadcast. Query the captured
     // pane, never whichever pane happens to be focused when this worker runs.
-    if request.source.cwd.is_none() {
+    if request.source.cwd.is_none() && !matches!(request.action, AgentAction::History(_)) {
         let (tx, rx) = crossbeam::channel::bounded(1);
         if senders
             .send_to_pty(PtyInstruction::GetPaneCwd {
@@ -89,6 +91,9 @@ fn execute(
     data: &DataAccess,
 ) -> Result<AgentReply, String> {
     use AgentAction::*;
+    if let AgentAction::History(action) = &request.action {
+        return history::execute(request, action, senders, data);
+    }
     let source = current_source(request, senders)?;
     let choice = |label: String, description: String, action| AgentChoice {
         label,
@@ -97,6 +102,7 @@ fn execute(
     };
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
+        History(_) => unreachable!("handled above"),
         Start { kind, vm, project } => {
             let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {

@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::{atomic::AtomicBool, Arc};
 use yinz_runtime::channels::{unbounded, SenderWithContext};
-use yinz_types::internal_ids::{ClientId, TabId};
+use yinz_types::internal_ids::{ClientId, HostId, TabId};
 
 fn repository() -> (tempfile::TempDir, DataAccess) {
     let temp = tempfile::tempdir().unwrap();
@@ -347,4 +347,294 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
     let (reply, commands) = run(&cancelled, &data);
     assert!(reply.unwrap_err().contains("cancelled"));
     assert!(commands.is_empty());
+}
+
+fn recorded_run(root: &Path) -> agent_proto::agents::AgentRun {
+    agent_proto::agents::AgentRun {
+        id: "codex:archived".into(),
+        pane_id: 7,
+        yinz_session_name: "old-session".into(),
+        host_id: yinz_runtime::host_identity::host_id(),
+        origin_run_id: None,
+        previous_run_id: Some("previous".into()),
+        session_id: "archived".into(),
+        kind: "codex".into(),
+        cwd: Some(root.to_string_lossy().into_owned()),
+        host: None,
+        worktree: None,
+        started_at_ms: 100,
+        ended_at_ms: Some(200),
+        outcome: agent_proto::agents::RunOutcome::Completed,
+        revision: 1,
+        summarized_revision: 0,
+        summary: None,
+        omitted_entries: 0,
+        entries: vec![agent_proto::agents::RunEntry {
+            tool: None,
+            revision: 1,
+            event_id: None,
+            kind: agent_proto::agents::RunEntryKind::Message,
+            text: format!("needle\n{}", "日本語 retained text ".repeat(4000)),
+            created_at_ms: Some(150),
+        }],
+    }
+}
+
+#[test]
+fn palette_history_search_exact_event_predecessor_and_resume() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    let (temp, data) = repository();
+    let recorded = recorded_run(temp.path());
+    let write = |recorded: &agent_proto::agents::AgentRun| {
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(recorded),
+            )
+            .unwrap();
+    };
+    write(&recorded);
+    let execute = |action| run(&request(temp.path(), AgentAction::History(action)), &data);
+    let (reply, commands) = execute(HistoryAction::Search(
+        yinz_bus::command_palette::query::AgentQuery::parse(
+            "needle provider:codex session:old-session",
+            yinz_bus::command_palette::query::ARCHIVE_FIELDS,
+        )
+        .unwrap(),
+    ));
+    let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+        panic!("expected search rows")
+    };
+    assert_eq!(rows.len(), 1);
+    assert!(commands.is_empty());
+    let (reply, _) = execute(rows[0].action.clone());
+    let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+        panic!("expected timeline")
+    };
+    assert!(rows
+        .iter()
+        .any(|r| matches!(&r.action, HistoryAction::Run { id, .. } if id == "previous")));
+    let (reply, _) = execute(HistoryAction::Event {
+        id: recorded.id.clone(),
+        revision: 1,
+    });
+    let AgentReply::History(HistoryReply::Text(text)) = reply.unwrap() else {
+        panic!("expected retained event")
+    };
+    assert!(text.contains(&recorded.entries[0].text));
+    let (reply, commands) = execute(HistoryAction::Resume {
+        id: recorded.id.clone(),
+    });
+    assert!(matches!(reply.unwrap(), AgentReply::Launched(_)));
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].args.iter().any(|arg| arg == "archived"));
+    assert_eq!(commands[0].cwd.as_deref(), Some(temp.path()));
+    for (outcome, host, host_id, kind, session, directory, error) in [
+        (
+            agent_proto::agents::RunOutcome::Active,
+            None,
+            recorded.host_id.clone(),
+            "codex",
+            "archived",
+            Some(temp.path().to_string_lossy().into_owned()),
+            "active",
+        ),
+        (
+            agent_proto::agents::RunOutcome::Completed,
+            Some("firecracker:vm-1".into()),
+            recorded.host_id.clone(),
+            "codex",
+            "archived",
+            recorded.cwd.clone(),
+            "Firecracker",
+        ),
+        (
+            agent_proto::agents::RunOutcome::Completed,
+            None,
+            yinz_types::internal_ids::HostId::new("foreign"),
+            "codex",
+            "archived",
+            recorded.cwd.clone(),
+            "foreign host",
+        ),
+        (
+            agent_proto::agents::RunOutcome::Completed,
+            None,
+            recorded.host_id.clone(),
+            "codex",
+            "",
+            recorded.cwd.clone(),
+            "session id",
+        ),
+        (
+            agent_proto::agents::RunOutcome::Completed,
+            None,
+            recorded.host_id.clone(),
+            "codex",
+            "archived",
+            None,
+            "directory",
+        ),
+        (
+            agent_proto::agents::RunOutcome::Completed,
+            None,
+            recorded.host_id.clone(),
+            "gemini",
+            "archived",
+            recorded.cwd.clone(),
+            "resume",
+        ),
+    ] {
+        let mut changed = recorded.clone();
+        changed.outcome = outcome;
+        changed.host = host;
+        changed.host_id = host_id;
+        changed.kind = kind.into();
+        changed.session_id = session.into();
+        changed.cwd = directory;
+        write(&changed);
+        let (reply, commands) = execute(HistoryAction::Resume {
+            id: recorded.id.clone(),
+        });
+        assert!(reply.unwrap_err().contains(error));
+        assert!(commands.is_empty());
+    }
+}
+
+#[test]
+fn palette_history_older_follows_retained_revisions() {
+    use yinz_bus::command_palette::{HistoryAction, HistoryReply};
+    for (revisions, text, expected_starts) in [
+        (
+            vec![1].into_iter().chain(100..130).collect::<Vec<_>>(),
+            "event",
+            vec![100, 1],
+        ),
+        (
+            (1..5).chain(100..130).chain(1000..1030).collect(),
+            "event",
+            vec![1000, 100, 1],
+        ),
+        ((1..=65).collect(), "event", vec![36, 6, 1]),
+        ((1..=65).collect(), &"x".repeat(4000), vec![52, 22, 1]),
+    ] {
+        let (temp, data) = repository();
+        let mut recorded = recorded_run(temp.path());
+        let entry = recorded.entries[0].clone();
+        recorded.entries = revisions
+            .iter()
+            .map(|revision| {
+                let mut entry = entry.clone();
+                entry.revision = *revision;
+                entry.text = text.into();
+                entry
+            })
+            .collect();
+        recorded.revision = *revisions.last().unwrap();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(&recorded),
+            )
+            .unwrap();
+        // Other runs must not contribute revisions to the backward cursor.
+        let mut other = recorded.clone();
+        other.id = "other-run".into();
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(&other),
+            )
+            .unwrap();
+        let mut action = HistoryAction::Run {
+            id: recorded.id.clone(),
+            from: None,
+            query: String::new(),
+        };
+        let mut starts = Vec::new();
+        loop {
+            let (reply, _) = run(&request(temp.path(), AgentAction::History(action)), &data);
+            let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+                panic!("expected timeline")
+            };
+            starts.push(
+                rows.iter()
+                    .find_map(|row| match row.action {
+                        HistoryAction::Event { revision, .. } => Some(revision),
+                        _ => None,
+                    })
+                    .unwrap(),
+            );
+            assert!(
+                starts.len() <= expected_starts.len(),
+                "backward navigation failed to terminate: {starts:?}"
+            );
+            let Some(older) = rows.iter().find(|row| row.id == "older") else {
+                break;
+            };
+            action = older.action.clone();
+        }
+        assert_eq!(starts, expected_starts);
+    }
+}
+
+#[test]
+fn palette_history_filters_match_the_same_runs_with_or_without_text() {
+    use yinz_bus::command_palette::{
+        query::{AgentQuery, ARCHIVE_FIELDS},
+        HistoryAction, HistoryReply,
+    };
+    let (temp, data) = repository();
+    let mut recorded = recorded_run(temp.path());
+    recorded.id = "Codex:Archived".into();
+    recorded.kind = "Codex".into();
+    recorded.yinz_session_name = "Main".into();
+    recorded.host_id = HostId::new("Host-A");
+    let mut legacy = recorded.clone();
+    legacy.id = "Codex:Legacy".into();
+    legacy.host_id = HostId::new("");
+    let mut active = recorded.clone();
+    active.id = "Codex:Active".into();
+    active.outcome = agent_proto::agents::RunOutcome::Active;
+    for record in [&recorded, &legacy, &active] {
+        data.plugin_data()
+            .apply(
+                project_data::store::SHARED,
+                &agent_proto::agents::rows::run_mutations(record),
+            )
+            .unwrap();
+    }
+    for (filters, expected) in [
+        ("session:main", vec!["Codex:Archived", "Codex:Legacy"]),
+        ("provider:codex", vec!["Codex:Archived", "Codex:Legacy"]),
+        ("host:host-a", vec!["Codex:Archived"]),
+        ("run:codex:archived", vec!["Codex:Archived"]),
+        (
+            "session:main host:host-a",
+            vec!["Codex:Archived", "Codex:Legacy"],
+        ),
+        ("session:other", vec![]),
+        ("provider:claude", vec![]),
+        ("host:host-b", vec![]),
+        ("run:absent", vec![]),
+        ("since:101", vec![]),
+    ] {
+        for text in ["", "needle"] {
+            let query = AgentQuery::parse(&format!("{text} {filters}"), ARCHIVE_FIELDS).unwrap();
+            let (reply, commands) = run(
+                &request(
+                    temp.path(),
+                    AgentAction::History(HistoryAction::Search(query)),
+                ),
+                &data,
+            );
+            let AgentReply::History(HistoryReply::Rows { rows, .. }) = reply.unwrap() else {
+                panic!("expected search rows")
+            };
+            let mut ids: Vec<_> = rows.iter().map(|r| r.id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, expected, "{text:?} {filters}");
+            assert!(commands.is_empty());
+        }
+    }
 }

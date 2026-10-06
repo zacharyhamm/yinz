@@ -1107,3 +1107,130 @@ fn project_note_editor_uses_finder_geometry_on_a_large_terminal() {
 fn project_note_editor_clamps_to_a_small_terminal() {
     project_note_editor_flow(yinz_integration_tests::Size { cols: 70, rows: 20 });
 }
+
+#[test]
+fn command_palette_agent_history_event_back_focus_and_archive_resume() {
+    use agent_proto::{
+        agents::{AgentRun, RunEntry, RunEntryKind, RunOutcome},
+        store,
+    };
+    use yinz_types::data::PaneId;
+    let root = yinz_integration_tests::test_env::init();
+    let data = yinz_storage::data_access::DataAccess::sqlite(&root.join("data"));
+    for definition in store::shared_defs() {
+        data.plugin_data()
+            .define_entity(store::SHARED, "test", &definition, false)
+            .unwrap();
+    }
+    let run = AgentRun {
+        id: "codex:palette-history".into(),
+        pane_id: 1,
+        yinz_session_name: "archived-session".into(),
+        host_id: yinz_runtime::host_identity::host_id(),
+        origin_run_id: None,
+        previous_run_id: None,
+        session_id: "palette-history".into(),
+        kind: "codex".into(),
+        cwd: Some(root.join("cwd").to_string_lossy().into_owned()),
+        host: None,
+        worktree: None,
+        started_at_ms: 100,
+        ended_at_ms: Some(200),
+        outcome: RunOutcome::Completed,
+        revision: 1,
+        summarized_revision: 0,
+        summary: None,
+        omitted_entries: 0,
+        entries: vec![RunEntry {
+            revision: 1,
+            event_id: None,
+            kind: RunEntryKind::Message,
+            text: "Unique retained palette conversation\nExact second line".into(),
+            created_at_ms: Some(150),
+            tool: None,
+        }],
+    };
+    data.plugin_data()
+        .apply(
+            store::SHARED,
+            &agent_proto::agents::rows::run_mutations(&run),
+        )
+        .unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_animations false")
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    let shell = yinz.expect_pty_spawn();
+    shell.output(PROMPT);
+    yinz.wait_until("shell ready", |s| s.contains("$"));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::AgentReport {
+            pane_id: Some(PaneId::Terminal(shell.terminal_id()).to_string()),
+            kind: Some("codex".into()),
+            state: Some("idle".into()),
+            detail: Some("paletteinspect".into()),
+            cwd: None,
+            hook_json: false,
+            clear: false,
+            run_id: Some(run.id.clone())
+        }),
+        0
+    );
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"paletteinspect");
+    yinz.wait_until("live agent search", |s| {
+        s.contains("codex") && s.contains("idle")
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("agent timeline", |s| {
+        s.contains("Unique retained palette conversation")
+    });
+    yinz.send_stdin(b"\t");
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("expanded event", |s| {
+        s.contains("Exact second line") && s.contains("Revision: 1")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("back to timeline", |s| {
+        s.contains("Focus") && s.contains("Latest / Refresh")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("search restored", |s| s.contains("> paletteinspect"));
+    yinz.send_stdin(b"\x1b[13;5u"); // Ctrl+Enter.
+    yinz.send_stdin(b"focusedbyagent");
+    shell.wait_for_stdin("direct focus", |bytes| bytes.ends_with(b"focusedbyagent"));
+    yinz.send_stdin(DO);
+    yinz.send_stdin(b"Archived agents");
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("archive browser", |s| s.contains("Ended runs"));
+    yinz.send_stdin(b"Unique retained palette conversation");
+    yinz.wait_until("archive search hit", |s| {
+        s.contains("Completed") && s.contains("Unique retained")
+    });
+    yinz.send_stdin(b"\x1b[B"); // Filters, then the matching run.
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("archived info", |s| {
+        s.contains("Resume") && s.contains("Latest / Refresh")
+    });
+    yinz.send_stdin(&keys::ESC);
+    yinz.wait_until("archive query restored", |s| {
+        s.contains("> Unique retained palette conversation")
+    });
+    yinz.send_stdin(b"\r");
+    yinz.wait_until("archive selection restored", |s| {
+        s.contains("Resume") && s.contains("Latest / Refresh")
+    });
+    yinz.send_stdin(b"\t\t"); // Metadata -> timeline -> actions.
+    yinz.send_stdin(b"\r");
+    let resumed = yinz.expect_pty_spawn();
+    assert!(resumed
+        .run_command()
+        .args
+        .iter()
+        .any(|arg| arg == "palette-history"));
+    resumed.output(b"RESUMED PALETTE AGENT\r\n");
+    yinz.wait_until("resumed agent focused", |s| {
+        s.contains("RESUMED PALETTE AGENT") && !s.contains("Latest / Refresh")
+    });
+    yinz.quit();
+}
