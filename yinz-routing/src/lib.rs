@@ -183,11 +183,25 @@ pub fn route_action(
     // we use this oneshot channel to wait for an action to be "logically"
     // done, meaning that it traveled through all the threads it needed to travel through and the
     // app has confirmed that it is complete. Once this happens, we get a signal through the
-    // wait_for_action_completion call below (or timeout after 1 second) and release this thread,
+    // wait_for_action_completion call below (or the timeout for other actions) and release this thread,
     // allowing the client to produce another action without risking races
     let (completion_tx, completion_rx) = oneshot::channel();
 
-    let mut wait_forever = false;
+    let creates_pane = matches!(
+        action,
+        Action::NewPane { .. }
+            | Action::NewTiledPane { .. }
+            | Action::NewFloatingPane { .. }
+            | Action::NewInPlacePane { .. }
+            | Action::NewStackedPane { .. }
+            | Action::EditFile { .. }
+            | Action::NewTiledPluginPane { .. }
+            | Action::NewFloatingPluginPane { .. }
+            | Action::NewInPlacePluginPane { .. }
+    );
+    // Creation completes when its pane is placed, however long startup takes.
+    // Blocking panes retain their separate command-exit/unblock-condition wait.
+    let mut wait_forever = creates_pane;
 
     match action {
         Action::ToggleTab => {
@@ -1588,6 +1602,7 @@ pub fn route_action(
                     .with_context(err_context)?;
             } else {
                 log::error!("Must have pane_id in order to open in place pane");
+                drop(completion_tx);
             }
         },
         Action::StartOrReloadPlugin { plugin: run_plugin } => {
@@ -2351,7 +2366,10 @@ pub fn route_action(
                 .with_context(err_context)?;
         },
     }
-    let result = wait_for_action_completion(completion_rx, &action_name, wait_forever);
+    let mut result = wait_for_action_completion(completion_rx, &action_name, wait_forever);
+    if creates_pane && result.affected_pane_id.is_none() && result.error_message.is_none() {
+        result.error_message = Some(format!("Action {action_name} completed without a pane ID"));
+    }
     if let Some(error_message) = &result.error_message {
         if let Some(cli_client_id) = cli_client_id {
             if let Some(ref os_input) = os_input {
@@ -2865,6 +2883,10 @@ fn send_output_to_client(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/pane_completion_tests.rs"]
+mod pane_completion_tests;
 
 #[cfg(test)]
 #[path = "unit/input_barrier_tests.rs"]

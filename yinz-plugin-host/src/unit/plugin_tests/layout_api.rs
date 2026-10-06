@@ -1906,6 +1906,18 @@ pub fn edit_layout_plugin_command() {
         |instructions| format!("{instructions:?}"),
     ));
 
+    // The fake PTY must finish placement before teardown joins the waiting plugin.
+    let mut completion = received_pty_instructions
+        .lock()
+        .iter_mut()
+        .find_map(|instruction| match instruction {
+            PtyInstruction::SpawnInPlaceTerminal(_, _, _, _, completion) => completion.take(),
+            _ => None,
+        })
+        .unwrap();
+    completion.set_affected_pane_id(PaneId::Terminal(crate::TerminalId::new(1)));
+    drop(completion);
+
     teardown();
     screen_thread.join().unwrap();
     pty_thread.join().unwrap();
