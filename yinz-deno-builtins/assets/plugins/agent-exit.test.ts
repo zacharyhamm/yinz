@@ -8,16 +8,20 @@ const listing = (secondary = true): string =>
 function bytes(value: string): number[] {
   return [...value].map((character) => character.codePointAt(0) ?? 0);
 }
+function lastRunCommand(plugin: Awaited<ReturnType<typeof loadPlugin>>) {
+  const captured = [...plugin.commands]
+    .reverse()
+    .find((entry) => typeof entry === "object" && entry != null && "RunCommand" in entry);
+  assert(typeof captured === "object" && captured != null && "RunCommand" in captured);
+  return captured;
+}
 async function reply(
   plugin: Awaited<ReturnType<typeof loadPlugin>>,
   stdout: string,
   exitCode = 0,
   stderr = "",
 ): Promise<void> {
-  const captured = [...plugin.commands]
-    .reverse()
-    .find((entry) => typeof entry === "object" && entry != null && "RunCommand" in entry);
-  assert(typeof captured === "object" && captured != null && "RunCommand" in captured);
+  const captured = lastRunCommand(plugin);
   const payload = captured.RunCommand;
   assert(Array.isArray(payload));
   const context = payload[3];
@@ -69,6 +73,8 @@ async function confirmDeletion(
 ): Promise<void> {
   await prepareDeletion(plugin, listingOutput);
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  if (JSON.stringify(lastRunCommand(plugin)).includes('"fetch"'))
+    await reply(plugin, "", 128, "origin unavailable");
 }
 
 async function cleanCheckout(plugin: Awaited<ReturnType<typeof loadPlugin>>): Promise<void> {
@@ -80,6 +86,149 @@ async function cleanCheckout(plugin: Awaited<ReturnType<typeof loadPlugin>>): Pr
   await reply(plugin, "");
   assert(JSON.stringify(plugin.commands.at(-1)).includes('"rev-list","--max-count=1"'));
   await reply(plugin, "");
+}
+
+for (const scenario of [
+  { name: "fresh remote proof", local: head, remote: "" },
+  { name: "local proof with remote behind", local: "", remote: head },
+  { name: "neither destination merged", local: head, remote: head },
+  { name: "failed fetch with local proof", local: "", fetchFails: true },
+  { name: "failed fetch excludes stale remote proof", local: head, fetchFails: true },
+  { name: "missing local base with remote proof", local: "", localFails: true, remote: "" },
+  { name: "Git verification failure", local: "", localFails: true, remoteFails: true },
+]) {
+  test(`agent-exit ${scenario.name}`, async () => {
+    const plugin = await checkout();
+    await prepareDeletion(plugin);
+    assert(!JSON.stringify(plugin.commands).includes('"fetch"'));
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    assert(
+      JSON.stringify(lastRunCommand(plugin)).includes(
+        '"fetch","--no-tags","origin","+refs/heads/main:refs/remotes/origin/main"',
+      ),
+    );
+    await reply(plugin, "", scenario.fetchFails ? 128 : 0, "fetch unavailable");
+    await reply(plugin, listing());
+    await reply(plugin, "");
+    await reply(plugin, scenario.local, scenario.localFails ? 128 : 0, "local unavailable");
+    const localProof = !scenario.local && !scenario.localFails;
+    if (!localProof && !scenario.fetchFails) {
+      assert(JSON.stringify(plugin.commands.at(-1)).includes(`refs/remotes/origin/main..${head}`));
+      await reply(
+        plugin,
+        scenario.remote ?? "",
+        scenario.remoteFails ? 128 : 0,
+        "remote unavailable",
+      );
+    }
+    const merged =
+      localProof || (!scenario.fetchFails && !scenario.remoteFails && !scenario.remote);
+    if (merged) {
+      await reply(plugin, "");
+      await reply(plugin, "");
+      assertEquals(plugin.commands.at(-1), "CloseSelf");
+    } else {
+      const rendered = await plugin.render(30, 200);
+      assert(rendered.includes("worktree and branch preserved"));
+      assert(rendered.includes("local main or freshly fetched origin/main"));
+      if (scenario.fetchFails) assert(rendered.includes("fetch unavailable"));
+      assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+      assert(!JSON.stringify(plugin.commands).includes('"update-ref"'));
+    }
+    if (scenario.fetchFails)
+      assert(!JSON.stringify(plugin.commands).includes(`refs/remotes/origin/main..${head}`));
+  });
+}
+for (const localProof of [true, false]) {
+  test(`agent-exit fetch deadline ${localProof ? "allows local cleanup" : "preserves without local proof"}`, async () => {
+    const plugin = await checkout();
+    await prepareDeletion(plugin);
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    const fetch = lastRunCommand(plugin).RunCommand;
+    assert(Array.isArray(fetch));
+    await plugin.advance(9999);
+    assertEquals(lastRunCommand(plugin).RunCommand, fetch);
+    const pending = plugin.commands.length;
+    assert(!(await plugin.render()).includes("Deletion failed"));
+    await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+    assertEquals(plugin.commands.length, pending);
+    await plugin.advance(1);
+    assert(JSON.stringify(lastRunCommand(plugin)).includes('"worktree","list"'));
+    const verifying = plugin.commands.length;
+    await plugin.event({ RunCommandResult: [0, [], [], fetch[3]] });
+    assertEquals(plugin.commands.length, verifying);
+    await reply(plugin, listing());
+    await reply(plugin, "");
+    assert(JSON.stringify(lastRunCommand(plugin)).includes(`refs/heads/main..${head}`));
+    await reply(plugin, localProof ? "" : head);
+    assert(!JSON.stringify(plugin.commands).includes(`refs/remotes/origin/main..${head}`));
+    if (localProof) {
+      assert(JSON.stringify(lastRunCommand(plugin)).includes('"worktree","remove"'));
+      await reply(plugin, "");
+      await reply(plugin, "");
+      assertEquals(plugin.commands.at(-1), "CloseSelf");
+    } else {
+      const failure = await plugin.render(30, 200);
+      assert(failure.includes("Fetch origin/main: Error: git timed out after 10000 ms"));
+      assert(failure.includes("worktree and branch preserved"));
+      assert(failure.includes("Delete: retry cleanup  Esc: close pane"));
+      assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+      assert(!JSON.stringify(plugin.commands).includes('"update-ref"'));
+      const preserved = plugin.commands.length;
+      await plugin.event({ RunCommandResult: [0, [], [], fetch[3]] });
+      assertEquals(plugin.commands.length, preserved);
+      assertEquals(await plugin.render(30, 200), failure);
+      await prepareDeletion(plugin);
+      assert((await plugin.render(30, 200)).includes("Delete again"));
+      await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+      assert(!plugin.commands.includes("CloseSelf"));
+      await plugin.event({ Key: { bare_key: "Esc", key_modifiers: [] } });
+      assertEquals(plugin.commands.slice(-2), [{ CloseTerminalPane: 7 }, "CloseSelf"]);
+    }
+  });
+}
+for (const exitCode of [0, 128]) {
+  test(`agent-exit cancels fetch deadline after exit ${exitCode}`, async () => {
+    const plugin = await checkout();
+    await prepareDeletion(plugin);
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await reply(plugin, "", exitCode);
+    const count = plugin.commands.length;
+    // A live deadline would rearm SetTimeout on this early timer event.
+    await plugin.advance(9999);
+    assertEquals(plugin.commands.length, count);
+    await plugin.advance(1);
+    assertEquals(plugin.commands.length, count);
+    await reply(plugin, listing());
+    await cleanCheckout(plugin);
+    await reply(plugin, "");
+    await reply(plugin, "");
+    assertEquals(plugin.commands.at(-1), "CloseSelf");
+  });
+}
+for (const change of ["head", "branch", "dirty"]) {
+  test(`agent-exit refuses ${change} changes during fetch`, async () => {
+    const plugin = await checkout();
+    await prepareDeletion(plugin);
+    await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+    await reply(plugin, "");
+    await reply(
+      plugin,
+      change === "head"
+        ? listing().replaceAll(head, "1".repeat(40))
+        : change === "branch"
+          ? listing().replace("refs/heads/topic", "refs/heads/other")
+          : listing(),
+    );
+    if (change === "dirty") await reply(plugin, "?? new-file\n");
+    assert(
+      (await plugin.render()).includes(
+        change === "dirty" ? "uncommitted changes" : "identity changed",
+      ),
+    );
+    assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
+    assert(!JSON.stringify(plugin.commands).includes('"update-ref"'));
+  });
 }
 
 for (const [key, commands] of [
@@ -217,11 +366,12 @@ for (const target of ["local", "firecracker"]) {
       error: null,
     });
     await confirmDeletion(plugin);
+    assert(JSON.stringify(plugin.commands).includes("+refs/heads/trunk:refs/remotes/origin/trunk"));
     await reply(plugin, listing());
     await reply(plugin, "");
     assert(JSON.stringify(plugin.commands.at(-1)).includes(`refs/heads/trunk..${head}`));
     await reply(plugin, head + "\n");
-    assert((await plugin.render(24, 200)).includes("not merged into trunk"));
+    assert((await plugin.render(24, 200)).includes("merged into local trunk"));
     const commands = JSON.stringify(plugin.commands);
     assert(!commands.includes('"worktree","remove"'));
     assert(!commands.includes('"update-ref"'));
@@ -289,6 +439,7 @@ test("agent-exit closes a guarded Firecracker VM before Git deletion", async () 
   await prepareDeletion(plugin);
   assert((await plugin.render(24, 200)).includes("VM: review"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, "", 128, "origin unavailable");
   await reply(plugin, listing());
   await cleanCheckout(plugin);
   const first = plugin.commands.at(-1);
@@ -619,6 +770,7 @@ for (const state of ["absent", "starting", "running", "question", "completed", "
     assert(!JSON.stringify(plugin.commands).includes('"worktree","remove"'));
     await confirmDeletion(plugin);
     await rpcReply(plugin, "cleanup_prepare", { ready: true });
+    await reply(plugin, "", 128, "origin unavailable");
     await reply(plugin, listing());
     await cleanCheckout(plugin);
     await reply(plugin, "");
@@ -633,6 +785,7 @@ test("agent-exit removes a detached secondary checkout without deleting a branch
   await prepareDeletion(plugin, detached);
   assert((await plugin.render()).includes("detached HEAD"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, "", 128, "origin unavailable");
   await reply(plugin, detached);
   await cleanCheckout(plugin);
   await reply(plugin, "");
@@ -668,8 +821,9 @@ test("agent-exit refreshes a changed checkout before confirming its exact revisi
   const confirmation = await plugin.render();
   assert(confirmation.includes(next));
   assert(confirmation.includes("Branch: rebased"));
-  assert(confirmation.includes("commits merged into the base branch"));
+  assert(confirmation.includes("commits merged into the local base branch"));
   await plugin.event({ Key: { bare_key: "Delete", key_modifiers: [] } });
+  await reply(plugin, "", 128, "origin unavailable");
   await reply(plugin, changed);
   await cleanCheckout(plugin);
   await reply(plugin, "");
