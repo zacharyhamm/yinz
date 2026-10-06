@@ -374,7 +374,7 @@ impl Screen {
                 plugin_ids.extend(tab.get_plugin_ids());
             }
         }
-        // An overlay follows the client between tabs under its own steam - hocus moves itself on
+        // An overlay follows the client between tabs under its own steam - agent moves itself on
         // `TabUpdate` - so a client's active tab is not necessarily where the overlay is right
         // now, and the active-tab walk above would leave it deaf to the very event it moves on.
         //

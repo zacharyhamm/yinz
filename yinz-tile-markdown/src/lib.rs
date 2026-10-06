@@ -15,7 +15,7 @@
 // test comment 5
 //! Markdown to styled terminal lines.
 //!
-//! Lived in `hocus::ui` while the conversation was the only pane that drew a model's prose.
+//! Lived in `agent::ui` while the conversation was the only pane that drew a model's prose.
 //! The agents pane's history half draws the same material now — prompts, plans and the
 //! `last_assistant_message` a run ends on are raw markdown by the time they reach a pane — and
 //! one renderer reading one dialect is the whole point of moving it out, the same move
@@ -35,11 +35,11 @@
 //! The dialect is CommonMark plus the three GFM extensions a model actually emits: tables,
 //! strikethrough and task lists. Footnotes, definition lists and the rest stay off - nothing
 //! writes them at us, and every extension is a character that stops being literal. Note what
-//! that costs the *producers* of markdown: `hocus::present::inline` has to escape `|` and `~`
+//! that costs the *producers* of markdown: `agent::present::inline` has to escape `|` and `~`
 //! now that they mean something.
 //!
 //! The per-character style vector is deliberate and is the expensive part — see
-//! `hocus/benches/transcript.rs`, which calls this by far the most expensive thing a render
+//! `agent/benches/transcript.rs`, which calls this by far the most expensive thing a render
 //! does. Callers that redraw on a timer cache the result rather than parsing again.
 
 use std::collections::HashMap;
@@ -81,7 +81,7 @@ pub struct StyledChar {
 
 /// One rendered line: the text as it reads, and one style per character of it.
 ///
-/// Crate-neutral on purpose. `hocus` wraps this in a `VLine` that also carries the speaking
+/// Crate-neutral on purpose. `agent` wraps this in a `VLine` that also carries the speaking
 /// role; the agents pane has no roles and uses it as it comes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MdLine {
@@ -374,8 +374,8 @@ pub fn style_over(mut painted: Text, styles: &[MdStyle], dim: bool) -> Text {
 /// a pane title is a cell boundary and a pair of tildes strikes out whatever is between them.
 /// Both are ASCII punctuation, so `\|` and `\~` read as themselves wherever they land.
 ///
-/// Lived in `hocus::present::inline` while hocus was the only crate producing markdown. The
-/// agents pane's timeline produces it now — `hocus_proto::envelope` builds a row out of what a
+/// Lived in `agent::present::inline` while agent was the only crate producing markdown. The
+/// agents pane's timeline produces it now — `agent_proto::envelope` builds a row out of what a
 /// harness wrote at an agent — and one escaper beside the parser it escapes for is the same
 /// move [`yinz_tile::text`] and this crate each record above.
 pub fn escape_inline(text: &str) -> String {
@@ -422,7 +422,7 @@ pub struct MdBlock {
 /// How a column's cells sit in the width the column is given.
 ///
 /// Mirrors pulldown-cmark's `Alignment` rather than re-exporting it: every other public type
-/// here is dependency-free, and neither `hocus` nor `hocus-agents` depends on the parser.
+/// here is dependency-free, and neither `agent` nor `agents` depends on the parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MdAlign {
     /// No colon in the delimiter row. Reads left, which is what GFM says.

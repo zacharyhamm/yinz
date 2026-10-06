@@ -10,8 +10,8 @@ fn installed_and_inline_claude_hooks_report_once_with_unchanged_payloads() {
         &reporter,
         "printf '%s\\n' \"$*\" >> \"$REPORTS\"\n/bin/cat >> \"$REPORTS\"",
     );
-    let installed = temp.path().join("hocus-hook.sh");
-    std::fs::write(&installed, script(HocusHookAgent::Claude, &reporter)).unwrap();
+    let installed = temp.path().join("yinz-hook.sh");
+    std::fs::write(&installed, script(HookAgent::Claude, &reporter)).unwrap();
     let settings: Value =
         serde_json::from_str(&yinz_runtime::agent::launch::claude_hook_settings_argument())
             .unwrap();

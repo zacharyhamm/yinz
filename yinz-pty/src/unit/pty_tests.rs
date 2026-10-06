@@ -875,7 +875,7 @@ fn no_cwd_event_when_unchanged() {
 fn a_pane_that_never_leaves_its_launch_folder_still_reports_it() {
     let mock = MockOsApi::new();
     let child_pid = ProcessId::new(100);
-    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    mock.set_cwd(child_pid, PathBuf::from("/work/agent"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
 
     pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
@@ -883,7 +883,7 @@ fn a_pane_that_never_leaves_its_launch_folder_still_reports_it() {
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, PaneId::Terminal(crate::TerminalId::new(1)));
-    assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
+    assert_eq!(events[0].1, PathBuf::from("/work/agent"));
 }
 
 /// Why it was a race rather than a certainty: with the child not yet forked far
@@ -896,15 +896,15 @@ fn an_initial_cwd_the_os_cannot_answer_falls_back_to_the_requested_one() {
     pty.capture_initial_cwd(
         crate::TerminalId::new(1),
         ProcessId::new(100),
-        Some(PathBuf::from("/work/hocus")),
+        Some(PathBuf::from("/work/agent")),
     );
 
     let events = collect_cwd_changed_events(&rx);
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].1, PathBuf::from("/work/hocus"));
+    assert_eq!(events[0].1, PathBuf::from("/work/agent"));
     assert_eq!(
         pty.terminal_cwds.get(&TerminalId::new(1)),
-        Some(&PathBuf::from("/work/hocus"))
+        Some(&PathBuf::from("/work/agent"))
     );
 }
 
@@ -924,7 +924,7 @@ fn an_initial_cwd_with_nothing_to_go_on_reports_nothing() {
 fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
     let mock = MockOsApi::new();
     let child_pid = ProcessId::new(100);
-    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    mock.set_cwd(child_pid, PathBuf::from("/work/agent"));
     let (mut pty, rx) = make_pty_with_plugin_receiver(mock);
     set_active_terminal(&mut pty, crate::TerminalId::new(1), child_pid);
 
@@ -940,14 +940,14 @@ fn an_initial_cwd_reports_once_and_the_ticker_stays_quiet() {
 fn an_initial_cwd_reaches_screen() {
     let mock = MockOsApi::new();
     let child_pid = ProcessId::new(100);
-    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    mock.set_cwd(child_pid, PathBuf::from("/work/agent"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
 
     pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
 
     assert_eq!(
         collect_pane_cwd_instructions(&screen_rx),
-        vec![(TerminalId::new(1), Some(PathBuf::from("/work/hocus")))]
+        vec![(TerminalId::new(1), Some(PathBuf::from("/work/agent")))]
     );
 }
 
@@ -957,7 +957,7 @@ fn an_initial_cwd_reaches_screen() {
 fn a_closed_pane_takes_its_folder_with_it() {
     let mock = MockOsApi::new();
     let child_pid = ProcessId::new(100);
-    mock.set_cwd(child_pid, PathBuf::from("/work/hocus"));
+    mock.set_cwd(child_pid, PathBuf::from("/work/agent"));
     let (mut pty, _plugin_rx, screen_rx) = make_pty_with_screen_receiver(mock);
     pty.capture_initial_cwd(crate::TerminalId::new(1), child_pid, None);
     let _ = collect_pane_cwd_instructions(&screen_rx);
@@ -2564,7 +2564,7 @@ fn an_unchanged_remote_pane_emits_nothing_further() {
     );
 }
 
-/// Plugins ask directly when the poll missed something (`hocus-agentd` repairs
+/// Plugins ask directly when the poll missed something (`agent-service` repairs
 /// panes this way). A remote pane has to answer from its cache rather than
 /// reporting itself as not running.
 #[test]
@@ -2593,7 +2593,7 @@ fn a_remote_pane_answers_the_plugin_facing_accessors() {
 /// plugins raw. Raw is the point: a repository with no commits writes its
 /// identity to stdout and *then* exits 128, so a parse that gated on the exit
 /// code would record a real checkout as an ordinary folder — and the parser that
-/// knows this already exists in `hocus-agentd`, for local panes.
+/// knows this already exists in `agent-service`, for local panes.
 #[test]
 fn a_remote_pane_hands_its_git_probe_to_the_plugins() {
     let mock = MockOsApi::new();

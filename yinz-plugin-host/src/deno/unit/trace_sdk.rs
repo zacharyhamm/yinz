@@ -60,7 +60,7 @@ fn trace_dispatch_async_and_consumed_inputs_preserve_behavior_and_privacy() {
       bridge('pipe',{name:'done',payload:'SECRET'},9);
       bridge('pipe',{name:'bad',payload:new Uint8Array([1,2])},9);
       bridge('pipe',{name:'yinz_rpc_reply',payload:'SECRET'},9);
-      bridge('pipe',{name:'hocus_complete_result',payload:'SECRET'},9);
+      bridge('pipe',{name:'llm_complete_result',payload:'SECRET'},9);
       bridge('pipe',{name:'a\n\x1b\x85'+ 'x'.repeat(250),payload:'SECRET'},9);
       bridge('update',{Timer:0},9);
     "#);
@@ -73,7 +73,7 @@ fn trace_dispatch_async_and_consumed_inputs_preserve_behavior_and_privacy() {
       check(markers.filter(l=>l==='7 command "RequestPluginPermissions"').length===2);
       check(markers.filter(l=>l==='7 command invalid').length===2);
       check(markers.includes('9 pipe "yinz_rpc_reply"'));
-      check(markers.includes('9 pipe "hocus_complete_result"'));
+      check(markers.includes('9 pipe "llm_complete_result"'));
       check(markers.includes('9 event "Timer"'));
       check(markers.includes('7 operation 1 finished'));
       check(markers.includes('7 operation 2 cancelled'));

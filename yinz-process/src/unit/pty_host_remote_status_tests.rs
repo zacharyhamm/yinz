@@ -172,7 +172,7 @@ fn a_probe_becomes_the_report_it_claims_to() {
 
 // ---- the git probe ----
 
-/// The probe runs the same two invocations `hocus-agentd` does, and the parser
+/// The probe runs the same two invocations `agent-service` does, and the parser
 /// on the other end is that plugin's. What matters is that the raw bytes are the
 /// ones that parser expects, so probe this very repository.
 #[test]

@@ -574,7 +574,7 @@ fn spawned_agent_command(key: char) -> yinz_types::input::command::RunCommand {
 #[test]
 #[serial(plugin_tests)]
 pub fn a_script_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_marker() {
-    use yinz_types::data::HOCUS_AGENT_PANE_CONTEXT;
+    use yinz_types::data::AGENT_PANE_CONTEXT;
     let run = spawned_agent_command('s');
     assert_eq!(run.command, PathBuf::from("env"));
     assert_eq!(run.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude", "fix it"]);
@@ -584,7 +584,7 @@ pub fn a_script_plugin_spawns_an_agent_pane_with_the_planned_argv_and_an_agent_m
         .map(|origin| origin.context.clone())
         .unwrap_or_default();
     assert_eq!(
-        context.get(HOCUS_AGENT_PANE_CONTEXT).map(String::as_str),
+        context.get(AGENT_PANE_CONTEXT).map(String::as_str),
         Some("claude"),
         "the marker carries the kind: {context:?}"
     );
@@ -1023,7 +1023,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     // configuration *is* its payload: the second firing looks identical to the first, and
     // anything that dedupes on that identity would answer it with the instance that has just
     // gone. The pipe in the middle is a plugin lookup landing between the two, which is the
-    // shape hocus produces continuously - it must not change the answer.
+    // shape agent produces continuously - it must not change the answer.
     let temp_folder = tempdir().unwrap();
     let plugin_host_folder = PathBuf::from(temp_folder.path());
     let (plugin_thread_sender, screen_receiver, teardown) =

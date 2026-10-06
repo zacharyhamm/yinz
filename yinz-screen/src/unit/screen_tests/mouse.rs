@@ -167,7 +167,7 @@ fn clicking_overlapping_pane_notifications_uses_paint_order() {
 
 /// The click on a toast is the one gesture that says "the thing this was about, now". Focusing
 /// the pane says where; the message says what, and only the plugin that raised the toast can act
-/// on it - hocus opening the conversation that asked, say.
+/// on it - agent opening the conversation that asked, say.
 ///
 /// Both clients travel with it. A toast raised by one client's instance can be clicked by
 /// another, and the two ids answer different questions - see
@@ -182,7 +182,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
     screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_tx));
     new_tab(&mut screen, 1, TabId::new(0));
 
-    let text = "hocus has a plan";
+    let text = "agent has a plan";
     screen.notifications.push(settled_notification_with(
         0,
         text,
@@ -190,7 +190,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
         Some(NotificationClick {
             plugin_id: crate::PluginId::new(7),
             client_id: raiser,
-            message: "hocus_toast_click".to_owned(),
+            message: "agent_toast_click".to_owned(),
             payload: "42".to_owned(),
         }),
     ));
@@ -221,7 +221,7 @@ fn clicking_a_notification_tells_the_plugin_that_raised_it() {
             crate::PluginId::new(7),
             raiser,
             client_id,
-            "hocus_toast_click".to_owned(),
+            "agent_toast_click".to_owned(),
             "42".to_owned()
         )
     );
@@ -250,7 +250,7 @@ fn a_notification_click_is_reported_even_when_its_pane_is_already_focused() {
         Some(NotificationClick {
             plugin_id: crate::PluginId::new(7),
             client_id,
-            message: "hocus_toast_click".to_owned(),
+            message: "agent_toast_click".to_owned(),
             payload: "9".to_owned(),
         }),
     ));

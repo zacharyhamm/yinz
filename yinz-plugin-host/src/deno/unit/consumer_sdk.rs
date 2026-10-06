@@ -1164,16 +1164,6 @@ fn deno_bridge_refresh_reuses_dispatch_and_notifies_all_manual_views() {
 }
 
 #[test]
-fn deno_hocus_workflow_rpc_is_scoped_validated_and_preserves_owned_controls() {
-    let mut runtime = sdk();
-    run(&mut runtime, include_str!("bridge_fixture.js"));
-    consumer(&mut runtime, "swamp-bridge");
-    run(&mut runtime, include_str!("hocus_workflow_tests.js"));
-    for _ in 0..100 { run(&mut runtime, "if(failure)throw Error(failure);"); }
-    run(&mut runtime, "check(done);");
-}
-
-#[test]
 fn workflow_cli_attachments_accept_null_ids_and_acknowledge() {
     let mut runtime = sdk();
     run(&mut runtime, r#"

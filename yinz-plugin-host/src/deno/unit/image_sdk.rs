@@ -2,7 +2,7 @@
 fn deno_images_match_the_wasm_kitty_protocol_and_reject_invalid_coordinates() {
     use yinz_tile::ui_components::{image_row, place_image_sequence, png_transmit_sequence};
     let mut runtime = sdk();
-    let png = include_bytes!("../../../../default-plugins/hocus/assets/wand/frame-00.png");
+    let png = include_bytes!("../../../../yinz-test-support/assets/graphics.png");
     run(&mut runtime, &format!(
         "const image = yinz.ui.image; const png = new Uint8Array({}); check(image.transmitPng(45056, png) === {}); check(image.transmitPng(45056, [...png]) === {}); check(image.place(45056, 10, 6) === {});",
         json!(png.as_slice()), json!(png_transmit_sequence(45056, png)),

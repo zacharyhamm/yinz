@@ -156,7 +156,7 @@ keybinds {
     agent {
         bind "Ctrl e" { SwitchToMode "Normal"; }
         bind "n" {
-            LaunchOrFocusPlugin "hocus-new-agent" {
+            LaunchOrFocusPlugin "new-agent" {
                 floating true
                 overlay true
                 modal true
@@ -165,7 +165,7 @@ keybinds {
             SwitchToMode "Normal"
         }
         bind "d" {
-            LaunchOrFocusPlugin "hocus-duplicate-agent" {
+            LaunchOrFocusPlugin "duplicate-agent" {
                 floating true
                 overlay true
                 modal true
@@ -174,7 +174,7 @@ keybinds {
             SwitchToMode "Normal"
         }
         bind "f" {
-            LaunchOrFocusPlugin "hocus-fork-agent" {
+            LaunchOrFocusPlugin "fork-agent" {
                 floating true
                 overlay true
                 modal true
@@ -191,13 +191,13 @@ keybinds {
         // way — the panel is one thing with one visibility — it simply does not
         // take the focus.
         //
-        // `awaits_placement` says hocus puts this pane where it goes, so don't
+        // `awaits_placement` says agent puts this pane where it goes, so don't
         // paint it at the centered default it is born with in the meantime —
         // otherwise opening one half flashes in the middle of the screen, on
         // top of the other. The key is part of plugin identity, like `overlay`,
         // so it has to match what the halves launch each other with.
         bind "a" {
-            LaunchOrFocusPlugin "hocus-agents" {
+            LaunchOrFocusPlugin "agents" {
                 floating true
                 overlay true
                 awaits_placement true
@@ -231,7 +231,7 @@ keybinds {
         // that already has the keyboard changes nothing, so click the panel or
         // press one of these two first, then Esc.
         bind "c" {
-            LaunchOrFocusPlugin "hocus" {
+            LaunchOrFocusPlugin "agents" {
                 floating true
                 overlay true
                 awaits_placement true
@@ -241,7 +241,7 @@ keybinds {
         }
         // Move the panel one corner clockwise, wherever the keyboard is, while the
         // panel is up. The message names no plugin, so it goes to the plugins
-        // already running and starts none: with hocus not running this does
+        // already running and starts none: with agent not running this does
         // nothing, and a hidden panel stays where it is. Inside the panel Ctrl o
         // does the same, but only in Locked mode - in every other mode Ctrl o
         // enters Session mode, and no plugin sees it.
@@ -374,13 +374,13 @@ plugins {
     file-finder location="yinz:file-finder"
     // The agent conversation, bound to Ctrl e c above.
     //
-    // hocus draws itself as one overlay panel in the bottom-left corner of the
+    // agent draws itself as one overlay panel in the bottom-left corner of the
     // screen — over a tab rather than beside it, so no tab is shrunk to make
     // room. The panel is two panes butted together: the agent list on the left,
     // the conversation on the right, with a divider between them. Drag the
     // divider with the mouse to move it, or type `/split 40` (columns) or
     // `/split 35%` in the conversation; a bare `/split` says where it is. Four
-    // keys size the panel, and hocus re-places it whenever the terminal is
+    // keys size the panel, and agent re-places it whenever the terminal is
     // resized:
     //
     //   width   the whole panel's width. A percentage of the screen ("60%",
@@ -407,13 +407,13 @@ plugins {
     //           Default 3, capped at a quarter of the screen - and shrunk
     //           further, to nothing if need be, whenever what it would leave
     //           is too small for the panel. The inset gives way before it does,
-    //           which is what keeps hocus usable in a small terminal: below the
+    //           which is what keeps agent usable in a small terminal: below the
     //           minimum the panel takes the whole screen and draws less around
     //           the conversation - the rules around the input box first, then
     //           the help line, then the title bar - rather than refusing to
     //           draw at all.
     //
-    // A value hocus cannot read - "0.4", "60.5%", a word, a percentage for `pad` -
+    // A value agent cannot read - "0.4", "60.5%", a word, a percentage for `pad` -
     // is named in a notice in the conversation, and its default is used instead.
     // Resize mode (`Ctrl n`, then the arrows) or a Ctrl + drag of the panel's
     // border resizes the whole panel as well; a size set that way is kept for the
@@ -439,7 +439,7 @@ plugins {
     // Session mode before the panel sees it. It works on a panel you have
     // dragged, too - the press carries on from where the drag left it, and
     // dragging either half's frame moves the whole panel, split and all.
-    hocus location="yinz:hocus" {
+    agent location="yinz:agents" {
         shared true
         // DeepSeek v4 defaults to high-effort thinking. Disable it for shorter,
         // more direct tool runs; both keys are omitted from API requests unless set.
@@ -453,26 +453,26 @@ plugins {
         // models reject that pair with a 400. Both come off the same base_url.
         //
         // Against OpenAI's own endpoint (base_url api.openai.com, the default)
-        // hocus already defaults to api "responses", and to reasoning_effort
+        // agent already defaults to api "responses", and to reasoning_effort
         // "medium" when the model reasons too (gpt-5, o1, o3, o4 - the default
         // gpt-4o-mini does not, and rejects the field). Set either explicitly to
         // override. Uncomment to force chat/completions against OpenAI instead:
         // api "chat"
     }
     // The agent list, bound to Ctrl e a above — the left half of the panel, or
-    // the whole of it when there is no conversation beside it. Sized by hocus's `width`,
+    // the whole of it when there is no conversation beside it. Sized by agent's `width`,
     // `height` and `split`, above.
-    hocus-agents location="yinz:hocus-agents" {
+    agents location="yinz:agents" {
         shared true
     }
-    hocus-new-agent location="yinz:hocus-new-agent"
-    hocus-duplicate-agent location="yinz:hocus-new-agent" {
+    new-agent location="yinz:new-agent"
+    duplicate-agent location="yinz:new-agent" {
         duplicate_focused true
     }
     // The same modal again, asking one question first: which agent to start in the
     // focused pane's place. It opens on an agent *other* than the one running, which is
     // the whole reason to fork rather than duplicate.
-    hocus-fork-agent location="yinz:hocus-new-agent" {
+    fork-agent location="yinz:new-agent" {
         fork_focused true
     }
 }

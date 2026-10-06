@@ -1268,7 +1268,7 @@ function claim(args: Partial<Request>): [string, Delivery | undefined] {
 // oxlint-disable-next-line eslint/no-shadow -- The nested callback has its own independent operation state.
 function openPicker(work: string, key: string, action: string, source: number): void {
   message({
-    plugin_url: "yinz:hocus-new-agent",
+    plugin_url: "yinz:new-agent",
     message_name: "swamp-pane-action",
     plugin_config: {
       caller_terminal_pane_id: String(source),
@@ -1278,7 +1278,7 @@ function openPicker(work: string, key: string, action: string, source: number): 
       swamp_key: key,
       // A modal overlay, as every other New agent launch is (`Ctrl e n/d/f`, the agents
       // list's D and F). A plain floating pane hands the keys to the tiled layer when it
-      // closes, not back to where they came from, and hocus reads a tiled pane taking the
+      // closes, not back to where they came from, and agent reads a tiled pane taking the
       // keys from over its panel as the user leaving it: a cancelled picker put the panel away.
       overlay: "true",
       modal: "true",
@@ -1907,7 +1907,7 @@ async function handle(
     const config = z.projectConfig.read(args.directory);
     assert(!config.error, config.error ?? "Invalid project config");
     const workflow = args.workflow ?? config.config.workflow;
-    assert(workflow, "No exit workflow configured. Use Hocus /project-setup.");
+    assert(workflow, "No exit workflow configured. Use Agent /project-setup.");
     const { name } = parsedObject(
       await swamp(
         { operation: "workflow.get", payload: { workflowIdOrName: workflow }, onProgress },
@@ -2507,18 +2507,7 @@ async function serverAddress(root: string | undefined): Promise<string | undefin
   return `${bind.includes(":") ? `[${bind}]` : bind}:${port}`;
 }
 
-// A separate RPC surface: Hocus cannot select arbitrary privileged bridge methods.
-// oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- Accept the SDK JSON and RPC wire types.
-async function hocusWorkflow(input: Json, call: RpcCall): Promise<Json> {
-  const from = call.source?.Plugin;
-  assert(
-    from != null && z.command("GetPaneInfo", plugin(from))?.plugin_url === "yinz:hocus",
-    "Workflow tools require the host-authenticated builtin Hocus",
-  );
-  return validatedWorkflow(input, call);
-}
-
-// Shared by authenticated Hocus RPC and the host-authenticated CLI pipe.
+// Shared by authenticated Agent RPC and the host-authenticated CLI pipe.
 // oxlint-disable-next-line eslint/complexity, eslint/max-lines-per-function -- Keep the validated operation decision tree together.
 async function validatedWorkflow(
   // oxlint-disable-next-line typescript/prefer-readonly-parameter-types -- The shared validator accepts the SDK JSON wire type.
@@ -2705,7 +2694,7 @@ async function validatedWorkflow(
           typeof supplied === "string" &&
           /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/u.test(supplied)
             ? supplied
-            : key(`${z.instanceId}-hocus-${call.callId}`);
+            : key(`${z.instanceId}-agent-${call.callId}`);
         // oxlint-disable-next-line eslint/no-shadow, typescript/no-unsafe-type-assertion -- The nested callback has its own independent operation state. This conversion restores the known host or stored wire type after JSON transport.
         const result = (await invoke(
           {
@@ -2742,7 +2731,7 @@ async function validatedWorkflow(
       case "workflow_cancel_step":
         break;
       default:
-        throw new Error("Unsupported Hocus workflow tool");
+        throw new Error("Unsupported Agent workflow tool");
     }
     const run = argument("run");
     assert(
@@ -2836,7 +2825,7 @@ async function validatedWorkflow(
         {
           method: "swamp_dispatch",
           work: work ?? run,
-          key: key(`hocus-${call.callId}`),
+          key: key(`agent-${call.callId}`),
           directory: root,
           operation: "workflow.resume",
           payload: {
@@ -2909,7 +2898,7 @@ async function validatedWorkflow(
             run,
             question,
             answer: argument("answer"),
-            submission: key(`hocus-${call.callId}`),
+            submission: key(`agent-${call.callId}`),
           },
         },
         undefined,
@@ -2974,7 +2963,6 @@ export default definePlugin({
       )
         stopOperation(entry.uid);
     }
-    z.rpc.handle("hocus_workflow", hocusWorkflow);
     // oxlint-disable-next-line eslint/max-lines-per-function -- Authentication and lifecycle ownership must precede privileged dispatch.
     z.rpc.handle("swamp", async (payload, call) => {
       const from = call.source?.Plugin;
@@ -3084,10 +3072,7 @@ export default definePlugin({
       if (from == null) return;
       const pane = z.command("GetPaneInfo", plugin(from));
       if (!pane) return;
-      assert(
-        pane.plugin_url === "yinz:hocus-new-agent",
-        "Pane result must come from the agent picker",
-      );
+      assert(pane.plugin_url === "yinz:new-agent", "Pane result must come from the agent picker");
       // oxlint-disable-next-line typescript/no-unsafe-assignment -- The producer supplies this documented wire shape; the handler checks fields before dispatch.
       const reply: { work: string; key: string; choice: string; pane_id?: { Terminal: number } } =
         JSON.parse(messageIn.payload);

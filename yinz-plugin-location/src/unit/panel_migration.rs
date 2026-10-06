@@ -11,18 +11,18 @@ fn legacy_panel_locations_and_aliases_normalize_after_configuration_merging() {
     let aliases = PluginAliases {
         aliases: BTreeMap::from([(
             "legacy".into(),
-            run_plugin_from_url("yinz:hocus-agents")
+            run_plugin_from_url("yinz:agents")
                 .unwrap()
                 .with_configuration(inherited.clone())
                 .with_initial_cwd(Some("/alias".into())),
         )]),
     };
-    for (view, expected) in [("vms", "yinz:hocus-vms"), ("swamp", "yinz:hocus-swamp")] {
+    for (view, expected) in [("vms", "yinz:vms"), ("swamp", "yinz:swamp-issues")] {
         let configuration = BTreeMap::from([
             ("view".into(), view.into()),
             ("keep".into(), "override".into()),
         ]);
-        for location in ["yinz:hocus-agents", "legacy"] {
+        for location in ["yinz:agents", "legacy"] {
             let mut run =
                 run_plugin_or_alias_from_url(location, &Some(configuration.clone()), None, None)
                     .unwrap()
@@ -57,15 +57,15 @@ fn legacy_panel_locations_and_aliases_normalize_after_configuration_merging() {
         .unwrap()
         .get_run_plugin()
         .unwrap();
-    assert_eq!(plugin.location.display(), "yinz:hocus-vms");
+    assert_eq!(plugin.location.display(), "yinz:vms");
     assert_eq!(plugin.initial_cwd, Some("/alias".into()));
 }
 
 #[test]
 fn custom_plugins_and_agents_child_markers_are_preserved() {
-    for location in ["file:/tmp/hocus-agents.wasm", "yinz:hocus-agents"] {
+    for location in ["file:/tmp/agents.wasm", "yinz:agents"] {
         for view in ["agents", "custom", "vms", "swamp"] {
-            if location == "yinz:hocus-agents" && matches!(view, "vms" | "swamp") {
+            if location == "yinz:agents" && matches!(view, "vms" | "swamp") {
                 continue;
             }
             let configuration = BTreeMap::from([("view".into(), view.into())]);
@@ -94,7 +94,7 @@ fn custom_file_alias_descriptors_keep_their_location_and_view() {
     let aliases = PluginAliases {
         aliases: BTreeMap::from([(
             "custom".into(),
-            run_plugin_from_url("file:/tmp/hocus-agents.wasm")
+            run_plugin_from_url("file:/tmp/agents.wasm")
                 .unwrap()
                 .with_configuration(BTreeMap::from([("view".into(), "vms".into())])),
         )]),

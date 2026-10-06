@@ -1809,7 +1809,7 @@ mod tests {
     }
 
     /// A PNG wide enough that its base64 does not fit in one command, so `transmit_png` has to
-    /// chunk it - which is the shape hocus's wand frames arrive in.
+    /// chunk it - which is the shape agent's wand frames arrive in.
     fn chunky_png() -> Vec<u8> {
         let (width, height) = (64u32, 64u32);
         let mut png = Vec::new();
@@ -1911,7 +1911,7 @@ mod tests {
 
     /// A PNG wide enough that its base64 does not fit in one command, so the transmission has to
     /// be chunked - which is the shape `yinz-tile`'s `transmit_png` actually emits and the shape
-    /// hocus's wand frames arrive in.
+    /// agent's wand frames arrive in.
     #[test]
     fn a_plugin_can_transmit_a_png_across_several_chunks() {
         let mut pane = test_plugin_pane_with_cell_size(

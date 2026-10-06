@@ -214,11 +214,10 @@ export function hintsForMode(mi: ModeInfo): Hint[] {
       ];
     case "Agent":
       return [
-        hint("New agent", "New", plugin("hocus-new-agent")),
-        hint("Duplicate agent", "Duplicate", plugin("hocus-duplicate-agent")),
-        hint("Fork agent", "Fork", plugin("hocus-fork-agent")),
-        hint("Agents", "Agents", plugin("hocus-agents")),
-        hint("Chat", "Chat", plugin("hocus")),
+        hint("New agent", "New", plugin("new-agent")),
+        hint("Duplicate agent", "Duplicate", plugin("duplicate-agent")),
+        hint("Fork agent", "Fork", plugin("fork-agent")),
+        hint("Agents", "Agents", plugin("agents")),
         hint("Move panel", "Move", pipeKeys(km, "agent_strip_reposition")),
         select,
       ];

@@ -226,7 +226,7 @@ fn every_client_leaves_when_the_last_pane_closes() {
     yinz.wait_for_exit();
 }
 
-/// A background plugin that asks for the quit to be confirmed, the way hocus does mid-reply.
+/// A background plugin that asks for the quit to be confirmed, the way agent does mid-reply.
 const GUARD_PLUGIN: &str = r#"
 import z from 'yinz:plugin';
 export default {async load() {await z.waitForPermissions(['ChangeApplicationState']); z.host.setQuitNotice({notice:'the fixture is still working',guard:true});}, update() {return false;}, render() {return '';}};

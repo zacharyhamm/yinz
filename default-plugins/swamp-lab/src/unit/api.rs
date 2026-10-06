@@ -126,7 +126,7 @@ fn create_trims_and_checks_what_the_server_would() {
             kind: IssueType::Feature,
             title: "  Dark mode  ".into(),
             body: "\nPlease.\n".into(),
-            source: Some("hocus".into()),
+            source: Some("agents".into()),
         })
         .unwrap();
     assert_eq!(request.method, Method::Post);
@@ -137,7 +137,7 @@ fn create_trims_and_checks_what_the_server_would() {
     );
     assert_eq!(
         body(&request),
-        json!({"type": "feature", "title": "Dark mode", "body": "Please.", "source": "hocus"})
+        json!({"type": "feature", "title": "Dark mode", "body": "Please.", "source": "agents"})
     );
     let issue = |title: &str, body: &str| NewIssue {
         kind: IssueType::Bug,

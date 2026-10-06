@@ -4271,7 +4271,7 @@ pub fn apply_before_close_event_to_plugin(
 /// map by whoever asked for the launch rather than written by the user: the keybinding path writes
 /// both (`Pty::spawn_plugin`), a plugin asking for another plugin by url writes only the first
 /// (`yinz_exports::message_to_plugin`). An exact key lookup therefore failed to see a plugin
-/// that was already running and started a second copy of it - which is how a second, hidden hocus
+/// that was already running and started a second copy of it - which is how a second, hidden agent
 /// conversation ended up behind the agent list, placing the list into the visible conversation's
 /// slot on top of it.
 ///
@@ -4376,7 +4376,7 @@ mod tests {
         );
     }
 
-    /// The two halves of hocus address each other by url, and the launch behind that url has to
+    /// The two halves of agent address each other by url, and the launch behind that url has to
     /// find the half that is already on screen rather than open a second one.
     ///
     /// The running instance carries the caller context the keybinding stamped on it; the greeting
@@ -4402,7 +4402,7 @@ mod tests {
         let at_this_location =
             HashMap::from([(running, vec![(PluginId::new(7), ClientId::new(1))])]);
 
-        // as asked for by `hocus-agents`, whose message is stamped with `caller_cwd` alone
+        // as asked for by `agents`, whose message is stamped with `caller_cwd` alone
         let greeting = configuration(&[
             ("overlay", "true"),
             ("awaits_placement", "true"),

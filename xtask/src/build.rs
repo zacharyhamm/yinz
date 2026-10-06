@@ -93,7 +93,7 @@ pub fn profile_dir(profile: &str) -> &str {
 }
 
 /// The crates built for wasm32-wasip1: every package under `default-plugins` with a binary, by
-/// package name, which is also its wasm file stem. Library crates, `hocus-proto` and `hocus-data`
+/// package name, which is also its wasm file stem. Library crates, `agent-proto` and `project-data`
 /// among them, build as dependencies of a plugin or of the yinz binary, so a new library needs
 /// no entry here.
 pub const PLUGINS: &[&str] = &[
@@ -111,14 +111,13 @@ pub const PLUGINS: &[&str] = &[
     "file-finder",
     "quit-confirmation",
     "shared-test",
-    "hocus",
-    "hocus-todos",
-    "hocus-agents",
-    "hocus-vms",
-    "hocus-swamp",
-    "hocus-new-agent",
-    "hocus-agentd",
-    "hocus-store",
+    "todos",
+    "agents",
+    "vms",
+    "swamp-issues",
+    "new-agent",
+    "agent-service",
+    "project-store",
 ];
 
 /// Plugins that exist for the test suites and must not be installed for users.
@@ -207,9 +206,9 @@ pub(crate) const DEV_OPT_LEVEL: &str = "CARGO_PROFILE_DEV_OPT_LEVEL";
 ///
 /// `[profile.dev.package."*"] opt-level = 3` keeps `wasmi` and the host's dependencies fast in
 /// a dev build, but it deliberately excludes workspace members - and the plugins, `yinz-tile`,
-/// `yinz-plugin-api`, `hocus-proto` and `hocus-data` all are. Left at opt-level 0 with DWARF
+/// `yinz-plugin-api`, `agent-proto` and `project-data` all are. Left at opt-level 0 with DWARF
 /// they are 20-100× slower under the interpreter on exactly the per-event decode path (a
-/// `--profile dev` install once cost hocus 74 s of keystroke latency), and a plugin test loads
+/// `--profile dev` install once cost agent 74 s of keystroke latency), and a plugin test loads
 /// the same wasm.
 /// Setting these on the plugin build alone reaches only `target/wasm32-wasip1/debug`: the host
 /// build is untouched, and the `package."*"` override still wins for dependencies. Overflow

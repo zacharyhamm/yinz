@@ -208,7 +208,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
   await tick();check(cancelled.late&&!read('work','view').cancel_pending);
 
   for(const action of ['duplicate','fork'])for(const cancelFirst of [true,false])for(const terminalRemoved of [false,true]){
-    seed();panemap.p6={plugin_url:'yinz:hocus-new-agent'};
+    seed();panemap.p6={plugin_url:'yinz:new-agent'};
     check((await call({method:'pane_action',work:'work',key:action,action})).outcome==='pending');
     const terminal=action==='fork'?1:7;panemap['t'+terminal]={...panemap['t'+terminal],target:'Local',exited:false};
     if(cancelFirst)mock.command('CloseTerminalPane',1);
@@ -225,7 +225,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     }
     await flush();
   }
-  seed();panemap.p6={plugin_url:'yinz:hocus-new-agent'};
+  seed();panemap.p6={plugin_url:'yinz:new-agent'};
   await call({method:'pane_action',work:'work',key:'duplicate',action:'duplicate'});
   for(const pane_id of [null,7,{Plugin:2},{Terminal:-1},{Terminal:1.5},{Terminal:4294967296},{Terminal:1,Plugin:2}]){
     await rejected(()=>M.pipe({name:'swamp-pane-result',source:{Plugin:6},payload:JSON.stringify({work:'work',key:'duplicate',choice:'started',pane_id})}));
@@ -269,7 +269,7 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
     return originalCommand(name,args);
   };
   const picker=(key,choice='started',pane=1)=>M.pipe({name:'swamp-pane-result',source:{Plugin:6},payload:JSON.stringify({work:'work',key,choice,pane_id:choice==='started'?{Terminal:pane}:null})});
-  seed();panemap.p6={plugin_url:'yinz:hocus-new-agent'};
+  seed();panemap.p6={plugin_url:'yinz:new-agent'};
   await call({method:'pane_action',work:'work',key:'fork-1',action:'fork',cancel_active:true});
   const again=await call({method:'pane_action',work:'work',key:'fork-2',action:'fork',cancel_active:true});
   check(again.key==='fork-1'&&!read('work','fork-2')&&pickers.length===2&&pickers.every(p=>p.swamp_key==='fork-1'));
@@ -291,13 +291,13 @@ const searches=()=>requests.filter(r=>r.operation==='workflow.history.search').l
   await picker('fork-3');check(panemap.t1&&panemap.p6);
   panemap.t8={target:'Local'};await picker('fork-4','started',8);check(!panemap.t8&&!panemap.p6&&panemap.t1);
   for(const action of ['duplicate','fork']){
-    seed();pickers=[];panemap.p6={plugin_url:'yinz:hocus-new-agent'};
+    seed();pickers=[];panemap.p6={plugin_url:'yinz:new-agent'};
     await call({method:'pane_action',work:'work',key:'menu',action});
     const press=await call({method:'pane_action',work:'work',key:'button',action:'fork',cancel_active:true});
     check(press.key==='button'&&pickers[1].fork_focused==='true'&&!pickers[1].duplicate_focused);
     panemap.t1.exited=false;await picker('button');await flush();check(cancelled.run&&cancelled.child);
   }
-  seed();panemap.p6={plugin_url:'yinz:hocus-new-agent'};
+  seed();panemap.p6={plugin_url:'yinz:new-agent'};
   await call({method:'pane_action',work:'work',key:'fork-c',action:'fork',cancel_active:true});
   await call({method:'pane_action',work:'work',key:'restart',action:'restart',cancel_active:true});
   check(read('work','fork-c').outcome==='interrupted');

@@ -109,9 +109,9 @@ fn a_project_names_a_tab_that_still_has_its_default_name() {
     new_tab(&mut screen, 1, TabId::new(0));
     assert_eq!(name_of(&screen, TabId::new(0)), "Tab #1");
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn a_tab_the_user_named_keeps_that_name() {
         .unwrap()
         .rename_by_user("notes".to_owned());
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     assert_eq!(name_of(&screen, TabId::new(0)), "notes");
 }
@@ -162,8 +162,8 @@ fn a_name_the_tab_was_born_with_gives_way_to_the_project() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_named_tab(&mut screen, 1, TabId::new(0), "editor");
 
-    set_projects(&mut screen, &[(0, "hocus")]);
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    set_projects(&mut screen, &[(0, "agent")]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 
     set_projects(&mut screen, &[]);
     assert_eq!(
@@ -183,7 +183,7 @@ fn a_name_typed_with_new_tab_holds_off_the_project() {
         .unwrap()
         .set_user_named(Screen::tab_name_is_users(Some("logs"), None));
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     assert_eq!(name_of(&screen, TabId::new(0)), "logs");
 }
@@ -246,7 +246,7 @@ fn enter_mode(screen: &mut Screen, mode: InputMode) {
 fn a_name_typed_in_rename_mode_holds_off_the_project() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     enter_mode(&mut screen, InputMode::RenameTab);
     type_in_rename_mode(&mut screen, &["\0", "n", "o"]);
@@ -264,12 +264,12 @@ fn a_name_typed_in_rename_mode_holds_off_the_project() {
 fn an_empty_cli_tab_rename_restores_automatic_naming() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     type_in_rename_mode(&mut screen, &["\0", "notes"]);
     assert_eq!(name_of(&screen, TabId::new(0)), "notes");
     type_in_rename_mode(&mut screen, &["\0", ""]);
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 
     enter_mode(&mut screen, InputMode::RenameTab);
     type_in_rename_mode(&mut screen, &["\0", ""]);
@@ -286,7 +286,7 @@ fn clearing_the_name_hands_the_tab_back_to_its_project() {
         .get_tab_by_id_mut(TabId::new(0))
         .unwrap()
         .rename_by_user("notes".to_owned());
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     enter_mode(&mut screen, InputMode::RenameTab);
     type_in_rename_mode(&mut screen, &["\0"]);
@@ -296,7 +296,7 @@ fn clearing_the_name_hands_the_tab_back_to_its_project() {
         "an emptied name is still being typed",
     );
     enter_mode(&mut screen, InputMode::Normal);
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 
     set_projects(&mut screen, &[]);
     assert_eq!(name_of(&screen, TabId::new(0)), "Tab #1");
@@ -306,7 +306,7 @@ fn clearing_the_name_hands_the_tab_back_to_its_project() {
 fn undoing_a_rename_hands_the_tab_back_to_its_project() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     enter_mode(&mut screen, InputMode::RenameTab);
     type_in_rename_mode(&mut screen, &["\0", "x"]);
@@ -315,7 +315,7 @@ fn undoing_a_rename_hands_the_tab_back_to_its_project() {
         .expect("TEST");
     enter_mode(&mut screen, InputMode::Normal);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 }
 
 /// A warped pane's default caption ("Pane #3") arrives as a caption, not a name, so a lone
@@ -334,9 +334,9 @@ fn a_carried_default_caption_is_not_lent_to_the_tab() {
         })
         .expect("TEST");
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "[1] hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "[1] agent");
 }
 
 fn adopt_tab(screen: &mut Screen, name: &str, user_named: bool) -> TabId {
@@ -369,10 +369,10 @@ fn a_warped_in_tab_takes_the_project_unless_the_user_named_it() {
 
     set_projects(
         &mut screen,
-        &[(arrived.get(), "hocus"), (renamed.get(), "hocus")],
+        &[(arrived.get(), "agent"), (renamed.get(), "agent")],
     );
 
-    assert_eq!(name_of(&screen, arrived), "hocus");
+    assert_eq!(name_of(&screen, arrived), "agent");
     assert_eq!(
         name_of(&screen, renamed),
         "notes",
@@ -387,7 +387,7 @@ fn undo_on_a_warped_in_tab_keeps_the_rename_it_carried() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     let renamed = adopt_tab(&mut screen, "notes", true);
-    set_projects(&mut screen, &[(renamed.get(), "hocus")]);
+    set_projects(&mut screen, &[(renamed.get(), "agent")]);
 
     let tab = screen.get_tab_by_id_mut(renamed).unwrap();
     tab.start_rename();
@@ -403,8 +403,8 @@ fn undo_on_a_warped_in_tab_keeps_the_rename_it_carried() {
 fn a_project_that_goes_away_gives_the_tab_its_own_name_back() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
-    set_projects(&mut screen, &[(0, "hocus")]);
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    set_projects(&mut screen, &[(0, "agent")]);
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 
     set_projects(&mut screen, &[]);
 
@@ -418,10 +418,10 @@ fn two_tabs_on_one_project_are_numbered_by_position() {
     new_tab(&mut screen, 2, TabId::new(1));
     new_tab(&mut screen, 3, TabId::new(2));
 
-    set_projects(&mut screen, &[(0, "hocus"), (1, "pocus"), (2, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent"), (1, "pocus"), (2, "agent")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus #1");
-    assert_eq!(name_of(&screen, TabId::new(2)), "hocus #2");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent #1");
+    assert_eq!(name_of(&screen, TabId::new(2)), "agent #2");
     assert_eq!(
         name_of(&screen, TabId::new(1)),
         "pocus",
@@ -434,12 +434,12 @@ fn the_last_tab_on_a_project_goes_back_to_the_plain_name() {
     let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
     new_tab(&mut screen, 1, TabId::new(0));
     new_tab(&mut screen, 2, TabId::new(1));
-    set_projects(&mut screen, &[(0, "hocus"), (1, "hocus")]);
-    assert_eq!(name_of(&screen, TabId::new(1)), "hocus #2");
+    set_projects(&mut screen, &[(0, "agent"), (1, "agent")]);
+    assert_eq!(name_of(&screen, TabId::new(1)), "agent #2");
 
     screen.close_tab_by_id(TabId::new(0)).expect("TEST");
 
-    assert_eq!(name_of(&screen, TabId::new(1)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(1)), "agent");
 }
 
 /// A lone pane's explicit title is more specific than its project name.
@@ -456,7 +456,7 @@ fn a_lone_pane_title_outranks_the_project() {
     )
     .expect("TEST");
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     assert_eq!(name_of(&screen, TabId::new(0)), "[1] vim README");
     set_projects(&mut screen, &[]);
@@ -511,7 +511,7 @@ fn a_lone_agent_panes_full_title_outranks_the_project() {
     let pane_id = PaneId::Terminal(TerminalId::new(1));
     new_tab(&mut screen, 1, tab_id);
     new_tab(&mut screen, 2, TabId::new(1));
-    set_projects(&mut screen, &[(0, "hocus"), (1, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent"), (1, "agent")]);
     screen
         .get_tab_by_id_mut(tab_id)
         .unwrap()
@@ -519,12 +519,12 @@ fn a_lone_agent_panes_full_title_outranks_the_project() {
     screen
         .with_pane(pane_id, |pane| {
             pane.handle_pty_bytes(b"\x1b]0;codex\x07".to_vec());
-            pane.set_title_prefix(Some("hocus:topic".to_owned()));
+            pane.set_title_prefix(Some("agent:topic".to_owned()));
         })
         .expect("TEST");
 
-    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
-    assert_eq!(name_of(&screen, TabId::new(1)), "hocus");
+    assert_eq!(name_of(&screen, tab_id), "[1] agent:topic: codex");
+    assert_eq!(name_of(&screen, TabId::new(1)), "agent");
 
     screen
         .get_tab_by_id_mut(tab_id)
@@ -535,7 +535,7 @@ fn a_lone_agent_panes_full_title_outranks_the_project() {
         .get_tab_by_id_mut(tab_id)
         .unwrap()
         .rename_by_user(String::new());
-    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
+    assert_eq!(name_of(&screen, tab_id), "[1] agent:topic: codex");
 
     let second_pane_id = PaneId::Terminal(TerminalId::new(3));
     screen
@@ -552,13 +552,13 @@ fn a_lone_agent_panes_full_title_outranks_the_project() {
             None,
         )
         .expect("TEST");
-    assert_eq!(name_of(&screen, tab_id), "hocus #1");
-    assert_eq!(name_of(&screen, TabId::new(1)), "hocus #2");
+    assert_eq!(name_of(&screen, tab_id), "agent #1");
+    assert_eq!(name_of(&screen, TabId::new(1)), "agent #2");
     screen
         .get_tab_by_id_mut(tab_id)
         .unwrap()
         .close_pane(second_pane_id, false, None);
-    assert_eq!(name_of(&screen, tab_id), "[1] hocus:topic: codex");
+    assert_eq!(name_of(&screen, tab_id), "[1] agent:topic: codex");
 }
 
 /// A second pane means no title is being lent, so the project names the tab.
@@ -589,16 +589,16 @@ fn a_tab_with_two_panes_takes_the_project_name() {
         )
         .expect("TEST");
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent");
 }
 
 /// The tab a lone pane exits in still says so, whatever name it is wearing.
 ///
 /// The marker used to be baked into the lent name, so a pane that set no title
 /// of its own handed back "Tab #1 [ EXITED ] " — which is not the tab's own name
-/// and so read as a loan, and vetoed the project. The tab went from "hocus" to
+/// and so read as a loan, and vetoed the project. The tab went from "agent" to
 /// "Tab #1 [ EXITED ]" the moment its shell stopped.
 #[test]
 fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
@@ -613,11 +613,11 @@ fn a_pane_that_exits_without_a_title_keeps_the_projects_name() {
         RunCommand::default(),
     );
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     assert_eq!(
         name_of(&screen, TabId::new(0)),
-        "[1] hocus [ EXIT CODE: 2 ] "
+        "[1] agent [ EXIT CODE: 2 ] "
     );
 }
 
@@ -640,7 +640,7 @@ fn a_pane_that_exits_with_a_title_still_lends_it() {
         RunCommand::default(),
     );
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
 
     assert_eq!(
         name_of(&screen, TabId::new(0)),
@@ -664,14 +664,14 @@ fn two_tabs_sharing_a_combined_label_are_numbered_by_position() {
 
     set_projects(
         &mut screen,
-        &[(0, "hocus + pocus"), (1, "hocus"), (2, "hocus + pocus")],
+        &[(0, "agent + pocus"), (1, "agent"), (2, "agent + pocus")],
     );
 
-    assert_eq!(name_of(&screen, TabId::new(0)), "hocus + pocus #1");
-    assert_eq!(name_of(&screen, TabId::new(2)), "hocus + pocus #2");
+    assert_eq!(name_of(&screen, TabId::new(0)), "agent + pocus #1");
+    assert_eq!(name_of(&screen, TabId::new(2)), "agent + pocus #2");
     assert_eq!(
         name_of(&screen, TabId::new(1)),
-        "hocus",
+        "agent",
         "a tab on one of the two projects collides with neither"
     );
 }
@@ -696,10 +696,10 @@ fn a_lone_pane_lends_its_id_to_a_tab_however_the_tab_is_named() {
         "the tab's own name"
     );
 
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
     assert_eq!(
         name_of(&screen, TabId::new(0)),
-        "[1] hocus",
+        "[1] agent",
         "a project's name"
     );
 
@@ -772,7 +772,7 @@ fn a_long_lent_pane_title_keeps_the_width_limit_and_exit_marker() {
     let tab_id = TabId::new(0);
     let pane_id = PaneId::Terminal(TerminalId::new(1));
     new_tab(&mut screen, 1, tab_id);
-    set_projects(&mut screen, &[(0, "hocus")]);
+    set_projects(&mut screen, &[(0, "agent")]);
     screen
         .get_tab_by_id_mut(tab_id)
         .unwrap()
@@ -780,7 +780,7 @@ fn a_long_lent_pane_title_keeps_the_width_limit_and_exit_marker() {
     screen
         .with_pane(pane_id, |pane| {
             pane.rename("界".repeat(40).into_bytes());
-            pane.set_title_prefix(Some("hocus:topic".to_owned()));
+            pane.set_title_prefix(Some("agent:topic".to_owned()));
         })
         .expect("TEST");
 
@@ -794,7 +794,7 @@ fn a_long_lent_pane_title_keeps_the_width_limit_and_exit_marker() {
             );
         }
         let name = name_of(&screen, tab_id);
-        assert!(name.starts_with("[1] hocus:topic: "), "{name:?}");
+        assert!(name.starts_with("[1] agent:topic: "), "{name:?}");
         assert!(name.contains('…'), "{name:?}");
         assert!(name.width() <= 40, "{name:?} is {} columns", name.width());
         if exited {

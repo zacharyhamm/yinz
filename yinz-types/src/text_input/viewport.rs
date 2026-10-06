@@ -16,7 +16,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// The visible line and the terminal column the cursor belongs in.
 ///
 /// The box is a single row, so the text *scrolls sideways* rather than wrapping
-/// the way hocus's input box does. The prompt is pinned: it is the only thing
+/// the way agent's input box does. The prompt is pinned: it is the only thing
 /// telling the user what this pane is when frames are off, so it must not be
 /// the first casualty of a long question.
 ///

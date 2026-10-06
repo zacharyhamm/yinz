@@ -3093,43 +3093,24 @@ export default {
 }
 
 #[test]
-fn deno_hocus_registration_requires_the_real_message_grant() {
+fn deno_has_stateless_llm_and_no_chat_namespace() {
     let harness = Harness::new(
         "ts",
         r#"
-let state = 'starting';
 export default {
-  async load() {
-    let refusals = 0;
-    const attempt = () => {
-      try {yinz.hocus.tools({forecast:{handler:()=> 'unexpected'}});}
-      catch (error) {if (String(error).includes('MessageAndLaunchOtherPlugins')) refusals++; else throw error;}
-    };
-    attempt();
-    try {await yinz.waitForPermissions(['MessageAndLaunchOtherPlugins']);} catch (_) {}
-    attempt();
-    state = refusals === 2 ? 'registration denied before and after refusal' : 'unexpected registration';
-  },
-  render() {return state;}
+  render() { return typeof yinz.llm.complete === 'function' && !('hocus' in yinz) ? 'neutral completion API' : 'unexpected SDK'; }
 };
 "#,
-        PermissionStatus::Denied,
+        PermissionStatus::Granted,
     );
     load(
         &harness.sender,
         RunPluginOrAlias::RunPlugin(RunPlugin {
             location: RunPluginLocation::File(harness.path.clone()),
-            configuration: PluginUserConfiguration::new(BTreeMap::from([
-                ("hocus_extension_name".into(), "weather".into()),
-                (
-                    "hocus_extension_path".into(),
-                    harness.path.display().to_string(),
-                ),
-            ])),
             ..Default::default()
         }),
     );
-    harness.rendered("registration denied before and after refusal");
+    harness.rendered("neutral completion API");
     harness.finish();
 }
 
@@ -3300,7 +3281,7 @@ fn deno_completion_real_dispatch_permissions_and_reload_isolation() {
     scan.current_session_plugin_list.lock().unwrap().insert(
         PluginId::new(7),
         RunPlugin {
-            location: RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("hocus-agentd")),
+            location: RunPluginLocation::Yinz(yinz_types::data::PluginTag::new("agent-service")),
             ..Default::default()
         },
     );
@@ -3310,14 +3291,14 @@ let state='starting', fences=0;
 export default {
   async load() {
     yinz.subscribe(['CustomMessage']);
-    try {await yinz.hocus.complete({messages:[{role:'user'}]}); throw Error('discovery was unprotected');}
+    try {await yinz.llm.complete({messages:[{role:'user'}]}); throw Error('discovery was unprotected');}
     catch(e) {if (!String(e).includes('ReadApplicationState')) throw e;}
     await yinz.waitForPermissions(['ReadApplicationState']);
-    try {await yinz.hocus.complete({messages:[{role:'user'}]}); throw Error('message was unprotected');}
+    try {await yinz.llm.complete({messages:[{role:'user'}]}); throw Error('message was unprotected');}
     catch(e) {if (!String(e).includes('MessageAndLaunchOtherPlugins')) throw e;}
     await yinz.waitForPermissions(['MessageAndLaunchOtherPlugins']);
     state='waiting'; yinz.requestRender();
-    const result=await yinz.hocus.complete({messages:[{role:'user',content:label}]});
+    const result=await yinz.llm.complete({messages:[{role:'user',content:label}]});
     state=result.content;
   },
   update(e) {if(e.CustomMessage){fences++;return true;}},
@@ -3342,12 +3323,12 @@ export default {
                 PluginInstruction::MessageFromPlugin {
                     source_plugin_id,
                     mut message,
-                } if message.message_name == "hocus_complete" => {
+                } if message.message_name == "llm_complete" => {
                     assert_eq!(message.destination_plugin_id, Some(PluginId::new(7)));
                     let request: serde_json::Value =
                         serde_json::from_str(message.message_payload.as_ref().unwrap()).unwrap();
                     message.destination_plugin_id = Some(source_plugin_id);
-                    message.message_name = "hocus_complete_result".into();
+                    message.message_name = "llm_complete_result".into();
                     message.message_payload = Some(serde_json::json!({"request_id":request["request_id"],"content":request["messages"][0]["content"],"tool_calls":[],"finish_reason":"stop","model":"deterministic-peer","usage":null,"error":""}).to_string());
                     replies.lock().push(PluginInstruction::MessageFromPlugin {
                         source_plugin_id: PluginId::new(7),
@@ -3368,7 +3349,7 @@ export default {
     // Grants survive reload, so the replacement proceeds directly to its request.
     let replacement = source.replace("const label = 'old'", "const label = 'new'");
     let start = replacement
-        .find("    try {await yinz.hocus.complete")
+        .find("    try {await yinz.llm.complete")
         .unwrap();
     let end = replacement.find("    state='waiting'").unwrap();
     let replacement = format!("{}    await yinz.waitForPermissions(['ReadApplicationState', 'MessageAndLaunchOtherPlugins']);\n{}", &replacement[..start], &replacement[end..]);

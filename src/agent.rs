@@ -11,6 +11,19 @@ use yinz_types::agent::control::{
 use yinz_types::agent::AgentSpawnSpec;
 
 pub(crate) fn run(mut command: Agent, opts: &CliArgs) -> Result<i32> {
+    match &command {
+        Agent::Codex { command, args } => return yinz_codex::launch(command, args),
+        Agent::Muse { command, args } => return yinz_muse::launch(command, args),
+        Agent::CodexReport => {
+            yinz_codex::report(&std::env::current_exe().context("find this yinz binary")?)?;
+            return Ok(0);
+        },
+        Agent::MuseReport => {
+            yinz_muse::report(&std::env::current_exe().context("find this yinz binary")?)?;
+            return Ok(0);
+        },
+        _ => {},
+    }
     if let Agent::Watch { filters, json } = command {
         crate::commands::stream_session_events(
             yinz_cli::args::EventsCli {
@@ -161,7 +174,14 @@ fn request(mut command: Agent, stdin: &mut impl Read) -> Result<(AgentRequest, b
     let mut timeout = Duration::from_secs(30);
     let (request, json) = match command {
         Agent::List { project, json } => (AgentRequest::List { project }, json),
-        Agent::Control(_) | Agent::Watch { .. } | Agent::Archive(_) | Agent::Register { .. } => {
+        Agent::Codex { .. }
+        | Agent::CodexReport
+        | Agent::Muse { .. }
+        | Agent::MuseReport
+        | Agent::Control(_)
+        | Agent::Watch { .. }
+        | Agent::Archive(_)
+        | Agent::Register { .. } => {
             bail!("archive and registration use background services")
         },
         Agent::Status {

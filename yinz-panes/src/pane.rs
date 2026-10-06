@@ -664,7 +664,7 @@ pub trait Pane {
     /// A decoration to compose in front of the title, whatever the title is.
     ///
     /// Set by whoever knows something durable about the pane that its own title
-    /// cannot be trusted to keep — hocus-agentd puts an agent's checkout here.
+    /// cannot be trusted to keep — agent-service puts an agent's checkout here.
     /// Only relevant for terminal panes.
     fn set_title_prefix(&mut self, _prefix: Option<String>) {}
     fn set_subtitle(&mut self, _subtitle: Option<String>) {}

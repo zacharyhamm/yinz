@@ -18,7 +18,7 @@ const NEW_AGENT_CONFIG: &str = r#"mouse_mode true
 keybinds {
   normal {
     bind "Ctrl b" {
-      LaunchOrFocusPlugin "hocus-new-agent" {
+      LaunchOrFocusPlugin "new-agent" {
         floating true
         move_to_focused_tab true
       }
@@ -26,7 +26,7 @@ keybinds {
   }
 }
 plugins {
-  hocus-new-agent location="yinz:hocus-new-agent"
+  new-agent location="yinz:new-agent"
 }
 load_plugins clear-defaults=true {
 }
@@ -38,7 +38,7 @@ const NEW_AGENT_OVERLAY_CONFIG: &str = r#"mouse_mode true
 keybinds {
   normal {
     bind "Ctrl b" {
-      LaunchOrFocusPlugin "hocus-new-agent" {
+      LaunchOrFocusPlugin "new-agent" {
         floating true
         overlay true
         modal true
@@ -48,7 +48,7 @@ keybinds {
   }
 }
 plugins {
-  hocus-new-agent location="yinz:hocus-new-agent"
+  new-agent location="yinz:new-agent"
 }
 load_plugins clear-defaults=true {
 }
@@ -76,7 +76,7 @@ agent_pane_min_rows 0
 keybinds {
   normal {
     bind "Ctrl d" {
-      LaunchOrFocusPlugin "hocus-duplicate-agent" {
+      LaunchOrFocusPlugin "duplicate-agent" {
         floating true
         overlay true
         modal true
@@ -86,10 +86,10 @@ keybinds {
   }
 }
 plugins {
-  hocus-duplicate-agent location="yinz:hocus-new-agent" { duplicate_focused true; }
-  hocus-agentd location="yinz:hocus-agentd"
+  duplicate-agent location="yinz:new-agent" { duplicate_focused true; }
+  agent-service location="yinz:agent-service"
 }
-load_plugins clear-defaults=true { "hocus-agentd"; }
+load_plugins clear-defaults=true { "agent-service"; }
 "#;
     let layout = if is_agent {
         "layout { pane command=\"claude\"; }"
@@ -435,12 +435,12 @@ agent_pane_min_rows 0
 keybinds {{
   normal {{
     bind "Ctrl b" {{
-      LaunchOrFocusPlugin "hocus-new-agent" {{ floating true; {action} true; }}
+      LaunchOrFocusPlugin "new-agent" {{ floating true; {action} true; }}
     }}
   }}
 }}
-plugins {{ hocus-new-agent location="yinz:hocus-new-agent"; }}
-load_plugins clear-defaults=true {{ "yinz:hocus-agentd"; }}
+plugins {{ new-agent location="yinz:new-agent"; }}
+load_plugins clear-defaults=true {{ "yinz:agent-service"; }}
 "#
         ))
         .with_layout(LayoutInfo::Stringified(format!(
@@ -469,7 +469,7 @@ load_plugins clear-defaults=true {{ "yinz:hocus-agentd"; }}
     };
     if kind == "codex" {
         assert_eq!(command.command, std::path::PathBuf::from("yinz"));
-        assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
+        assert_eq!(command.args, ["agent", "codex", "--command", "codex", "--"]);
     } else if kind == "claude" {
         assert_eq!(command.command, std::path::PathBuf::from("env"));
         assert_eq!(&command.args[..2], ["YINZ_CLAUDE_INLINE_HOOKS=1", "claude"]);

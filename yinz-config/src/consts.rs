@@ -14,14 +14,13 @@ pub const BUILTIN_PLUGIN_NAMES: &[&str] = &[
     "file-finder",
     "quit-confirmation",
     "shared-test",
-    "hocus",
-    "hocus-agentd",
-    "hocus-agents",
-    "hocus-todos",
-    "hocus-vms",
-    "hocus-swamp",
-    "hocus-new-agent",
-    "hocus-store",
+    "agent-service",
+    "agents",
+    "todos",
+    "vms",
+    "swamp-issues",
+    "new-agent",
+    "project-store",
 ];
 
 /// The checkout's freshly built debug plugins, baked in at compile time from this crate's

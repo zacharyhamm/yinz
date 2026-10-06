@@ -1514,7 +1514,7 @@ where
     // produces ~50 socket reads a second, and each one used to be its own `PluginInstruction`,
     // its own wasm `update()` and its own trip through the plugin thread's queue - the same
     // queue the user's keystrokes have to cross. Concatenating is safe because the framing is
-    // reassembled on the far side (hocus feeds these to an `SseParser`, which already handles a
+    // reassembled on the far side (agent feeds these to an `SseParser`, which already handles a
     // frame split across reads); all this changes is how many events carry the same bytes.
     let mut buf = [0u8; WEB_REQUEST_STREAM_CHUNK_SIZE];
     // Every exit from the loop below owes the pending bytes to the plugin before the terminator

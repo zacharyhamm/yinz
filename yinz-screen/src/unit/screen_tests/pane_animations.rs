@@ -73,7 +73,7 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
         .get_mut(&TabId::new(0))
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Full);
-    let (_, pane_id) = panel_half(&mut screen, 7, "hocus", 3, true);
+    let (_, pane_id) = panel_half(&mut screen, 7, "agents", 3, true);
     let (server_tx, server_rx) = channels::unbounded();
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
     let mut grid = grid_for_render_snapshot(size);
@@ -91,7 +91,7 @@ fn opening_ripple_placement_cache_and_clock_shutdown() {
         .request_plugin_permissions(
             PluginId::new(7),
             Some(yinz_types::data::PluginPermission::new(
-                "hocus".into(),
+                "agents".into(),
                 vec![yinz_types::data::PermissionType::ReadApplicationState],
             )),
         );
@@ -163,11 +163,11 @@ fn opening_ripple_link_reveal_move_resize_and_disable() {
         .get_mut(&TabId::new(0))
         .unwrap()
         .set_pane_frames(PaneFrameStyle::Full);
-    let (run, left) = panel_half(&mut screen, 7, "hocus", 3, false);
+    let (run, left) = panel_half(&mut screen, 7, "agents", 3, false);
     let start = Instant::now();
     screen.pinned_now = Some(start);
     screen.render_to_clients().unwrap();
-    let (_, right) = panel_half(&mut screen, 8, "hocus-agents", 38, false);
+    let (_, right) = panel_half(&mut screen, 8, "agents", 38, false);
     let (_, unrelated) = panel_half(&mut screen, 9, "file-finder", 73, false);
     screen
         .tabs
@@ -295,10 +295,10 @@ fn opening_ripple_fullscreen_bounds_and_restore() {
             .get_mut(&TabId::new(0))
             .unwrap()
             .set_pane_frames(PaneFrameStyle::Full);
-        let (_, left) = panel_half(&mut screen, 7, "hocus", 3, false);
+        let (_, left) = panel_half(&mut screen, 7, "agents", 3, false);
         let mut panes = vec![left];
         if linked {
-            let (_, right) = panel_half(&mut screen, 8, "hocus-agents", 38, false);
+            let (_, right) = panel_half(&mut screen, 8, "agents", 38, false);
             panes.push(right);
             screen
                 .tabs
@@ -373,12 +373,12 @@ fn opening_ripple_alone_and_reopened_beside_a_settled_half() {
         rows: 24,
     });
     new_tab(&mut screen, 1, TabId::new(0));
-    let (_, agents) = panel_half(&mut screen, 7, "hocus-agents", 3, false);
+    let (_, agents) = panel_half(&mut screen, 7, "agents", 3, false);
     let start = Instant::now();
     screen.pinned_now = Some(start);
     screen.render_to_clients().unwrap();
     assert!(screen.animations_are_live(start), "agents can open alone");
-    let (_, conversation) = panel_half(&mut screen, 8, "hocus", 38, false);
+    let (_, conversation) = panel_half(&mut screen, 8, "agents", 38, false);
     let later = start + Duration::from_secs(1);
     let tab = screen.tabs.get_mut(&TabId::new(0)).unwrap();
     tab.create_multipane([agents, conversation], panel_split(), 0, panel_placement())

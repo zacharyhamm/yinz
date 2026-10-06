@@ -1,6 +1,6 @@
 //! Where a newly spawned agent pane goes.
 //!
-//! Every route that opens a coding agent in a pane - hocus's tools and modal, `yinz run --
+//! Every route that opens a coding agent in a pane - agent's tools and modal, `yinz run --
 //! claude`, a keybinding's `Run` - ends in a `ScreenInstruction::NewPane` that names the tab it
 //! was asked for only indirectly: the client's active tab, or the tab of the plugin that asked.
 //! None of them can see whether that tab has room, and a tab does not know its siblings, so the
@@ -29,7 +29,7 @@ use crate::pty::ClientTabIndexOrPaneId;
 use crate::ClientId;
 use yinz_types::input::layout::Run;
 use yinz_types::pane_size::{Size, Viewport};
-use {yinz_types::data::NewPanePlacement, yinz_types::data::HOCUS_AGENT_PANE_CONTEXT};
+use {yinz_types::data::NewPanePlacement, yinz_types::data::AGENT_PANE_CONTEXT};
 
 /// What `Screen::agent_pane_target` decided: where the pane goes, and whether a client has to
 /// be brought to it afterwards.
@@ -58,7 +58,7 @@ impl AgentPlacement {
 /// Whether a pane about to be created is a coding agent's, from what the session knows before
 /// the process has said anything: a plugin opened it as an agent pane - the context marker
 /// `agent_from_run` in `panes::terminal_pane` starts the record from - or its *program* names
-/// a known agent, by the list `hocus-agentd` detects with. The program only, not any argument:
+/// a known agent, by the list `agent-service` detects with. The program only, not any argument:
 /// a wrong answer here moves a pane, where a wrong label costs nothing.
 pub(super) fn is_agent_spawn(invoked_with: Option<&Run>) -> bool {
     let Some(Run::Command(run_command)) = invoked_with else {
@@ -67,7 +67,7 @@ pub(super) fn is_agent_spawn(invoked_with: Option<&Run>) -> bool {
     let marked = run_command
         .originating_plugin
         .as_ref()
-        .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
+        .is_some_and(|plugin| plugin.context.contains_key(AGENT_PANE_CONTEXT));
     marked
         || yinz_types::agent::kind_from_program_and_args(&run_command.command, &run_command.args)
             .is_some()
@@ -150,7 +150,7 @@ impl Screen {
     /// `TabIndex` when the spawn wanted focus and `TabIndexNoFocus` when it did not. A
     /// `ClientId` target - `yinz run`, a keybinding's `Run` - wanted focus, since the arm it
     /// came from would have focused the pane, so the client follows it. A `PaneId` target -
-    /// every hocus route opens its agent panes near the plugin - did not: the plugin focuses
+    /// every agent route opens its agent panes near the plugin - did not: the plugin focuses
     /// the pane itself if it means to, and a spawn from `agent_spawn` should not pull the user
     /// off what they were looking at.
     ///

@@ -30,7 +30,7 @@ All commands accept `--json`. Targeted commands also accept
 same conversation on a later command. A pane ID alone does not preserve identity
 between separate commands.
 
-`agent register PANE KIND --json` records an existing pane through `hocus-agentd`.
+`agent register PANE KIND --json` records an existing pane through `agent-service`.
 Registration returns the service's JSON acknowledgement; `--json` also structures
 its errors. It does not establish managed prompt readiness or accept a conversation guard.
 
@@ -39,20 +39,20 @@ its errors. It does not establish managed prompt readiness or accept a conversat
 For Codex, Muse, and Antigravity (agy), install Yinz's lifecycle hooks before launching:
 
 ```sh
-yinz hocus hooks install --agent codex
-yinz hocus hooks install --agent muse
-yinz hocus hooks install --agent agy
+yinz hooks install --agent codex
+yinz hooks install --agent muse
+yinz hooks install --agent agy
 ```
 
-`yinz hocus hooks install` without `--agent` wires every agent at once.
-Use `yinz hocus hooks status --agent KIND` to inspect an existing installation.
+`yinz hooks install` without `--agent` wires every agent at once.
+Use `yinz hooks status --agent KIND` to inspect an existing installation.
 Install the hooks on the host where the provider runs. If startup reports
 `status_unavailable`, inspect the pane and hook status before retrying.
 Claude Code launches receive the hooks through the existing launch planner.
-Refresh older installed Claude hooks with `yinz hocus hooks install --agent claude`
+Refresh older installed Claude hooks with `yinz hooks install --agent claude`
 to prevent duplicate reports alongside the inline hooks, and ensure the current
 Yinz binary is on the provider's `PATH`.
-Antigravity hooks can also be installed at the project level with `yinz hocus hooks install --agent agy --project`.
+Antigravity hooks can also be installed at the project level with `yinz hooks install --agent agy --project`.
 
 AGY completion requires its host-local `GetCascadeTrajectory` API to report Idle
 for the submitted prompt. Hooks must inherit `ANTIGRAVITY_LS_ADDRESS` (a loopback
@@ -144,23 +144,23 @@ not disable extensions you installed in Pi.
 For Pi processes started outside Yinz, install the same extension:
 
 ```sh
-yinz hocus hooks install --agent pi
-yinz hocus hooks status --agent pi
+yinz hooks install --agent pi
+yinz hooks status --agent pi
 ```
 
 The installer uses `$PI_CODING_AGENT_DIR/extensions`, or
 `~/.pi/agent/extensions` when that variable is unset or empty. Installation is
-user-level only. Use `yinz hocus hooks uninstall --agent pi` to remove it.
+user-level only. Use `yinz hooks uninstall --agent pi` to remove it.
 Installed and injected copies share one reporter, including after `/reload`.
 
 Pi supports `--model` and these `--effort` values: `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, and `max`. Yinz translates `none` to Pi's `off`.
 Pi controls permissions through extensions, so Yinz rejects `--permission-mode`.
-Hocus launches can include a positional opening prompt. With `agent spawn`, wait
+Agent launches can include a positional opening prompt. With `agent spawn`, wait
 for readiness and then use `agent prompt`.
 
 `--resume last` maps to Pi's `--continue`. Other resume values use `--session`
-and can name a session ID or file. Hocus archive resumes use the same launch path.
+and can name a session ID or file. Agent archive resumes use the same launch path.
 Restart removes opening prompts and session selectors while preserving supported
 launch options. It rejects print, JSON, RPC, and ambiguous command arguments.
 
@@ -318,7 +318,7 @@ To investigate missing or stale tracking:
 
 1. Save `yinz --session SESSION agent list --json` and
    `yinz --session SESSION action list-panes --all --json` before recovery.
-2. Run `yinz hocus hooks status --agent KIND` on the agent's host and in its
+2. Run `yinz hooks status --agent KIND` on the agent's host and in its
    project directory. For Codex, also inspect hook trust with `/hooks`.
 3. Record the binary versions, session, pane reference, conversation ID, and time.
    Save provider hook logs and the visible dialog or composer state.
@@ -690,7 +690,7 @@ permission. Watch does not change or bypass sandbox settings.
 
 ## Durable archives
 
-`agent runs`, `run`, `history-search`, and `predecessors` query `hocus-store` and
+`agent runs`, `run`, `history-search`, and `predecessors` query `project-store` and
 always return JSON. They describe durable archive run IDs, distinct from provider
 conversation IDs, turn IDs, and the live submission IDs above.
 
@@ -726,7 +726,7 @@ latency. The existing fetch transport can return one oversized row.
 
 Results retain the maximum of 50 hits. `truncated: true` can mean older entries
 remain unsearched, the scope is incomplete, or more hits exist. Narrow the scope
-to search further. There are no tuning flags or continuation cursor. Hocus's
+to search further. There are no tuning flags or continuation cursor. Agent's
 `agent_history_search` tool accepts the same mode as `"regex": true`.
 
 
@@ -773,14 +773,14 @@ OpenCode child calls retain worker attribution after verified ancestry lookup. F
 Antigravity uses `step:<stepIdx>` as its call ID and has no documented output body.
 Other agents need an adapter that emits the shared hook contract. Executable detection alone does not capture tools.
 
-Upgrade all Hocus plugins and servers that share the database together.
+Upgrade all Agent plugins and servers that share the database together.
 The additive `agent_run_entry` v4 schema adds nullable JSON `tool` metadata.
 Existing entries remain unchanged. Older declarations reject the new column as a removal.
 Refresh installed adapters on each local or remote agent host:
 
 ```sh
-yinz hocus hooks install --agent pi
-yinz hocus hooks install --agent opencode
+yinz hooks install --agent pi
+yinz hooks install --agent opencode
 ```
 
 ## TypeScript agent plugins
@@ -860,16 +860,16 @@ for a JSON-quoted binary path, `__YINZ_SHELL__` for a shell-quoted path, and
 `__TOKEN_ENV__` for the JSON-quoted remote token variable name.
 
 ```sh
-yinz hocus hooks install --agent ./my-agent.ts --dry-run
-yinz hocus hooks install --agent ./my-agent.ts
-yinz hocus hooks status --agent ./my-agent.ts
-yinz hocus hooks uninstall --agent ./my-agent.ts
+yinz hooks install --agent ./my-agent.ts --dry-run
+yinz hooks install --agent ./my-agent.ts
+yinz hooks status --agent ./my-agent.ts
+yinz hooks uninstall --agent ./my-agent.ts
 ```
 
 OpenCode uses the bundled [TypeScript provider](../yinz-deno-builtins/assets/plugins/agent-opencode.ts).
 Yinz loads it before other background plugins. Its hook adapter owns event
 translation, parent-session filtering, and ordered reporting. Existing
-`yinz hocus hooks install --agent opencode` commands still work. Older installed
+`yinz hooks install --agent opencode` commands still work. Older installed
 hook files remain accepted until reinstallation. OpenCode supports launch,
 detection, restart, and lifecycle waits. It does not advertise reliable prompt
 submission yet.

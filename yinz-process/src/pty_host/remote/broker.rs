@@ -409,7 +409,7 @@ fn start_pane(
     // none, because only this machine can say what it should be.
     let mut cmd = cmd;
     let arg0 = resolve_default_shell(&mut cmd, &ShellSource::from_user(&user));
-    crate::command::resolve_hocus_launcher(host_bin, &mut cmd.command, &mut cmd.args)?;
+    crate::command::resolve_agent_launcher(host_bin, &mut cmd.command, &mut cmd.args)?;
 
     // Recomputed here, per pane, from *this* machine's passwd entry. Nothing is
     // inherited from the broker: its environment is a frozen copy of whichever
@@ -729,7 +729,7 @@ const STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// nothing about the pane says when: `git checkout` in place moves the branch
 /// without moving the folder, so a cwd-triggered probe alone would report a
 /// branch that is wrong for as long as the pane sits there. Matches
-/// `hocus-agentd`'s own `GIT_REFRESH_SECONDS`, which is the cadence the local
+/// `agent-service`'s own `GIT_REFRESH_SECONDS`, which is the cadence the local
 /// half of the same job already runs at.
 ///
 /// Not shorter: each pane has its own pump, so this is two `git` processes per
@@ -1053,7 +1053,7 @@ pub fn broker_invocation() -> Option<String> {
 
 /// The environment variable a remote pane's process finds its broker token in.
 ///
-/// Read by `report_agent_hook` below, and by the hook script `yinz hocus hooks install`
+/// Read by `report_agent_hook` below, and by the hook script `yinz hooks install`
 /// writes: it is how a hook running on the far side of the transport knows there is no
 /// session on this machine to report to, and which pane the broker should relay it to.
 pub const PANE_TOKEN_ENV: &str = "YINZ_REMOTE_PANE_TOKEN";

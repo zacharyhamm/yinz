@@ -72,11 +72,11 @@ fn current_source(request: &AgentRequest, senders: &ThreadSenders) -> Result<Pan
 fn project_root(
     project: &AgentProject,
     data: &DataAccess,
-) -> Result<(PathBuf, Option<hocus_data::projects::Project>), String> {
+) -> Result<(PathBuf, Option<project_data::projects::Project>), String> {
     match project {
         AgentProject::Repository(root) => Ok((primary_worktree(root)?, None)),
         AgentProject::Registered(name) => {
-            let registry = hocus_data::projects::from_rows(&agent_control::projects(data)?);
+            let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let project = registry.get(name).ok_or("Project no longer exists")?;
             Ok((PathBuf::from(&project.root), Some(project.clone())))
         },
@@ -98,7 +98,7 @@ fn execute(
     let choices = |title: String, choices| Ok(AgentReply::Choices { title, choices });
     match &request.action {
         Start { kind, vm, project } => {
-            let registry = hocus_data::projects::from_rows(&agent_control::projects(data)?);
+            let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let action = match project.as_ref().filter(|name| registry.contains_key(*name)) {
                 Some(name) => Worktrees {
                     kind: kind.clone(),
@@ -120,7 +120,7 @@ fn execute(
             )
         },
         Projects { kind, vm } => {
-            let registry = hocus_data::projects::from_rows(&agent_control::projects(data)?);
+            let registry = project_data::projects::from_rows(&agent_control::projects(data)?);
             let mut entries: Vec<_> = registry
                 .values()
                 .map(|p| {

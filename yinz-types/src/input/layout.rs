@@ -54,10 +54,10 @@ impl RunPluginOrAlias {
             run_plugin_alias.run_plugin = merged_run_plugin;
         }
         match self {
-            Self::RunPlugin(plugin) => plugin.normalize_hocus_panel(),
+            Self::RunPlugin(plugin) => plugin.normalize_agent_panel(),
             Self::Alias(alias) => {
                 if let Some(plugin) = &mut alias.run_plugin {
-                    plugin.normalize_hocus_panel();
+                    plugin.normalize_agent_panel();
                 }
             },
         }
@@ -120,12 +120,12 @@ impl RunPluginOrAlias {
     ///
     /// **The key is part of plugin identity**, as `overlay` is - a plugin is (location,
     /// configuration) - so a keybinding that writes it and a plugin-side launch that does not
-    /// address two different instances. See `hocus_proto::launch::overlay_configuration`.
+    /// address two different instances. See `agent_proto::launch::overlay_configuration`.
     pub fn awaits_placement(&self) -> bool {
         self.configuration_value_is_true("awaits_placement")
             || self.get_run_plugin().is_some_and(|plugin| {
                 matches!(plugin.location, RunPluginLocation::Yinz(tag)
-                    if matches!(tag.to_string().as_str(), "hocus-new-agent" | "quit-confirmation"))
+                    if matches!(tag.to_string().as_str(), "new-agent" | "quit-confirmation"))
             })
     }
     pub fn requests_overlay(&self) -> bool {
@@ -438,16 +438,16 @@ pub struct RunPlugin {
 }
 
 /// Consume the legacy panel selector only for the builtin that used to own those views.
-pub fn normalize_hocus_panel(
+pub fn normalize_agent_panel(
     location: &str,
     configuration: &mut BTreeMap<String, String>,
 ) -> Option<&'static str> {
-    if location != "yinz:hocus-agents" {
+    if location != "yinz:agents" {
         return None;
     }
     let location = match configuration.get("view").map(String::as_str) {
-        Some("vms") => "yinz:hocus-vms",
-        Some("swamp") => "yinz:hocus-swamp",
+        Some("vms") => "yinz:vms",
+        Some("swamp") => "yinz:swamp-issues",
         _ => return None,
     };
     configuration.remove("view");
@@ -455,9 +455,9 @@ pub fn normalize_hocus_panel(
 }
 
 impl RunPlugin {
-    pub fn normalize_hocus_panel(&mut self) {
+    pub fn normalize_agent_panel(&mut self) {
         if let Some(location) =
-            normalize_hocus_panel(&self.location.display(), &mut self.configuration.0)
+            normalize_agent_panel(&self.location.display(), &mut self.configuration.0)
         {
             self.location =
                 RunPluginLocation::Yinz(PluginTag::new(location.trim_start_matches("yinz:")));
@@ -643,7 +643,7 @@ impl PluginUserConfiguration {
     /// for them. They are therefore *not* part of a plugin's identity, and every comparison that
     /// asks "is this the plugin that is already running?" has to look past them - otherwise a
     /// plugin asking for its other half by url opens a second copy of a pane that is already on
-    /// screen, which is how hocus ended up with two conversations and an agent list placed by the
+    /// screen, which is how agent ended up with two conversations and an agent list placed by the
     /// wrong one.
     ///
     /// Here rather than copied into each caller: it was three separate closures, one of which

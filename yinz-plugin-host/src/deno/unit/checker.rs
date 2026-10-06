@@ -466,7 +466,7 @@ fn shipped_examples_typecheck_offline() {
         }
     }
     assert!(
-        checked >= 16,
+        checked >= 15,
         "only {checked} shipped examples were checked"
     );
 }
@@ -1063,9 +1063,9 @@ fn sdk_rpc_declarations_require_one_destination_and_json() {
 
 #[test]
 fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
-    // hocus-proto's wire tests compare these fixtures to serialized Rust structs.
+    // agent-proto's wire tests compare these fixtures to serialized Rust structs.
     let fixtures: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../default-plugins/hocus-proto/src/completion-fixtures.json"
+        "../../../../default-plugins/agent-proto/src/completion-fixtures.json"
     ))
     .unwrap();
     let source = format!(
@@ -1075,8 +1075,8 @@ fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
       const reply = {};
       const options: CompletionOptions = {{messages:request.messages, system:request.system, model:request.model, tools:request.tools, toolChoice:request.tool_choice, temperature:request.temperature, maxTokens:request.max_tokens}};
       const result: CompletionResult = {{content:reply.content, toolCalls:reply.tool_calls, finishReason:reply.finish_reason, usage:reply.usage, model:reply.model}};
-      yinz.hocus.complete(options).cancel();
-      yinz.hocus.complete({{messages:[{{role:'assistant',tool_calls:result.toolCalls}},{{role:'tool',tool_call_id:'call_1',content:'clear'}}]}});
+      yinz.llm.complete(options).cancel();
+      yinz.llm.complete({{messages:[{{role:'assistant',tool_calls:result.toolCalls}},{{role:'tool',tool_call_id:'call_1',content:'clear'}}]}});
       const pane: PaneId = yinz.agent.spawn({{kind:'codex',permission_mode:'plan',sourceDirectory:'/host',startSuppressed:true}});
       const info: AgentInfo | null = yinz.agent.info(7);
       yinz.agent.info({{Terminal:7}});
@@ -1097,13 +1097,13 @@ fn sdk_agent_and_completion_types_check_rust_completion_fixtures() {
       // @ts-expect-error unsupported fallback
       yinz.agent.waitForTurn(7,{{fallback:'SessionStart'}});
       // @ts-expect-error tool messages require a call ID
-      yinz.hocus.complete({{messages:[{{role:'tool',content:'answer'}}]}});
+      yinz.llm.complete({{messages:[{{role:'tool',content:'answer'}}]}});
       // @ts-expect-error unknown role
-      yinz.hocus.complete({{messages:[{{role:'developer'}}]}});
+      yinz.llm.complete({{messages:[{{role:'developer'}}]}});
       // @ts-expect-error maxTokens is numeric
-      yinz.hocus.complete({{messages:[],system:'hello',maxTokens:'12'}});
+      yinz.llm.complete({{messages:[],system:'hello',maxTokens:'12'}});
       // @ts-expect-error tools are JSON
-      yinz.hocus.complete({{messages:[],system:'hello',tools:[()=>null]}});
+      yinz.llm.complete({{messages:[],system:'hello',tools:[()=>null]}});
       // @ts-expect-error nested wire field spelling is preserved
       const bad: CompletionMessage = {{role:'assistant',toolCalls:result.toolCalls}};
     "#,

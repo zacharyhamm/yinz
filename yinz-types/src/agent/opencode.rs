@@ -2,7 +2,7 @@
 //!
 //! The current TypeScript provider owns event translation and emits [`HookEvent`] directly.
 //! This reader accepts the native payloads from older installed hook files until users run
-//! `yinz hocus hooks install --agent opencode` again. New providers need no Rust adapter.
+//! `yinz hooks install --agent opencode` again. New providers need no Rust adapter.
 
 use super::HookEvent;
 use serde_json::Value;

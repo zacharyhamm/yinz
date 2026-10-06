@@ -8,7 +8,7 @@
 //!
 //! The same two calls, in the same order, against the pane this broker owns.
 //! Matching the local semantics exactly is the point: agent detection is pure
-//! string matching over argv and titles (`hocus-proto`'s `agents.rs`), so a
+//! string matching over argv and titles (`agent-proto`'s `agents.rs`), so a
 //! remote pane that reports the same argv a local one would is classified
 //! identically, with nothing in the detection layer aware of the difference.
 
@@ -104,7 +104,7 @@ pub fn probe(master_fd: RawFd, child_pid: ProcessId) -> Probe {
 
 /// The raw result of asking git about a directory.
 ///
-/// Deliberately unparsed. `hocus-agentd`'s `poll::repository` already turns
+/// Deliberately unparsed. `agent-service`'s `poll::repository` already turns
 /// exactly these three things into a checkout identity, including the awkward
 /// parts — a repository with no commits writes its identity to stdout and *then*
 /// exits 128, so the exit code cannot gate the parse. Shipping raw output means
@@ -121,7 +121,7 @@ pub struct GitProbe {
     pub config: Vec<u8>,
 }
 
-/// The same two invocations `hocus-agentd` runs, against a directory on this
+/// The same two invocations `agent-service` runs, against a directory on this
 /// machine.
 ///
 /// Kept byte-identical to the plugin's, because the parser on the other end is

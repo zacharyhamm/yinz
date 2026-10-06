@@ -55,9 +55,9 @@ here:
   (`Grid::kitty_refresh_placeholder_placements`), and `placeholder_uids` keeps the placement uid
   stable across those rebuilds so the host diff does not retransmit every frame.
 * **A plugin pane holds one grid per attached client**, each with its own image-id namespace, so a
-  plugin has to transmit into each of them - see hocus's `wand_transmitted`.
+  plugin has to transmit into each of them - see agent's `wand_transmitted`.
 
 The plugin-side helpers are `yinz-tile/src/ui_components/image.rs`; the diacritic table they
-share with this module lives in `yinz_types::kitty_placeholders`. hocus's empty-chat wand is the
+share with this module lives in `yinz_types::kitty_placeholders`. agent's empty-chat wand is the
 first consumer, and it is also the first thing to drive frames off its own timer, which is what
 the "no playback clock" note below means in practice.

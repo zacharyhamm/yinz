@@ -216,14 +216,14 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             "printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' | yinz --pty-broker report claude && printf 'hook-reported '; ",
             // Provisioning wired every agent. Codex routes by conversation because
             // its shared daemon cannot inherit one pane's broker environment.
-            "test -x /root/.claude/hocus/hocus-hook.sh; ",
-            "test -x /root/.codex/hocus/hocus-hook.sh; ",
-            "test -f /root/.config/opencode/plugin/hocus.js; ",
-            "grep -q 'pty-broker report claude' /root/.claude/hocus/hocus-hook.sh; ",
-            "grep -q 'hocus codex-report' /root/.codex/hocus/hocus-hook.sh; ",
-            "grep -q '\"--pty-broker\", \"report\", \"opencode\"' /root/.config/opencode/plugin/hocus.js; ",
-            "grep -q hocus-hook /root/.claude/settings.json; ",
-            "grep -q hocus-hook /root/.codex/hooks.json; ",
+            "test -x /root/.claude/yinz/yinz-hook.sh; ",
+            "test -x /root/.codex/yinz/yinz-hook.sh; ",
+            "test -f /root/.config/opencode/plugin/yinz.js; ",
+            "grep -q 'pty-broker report claude' /root/.claude/yinz/yinz-hook.sh; ",
+            "grep -q 'agent codex-report' /root/.codex/yinz/yinz-hook.sh; ",
+            "grep -q '\"--pty-broker\", \"report\", \"opencode\"' /root/.config/opencode/plugin/yinz.js; ",
+            "grep -q yinz-hook /root/.claude/settings.json; ",
+            "grep -q yinz-hook /root/.codex/hooks.json; ",
             "printf 'hooks-installed '; ",
             // The installed script itself, with nothing but the event on stdin. It swallows
             // the broker's own output and always exits 0, so what this proves is the half
@@ -231,7 +231,7 @@ fn a_worktree_vm_syncs_merges_renames_and_stops() {
             // which some events would inject into the agent's context. Acceptance is the
             // direct `--pty-broker report` above.
             "out=$(printf '{\"hook_event_name\":\"Stop\",\"session_id\":\"fc-test\"}' ",
-            "| /root/.claude/hocus/hocus-hook.sh); ",
+            "| /root/.claude/yinz/yinz-hook.sh); ",
             "test -z \"$out\" && printf 'script-silent '; ",
             // The account for the third mapping, made only now: the first copy landed in a
             // /home/agent that nothing owned, and the next one has a home to answer to.
@@ -474,7 +474,7 @@ fn two_sessions_share_a_worktree_vm_until_the_last_one_leaves() {
     assert_eq!(rejoined.worktree.as_deref(), Some(worktree_path.as_path()));
     let restored = run_in_guest(
         &joined,
-        "set -e; grep -q hocus-hook /root/.claude/settings.json; printf 'hooks-restored'",
+        "set -e; grep -q yinz-hook /root/.claude/settings.json; printf 'hooks-restored'",
         "hooks-restored",
     );
     assert!(

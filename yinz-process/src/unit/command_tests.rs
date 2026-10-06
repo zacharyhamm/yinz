@@ -2,7 +2,7 @@ use super::*;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 #[test]
-fn hocus_launchers_use_the_execution_hosts_binary_outside_path() {
+fn agent_launchers_use_the_execution_hosts_binary_outside_path() {
     let root = tempfile::tempdir().unwrap();
     let host_bin = root.path().join("host yinz");
     yinz_test_support::write_warm_script(&host_bin, "printf '%s\\n' \"$@\"");
@@ -51,7 +51,7 @@ fn hocus_launchers_use_the_execution_hosts_binary_outside_path() {
                 expected = cmd.clone();
                 expected.args[2] = host_bin.to_str().unwrap().into();
             }
-            resolve_hocus_launcher(&host_bin, &mut cmd.command, &mut cmd.args).unwrap();
+            resolve_agent_launcher(&host_bin, &mut cmd.command, &mut cmd.args).unwrap();
             assert_eq!(cmd, expected);
             let output = std::process::Command::new(&cmd.command)
                 .args(&cmd.args)
@@ -68,23 +68,23 @@ fn hocus_launchers_use_the_execution_hosts_binary_outside_path() {
 }
 
 #[test]
-fn hocus_launcher_resolution_leaves_other_commands_and_explicit_paths_unchanged() {
+fn agent_launcher_resolution_leaves_other_commands_and_explicit_paths_unchanged() {
     for (program, args) in [
         ("codex", vec![]),
         ("muse", vec![]),
         ("yinz", vec!["action", "new-pane"]),
-        ("yinz", vec!["hocus"]),
-        ("yinz", vec!["hocus", "hooks", "install"]),
+        ("yinz", vec!["agent"]),
+        ("yinz", vec!["agent", "hooks", "install"]),
         ("env", vec!["PATH=/remote/bin", "codex"]),
         (
             "env",
             vec!["PATH=/remote/bin", "yinz", "action", "new-pane"],
         ),
         ("env", vec!["PATH=/remote/bin"]),
-        ("/other/yinz", vec!["hocus", "codex", "--"]),
+        ("/other/yinz", vec!["agent", "codex", "--"]),
         (
             "env",
-            vec!["PATH=/remote/bin", "/other/yinz", "hocus", "codex", "--"],
+            vec!["PATH=/remote/bin", "/other/yinz", "agent", "codex", "--"],
         ),
     ] {
         let requested = RunCommand {
@@ -93,7 +93,7 @@ fn hocus_launcher_resolution_leaves_other_commands_and_explicit_paths_unchanged(
             ..Default::default()
         };
         let mut resolved = requested.clone();
-        resolve_hocus_launcher(
+        resolve_agent_launcher(
             Path::new("/remote/bin/yinz"),
             &mut resolved.command,
             &mut resolved.args,

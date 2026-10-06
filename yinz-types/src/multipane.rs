@@ -140,7 +140,7 @@ mod tests {
         .is_err());
     }
 
-    /// The hocus panel's `split "0"` and `split "100%"` became a 1 and a 9999 basis-point
+    /// The agent panel's `split "0"` and `split "100%"` became a 1 and a 9999 basis-point
     /// ratio, and left one half a single column wide. With a floor each half keeps it, and on a
     /// panel too narrow for two floors the halves share what there is evenly instead.
     #[test]

@@ -1,0 +1,22 @@
+[package]
+name = "agent-proto"
+version = "0.1.0"
+edition.workspace = true
+
+
+[lints]
+workspace = true
+
+[dependencies]
+# The store seam, the schemas and the project/todo/note registry, re-exported unchanged. Its
+# native build carries the store engine, which is what `store::Local` needs here.
+project-data = { path = "../project-data" }
+yinz-types = { workspace = true }
+yinz-tile = { path = "../../yinz-tile" }
+yinz-tile-markdown = { path = "../../yinz-tile-markdown" }
+swamp-lab = { path = "../swamp-lab" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true, features = ["unicode-case"] }

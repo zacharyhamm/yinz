@@ -195,13 +195,13 @@ async function completionDaemon(context: Omit<Context, "writeResource">) {
         }
         const daemons = Object.entries(sessions[0].plugins).filter((
             [, plugin],
-        ) => plugin.location === "yinz:hocus-agentd");
+        ) => plugin.location === "yinz:agent-service");
         if (daemons.length !== 1) {
-            throw new Error("Expected exactly one hocus-agentd plugin");
+            throw new Error("Expected exactly one agent-service plugin");
         }
         const id = daemons[0][0];
         if (!/^(0|[1-9][0-9]*)$/.test(id) || Number(id) > 4294967295) {
-            throw new Error("Invalid hocus-agentd plugin ID");
+            throw new Error("Invalid agent-service plugin ID");
         }
         return `plugin_${id}`;
     } finally {
@@ -260,7 +260,7 @@ export const model = {
         },
         completion: {
             description:
-                "One Hocus completion with its session and reported usage",
+                "One Agent completion with its session and reported usage",
             schema: CompletionReply.extend({ session: z.string() }),
             lifetime: "7d",
             garbageCollection: 10,
@@ -268,9 +268,9 @@ export const model = {
     },
     methods: {
         ...methods,
-        hocus_complete: {
+        llm_complete: {
             description:
-                "Request one Hocus model turn; the workflow runs any tools",
+                "Request one Agent model turn; the workflow runs any tools",
             arguments: CompletionArgs,
             execute: async (
                 args: z.input<typeof CompletionArgs>,
@@ -287,7 +287,7 @@ export const model = {
                 const result = await command(context, [
                     "pipe",
                     "--name",
-                    "hocus_complete",
+                    "llm_complete",
                     "--plugin",
                     plugin,
                     "--",
@@ -296,7 +296,7 @@ export const model = {
                 const reply = CompletionReply.parse(JSON.parse(result.stdout));
                 if (reply.request_id !== request.request_id) {
                     throw new Error(
-                        "Hocus completion request_id does not match",
+                        "Agent completion request_id does not match",
                     );
                 }
                 if (reply.error !== "") throw new Error(reply.error);

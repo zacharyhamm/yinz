@@ -30,7 +30,7 @@ Commands:
                        per line, `{"event": <type>, "payload": <the event>}`, until the session ends
   recordings           Read local terminal pane recordings
   plugins              Write, check, reload and read logs of JS/TS plugins
-  hocus                The hocus agent plugins
+  hooks                Install, inspect or remove coding-agent hooks
   firecracker          Manage session-scoped Firecracker VMs
   pty-host             Inspect and clean up detached pane supervisors. Panes outlive a server that
                        was killed rather than shut down, and this is how you find them

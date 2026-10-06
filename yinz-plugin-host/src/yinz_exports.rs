@@ -127,7 +127,7 @@ use {
     yinz_types::data::SaveLayoutResponse, yinz_types::data::SessionConnection,
     yinz_types::data::SpawnAgentResponse, yinz_types::data::TabMetadata,
     yinz_types::data::WarpPaneResponse, yinz_types::data::WarpPlacement,
-    yinz_types::data::HOCUS_AGENT_PANE_CONTEXT,
+    yinz_types::data::AGENT_PANE_CONTEXT,
 };
 
 use crate::PaneId;
@@ -313,7 +313,7 @@ fn run_command_action(
     let cwd = if env.plugin_config.is_builtin()
         && (context.contains_key("swamp_owner")
             || context
-                .get("hocus_agent_host_cwd")
+                .get("agent_agent_host_cwd")
                 .is_some_and(|value| value == "true"))
     {
         command_to_run.cwd.clone()
@@ -1552,7 +1552,7 @@ fn request_permission(env: &PluginEnv, permissions: Vec<PermissionType>) -> Resu
         .check_permissions(env.plugin_config.location.to_string(), &permissions)
     {
         // In force from this call on, not from the event's arrival: a grant the user gave long
-        // ago - or one hocus made when it approved the plugin's source - has nothing left to
+        // ago - or one agent made when it approved the plugin's source - has nothing left to
         // ask, and a plugin asking in `load` may act in `load`. The event still follows, for
         // the handler that waits on it and for the cache the bridge keeps in step.
         env.permissions
@@ -2982,7 +2982,7 @@ fn open_command_pane_in_git_checkout_near_plugin(
             spawn_command_pane_near_plugin(
                 env,
                 command_to_run,
-                BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind)]),
+                BTreeMap::from([(AGENT_PANE_CONTEXT.to_owned(), kind)]),
                 None,
                 true,
                 false,
@@ -2995,9 +2995,9 @@ fn open_command_pane_in_git_checkout_near_plugin(
         .non_fatal();
 }
 
-/// Start a coding agent near this plugin: the launch planner every hocus launcher uses, the
-/// checkout the spec asks for, the pane, and the agent record - one road for hocus's
-/// `agent_spawn`, the `hocus-new-agent` modal and a TypeScript plugin's `yinz.agent.spawn`.
+/// Start a coding agent near this plugin: the launch planner every agent launcher uses, the
+/// checkout the spec asks for, the pane, and the agent record - one road for agent's
+/// `agent_spawn`, the `new-agent` modal and a TypeScript plugin's `yinz.agent.spawn`.
 fn spawn_agent(
     env: &mut PluginEnv,
     mut spec: AgentSpawnSpec,
@@ -3036,7 +3036,7 @@ fn spawn_agent(
             || (env.plugin_config.is_builtin()
                 && (context.contains_key("swamp_owner")
                     || context
-                        .get("hocus_agent_host_cwd")
+                        .get("agent_agent_host_cwd")
                         .is_some_and(|value| value == "true")));
         let source = source_directory
             .map(|path| {
@@ -3067,7 +3067,7 @@ fn spawn_agent(
         let resources = prepared.resources();
         let kind = yinz_types::agent::agent_kind_of(&prepared.command.path, &prepared.command.args)
             .unwrap_or_else(|| "true".to_owned());
-        context.insert(HOCUS_AGENT_PANE_CONTEXT.to_owned(), kind);
+        context.insert(AGENT_PANE_CONTEXT.to_owned(), kind);
         spawn_command_pane_near_plugin(env, prepared.command, context, name, true, start_suppressed)
             .map(|pane_id| {
                 if let Some(cwd) = &resources.cwd {
@@ -3167,8 +3167,8 @@ fn prepare_agent(
     let (mut command, mut checkout) = yinz_runtime::agent::launch::plan(spec)?;
     apply_project_worktree_dir(&mut checkout, spec.worktree_dir.as_deref(), &source, || {
         data_access.plugin_data().fetch(
-            hocus_data::store::SHARED,
-            &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
+            project_data::store::SHARED,
+            &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
         )
     })?;
     let checkout_made = !matches!(checkout, GitCheckout::Current);
@@ -3603,9 +3603,9 @@ fn apply_project_worktree_dir(
             ))
         },
     };
-    let projects = hocus_data::projects::from_rows(&rows);
-    let location = hocus_data::location::Location::local(source.to_string_lossy());
-    let project = match hocus_data::projects::for_cwd(&projects, &location) {
+    let projects = project_data::projects::from_rows(&rows);
+    let location = project_data::location::Location::local(source.to_string_lossy());
+    let project = match project_data::projects::for_cwd(&projects, &location) {
         Some(project) => Some(project),
         None if projects.is_empty() => None,
         None => {
@@ -3613,9 +3613,9 @@ fn apply_project_worktree_dir(
             let (primary, linked) = checkouts
                 .split_first()
                 .ok_or_else(|| "git could not find the primary worktree".to_owned())?;
-            hocus_data::projects::for_cwd(
+            project_data::projects::for_cwd(
                 &projects,
-                &hocus_data::location::Location::local(primary.path.to_string_lossy()),
+                &project_data::location::Location::local(primary.path.to_string_lossy()),
             )
             .or_else(|| {
                 let mut matches = projects.values().filter(|project| {
@@ -3641,7 +3641,7 @@ fn apply_project_worktree_dir(
 /// Where a spawned agent's pane runs. A branch means git work in `source`, the repository, and
 /// the pane lands in the checkout that makes. Without one there is no git work at all: the
 /// pane runs in `cwd` when the caller named one, and otherwise in `source` as it stands -
-/// hocus sends the focused pane's folder, a TypeScript plugin's default is its own - never the
+/// agent sends the focused pane's folder, a TypeScript plugin's default is its own - never the
 /// repository root, which `command=zsh` in a subfolder of a checkout does not want and which
 /// costs a `git rev-parse` to find.
 #[cfg(test)]
@@ -6358,7 +6358,7 @@ pub(crate) fn notify_data_watchers(
     namespace: &str,
     touched_entities: &BTreeSet<String>,
 ) {
-    if namespace == hocus_data::store::SHARED
+    if namespace == project_data::store::SHARED
         && (touched_entities.contains("project") || touched_entities.contains("agent_assignment"))
     {
         senders
@@ -6451,7 +6451,7 @@ mod validation_tests {
         let firecracker = || CommandToRun {
             path: PathBuf::from("claude"),
             target: PaneTarget::Firecracker {
-                vm: "hocus-agent-1".to_owned(),
+                vm: "yinz-agent-1".to_owned(),
                 image: None,
                 worktree: None,
             },
@@ -6460,7 +6460,7 @@ mod validation_tests {
 
         let mut isolated = firecracker();
         place_agent(&mut isolated, folder.clone(), false, false).unwrap();
-        assert_eq!(isolated.target.firecracker_vm(), Some("hocus-agent-1"));
+        assert_eq!(isolated.target.firecracker_vm(), Some("yinz-agent-1"));
         assert_eq!(isolated.target.firecracker_worktree(), None);
         assert_eq!(isolated.cwd, None);
 
@@ -6477,10 +6477,7 @@ mod validation_tests {
 
         let mut named_checkout = firecracker();
         place_agent(&mut named_checkout, folder.clone(), false, true).unwrap();
-        assert_eq!(
-            named_checkout.target.firecracker_vm(),
-            Some("hocus-agent-1")
-        );
+        assert_eq!(named_checkout.target.firecracker_vm(), Some("yinz-agent-1"));
         assert_eq!(
             named_checkout.target.firecracker_worktree(),
             Some(folder.as_path())
@@ -7046,7 +7043,7 @@ fn set_pane_agent_run(env: &PluginEnv, pane_id: yinz_types::data::PaneId, run_id
 /// What this plugin wants said, and decided, when the session is about to end.
 ///
 /// Keyed by plugin id rather than by pane id: it is the plugin that has something outstanding,
-/// and a plugin that moves pane - hocus does, between tabs - has not changed its mind about the
+/// and a plugin that moves pane - agent does, between tabs - has not changed its mind about the
 /// quit on the way.
 fn set_quit_notice(env: &PluginEnv, notice: Option<String>, guard: bool) {
     let _ = env.senders.send_to_screen(ScreenInstruction::SetQuitNotice(
@@ -10096,7 +10093,7 @@ mod permission_tests {
 
     #[test]
     fn project_worktree_defaults_apply_from_primary_and_external_checkouts() {
-        use hocus_data::{projects, store};
+        use project_data::{projects, store};
         let first = repository();
         let second = repository();
         let external = tempfile::tempdir().unwrap();
@@ -10133,7 +10130,7 @@ mod permission_tests {
         // The host reads the real shared store, including when the caller is a direct plugin.
         let db_dir = tempfile::tempdir().unwrap();
         let db = plugin_data_store::PluginDataStore::new(db_dir.path());
-        db.define_entity(store::SHARED, "hocus", &store::project_def(), false)
+        db.define_entity(store::SHARED, "agents", &store::project_def(), false)
             .unwrap();
         for project in registry.values() {
             db.apply(store::SHARED, &[projects::to_mutation(project)])
@@ -10179,7 +10176,7 @@ mod permission_tests {
 
     #[test]
     fn project_worktree_linked_defaults_follow_repository_membership() {
-        use hocus_data::projects;
+        use project_data::projects;
         let repo = repository();
         let unrelated = repository();
         let external = tempfile::tempdir().unwrap();
@@ -10300,7 +10297,7 @@ mod permission_tests {
         .unwrap_err();
         assert!(error.contains("offline"));
         apply_project_worktree_dir(&mut checkout, None, "/unused".as_ref(), || {
-            Ok(hocus_data::projects::to_rows(&Default::default()))
+            Ok(project_data::projects::to_rows(&Default::default()))
         })
         .unwrap();
     }

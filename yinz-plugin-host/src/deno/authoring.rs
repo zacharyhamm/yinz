@@ -1,4 +1,4 @@
-//! One offline policy for CLI and Hocus. Only owned copies reach native tools.
+//! One offline policy for CLI and Agent. Only owned copies reach native tools.
 use super::{checker, loader, worker};
 use std::{
     path::{Component, Path, PathBuf},

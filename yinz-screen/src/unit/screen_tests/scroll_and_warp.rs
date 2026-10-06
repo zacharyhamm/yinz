@@ -3849,7 +3849,7 @@ fn warp_held_state_survives_single_pane_tab_and_companion_transfers() {
 
 #[test]
 fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
-    use yinz_types::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
+    use yinz_types::data::{OriginatingPlugin, AGENT_PANE_CONTEXT};
     use yinz_types::input::hooks::HookPoint;
 
     for kind in ["pane", "tab", "companion"] {
@@ -3885,7 +3885,7 @@ fn warp_held_replacements_resume_only_when_the_pane_stays_in_the_source() {
                             yinz_types::internal_ids::PluginId::new(2),
                             ClientId::new(1),
                             std::collections::BTreeMap::from([(
-                                HOCUS_AGENT_PANE_CONTEXT.into(),
+                                AGENT_PANE_CONTEXT.into(),
                                 "true".into(),
                             )]),
                         )),

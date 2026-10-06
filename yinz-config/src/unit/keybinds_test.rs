@@ -560,7 +560,7 @@ fn example_agent_mode_moves_the_panel() {
         .keybinds
         .get_actions_for_key_in_mode(&InputMode::Agent, &KeyWithModifier::new(BareKey::Char('o')))
         .expect("Agent mode binds o");
-    // A message that names no plugin, so it reaches the hocus already running and starts
+    // A message that names no plugin, so it reaches the agent already running and starts
     // none, then back to Normal as every other Agent-mode key goes.
     assert!(
         matches!(

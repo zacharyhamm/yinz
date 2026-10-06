@@ -64,8 +64,8 @@ export const agentProvider: AgentProvider = {
   hooks: [
     {
       base: "config",
-      path: "opencode/plugin/hocus.js",
-      marker: "hocus-opencode-plugin",
+      path: "opencode/plugin/yinz.js",
+      marker: "yinz-opencode-plugin",
       content: hookSource,
     },
   ],

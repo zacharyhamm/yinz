@@ -1,4 +1,4 @@
-//! One request to the running hocus-store, with no stdin loop or mutation retries.
+//! One request to the running project-store, with no stdin loop or mutation retries.
 use std::time::{Duration, Instant};
 use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, ServerToClientMsg};
 use yinz_runtime::errors::prelude::*;

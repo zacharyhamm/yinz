@@ -596,7 +596,7 @@ fn restart_and_fork_are_offered_while_the_workflow_runs_and_a_started_fork_cance
     yinz.wait_until("a cancelled picker returns to the running view", |_| {
         !panes(&yinz)
             .iter()
-            .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent"))
+            .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent"))
     });
     assert_eq!(fixture_reply(&yinz, "status"), "running");
     yinz.wait_until("the running view offers fork again", |s| {
@@ -615,7 +615,7 @@ fn restart_and_fork_are_offered_while_the_workflow_runs_and_a_started_fork_cance
                 p.pane_info.id == before[0].pane_info.id
                     && !p.pane_info.exited
                     && p.pane_info.terminal_command.as_deref()
-                        == Some("yinz hocus codex --command codex --")
+                        == Some("yinz agent codex --command codex --")
             }) && fixture_reply(&yinz, "status") == "cancelled"
         },
     );
@@ -708,14 +708,14 @@ fn workflow_fork_reuses_the_source_layout_scrollback_directory_and_focus() {
                 p.pane_info
                     .plugin_url
                     .as_deref()
-                    .is_some_and(|url| url == "yinz:hocus-new-agent" || url.ends_with("/exit.ts"))
+                    .is_some_and(|url| url == "yinz:new-agent" || url.ends_with("/exit.ts"))
             })
             && now.iter().any(|p| {
                 p.pane_info.id == before[0].pane_info.id
                     && !p.pane_info.exited
                     && !p.pane_info.is_suppressed
                     && p.pane_info.terminal_command.as_deref()
-                        == Some("yinz hocus codex --command codex --")
+                        == Some("yinz agent codex --command codex --")
             })
     });
     let after = panes(&yinz);
@@ -791,7 +791,7 @@ fn workflow_fork_cancellation_returns_to_the_exit_menu_without_starting_an_agent
     );
     assert!(!after
         .iter()
-        .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent")));
+        .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent")));
     yinz.quit();
 }
 
@@ -805,7 +805,7 @@ fn manual_picker_source_closure_completes_without_a_persisted_view() {
             && state["choice"] == "cancelled"
             && !panes(&yinz)
                 .iter()
-                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent"))
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent"))
     });
     let after = panes(&yinz);
     assert_eq!(
@@ -814,7 +814,7 @@ fn manual_picker_source_closure_completes_without_a_persisted_view() {
     );
     assert!(!after
         .iter()
-        .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent")));
+        .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent")));
     yinz.quit();
 }
 
@@ -830,7 +830,7 @@ fn workflow_fork_cancels_when_the_source_restarts_before_confirmation() {
             && !original.is_exited()
             && !panes(&yinz)
                 .iter()
-                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent"))
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent"))
     });
     let after = panes(&yinz);
     assert_eq!(
@@ -840,7 +840,7 @@ fn workflow_fork_cancels_when_the_source_restarts_before_confirmation() {
     assert!(!after
         .iter()
         .any(|p| p.pane_info.terminal_command.as_deref()
-            == Some("yinz hocus codex --command codex --")));
+            == Some("yinz agent codex --command codex --")));
     let mut restarted = expected;
     assert_eq!(restarted.args.pop().as_deref(), Some("original prompt"));
     assert_eq!(original.run_command(), restarted);
@@ -856,7 +856,7 @@ fn workflow_fork_rechecks_a_closed_source_before_confirmation() {
         after.iter().filter(|p| !p.pane_info.is_plugin()).count() == before.len() - 1
             && !after
                 .iter()
-                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:hocus-new-agent"))
+                .any(|p| p.pane_info.plugin_url.as_deref() == Some("yinz:new-agent"))
     });
     yinz.quit();
 }

@@ -1,0 +1,26 @@
+[package]
+name = "project-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The agent plugins' store engine seam, entity schemas, and project/todo/note registry"
+
+[lints]
+workspace = true
+
+# Nothing from the rest of agent-proto: the plugin host links this crate for the project
+# registry, so it must not bring agent strips, envelopes, the LLM request builders or swamp-lab
+# into the server with it.
+[dependencies]
+yinz-tile = { path = "../../yinz-tile" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+
+# The store engine, for `store::Local`. Not a dev-dependency: the crates that
+# link this one test against `Local` too, and a dev-dependency would not reach
+# them. Target-gated because `plugin_data_store` and `rusqlite` do not build for
+# wasm — which is the same reason the plugins get `store::Host` instead.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+yinz-storage = { workspace = true }
+tempfile = { workspace = true }

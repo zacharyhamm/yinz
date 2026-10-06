@@ -133,17 +133,17 @@ fn project_event_membership_recovers_after_failed_probes_with_identical_inputs()
     let temp = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(temp.path());
     let store = data.plugin_data();
-    for def in hocus_data::store::shared_defs() {
+    for def in project_data::store::shared_defs() {
         store
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let mut project = hocus_data::projects::validate("work", "/work").unwrap();
+    let mut project = project_data::projects::validate("work", "/work").unwrap();
     project.remote = Some("git@example.com:team/repo.git".into());
     store
         .apply(
-            hocus_data::store::SHARED,
-            &[hocus_data::projects::to_mutation(&project)],
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
         )
         .unwrap();
     let remote = AgentStatus {
@@ -202,17 +202,17 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
     git(&root, &["init", "-b", "main"]);
     let data = DataAccess::sqlite(temp.path());
     let store = data.plugin_data();
-    for def in hocus_data::store::shared_defs() {
+    for def in project_data::store::shared_defs() {
         store
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let mut project = hocus_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
     project.remote = Some("git@example.com:team/repo.git".into());
     let id = store
         .apply(
-            hocus_data::store::SHARED,
-            &[hocus_data::projects::to_mutation(&project)],
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
         )
         .unwrap()
         .report
@@ -300,7 +300,7 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
     for (project_id, expected) in [(id.get() + 1, false), (id.get(), true)] {
         store
             .apply(
-                hocus_data::store::SHARED,
+                project_data::store::SHARED,
                 &[Mutation::put("agent_assignment")
                     .uid("remote-override")
                     .set("host_id", "host")
@@ -322,7 +322,7 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
     }
     store
         .apply(
-            hocus_data::store::SHARED,
+            project_data::store::SHARED,
             &[Mutation::delete(
                 "agent_assignment",
                 yinz_types::plugin_data::Pred::eq("uid", "remote-override"),
@@ -340,7 +340,7 @@ fn project_filter_respects_host_session_assignment_and_remote_paths() {
     ] {
         store
             .apply(
-                hocus_data::store::SHARED,
+                project_data::store::SHARED,
                 &[Mutation::put("agent_assignment")
                     .uid(format!("{host}/{session}"))
                     .set("host_id", host)
@@ -383,18 +383,18 @@ fn project_launch_defaults_and_firecracker_placement_are_shared() {
     }
     let data = DataAccess::sqlite(&root.join("data"));
     let store = data.plugin_data();
-    for def in hocus_data::store::shared_defs() {
+    for def in project_data::store::shared_defs() {
         store
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let mut project = hocus_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+    let mut project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
     project.worktree_dir = Some("custom-trees".into());
     project.firecracker_image = Some("rust".into());
     store
         .apply(
-            hocus_data::store::SHARED,
-            &[hocus_data::projects::to_mutation(&project)],
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
         )
         .unwrap();
     for (reuse, branch) in [(false, "topic"), (false, "topic-2"), (true, "topic")] {
@@ -506,18 +506,18 @@ fn project_containment_uses_canonical_paths() {
     std::os::unix::fs::symlink(&root, base.join("alias")).unwrap();
     std::os::unix::fs::symlink(&sibling, root.join("escape")).unwrap();
     let data = DataAccess::sqlite(&base.join("data"));
-    for def in hocus_data::store::shared_defs() {
+    for def in project_data::store::shared_defs() {
         data.plugin_data()
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
     for project_root in [&root, &base.join("alias")] {
         let project =
-            hocus_data::projects::validate("work", project_root.to_str().unwrap()).unwrap();
+            project_data::projects::validate("work", project_root.to_str().unwrap()).unwrap();
         data.plugin_data()
             .apply(
-                hocus_data::store::SHARED,
-                &[hocus_data::projects::to_mutation(&project)],
+                project_data::store::SHARED,
+                &[project_data::projects::to_mutation(&project)],
             )
             .unwrap();
         for cwd in [root.join("src"), base.join("alias/src")] {
@@ -605,16 +605,16 @@ fn project_filter_uses_repository_identity_before_containment() {
     let data = DataAccess::sqlite(&root.join("data"));
     let store = data.plugin_data();
     // Missing assignments are allowed; repository ownership still works.
-    for def in hocus_data::store::shared_defs()
+    for def in project_data::store::shared_defs()
         .into_iter()
         .filter(|def| def.name == "project")
     {
         store
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let outer = hocus_data::projects::validate("outer", root.to_str().unwrap()).unwrap();
-    let mut project = hocus_data::projects::validate("work", "/registered/elsewhere").unwrap();
+    let outer = project_data::projects::validate("outer", root.to_str().unwrap()).unwrap();
+    let mut project = project_data::projects::validate("work", "/registered/elsewhere").unwrap();
     project.remote = Some("git@example.com:team/repo.git".into());
     project.common_dir = Some(checkout.join(".git").to_string_lossy().into_owned());
     let check = |cwd: &std::path::Path, name: &str, expected: bool| {
@@ -630,10 +630,10 @@ fn project_filter_uses_repository_identity_before_containment() {
         }
         store
             .apply(
-                hocus_data::store::SHARED,
+                project_data::store::SHARED,
                 &[
-                    hocus_data::projects::to_mutation(&outer),
-                    hocus_data::projects::to_mutation(&project),
+                    project_data::projects::to_mutation(&outer),
+                    project_data::projects::to_mutation(&project),
                 ],
             )
             .unwrap();
@@ -654,16 +654,16 @@ fn project_filter_limits_assignments_per_host_and_session() {
     let temp = tempfile::tempdir().unwrap();
     let data = DataAccess::sqlite(temp.path());
     let store = data.plugin_data();
-    for def in hocus_data::store::shared_defs() {
+    for def in project_data::store::shared_defs() {
         store
-            .define_entity(hocus_data::store::SHARED, "test", &def, false)
+            .define_entity(project_data::store::SHARED, "test", &def, false)
             .unwrap();
     }
-    let project = hocus_data::projects::validate("work", "/work").unwrap();
+    let project = project_data::projects::validate("work", "/work").unwrap();
     let id = store
         .apply(
-            hocus_data::store::SHARED,
-            &[hocus_data::projects::to_mutation(&project)],
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
         )
         .unwrap()
         .report
@@ -680,14 +680,16 @@ fn project_filter_limits_assignments_per_host_and_session() {
     };
     // Each unrelated owner exceeds the limit independently: neither half may be omitted.
     for (host, session) in [("other", "session"), ("host", "other")] {
-        let mutations: Vec<_> = (0..=hocus_data::store::LIST_FETCH_LIMIT)
+        let mutations: Vec<_> = (0..=project_data::store::LIST_FETCH_LIMIT)
             .map(|tab| assignment(host, session, i64::from(tab)))
             .collect();
-        store.apply(hocus_data::store::SHARED, &mutations).unwrap();
+        store
+            .apply(project_data::store::SHARED, &mutations)
+            .unwrap();
     }
     store
         .apply(
-            hocus_data::store::SHARED,
+            project_data::store::SHARED,
             &[assignment("host", "session", 3)],
         )
         .unwrap();
@@ -700,10 +702,12 @@ fn project_filter_limits_assignments_per_host_and_session() {
     })
     .unwrap();
     assert_eq!(response.agents.len(), 1);
-    let mutations: Vec<_> = (0..=hocus_data::store::LIST_FETCH_LIMIT)
+    let mutations: Vec<_> = (0..=project_data::store::LIST_FETCH_LIMIT)
         .map(|tab| assignment("host", "session", i64::from(tab)))
         .collect();
-    store.apply(hocus_data::store::SHARED, &mutations).unwrap();
+    store
+        .apply(project_data::store::SHARED, &mutations)
+        .unwrap();
     assert_eq!(
         filter_project(&mut response, "work", &data, |_, _| panic!("truncated")),
         Err("project assignments are incomplete".into())

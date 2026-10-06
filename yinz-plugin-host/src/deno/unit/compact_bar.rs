@@ -395,7 +395,7 @@ fn compact_bar_wasm_deno_tooltip_action_wire_payloads() {
     // the reference when Deno receives the richer native event.
     let launch = |extra_fields: bool, should_float| Action::LaunchPlugin {
         plugin: RunPluginOrAlias::Alias(PluginAlias::new(
-            "hocus-agents",
+            "agents",
             &None,
             extra_fields.then(|| "/tmp/alias".into()),
         )),

@@ -16,7 +16,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
     new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
         crate::TerminalId::new(1),
-        std::path::PathBuf::from("/work/hocus"),
+        std::path::PathBuf::from("/work/agent"),
     );
 
     let manifest = screen.generate_and_report_pane_state().expect("TEST");
@@ -27,7 +27,7 @@ fn a_pane_manifest_carries_the_pane_cwd() {
         .flatten()
         .find(|pane| pane.id == PaneId::Terminal(crate::TerminalId::new(1)))
         .expect("the terminal pane is in the manifest");
-    assert_eq!(pane.cwd.as_deref(), Some("/work/hocus"));
+    assert_eq!(pane.cwd.as_deref(), Some("/work/agent"));
 }
 
 /// A pane that named a VM and no worktree of its own gets the one the provider named,
@@ -78,7 +78,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         .set_pane_host(
             crate::TerminalId::new(1),
             Some("firecracker:review".to_owned()),
-            Some(std::path::PathBuf::from("/work/hocus")),
+            Some(std::path::PathBuf::from("/work/agent")),
         )
         .unwrap();
 
@@ -91,7 +91,7 @@ fn a_pane_manifest_carries_the_worktree_a_firecracker_vm_mirrors() {
         .expect("the terminal pane is in the manifest");
     assert_eq!(
         pane.target.firecracker_worktree(),
-        Some(std::path::Path::new("/work/hocus"))
+        Some(std::path::Path::new("/work/agent"))
     );
     assert_eq!(pane.host.as_deref(), Some("firecracker:review"));
 }
@@ -104,7 +104,7 @@ fn a_plugin_pane_has_no_cwd() {
     new_tab(&mut screen, 1, TabId::new(0));
     screen.terminal_cwds.insert(
         crate::TerminalId::new(1),
-        std::path::PathBuf::from("/work/hocus"),
+        std::path::PathBuf::from("/work/agent"),
     );
 
     let manifest = screen.generate_and_report_pane_state().expect("TEST");

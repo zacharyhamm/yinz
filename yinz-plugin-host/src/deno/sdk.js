@@ -788,9 +788,6 @@
     },
   });
 
-  let hocusIdentity = null;
-  let hocusDefinitions = null;
-  let hocusHandlers = new Map();
   let rpcPrefix = null;
   let rpcCount = 0n;
   const rpcHandlers = new Map();
@@ -809,7 +806,7 @@
       }));
     }
     const encoded = JSON.stringify(copy(value));
-    if (encodeUtf8(encoded).length > maxBytes) throw new RangeError(`RPC/Hocus payload exceeds ${maxBytes} bytes`);
+    if (encodeUtf8(encoded).length > maxBytes) throw new RangeError(`RPC payload exceeds ${maxBytes} bytes`);
     return encoded;
   }
   function sendPluginMessage(name, payload, destination = null, pluginUrl = null, pluginConfig = {}, maxBytes = 64000) {
@@ -822,7 +819,7 @@
   }
   const rpc = Object.freeze({
     handle(name, handler) {
-      if (typeof name !== "string" || !name || name.startsWith("hocus_tool:")) throw new TypeError("RPC name must be nonempty and not use reserved hocus_tool: prefix");
+      if (typeof name !== "string" || !name) throw new TypeError("RPC name must be nonempty");
       if (typeof handler !== "function") throw new TypeError("RPC handler must be a function");
       rpcHandlers.set(name, handler);
     },
@@ -841,7 +838,7 @@
         const callId = rpcPrefix + ":rpc" + (++rpcCount);
         let timer;
         operation.cleanup = () => { rpcCalls.delete(callId); timer?.cancel(); };
-        const maxBytes = name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
+        const maxBytes = RPC_MAX_BYTES;
         rpcCalls.set(callId, {operation, pluginId, maxBytes, onProgress, origin: client});
         if (timeoutMs !== undefined) timer = addTimer(timeoutMs, () => {
           const error = new Error("RPC timed out: " + name);
@@ -852,11 +849,6 @@
       });
     },
   });
-  function registerHocus(definitions = hocusDefinitions) {
-    if (hocusIdentity && definitions !== null) {
-      sendPluginMessage("hocus_extension_register", {version: 1, ...hocusIdentity, tools: definitions});
-    }
-  }
   const completions = new Map();
   let completionCount = 0n;
   function completionCalls(calls) {
@@ -890,22 +882,22 @@
       jsonMessage(payload);
       const snapshot = command("GetSessionList");
       const daemons = snapshot.live_sessions.filter(s => s.is_current_session).flatMap(s => Object.entries(s.plugins))
-        .filter(([,p]) => p.location === "yinz:hocus-agentd");
-      if (daemons.length !== 1) throw new Error(daemons.length ? "multiple hocus-agentd plugins in the current session" : "no hocus-agentd in the current session");
+        .filter(([,p]) => p.location === "yinz:agent-service");
+      if (daemons.length !== 1) throw new Error(daemons.length ? "multiple agent-service plugins in the current session" : "no agent-service in the current session");
       const pluginId = Number(daemons[0][0]);
-      if (!Number.isSafeInteger(pluginId) || pluginId < 0 || pluginId > 4294967295) throw new Error("invalid hocus-agentd plugin ID");
+      if (!Number.isSafeInteger(pluginId) || pluginId < 0 || pluginId > 4294967295) throw new Error("invalid agent-service plugin ID");
       let timer;
       operation.cleanup = () => { completions.delete(request_id); timer?.cancel(); };
       completions.set(request_id, {operation, pluginId});
       timer = addTimer(timeoutMs, () => {
-        const error = new Error("Hocus completion timed out"); error.name = "TimeoutError"; operation.reject(error);
+        const error = new Error("LLM completion timed out"); error.name = "TimeoutError"; operation.reject(error);
       }, operation.reject);
-      sendPluginMessage("hocus_complete", payload, pluginId);
+      sendPluginMessage("llm_complete", payload, pluginId);
     });
   }
   function completionPipe(message) {
-    if (message.name === "hocus_complete") return true;
-    if (message.name !== "hocus_complete_result") return false;
+    if (message.name === "llm_complete") return true;
+    if (message.name !== "llm_complete_result") return false;
     if (typeof message.payload !== "string") return true;
     let reply;
     try { reply = JSON.parse(message.payload); validate(reply); record(reply, "completion reply"); } catch (_) { return true; }
@@ -925,40 +917,7 @@
     waiting.operation.resolve({content:reply.content, toolCalls:reply.tool_calls, finishReason:reply.finish_reason, usage:reply.usage, model:reply.model});
     return true;
   }
-  const hocus = Object.freeze({
-    complete,
-    launch: () => hocusIdentity && {...hocusIdentity},
-    tools(definitions) {
-      record(definitions, "Hocus tools");
-      const entries = Object.entries(definitions);
-      if (entries.length > 32) throw new RangeError("at most 32 Hocus tools are allowed");
-      const replacement = new Map();
-      const specs = entries.sort(([a], [b]) => a.localeCompare(b)).map(([name, definition]) => {
-        const {handler, description = name, parameters = {type: "object"}, safety = "read_only", consequence = null} = record(definition, "Hocus tool");
-        if (!/^[a-z][a-z0-9_]*$/.test(name) || name.length > 64) throw new TypeError("tool names must be lower snake case, at most 64 characters");
-        if (typeof handler !== "function") throw new TypeError("tool handler must be a function");
-        if (typeof description !== "string" || !description.trim() || encodeUtf8(description).length > 2000) throw new TypeError("tool description must contain 1–2000 bytes");
-        validate(parameters);
-        if (parameters?.type !== "object" || encodeUtf8(JSON.stringify(parameters)).length > 16000) throw new TypeError("tool parameters must be an object JSON Schema of at most 16000 bytes");
-        if (!["read_only", "automatic", "confirm"].includes(safety)) throw new TypeError("invalid tool safety");
-        if (consequence !== null && typeof consequence !== "string") throw new TypeError("consequence must be a string");
-        if (safety === "confirm" && !consequence?.trim()) throw new TypeError("confirm requires a consequence");
-        replacement.set("hocus_tool:" + name, handler);
-        return {name, description, parameters, safety, consequence};
-      });
-      // The dispatcher checks the existing grant before publishing or replacing handlers.
-      registerHocus(specs);
-      hocusDefinitions = JSON.parse(JSON.stringify(specs));
-      hocusHandlers = replacement;
-    },
-  });
-  function hocusPipe(message) {
-    if (message.name === "hocus_extension_discover") {
-      if (message.source && Number.isSafeInteger(message.source.Plugin)) registerHocus();
-      return true;
-    }
-    return false;
-  }
+  const llm = Object.freeze({complete});
   function rpcPipe(message) {
     if (!["yinz_rpc_call", "yinz_rpc_reply", "yinz_rpc_progress"].includes(message.name)) return false;
     const from = message.source?.Plugin;
@@ -986,7 +945,7 @@
       return true;
     }
     if (typeof call.name !== "string" || !call.name) return true;
-    const maxBytes = call.name.startsWith("hocus_tool:") ? 64000 : RPC_MAX_BYTES;
+    const maxBytes = RPC_MAX_BYTES;
     if (encodeUtf8(message.payload).length > maxBytes) return true;
     const origin = client;
     let active = true;
@@ -1017,7 +976,7 @@
       } catch (error) { fail(error); }
       finally { client = previous; }
     };
-    const handler = call.name.startsWith("hocus_tool:") ? (hocusIdentity && hocusHandlers.get(call.name)) : rpcHandlers.get(call.name);
+    const handler = rpcHandlers.get(call.name);
     try {
       if (!handler) throw new Error("no rpc handler named " + call.name);
       const payload = call.payload ?? null;
@@ -1582,7 +1541,7 @@
     projectConfig,
     ui,
     text,
-    hocus,
+    llm,
     agent,
     rpc,
     data,
@@ -1654,11 +1613,9 @@
       arg = { ...defaults, ...arg };
       if (arg.trace === "true") trace(true);
       else if (arg.trace === "false") trace(false);
-      const namespace = arg.hocus_extension_name, path = arg.hocus_extension_path;
-      hocusIdentity = typeof namespace === "string" && namespace && typeof path === "string" && path ? {namespace, path} : null;
     }
     if (tracing && name === "pipe") transcript(`pipe ${traceName(arg.name)}`);
-    if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || hocusPipe(arg) || keybindingPipe(arg))) return;
+    if (name === "pipe" && (completionPipe(arg) || rpcPipe(arg) || keybindingPipe(arg))) return;
     const type = name === "update" ? (typeof arg === "string" ? arg : Object.keys(arg)[0]) : undefined;
     if (tracing && name === "update") transcript(`event ${traceName(type)}`);
     const payload = name === "update" && typeof arg !== "string" ? arg[type] : undefined;

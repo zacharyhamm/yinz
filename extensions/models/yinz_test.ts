@@ -46,8 +46,8 @@ Deno.test("Yinz methods preserve argv, validate snapshots, and fail without writ
         is_current_session: true,
         panes: {}, // Headless daemon has no pane.
         plugins: {
-            "42": { location: "yinz:hocus-agentd" },
-            "7": { location: "yinz:hocus" },
+            "42": { location: "yinz:agent-service" },
+            "7": { location: "yinz:agents" },
             "8": { location: "file:unrelated.ts" },
         },
     };
@@ -195,7 +195,7 @@ Deno.test("Yinz methods preserve argv, validate snapshots, and fail without writ
         ]);
         equal(writes.pop()?.name, "pipe");
 
-        const completion = model.methods.hocus_complete;
+        const completion = model.methods.llm_complete;
         const toolCall = {
             id: "call-1",
             name: "lookup",
@@ -262,7 +262,7 @@ Deno.test("Yinz methods preserve argv, validate snapshots, and fail without writ
                 "example-session",
                 "pipe",
                 "--name",
-                "hocus_complete",
+                "llm_complete",
                 "--plugin",
                 "plugin_42",
                 "--",
@@ -393,19 +393,19 @@ Deno.test("Yinz methods preserve argv, validate snapshots, and fail without writ
                 snapshot([{ ...session, plugins: {} }]),
                 snapshot([{
                     ...session,
-                    plugins: { "7": { location: "yinz:hocus" } },
+                    plugins: { "7": { location: "yinz:agents" } },
                 }]),
                 snapshot([{
                     ...session,
                     plugins: {
                         ...session.plugins,
-                        "99": { location: "yinz:hocus-agentd" },
+                        "99": { location: "yinz:agent-service" },
                     },
                 }]),
                 ...["bad", "-1", "1.5", "01", "4294967296"].map((id) =>
                     snapshot([{
                         ...session,
-                        plugins: { [id]: { location: "yinz:hocus-agentd" } },
+                        plugins: { [id]: { location: "yinz:agent-service" } },
                     }])
                 ),
                 snapshot([{ ...session, plugins: null }]),

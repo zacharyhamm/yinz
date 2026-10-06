@@ -1,4 +1,5 @@
 use super::*;
+use yinz_types::internal_ids::DataRevision;
 
 #[test]
 fn defining_an_entity_reports_that_it_was_created() {
@@ -297,7 +298,7 @@ fn a_second_plugin_may_extend_a_shared_entity_but_not_shrink_it() {
     let (store, _dir) = store();
     let shared = "shared:agents";
     store
-        .define_entity(shared, "yinz:hocus", &agent_def(), false)
+        .define_entity(shared, "yinz:agents", &agent_def(), false)
         .unwrap();
     // extending is fine: the owner's columns are all still there
     let extended = agent_def().attr(AttrDef::text("worktree"));
@@ -339,14 +340,14 @@ fn namespaces_are_separate_stores() {
 
 #[test]
 fn a_private_namespace_is_derived_from_the_plugin_url() {
-    assert_eq!(private_namespace("yinz:hocus"), "plugin:yinz:hocus");
+    assert_eq!(private_namespace("yinz:agents"), "plugin:yinz:agents");
     // a debug and a release build of the same plugin are different plugins here, exactly as
     // they are for permissions
     assert_ne!(
         private_namespace("file:/target/debug/x.wasm"),
         private_namespace("file:/target/release/x.wasm")
     );
-    assert!(!is_shared_namespace(&private_namespace("yinz:hocus")));
+    assert!(!is_shared_namespace(&private_namespace("yinz:agents")));
     assert!(is_shared_namespace("shared:agents"));
 }
 
@@ -622,5 +623,189 @@ fn tool_history_v4_adds_nullable_metadata_without_changing_searchable_entries() 
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[test]
+fn builtin_rename_preserves_rows_links_revisions_and_search() {
+    let (store, guard) = store();
+    let def = agent_def().attr(AttrDef::int("parent_id"));
+    for (namespace, owner) in [
+        ("shared:hocus", "yinz:hocus-store"),
+        ("plugin:yinz:hocus", "yinz:hocus"),
+        ("plugin:yinz:hocus-agentd", "yinz:hocus-agentd"),
+        ("shared:unrelated", "file:/custom.ts"),
+    ] {
+        store.define_entity(namespace, owner, &def, false).unwrap();
+        store
+            .apply(
+                namespace,
+                &[Mutation::put("agent")
+                    .uid("kept")
+                    .set("project", "project")
+                    .set("summary", "searchable history")
+                    .set("parent_id", 1_i64)
+                    .build()],
+            )
+            .unwrap();
+        store
+            .apply(
+                namespace,
+                &[Mutation::update("agent", Pred::eq("uid", "kept"))
+                    .set("branch", "topic")
+                    .build()],
+            )
+            .unwrap();
+    }
+    let before = store
+        .fetch("shared:hocus", &FetchRequest::entity("agent"))
+        .unwrap();
+    let private = store
+        .fetch("plugin:yinz:hocus", &FetchRequest::entity("agent"))
+        .unwrap();
+    let service = store
+        .fetch("plugin:yinz:hocus-agentd", &FetchRequest::entity("agent"))
+        .unwrap();
+    let unrelated = store
+        .fetch("shared:unrelated", &FetchRequest::entity("agent"))
+        .unwrap();
+    let mut job = def.clone();
+    job.name = "job".into();
+    store
+        .define_entity("shared:hocus", "yinz:hocus", &job, false)
+        .unwrap();
+    store
+        .apply(
+            "shared:hocus",
+            &[Mutation::put("job")
+                .uid("retired")
+                .set("summary", "never scheduled again")
+                .build()],
+        )
+        .unwrap();
+    let jobs = store
+        .fetch("shared:hocus", &FetchRequest::entity("job"))
+        .unwrap();
+    drop(store);
+    set_store_version(&guard, 3);
+    let store = reopen(&guard);
+    for (namespace, expected) in [
+        ("shared:yinz", &before),
+        ("plugin:yinz:retired-chat", &private),
+        ("plugin:yinz:agent-service", &service),
+        ("shared:unrelated", &unrelated),
+    ] {
+        assert_eq!(
+            &store
+                .fetch(namespace, &FetchRequest::entity("agent"))
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        store
+            .fetch("plugin:yinz:retired-chat", &FetchRequest::entity("job"))
+            .unwrap(),
+        jobs
+    );
+    let entities = store.catalog(Some("shared:yinz")).unwrap();
+    assert_eq!(entities[0].owner_plugin, "yinz:project-store");
+    let search = store
+        .fetch(
+            "shared:yinz",
+            &FetchRequest::entity("agent").search("searchable"),
+        )
+        .unwrap();
+    assert_eq!(search.len(), 1);
+    // A revision the old author read still guards the migrated row.
+    store
+        .apply(
+            "shared:yinz",
+            &[Mutation::update("agent", Pred::eq("uid", "kept"))
+                .expect_rev(DataRevision::new(2))
+                .set("branch", "after upgrade")
+                .build()],
+        )
+        .unwrap();
+    assert_err!(
+        store
+            .apply(
+                "shared:yinz",
+                &[Mutation::update("agent", Pred::eq("uid", "kept"))
+                    .expect_rev(DataRevision::new(2))
+                    .set("branch", "stale")
+                    .build()]
+            )
+            .unwrap_err(),
+        DataError::Conflict(_)
+    );
+    let after = store
+        .fetch("shared:yinz", &FetchRequest::entity("agent"))
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        reopen(&guard)
+            .fetch("shared:yinz", &FetchRequest::entity("agent"))
+            .unwrap(),
+        after
+    );
+}
+
+#[test]
+fn builtin_rename_collision_rolls_back_every_entity_and_version() {
+    let (store, guard) = store();
+    for (namespace, owner) in [
+        ("shared:hocus", "yinz:hocus-store"),
+        ("shared:yinz", "yinz:project-store"),
+        ("plugin:yinz:hocus", "yinz:hocus"),
+    ] {
+        store
+            .define_entity(namespace, owner, &agent_def(), false)
+            .unwrap();
+        store
+            .apply(
+                namespace,
+                &[Mutation::put("agent")
+                    .uid("kept")
+                    .set("summary", namespace)
+                    .build()],
+            )
+            .unwrap();
+    }
+    drop(store);
+    set_store_version(&guard, 3);
+    let failed = reopen(&guard);
+    assert_err!(failed.catalog(None).unwrap_err(), DataError::Storage(_));
+    drop(failed);
+    assert_eq!(store_version(&guard), 3);
+    // Bypass only the migration to inspect the transaction's original contents.
+    set_store_version(&guard, 4);
+    let store = reopen(&guard);
+    assert_eq!(
+        texts(
+            &store
+                .fetch("shared:hocus", &FetchRequest::entity("agent"))
+                .unwrap(),
+            "summary"
+        ),
+        ["shared:hocus"]
+    );
+    assert_eq!(
+        texts(
+            &store
+                .fetch("shared:yinz", &FetchRequest::entity("agent"))
+                .unwrap(),
+            "summary"
+        ),
+        ["shared:yinz"]
+    );
+    assert_eq!(
+        texts(
+            &store
+                .fetch("plugin:yinz:hocus", &FetchRequest::entity("agent"))
+                .unwrap(),
+            "summary"
+        ),
+        ["plugin:yinz:hocus"]
     );
 }

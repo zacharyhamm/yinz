@@ -13,7 +13,7 @@ fn pipe_output_that_fits_in_a_frame_reaches_the_cli_unchanged() {
 
 /// The thread writing to the client refuses a frame over the limit but can only log it, so
 /// before the server checked, `yinz pipe` took the plugin's unblock that followed and exited 0
-/// with an empty stdout, and `yinz hocus store` waited out its deadline.
+/// with an empty stdout, and `yinz agent store` waited out its deadline.
 #[test]
 fn pipe_output_too_large_for_a_frame_reaches_the_cli_as_an_error() {
     let reply = cli_pipe_reply("pipe".into(), "x".repeat(yinz_ipc::MAX_IPC_FRAME_LEN));

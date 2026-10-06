@@ -29,7 +29,7 @@ impl PaneTabDescriptor {
         if let Some(plugin) = aliases.aliases.get(&self.location) {
             if !matches!(
                 plugin.location.display().as_str(),
-                "yinz:hocus-agents" | "yinz:hocus-todos" | "yinz:hocus-vms" | "yinz:hocus-swamp"
+                "yinz:agents" | "yinz:todos" | "yinz:vms" | "yinz:swamp-issues"
             ) {
                 return;
             }
@@ -39,17 +39,17 @@ impl PaneTabDescriptor {
             if self.initial_cwd.is_some() {
                 plugin.initial_cwd = self.initial_cwd.clone();
             }
-            plugin.normalize_hocus_panel();
+            plugin.normalize_agent_panel();
             self.location = plugin.location.display();
             self.configuration = plugin.configuration.inner().clone();
             self.initial_cwd = plugin.initial_cwd;
         }
-        self.normalize_hocus_panel();
+        self.normalize_agent_panel();
     }
 
-    pub fn normalize_hocus_panel(&mut self) {
+    pub fn normalize_agent_panel(&mut self) {
         if let Some(location) =
-            crate::input::layout::normalize_hocus_panel(&self.location, &mut self.configuration)
+            crate::input::layout::normalize_agent_panel(&self.location, &mut self.configuration)
         {
             self.location = location.into();
         }

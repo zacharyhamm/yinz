@@ -152,8 +152,8 @@ pub(crate) fn agent_event_projects(
 pub(super) fn projects(data: &DataAccess) -> Result<yinz_types::data::DataRows, String> {
     data.plugin_data()
         .fetch(
-            hocus_data::store::SHARED,
-            &FetchRequest::entity("project").limit(hocus_data::store::LIST_FETCH_LIMIT),
+            project_data::store::SHARED,
+            &FetchRequest::entity("project").limit(project_data::store::LIST_FETCH_LIMIT),
         )
         .or_else(|error| match error {
             DataError::UnknownEntity(_) => Ok(Default::default()),
@@ -177,11 +177,11 @@ fn filter_project(
     mut probe_of: impl FnMut(PaneId, &str) -> yinz_types::data::GetPaneGitProbeResponse,
 ) -> Result<bool, String> {
     let rows = projects(data)?;
-    let registry = hocus_data::projects::from_rows(&rows);
+    let registry = project_data::projects::from_rows(&rows);
     let project = registry
         .get(name)
         .ok_or("unknown project; use project-list")?;
-    let ids = hocus_data::projects::row_ids(&rows);
+    let ids = project_data::projects::row_ids(&rows);
     let project_id = ids.get(name).ok_or("project has no identity")?;
     let mut assignments = BTreeMap::new();
     for status in response
@@ -191,14 +191,14 @@ fn filter_project(
     {
         let key = (status.host_id.clone(), status.session.clone());
         if let std::collections::btree_map::Entry::Vacant(entry) = assignments.entry(key) {
-            let owner = hocus_data::store::Owner::new(
+            let owner = project_data::store::Owner::new(
                 status.host_id.clone(),
                 status.session.clone().into(),
             );
             let rows = data.plugin_data().fetch(
-                hocus_data::store::SHARED,
-                &hocus_data::store::owned_rows_request("agent_assignment", &owner)
-                    .limit(hocus_data::store::LIST_FETCH_LIMIT),
+                project_data::store::SHARED,
+                &project_data::store::owned_rows_request("agent_assignment", &owner)
+                    .limit(project_data::store::LIST_FETCH_LIMIT),
             );
             entry.insert(match rows {
                 Ok(rows) if !rows.truncated => Some(rows),
@@ -244,8 +244,8 @@ fn filter_project(
                 if probe.host != *host || probe.cwd != cwd {
                     return false;
                 }
-                let hocus_data::git_probe::ProbeOutcome::Checkout(mut repository) =
-                    hocus_data::git_probe::repository(
+                let project_data::git_probe::ProbeOutcome::Checkout(mut repository) =
+                    project_data::git_probe::repository(
                         probe.exit_code,
                         &probe.metadata,
                         &probe.config,
@@ -254,7 +254,7 @@ fn filter_project(
                     return false;
                 };
                 repository.host = Some(probe.host);
-                return hocus_data::projects::for_repository(&registry, &repository)
+                return project_data::projects::for_repository(&registry, &repository)
                     .is_some_and(|owner| owner.name == project.name);
             },
             yinz_types::command::PaneTarget::Firecracker {
@@ -266,14 +266,18 @@ fn filter_project(
         };
         cwd.is_some_and(|cwd| {
             let probe = yinz_process::pty_host::remote::status::probe_git(cwd);
-            let hocus_data::git_probe::ProbeOutcome::Checkout(repository) =
-                hocus_data::git_probe::repository(probe.exit_code, &probe.metadata, &probe.config)
+            let project_data::git_probe::ProbeOutcome::Checkout(repository) =
+                project_data::git_probe::repository(
+                    probe.exit_code,
+                    &probe.metadata,
+                    &probe.config,
+                )
             else {
                 return false;
             };
-            let location = hocus_data::location::Location::local(cwd);
+            let location = project_data::location::Location::local(cwd);
             let probed = BTreeMap::from([(location.clone(), repository)]);
-            hocus_data::projects::project_for_cwd(&probed, &registry, &location)
+            project_data::projects::project_for_cwd(&probed, &registry, &location)
                 .is_some_and(|owner| owner.name == project.name)
         })
     });
@@ -349,7 +353,7 @@ pub(super) fn prepare_automation_agent(
     }
     let registry = project
         .as_ref()
-        .map(|_| projects(data).map(|rows| hocus_data::projects::from_rows(&rows)))
+        .map(|_| projects(data).map(|rows| project_data::projects::from_rows(&rows)))
         .transpose()?;
     let project = project
         .as_ref()

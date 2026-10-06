@@ -17,8 +17,5 @@ cargo x bench -- --baseline main          # after; criterion prints the deltas
 cargo x bench -- frame/plain_text         # a bare filter narrows the run
 ```
 
-The server comparison stays strict. Hocus uses Criterion's lenient comparison because older
-branches have no hocus benchmark baseline; it still measures those new cases without a delta.
-
 First build is slow — `[profile.bench]` optimizes the whole server. Timings are only comparable
 within one machine, and the workloads are seeded so input never drifts between runs.

@@ -3,7 +3,7 @@
 //! Muse runs hook commands with the environment filtered to a fixed allowlist, so a hook
 //! inherits no pane identity to report to - the same routing problem Codex has, for a
 //! different reason (there it is the shared daemon's environment). The launcher
-//! (`yinz hocus muse`) therefore records the pane's routing environment and its own
+//! (`yinz agent muse`) therefore records the pane's routing environment and its own
 //! process id in a registry; the first `SessionStart` binds the session id it carries to
 //! the registration its own ancestry passes through, and later hooks route by that
 //! binding. A session the pane did not start - a subagent's, an observer's, a manual
@@ -123,8 +123,8 @@ impl Registration {
     }
 }
 
-/// The reporting script `yinz hocus hooks install` writes, beside the settings that wire it.
-pub const HOOK_SCRIPT_NAME: &str = "hocus-hook.sh";
+/// The reporting script `yinz hooks install` writes, beside the settings that wire it.
+pub const HOOK_SCRIPT_NAME: &str = "yinz-hook.sh";
 
 /// Muse's config root: `$XDG_CONFIG_HOME/muse`, else `~/.config/muse`.
 pub fn config_root(
@@ -150,7 +150,7 @@ pub fn hook_files() -> Result<(PathBuf, PathBuf)> {
 
 /// The reporting script beside a config root.
 pub fn hook_script_path(root: &Path) -> PathBuf {
-    root.join("hocus").join(HOOK_SCRIPT_NAME)
+    root.join("yinz").join(HOOK_SCRIPT_NAME)
 }
 
 /// The settings document wiring the reporting script beside a config root.

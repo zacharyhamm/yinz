@@ -56,18 +56,18 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
 - **The checker is its own isolate** (`checker.rs`): the bundled TypeScript compiler (provenance
   in `compiler/provenance.json`, hash-checked by a test) runs offline with ES2022 declarations
   and `sdk.d.ts`; plugin source is data to it, never a module it evaluates. `analysis.rs` runs in
-  the worker and is where Hocus's inferred grants and the lint findings come from.
+  the worker and is where Agent's inferred grants and the lint findings come from.
 - **Strict authoring is separate from loading.** `authoring.rs` stages the loader's confined
   dependency graph, formats only the requested file, then runs the compiler and pinned native
   Oxlint/tsgolint. `authoring/` owns the shared policies, hashes and licenses; xtask installs the
   tools independently of Wasm builtins. `Syntax` stays lightweight; `Format` and `Prepare`
   return formatted source. The worker deadline covers the complete process group.
 - **The authoring entry points link no engine.** `yinz-plugin-authoring` holds what the CLI,
-  `PluginCommand::CheckPlugin` and Hocus's native tests call (`check_source`, `write`,
+  `PluginCommand::CheckPlugin` and Agent's native tests call (`check_source`, `write`,
   `format_file`, `log_tail`), the analysis client and the source-size budget. It reaches
   analysis, the checker and strict authoring only through the worker, so it must not depend on
   `deno_core`, `deno_ast` or this crate; `ENGINE_FREE` in `xtask/src/metadata.rs` enforces that
-  for it and for Hocus. Anything needing V8 or SWC belongs on the worker side, here.
+  for it and for Agent. Anything needing V8 or SWC belongs on the worker side, here.
   `yinz_plugin_host::plugin_authoring` re-exports it for the server and the CLI. Its
   always-on `worker::spawn_count` is what this crate's loader and plugin tests assert deltas
   against.
@@ -78,14 +78,14 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   (`RuntimeInstance::call_event`). Normalization is additive: `yinz.event()` and `onEvent()`
   decode in the SDK, so builtins that destructure tuples keep working. Delivery order is `update`,
   then pipe waiters, then the timer sweep, then the `on` handlers; the reserved pipes the SDK
-  consumes (RPC, completions, Hocus extensions, default keybindings) never reach `pipe`.
+  consumes (RPC, completions, Agent extensions, default keybindings) never reach `pipe`.
 - **Permissions are pre-flighted in `dispatch`** so a refused command throws in the guest with
   the fix named - and a plugin whose request is unanswered is told to wait for
   `PermissionRequestResult` while one that never asked is told to ask. The parent and its worker isolates share
   one permission coordinator beside the worker registry. Only the FIFO head reaches the host,
   and later requests carry earlier grants because the host replaces the set. The parent processes
   each host answer once. A private bridge callback completes the requesting isolate's promise;
-  ordinary `PermissionRequestResult` observers never settle requests. Hocus pre-grants the literal requests
+  ordinary `PermissionRequestResult` observers never settle requests. Agent pre-grants the literal requests
   `analysis.rs` finds, so an authored plugin never prompts in a pane the loop cannot see.
 - **`console` goes to the log.** Core's console would write to the server's stdout, so the SDK
   installs a frozen one whose methods reach `[deno:<file>]`, available from module top level.
@@ -101,8 +101,8 @@ and containment in the compilation subprocess, while the worker transport's dead
 limits, early exits and reaping are tested in `yinz-plugin-authoring/src/unit/worker.rs` beside
 `plugin_authoring.rs`'s own tests; `unit/builtins.rs` loads every shipped builtin and reference
 example; `../unit/plugin_tests/deno_plugins.rs` drives a real plugin thread; and
-`yinz-integration-tests/tests/deno_plugins.rs` runs whole sessions. Hocus serves the guide and
-`sdk.d.ts` through `hocus/src/plugin_docs.rs`, whose tests hold every `##` heading of the guide
+`yinz-integration-tests/tests/deno_plugins.rs` runs whole sessions. Agent serves the guide and
+`sdk.d.ts` through `agent/src/plugin_docs.rs`, whose tests hold every `##` heading of the guide
 to a section name and every section under 16 KB.
 
 ## Shared host boundary

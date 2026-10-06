@@ -41,7 +41,7 @@ fn parse_provider_hook_event(kind: &str, json: String) -> serde_json::Result<(Ho
     if kind == "opencode" {
         let value: serde_json::Value = serde_json::from_str(&json)?;
         // Current provider adapters emit HookEvent directly. Keep accepting v4 installed
-        // hook files until users reinstall them with `yinz hocus hooks install`.
+        // hook files until users reinstall them with `yinz hooks install`.
         if value.get("hook_event_name").is_some() {
             return Ok((serde_json::from_value(value)?, json));
         }

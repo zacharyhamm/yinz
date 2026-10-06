@@ -884,7 +884,7 @@ pub fn display_title_prefixes_a_custom_rename_pane_name_with_the_hostname() {
 
 /// The whole point of the prefix: it is not the pane's name, so it outlives every
 /// writer of the name — the user's rename, the pane's own OSC title, and the idle
-/// summary hocus-agentd writes there.
+/// summary agent-service writes there.
 #[test]
 pub fn a_title_prefix_survives_every_kind_of_title() {
     let mut terminal_pane = make_terminal_pane_for_bell();
@@ -1888,8 +1888,8 @@ pub fn waiting_agent_bell_persists_until_the_reported_wait_ends() {
 
 /// A pane the host opened for `agent_spawn` starts with the kind the planner resolved,
 /// before the process has said anything. opencode is one of those kinds, so the pane it
-/// opens is an agent pane in the manifest from the first frame - which is what hocus and
-/// hocus-agents read.
+/// opens is an agent pane in the manifest from the first frame - which is what agent and
+/// agents read.
 #[test]
 pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
     yinz_types::agent::provider::register(
@@ -1901,7 +1901,7 @@ pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
         },
     )
     .unwrap();
-    use yinz_types::data::{OriginatingPlugin, HOCUS_AGENT_PANE_CONTEXT};
+    use yinz_types::data::{OriginatingPlugin, AGENT_PANE_CONTEXT};
     let run = |marker: &str, program: &str| {
         super::Run::Command(RunCommand {
             command: PathBuf::from(program),
@@ -1910,7 +1910,7 @@ pub fn a_spawned_opencode_pane_records_its_kind_before_it_has_said_anything() {
                 yinz_types::internal_ids::PluginId::new(2),
                 crate::ClientId::new(1),
                 std::collections::BTreeMap::from([(
-                    HOCUS_AGENT_PANE_CONTEXT.to_owned(),
+                    AGENT_PANE_CONTEXT.to_owned(),
                     marker.to_owned(),
                 )]),
             )),

@@ -14,10 +14,10 @@ async function run(): Promise<void> {
     say("already running");
     return;
   }
-  const remote = `~/.hocus/skills/${skill}/SKILL.md`;
+  const remote = `~/.agents/skills/${skill}/SKILL.md`;
   const steps: PaneStep[] = host
     ? [
-        { name: "list", path: "ssh", args: [host, "ls ~/.hocus/skills"], timeoutMs: 30000 },
+        { name: "list", path: "ssh", args: [host, "ls ~/.agents/skills"], timeoutMs: 30000 },
         { name: "read", path: "ssh", args: [host, `cat ${remote}`], timeoutMs: 30000 },
         {
           name: "copy",

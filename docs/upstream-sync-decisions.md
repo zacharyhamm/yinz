@@ -27,8 +27,8 @@ titles and paths keep their Zellij names (`zellij-*`). Fork paths use yinz names
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: `yinz -s name --layout-string 'layout { pane command="cmd" }'` already covers the use case, and `yinz action new-tab -- cmd` covers a running session. The port is ~200 LOC of contract plumbing (`ClientInfo::New`, `CliAssets`, `spawn_tabs`, `actions.rs`, protobuf) through the fork's most-diverged files plus 26 test-literal edits, for an ergonomic gain no hocus workflow needs.
-- Reconsider only if: A hocus workflow needs `yinz attach -c <name> -- <cmd>` directly, or the user reopens this decision.
+- Reason: `yinz -s name --layout-string 'layout { pane command="cmd" }'` already covers the use case, and `yinz action new-tab -- cmd` covers a running session. The port is ~200 LOC of contract plumbing (`ClientInfo::New`, `CliAssets`, `spawn_tabs`, `actions.rs`, protobuf) through the fork's most-diverged files plus 26 test-literal edits, for an ergonomic gain no agent workflow needs.
+- Reconsider only if: A agent workflow needs `yinz attach -c <name> -- <cmd>` directly, or the user reopens this decision.
 
 ## 2026-08-28 — Notify floating panes when their tab is hidden
 
@@ -36,7 +36,7 @@ titles and paths keep their Zellij names (`zellij-*`). Fork paths use yinz names
 - Upstream range: `98a0837077492d53dd252ab30bc3e43e41e504f4..e839bfffa586992364309a685b2c71f3b23c247e`
 - Fork baseline: `main` at `005accbb2`
 - Decision: Skip
-- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask hocus popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`yinz-tab/src/tab/mod.rs`; upstream `zellij-server/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
+- Reason: Already present. Fork commit `06414ce12` ("Dismiss the ask agent popup when focus leaves it") made `Tab::visible` walk tiled, floating, and visible overlay panes (`yinz-tab/src/tab/mod.rs`; upstream `zellij-server/src/tab/mod.rs`), which is a superset of the upstream change. The fork session manager also gates its timer on visibility.
 - Reconsider only if: The user reopens this decision. The upstream regression test can be lifted on its own at any time.
 
 ## 2026-08-28 — IPC: distinguish disconnect from an undecodable frame (`IpcReceiveError`, `try_recv_*`)

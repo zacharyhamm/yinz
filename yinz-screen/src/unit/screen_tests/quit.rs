@@ -76,7 +76,7 @@ fn close_pane(screen: &mut Screen, pane_id: PaneId) {
         .close_pane(pane_id, false, None);
 }
 
-const HOCUS_PLUGIN_ID: PluginId = crate::PluginId::new(7);
+const AGENT_PLUGIN_ID: PluginId = crate::PluginId::new(7);
 
 /// A screen with one tab, one pane, and a channel onto its own instruction queue - which is
 /// where `confirm_quit` puts the modal.
@@ -225,8 +225,8 @@ fn confirming_a_plain_quit_launches_the_modal_with_no_configuration() {
 fn a_notice_reaches_the_confirmation() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
     screen.set_quit_notice(
-        HOCUS_PLUGIN_ID,
-        Some("hocus is still working".to_owned()),
+        AGENT_PLUGIN_ID,
+        Some("agent is still working".to_owned()),
         true,
     );
     screen
@@ -237,7 +237,7 @@ fn a_notice_reaches_the_confirmation() {
     let (_, configuration, _) = launch_details(&launch);
     assert_eq!(
         configuration.get("notice").map(String::as_str),
-        Some("hocus is still working")
+        Some("agent is still working")
     );
     assert_eq!(
         configuration.get("reason"),
@@ -270,10 +270,10 @@ fn notices_from_several_plugins_are_joined_in_a_stable_order() {
 #[test]
 fn a_withdrawn_notice_leaves_nothing_behind() {
     let (mut screen, screen_receiver) = screen_with_a_single_pane();
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("working".to_owned()), true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, Some("working".to_owned()), true);
     assert!(screen.quit_is_guarded());
 
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, false);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, false);
     assert!(!screen.quit_is_guarded());
 
     screen
@@ -407,8 +407,8 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
     let client_id = crate::ClientId::new(1);
     screen.set_quit_notice(
-        HOCUS_PLUGIN_ID,
-        Some("hocus is still working".to_owned()),
+        AGENT_PLUGIN_ID,
+        Some("agent is still working".to_owned()),
         true,
     );
 
@@ -454,7 +454,7 @@ fn the_last_pane_closing_confirms_when_a_plugin_guards() {
     );
     assert_eq!(
         configuration.get("notice").map(String::as_str),
-        Some("hocus is still working")
+        Some("agent is still working")
     );
     assert_eq!(
         placement,
@@ -474,7 +474,7 @@ fn closing_all_tabs_at_once_still_confirms_when_a_plugin_guards() {
             &[TabId::new(1), TabId::new(2)],
             &[crate::ClientId::new(1)],
         );
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("hocus is still working".into()), true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, Some("agent is still working".into()), true);
 
     for (tab_id, terminal_id) in [(1, 1), (2, 2)] {
         screen
@@ -512,7 +512,7 @@ fn closing_all_tabs_at_once_still_confirms_when_a_plugin_guards() {
 fn the_confirmation_is_raised_once_and_not_once_per_pass() {
     let (mut screen, screen_receiver, _server_receiver, plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     for _ in 0..4 {
@@ -539,7 +539,7 @@ fn the_confirmation_is_raised_once_and_not_once_per_pass() {
 fn closing_the_replacements_shell_asks_again() {
     let (mut screen, screen_receiver, server_receiver, plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
@@ -576,7 +576,7 @@ fn closing_the_replacements_shell_asks_again() {
 fn a_guarded_session_with_nobody_attached_waits_for_a_client() {
     let (mut screen, _screen_receiver, server_receiver, plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
@@ -599,7 +599,7 @@ fn a_guarded_session_with_nobody_attached_waits_for_a_client() {
 fn a_replacement_closed_before_it_loads_is_requested_again() {
     let (mut screen, _screen_receiver, server_receiver, plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
@@ -624,7 +624,7 @@ fn a_replacement_closed_before_it_loads_is_requested_again() {
 fn a_replacement_that_loads_unusable_ends_the_session() {
     let (mut screen, _screen_receiver, server_receiver, plugin_receiver) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
 
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().expect("TEST");
@@ -654,10 +654,10 @@ fn a_replacement_that_loads_unusable_ends_the_session() {
 #[test]
 fn a_notice_is_dropped_with_its_plugin() {
     let (mut screen, _screen_receiver) = screen_with_a_single_pane();
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("working".to_owned()), true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, Some("working".to_owned()), true);
     assert!(screen.quit_is_guarded());
 
-    screen.drop_quit_notice(HOCUS_PLUGIN_ID);
+    screen.drop_quit_notice(AGENT_PLUGIN_ID);
     assert!(!screen.quit_is_guarded());
 }
 
@@ -1046,7 +1046,7 @@ fn disconnected_pty_does_not_interrupt_tab_teardown() {
 fn pending_tabs_are_not_relocation_destinations_and_cancel_obsolete_confirmation() {
     let (mut screen, receiver, _, plugins) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().unwrap();
     let replacement = requested_tabs(&plugins)[0];
@@ -1078,7 +1078,7 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
         let destination = TabId::new(2);
         let client = crate::ClientId::new(1);
         let hidden = PaneId::Terminal(crate::TerminalId::new(8));
-        let overlay = PaneId::Plugin(HOCUS_PLUGIN_ID);
+        let overlay = PaneId::Plugin(AGENT_PLUGIN_ID);
         let respawn = (RunCommand::default(), true);
         let (mut screen, receiver, server, plugins) =
             screen_with_plugin_senders_and_clients(&[source], &[client, CLIENT_2]);
@@ -1097,7 +1097,7 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
         }
         tab.suppress_pane(hidden, None);
         tab.restore_pending_respawn(hidden, respawn.clone());
-        screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("working".into()), true);
+        screen.set_quit_notice(AGENT_PLUGIN_ID, Some("working".into()), true);
         screen
             .new_tab(destination, (vec![], vec![]), None, Some(client))
             .unwrap();
@@ -1289,11 +1289,11 @@ fn tab_teardown_records_destruction_but_not_held_or_relocated_panes() {
 fn homeless_plugin_drops_its_notice_before_settlement() {
     let (mut screen, _, server, plugins) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
-    screen.close_homeless_pane(PaneId::Plugin(HOCUS_PLUGIN_ID));
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
+    screen.close_homeless_pane(PaneId::Plugin(AGENT_PLUGIN_ID));
     assert!(screen
         .destroyed_panes
-        .contains(&PaneId::Plugin(HOCUS_PLUGIN_ID)));
+        .contains(&PaneId::Plugin(AGENT_PLUGIN_ID)));
     assert!(!screen.quit_is_guarded());
     close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
     screen.settle_tabs().unwrap();
@@ -1327,7 +1327,7 @@ fn explicit_last_tab_close_checks_guards_and_preserves_hidden_work() {
     for focused in [false, true] {
         let (mut screen, receiver, server, plugins) =
             screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-        screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+        screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
         if focused {
             screen.close_tab(crate::ClientId::new(1)).unwrap();
         } else {
@@ -1335,7 +1335,7 @@ fn explicit_last_tab_close_checks_guards_and_preserves_hidden_work() {
         }
         assert_eq!(launches(&receiver), 1);
         assert!(screen.tabs.contains_key(&TabId::new(1)));
-        screen.drop_quit_notice(HOCUS_PLUGIN_ID);
+        screen.drop_quit_notice(AGENT_PLUGIN_ID);
         let id = PaneId::Terminal(crate::TerminalId::new(1));
         screen
             .tabs
@@ -1362,7 +1362,7 @@ fn automatic_replacement_preserves_guarding_plugins_in_every_layer() {
     for layer in 0..5 {
         let (mut screen, receiver, _, plugins) =
             screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-        let id = PaneId::Plugin(HOCUS_PLUGIN_ID);
+        let id = PaneId::Plugin(AGENT_PLUGIN_ID);
         let tab = screen.tabs.get_mut(&TabId::new(1)).unwrap();
         let placement = match layer {
             1 => NewPanePlacement::Floating(None),
@@ -1386,7 +1386,7 @@ fn automatic_replacement_preserves_guarding_plugins_in_every_layer() {
         } else {
             tab.set_pane_selectable(id, false);
         }
-        screen.set_quit_notice(HOCUS_PLUGIN_ID, Some("working".into()), true);
+        screen.set_quit_notice(AGENT_PLUGIN_ID, Some("working".into()), true);
         close_pane(&mut screen, PaneId::Terminal(crate::TerminalId::new(1)));
         screen.settle_tabs().unwrap();
         let replacement = requested_tabs(&plugins)[0];
@@ -1409,7 +1409,7 @@ fn all_tab_close_instructions_confirm_before_destroying_the_last_tab() {
     let receiver = mock.pty_receiver.take().unwrap();
     mock.to_screen
         .send(ScreenInstruction::SetQuitNotice(
-            HOCUS_PLUGIN_ID,
+            AGENT_PLUGIN_ID,
             None,
             true,
         ))
@@ -1917,7 +1917,7 @@ fn replacement_exit_buffered_before_layout_is_held_after_settlement() {
     let plugins = mock.plugin_receiver.take().unwrap();
     mock.to_screen
         .send(ScreenInstruction::SetQuitNotice(
-            HOCUS_PLUGIN_ID,
+            AGENT_PLUGIN_ID,
             None,
             true,
         ))
@@ -1981,7 +1981,7 @@ fn focused_last_tab_confirmation_goes_to_the_requesting_client() {
         &[TabId::new(1)],
         &[crate::ClientId::new(1), CLIENT_2],
     );
-    screen.set_quit_notice(HOCUS_PLUGIN_ID, None, true);
+    screen.set_quit_notice(AGENT_PLUGIN_ID, None, true);
     screen.close_tab(CLIENT_2).unwrap();
     assert!(
         matches!(launched_plugin(&receiver), Some(ScreenInstruction::LaunchPlugin(
@@ -1994,7 +1994,7 @@ fn focused_last_tab_confirmation_goes_to_the_requesting_client() {
 fn background_tab_overlays_skip_pending_destinations() {
     let (mut screen, _, _, _) =
         screen_with_plugin_senders_and_clients(&[TabId::new(1)], &[crate::ClientId::new(1)]);
-    let id = PaneId::Plugin(HOCUS_PLUGIN_ID);
+    let id = PaneId::Plugin(AGENT_PLUGIN_ID);
     screen
         .tabs
         .get_mut(&TabId::new(1))

@@ -94,32 +94,6 @@ fn runtime_check_reports_syntax_semantics_and_confined_dependency_failures() {
 }
 
 #[test]
-fn hocus_tool_outlines_and_permission_warnings_respect_sdk_identity() {
-    let dir = tempfile::tempdir().unwrap();
-    for (source, warns) in [
-        ("import {yinz as z} from 'yinz:plugin'; z.hocus.tools({forecast:{handler(){}}});", true),
-        ("yinz.waitForPermissions(['MessageAndLaunchOtherPlugins']); yinz.hocus.tools({forecast:{handler(){}}});", false),
-    ] {
-        let report = check(&dir.path().join("weather.ts"), source, PluginCheckMode::Syntax);
-        assert!(report.outline.iter().any(|e| e.kind == OutlineKind::Tool && e.text == "forecast"));
-        assert_eq!(report.warnings.iter().any(|w| w.contains("registration requires")), warns);
-    }
-    let report = check(
-        &dir.path().join("shadow.ts"),
-        "function f(yinz) { yinz.hocus.tools({wrong:{}}); }",
-        PluginCheckMode::Syntax,
-    );
-    assert!(!report.outline.iter().any(|e| e.kind == OutlineKind::Tool));
-}
-
-fn warnings_of(source: &str) -> Vec<String> {
-    let dir = tempfile::tempdir().unwrap();
-    let report = check(&dir.path().join("lint.ts"), source, PluginCheckMode::Syntax);
-    assert!(report.diagnostics.is_empty(), "{report:?}");
-    report.warnings
-}
-
-#[test]
 fn a_permission_typo_suggests_the_nearest_typescript_spelling() {
     let warnings = warnings_of("yinz.requestPermission(['ReadFile', 'SharedData', 'weather']);");
     assert_eq!(warnings.len(), 3, "{warnings:?}");
@@ -185,7 +159,7 @@ fn a_shared_namespace_needs_shared_plugin_data_in_every_spelling() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     for source in [
         "yinz.requestPermission(['PluginData', 'SharedPluginData']); export default { async load() { await yinz.waitForPermissions(['PluginData']); yinz.data.fetch({namespace: 'shared:notes', entity: 'note'}); } };",
-        "yinz.requestPermission(['PluginData']); export default { async load() { await yinz.waitForPermissions(['PluginData']); /* shared:notes */ const label = 'shared:notes'; yinz.data.fetch({entity: 'note'}); yinz.hocus.tools({t: {description: 'reads shared:notes', handler() {}}}); } };",
+        "yinz.requestPermission(['PluginData']); export default { async load() { await yinz.waitForPermissions(['PluginData']); /* shared:notes */ const label = 'shared:notes'; yinz.data.fetch({entity: 'note'}); yinz.agent.tools({t: {description: 'reads shared:notes', handler() {}}}); } };",
     ] {
         let warnings = warnings_of(source);
         assert!(!warnings.iter().any(|w| w.contains("shared:")), "{source}\n{warnings:?}");
@@ -254,7 +228,7 @@ fn a_data_call_in_load_before_awaiting_permissions_is_a_finding() {
     }
 }
 
-/// The reference examples are what Hocus shows its model; a finding there is a finding in
+/// The reference examples are what Agent shows its model; a finding there is a finding in
 /// every plugin written from them. The builtins are analysed too, but only for diagnostics: a
 /// builtin is granted everything without asking, so the permission rules do not apply to it.
 #[test]
@@ -307,4 +281,11 @@ fn notification_observation_infers_read_state_but_policy_decisions_need_no_grant
     }
     let report = check(&dir.path().join("policy.ts"), "yinz.subscribe(['NotificationRequested']); yinz.host.resolveNotification({id: 1, decision: 'Pass'});", PluginCheckMode::Syntax);
     assert!(report.permissions.is_empty());
+}
+
+fn warnings_of(source: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let report = check(&dir.path().join("lint.ts"), source, PluginCheckMode::Syntax);
+    assert!(report.diagnostics.is_empty(), "{report:?}");
+    report.warnings
 }

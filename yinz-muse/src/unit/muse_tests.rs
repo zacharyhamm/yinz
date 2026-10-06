@@ -305,7 +305,7 @@ fn muse_config_follows_xdg_config_home_and_falls_back_to_dot_config() {
 }
 
 fn wired_config(root: &Path) -> (PathBuf, PathBuf) {
-    let script = root.join("hocus").join(HOOK_SCRIPT_NAME);
+    let script = root.join("yinz").join(HOOK_SCRIPT_NAME);
     std::fs::create_dir_all(script.parent().unwrap()).unwrap();
     yinz_test_support::write_warm_script(&script, "exit 0");
     let settings = root.join("settings.json");
@@ -374,9 +374,9 @@ fn startup_verification_requires_the_exact_installed_command() {
     let (script, settings) = wired_config(&root.path().join("Muse's config with spaces"));
     verify_hooks(&script, &settings).unwrap();
     for command in [
-        "'/stale/hocus/hocus-hook.sh'".to_owned(),
+        "'/stale/yinz/yinz-hook.sh'".to_owned(),
         format!("'{}'", root.path().join(HOOK_SCRIPT_NAME).display()),
-        "echo hocus-hook.sh".to_owned(),
+        "echo yinz-hook.sh".to_owned(),
         format!("echo '{}'", script.display()),
         format!("'{}'", script.display()), // Unescaped apostrophe.
     ] {

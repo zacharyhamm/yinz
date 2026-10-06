@@ -36,10 +36,6 @@ pub enum OutlineKind {
     Handler,
     /// `data.define "entity"`.
     Define,
-    /// A hocus extension's registration message.
-    Registration,
-    /// One tool that registration offers hocus.
-    Tool,
 }
 
 /// One line of an source analysis: what is defined or hooked there, and where.

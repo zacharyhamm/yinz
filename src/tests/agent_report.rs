@@ -130,7 +130,7 @@ fn daemon_hooks_use_the_registered_conversation_and_ignore_inherited_targets() {
         .unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
         command
-            .args(["hocus", "codex-report"])
+            .args(["agent", "codex-report"])
             .env("YINZ_SOCKET_DIR", dir.path().join("daemon"))
             .env("TMPDIR", dir.path())
             .env_remove("XDG_RUNTIME_DIR")
@@ -241,7 +241,7 @@ fn bypassed_codex_launches_preserve_arguments_and_socket_config_is_not_pane_iden
     for (args, pane) in cases {
         let mut command = Command::new(env!("CARGO_BIN_EXE_yinz"));
         command
-            .args(["hocus", "codex", "--command"])
+            .args(["agent", "codex", "--command"])
             .arg(&program)
             .arg("--")
             .args(*args)
@@ -297,7 +297,7 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
         ] {
             let mut reporter = Command::new(root.join("yinz"));
             reporter
-                .args(["hocus", "codex-report"])
+                .args(["agent", "codex-report"])
                 .env("YINZ_SOCKET_DIR", root.join("socket-alias"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -602,7 +602,7 @@ fn codex_router_bounds_unclosed_stdin_without_configuration_or_logging() {
     warm_binary();
     let started = Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_yinz"))
-        .args(["hocus", "codex-report"])
+        .args(["agent", "codex-report"])
         .env("TMPDIR", "/dev/null")
         .env("XDG_CONFIG_HOME", "/dev/null")
         .stdin(Stdio::piped())
@@ -648,7 +648,7 @@ fn oversized_reports_use_the_existing_bounded_payload() {
 fn installed_scripts_keep_neutral_output_after_reporter_failure() {
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_yinz"))
-        .args(["hocus", "hooks", "install"])
+        .args(["hooks", "install"])
         .env("HOME", dir.path())
         .env("CODEX_HOME", dir.path().join(".codex"))
         .env("XDG_CONFIG_HOME", dir.path())
@@ -664,7 +664,7 @@ fn installed_scripts_keep_neutral_output_after_reporter_failure() {
     for (agent, expected) in [(".claude", ""), (".codex", "{}\n")] {
         let started = Instant::now();
         let mut child = Command::new("sh")
-            .arg(dir.path().join(agent).join("hocus/hocus-hook.sh"))
+            .arg(dir.path().join(agent).join("yinz/yinz-hook.sh"))
             .env("YINZ_SESSION_NAME", "missing")
             .env("YINZ_PANE_ID", "7")
             .env("YINZ_SOCKET_DIR", dir.path())

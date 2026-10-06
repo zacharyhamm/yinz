@@ -96,7 +96,7 @@ impl Tab {
         client: ClientId,
     ) -> Result<PaneTabsInfo> {
         for descriptor in &mut layout.tabs {
-            descriptor.normalize_hocus_panel();
+            descriptor.normalize_agent_panel();
         }
         layout.validate().map_err(|error| anyhow!(error))?;
         let PaneId::Plugin(plugin_id) = pane else {

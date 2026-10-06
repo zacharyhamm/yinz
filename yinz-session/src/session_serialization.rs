@@ -2588,7 +2588,7 @@ mod tests {
                 },
                 PaneTabDescriptor {
                     label: "VMs!".into(),
-                    location: "yinz:hocus-agents".into(),
+                    location: "yinz:agents".into(),
                     initial_cwd: None,
                     configuration: BTreeMap::from([("view".into(), "vms".into())]),
                 },
@@ -2623,7 +2623,7 @@ mod tests {
                 tiled.children[0].pane_tabs.as_ref()
             };
             let mut expected = tabs.clone();
-            expected.tabs[1].location = "yinz:hocus-vms".into();
+            expected.tabs[1].location = "yinz:vms".into();
             expected.tabs[1].configuration.clear();
             assert_eq!(actual, Some(&expected), "{raw}");
         }

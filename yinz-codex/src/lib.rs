@@ -469,7 +469,7 @@ async fn verify_capability(program: &Path, hook: &Value) -> Result<()> {
                 .map(|home| PathBuf::from(home).join(".codex"))
         })
         .context("cannot locate Codex reporting script")?;
-    let script = root.join("hocus/hocus-hook.sh");
+    let script = root.join("yinz/yinz-hook.sh");
     let (_child, stream) = daemon_connection(program)?;
     let (mut ws, _) = tokio_tungstenite::client_async("ws://localhost", stream)
         .await

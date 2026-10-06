@@ -873,9 +873,9 @@ impl ServerOsInputOutput {
         let rerun_cmd = cmd.clone();
         let (name, image, worktree) = match &cmd.target {
             PaneTarget::Local => {
-                yinz_process::command::resolve_hocus_launcher(
+                yinz_process::command::resolve_agent_launcher(
                     yinz_runtime::own_binary::server_binary()
-                        .context("find this Yinz binary for the hocus launcher")?,
+                        .context("find this Yinz binary for the agent launcher")?,
                     &mut cmd.command,
                     &mut cmd.args,
                 )?;
