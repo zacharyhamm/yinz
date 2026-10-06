@@ -247,8 +247,7 @@ impl State {
     /// The one publisher of tab projects in the session. It lives here, and not
     /// in agent where the rest of the project machinery is, because a tab has to
     /// be named whether or not a agent pane is open — and in most sessions one
-    /// never is. agent keeps its own copy of this map to show the model, derived
-    /// by the same two functions so the two cannot disagree.
+    /// never is. Project assignments remain separate from these display labels.
     ///
     /// The host does the rest of the naming: it knows the tab order the `#1`/`#2`
     /// of two tabs on one project are read in, it knows which tabs the user has
@@ -262,13 +261,19 @@ impl State {
         panes: &[agents::AgentPane],
     ) {
         self.publish_project_context(registry, Some(reply));
-        let owners: BTreeMap<u32, String> = panes
+        let owners: BTreeMap<_, _> = panes
             .iter()
             .chain(&reply.suppressed_panes)
             .filter_map(|pane| {
                 let location = pane.checkout_location()?;
                 let label = projects::label_for_cwd(&reply.repositories, registry, &location)?;
-                Some((pane.pane_id, label))
+                // A parent probe can identify the project, but a nested worktree
+                // may have a different branch. Only use this location's probe.
+                let branch = reply
+                    .repositories
+                    .get(&location)
+                    .and_then(|repository| repository.branch.clone());
+                Some((pane.pane_id, (label, branch)))
             })
             .collect();
         // Tab *ids*, never the tab name `AgentPane.tab` also carries — that name
@@ -825,7 +830,7 @@ mod tests {
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
         assert!(
             project_names(&backend).is_empty(),
@@ -852,7 +857,7 @@ mod tests {
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent + pocus",
+            "agent:main + pocus:main",
             "sorted, so the name does not shuffle when the panes come back in another order",
         );
     }
@@ -907,7 +912,7 @@ mod tests {
         state.on_snapshot(&backend, &snapshot);
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "the-workspace"
+            "the-workspace:main"
         );
 
         let context = state.published_project_context.clone();
@@ -916,7 +921,7 @@ mod tests {
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "the-workspace",
+            "the-workspace:main",
             "a failed fetch is not an empty registry"
         );
     }
@@ -976,7 +981,7 @@ mod tests {
         state.retry_snapshot(&backend);
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
         assert!(!state.retry_snapshot);
     }
@@ -998,7 +1003,7 @@ mod tests {
         state.retry_snapshot(&backend);
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "current"
+            "current:main"
         );
         assert!(!state.retry_snapshot);
     }
@@ -1024,7 +1029,7 @@ mod tests {
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "the-workspace"
+            "the-workspace:main"
         );
     }
 
@@ -1068,7 +1073,7 @@ mod tests {
         );
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
         backend
             .apply(vec![
@@ -1087,7 +1092,7 @@ mod tests {
         ));
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
         state.update(changed(rows.clone(), watch.watch_id));
         assert_eq!(
@@ -1103,16 +1108,16 @@ mod tests {
             .all(|(_, name)| name == "renamed"));
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "renamed"
+            "renamed:main"
         );
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(2)],
-            "renamed"
+            "renamed:main"
         );
         state.update(changed(rows.clone(), watch.watch_id));
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "renamed"
+            "renamed:main"
         );
 
         // Invalid payloads and partial replies must not replace the last full pane snapshot.
@@ -1168,7 +1173,7 @@ mod tests {
 
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
     }
 
@@ -1188,7 +1193,7 @@ mod tests {
         );
         assert_eq!(
             state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
-            "agent"
+            "agent:main"
         );
 
         state.on_snapshot(&backend, &snapshot_of_panes(Vec::new(), BTreeMap::new()));
@@ -1271,6 +1276,46 @@ mod tests {
         check(&mut state, &reply, &[(2, "B")]);
         reply.panes.as_mut().unwrap().pop();
         check(&mut state, &reply, &[]);
+    }
+
+    #[test]
+    fn branches_follow_checkout_probes_without_changing_project_assignments() {
+        let backend = backend();
+        backend
+            .apply(vec![projects::to_mutation(
+                &projects::validate("registered", "/work/repo").unwrap(),
+            )])
+            .unwrap();
+        let mut reply: PollReply = serde_json::from_str(&snapshot_of_panes(
+            vec![pane_on_tab(3, "zsh", "/work/repo", TabId::new(1))],
+            BTreeMap::new(),
+        ))
+        .unwrap();
+        // Hidden panes use the same checkout resolution as visible ones, including VMs.
+        let mut hidden = reply.panes.as_mut().unwrap().pop().unwrap();
+        hidden.host = Some("firecracker:review".into());
+        hidden.firecracker_worktree = Some("/work/repo".into());
+        hidden.cwd = Some("/workspace".into());
+        reply.suppressed_panes.push(hidden);
+        let mut state = State::default();
+        for (branch, expected) in [(Some("topic"), "registered:topic"), (None, "registered")] {
+            reply.repositories.values_mut().next().unwrap().branch = branch.map(str::to_owned);
+            state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
+            assert_eq!(
+                state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+                expected
+            );
+            assert_eq!(
+                state.published_project_context.as_ref().unwrap().1[0].1,
+                "registered"
+            );
+        }
+        reply.repositories.clear();
+        state.on_snapshot(&backend, &serde_json::to_string(&reply).unwrap());
+        assert_eq!(
+            state.published_tab_names.as_ref().unwrap()[&TabId::new(1)],
+            "registered"
+        );
     }
 
     /// A snapshot with one pane in one checkout, as the daemon sends it.

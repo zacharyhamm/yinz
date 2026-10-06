@@ -3596,7 +3596,7 @@ pub fn tab_projects(
         .collect()
 }
 
-/// Every project a tab's panes are working on, sorted and without repeats.
+/// Every project/branch pair a tab's panes are working on, sorted without repeats.
 ///
 /// The other half of [`tab_projects`], and it differs from that one twice over.
 /// That one asks which project *owns* a tab and refuses to answer for a tab two
@@ -3615,9 +3615,9 @@ pub fn tab_projects(
 /// order. A tab whose panes have no known project gets no entry, as before.
 pub fn tab_project_labels<'a>(
     panes: impl IntoIterator<Item = &'a AgentPane>,
-    owners: &BTreeMap<u32, String>,
-) -> BTreeMap<TabId, Vec<String>> {
-    let mut found: BTreeMap<TabId, BTreeSet<String>> = BTreeMap::new();
+    owners: &BTreeMap<u32, (String, Option<String>)>,
+) -> BTreeMap<TabId, Vec<(String, Option<String>)>> {
+    let mut found: BTreeMap<TabId, BTreeSet<(String, Option<String>)>> = BTreeMap::new();
     for pane in panes {
         let (Some((tab_id, _)), Some(owner)) = (&pane.tab, owners.get(&pane.pane_id)) else {
             continue;
@@ -3630,23 +3630,41 @@ pub fn tab_project_labels<'a>(
         .collect()
 }
 
-/// How many projects a tab's label names before the rest are counted instead.
-const MAX_LABELLED_PROJECTS: usize = 2;
-
-/// The one string that names every project in a tab.
-///
-/// Two projects are joined; beyond that the tail is counted, because the tab bar
-/// gives a name 40 columns at the outside (`MAX_TAB_NAME_WIDTH`) and a fourth
-/// repository name would be cut off mid-word — which loses the count as well as
-/// the name. `agent + pocus +2` keeps both.
-pub fn tab_project_label(projects: &[String]) -> Option<String> {
-    let (named, rest) = projects.split_at(projects.len().min(MAX_LABELLED_PROJECTS));
-    let named = named.join(" + ");
-    match (named.is_empty(), rest.len()) {
-        (true, _) => None,
-        (false, 0) => Some(named),
-        (false, more) => Some(format!("{named} +{more}")),
+/// Format sorted, unique project/branch pairs within the tab bar's 40 columns.
+/// Repeated project prefixes are omitted; entries that do not fit are counted.
+pub fn tab_project_label(projects: &[(String, Option<String>)]) -> Option<String> {
+    let mut named = String::new();
+    let mut best = None;
+    for (index, (project, branch)) in projects.iter().enumerate() {
+        if index > 0 {
+            named.push_str(" + ");
+        }
+        match branch {
+            Some(branch) if index > 0 && projects[index - 1].0 == *project => {
+                named.push_str(branch);
+            },
+            Some(branch) => named.push_str(&format!("{project}:{branch}")),
+            None => named.push_str(project),
+        }
+        let remaining = projects.len() - index - 1;
+        let suffix = if remaining == 0 {
+            String::new()
+        } else {
+            format!(" +{remaining}")
+        };
+        if named.width() + suffix.width() <= 40 {
+            best = Some(format!("{named}{suffix}"));
+        } else if index == 0 {
+            best = Some(format!(
+                "{}{suffix}",
+                yinz_tile_utils::ellipsize(&named, 40 - suffix.width())
+            ));
+        }
+        if named.width() > 40 {
+            break;
+        }
     }
+    best
 }
 
 /// The `@`-mention bodies in a message: the maximal leading run of kind characters
@@ -7647,11 +7665,20 @@ mod tests {
         ]);
 
         assert_eq!(
-            tab_project_labels(&panes, &owners),
+            tab_project_labels(
+                &panes,
+                &owners
+                    .iter()
+                    .map(|(id, name)| (*id, (name.clone(), None)))
+                    .collect()
+            ),
             BTreeMap::from([
-                (TabId::new(1), vec!["agent".to_owned()]),
-                (TabId::new(2), vec!["agent".to_owned(), "pocus".to_owned()]),
-                (TabId::new(3), vec!["agent".to_owned()]),
+                (TabId::new(1), vec![("agent".to_owned(), None)]),
+                (
+                    TabId::new(2),
+                    vec![("agent".to_owned(), None), ("pocus".to_owned(), None)]
+                ),
+                (TabId::new(3), vec![("agent".to_owned(), None)]),
             ]),
         );
     }
@@ -7665,16 +7692,25 @@ mod tests {
         let owners = owners(&[(7, "agent")]);
 
         assert_eq!(
-            tab_project_labels(&panes, &owners),
-            BTreeMap::from([(TabId::new(3), vec!["agent".to_owned()])]),
+            tab_project_labels(
+                &panes,
+                &owners
+                    .iter()
+                    .map(|(id, name)| (*id, (name.clone(), None)))
+                    .collect()
+            ),
+            BTreeMap::from([(TabId::new(3), vec![("agent".to_owned(), None)])]),
         );
         assert!(tab_projects(&panes, &manual(&[]), &owners).is_empty());
     }
 
     #[test]
-    fn a_tab_in_more_projects_than_fit_counts_the_rest() {
-        let named = |names: &[&str]| -> Vec<String> {
-            names.iter().map(|name| (*name).to_owned()).collect()
+    fn all_projects_that_fit_are_named() {
+        let named = |names: &[&str]| -> Vec<(String, Option<String>)> {
+            names
+                .iter()
+                .map(|name| ((*name).to_owned(), None))
+                .collect()
         };
 
         assert_eq!(tab_project_label(&named(&[])), None);
@@ -7685,7 +7721,99 @@ mod tests {
         );
         assert_eq!(
             tab_project_label(&named(&["agent", "pocus", "focus", "locus"])).unwrap(),
-            "agent + pocus +2"
+            "agent + pocus + focus + locus"
+        );
+    }
+
+    #[test]
+    fn branch_labels_are_sorted_and_deduplicated() {
+        let panes = (1..=5)
+            .map(|id| in_folder(id, "zsh", "/work", TabId::new(1)))
+            .collect::<Vec<_>>();
+        let owners = BTreeMap::from([
+            (1, ("project".into(), Some("b".into()))),
+            (2, ("project".into(), Some("a".into()))),
+            (3, ("project".into(), Some("b".into()))),
+            (4, ("other".into(), Some("main".into()))),
+            (5, ("project".into(), None)),
+        ]);
+        let labels = tab_project_labels(&panes, &owners);
+        assert_eq!(labels[&TabId::new(1)].len(), 4);
+        assert_eq!(
+            tab_project_label(&labels[&TabId::new(1)]).unwrap(),
+            "other:main + project + a + b"
+        );
+        assert_eq!(tab_project_labels(panes.iter().rev(), &owners), labels);
+    }
+
+    #[test]
+    fn branch_summary_fits_complete_entries_and_reserves_the_count() {
+        let cases = [
+            (vec![("project", Some("a"))], "project:a".to_owned()),
+            (
+                vec![
+                    ("project", Some("a")),
+                    ("project", Some("b")),
+                    ("project", Some("c")),
+                ],
+                "project:a + b + c".into(),
+            ),
+            (
+                vec![("project", Some("a")), ("other", Some("b"))],
+                "project:a + other:b".into(),
+            ),
+            (
+                vec![
+                    ("1234567890123456789012345678901234567", None),
+                    ("ab", None),
+                ],
+                "1234567890123456789012345678901234567 +1".into(),
+            ),
+            (
+                vec![("123456789012345678901234567890123456", None), ("a", None)],
+                "123456789012345678901234567890123456 + a".into(),
+            ),
+            (
+                vec![("1234567890123456789012345678901234567890", None)],
+                "1234567890123456789012345678901234567890".into(),
+            ),
+            (
+                vec![("12345678901234567890123456789012345678901", None)],
+                "123456789012345678901234567890123456789…".into(),
+            ),
+            (
+                vec![
+                    ("12345678901234567890123456789012345678901", None),
+                    ("b", None),
+                    ("c", None),
+                ],
+                "123456789012345678901234567890123456… +2".into(),
+            ),
+            (
+                vec![("日本語", Some("á")), ("日本語", Some("界"))],
+                "日本語:á + 界".into(),
+            ),
+            (
+                vec![
+                    ("日本語日本語日本語日本語日本語日本語日本語", None),
+                    ("z", None),
+                ],
+                format!("{}… +1", "日本語".repeat(6)),
+            ),
+        ];
+        for (entries, expected) in cases {
+            let entries = entries
+                .into_iter()
+                .map(|(p, b)| (p.to_owned(), b.map(str::to_owned)))
+                .collect::<Vec<_>>();
+            let label = tab_project_label(&entries).unwrap();
+            assert_eq!(label, expected);
+            assert!(label.width() <= 40);
+        }
+        let entries = vec![("x".repeat(50), None); 12];
+        assert_eq!(
+            tab_project_label(&entries).unwrap(),
+            format!("{}… +11", "x".repeat(35))
         );
     }
 
@@ -7693,7 +7821,7 @@ mod tests {
     fn a_tab_whose_agents_have_no_project_is_left_out() {
         let panes = vec![in_folder(3, "codex", "/elsewhere", TabId::new(1))];
 
-        assert!(tab_project_labels(&panes, &owners(&[])).is_empty());
+        assert!(tab_project_labels(&panes, &BTreeMap::new()).is_empty());
     }
 
     #[test]

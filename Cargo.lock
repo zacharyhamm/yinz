@@ -30,6 +30,7 @@ dependencies = [
  "url",
  "yinz-tile",
  "yinz-tile-markdown",
+ "yinz-tile-utils",
  "yinz-types",
 ]
 
