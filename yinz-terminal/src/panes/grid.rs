@@ -3180,7 +3180,7 @@ impl Grid {
     }
     pub fn reset_terminal_state(&mut self) {
         if let Some(alternate_screen_state) = self.alternate_screen_state.as_mut() {
-            alternate_screen_state.kitty_grid.clear_all_placements();
+            alternate_screen_state.kitty_grid.teardown();
         }
         self.lines_above = VecDeque::new();
         self.lines_below = VecDeque::new();
@@ -3214,7 +3214,7 @@ impl Grid {
         if let Some(images_to_reap) = self.sixel_grid.clear() {
             self.sixel_grid.reap_images(images_to_reap);
         }
-        self.kitty_grid.clear_all_placements();
+        self.kitty_grid.teardown();
         let kitty_image_store = self.kitty_grid.kitty_image_store.clone();
         self.kitty_grid = KittyGrid::new(self.character_cell_size.clone(), kitty_image_store);
         self.kitty_parser.abort_pending();
@@ -3231,7 +3231,7 @@ impl Grid {
             if let Some(image_ids_to_reap) = self.sixel_grid.clear() {
                 self.sixel_grid.reap_images(image_ids_to_reap);
             }
-            self.kitty_grid.clear_all_placements();
+            self.kitty_grid.teardown();
             alternate_screen_state.apply_contents_to(
                 &mut self.lines_above,
                 &mut self.viewport,
@@ -4434,30 +4434,25 @@ impl Grid {
                 if command.is_relative() {
                     self.kitty_refresh_placeholder_placements();
                 }
-                let cursor_px = self.current_cursor_pixel_coordinates();
-                let cell = { *self.character_cell_size.borrow() };
-                let (cursor_px, cell) = match (cursor_px, cell) {
-                    (Some(cursor_px), Some(cell)) => (cursor_px, cell),
-                    _ => {
-                        return Err(KittyError {
-                            code: KittyErrorCode::Enotsupported,
-                            message: "cell size unknown".to_owned(),
-                            image_id: command.image_id,
-                            image_number: command.image_number,
-                            placement_id: command.placement_id,
-                            quiet: command.quiet,
-                        });
-                    },
+                let cell = *self.character_cell_size.borrow();
+                // Virtual placements have no cursor anchor. Retain their source and requested
+                // dimensions even before the host has supplied pixel geometry.
+                let cursor_px = self.current_cursor_pixel_coordinates().unwrap_or((0, 0));
+                let vertical_anchor = if let Some(cell) = cell {
+                    let placement_top_px = (cursor_px.1
+                        + std::cmp::min(command.cell_offset_y as usize, cell.height - 1))
+                        as isize;
+                    Self::kitty_anchor_from_pixel_y(
+                        placement_top_px,
+                        cell.height as isize,
+                        &self.kitty_canonical_line_starts(),
+                    )
+                } else {
+                    KittyVerticalAnchor {
+                        canonical_line: 0,
+                        offset_px_from_line_start: 0,
+                    }
                 };
-                let placement_top_px = (cursor_px.1
-                    + std::cmp::min(command.cell_offset_y as usize, cell.height - 1))
-                    as isize;
-                let starts = self.kitty_canonical_line_starts();
-                let vertical_anchor = Self::kitty_anchor_from_pixel_y(
-                    placement_top_px,
-                    cell.height as isize,
-                    &starts,
-                );
                 match self.kitty_grid.place(
                     pane_image_id,
                     internal,
@@ -4854,9 +4849,9 @@ impl Grid {
 impl Drop for Grid {
     fn drop(&mut self) {
         self.clear_completed_sixel();
-        self.kitty_grid.clear_all_placements();
+        self.kitty_grid.teardown();
         if let Some(alt) = self.alternate_screen_state.as_mut() {
-            alt.kitty_grid.clear_all_placements();
+            alt.kitty_grid.teardown();
         }
     }
 }
@@ -5471,7 +5466,7 @@ impl Perform for Grid {
                             if let Some(mut alternate_screen_state) =
                                 self.alternate_screen_state.take()
                             {
-                                self.kitty_grid.clear_all_placements();
+                                self.kitty_grid.teardown();
                                 alternate_screen_state.apply_contents_to(
                                     &mut self.lines_above,
                                     &mut self.viewport,

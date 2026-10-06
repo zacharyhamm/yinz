@@ -588,3 +588,38 @@ fn a_watcher_reporting_synchronized_output_support_asks_for_a_full_frame() {
         "every watcher's next frame is decided by this answer, so every watcher is repainted"
     );
 }
+
+#[test]
+fn late_kitty_capability_repaints_retained_images_for_each_client() {
+    let mut screen = create_new_screen(Size { cols: 80, rows: 20 }, true, true);
+    new_tab(&mut screen, 1, TabId::new(0));
+    screen.add_client(ClientId::new(2)).unwrap();
+    *screen.character_cell_size.borrow_mut() = Some(SizeInPixels {
+        width: 23,
+        height: 43,
+    });
+    let receiver = screen_wired_to_server(&mut screen);
+    screen
+        .get_active_tab_mut(CLIENT_1)
+        .unwrap()
+        .get_active_pane_mut(CLIENT_1)
+        .unwrap()
+        .handle_pty_bytes(b"\x1b_Ga=T,q=2,f=24,s=2,v=2,m=0;////////////////\x1b\\".to_vec());
+    screen.render_to_clients().unwrap();
+    while receiver.try_recv().is_ok() {}
+    for client in [CLIENT_1, ClientId::new(2)] {
+        screen.update_kitty_graphics_support(client, true);
+        screen.render_to_clients().unwrap();
+        let mut output = String::new();
+        while let Ok((instruction, _)) = receiver.try_recv() {
+            if let ServerInstruction::Render(Some(mut clients)) = instruction {
+                output.push_str(&clients.remove(&client).unwrap_or_default());
+            }
+        }
+        assert!(
+            output.contains("\x1b_Ga=t,"),
+            "no transmission for {client}"
+        );
+        assert!(output.contains("\x1b_Ga=p,"), "no placement for {client}");
+    }
+}

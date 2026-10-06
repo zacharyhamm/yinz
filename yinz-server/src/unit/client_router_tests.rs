@@ -560,6 +560,9 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
         let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(client);
         for message in [
             first_message,
+            ClientToServerMsg::TerminalPixelDimensions {
+                pixel_dimensions: Default::default(),
+            },
             ClientToServerMsg::KittyGraphicsSupport { supported: false },
             ClientToServerMsg::KittyGraphicsSupport { supported: true },
             ClientToServerMsg::ClientExited,
@@ -590,6 +593,10 @@ fn kitty_probe_routing_preserves_client_lifecycle_order() {
                 [
                     ServerInstruction::FirstClientConnected(_, CLIENT_1)
                         | ServerInstruction::AttachClient(_, _, _, CLIENT_1),
+                    ServerInstruction::TerminalPixelDimensions {
+                        client_id: CLIENT_1,
+                        ..
+                    },
                     ServerInstruction::KittyGraphicsSupport {
                         client_id: CLIENT_1,
                         supported: false

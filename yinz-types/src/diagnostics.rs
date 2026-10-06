@@ -557,6 +557,7 @@ pub enum ServerContext {
     KeyPassthroughChanged,
     EmitNestedSessionFrameToClient,
     SynchronizedOutputSupport,
+    TerminalPixelDimensions,
     KittyGraphicsSupport,
 }
 

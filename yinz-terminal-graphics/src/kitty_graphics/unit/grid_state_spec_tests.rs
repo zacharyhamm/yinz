@@ -113,12 +113,13 @@ impl Model {
         internal: crate::kitty_graphics::store::InternalImageId,
         command: &KittyCommand,
     ) -> Result<Option<(u16, u16)>, KittyError> {
+        let cell = *self.kitty.character_cell_size.borrow();
         self.kitty.place(
             id,
             internal,
             command,
             self.cursor_px,
-            CELL,
+            cell,
             KittyVerticalAnchor {
                 canonical_line: 0,
                 offset_px_from_line_start: self.cursor_px.1 as isize,
@@ -706,4 +707,36 @@ fn deleting_placements_of_one_image_leaves_other_images_alone() {
 
     assert!(model.can_still_display_by_placing_it(1));
     assert!(model.can_still_display_by_placing_it(3));
+}
+
+#[test]
+fn pending_virtual_placements_preserve_omitted_axes_replacement_and_deletion() {
+    // Spec: virtual placements are "prototypes for real images"; their dimensions may be
+    // omitted. Learning the host geometry must produce the same prototype as knowing it early.
+    for axes in ["", ",c=3", ",r=2", ",c=3,r=2"] {
+        let mut known = Model::new();
+        let mut delayed = Model::new();
+        *delayed.kitty.character_cell_size.borrow_mut() = None;
+        delayed.kitty.previous_cell_size = None;
+        for model in [&mut known, &mut delayed] {
+            model.ok("a=t,i=42,f=32,s=20,v=40", &[255; 20 * 40 * 4]);
+            model.ok(&format!("a=p,i=42,p=1,U=1{axes}"), &[]);
+            model.ok(
+                &format!("a=p,i=42,p=1,U=1,x=2,y=3,w=10,h=20,z=-1{axes}"),
+                &[],
+            );
+            model.ok("a=p,i=42,p=2,U=1,c=1,r=1", &[]);
+            model.ok("a=d,d=i,i=42,p=2", &[]);
+        }
+        *delayed.kitty.character_cell_size.borrow_mut() = Some(CELL);
+        delayed.kitty.character_cell_size_possibly_changed();
+        assert_eq!(
+            delayed.kitty.virtual_placements(),
+            known.kitty.virtual_placements()
+        );
+        delayed.kitty.teardown();
+        delayed.kitty.teardown();
+        assert_eq!(delayed.store.borrow().image_count(), 0);
+        assert_eq!(delayed.store.borrow().total_bytes(), 0);
+    }
 }

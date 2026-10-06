@@ -662,16 +662,12 @@ pub(crate) fn route_thread_main(
                             }
                         },
                         ClientToServerMsg::TerminalPixelDimensions { pixel_dimensions } => {
-                            send_to_screen_or_retry_queue!(
-                                senders,
-                                ScreenInstruction::TerminalPixelDimensions(
+                            to_server
+                                .send(ServerInstruction::TerminalPixelDimensions {
                                     client_id,
                                     pixel_dimensions,
-                                ),
-                                instruction,
-                                retry_queue
-                            )
-                            .with_context(err_context)?;
+                                })
+                                .with_context(err_context)?;
                         },
                         ClientToServerMsg::KittyGraphicsSupport { supported } => {
                             // A fast probe must not overtake FirstClientConnected/AttachClient.

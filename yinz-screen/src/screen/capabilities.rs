@@ -69,9 +69,17 @@ impl Screen {
         );
         self.kitty_probe_answers.insert(client_id, supported);
         let supported = supported && self.support_kitty_graphics_protocol;
-        self.kitty_host_capabilities
+        let previous = self
+            .kitty_host_capabilities
             .borrow_mut()
             .insert(client_id, supported);
+        if supported && previous != Some(true) {
+            // A per-client gate may have consumed the only plugin frame, even when another
+            // client already supported graphics. Repaint retained pane content.
+            for tab in self.tabs.values_mut() {
+                tab.set_force_render();
+            }
+        }
         self.push_kitty_host_support_to_tabs();
         self.push_kitty_capability_to_plugins(client_id, supported);
     }

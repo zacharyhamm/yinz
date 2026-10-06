@@ -102,7 +102,36 @@ pub struct VirtualPlacement {
     pub source: (usize, usize, usize, usize),
     /// The image is fitted into the box preserving its aspect ratio, so this is at most the box.
     pub fitted_px: (usize, usize),
+    pending_geometry: Option<(u32, u32)>,
     pub z_index: i32,
+}
+
+fn virtual_dimensions(
+    columns: u32,
+    rows: u32,
+    source_w: usize,
+    source_h: usize,
+    cell: SizeInPixels,
+) -> (usize, usize) {
+    let ceil_div = |a: usize, b: usize| std::cmp::max(a.div_ceil(b), 1);
+    // Spec, "Controlling displayed image layout": with only one of `c`/`r` given the other
+    // follows the source aspect ratio; with neither, the image keeps its natural size.
+    let (columns, rows) = match (columns as usize, rows as usize) {
+        (0, 0) => (
+            ceil_div(source_w, cell.width),
+            ceil_div(source_h, cell.height),
+        ),
+        (c, 0) => (
+            c,
+            ceil_div(c * cell.width * source_h / source_w.max(1), cell.height),
+        ),
+        (0, r) => (
+            ceil_div(r * cell.height * source_w / source_h.max(1), cell.width),
+            r,
+        ),
+        (c, r) => (c, r),
+    };
+    (columns, rows)
 }
 
 fn fit_into_box(source: (usize, usize), box_px: (usize, usize)) -> (usize, usize) {
@@ -579,7 +608,7 @@ impl KittyGrid {
         internal: InternalImageId,
         command: &KittyCommand,
         cursor_px: (usize, usize),
-        cell: SizeInPixels,
+        cell: Option<SizeInPixels>,
         vertical_anchor: KittyVerticalAnchor,
     ) -> Result<Option<(u16, u16)>, KittyError> {
         let (image_width, image_height) = {
@@ -629,6 +658,14 @@ impl KittyGrid {
             // it occupies no cells here and the cursor has nothing to move past.
             return Ok(None);
         }
+        let cell = cell.ok_or_else(|| KittyError {
+            code: KittyErrorCode::Enotsupported,
+            message: "cell size unknown".to_owned(),
+            image_id: command.image_id,
+            image_number: command.image_number,
+            placement_id: command.placement_id,
+            quiet: command.quiet,
+        })?;
         let off_x = std::cmp::min(command.cell_offset_x as usize, cell.width - 1);
         let off_y = std::cmp::min(command.cell_offset_y as usize, cell.height - 1);
         let ceil_div = |a: usize, b: usize| a.div_ceil(b);
@@ -963,58 +1000,47 @@ impl KittyGrid {
         pane_image_id: u32,
         internal: InternalImageId,
         command: &KittyCommand,
-        cell: SizeInPixels,
+        cell: Option<SizeInPixels>,
         image_size: (usize, usize),
         source: (usize, usize, usize, usize),
     ) -> Result<(), KittyError> {
         let (image_width, image_height) = image_size;
         let (source_x, source_y, source_w, source_h) = source;
-        let ceil_div = |a: usize, b: usize| std::cmp::max(a.div_ceil(b), 1);
-        // Spec, "Controlling displayed image layout": with only one of `c`/`r` given the other
-        // follows the source aspect ratio; with neither, the image keeps its natural size.
-        let (columns, rows) = match (command.columns as usize, command.rows as usize) {
-            (0, 0) => (
-                ceil_div(source_w, cell.width),
-                ceil_div(source_h, cell.height),
-            ),
-            (c, 0) => (
-                c,
-                ceil_div(c * cell.width * source_h / source_w.max(1), cell.height),
-            ),
-            (0, r) => (
-                ceil_div(r * cell.height * source_w / source_h.max(1), cell.width),
-                r,
-            ),
-            (c, r) => (c, r),
+        let (columns, rows, fitted_px) = if let Some(cell) = cell {
+            let (columns, rows) =
+                virtual_dimensions(command.columns, command.rows, source_w, source_h, cell);
+            let box_px = (columns * cell.width, rows * cell.height);
+            // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio
+            // preserved" - so a square image in a wide box keeps its shape rather than stretching.
+            let fitted_px = fit_into_box((source_w, source_h), box_px);
+            let variant_key = (columns as u16, rows as u16);
+            let fitted_bytes = {
+                let store = self.kitty_image_store.borrow();
+                let image = store
+                    .get(internal)
+                    .ok_or_else(|| enoent(command, "unknown image id"))?;
+                let cropped = crop_rgba(
+                    image.displayed_rgba(),
+                    image_width,
+                    image_height,
+                    source_x,
+                    source_y,
+                    source_w,
+                    source_h,
+                );
+                scale_rgba(&cropped, source_w, source_h, fitted_px.0, fitted_px.1)
+            };
+            if !self.kitty_image_store.borrow_mut().add_scaled_variant(
+                internal,
+                variant_key,
+                fitted_bytes,
+            ) {
+                return Err(enospc(command, "scaled image exceeds storage quota"));
+            }
+            (columns, rows, fitted_px)
+        } else {
+            (command.columns as usize, command.rows as usize, (0, 0))
         };
-        let box_px = (columns * cell.width, rows * cell.height);
-        // Spec: "The image will eventually be fit to the specified rectangle, its aspect ratio
-        // preserved" - so a square image in a wide box keeps its shape rather than stretching.
-        let fitted_px = fit_into_box((source_w, source_h), box_px);
-        let variant_key = (columns as u16, rows as u16);
-        let fitted_bytes = {
-            let store = self.kitty_image_store.borrow();
-            let image = store
-                .get(internal)
-                .ok_or_else(|| enoent(command, "unknown image id"))?;
-            let cropped = crop_rgba(
-                image.displayed_rgba(),
-                image_width,
-                image_height,
-                source_x,
-                source_y,
-                source_w,
-                source_h,
-            );
-            scale_rgba(&cropped, source_w, source_h, fitted_px.0, fitted_px.1)
-        };
-        if !self.kitty_image_store.borrow_mut().add_scaled_variant(
-            internal,
-            variant_key,
-            fitted_bytes,
-        ) {
-            return Err(enospc(command, "scaled image exceeds storage quota"));
-        }
         let placement_id = if pane_image_id != 0 {
             command.placement_id.unwrap_or(0)
         } else {
@@ -1032,6 +1058,7 @@ impl KittyGrid {
             rows: rows as u16,
             source,
             fitted_px,
+            pending_geometry: cell.is_none().then_some((command.columns, command.rows)),
             z_index: command.z_index,
         });
         self.kitty_image_store
@@ -1582,10 +1609,9 @@ impl KittyGrid {
         self.placements = kept;
     }
     pub fn character_cell_size_possibly_changed(&mut self) {
-        if let (Some(previous_cell_size), Some(character_cell_size)) =
-            (self.previous_cell_size, *self.character_cell_size.borrow())
-        {
-            if previous_cell_size != character_cell_size {
+        if let Some(character_cell_size) = *self.character_cell_size.borrow() {
+            if self.previous_cell_size != Some(character_cell_size) {
+                let previous_cell_size = self.previous_cell_size.unwrap_or(character_cell_size);
                 struct Regeneration {
                     placement_index: usize,
                     internal_id: InternalImageId,
@@ -1667,6 +1693,17 @@ impl KittyGrid {
                 let mut virtual_regenerations = Vec::new();
                 for placement in &mut self.virtual_placements {
                     let (_, _, source_width, source_height) = placement.source;
+                    if let Some((columns, rows)) = placement.pending_geometry.take() {
+                        let (columns, rows) = virtual_dimensions(
+                            columns,
+                            rows,
+                            source_width,
+                            source_height,
+                            character_cell_size,
+                        );
+                        placement.columns = columns as u16;
+                        placement.rows = rows as u16;
+                    }
                     placement.fitted_px = fit_into_box(
                         (source_width, source_height),
                         (
@@ -1716,6 +1753,19 @@ impl KittyGrid {
         }
         self.previous_cell_size = *self.character_cell_size.borrow();
     }
+    /// Release this grid's namespace when it is permanently discarded. Clones are snapshots,
+    /// so ownership cleanup is explicit rather than an implicit `Drop` implementation.
+    pub fn teardown(&mut self) {
+        self.clear_all_placements();
+        self.remove_virtual_placements(|_| true);
+        let mut store = self.kitty_image_store.borrow_mut();
+        for (_, internal) in self.image_ids.drain() {
+            store.remove_entry(internal);
+        }
+        self.image_numbers.clear();
+        self.placeholder_uids.clear();
+    }
+
     pub fn clear_all_placements(&mut self) {
         let mut store = self.kitty_image_store.borrow_mut();
         for placement in self.placements.drain(..) {

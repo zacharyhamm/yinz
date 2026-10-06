@@ -1699,7 +1699,17 @@ pub(super) fn store_test_kitty_image(
     kitty_image_store
         .borrow_mut()
         .store_image(DecodedImage {
-            bytes: vec![255u8; (width * height * 4) as usize],
+            bytes: {
+                let mut state = 42u32;
+                (0..width * height * 4)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        state as u8
+                    })
+                    .collect()
+            },
             width,
             height,
             format: KittyFormat::Rgba32,
@@ -1897,7 +1907,7 @@ fn kitty_transmission_preserves_payload_at_chunk_boundaries() {
             let separator = command.iter().position(|byte| *byte == b';').unwrap();
             let more = u8::from(index + 1 < commands.len());
             let control = if index == 0 {
-                format!("a=t,q=2,f=32,t=d,i=42,s=30,v=40,m={more}")
+                format!("a=t,q=2,f=32,o=z,t=d,i=42,s=30,v=40,m={more}")
             } else {
                 format!("q=2,m={more}")
             };
@@ -1915,7 +1925,7 @@ fn kitty_placement_bytes_with_negative_z() {
     let mut chunk = kitty_chunk(internal, 1, 5, 3);
     chunk.z_index = -1;
     let output = run_kitty_frame(&parts, vec![chunk], None);
-    assert!(output.contains("\u{1b}_Ga=t,q=2,f=32,t=d,i=2000000000,s=30,v=40,m=1;"));
+    assert!(output.contains("\u{1b}_Ga=t,q=2,f=32,o=z,t=d,i=2000000000,s=30,v=40,m=1;"));
     assert!(output.contains("\u{1b}_Gq=2,m=0;"));
     let placement = "\u{1b}[4;6H\u{1b}[m\u{1b}_Ga=p,q=2,i=2000000000,p=1,x=0,y=0,w=30,h=40,X=0,Y=0,z=-1,C=1\u{1b}\\";
     assert!(output.contains(placement));
@@ -1950,6 +1960,10 @@ fn kitty_host_display_clear_forces_replacement_next_frame() {
         frame_3.matches("\u{1b}_Ga=p,q=2,").count(),
         1,
         "a host display clear must force the placement to be re-emitted"
+    );
+    assert!(
+        frame_3.contains("\x1b_Ga=d,q=2,d=I,i=2000000000\x1b\\"),
+        "full repaint must release the old host image before forgetting its ID"
     );
     let clear_pos = frame_3.find("\u{1b}[2J").unwrap();
     let transmit_pos = frame_3.find("\u{1b}_Ga=t").unwrap();
@@ -1998,7 +2012,7 @@ fn kitty_diff_move_remove_free_retransmit() {
     assert!(frame_4.contains("\u{1b}_Ga=d,q=2,d=I,i=2000000000\u{1b}\\"));
     let new_internal = store_test_kitty_image(&parts.0, 30, 40);
     let frame_5 = run_kitty_frame(&parts, vec![kitty_chunk(new_internal, 2, 0, 0)], None);
-    assert!(frame_5.contains("\u{1b}_Ga=t,q=2,f=32,t=d,i=2000000001,"));
+    assert!(frame_5.contains("\u{1b}_Ga=t,q=2,f=32,o=z,t=d,i=2000000001,"));
 }
 
 #[test]
