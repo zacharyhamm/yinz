@@ -2062,30 +2062,21 @@ fn get_local_utc_offset(env: &mut PluginEnv, epoch_ms: SignedUnixMillis) {
         .non_fatal();
 }
 
-/// The plugin `name`'s lines from yinz's own log, the way `yinz plugins log` reads them:
-/// `name` resolves in the user's plugin folder (a builtin's bare tag resolves the same way and
-/// is matched by `log_tail` on its stem), and the answer is the last `lines` matching lines.
-/// A folder that cannot be found, a name that is not a plugin name, or a log that is not there
-/// yet all come back as the error rather than as an empty answer, so "no lines yet" stays
-/// distinguishable from "could not look".
+fn plugin_log_lines(env: &PluginEnv, name: &str, lines: usize, log_file: &Path) -> Result<String> {
+    let dir = env.user_plugin_dir.clone().or_else(default_user_plugin_dir);
+    crate::plugin_authoring::resolve_log_target(
+        name,
+        dir.as_deref(),
+        &env.yinz_data_dir,
+        &env.plugin_aliases.lock().unwrap(),
+        &env.plugin_cwd,
+    )
+    .and_then(|target| crate::plugin_authoring::log_target_tail(log_file, &target, lines))
+}
+
+/// Read a name, configured alias, or explicit source path using the caller's cwd.
 fn read_plugin_log(env: &mut PluginEnv, name: String, lines: usize) {
-    let result = env
-        .user_plugin_dir
-        .clone()
-        .or_else(default_user_plugin_dir)
-        .ok_or_else(|| {
-            anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Yinz config")
-        })
-        .and_then(|dir| {
-            yinz_plugin_api::authoring::resolve_plugin_file(&dir, &name).map_err(|e| anyhow!(e))
-        })
-        .and_then(|path| {
-            crate::plugin_authoring::log_tail(
-                &yinz_runtime::consts::YINZ_TMP_LOG_FILE,
-                &path,
-                lines,
-            )
-        });
+    let result = plugin_log_lines(env, &name, lines, &yinz_runtime::consts::YINZ_TMP_LOG_FILE);
     let response = ProtobufReadPluginLogResponse {
         result: Some(match result {
             Ok(lines) => read_plugin_log_response::Result::Lines(lines),
@@ -10945,3 +10936,7 @@ mod permission_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/plugin_log_tests.rs"]
+mod plugin_log_tests;

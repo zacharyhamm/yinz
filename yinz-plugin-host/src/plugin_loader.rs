@@ -65,7 +65,7 @@ fn cached_module(plugin_cache: &PluginCache, key: &PluginCacheKey) -> Result<Mod
         .lock()
         .unwrap()
         .get(key)
-        .cloned()
+        .map(|(module, _)| module.clone())
         .ok_or_else(|| anyhow!("Plugin is not stored in memory"))
 }
 
@@ -99,7 +99,7 @@ fn script_source(
         },
         _ => {
             let (path, source) = plugin_config.resolve_source(user_plugin_dir)?;
-            Ok((Some(path), source))
+            Ok((Some(path.canonicalize().unwrap_or(path)), source))
         },
     }
 }
@@ -217,11 +217,31 @@ impl<'a> PluginLoader<'a> {
         self.connected_clients = None;
         self
     }
+    fn wasm_source_path(&self) -> Option<PathBuf> {
+        self.plugin_cache
+            .lock()
+            .unwrap()
+            .get(&plugin_cache_key(
+                &self.plugin_config,
+                self.builtin_plugins_dir.as_deref(),
+            ))
+            .map(|(_, path)| path.clone())
+    }
+
     pub fn start_plugin(&mut self) -> Result<()> {
         let resolved_source_path = self
             .plugin_map
             .reload_metadata(self.plugin_id)
-            .and_then(|metadata| metadata.resolved_source_path);
+            .filter(|metadata| {
+                metadata.config.path == self.plugin_config.path
+                    && metadata.config.location == self.plugin_config.location
+            })
+            .and_then(|metadata| metadata.resolved_source_path)
+            .or_else(|| {
+                (self.plugin_config.runtime() == PluginRuntime::Wasm)
+                    .then(|| self.wasm_source_path())
+                    .flatten()
+            });
         self.plugin_map.remember_plugin(
             self.plugin_id,
             super::plugin_map::PluginMetadata {
@@ -354,13 +374,24 @@ impl<'a> PluginLoader<'a> {
     }
     fn interpret_module(&mut self) -> Result<Module> {
         self.loading_indication.override_previous_error();
-        let wasm_bytes = self
+        let (path, wasm_bytes) = self
             .plugin_config
-            .resolve_wasm_bytes(&self.yinz_data_dir, self.builtin_plugins_dir.as_deref())?;
+            .resolve_wasm_source(&self.yinz_data_dir, self.builtin_plugins_dir.as_deref())?;
+        let path = path.canonicalize().unwrap_or(path);
+        if let Some(mut metadata) = self.plugin_map.reload_metadata(self.plugin_id) {
+            metadata.resolved_source_path = Some(path.clone());
+            self.plugin_map.remember_plugin(self.plugin_id, metadata);
+        }
         let timer = std::time::Instant::now();
         let module = Module::new(&self.engine, &wasm_bytes)?;
         log::info!(
-            "Loaded plugin '{}' in {:?}",
+            "{} Loaded plugin '{}' in {:?}",
+            crate::plugin_authoring::LogIdentity::new(
+                &self.plugin_config.location,
+                &path,
+                &self.plugin_cwd
+            )
+            .marker(),
             self.plugin_config.path.display(),
             timer.elapsed()
         );
@@ -369,7 +400,7 @@ impl<'a> PluginLoader<'a> {
         // recompile.
         self.plugin_cache.lock().unwrap().insert(
             plugin_cache_key(&self.plugin_config, self.builtin_plugins_dir.as_deref()),
-            module.clone(),
+            (module.clone(), path),
         );
         Ok(module)
     }
@@ -498,9 +529,13 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
-            // Set by `start_script_plugin` once the source has been resolved; a wasm plugin has
-            // its own lookup and leaves it unset.
-            resolved_source_path: None,
+            yinz_data_dir: self.yinz_data_dir.clone(),
+            // Deno fills this after resolving its source; Wasm retains the cached source path.
+            resolved_source_path: if self.plugin_config.runtime() == PluginRuntime::Wasm {
+                self.wasm_source_path()
+            } else {
+                None
+            },
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),
@@ -530,7 +565,14 @@ impl<'a> PluginLoader<'a> {
             &self.plugin_own_cache_dir,
             &YINZ_TMP_DIR,
             self.user_plugin_dir.as_ref(),
-            &self.plugin_config.location.to_string(),
+            &crate::plugin_authoring::LogIdentity::new(
+                &self.plugin_config.location,
+                self.wasm_source_path()
+                    .as_deref()
+                    .unwrap_or(&self.plugin_config.path),
+                &self.plugin_cwd,
+            )
+            .marker(),
             self.plugin_id,
             stdin_pipe.clone(),
             stdout_pipe.clone(),
@@ -628,7 +670,14 @@ impl<'a> PluginLoader<'a> {
             &self.plugin_own_cache_dir,
             &YINZ_TMP_DIR,
             self.user_plugin_dir.as_ref(),
-            &self.plugin_config.location.to_string(),
+            &crate::plugin_authoring::LogIdentity::new(
+                &self.plugin_config.location,
+                self.wasm_source_path()
+                    .as_deref()
+                    .unwrap_or(&self.plugin_config.path),
+                &self.plugin_cwd,
+            )
+            .marker(),
             self.plugin_id,
             stdin_pipe.clone(),
             stdout_pipe.clone(),
@@ -668,8 +717,8 @@ impl<'a> PluginLoader<'a> {
             input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
             layout_dir: self.layout_dir.clone(),
             user_plugin_dir: self.user_plugin_dir.clone(),
-            // Script runtimes resolve a source file; wasm has its own lookup.
-            resolved_source_path: None,
+            yinz_data_dir: self.yinz_data_dir.clone(),
+            resolved_source_path: self.wasm_source_path(),
             default_mode: self.default_mode,
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
             keybinds: self.keybinds.clone(),
@@ -878,11 +927,17 @@ mod tests {
         let engine = Engine::default();
         let empty_module = Module::new(&engine, b"\0asm\x01\0\0\0").unwrap();
         let key = (std::path::PathBuf::from("plugin.wasm"), None);
-        let cache = Arc::new(Mutex::new(HashMap::from([(key.clone(), empty_module)])));
+        let cache = Arc::new(Mutex::new(HashMap::from([(
+            key.clone(),
+            (empty_module, "plugin.wasm".into()),
+        )])));
 
         cached_module(&cache, &key).expect("the cached module");
 
-        assert!(cache.lock().unwrap().contains_key(&key));
+        assert_eq!(
+            cache.lock().unwrap().get(&key).unwrap().1,
+            Path::new("plugin.wasm")
+        );
         let missing = (std::path::PathBuf::from("other.wasm"), None);
         assert!(cached_module(&cache, &missing).is_err());
     }

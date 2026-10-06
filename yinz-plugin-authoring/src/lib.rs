@@ -8,6 +8,8 @@
 pub mod analysis;
 pub mod git;
 pub mod limits;
+mod logs;
+pub use logs::*;
 mod plugin_authoring;
 pub mod worker;
 

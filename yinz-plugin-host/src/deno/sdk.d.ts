@@ -197,7 +197,7 @@ export interface Yinz {
   /** Requires WriteToStdin. Text is UTF-8 encoded. */
   write(text: string | Uint8Array): void;
   writeToPaneId(text: string | Uint8Array, pane: PaneId): void;
-  /** Requires AuthorPlugins. The last lines (default 50) yinz logged about the named plugin. */
+  /** Requires AuthorPlugins. The last lines (default 50) for a plugin name, configured alias, or explicit path (absolute, ./, ../, file:). Relative paths use the calling plugin cwd. Paths and aliases require source-attributed entries. */
   readPluginLog(name: string, lines?: number): string;
   /** Requires OpenTerminalsOrPlugins. A new terminal pane, optionally in cwd. */
   openTerminal(cwd?: string | {cwd?: string | null; path?: string | null} | null): PaneId | null;

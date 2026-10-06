@@ -84,6 +84,7 @@ impl Workers {
         let source = source.to_owned();
         let path = path.to_owned();
         let worker_name = name.clone();
+        let identity = env.log_identity();
         // Guest execution and synchronous host ops stay outside Tokio, just like the UI isolate.
         let thread = thread::Builder::new()
             .name(format!("deno-worker-{generation}"))
@@ -146,9 +147,13 @@ impl Workers {
                     }
                     Ok(())
                 };
-                run()
-                    .with_context(|| format!("Deno worker {worker_name} failed"))
-                    .non_fatal();
+                if let Err(error) =
+                    run().with_context(|| format!("Deno worker {worker_name} failed"))
+                {
+                    for line in format!("{error:#}").lines() {
+                        log::error!("{identity} {line}");
+                    }
+                }
             })
             .context("starting Deno worker thread")?;
         self.workers

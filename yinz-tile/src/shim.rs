@@ -2215,9 +2215,10 @@ fn fs_mutate(plugin_command: PluginCommand) -> Result<(), String> {
     }
 }
 
-/// The last `lines` lines of yinz's own log about the plugin `name` - what it logged, and
-/// any loader error naming its file - the way `yinz plugins log` reads them. Empty when the
-/// plugin has not logged yet; an error when the log or the plugin folder cannot be found.
+/// The last `lines` log entries for a plugin name, configured alias, or explicit path
+/// (absolute, `./`, `../`, or `file:`). Relative paths use the calling plugin's cwd.
+/// Paths and aliases require source-attributed entries; bare names also read legacy entries.
+/// Empty when no entries match; an error when the log cannot be found.
 pub fn read_plugin_log(name: &str, lines: usize) -> Result<String, String> {
     let response: ProtobufReadPluginLogResponse = call(PluginCommand::ReadPluginLog {
         name: name.to_owned(),

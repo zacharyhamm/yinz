@@ -36,6 +36,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
     (
         "yinz-plugin-authoring",
         &[
+            "yinz-config",
             "yinz-types",
             "yinz-runtime",
             "yinz-plugin-api",
@@ -481,9 +482,6 @@ mod tests {
             ("yinz-routing", "yinz-plugin-host"),
             ("yinz-routing", "yinz-server"),
             ("yinz-routing", "yinz-panes"),
-            // Authoring reads its two constants from the runtime so Agent's native tests do not
-            // build configuration.
-            ("yinz-plugin-authoring", "yinz-config"),
         ] {
             let index = metadata["packages"]
                 .as_array()
