@@ -431,7 +431,8 @@ pub enum PtyHosts {
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Find, launch and control agents in explicit terminal panes.
-    #[clap(subcommand)]
+    // Running servers from before the rename still launch `yinz hocus codex`.
+    #[clap(subcommand, alias = "hocus")]
     Agent(Agent),
 
     /// Inspect and install portable coding-agent skills.
@@ -2581,6 +2582,31 @@ mod tests {
 
     const CLI_PARSE_STACK_SIZE: usize = 32 * 1024 * 1024;
 
+    #[test]
+    fn legacy_hocus_launchers_remain_compatible_with_running_servers() {
+        for launcher in ["codex", "muse"] {
+            let parsed = try_parse_cli([
+                "yinz",
+                "hocus",
+                launcher,
+                "--command",
+                launcher,
+                "--",
+                "--help",
+            ])
+            .unwrap();
+            match parsed.command {
+                Some(Command::Agent(
+                    Agent::Codex { command, args } | Agent::Muse { command, args },
+                )) => {
+                    assert_eq!(command, std::path::PathBuf::from(launcher));
+                    assert_eq!(args, ["--help"]);
+                },
+                other => panic!("expected agent launcher, got {other:?}"),
+            }
+        }
+    }
+
     /// clap's derived builder for `CliArgs` needs ~2.5MB of stack in a debug build (the
     /// derive expands the huge `CliAction` enum into one unoptimized function), more than
     /// libtest's 2MiB per-test threads. Parse on a thread with room.
@@ -3045,17 +3071,17 @@ mod tests {
         }
     }
     #[test]
-    fn neutral_agent_cli_and_hooks_have_no_hocus_alias() {
+    fn neutral_agent_cli_keeps_hooks_separate_from_launchers() {
         for args in [
             vec!["yinz", "hooks", "status"],
             vec!["yinz", "agent", "codex", "--", "--model", "local"],
             vec!["yinz", "agent", "muse-report"],
+            vec!["yinz", "hocus", "codex"],
         ] {
             assert!(try_parse_cli(args).is_ok());
         }
         for args in [
             vec!["yinz", "hocus", "hooks", "status"],
-            vec!["yinz", "hocus", "codex"],
             vec!["yinz", "agent", "hooks", "status"],
         ] {
             assert!(try_parse_cli(args).is_err());

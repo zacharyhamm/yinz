@@ -3,7 +3,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use yinz_cli::args::{Agent, CliArgs};
-use yinz_ipc::ipc::{ClientToServerMsg, IpcRecv, IpcSenderWithContext, ServerToClientMsg};
+use yinz_ipc::ipc::{
+    ClientToServerMsg, IpcReceiverWithContext, IpcRecv, IpcSenderWithContext, ServerToClientMsg,
+};
 use yinz_runtime::errors::prelude::*;
 use yinz_types::agent::control::{
     AgentOutcome, AgentRequest, AgentResponse, MAX_PROMPT_BYTES, MAX_TIMEOUT_MS,
@@ -512,24 +514,31 @@ fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<A
                 return Err(error).with_context(|| format!("cannot connect to session {session}"))
             },
         };
+    exchange_on_socket(socket, request, timeout)
+}
+
+fn exchange_on_socket(
+    socket: interprocess::local_socket::Stream,
+    request: AgentRequest,
+    timeout: Duration,
+) -> Result<AgentResponse> {
     let mut sender = IpcSenderWithContext::<ClientToServerMsg>::new(socket);
     let mut receiver = sender
         .get_receiver::<ServerToClientMsg>()
         .context("cannot set up agent reply")?;
     if matches!(&request, AgentRequest::Spawn { placement, .. } if *placement != yinz_types::agent::control::AgentPlacement::Automatic)
     {
-        receiver
-            .set_recv_timeout(Some(Duration::from_secs(5)))
-            .context("bound placement support check")?;
         sender
             .send_client_msg(ClientToServerMsg::AgentControl(
                 AgentRequest::SpawnPlacementSupport,
             ))
             .context("check server tab placement support")?;
-        if !matches!(receiver.recv_server_msg(), IpcRecv::Msg(ServerToClientMsg::AgentControl(response), _)
-            if response.output.as_deref() == Some("agent-tab-placement-v1"))
+        let response = receive_response(&mut receiver, Instant::now() + Duration::from_secs(5))
+            .context("cannot verify server tab placement support (spawn was not sent)")?;
+        if response.outcome != AgentOutcome::Ok
+            || response.output.as_deref() != Some("agent-tab-placement-v1")
         {
-            bail!("tab placement requires a matching running server; restart the session with this Yinz version (spawn was not sent)");
+            bail!("server did not confirm tab placement support; restart the session with this Yinz version (spawn was not sent)");
         }
     }
     // The server's deadline determines the outcome. Allow its timeout result to arrive.
@@ -540,7 +549,21 @@ fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<A
     sender
         .send_client_msg(ClientToServerMsg::AgentControl(request))
         .context("cannot send agent request")?;
-    let result = (|| loop {
+    let result = receive_response(&mut receiver, deadline);
+    sender
+        .send_client_msg(ClientToServerMsg::ClientExited)
+        .context("disconnecting agent client")
+        .non_fatal();
+    result
+}
+
+// The router can acknowledge a request before the screen thread answers it.
+// Ignore those acknowledgements without extending the original deadline.
+fn receive_response(
+    receiver: &mut IpcReceiverWithContext<ServerToClientMsg>,
+    deadline: Instant,
+) -> Result<AgentResponse> {
+    loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             bail!("session did not answer the agent request before the deadline; the request was not retried");
@@ -557,12 +580,7 @@ fn exchange(session: &str, request: AgentRequest, timeout: Duration) -> Result<A
             IpcRecv::Idle => bail!("session did not answer the agent request before the deadline; the request was not retried"),
             _ => {},
         }
-    })();
-    sender
-        .send_client_msg(ClientToServerMsg::ClientExited)
-        .context("disconnecting agent client")
-        .non_fatal();
-    result
+    }
 }
 
 fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) -> Result<()> {
@@ -572,7 +590,7 @@ fn print_response(response: &AgentResponse, json: bool, out: &mut impl Write) ->
     )
 }
 
-fn allow_closed_stdout(result: Result<()>) -> Result<()> {
+pub(crate) fn allow_closed_stdout(result: Result<()>) -> Result<()> {
     match result {
         Err(error)
             if error
