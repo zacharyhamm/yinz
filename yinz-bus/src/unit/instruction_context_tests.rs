@@ -367,7 +367,7 @@ pin_context_to_instruction! {
     mod plugin;
     instruction: PluginInstruction;
     context: PluginContext;
-    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoPalette", "PaletteNote", "PaletteAgent", "DenoEvent", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
+    special: ["DataRequest", "PostMessagesToPluginWorker", "DenoTick", "DenoPalette", "PaletteNote", "PaletteAgent", "DenoEvent", "DenoReply", "DenoDispose", "ReleasePluginInstancePipes", "PipeCompleted", "InputBarrier"];
     only_special: ["PostMessageToPluginWorker", "UnblockCliPipes"];
     targets: [(
         "DataRequest",
@@ -416,6 +416,16 @@ pin_context_to_instruction! {
     ), (
         "DenoEvent",
         PluginInstruction::DenoEvent(PluginId::new(1), ClientId::new(1), 1, yinz_types::data::Event::BeforeClose),
+        "Update"
+    ), (
+        "DenoReply",
+        {
+            let _mailbox = crate::thread_bus::DenoReplies::new(9001);
+            let (sender, receiver) = yinz_runtime::channels::unbounded();
+            let senders = crate::thread_bus::ThreadSenders { to_plugin: Some(yinz_runtime::channels::SenderWithContext::new(sender)), ..Default::default() };
+            senders.send_to_plugin(PluginInstruction::DenoEvent(PluginId::new(1), ClientId::new(1), 9001, yinz_types::data::Event::BeforeClose)).unwrap();
+            receiver.try_recv().unwrap().0
+        },
         "Update"
     ), (
         "DenoDispose",

@@ -1315,7 +1315,7 @@ export default {
                 .expect("the timer proxy must be stopped after teardown");
             match instruction {
                 PluginInstruction::Exit => break,
-                timer @ PluginInstruction::DenoEvent(_, _, _, Event::Timer(_)) => {
+                timer @ PluginInstruction::DenoReply(_, _, _, Event::Timer(_), _) => {
                     completions.lock().push(timer);
                 },
                 // Capture the legacy envelope too, so losing the generation at the
@@ -1354,8 +1354,8 @@ export default {
     harness.rendered("replacement pending timers=0 fences=0");
     match (&old, &current) {
         (
-            PluginInstruction::DenoEvent(old_id, old_client, old_generation, Event::Timer(_)),
-            PluginInstruction::DenoEvent(new_id, new_client, new_generation, Event::Timer(_)),
+            PluginInstruction::DenoReply(old_id, old_client, old_generation, Event::Timer(_), _),
+            PluginInstruction::DenoReply(new_id, new_client, new_generation, Event::Timer(_), _),
         ) => {
             assert_eq!((*old_id, *old_client), (PLUGIN, CLIENT));
             assert_eq!((*new_id, *new_client), (PLUGIN, CLIENT));
@@ -2424,7 +2424,7 @@ export default {
                 let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
                 match instruction {
                     PluginInstruction::Exit => break,
-                    timer @ PluginInstruction::DenoEvent(_, _, _, Event::Timer(_)) => {
+                    timer @ PluginInstruction::DenoReply(_, _, _, Event::Timer(_), _) => {
                         completions.lock().push(timer);
                     },
                     other => {
@@ -3040,10 +3040,13 @@ export default {
             let (instruction, _) = outgoing.recv_timeout(FAKE_SCREEN_RECV_TIMEOUT).unwrap();
             match instruction {
                 PluginInstruction::Exit => break,
-                changed
-                @ PluginInstruction::DenoEvent(_, _, _, Event::PluginDataChanged { .. }) => {
-                    replies.lock().push(changed)
-                },
+                changed @ PluginInstruction::DenoReply(
+                    _,
+                    _,
+                    _,
+                    Event::PluginDataChanged { .. },
+                    _,
+                ) => replies.lock().push(changed),
                 PluginInstruction::Update(ref events)
                     if events
                         .iter()
@@ -3074,8 +3077,8 @@ export default {
     harness.rendered("new changes=0 fences=0");
     match (&old, &current) {
         (
-            PluginInstruction::DenoEvent(_, _, old, _),
-            PluginInstruction::DenoEvent(_, _, new, _),
+            PluginInstruction::DenoReply(_, _, old, _, _),
+            PluginInstruction::DenoReply(_, _, new, _, _),
         ) => assert_ne!(old, new),
         _ => panic!("data replies require generations: {old:?}, {current:?}"),
     }
@@ -3848,11 +3851,12 @@ export default {
                 if matches!(instruction, PluginInstruction::Exit) {
                     break;
                 }
-                if let PluginInstruction::DenoEvent(
+                if let PluginInstruction::DenoReply(
                     _,
                     client,
                     _,
                     Event::CustomMessage(name, payload),
+                    _,
                 ) = &instruction
                 {
                     messages
@@ -4000,7 +4004,7 @@ export default {
             }
             if matches!(
                 instruction,
-                PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(..))
+                PluginInstruction::DenoReply(_, _, _, Event::CustomMessage(..), _)
             ) {
                 messages.lock().push(instruction.clone());
             }
@@ -4010,12 +4014,12 @@ export default {
     let message = |name: &str, payload: &str| {
         messages.wait_until("the worker's message", default_timeout(), |messages| {
         messages.iter().find(|instruction| matches!(instruction,
-            PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(n, p)) if n == name && p == payload)).cloned()
+            PluginInstruction::DenoReply(_, _, _, Event::CustomMessage(n, p), _) if n == name && p == payload)).cloned()
     })
     };
     harness.load();
     harness.permission_requests(1);
-    let PluginInstruction::DenoEvent(plugin, client, old_generation, _) =
+    let PluginInstruction::DenoReply(plugin, client, old_generation, _, _) =
         message("queued", "original")
     else {
         unreachable!()
@@ -4024,7 +4028,7 @@ export default {
     harness.reload();
     let requests = harness.permission_requests(2);
     assert_eq!(requests.len(), 2);
-    let PluginInstruction::DenoEvent(_, _, new_generation, _) = message("queued", "replacement")
+    let PluginInstruction::DenoReply(_, _, new_generation, _, _) = message("queued", "replacement")
     else {
         unreachable!()
     };
@@ -4048,7 +4052,7 @@ export default {
             .lock()
             .iter()
             .filter_map(|instruction| match instruction {
-                PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(name, payload))
+                PluginInstruction::DenoReply(_, _, _, Event::CustomMessage(name, payload), _)
                     if name == "settled" =>
                     Some(payload.clone()),
                 _ => None,
@@ -4408,7 +4412,7 @@ export default {
             if matches!(instruction, PluginInstruction::Exit) {
                 break;
             }
-            if matches!(instruction, PluginInstruction::DenoEvent(..)) {
+            if matches!(instruction, PluginInstruction::DenoReply(..)) {
                 captured.lock().push(instruction.clone());
             }
             let _ = sender.send(instruction);
@@ -4437,11 +4441,11 @@ export default {
     let stale = captured.lock().clone();
     assert!(stale.iter().any(|message| matches!(
         message,
-        PluginInstruction::DenoEvent(_, _, _, Event::Timer(_))
+        PluginInstruction::DenoReply(_, _, _, Event::Timer(_), _)
     )));
     assert!(stale.iter().any(|message| matches!(
         message,
-        PluginInstruction::DenoEvent(_, _, _, Event::CustomMessage(..))
+        PluginInstruction::DenoReply(_, _, _, Event::CustomMessage(..), _)
     )));
     harness
         .sender
@@ -5058,11 +5062,12 @@ export default {
             if matches!(
                 instruction,
                 PluginInstruction::ChangePluginHostDir(..)
-                    | PluginInstruction::DenoEvent(
+                    | PluginInstruction::DenoReply(
                         _,
                         _,
                         _,
-                        Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_)
+                        Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_),
+                        _
                     )
             ) {
                 captured.lock().push(instruction.clone());
@@ -5103,7 +5108,7 @@ export default {
             PluginInstruction::ChangePluginHostDir(path, _, _, _) if path == moved.path() => {
                 *path = stale.path().to_path_buf();
             },
-            PluginInstruction::DenoEvent(_, _, _, Event::HostFolderChanged(path)) => {
+            PluginInstruction::DenoReply(_, _, _, Event::HostFolderChanged(path), _) => {
                 *path = stale.path().to_path_buf();
             },
             _ => {},

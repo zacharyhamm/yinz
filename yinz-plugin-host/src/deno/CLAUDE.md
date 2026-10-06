@@ -34,9 +34,14 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
   the replacement loads. Unload clears them after guest cleanup. The optional `unload` hook runs once during
   normal disposal (also on reload), before promises and workers are cancelled. The pinned
-  executor pumps generation-scoped replies through `thread_bus::UnloadReplies` while the
-  plugin map is unavailable. A two-second isolate watchdog bounds async and synchronous
-  cleanup; failed/interrupted isolates skip it. Shutdown keeps background jobs alive until
+  executor owns a `thread_bus::DenoReplies` mailbox from before guest initialization until
+  disposal. Generation-scoped replies stay there while notifications wait on the bus, in a
+  loading cache, or on an executor (including a worker). Only the owning executor claims
+  them for normal delivery, with the usual subscription and permission checks. Cleanup
+  atomically stops ordinary notifications and drains unclaimed replies followed by new
+  arrivals in routing order, preserving each acting client, even after the plugin leaves
+  the map. Failed initialization and final disposal remove the mailbox. A two-second isolate
+  watchdog bounds async and synchronous cleanup; failed/interrupted isolates skip it. Shutdown keeps background jobs alive until
   plugins finish so cleanup can await `runCommand`. No hook is guaranteed after a crash or
   the session shutdown deadline.
 - **Modules are confined** (`loader.rs`): an import is an explicit relative `.js/.mjs/.ts/.mts`

@@ -458,6 +458,7 @@ impl Drop for EnvScope<'_> {
 }
 
 pub struct DenoPlugin {
+    replies: Option<yinz_bus::thread_bus::DenoReplies>,
     env: Option<PluginEnv>,
     generation: u64,
     thread: ThreadId,
@@ -485,6 +486,7 @@ impl DenoPlugin {
         client_cancel: Arc<AtomicBool>,
         generation: u64,
     ) -> Result<Self> {
+        let replies = yinz_bus::thread_bus::DenoReplies::new(generation);
         env.deno_generation = Some(generation);
         env.deno_workers
             .get_or_insert_with(|| Arc::new(background_worker::Workers::new(generation)));
@@ -508,6 +510,7 @@ impl DenoPlugin {
         let terminate = instance.terminate.clone();
         RUNTIMES.with(|instances| instances.borrow_mut().insert(generation, instance));
         Ok(Self {
+            replies: Some(replies),
             env: Some(env),
             generation,
             thread: thread::current().id(),
@@ -689,7 +692,11 @@ impl DenoPlugin {
             return;
         }
         self.env().cancel.store(false, Ordering::Release);
-        let replies = yinz_bus::thread_bus::UnloadReplies::new(self.generation);
+        let replies = self
+            .replies
+            .as_ref()
+            .expect("live isolate reply mailbox")
+            .begin_cleanup();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let terminate = self.terminate.clone();
         let (finished, completion) = std::sync::mpsc::channel();
@@ -729,9 +736,8 @@ impl DenoPlugin {
                 if remaining.is_zero() {
                     bail!("unload exceeded its two-second deadline");
                 }
-                if let Ok((client, event)) = replies
-                    .receiver
-                    .recv_timeout(remaining.min(Duration::from_millis(10)))
+                if let Ok((client, event)) =
+                    replies.recv_timeout(remaining.min(Duration::from_millis(10)))
                 {
                     runtime
                         .call_event(&event, Some(client))
@@ -765,6 +771,7 @@ impl DenoPlugin {
         self.env_mut().filesystem_watcher.take();
         testing::cancel_instance(self.env());
         self.disposed = true;
+        self.replies.take();
         if let Some(workers) = &self.env().deno_workers {
             if workers.parent_generation == self.generation {
                 workers.stop();

@@ -64,7 +64,12 @@ fn make_plugin_url_path_safe(url: String) -> String {
 #[derive(Debug, Clone)]
 pub enum EventOrPipeMessage {
     Event(Event),
-    DenoEvent(ClientId, u64, Event),
+    DenoEvent(
+        ClientId,
+        u64,
+        Event,
+        Option<yinz_bus::thread_bus::DenoReplyId>,
+    ),
     // The cached delivery owns the pipe until replay registers the actual instances.
     PipeMessage(Option<ClientId>, PipeMessage, Option<PipeRequestId>, u64),
 }
@@ -87,7 +92,7 @@ impl EventOrPipeMessage {
         shared: bool,
     ) -> Option<ClientId> {
         match self {
-            Self::DenoEvent(client, expected, _)
+            Self::DenoEvent(client, expected, _, _)
                 if generation == Some(*expected) && (shared || *client == owner) =>
             {
                 Some(*client)
@@ -1938,6 +1943,7 @@ impl WasmBridge {
         }
     }
 
+    #[cfg(test)]
     pub fn deno_event(
         &mut self,
         plugin_id: PluginId,
@@ -1945,8 +1951,26 @@ impl WasmBridge {
         events: Vec<(ClientId, Event)>,
         shutdown_sender: Sender<()>,
     ) -> Result<()> {
+        self.deno_replies(
+            plugin_id,
+            generation,
+            events
+                .into_iter()
+                .map(|(client, event)| (client, event, None))
+                .collect(),
+            shutdown_sender,
+        )
+    }
+
+    pub fn deno_replies(
+        &mut self,
+        plugin_id: PluginId,
+        generation: u64,
+        events: Vec<(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>)>,
+        shutdown_sender: Sender<()>,
+    ) -> Result<()> {
         // Pane lifecycle events still describe the session after their plugin reloads.
-        for (_, event) in &events {
+        for (_, event, _) in &events {
             let event_type = EventType::from(event);
             if !self.cli_event_subscribers.is_empty() && event_type.is_cli_streamable() {
                 self.forward_event_to_cli_subscribers(event_type, event);
@@ -1954,10 +1978,13 @@ impl WasmBridge {
         }
         // Loading can hold the map while guest code runs. The plugin thread must
         // remain free to process the cancellation that interrupts that code.
-        let (batch_label, batch_has_input) = summarize_batch_for_stats(&events);
+        let (batch_label, batch_has_input) =
+            summarize_batch_for_stats(events.iter().map(|(_, event, _)| event));
         let messages: Vec<_> = events
             .into_iter()
-            .map(|(client, event)| EventOrPipeMessage::DenoEvent(client, generation, event))
+            .map(|(client, event, reply)| {
+                EventOrPipeMessage::DenoEvent(client, generation, event, reply)
+            })
             .collect();
         if let Some(cached) = self.cached_events_for_pending_plugins.get_mut(&plugin_id) {
             cached.extend(messages);
@@ -1972,12 +1999,15 @@ impl WasmBridge {
                         let mut map = plugin_map.lock().unwrap();
                         if let Some(workers) = map.deno_worker_routes(plugin_id, generation) {
                             for message in &messages {
-                                if let EventOrPipeMessage::DenoEvent(client, _, event) = message {
+                                if let EventOrPipeMessage::DenoEvent(client, _, event, reply) =
+                                    message
+                                {
                                     workers.send(
                                         generation,
                                         crate::deno::background_worker::Message::Event(
                                             *client,
                                             event.clone(),
+                                            *reply,
                                         ),
                                     );
                                 }
@@ -2005,9 +2035,13 @@ impl WasmBridge {
                                     plugin.deno_generation(),
                                     shared,
                                 )?;
-                                let EventOrPipeMessage::DenoEvent(_, _, event) = message else {
+                                let EventOrPipeMessage::DenoEvent(_, _, event, reply) = message
+                                else {
                                     unreachable!();
                                 };
+                                if let Some(reply) = reply {
+                                    reply.claim()?;
+                                }
                                 let event_type = EventType::from(event);
                                 (subs.contains(&event_type)
                                     || event_type == EventType::PermissionRequestResult)
@@ -2148,7 +2182,8 @@ impl WasmBridge {
             } else {
                 vec![*client_id]
             };
-            let (batch_label, batch_has_input) = summarize_batch_for_stats(&events);
+            let (batch_label, batch_has_input) =
+                summarize_batch_for_stats(events.iter().map(|(_, event)| event));
             // Execute directly on pinned thread (no async I/O needed for event processing)
             plugin_executor.execute_for_plugin_tagged(*plugin_id, batch_label, batch_has_input, {
                 let plugin_id = *plugin_id;
@@ -3150,14 +3185,27 @@ impl WasmBridge {
                 plugin_id,
                 "cached_events",
                 false,
-                move |senders, _, _, _, _| {
+                move |senders, plugin_map, _, _, _| {
                     let _guard = guard;
+                    // A cached notification still belongs to its original instance after
+                    // unload removes that instance from the map. Leave it for cleanup.
+                    if !plugin_map
+                        .lock()
+                        .unwrap()
+                        .running_plugins_and_subscriptions()
+                        .iter()
+                        .any(|(_, _, current, _)| Arc::ptr_eq(current, &instance))
+                    {
+                        return;
+                    }
                     for message in events {
                         let mut plugin = instance.lock().unwrap();
                         if plugin.is_unavailable() {
                             break;
                         }
-                        if let EventOrPipeMessage::DenoEvent(client, generation, event) = &message {
+                        if let EventOrPipeMessage::DenoEvent(client, generation, event, reply) =
+                            &message
+                        {
                             if let Some(workers) = &plugin.env().deno_workers {
                                 if workers.contains(*generation) {
                                     workers.send(
@@ -3165,6 +3213,7 @@ impl WasmBridge {
                                         crate::deno::background_worker::Message::Event(
                                             *client,
                                             event.clone(),
+                                            *reply,
                                         ),
                                     );
                                     continue;
@@ -3179,8 +3228,13 @@ impl WasmBridge {
                             continue;
                         };
                         let event = match message {
-                            EventOrPipeMessage::Event(event)
-                            | EventOrPipeMessage::DenoEvent(_, _, event) => event,
+                            EventOrPipeMessage::Event(event) => event,
+                            EventOrPipeMessage::DenoEvent(_, _, event, reply) => {
+                                if reply.is_some_and(|reply| reply.claim().is_none()) {
+                                    continue;
+                                }
+                                event
+                            },
                             EventOrPipeMessage::PipeMessage(..) => continue,
                         };
                         if !subs.contains(&EventType::from(&event))
@@ -3873,10 +3927,10 @@ fn handle_plugin_successful_loading(
 /// counts, e.g. "Key" or "PaneUpdate×2,TabUpdate" — and whether any event in it
 /// is user input (a focused or intercepted key, a mouse action, a paste), which
 /// is what marks the job urgent for the executor's accounting.
-fn summarize_batch_for_stats(events: &[(ClientId, Event)]) -> (String, bool) {
+fn summarize_batch_for_stats<'a>(events: impl IntoIterator<Item = &'a Event>) -> (String, bool) {
     let mut counts: Vec<(EventType, usize)> = Vec::new();
     let mut has_input = false;
-    for (_client_id, event) in events {
+    for event in events {
         let event_type = EventType::from(event);
         has_input |= matches!(
             event_type,
@@ -4328,15 +4382,15 @@ mod tests {
         let first = ClientId::new(1);
         let second = ClientId::new(2);
         let cached = [
-            EventOrPipeMessage::DenoEvent(first, 41, Event::Visible(true)),
-            EventOrPipeMessage::DenoEvent(second, 42, Event::Visible(false)),
+            EventOrPipeMessage::DenoEvent(first, 41, Event::Visible(true), None),
+            EventOrPipeMessage::DenoEvent(second, 42, Event::Visible(false), None),
         ];
         let replay = |owner, generation, shared| {
             cached
                 .iter()
                 .filter_map(|message| {
                     let client = message.client_for_replay(owner, generation, shared)?;
-                    let EventOrPipeMessage::DenoEvent(_, _, event) = message else {
+                    let EventOrPipeMessage::DenoEvent(_, _, event, _) = message else {
                         unreachable!()
                     };
                     Some((client, event.clone()))
@@ -4394,13 +4448,13 @@ mod tests {
 
     #[test]
     fn intercepted_keypress_batches_are_input_jobs() {
-        let events = vec![(
+        let events = [(
             ClientId::new(1),
             Event::InterceptedKeyPress(KeyWithModifier::new(BareKey::Char('x'))),
         )];
 
         assert_eq!(
-            summarize_batch_for_stats(&events),
+            summarize_batch_for_stats(events.iter().map(|(_, event)| event)),
             ("InterceptedKeyPress".to_owned(), true)
         );
     }

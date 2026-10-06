@@ -1467,7 +1467,7 @@ export default {
         let (instruction, _) = instructions
             .recv_timeout(yinz_test_support::default_timeout())
             .unwrap();
-        if let PluginInstruction::DenoEvent(_, _, generation, Event::Timer(_)) = instruction {
+        if let PluginInstruction::DenoReply(_, _, generation, Event::Timer(_), _) = instruction {
             break generation;
         }
     };
@@ -1495,11 +1495,12 @@ export default {
         let reply = instructions
             .try_iter()
             .find_map(|(instruction, _)| match instruction {
-                PluginInstruction::DenoEvent(
+                PluginInstruction::DenoReply(
                     _,
                     _,
                     reply_generation,
                     event @ Event::HostFolderChanged(_),
+                    _,
                 ) => {
                     assert_eq!(reply_generation, generation);
                     Some(event)
@@ -1592,11 +1593,12 @@ export default {
     assert!(pty.try_iter().next().is_none());
     assert!(!instructions.try_iter().any(|(instruction, _)| matches!(
         instruction,
-        PluginInstruction::DenoEvent(
+        PluginInstruction::DenoReply(
             _,
             _,
             _,
-            Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_)
+            Event::HostFolderChanged(_) | Event::FailedToChangeHostFolder(_),
+            _
         )
     )));
     let frames: Vec<_> = test
@@ -4178,4 +4180,106 @@ fn client_grid_reset_is_targeted_subscribed_ungated_and_keeps_identity_on_replay
         replayed,
         [(owner, "size 2".into()), (other, "size 2,2".into())]
     );
+}
+
+#[test]
+fn queued_deno_reply_survives_map_removal_and_cannot_reach_replacement() {
+    for cached in [false, true] {
+        let mut test = TestBridge::new();
+        let id = PluginId::new(1);
+        let client = ClientId::new(1);
+        let context = test.context(
+            1,
+            1,
+            r#"
+            let pending;
+            export default {
+              load() { pending = yinz.sleep(0); },
+              async unload() { await pending; yinz.host.setSelectable(false); }
+            };
+        "#,
+        );
+        test.load(context).unwrap();
+        {
+            let map = test.bridge.plugin_map.lock().unwrap();
+            let plugin = map.get_running_plugin(id, Some(client)).unwrap();
+            *plugin.lock().unwrap().env().permissions.lock().unwrap() =
+                Some(HashSet::from([PermissionType::ChangeApplicationState]));
+        }
+        let instructions = test.receiver::<PluginInstruction>();
+        let (generation, event, reply) = loop {
+            if let PluginInstruction::DenoReply(_, _, generation, event @ Event::Timer(_), reply) =
+                instructions
+                    .recv_timeout(yinz_test_support::default_timeout())
+                    .unwrap()
+                    .0
+            {
+                break (generation, event, reply);
+            }
+        };
+        let release = test.hold_executor(id);
+        let (shutdown, _) = tokio::sync::mpsc::channel(1);
+        if cached {
+            test.bridge
+                .cached_events_for_pending_plugins
+                .insert(id, vec![]);
+        }
+        test.bridge
+            .deno_replies(
+                id,
+                generation,
+                vec![(client, event.clone(), Some(reply))],
+                shutdown.clone(),
+            )
+            .unwrap();
+        if cached {
+            test.bridge
+                .apply_cached_events(vec![id], false, shutdown.clone())
+                .unwrap();
+        }
+        // Both normal and cached notifications are queued behind the channel gate.
+        test.bridge.unload_plugin(id).unwrap();
+        assert!(!test.bridge.plugin_map.lock().unwrap().contains(id, client));
+        let (done, finished) = std::sync::mpsc::channel();
+        test.bridge
+            .plugin_executor
+            .execute_for_plugin(id, move |_, _, _, _, _| {
+                done.send(()).unwrap();
+            });
+        release.send(()).unwrap();
+        finished
+            .recv_timeout(yinz_test_support::default_timeout())
+            .unwrap();
+        assert!(test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(instruction, _)| matches!(
+                instruction,
+                ScreenInstruction::SetSelectable(_, false)
+            )));
+        assert!(reply.claim().is_none());
+
+        let context = test.context(
+            1,
+            1,
+            r#"
+            export default {
+              load() { yinz.subscribe(['Timer']); },
+              update() { throw Error('stale notification reached replacement'); }
+            };
+        "#,
+        );
+        test.load(context).unwrap();
+        test.bridge
+            .deno_replies(id, generation, vec![(client, event, Some(reply))], shutdown)
+            .unwrap();
+        test.settle(id);
+        let map = test.bridge.plugin_map.lock().unwrap();
+        let plugin = map.get_running_plugin(id, Some(client)).unwrap();
+        assert!(!plugin.lock().unwrap().is_unavailable());
+        drop(map);
+        assert!(!instructions
+            .try_iter()
+            .any(|(instruction, _)| matches!(instruction, PluginInstruction::PluginFailed { .. })));
+    }
 }

@@ -115,6 +115,13 @@ pub enum PluginInstruction {
     PaletteNote(Box<crate::command_palette::NoteRequest>),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
     DenoEvent(PluginId, ClientId, u64, Event),
+    DenoReply(
+        PluginId,
+        ClientId,
+        u64,
+        Event,
+        crate::thread_bus::DenoReplyId,
+    ),
     DenoDispose(PluginId, u64),
     Unload(PluginId), // plugin_id
     Reload(
@@ -382,7 +389,9 @@ impl From<&PluginInstruction> for PluginContext {
             | PluginInstruction::PaletteAgent(..)
             | PluginInstruction::DenoPalette(..) => PluginContext::Update,
             PluginInstruction::DenoTick(..) => PluginContext::Update,
-            PluginInstruction::DenoEvent(..) => PluginContext::Update,
+            PluginInstruction::DenoEvent(..) | PluginInstruction::DenoReply(..) => {
+                PluginContext::Update
+            },
             PluginInstruction::DenoDispose(..) => PluginContext::Unload,
             PluginInstruction::PipeCompleted(..) => PluginContext::UnblockCliPipes,
             PluginInstruction::ReleasePluginInstancePipes(..) => PluginContext::UnblockCliPipes,

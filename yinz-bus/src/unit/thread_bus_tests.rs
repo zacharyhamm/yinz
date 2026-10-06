@@ -28,40 +28,83 @@ fn save_session_preserves_delivery_errors_during_shutdown() {
 }
 
 #[test]
-fn unload_replies_bypass_the_plugin_bus_only_for_the_retiring_generation() {
+fn replies_survive_queued_notifications_and_cleanup_without_replay() {
     use crate::plugins::{PluginId, PluginInstruction};
-    use crate::thread_bus::UnloadReplies;
+    use crate::thread_bus::DenoReplies;
     use yinz_types::data::Event;
     let (sender, receiver) = unbounded();
     let senders = ThreadSenders {
         to_plugin: Some(Shutdown::default().sender(sender)),
         ..Default::default()
     };
-    let reply = |generation| {
+    let reply = |generation, client, value: &str| {
         PluginInstruction::DenoEvent(
             PluginId::new(1),
-            ClientId::new(2),
+            ClientId::new(client),
             generation,
-            Event::Visible(true),
+            Event::CustomMessage(value.into(), String::new()),
         )
     };
-    let cleanup = UnloadReplies::new(123);
-    senders.send_to_plugin(reply(123)).unwrap();
+    let old = DenoReplies::new(123);
+    let replacement = DenoReplies::new(124);
+    let notification = || {
+        let PluginInstruction::DenoReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0 else {
+            panic!("expected retained reply")
+        };
+        reply
+    };
+    senders.send_to_plugin(reply(123, 2, "1")).unwrap();
+    let consumed = notification();
     assert!(
-        matches!(cleanup.receiver.try_recv().unwrap(), (client, Event::Visible(true)) if client == ClientId::new(2))
+        matches!(consumed.claim(), Some((client, Event::CustomMessage(value, _))) if client == ClientId::new(2) && value == "1")
     );
+    assert!(consumed.claim().is_none());
+    senders.send_to_plugin(reply(123, 3, "2")).unwrap();
+    let queued = notification();
+    senders.send_to_plugin(reply(124, 4, "3")).unwrap();
+    let current = notification();
+    let cleanup = old.begin_cleanup();
+    senders.send_to_plugin(reply(123, 5, "4")).unwrap();
     assert!(receiver.try_recv().is_err());
-    senders.send_to_plugin(reply(124)).unwrap();
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        PluginInstruction::DenoEvent(_, _, 124, _)
-    ));
-    drop(cleanup);
-    senders.send_to_plugin(reply(123)).unwrap();
-    assert!(matches!(
-        receiver.try_recv().unwrap().0,
-        PluginInstruction::DenoEvent(_, _, 123, _)
-    ));
+    assert!(queued.claim().is_none());
+    assert!(
+        matches!(cleanup.try_recv().unwrap(), (client, Event::CustomMessage(value, _)) if client == ClientId::new(3) && value == "2")
+    );
+    assert!(
+        matches!(cleanup.try_recv().unwrap(), (client, Event::CustomMessage(value, _)) if client == ClientId::new(5) && value == "4")
+    );
+    assert!(cleanup.try_recv().is_err());
+    assert!(
+        matches!(current.claim(), Some((client, Event::CustomMessage(value, _))) if client == ClientId::new(4) && value == "3")
+    );
+    drop(old);
+    assert!(queued.claim().is_none());
+    assert!(replacement.begin_cleanup().try_recv().is_err());
+}
+
+#[test]
+fn disposal_discards_pending_replies() {
+    use crate::plugins::{PluginId, PluginInstruction};
+    use crate::thread_bus::DenoReplies;
+    let (sender, receiver) = unbounded();
+    let senders = ThreadSenders {
+        to_plugin: Some(Shutdown::default().sender(sender)),
+        ..Default::default()
+    };
+    let mailbox = DenoReplies::new(125);
+    senders
+        .send_to_plugin(PluginInstruction::DenoEvent(
+            PluginId::new(1),
+            ClientId::new(2),
+            125,
+            yinz_types::data::Event::Visible(true),
+        ))
+        .unwrap();
+    let PluginInstruction::DenoReply(_, _, _, _, reply) = receiver.try_recv().unwrap().0 else {
+        panic!("expected retained reply")
+    };
+    drop(mailbox);
+    assert!(reply.claim().is_none());
 }
 
 #[test]

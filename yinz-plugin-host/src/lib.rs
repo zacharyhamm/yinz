@@ -374,10 +374,20 @@ pub fn plugin_thread_main(
                     &bus,
                     plugin_id,
                     generation,
-                    vec![(client_id, event)],
+                    vec![(client_id, event, None)],
                     &mut queued,
                 );
-                wasm_bridge.deno_event(plugin_id, generation, events, shutdown_send.clone())?;
+                wasm_bridge.deno_replies(plugin_id, generation, events, shutdown_send.clone())?;
+            },
+            PluginInstruction::DenoReply(plugin_id, client_id, generation, event, reply) => {
+                let events = drain_deno_events(
+                    &bus,
+                    plugin_id,
+                    generation,
+                    vec![(client_id, event, Some(reply))],
+                    &mut queued,
+                );
+                wasm_bridge.deno_replies(plugin_id, generation, events, shutdown_send.clone())?;
             },
             PluginInstruction::DenoDispose(plugin_id, generation) => {
                 wasm_bridge.deno_dispose(plugin_id, generation);
@@ -987,12 +997,9 @@ pub fn plugin_thread_main(
                 }
                 let event = Event::ListClients(client_list_for_plugin);
                 if let Some(generation) = generation {
-                    wasm_bridge.deno_event(
-                        plugin_id,
-                        generation,
-                        vec![(client_id, event)],
-                        shutdown_send.clone(),
-                    )?;
+                    bus.senders.send_to_plugin(PluginInstruction::DenoEvent(
+                        plugin_id, client_id, generation, event,
+                    ))?;
                 } else {
                     wasm_bridge.update_plugins(
                         vec![(Some(plugin_id), Some(client_id), event)],
@@ -2205,15 +2212,20 @@ fn drain_deno_events(
     bus: &Bus<PluginInstruction>,
     plugin_id: PluginId,
     generation: u64,
-    mut events: Vec<(ClientId, Event)>,
+    mut events: Vec<(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>)>,
     queued: &mut Option<(PluginInstruction, ErrorContext)>,
-) -> Vec<(ClientId, Event)> {
+) -> Vec<(ClientId, Event, Option<yinz_bus::thread_bus::DenoReplyId>)> {
     for _ in 0..MAX_UPDATE_DRAIN {
         match bus.try_recv() {
             Some((PluginInstruction::DenoEvent(id, client, expected, event), _))
                 if id == plugin_id && expected == generation =>
             {
-                events.push((client, event));
+                events.push((client, event, None));
+            },
+            Some((PluginInstruction::DenoReply(id, client, expected, event, reply), _))
+                if id == plugin_id && expected == generation =>
+            {
+                events.push((client, event, Some(reply)));
             },
             Some(other) => {
                 *queued = Some(other);
