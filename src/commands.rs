@@ -1909,12 +1909,23 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             Ok(())
         },
         PluginsCli::Log { name, lines } => {
-            let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                .map_err(|e| anyhow::anyhow!(e))?;
+            let target = yinz_server::plugin_authoring::resolve_log_target(
+                &name,
+                plugin_dir().ok().as_deref(),
+                &opts
+                    .data_dir
+                    .clone()
+                    .unwrap_or_else(yinz_runtime::home::get_default_data_dir),
+                &config
+                    .as_ref()
+                    .map(|config| config.plugins.clone())
+                    .unwrap_or_default(),
+                &std::env::current_dir().context("resolve log working directory")?,
+            )?;
             let log_file = yinz_runtime::consts::YINZ_TMP_LOG_FILE.clone();
             print!(
                 "{}",
-                yinz_server::plugin_authoring::log_tail(&log_file, &path, lines)?
+                yinz_server::plugin_authoring::log_target_tail(&log_file, &target, lines)?
             );
             Ok(())
         },

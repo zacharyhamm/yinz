@@ -9,6 +9,7 @@ description = "Offline TypeScript plugin checks and writes, run through the comp
 workspace = true
 
 [dependencies]
+yinz-config = { workspace = true }
 yinz-plugin-api = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }

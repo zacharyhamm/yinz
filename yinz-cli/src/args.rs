@@ -250,7 +250,7 @@ pub enum Plugins {
         #[clap(long)]
         headless: bool,
     },
-    /// The last lines the plugin logged with yinz.log or print.
+    /// Read logs by plugin name, configured alias, absolute path, ./path, ../path or file: URL.
     Log {
         name: String,
         #[clap(short, long, default_value = "50")]

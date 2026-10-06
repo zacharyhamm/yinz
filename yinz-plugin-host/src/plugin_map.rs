@@ -374,7 +374,10 @@ impl PluginMap {
                     // and must reload it rather than be told it does not exist and started again
                     // in a second pane.
                     || match (plugin_location, metadata.resolved_source_path.as_ref()) {
-                        (RunPluginLocation::File(requested), Some(resolved)) => requested == resolved,
+                        (RunPluginLocation::File(requested), Some(resolved)) => {
+                            requested.canonicalize().unwrap_or_else(|_| requested.clone())
+                                == resolved.canonicalize().unwrap_or_else(|_| resolved.clone())
+                        },
                         _ => false,
                     };
                 location_matches
@@ -593,6 +596,20 @@ impl PluginMap {
             .map(|(id, metadata)| (*id, metadata.run_plugin()))
             .collect()
     }
+    pub(crate) fn log_identity(&self, plugin_id: PluginId) -> Option<String> {
+        self.plugin_metadata.get(&plugin_id).map(|metadata| {
+            crate::plugin_authoring::LogIdentity::new(
+                &metadata.config.location,
+                metadata
+                    .resolved_source_path
+                    .as_deref()
+                    .unwrap_or(&metadata.config.path),
+                &metadata.cwd,
+            )
+            .marker()
+        })
+    }
+
     pub(crate) fn reload_metadata(&self, plugin_id: PluginId) -> Option<PluginMetadata> {
         self.get_running_plugin(plugin_id, None)
             .map(|plugin| PluginMetadata::from_running(&plugin.lock().unwrap()))
@@ -695,11 +712,10 @@ pub struct PluginEnv {
     /// Where the user's own plugins live. Read by `GetUserPluginDir`, and by the Deno
     /// loader as the folder to search when a plugin is named rather than pathed.
     pub user_plugin_dir: Option<PathBuf>,
-    /// The file a script plugin's source was actually read from, which is not always
-    /// `plugin_config.location`: a plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its
-    /// identity but is found in `user_plugin_dir`. A reload names the file in full, so this
-    /// is what `all_plugin_ids_for_plugin_location` matches it against. `None` for wasm
-    /// plugins, which are not reloadable by authoring and have their own lookup.
+    pub yinz_data_dir: PathBuf,
+    /// The canonical source file selected by the loader, including Wasm cache hits.
+    /// This can differ from `plugin_config.location` after plugin-folder lookup.
+    /// Used for log identity and matching reloads by source path; absent for embedded builtins.
     pub resolved_source_path: Option<PathBuf>,
     pub plugin_cwd: PathBuf,
     // Own the watch with this instance: its root, recipient, and lifetime must agree.
@@ -837,12 +853,24 @@ impl PluginEnv {
             });
     }
 
+    pub fn log_identity(&self) -> String {
+        crate::plugin_authoring::LogIdentity::new(
+            &self.plugin_config.location,
+            self.resolved_source_path
+                .as_deref()
+                .unwrap_or(&self.plugin_config.path),
+            &self.plugin_cwd,
+        )
+        .marker()
+    }
+
     // Get the name (path) of the containing plugin
     pub fn name(&self) -> String {
         format!(
-            "{} (ID {})",
-            self.plugin_config.path.display(),
-            self.plugin_id
+            "{} (ID {}) {}",
+            self.plugin_config.path.to_string_lossy().escape_default(),
+            self.plugin_id,
+            self.log_identity()
         )
     }
 
@@ -1431,3 +1459,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "unit/plugin_map_tests.rs"]
+mod plugin_map_tests;

@@ -32,7 +32,7 @@ impl LoggingPipe {
 
     fn log_message(&self, message: &str) {
         debug!(
-            "|{:<25.25}| {} [{:<10.15}] {}",
+            "|{:<25}| {} [{:<10.15}] {}",
             self.plugin_name,
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S.%3f"),
             format!("id: {}", self.plugin_id),

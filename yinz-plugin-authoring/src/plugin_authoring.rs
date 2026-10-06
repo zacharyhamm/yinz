@@ -366,37 +366,7 @@ fn keep_backup(path: &Path, contents: &str) -> anyhow::Result<Option<PathBuf>> {
 
 /// The last matching log lines, including a registered builtin's exact bare Deno tag.
 pub fn log_tail(log_file: &Path, path: &Path, lines: usize) -> anyhow::Result<String> {
-    let file_name = path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let deno_builtin_tag = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(stem))
-        .map(|stem| format!("[deno:{stem}]"));
-    let log = match std::fs::read_to_string(log_file) {
-        Ok(log) => log,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("no yinz log at {}", log_file.display())
-        },
-        Err(e) => anyhow::bail!("failed to read {}: {e}", log_file.display()),
-    };
-    let matching: Vec<&str> = log
-        .lines()
-        .filter(|line| {
-            line.contains(&file_name)
-                || deno_builtin_tag
-                    .as_ref()
-                    .is_some_and(|tag| line.contains(tag))
-        })
-        .collect();
-    let start = matching.len().saturating_sub(lines.max(1));
-    let mut out = matching[start..].join("\n");
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    Ok(out)
+    crate::log_target_tail(log_file, &crate::LogTarget::Legacy(path.to_owned()), lines)
 }
 
 #[cfg(test)]

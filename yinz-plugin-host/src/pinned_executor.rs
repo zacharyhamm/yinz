@@ -209,7 +209,13 @@ fn plugin_name(plugin_map: &Arc<Mutex<PluginMap>>, plugin_id: PluginId) -> Strin
     let location = plugin_map.try_lock().ok().and_then(|plugin_map| {
         plugin_map
             .run_plugin_of_plugin_id(plugin_id)
-            .map(|run_plugin| run_plugin.location.to_string())
+            .map(|run_plugin| {
+                format!(
+                    "{} {}",
+                    run_plugin.location,
+                    plugin_map.log_identity(plugin_id).unwrap_or_default()
+                )
+            })
     });
     match location {
         Some(location) => format!("{location}[{plugin_id}]"),

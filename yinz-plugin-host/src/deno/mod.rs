@@ -271,7 +271,9 @@ fn dispatch(
 
 #[op2(fast)]
 fn op_yinz_log(state: &OpState, #[string] line: &str) {
-    log::info!("[deno:{}] {}", state.borrow::<HostState>().log_tag, line);
+    for line in line.split('\n') {
+        log::info!("{} {}", state.borrow::<HostState>().log_tag, line);
+    }
 }
 
 #[op2(fast)]
@@ -283,11 +285,20 @@ fn op_yinz_worker_started(state: &mut OpState) {
 }
 
 fn log_tag(env: &PluginEnv) -> String {
-    env.resolved_source_path
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| env.plugin_config.path.to_string_lossy().into_owned())
+    format!(
+        "{} [deno:{}]",
+        env.log_identity(),
+        env.resolved_source_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().escape_default().to_string())
+            .unwrap_or_else(|| env
+                .plugin_config
+                .path
+                .to_string_lossy()
+                .escape_default()
+                .to_string())
+    )
 }
 
 deno_core::extension!(

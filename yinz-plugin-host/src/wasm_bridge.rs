@@ -191,7 +191,10 @@ impl LoadingContext {
                                 Some(load_id),
                                 plugin_id,
                                 &mut LoadingIndication::new(source.descriptor()),
-                                error,
+                                error.context(
+                                    crate::plugin_authoring::LogIdentity::repository(source)
+                                        .marker(),
+                                ),
                                 Some(self.client_id),
                             );
                             return true;
@@ -329,7 +332,7 @@ impl LoadingContext {
 }
 
 pub type PluginCacheKey = (PathBuf, Option<PathBuf>);
-pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, Module>>>;
+pub type PluginCache = Arc<Mutex<HashMap<PluginCacheKey, (Module, PathBuf)>>>;
 
 pub struct WasmBridge {
     temporary_root: Arc<OwnedDir>,
@@ -531,8 +534,7 @@ impl WasmBridge {
         );
         let plugin_map = Arc::new(Mutex::new(PluginMap::default()));
         let connected_clients: Arc<Mutex<Vec<ClientId>>> = Arc::new(Mutex::new(vec![]));
-        let plugin_cache: Arc<Mutex<HashMap<PluginCacheKey, Module>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let plugin_cache: PluginCache = Arc::new(Mutex::new(HashMap::new()));
         let max_threads = num_cpus::get().clamp(4, 16);
         let plugin_executor = Arc::new(PinnedExecutor::new(
             max_threads,
@@ -1061,6 +1063,11 @@ impl WasmBridge {
             })
             .context("resolve notifications after policy failure")
             .non_fatal();
+        if let Some(identity) = self.plugin_map.lock().unwrap().log_identity(plugin_id) {
+            for line in error.lines() {
+                log::error!("{} {}", identity, line);
+            }
+        }
         self.finish_pipe_requests();
         let recorded = self.queues.lock().unwrap().record_outcome(
             plugin_id,

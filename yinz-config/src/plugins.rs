@@ -265,6 +265,16 @@ impl PluginConfig {
         data_dir: &Path,
         builtin_plugins_dir: Option<&Path>,
     ) -> Result<Vec<u8>> {
+        self.resolve_wasm_source(data_dir, builtin_plugins_dir)
+            .map(|(_, bytes)| bytes)
+    }
+
+    /// The selected Wasm source path and its bytes, for source-attributed diagnostics.
+    pub fn resolve_wasm_source(
+        &self,
+        data_dir: &Path,
+        builtin_plugins_dir: Option<&Path>,
+    ) -> Result<(PathBuf, Vec<u8>)> {
         let err_context =
             |err: std::io::Error, path: &PathBuf| format!("{}: '{}'", err, path.display());
 
@@ -277,7 +287,7 @@ impl PluginConfig {
                         "Loaded builtin plugin '{}' from disk",
                         builtin_plugin_path.display()
                     );
-                    return Ok(bytes);
+                    return Ok((builtin_plugin_path, bytes));
                 },
                 Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
                     return Err(anyhow!("{}", err)).with_context(|| {
@@ -296,7 +306,8 @@ impl PluginConfig {
         // errors and can report all of them back. We must initialize `last_err` with something,
         // and since the user will only get to see it when loading a plugin failed, we may as well
         // spell it out right here.
-        let mut last_err: Result<Vec<u8>> = Err(anyhow!("failed to load plugin from disk"));
+        let mut last_err: Result<(PathBuf, Vec<u8>)> =
+            Err(anyhow!("failed to load plugin from disk"));
         // `None` here: the configured folder was already tried above, with stricter errors.
         for path in self.wasm_lookup_paths(data_dir, None) {
             // Try to read from disk
@@ -305,7 +316,7 @@ impl PluginConfig {
                     // Info, not debug: which of the lookup folders won is the one thing worth
                     // knowing when an install and a checkout both hold a copy.
                     log::info!("Loaded plugin '{}' from disk", path.display());
-                    return Ok(val);
+                    return Ok((path, val));
                 },
                 Err(err) => {
                     last_err = last_err.with_context(|| err_context(err, &path));

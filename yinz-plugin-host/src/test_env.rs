@@ -51,6 +51,7 @@ pub(crate) fn test_env() -> PluginEnv {
         input_pipes_to_block: Arc::new(Mutex::new(HashSet::new())),
         layout_dir: None,
         user_plugin_dir: None,
+        yinz_data_dir: PathBuf::from("."),
         resolved_source_path: None,
         default_mode: Default::default(),
         subscriptions: Arc::new(Mutex::new(HashSet::new())),
