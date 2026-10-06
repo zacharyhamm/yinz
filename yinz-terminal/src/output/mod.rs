@@ -465,7 +465,7 @@ fn emit_kitty_transmit(
         if part_index == 0 {
             write!(
                 out,
-                "\u{1b}_Ga=t,q=2,f=32,t=d,i={},s={},v={},m={};",
+                "\u{1b}_Ga=t,q=2,f=32,o=z,t=d,i={},s={},v={},m={};",
                 host_image_id, width, height, more
             )
             .context(err_context)?;
@@ -491,12 +491,15 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
     } = kitty_input;
     if host_display_cleared {
         host_state.live_placements.clear();
-        host_state.transmitted.clear();
     }
     let mut freed: Vec<(HostImageKey, u32)> = host_state
         .transmitted
         .iter()
-        .filter(|(image_key, _)| kitty_image_store.get(image_key.0).is_none())
+        // A full repaint may erase placements without freeing host image data. Delete our
+        // old host IDs before forgetting them and transmitting replacement IDs.
+        .filter(|(image_key, _)| {
+            host_display_cleared || kitty_image_store.get(image_key.0).is_none()
+        })
         .map(|(image_key, host_id)| (*image_key, *host_id))
         .collect();
     freed.sort_by_key(|(_, host_id)| *host_id);
@@ -590,7 +593,10 @@ fn serialize_kitty_frame(kitty_input: KittyFrameInput, out: &mut String) -> Resu
                         Some(dims) => dims,
                         None => continue,
                     };
-                    let b64 = match kitty_image_store.base64_for(chunk.internal_image_id, variant) {
+                    let b64 = match kitty_image_store
+                        .zlib_base64_for(chunk.internal_image_id, variant)
+                        .context("failed to compress kitty image")?
+                    {
                         Some(b64) => b64,
                         None => continue,
                     };

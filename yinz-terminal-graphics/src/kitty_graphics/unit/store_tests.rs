@@ -152,10 +152,10 @@ fn rgb24_images_are_normalized_to_rgba_at_store_time() {
 
 #[test]
 fn base64_cache_is_charged_and_dropped_before_image_eviction() {
-    let mut store = KittyImageStore::with_quota(200);
+    let mut store = KittyImageStore::with_quota(128);
     let id_a = store.store_image(rgba_image(4, 4)).unwrap();
     store.add_placement_ref(id_a);
-    let encoded = store.base64_for(id_a, None).unwrap();
+    let encoded = store.zlib_base64_for(id_a, None).unwrap().unwrap();
     assert_eq!(store.total_bytes(), 64 + encoded.len());
 
     let id_b = store.store_image(rgba_image(4, 4)).unwrap();
@@ -168,48 +168,62 @@ fn base64_cache_is_charged_and_dropped_before_image_eviction() {
 fn base64_is_returned_uncached_when_only_live_pixels_fit() {
     let mut store = KittyImageStore::with_quota(64);
     let id = store.store_image(rgba_image(4, 4)).unwrap();
-    let first = store.base64_for(id, None).unwrap();
-    let second = store.base64_for(id, None).unwrap();
+    let first = store.zlib_base64_for(id, None).unwrap().unwrap();
+    let second = store.zlib_base64_for(id, None).unwrap().unwrap();
     assert_eq!(first, second);
     assert_eq!(store.total_bytes(), 64);
 }
 
 #[test]
 fn shared_base64_handles_survive_variant_frame_and_image_replacement() {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    fn decode(encoded: &str) -> Vec<u8> {
+        use std::io::Read;
+        let bytes = base64_simd::STANDARD.decode_to_vec(encoded).unwrap();
+        let mut pixels = Vec::new();
+        flate2::read::ZlibDecoder::new(bytes.as_slice())
+            .read_to_end(&mut pixels)
+            .unwrap();
+        pixels
+    }
 
     let mut store = KittyImageStore::default();
     let id = store.store_image(rgba_image(1, 1)).unwrap();
-    let root = store.base64_for(id, None).unwrap();
-    assert!(Rc::ptr_eq(&root, &store.base64_for(id, None).unwrap()));
+    let root = store.zlib_base64_for(id, None).unwrap().unwrap();
+    assert!(Rc::ptr_eq(
+        &root,
+        &store.zlib_base64_for(id, None).unwrap().unwrap()
+    ));
 
     assert!(store.add_scaled_variant(id, (1, 1), vec![1; 4]));
-    let scaled = store.base64_for(id, Some((1, 1))).unwrap();
+    let scaled = store.zlib_base64_for(id, Some((1, 1))).unwrap().unwrap();
     assert!(store.add_scaled_variant(id, (1, 1), vec![2; 4]));
-    let replacement = store.base64_for(id, Some((1, 1))).unwrap();
-    assert_eq!(STANDARD.decode(scaled.as_bytes()).unwrap(), [1; 4]);
-    assert_eq!(STANDARD.decode(replacement.as_bytes()).unwrap(), [2; 4]);
+    let replacement = store.zlib_base64_for(id, Some((1, 1))).unwrap().unwrap();
+    assert_eq!(decode(&scaled), [1; 4]);
+    assert_eq!(decode(&replacement), [2; 4]);
 
     store.write_frame(id, None, vec![3; 4], 40).unwrap();
     store.set_current_frame(id, 2).unwrap();
-    assert!(store.base64_for(id, Some((1, 1))).is_none());
+    assert!(store.zlib_base64_for(id, Some((1, 1))).unwrap().is_none());
     assert_eq!(store.total_bytes(), 8);
-    let frame = store.base64_for(id, None).unwrap();
-    assert_eq!(STANDARD.decode(frame.as_bytes()).unwrap(), [3; 4]);
+    let frame = store.zlib_base64_for(id, None).unwrap().unwrap();
+    assert_eq!(decode(&frame), [3; 4]);
     store.write_frame(id, Some(2), vec![4; 4], 40).unwrap();
-    let edited = store.base64_for(id, None).unwrap();
-    assert_eq!(STANDARD.decode(edited.as_bytes()).unwrap(), [4; 4]);
+    let edited = store.zlib_base64_for(id, None).unwrap().unwrap();
+    assert_eq!(decode(&edited), [4; 4]);
 
     let next_id = store.replace_image(id, rgba_image(1, 1)).unwrap();
-    assert!(store.base64_for(id, None).is_none());
+    assert!(store.zlib_base64_for(id, None).unwrap().is_none());
     assert_eq!(store.total_bytes(), 4);
-    assert_eq!(*store.base64_for(next_id, None).unwrap(), *root);
+    assert_eq!(
+        *store.zlib_base64_for(next_id, None).unwrap().unwrap(),
+        *root
+    );
     // A render holding an old encoding keeps those pixels after cache invalidation or deletion.
-    assert_eq!(STANDARD.decode(root.as_bytes()).unwrap(), [0; 4]);
-    assert_eq!(STANDARD.decode(scaled.as_bytes()).unwrap(), [1; 4]);
-    assert_eq!(STANDARD.decode(replacement.as_bytes()).unwrap(), [2; 4]);
-    assert_eq!(STANDARD.decode(frame.as_bytes()).unwrap(), [3; 4]);
-    assert_eq!(STANDARD.decode(edited.as_bytes()).unwrap(), [4; 4]);
+    assert_eq!(decode(&root), [0; 4]);
+    assert_eq!(decode(&scaled), [1; 4]);
+    assert_eq!(decode(&replacement), [2; 4]);
+    assert_eq!(decode(&frame), [3; 4]);
+    assert_eq!(decode(&edited), [4; 4]);
 }
 
 #[test]
@@ -244,7 +258,7 @@ fn deleting_frames_debits_frames_variants_and_base64() {
     );
     store.set_current_frame(id, 2).unwrap();
     assert!(store.add_scaled_variant(id, (2, 2), vec![2; 20]));
-    let _ = store.base64_for(id, None).unwrap();
+    let _ = store.zlib_base64_for(id, None).unwrap().unwrap();
     assert!(store.total_bytes() > 128);
 
     store.remove_frames(id, None).unwrap();
@@ -341,7 +355,7 @@ impl KittyImageStoreModel {
     }
 
     #[rule]
-    fn base64_for(&mut self, tc: hegel::TestCase) {
+    fn zlib_base64_for(&mut self, tc: hegel::TestCase) {
         let id = self.any_id(&tc);
         let variant = if tc.draw(generators::booleans()) {
             Some((
@@ -351,7 +365,7 @@ impl KittyImageStoreModel {
         } else {
             None
         };
-        let _ = self.store.base64_for(id, variant);
+        let _ = self.store.zlib_base64_for(id, variant);
     }
 
     #[rule]

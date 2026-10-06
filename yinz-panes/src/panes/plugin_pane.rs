@@ -316,7 +316,15 @@ impl Pane for PluginPane {
                     }
                 },
                 Piece::Captured(command) => {
-                    grid.handle_kitty_apc(&command);
+                    if let Some(Err(error)) = grid.handle_kitty_apc(&command) {
+                        log::warn!(
+                            "plugin kitty command failed: plugin={} client={} image={:?} placement={:?} code={:?} message={} cell={:?} host={:?} images={} bytes={}",
+                            self.pid, client_id, error.image_id, error.placement_id,
+                            error.code, error.message, *self.character_cell_size.borrow(),
+                            self.kitty_host_support, self.kitty_image_store.borrow().image_count(),
+                            self.kitty_image_store.borrow().total_bytes(),
+                        );
+                    }
                     // A plugin has no pty to answer on, so a reply or a forwarded query has
                     // nowhere to go and would otherwise accumulate for the life of the pane.
                     // Plugins should pass `q=2`; this is the belt for the ones that do not.
@@ -1156,6 +1164,11 @@ impl Pane for PluginPane {
         );
     }
     fn start_loading_indication(&mut self, loading_indication: LoadingIndication) {
+        for grid in self.grids.values_mut() {
+            grid.reset_terminal_state();
+        }
+        self.vte_parsers.clear();
+        self.kitty_interceptors.clear();
         self.loading_indication.merge(loading_indication);
         self.handle_plugin_bytes_for_all_clients(
             self.loading_indication.to_string().as_bytes().to_vec(),
@@ -1866,6 +1879,155 @@ mod tests {
         assert_eq!(chunks.len(), 1, "{chunks:?}");
         assert_eq!(chunks[0].dest_cells, (2, 1));
         assert_eq!((chunks[0].cell_x, chunks[0].cell_y), (0, 0));
+    }
+
+    #[test]
+    fn plugin_cleanup_releases_only_its_own_images_and_all_caches() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 10,
+                height: 20,
+            }),
+        );
+        let store = pane.kitty_image_store.clone();
+        let mut surviving = Vec::new();
+        for client in [ClientId::new(1), ClientId::new(2)] {
+            pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
+            let chunks = kitty_chunks(&mut pane, client);
+            assert_eq!(chunks.len(), 1);
+            let chunk = &chunks[0];
+            store
+                .borrow_mut()
+                .zlib_base64_for(chunk.internal_image_id, Some(chunk.variant_key))
+                .unwrap()
+                .unwrap();
+            store
+                .borrow_mut()
+                .write_frame(chunk.internal_image_id, None, vec![7; 16], 40)
+                .unwrap();
+            if client == ClientId::new(2) {
+                surviving.push(chunk.internal_image_id);
+            }
+            // A virtual-only image and an image transmitted without any placement.
+            let mut frame = png_transmit_sequence(43, &tiny_png());
+            frame.push_str(&place_image_sequence(43, 2, 1));
+            frame.push_str(&png_transmit_sequence(44, &tiny_png()));
+            frame.push_str(&image_row(42, 0, 2));
+            pane.handle_plugin_bytes(client, frame.into_bytes());
+            assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
+        }
+        for id in &surviving {
+            store
+                .borrow_mut()
+                .zlib_base64_for(*id, None)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(store.borrow().image_count(), 6);
+        pane.remove_client(ClientId::new(1));
+        assert_eq!(store.borrow().image_count(), 3);
+        for id in surviving {
+            assert!(store.borrow().get(id).is_some());
+        }
+        drop(pane);
+        assert_eq!(store.borrow().image_count(), 0);
+        assert_eq!(store.borrow().total_bytes(), 0);
+    }
+
+    #[test]
+    fn closing_a_plugin_reclaims_quota_for_the_next_plugin() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 10,
+                height: 20,
+            }),
+        );
+        let store = Rc::new(RefCell::new(KittyImageStore::with_quota(1616)));
+        pane.kitty_image_store = store.clone();
+        pane.handle_plugin_bytes(ClientId::new(1), image_frame(42, 2, &tiny_png()));
+        assert_eq!(kitty_chunks(&mut pane, ClientId::new(1)).len(), 1);
+        assert_eq!(store.borrow().total_bytes(), 1616);
+        pane.handle_plugin_bytes(
+            ClientId::new(1),
+            png_transmit_sequence(43, &tiny_png()).into_bytes(),
+        );
+        assert_eq!(
+            store.borrow().image_count(),
+            1,
+            "placed pixels prevent eviction"
+        );
+        drop(pane);
+        assert_eq!(store.borrow().total_bytes(), 0);
+        let mut next = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 10,
+                height: 20,
+            }),
+        );
+        next.kitty_image_store = store;
+        next.handle_plugin_bytes(ClientId::new(1), image_frame(44, 2, &tiny_png()));
+        assert_eq!(kitty_chunks(&mut next, ClientId::new(1)).len(), 1);
+    }
+
+    #[test]
+    fn plugin_reload_releases_saved_alternate_screen_and_resets_parsers() {
+        let mut pane = test_plugin_pane_with_cell_size(
+            10,
+            10,
+            Offset::default(),
+            Some(SizeInPixels {
+                width: 10,
+                height: 20,
+            }),
+        );
+        let client = ClientId::new(1);
+        for id in 1..4 {
+            pane.handle_plugin_bytes(client, image_frame(id, 2, &tiny_png()));
+            pane.handle_plugin_bytes(client, b"\x1b[?1049h".to_vec());
+            pane.handle_plugin_bytes(client, image_frame(id + 10, 2, &tiny_png()));
+            pane.handle_plugin_bytes(client, b"\x1b_Ga=t,m=1;AAAA".to_vec());
+            pane.start_loading_indication(LoadingIndication::new("reload".into()));
+            assert_eq!(pane.kitty_image_store.borrow().image_count(), 0);
+            assert_eq!(pane.kitty_image_store.borrow().total_bytes(), 0);
+        }
+        pane.start_loading_indication(LoadingIndication::new("reload".into()));
+        pane.handle_plugin_bytes(client, image_frame(42, 2, &tiny_png()));
+        assert_eq!(kitty_chunks(&mut pane, client).len(), 1);
+    }
+
+    #[test]
+    fn one_shot_image_survives_delayed_geometry() {
+        for (width, height) in [(10, 20), (23, 43)] {
+            for delayed in [false, true] {
+                let cell = SizeInPixels { width, height };
+                let mut pane = test_plugin_pane_with_cell_size(
+                    10,
+                    10,
+                    Offset::default(),
+                    if delayed { None } else { Some(cell) },
+                );
+                pane.handle_plugin_bytes(ClientId::new(1), image_frame(42, 2, &chunky_png()));
+                if delayed {
+                    assert!(kitty_chunks(&mut pane, ClientId::new(1)).is_empty());
+                    *pane.character_cell_size.borrow_mut() = Some(cell);
+                    pane.character_cell_size_possibly_changed();
+                }
+                assert_eq!(
+                    kitty_chunks(&mut pane, ClientId::new(1)).len(),
+                    1,
+                    "cell={cell:?} delayed={delayed}"
+                );
+            }
+        }
     }
 
     #[test]

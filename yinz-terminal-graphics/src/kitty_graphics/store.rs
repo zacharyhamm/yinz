@@ -1,5 +1,7 @@
 use super::parser::{DecodedImage, KittyError, KittyErrorCode, KittyFormat};
+use flate2::{write::ZlibEncoder, Compression};
 use std::collections::HashMap;
+use std::io::Write;
 use std::rc::Rc;
 
 pub const DEFAULT_KITTY_STORE_QUOTA_BYTES: usize = 335_544_320;
@@ -208,22 +210,29 @@ impl KittyImageStore {
             self.remove_entry(id);
         }
     }
-    pub fn base64_for(
+    pub fn zlib_base64_for(
         &mut self,
         id: InternalImageId,
         variant: Option<(u16, u16)>,
-    ) -> Option<Rc<String>> {
+    ) -> std::io::Result<Option<Rc<String>>> {
         // Shared rather than cloned: an image is megabytes of base64.
         let encoded = {
-            let stored = self.images.get(&id)?;
+            let Some(stored) = self.images.get(&id) else {
+                return Ok(None);
+            };
             if let Some(cached) = stored.base64_cache.get(&variant) {
-                return Some(cached.clone());
+                return Ok(Some(cached.clone()));
             }
             let bytes = match variant {
-                Some(cells) => stored.image.scaled_variants.get(&cells)?,
+                Some(cells) => match stored.image.scaled_variants.get(&cells) {
+                    Some(bytes) => bytes,
+                    None => return Ok(None),
+                },
                 None => stored.image.displayed_rgba(),
             };
-            Rc::new(base64_simd::STANDARD.encode_to_string(bytes))
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(bytes)?;
+            Rc::new(base64_simd::STANDARD.encode_to_string(encoder.finish()?))
         };
         // This cache is an optimization, not image data. Do not evict or reject anything merely
         // to retain a second representation of pixels that can be encoded again later.
@@ -233,7 +242,7 @@ impl KittyImageStore {
                 self.total_bytes += encoded.len();
             }
         }
-        Some(encoded)
+        Ok(Some(encoded))
     }
     /// Cache the raster for a scaled placement. Returns `false` without replacing the previous
     /// raster when the new one cannot fit.
@@ -463,7 +472,7 @@ impl KittyImageStore {
     fn stored_image_bytes(stored: &StoredImage) -> usize {
         Self::stored_image_data_bytes(stored) + Self::base64_cache_bytes(stored)
     }
-    fn remove_entry(&mut self, id: InternalImageId) {
+    pub(super) fn remove_entry(&mut self, id: InternalImageId) {
         if let Some(stored) = self.images.remove(&id) {
             self.total_bytes -= Self::stored_image_bytes(&stored);
         }

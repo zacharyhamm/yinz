@@ -436,13 +436,18 @@ fn kitty_replacements(
     upload_bytes: usize,
 ) {
     use crate::panes::kitty_graphics::test_support::{apc, apc_b64};
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
     let mut surface = Surface::new(&[geom(2, 1, 132, 4)]);
     let mut unsupported = Surface::new(&[geom(2, 1, 132, 4)]);
     let mut host = Surface::new(&[geom(0, 0, 134, 5)]);
     for (step, &(width, height)) in dimensions.iter().enumerate() {
+        let mut noise = 0x9e3779b9u32 ^ ((seed as u32) << 16) ^ step as u32;
         let rgb: Vec<_> = (0..width * height * 3)
-            .map(|i| seed.wrapping_add(i as u8).wrapping_add(step as u8))
+            .map(|_| {
+                noise ^= noise << 13;
+                noise ^= noise >> 17;
+                noise ^= noise << 5;
+                noise as u8
+            })
             .collect();
         let expected: Vec<_> = rgb
             .as_chunks::<3>()
@@ -479,10 +484,16 @@ fn kitty_replacements(
             .filter(|(c, _)| c.get("a").copied().unwrap_or("t") == "t")
             .collect();
         assert!(!transmits.is_empty());
+        if width >= 1024 {
+            assert!(
+                transmits.len() > 1,
+                "noisy fixture must still chunk after compression"
+            );
+        }
         assert_eq!(transmits[0].0["s"], width.to_string());
         assert_eq!(transmits[0].0["v"], height.to_string());
         assert_eq!(transmits[0].0["f"], "32");
-        let mut encoded = String::new();
+        assert_eq!(transmits[0].0["o"], "z");
         for (index, (control, payload)) in transmits.iter().enumerate() {
             // Spec: data is "chunked up into chunks no larger than 4096 bytes".
             assert!(payload.len() <= 4096);
@@ -494,9 +505,7 @@ fn kitty_replacements(
                     "0"
                 }
             );
-            encoded.push_str(payload);
         }
-        assert_eq!(STANDARD.decode(encoded).unwrap(), expected);
         host.panes[0].handle_pty_bytes(frame.into_bytes());
         let placements = host.panes[0].grid.kitty_placements();
         assert_eq!(
@@ -553,7 +562,8 @@ fn kitty_replacement_survives_upload_and_pty_partitions(tc: hegel::TestCase) {
 
 #[test]
 fn kitty_payloads_straddle_input_and_output_base64_chunk_boundaries() {
-    // RGB input reaches 4096 base64 bytes at 1024 pixels; RGBA output at 768.
+    // RGB input reaches 4096 base64 bytes at 1024 pixels. Noise keeps the larger
+    // compressed RGBA fixtures above the host chunk limit too.
     kitty_replacements(
         &[
             (767, 1),

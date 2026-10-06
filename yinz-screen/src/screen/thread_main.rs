@@ -2092,6 +2092,7 @@ pub fn screen_thread_main(
                     supported,
                 } => {
                     screen.update_kitty_graphics_support(client_id, supported);
+                    screen.render()?;
                 },
                 ScreenInstruction::SetSixelSupport {
                     client_id,

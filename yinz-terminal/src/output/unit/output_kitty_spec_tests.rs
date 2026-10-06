@@ -464,3 +464,45 @@ fn kitty_placeholder_crops_share_a_raster_across_render_frames_and_drop_stale_re
         assert_eq!(value_of(&shifted_placements[0], key), Some(expected));
     }
 }
+
+#[test]
+fn compressed_transmissions_decode_to_exact_original_and_scaled_pixels() {
+    use crate::panes::kitty_graphics::KittyCommandParser;
+    for scaled in [false, true] {
+        let parts = create_test_kitty_parts();
+        let internal = store_test_kitty_image(&parts.0, 200, 200);
+        let mut chunk = kitty_chunk(internal, 1, 0, 0);
+        let expected = if scaled {
+            let pixels = vec![42; 30 * 40 * 4];
+            assert!(parts.0.borrow_mut().add_scaled_variant(
+                internal,
+                chunk.variant_key,
+                pixels.clone()
+            ));
+            chunk.scaled_px = Some((30, 40));
+            pixels
+        } else {
+            parts.0.borrow().get(internal).unwrap().rgba.clone()
+        };
+        let frame = run_kitty_frame(&parts, vec![chunk], None);
+        let mut parser = KittyCommandParser::new();
+        let mut decoded = None;
+        for command in extract_kitty_commands(&frame) {
+            if action_of(&command) != "t" {
+                continue;
+            }
+            if value_of(&control_of(&command), "a") == Some("t") {
+                assert_eq!(value_of(&control_of(&command), "o"), Some("z"));
+            }
+            if let Some(result) = parser.parse(&command) {
+                decoded = result.unwrap().image;
+            }
+        }
+        let decoded = decoded.expect("complete image");
+        assert_eq!(decoded.bytes, expected);
+        assert_eq!(
+            (decoded.width, decoded.height),
+            if scaled { (30, 40) } else { (200, 200) }
+        );
+    }
+}

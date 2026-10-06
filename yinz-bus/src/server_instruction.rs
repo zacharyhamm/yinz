@@ -78,6 +78,11 @@ pub enum ServerInstruction {
     ForwardQueryToHost(u32, Vec<u8>, bool),
     KeyPassthroughChanged(ClientId, PaneId, PaneId, bool, Option<Direction>, bool),
     EmitNestedSessionFrameToClient(ClientId, Vec<u8>),
+    /// Preserve geometry received before Screen exists, without waiting for another input.
+    TerminalPixelDimensions {
+        client_id: ClientId,
+        pixel_dimensions: yinz_ipc::ipc::PixelDimensions,
+    },
     /// Keep the startup graphics answer ordered after client registration and before removal,
     /// just like `SynchronizedOutputSupport`.
     KittyGraphicsSupport {

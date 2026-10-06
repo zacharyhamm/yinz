@@ -1963,6 +1963,21 @@ pub fn start_server_impl(
                     client_id,
                 );
             },
+            ServerInstruction::TerminalPixelDimensions {
+                client_id,
+                pixel_dimensions,
+            } => {
+                with_session(&session_data, |session| {
+                    session
+                        .senders
+                        .send_to_screen(ScreenInstruction::TerminalPixelDimensions(
+                            client_id,
+                            pixel_dimensions,
+                        ))
+                        .context("recording the client's pixel geometry")
+                        .non_fatal();
+                });
+            },
             ServerInstruction::KittyGraphicsSupport {
                 client_id,
                 supported,

@@ -7,7 +7,7 @@ use yinz_integration_tests::{
 };
 
 const KITTY_PROBE_ACK: &[u8] = b"\x1b_Gi=31;OK\x1b\\";
-const TRANSMIT_HEADER: &[u8] = b"\x1b_Ga=t,q=2,f=32,t=d,i=2000000000,s=2,v=2,m=0;";
+const TRANSMIT_HEADER: &[u8] = b"\x1b_Ga=t,q=2,f=32,o=z,t=d,i=2000000000,s=2,v=2,m=0;";
 const PLACEMENT: &[u8] = b"\x1b_Ga=p,q=2,i=2000000000,p=1,x=0,y=0,w=2,h=2,X=0,Y=0,z=0,C=1\x1b\\";
 const IMAGE_FREE_DELETE: &[u8] = b"\x1b_Ga=d,q=2,d=I,i=2000000000\x1b\\";
 const PLACEMENT_DELETE: &[u8] = b"\x1b_Ga=d,q=2,d=i,i=2000000000,p=1\x1b\\";
@@ -132,6 +132,76 @@ export default {{
             && contains_bytes(bytes, "\u{10eeee}".as_bytes())
     });
     yinz.quit();
+}
+
+#[test]
+fn one_shot_deno_image_reaches_host_without_a_recovery_redraw() {
+    for (width, height) in [(10, 20), (23, 43)] {
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = directory.path().join("one-shot.ts");
+        let png = include_bytes!("../../yinz-test-support/assets/graphics.png");
+        std::fs::write(
+            &plugin,
+            format!(
+                r#"
+const png = new Uint8Array({});
+let transmitted = false;
+export default {{
+  render() {{
+    const image = yinz.ui.image;
+    let frame = '';
+    if (!transmitted) {{
+      frame = image.transmitPng(42, png) + image.place(42, 10, 6);
+      transmitted = true;
+    }}
+    for (let row = 0; row < 6; row++) frame += `\x1b[${{row + 1}};1H` + image.row(42, row, 10);
+    return frame;
+  }}
+}};
+"#,
+                serde_json::to_string(png.as_slice()).unwrap()
+            ),
+        )
+        .unwrap();
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_config("load_plugins clear-defaults=true {}")
+            .with_layout(yinz_integration_tests::LayoutInfo::Stringified(format!(
+                "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\"; }}; }}",
+                plugin.display()
+            )))
+            .start();
+        yinz.wait_until_raw_output("graphics probe", |bytes| {
+            contains_bytes(bytes, b"\x1b_Ga=q,i=31,")
+        });
+        yinz.send_stdin(
+            format!("\x1b[6;{height};{width}t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c").as_bytes(),
+        );
+        yinz.wait_until_raw_output(
+            "one-shot image transmitted and placed without input",
+            |bytes| {
+                contains_bytes(bytes, b"\x1b_Ga=t,q=2,") && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
+            },
+        );
+        let before_close = yinz.raw_bytes().len();
+        yinz.send_stdin(&keys::ctrl('p'));
+        yinz.send_stdin(&keys::key('x'));
+        yinz.wait_until_raw_output("closing the plugin deletes its host image", |bytes| {
+            contains_bytes(&bytes[before_close..], b"\x1b_Ga=d,q=2,d=I,i=")
+        });
+        let before_reopen = yinz.raw_bytes().len();
+        let (code, output) =
+            yinz.run_cli_action_reporting(yinz_cli::args::CliAction::StartOrReloadPlugin {
+                url: format!("file:{}", plugin.display()),
+                configuration: None,
+            });
+        assert_eq!(code, 0, "{output}");
+        yinz.wait_until_raw_output("another image plugin works in the same session", |bytes| {
+            let tail = &bytes[before_reopen..];
+            contains_bytes(tail, b"\x1b_Ga=t,q=2,") && contains_bytes(tail, b"\x1b_Ga=p,q=2,")
+        });
+        yinz.quit();
+    }
 }
 
 #[test]
@@ -685,7 +755,7 @@ fn temp_file_transmission_probe_and_image_reach_the_client() {
     );
 
     yinz.wait_until_raw_output("the viu image reaches the client", |bytes| {
-        contains_bytes(bytes, b"\x1b_Ga=t,q=2,f=32,t=d,i=2000000000")
+        contains_bytes(bytes, b"\x1b_Ga=t,q=2,f=32,o=z,t=d,i=2000000000")
             && contains_bytes(bytes, b"\x1b_Ga=p,q=2,i=2000000000,p=1,")
     });
 
