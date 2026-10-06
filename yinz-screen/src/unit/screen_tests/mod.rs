@@ -524,7 +524,7 @@ impl MockSession {
 impl Drop for MockSession {
     fn drop(&mut self) {
         self.shutdown.begin();
-        self.senders.exit_threads(|| {});
+        self.senders.exit_threads(|| {}, || {});
     }
 }
 
@@ -871,7 +871,7 @@ impl MockScreen {
     /// exited has already done what the Exit message would have asked of it, and its `join` below
     /// is the real check.
     pub fn teardown(&mut self, threads: Vec<std::thread::JoinHandle<()>>) {
-        self.session_metadata.senders.exit_threads(|| {});
+        self.session_metadata.senders.exit_threads(|| {}, || {});
         let _ = self.to_server.send(ServerInstruction::KillSession);
         for thread in threads {
             if let Err(panic) = thread.join() {

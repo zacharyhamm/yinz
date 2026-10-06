@@ -32,7 +32,13 @@ checker holds plugins to, `ui.rs` binds isolate-local widget state and never dis
   command replies, data watches and pane-output subscriptions carry it, so a reply, tick or chunk
   addressed to an instance that has since been reloaded is dropped rather than delivered to its
   replacement. Reload order: `BeforeClose` to the old instance, its registrations cleared, then
-  the replacement loads. Unload clears them after guest cleanup.
+  the replacement loads. Unload clears them after guest cleanup. The optional `unload` hook runs once during
+  normal disposal (also on reload), before promises and workers are cancelled. The pinned
+  executor pumps generation-scoped replies through `thread_bus::UnloadReplies` while the
+  plugin map is unavailable. A two-second isolate watchdog bounds async and synchronous
+  cleanup; failed/interrupted isolates skip it. Shutdown keeps background jobs alive until
+  plugins finish so cleanup can await `runCommand`. No hook is guaranteed after a crash or
+  the session shutdown deadline.
 - **Modules are confined** (`loader.rs`): an import is an explicit relative `.js/.mjs/.ts/.mts`
   inside the entrypoint's folder after symlink resolution, plus `yinz:plugin`. Repository
   plugins use the canonical repository root instead, carried in `PluginConfig.repository_root`

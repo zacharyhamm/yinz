@@ -20,6 +20,42 @@ use yinz_types::input::options::Options;
 #[path = "unit/thread_bus_tests.rs"]
 mod tests;
 
+// Generations are process-wide Deno identities. During teardown the pinned executor
+// pumps replies itself: the plugin map (and at shutdown the plugin bus) is gone.
+// ponytail: one registry lock per Deno reply; shard if concurrent cleanup traffic contends.
+type UnloadReply = (ClientId, yinz_types::data::Event);
+static UNLOAD_REPLIES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, std::sync::mpsc::Sender<UnloadReply>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub struct UnloadReplies {
+    generation: u64,
+    pub receiver: std::sync::mpsc::Receiver<UnloadReply>,
+}
+
+impl UnloadReplies {
+    pub fn new(generation: u64) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        UNLOAD_REPLIES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(generation, sender);
+        Self {
+            generation,
+            receiver,
+        }
+    }
+}
+
+impl Drop for UnloadReplies {
+    fn drop(&mut self) {
+        UNLOAD_REPLIES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&self.generation);
+    }
+}
+
 /// A container for senders to the different threads in yinz on the server side
 #[derive(Default, Clone)]
 pub struct ThreadSenders {
@@ -84,6 +120,16 @@ impl ThreadSenders {
     }
 
     pub fn send_to_plugin(&self, instruction: PluginInstruction) -> Result<()> {
+        if let PluginInstruction::DenoEvent(_, client, generation, event) = &instruction {
+            if let Some(sender) = UNLOAD_REPLIES
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(generation)
+            {
+                let _ = sender.send((*client, event.clone()));
+                return Ok(());
+            }
+        }
         if self.should_silently_fail {
             let _ = self
                 .to_plugin
@@ -219,16 +265,18 @@ impl ThreadSenders {
 
     /// Tell every worker thread to exit, the screen first: it can still need every other worker
     /// while it finishes its queued instructions, so they are told only once `wait_for_screen`
-    /// returns. A caller that owns the screen thread joins it there.
+    /// returns. A caller that owns the screen thread joins it there. Background jobs stay
+    /// alive until `wait_for_plugins` returns so plugin unload hooks can await commands.
     ///
     /// The sends are allowed to fail, because a thread that has already exited has nothing left
     /// to be told. A new worker channel gets its `Exit` here, so every shutdown path sends it.
-    pub fn exit_threads(&self, wait_for_screen: impl FnOnce()) {
+    pub fn exit_threads(&self, wait_for_screen: impl FnOnce(), wait_for_plugins: impl FnOnce()) {
         let _ = self.send_to_screen(ScreenInstruction::Exit);
         wait_for_screen();
         let _ = self.send_to_pty(PtyInstruction::Exit);
         let _ = self.send_to_plugin(PluginInstruction::Exit);
         let _ = self.send_to_pty_writer(PtyWriteInstruction::Exit);
+        wait_for_plugins();
         let _ = self.send_to_background_jobs(BackgroundJob::Exit);
     }
 

@@ -4517,7 +4517,11 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
             return;
         },
     };
-    let send_plugin_instructions = env.senders.to_plugin.clone();
+    let senders = yinz_bus::thread_bus::ThreadSenders {
+        to_plugin: env.senders.to_plugin.clone(),
+        should_silently_fail: env.senders.should_silently_fail,
+        ..Default::default()
+    };
     let update_target = env.plugin_id;
     let deno_generation = env.deno_generation;
     let client_id = env.client_id;
@@ -4533,18 +4537,13 @@ fn set_timeout(env: &PluginEnv, secs: FractionalSeconds) {
         // waited reads its own clock.
         let elapsed_time = Instant::now().duration_since(start_time).as_secs_f64();
 
-        send_plugin_instructions
-            .ok_or(anyhow!("found no sender to send plugin instruction to"))
-            .and_then(|sender| {
-                sender
-                    .send(PluginInstruction::for_plugin_event(
-                        update_target,
-                        client_id,
-                        deno_generation,
-                        Event::Timer(FractionalSeconds::new(elapsed_time)),
-                    ))
-                    .to_anyhow()
-            })
+        senders
+            .send_to_plugin(PluginInstruction::for_plugin_event(
+                update_target,
+                client_id,
+                deno_generation,
+                Event::Timer(FractionalSeconds::new(elapsed_time)),
+            ))
             .with_context(|| {
                 format!(
                     "failed to set host timeout of {secs} s for plugin {}",

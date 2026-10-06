@@ -90,6 +90,14 @@ export interface Plugin {
   /** Each named callback runs serially in its own persistent isolate and background thread. */
   workers?: Record<string, (name: string, payload: string) => void | Promise<void>>;
   load?(configuration: Record<string, string>): void | Promise<void>;
+  /** Called once before normal close, reload (including hot reload), or session shutdown.
+   * Existing permissions remain granted. Await cleanup, including runCommand/sleep, within
+   * two seconds; errors are logged and timeout forces teardown. No new update/render/pipe
+   * calls start during unload. Pending cancellable promises are cancelled afterwards.
+   * Best effort: not guaranteed after a crash, interruption, SIGKILL, or shutdown deadline.
+   * Worker isolates do not invoke this hook.
+   */
+  unload?(): void | Promise<void>;
   update?(event: Event): boolean | void | Promise<boolean | void>;
   pipe?(message: PipeMessage): boolean | void | Promise<boolean | void>;
   render?(rows: number, columns: number): string | null | void | Promise<string | null | void>;

@@ -1401,3 +1401,88 @@ export default {
     });
     yinz.quit();
 }
+
+#[test]
+fn deno_unload_awaits_commands_on_reload_close_self_pane_close_and_shutdown() {
+    for close in ["pane", "self", "shutdown"] {
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = directory.path().join("unload.ts");
+        let marker = directory.path().join("unloaded");
+        fs::write(&plugin, format!(r#"
+import yinz, {{definePlugin}} from 'yinz:plugin';
+let ready = false;
+export default definePlugin({{
+  async load() {{
+    await yinz.waitForPermissions(['RunCommands', 'ReadApplicationState', 'ChangeApplicationState']);
+    yinz.subscribe(['Key']);
+    ready = true;
+  }},
+  update(event) {{ if (event.Key?.bare_key?.Char === 'q') yinz.closeSelf(); }},
+  render() {{ return ready ? 'unload fixture ready' : 'waiting'; }},
+  async unload() {{
+    await yinz.runCommand({{command:['sh','-c','printf "start\\n" >> "$1"','sh', {marker}]}});
+    await yinz.sleep(10);
+    await yinz.runCommand({{command:['sh','-c','printf "done\\n" >> "$1"','sh', {marker}]}});
+  }}
+}});
+"#, marker=serde_json::to_string(&marker).unwrap())).unwrap();
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_layout(LayoutInfo::Stringified(format!(
+                "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\"; }}; }}",
+                plugin.display()
+            )))
+            .start();
+        yinz.wait_until("unload fixture permission prompt", |grid| {
+            grid.contains("Allow? (y/n)")
+        });
+        yinz.send_stdin(b"y");
+        yinz.wait_until("unload fixture ready", |grid| {
+            grid.contains("unload fixture ready")
+        });
+        fs::write(
+            &plugin,
+            fs::read_to_string(&plugin)
+                .unwrap()
+                .replace("'unload fixture ready'", "'replacement fixture ready'"),
+        )
+        .unwrap();
+        let reload = || CliAction::StartOrReloadPlugin {
+            url: format!("file:{}", plugin.display()),
+            configuration: None,
+        };
+        let (code, output) = yinz.run_cli_action_reporting(reload());
+        assert_eq!(code, 0, "{output}");
+        yinz.wait_until(
+            "reload cleanup finished before replacement renders",
+            |grid| {
+                grid.contains("replacement fixture ready")
+                    && fs::read_to_string(&marker).unwrap_or_default() == "start\ndone\n"
+            },
+        );
+        match close {
+            "self" => {
+                yinz.send_stdin(b"q");
+                yinz.wait_until("closeSelf removes the pane", |grid| {
+                    !grid.contains("replacement fixture ready")
+                });
+            },
+            "pane" => {
+                let (code, output) =
+                    yinz.run_cli_action_reporting(CliAction::ClosePane { pane_id: None });
+                assert_eq!(code, 0, "{output}");
+                yinz.wait_until("close removes the pane", |grid| {
+                    !grid.contains("replacement fixture ready")
+                });
+            },
+            _ => {},
+        }
+        // Shutdown joins the plugin executor, including an already queued close job.
+        yinz.quit();
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "start\ndone\n".repeat(2),
+            "{close}"
+        );
+    }
+}

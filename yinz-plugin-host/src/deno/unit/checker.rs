@@ -1188,3 +1188,21 @@ const body: string | undefined = history[0]?.outcome?.body;
     )
     .unwrap();
 }
+
+#[test]
+fn sdk_checks_unload_and_define_plugin_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let entry = dir.path().join("unload.ts");
+    check_semantic_source(&entry, r#"
+      import yinz, {definePlugin, type Plugin} from 'yinz:plugin';
+      const sync: Plugin = {unload() {}};
+      const async: Plugin = {async unload() {await yinz.sleep(1);}};
+      export default definePlugin({defaults:{path:'tmp'}, load(config) {config.path.toUpperCase();}, async unload() {
+        await yinz.runCommand({command:['true']});
+      }});
+      // @ts-expect-error unload must be callable
+      const invalid: Plugin = {unload: 42};
+      // @ts-expect-error async unload cannot return a string
+      const wrong: Plugin = {async unload() {return 'wrong';}};
+    "#).unwrap();
+}

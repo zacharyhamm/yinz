@@ -538,3 +538,78 @@ fn pane_tabs_sdk_helpers_use_the_shared_command_and_decode_the_shared_reply() {
     let denied = yinz_plugin_api::plugin_command::ProtobufPaneTabsResponse { json: r#"{"Err":"Permission denied"}"#.into() };
     assert!(crate::response::decode_response(yinz_types::data::CommandType::PaneTabs, &denied.encode_to_vec()).unwrap().is_err());
 }
+
+#[test]
+fn unload_runs_once_preserves_async_operations_and_suppresses_lifecycle_calls() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.calls = [];
+      bind({
+        load() {
+          yinz.sleep(100000).catch(error => calls.push(error.name));
+        },
+        update() { throw Error('update after unload'); },
+        pipe() { throw Error('pipe after unload'); },
+        render() { throw Error('render after unload'); },
+        async unload() {
+          calls.push('start');
+          const result = await yinz.runCommand({command:['true']});
+          check(result.exitCode === 0);
+          calls.push('done');
+        }
+      });
+      bridge('load', {}, 7);
+      check(bridge('unload', null, 7) === false);
+      check(bridge('unload', null, 7) === false);
+      bridge('update', 'Visible', 7);
+      bridge('pipe', {name:'ignored'}, 7);
+      check(bridge('render', [10,20], 7) === '');
+      check(calls.join() === 'start');
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      const command = sent.find(([cmd]) => cmd.RunCommand)[0].RunCommand;
+      bridge('update', {RunCommandResult:[0,[],[],command[3]]}, 7);
+    "#);
+    run(&mut runtime, r#"
+      check(calls.join() === 'start,done');
+      check(bridge('unloaded', null) === true);
+      check(bridge('unload', null, 7) === true);
+      bridge('cancelPending', null, 7);
+    "#);
+    run(&mut runtime, "check(calls.join() === 'start,done,AbortError');");
+}
+
+#[test]
+fn unload_accepts_absent_sync_and_rejected_hooks() {
+    for body in ["{}", "{unload(){}}", "{unload(){throw Error('cleanup')}}", "{async unload(){throw Error('cleanup')}}"] {
+        let mut runtime = sdk();
+        run(&mut runtime, &format!("bind({body}); bridge('unload', null, 1);"));
+        run(&mut runtime, "check(bridge('unloaded', null) === true);");
+        let logs = runtime.op_state().borrow().borrow::<TestHost>().logs.clone();
+        assert_eq!(logs.len(), usize::from(body.contains("throw")));
+        if body.contains("throw") {
+            assert!(logs[0].contains("unload failed: Error: cleanup"));
+        }
+    }
+    let mut runtime = sdk();
+    run(&mut runtime, "let rejected=false; try {bind({unload:42});} catch(e) {rejected=e.message==='unload must be a function';} check(rejected);");
+}
+
+#[test]
+fn unload_deadline_interrupts_sync_loops_and_unsettled_promises() {
+    for hook in ["unload(){while(true){}}", "async unload(){await new Promise(()=>{});}"] {
+        let mut plugin = DenoPlugin::new(
+            &format!("export default {{{hook}}};"),
+            Path::new("/tmp/unload-deadline.js"),
+            crate::test_env::test_env(),
+            Arc::new(AtomicBool::new(false)),
+        ).unwrap();
+        let started = std::time::Instant::now();
+        plugin.dispose();
+        assert!(plugin.is_disposed());
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        plugin.dispose();
+    }
+}
