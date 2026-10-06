@@ -2632,6 +2632,7 @@ fn an_overlay_is_not_counted_by_the_floating_collection() {
             ..Default::default()
         })),
         None,
+        None,
     )
     .unwrap();
 
@@ -2678,6 +2679,7 @@ fn closing_the_last_floating_pane_under_an_overlay_takes_the_layer_down() {
             height: Some(PercentOrFixed::Fixed(8)),
             ..Default::default()
         })),
+        None,
         None,
     )
     .unwrap();

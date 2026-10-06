@@ -351,6 +351,9 @@ pub fn plugin_thread_main(
             PluginInstruction::InputBarrier(plugin_id, completion) => {
                 wasm_bridge.input_barrier(plugin_id, completion);
             },
+            PluginInstruction::PaletteNote(request) => {
+                wasm_bridge.palette_note(*request);
+            },
             PluginInstruction::PaletteAgent(request) => {
                 let senders = bus.senders.clone();
                 let data = palette_data.clone();

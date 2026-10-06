@@ -1,5 +1,7 @@
 #[path = "palette_agents.rs"]
 pub(super) mod agents;
+#[path = "palette_notes.rs"]
+pub(super) mod notes;
 #[path = "palette_plugins.rs"]
 pub(super) mod plugins;
 
@@ -27,6 +29,7 @@ pub(super) struct CommandPaletteState {
     widget: CommandPalette,
     plugins: plugins::State,
     agents: agents::State,
+    notes: notes::State,
     context: PaletteContext,
     actions: HashMap<String, Builtin>,
     warp_source: Option<SessionName>,
@@ -110,6 +113,7 @@ impl Screen {
                 widget: CommandPalette::default(),
                 plugins: plugins::State::default(),
                 agents: agents::State::new(source),
+                notes: notes::State::default(),
                 context: PaletteContext {
                     tab_id,
                     pane_id,
@@ -139,11 +143,23 @@ impl Screen {
     }
 
     pub(crate) fn close_command_palette(&mut self, client_id: ClientId) -> bool {
-        let Some(mut state) = self.command_palettes.remove(&client_id) else {
-            return false;
-        };
+        self.take_command_palette(client_id, true).is_some()
+    }
+
+    fn take_command_palette(
+        &mut self,
+        client_id: ClientId,
+        dismiss_plugins: bool,
+    ) -> Option<CommandPaletteState> {
+        let mut state = self.command_palettes.remove(&client_id)?;
         state.agents.cancel();
-        self.dismiss_plugin_palette(client_id, &mut state);
+        state.notes.cancel();
+        if dismiss_plugins {
+            self.dismiss_plugin_palette(client_id, &mut state);
+        } else {
+            // Keep the plugin opening alive while the native editor owns input.
+            state.cancel_requests(&self.bus.senders, client_id);
+        }
         self.bus
             .senders
             .send_to_server(ServerInstruction::SetCommandPaletteOpen(client_id, false))
@@ -162,7 +178,7 @@ impl Screen {
             tab.set_should_clear_display_before_rendering();
             tab.set_force_render();
         }
-        true
+        Some(state)
     }
 
     pub(super) fn dismiss_stale_command_palettes(&mut self) {
@@ -346,6 +362,7 @@ impl Screen {
 
 #[derive(Clone)]
 enum Builtin {
+    SearchNotes,
     ControlAgent(Action),
     SetControlAgent(PaneId),
     Agent(yinz_bus::command_palette::AgentAction),
@@ -441,6 +458,12 @@ impl Screen {
             "Switch session…",
             &["find session"],
             Builtin::Picker(EntryKind::Session),
+        );
+        command(
+            "search-project-notes",
+            "Search project notes…",
+            &["find notes markdown"],
+            Builtin::SearchNotes,
         );
         command(
             "focus-control-agent",
@@ -1158,6 +1181,9 @@ impl Screen {
     }
 
     fn handle_palette_outcome(&mut self, client: ClientId, outcome: Outcome) {
+        if self.note_palette_outcome(client, &outcome) {
+            return;
+        }
         if self.agent_palette_outcome(client, &outcome) {
             return;
         }
@@ -1210,6 +1236,10 @@ impl Screen {
                             .unwrap_or_else(|| "Could not set control agent".into()),
                     );
                 }
+                return;
+            },
+            Builtin::SearchNotes => {
+                self.open_note_search(client);
                 return;
             },
             Builtin::Agent(action) => {

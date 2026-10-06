@@ -2,6 +2,8 @@
 mod agent_control;
 #[path = "palette_agents.rs"]
 pub(crate) mod palette_agents;
+#[path = "palette_notes.rs"]
+pub(crate) mod palette_notes;
 pub(crate) use agent_control::agent_event_projects;
 pub use agent_control::control_agent;
 #[path = "multipanes.rs"]

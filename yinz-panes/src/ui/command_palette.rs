@@ -235,6 +235,13 @@ impl CommandPalette {
         self.rebuild_entries();
     }
 
+    pub fn set_section_status(&mut self, status: Option<String>) {
+        if let Some(section) = self.sections.first_mut() {
+            section.status = status;
+            self.rebuild_entries();
+        }
+    }
+
     fn rebuild_entries(&mut self) {
         let selected = {
             self.matches

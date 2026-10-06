@@ -482,6 +482,7 @@ fn palette_rejects_directional_splits_without_losing_input() {
                             true,
                             OverlayPlacement::dismissible(None),
                             None,
+                            None,
                         )
                         .unwrap();
                     assert_eq!(screen.get_active_pane_id(&CLIENT), Some(other));
@@ -3110,4 +3111,324 @@ fn native_agent_launch_replies_are_client_and_opening_scoped_and_errors_do_not_r
     });
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(!snapshot.contains("outcome unknown"));
+}
+
+#[test]
+fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
+    use yinz_bus::command_palette::{Instruction, NoteAction, NoteChoice, NoteResults};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    let (tx, rx) = unbounded();
+    screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+    screen.projects = ["project".into()].into_iter().collect();
+    screen.plugin_palette_instruction(Instruction::Command {
+        owner: yinz_bus::command_palette::Owner {
+            plugin_id: PluginId::new(50),
+            generation: 1,
+            client_id: Some(CLIENT),
+        },
+        client: CLIENT,
+        unavailable: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        command: yinz_types::command_palette::Command::Register {
+            id: "provider".into(),
+            title: "Provider".into(),
+            registration: "1".into(),
+        },
+    });
+    let enter = Some(KeyWithModifier::new(BareKey::Enter));
+    let esc = Some(KeyWithModifier::new(BareKey::Esc));
+    let next = || {
+        rx.try_iter()
+            .find_map(|(instruction, _)| match instruction {
+                PluginInstruction::PaletteNote(request) => Some(*request),
+                _ => None,
+            })
+            .unwrap()
+    };
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b"Search project notes", false, CLIENT);
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let recent = next();
+    assert_eq!(recent.project, "project");
+    assert!(matches!(recent.action, NoteAction::Search(ref query) if query.is_empty()));
+    screen.command_palette_handles_input(&None, b"body match", false, CLIENT);
+    assert!(!recent.active.load(std::sync::atomic::Ordering::Acquire));
+    screen.plugin_palette_instruction(Instruction::NoteSearch {
+        client: CLIENT,
+        token: recent.token,
+        revision: recent.revision,
+        reply: Err("STALE ERROR".into()),
+    });
+    assert!(!render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("STALE ERROR"));
+    screen.plugin_palette_instruction(Instruction::NoteDiscover {
+        client: CLIENT,
+        token: recent.token,
+        revision: recent.revision + 1,
+    });
+    let search = next();
+    assert!(matches!(search.action, NoteAction::Search(ref query) if query == "body match"));
+    let results = || {
+        Ok(NoteResults {
+            notes: vec![
+                NoteChoice {
+                    id: 1,
+                    title: "First".into(),
+                    snippet: "Matching body".into(),
+                    archived: true,
+                },
+                NoteChoice {
+                    id: 2,
+                    title: "Second".into(),
+                    snippet: "Another body".into(),
+                    archived: false,
+                },
+            ],
+            truncated: true,
+        })
+    };
+    screen.plugin_palette_instruction(Instruction::NoteSearch {
+        client: CLIENT,
+        token: search.token,
+        revision: search.revision,
+        reply: results(),
+    });
+    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(rendered.contains("First [archived]"), "{rendered}");
+    assert!(rendered.contains("Matching body"), "{rendered}");
+    assert!(rendered.contains("more results"), "{rendered}");
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Down)),
+        b"",
+        false,
+        CLIENT,
+    );
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let open = next();
+    assert!(matches!(open.action, NoteAction::Open(2)));
+    let (tx, pty_rx) = unbounded();
+    screen.bus.senders.to_pty = Some(SenderWithContext::new(tx));
+    let (exit, _) = crossbeam::channel::bounded(1);
+    screen.plugin_palette_instruction(Instruction::NoteReady {
+        client: CLIENT,
+        token: open.token,
+        revision: open.revision,
+        path: "/tmp/note.md".into(),
+        exit,
+    });
+    assert!(!screen.command_palettes.contains_key(&CLIENT));
+    assert!(
+        !rx.try_iter().any(|(instruction, _)| matches!(
+            instruction,
+            PluginInstruction::DenoPalette(yinz_bus::command_palette::Delivery {
+                message: yinz_types::command_palette::Message::Dismiss { .. },
+                ..
+            })
+        )),
+        "suspending note search must keep the provider opening alive"
+    );
+    assert!(pty_rx.try_iter().any(
+        |(i, _)| matches!(i, PtyInstruction::OpenNoteEditor { tab, .. } if tab == TabId::new(0))
+    ));
+    assert!(!screen.command_palette_handles_input(&None, b"editor input", false, CLIENT));
+    screen.plugin_palette_instruction(Instruction::NoteFinished {
+        client: CLIENT,
+        token: open.token,
+        revision: open.revision,
+        result: Ok(()),
+    });
+    let refreshed = next();
+    assert!(matches!(refreshed.action, NoteAction::Search(ref query) if query == "body match"));
+    screen.plugin_palette_instruction(Instruction::NoteSearch {
+        client: CLIENT,
+        token: refreshed.token,
+        revision: refreshed.revision,
+        reply: results(),
+    });
+    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("› Second"));
+    screen.command_palette_handles_input(&esc, b"", false, CLIENT);
+    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(rendered.contains("Search project notes"), "{rendered}");
+    assert!(!refreshed.active.load(std::sync::atomic::Ordering::Acquire));
+    screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+    let pending = next();
+    screen.command_palette_handles_input(&esc, b"", false, CLIENT);
+    assert!(render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("Esc Close"));
+    assert!(!pending.active.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn native_note_palette_requires_a_current_project() {
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen.toggle_command_palette(CLIENT);
+    screen.command_palette_handles_input(&None, b"Search project notes", false, CLIENT);
+    screen.command_palette_handles_input(
+        &Some(KeyWithModifier::new(BareKey::Enter)),
+        b"",
+        false,
+        CLIENT,
+    );
+    let rendered = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(rendered.contains("No current project"), "{rendered}");
+}
+
+#[test]
+fn native_note_editor_completion_does_not_replace_a_new_palette_or_restore_a_disconnected_client() {
+    use yinz_bus::command_palette::{Instruction, NoteChoice, NoteResults};
+    use yinz_runtime::channels::{unbounded, SenderWithContext};
+    struct RecoveryLog(std::sync::Mutex<Vec<String>>);
+    impl log::Log for RecoveryLog {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() == log::Level::Error
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                self.0.lock().unwrap().push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOG: RecoveryLog = RecoveryLog(std::sync::Mutex::new(Vec::new()));
+    log::set_logger(&LOG).unwrap();
+    log::set_max_level(log::LevelFilter::Error);
+    for (replaced, reconnected, failed) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+        (false, true, true),
+    ] {
+        LOG.0.lock().unwrap().clear();
+        let mut screen = screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let (tx, rx) = unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(tx));
+        screen.projects = ["project".into()].into_iter().collect();
+        let next = || {
+            rx.try_iter()
+                .find_map(|(instruction, _)| match instruction {
+                    PluginInstruction::PaletteNote(request) => Some(*request),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let enter = Some(KeyWithModifier::new(BareKey::Enter));
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(&None, b"Search project notes", false, CLIENT);
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let search = next();
+        screen.plugin_palette_instruction(Instruction::NoteSearch {
+            client: CLIENT,
+            token: search.token,
+            revision: search.revision,
+            reply: Ok(NoteResults {
+                notes: vec![NoteChoice {
+                    id: 1,
+                    title: "Note".into(),
+                    snippet: "Body".into(),
+                    archived: false,
+                }],
+                truncated: false,
+            }),
+        });
+        screen.command_palette_handles_input(&enter, b"", false, CLIENT);
+        let open = next();
+        let (exit, _) = crossbeam::channel::bounded(1);
+        screen.plugin_palette_instruction(Instruction::NoteReady {
+            client: CLIENT,
+            token: open.token,
+            revision: open.revision,
+            path: "/tmp/note.md".into(),
+            exit,
+        });
+        assert!(!screen.command_palettes.contains_key(&CLIENT));
+        screen.plugin_palette_instruction(Instruction::NoteFinished {
+            client: ClientId::new(2),
+            token: open.token,
+            revision: open.revision,
+            result: Ok(()),
+        });
+        assert!(screen.note_edit_palettes.contains_key(&open.token));
+        if replaced {
+            screen.toggle_command_palette(CLIENT);
+        } else {
+            let tab = screen.active_tab_ids[&CLIENT];
+            screen.remove_client(CLIENT).unwrap();
+            assert!(screen.note_edit_palettes.is_empty());
+            if reconnected {
+                screen.add_client(CLIENT).unwrap();
+                assert_eq!(screen.active_tab_ids[&CLIENT], tab);
+            }
+        }
+        let failure = "Cannot save note: revision conflict; recovery file: /tmp/recovered-note.md";
+        screen.plugin_palette_instruction(Instruction::NoteFinished {
+            client: CLIENT,
+            token: open.token,
+            revision: open.revision,
+            result: if failed { Err(failure.into()) } else { Ok(()) },
+        });
+        let logs = LOG.0.lock().unwrap();
+        assert_eq!(logs.iter().any(|message| message == failure), failed);
+        drop(logs);
+        if replaced {
+            assert!(
+                render_frame_into(&mut screen, &receiver, CLIENT, &mut grid).contains("Esc Close")
+            );
+        } else {
+            assert!(!screen.command_palettes.contains_key(&CLIENT));
+            assert!(!screen.command_palette_handles_input(&enter, b"", false, CLIENT));
+        }
+        assert!(screen.note_edit_palettes.is_empty());
+    }
+}
+
+#[test]
+fn note_editor_placement_keeps_its_tab_and_only_focuses_its_requester() {
+    use yinz_types::data::OverlayPlacement;
+    for switched in [false, true] {
+        let mut screen = screen();
+        let other = ClientId::new(2);
+        screen.add_client(other).unwrap();
+        let destination = TabId::new(0);
+        let original = screen.tabs[&destination].get_active_pane_id(other);
+        if switched {
+            new_tab(&mut screen, 2, TabId::new(1));
+        }
+        let requester_tab = screen.active_tab_ids[&CLIENT];
+        let requester_focus = screen.tabs[&requester_tab].get_active_pane_id(CLIENT);
+        let editor = PaneId::Terminal(TerminalId::new(9));
+        screen
+            .place_new_pane(
+                editor,
+                Some("Project note".into()),
+                None,
+                None,
+                NewPanePlacement::Overlay(OverlayPlacement::modal(None)),
+                false,
+                ClientTabIndexOrPaneId::TabIndexForClient(destination, CLIENT),
+                None,
+                false,
+                &mut super::super::thread_main::PendingEvents::default(),
+            )
+            .unwrap();
+        assert!(screen.tabs[&destination].has_pane_with_pid(&editor));
+        assert_eq!(screen.active_tab_ids[&CLIENT], requester_tab);
+        assert_eq!(screen.active_tab_ids[&other], destination);
+        assert_eq!(
+            screen.tabs[&destination].get_active_pane_id(other),
+            original
+        );
+        assert_eq!(
+            screen.tabs[&requester_tab].get_active_pane_id(CLIENT),
+            if switched {
+                requester_focus
+            } else {
+                Some(editor)
+            }
+        );
+    }
 }

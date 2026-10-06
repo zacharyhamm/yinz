@@ -2440,3 +2440,61 @@ fn server_termios_argument_distinguishes_defaults_and_invalid_json() {
         assert!(error.to_string().contains("invalid --server-termios"));
     }
 }
+
+#[test]
+fn note_file_editor_precedence_and_arguments_use_executable_stubs() {
+    const CHILD: &str = "YINZ_TEST_NOTE_EDITOR_PRECEDENCE";
+    const NAME: &str = "os_input_output::os_input_output_tests::note_file_editor_precedence_and_arguments_use_executable_stubs";
+    if env::var_os(CHILD).is_none() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["configured", "editor", "visual", "vi"] {
+            yinz_test_support::write_warm_script(
+                &directory.path().join(name),
+                "printf '%s\\n' \"$0\" \"$@\"\n",
+            );
+        }
+        for level in ["configured", "editor", "visual", "vi"] {
+            let mut command = Command::new(env::current_exe().unwrap());
+            command
+                .args(["--exact", NAME])
+                .env(CHILD, level)
+                .env("PATH", directory.path())
+                .env("YINZ_DISABLE_PTY_HOST", "1")
+                .env_remove("EDITOR")
+                .env_remove("VISUAL");
+            if level != "vi" {
+                command.env("VISUAL", "visual --visual-arg");
+            }
+            if matches!(level, "configured" | "editor") {
+                command.env("EDITOR", "editor --editor-arg");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{level}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    }
+    let level = env::var(CHILD).unwrap();
+    let payload =
+        yinz_types::input::command::OpenFilePayload::new("/tmp/note.md".into(), None, None);
+    let configured = (level == "configured").then(|| PathBuf::from("configured --configured-arg"));
+    let (command, fallback) = build_command(TerminalAction::OpenFile(payload), configured);
+    assert_eq!(command.command, PathBuf::from(&level));
+    assert_eq!(command.args.last().unwrap(), "/tmp/note.md");
+    assert_eq!(command.args.len(), if level == "vi" { 1 } else { 2 });
+    if level != "vi" {
+        assert_eq!(command.args[0], format!("--{level}-arg"));
+    }
+    assert!(fallback.is_none());
+    let output = Command::new(&command.command)
+        .args(&command.args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/tmp/note.md"));
+}

@@ -3765,7 +3765,7 @@ fn open_overlay_of_kind(screen: &mut Screen, pane_id: u32, contents: &str, kind:
         false,
         true,
         NewPanePlacement::Overlay(placement),
-        Some(crate::ClientId::new(1)),
+        None, // This fixture opens an overlay for every client on the tab.
         None,
     )
     .expect("TEST");

@@ -680,6 +680,7 @@ pub(crate) struct Screen {
     /// in `remove_client` alongside `notification_mouse_captures`. See `screen::context_menu`.
     context_menus: HashMap<ClientId, ContextMenuState>,
     command_palettes: HashMap<ClientId, command_palette::CommandPaletteState>,
+    note_edit_palettes: HashMap<u64, (ClientId, command_palette::CommandPaletteState)>,
     command_palette_mouse_captures: HashSet<ClientId>,
     palette_providers: command_palette::plugins::Registry,
     /// Correlates a plugin's answer with the menu that asked for it. Monotonic per session.
@@ -1367,6 +1368,7 @@ impl Screen {
             notification_mouse_captures: HashSet::new(),
             context_menus: HashMap::new(),
             command_palettes: HashMap::new(),
+            note_edit_palettes: HashMap::new(),
             command_palette_mouse_captures: HashSet::new(),
             palette_providers: command_palette::plugins::Registry::default(),
             next_context_menu_request_id: ContextMenuRequestId::new(0),
@@ -2350,6 +2352,8 @@ impl Screen {
         // nobody is looking at any more.
         self.context_menus.remove(&client_id);
         self.close_command_palette(client_id);
+        self.note_edit_palettes
+            .retain(|_, (client, _)| *client != client_id);
         self.disconnect_palette_client(client_id);
         self.command_palette_mouse_captures.remove(&client_id);
         self.client_projects.remove(&client_id);
@@ -3811,7 +3815,8 @@ impl Screen {
                 };
             },
             ClientTabIndexOrPaneId::TabIndex(_tab_index)
-            | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index) => {
+            | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index)
+            | ClientTabIndexOrPaneId::TabIndexForClient(_tab_index, _) => {
                 self.forget_unplaced_pane(
                     new_pane_id,
                     "cannot replace a pane by tab index".to_owned(),

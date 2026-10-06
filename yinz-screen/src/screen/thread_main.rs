@@ -713,7 +713,8 @@ pub fn screen_thread_main(
                             .replace_active_pane_with_editor_pane(pid, client_id), ?);
                         },
                         ClientTabIndexOrPaneId::TabIndex(_tab_index)
-                        | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index) => {
+                        | ClientTabIndexOrPaneId::TabIndexNoFocus(_tab_index)
+                        | ClientTabIndexOrPaneId::TabIndexForClient(_tab_index, _) => {
                             log::error!("Cannot OpenInPlaceEditor with a TabIndex");
                         },
                         ClientTabIndexOrPaneId::PaneId(pane_id_to_replace)
