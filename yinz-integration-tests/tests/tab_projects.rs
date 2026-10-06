@@ -432,9 +432,44 @@ fn tab_projects_follow_cwd_changes_and_pane_closure_without_agent() {
     let second = yinz.expect_pty_spawn();
     wait_for_tab(&yinz, "project-alpha", &["project-beta"]);
 
+    let worktree = a.join("topic-tree");
+    let status = std::process::Command::new("git")
+        .current_dir(&a)
+        .args(["worktree", "add", "-b", "topic"])
+        .arg(&worktree)
+        .status()
+        .expect("create worktree");
+    assert!(status.success());
+    second.output(format!("\x1b]7;file://localhost{}\x07", worktree.display()).as_bytes());
+    wait_for_tab(&yinz, "project-alpha:main + topic", &[]);
+    let status = std::process::Command::new("git")
+        .current_dir(&worktree)
+        .args(["checkout", "-b", "updated"])
+        .status()
+        .expect("change branch");
+    assert!(status.success());
+    // Refresh explicitly instead of waiting for the minute-long Git polling interval.
+    assert_eq!(
+        yinz.run_cli_action(CliAction::Pipe {
+            name: Some("agent_refresh".into()),
+            payload: None,
+            args: None,
+            plugin: None,
+            plugin_configuration: None,
+            force_launch_plugin: false,
+            skip_plugin_cache: false,
+            floating_plugin: None,
+            in_place_plugin: None,
+            plugin_cwd: None,
+            plugin_title: None,
+        }),
+        0
+    );
+    wait_for_tab(&yinz, "project-alpha:main + updated", &["topic"]);
+
     // Only the CWD notification, with no prompt output or focus change to trigger a redraw.
     second.output(format!("\x1b]7;file://localhost{}\x07", b.display()).as_bytes());
-    wait_for_tab(&yinz, "project-alpha + project-beta", &[]);
+    wait_for_tab(&yinz, "project-alpha:main + project-beta:main", &[]);
     assert_eq!(
         yinz.run_cli_action(CliAction::ClosePane {
             pane_id: Some(first.terminal_id().to_string()),
