@@ -1,5 +1,5 @@
 use yinz_runtime::errors::prelude::*;
-use yinz_types::internal_ids::TabId;
+use yinz_types::internal_ids::{TabId, TabPosition};
 
 use super::{BreakPanesToTabOutcome, Screen};
 use crate::background_jobs::BackgroundJob;
@@ -239,19 +239,19 @@ impl Screen {
     ) -> Result<()> {
         let err_context = || "failed break pane out of tab".to_string();
         if self.tabs.len() > 1 {
+            let position = self.get_active_tab(client_id)?.position.get();
+            let destination_position = TabPosition::new(match direction {
+                Direction::Right | Direction::Down => (position + 1) % self.tabs.len(),
+                Direction::Left | Direction::Up => {
+                    (position + self.tabs.len() - 1) % self.tabs.len()
+                },
+            });
             let active_tab = self.get_active_tab_mut(client_id)?;
             let active = active_tab
                 .get_active_pane_id(client_id)
                 .context("no active pane")?;
             if active_tab.pane_is_overlay(active) {
-                match direction {
-                    Direction::Right | Direction::Down => {
-                        self.switch_tab_next(None, true, client_id)?
-                    },
-                    Direction::Left | Direction::Up => {
-                        self.switch_tab_prev(None, true, client_id)?
-                    },
-                }
+                self.switch_active_tab(destination_position, None, true, client_id)?;
                 let destination = self.get_active_tab_mut(client_id)?.id;
                 self.break_multiple_panes_to_tab_with_id(
                     vec![active],
@@ -294,17 +294,8 @@ impl Screen {
                     carried_respawn,
                 )
             };
-            // the plugins in the tab the pane lands in need the client's mode, not just
-            // the pane
-            let update_mode_infos = true;
-            match direction {
-                Direction::Right | Direction::Down => {
-                    self.switch_tab_next(None, update_mode_infos, client_id)?;
-                },
-                Direction::Left | Direction::Up => {
-                    self.switch_tab_prev(None, update_mode_infos, client_id)?;
-                },
-            };
+            // Moving an existing pane supplies content itself; do not recover parked work.
+            self.switch_active_tab(destination_position, None, true, client_id)?;
             let new_active_tab = self.get_active_tab_mut(client_id)?;
 
             if let Some(placement) = overlay_placement {

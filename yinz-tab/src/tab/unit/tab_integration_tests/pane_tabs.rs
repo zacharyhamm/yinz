@@ -857,3 +857,57 @@ fn pane_tabs_render_active_inactive_and_independent_keyboard_highlight() {
         }
     }
 }
+
+#[test]
+fn navigation_recovery_leaves_hidden_pane_tab_children_untouched() {
+    let (mut tab, receiver) =
+        create_new_tab_with_plugin_receiver(Size { cols: 80, rows: 24 }, ModeInfo::default());
+    let client = ClientId::new(1);
+    let parent = PaneId::Plugin(PluginId::new(100));
+    tab.new_pane(
+        parent,
+        None,
+        None,
+        false,
+        true,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    let info = tab.mount_pane_tabs(parent, layout(), 0, client).unwrap();
+    tab.select_pane_tab(info.id, 1, client).unwrap();
+    let generation = receiver
+        .try_iter()
+        .find_map(|(instruction, _)| match instruction {
+            PluginInstruction::LoadPaneTab {
+                generation,
+                index: 1,
+                ..
+            } => Some(generation),
+            _ => None,
+        })
+        .unwrap();
+    let run = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+        "yinz:fixture-plugin-for-tests",
+        &None,
+        None,
+        None,
+    )
+    .unwrap();
+    let child = PluginId::new(101);
+    tab.pane_tab_loaded(info.id, 1, generation, Ok((child, run)))
+        .unwrap();
+    tab.select_pane_tab(info.id, 0, client).unwrap();
+    tab.set_pane_selectable(parent, false);
+    let terminal = PaneId::Terminal(TerminalId::new(1));
+    tab.suppress_pane(terminal, None);
+    let before = tab.pane_tabs_info(info.id).unwrap();
+    assert!(tab
+        .recover_suppressed_terminal_for_navigation(client)
+        .unwrap());
+    assert_eq!(tab.get_active_pane_id(client), Some(terminal));
+    assert_eq!(tab.pane_tabs_info(info.id).unwrap(), before);
+    assert_eq!(tab.pane_tabs_of(PaneId::Plugin(child)), Some(info.id));
+    assert!(tab.suppressed_panes.contains_key(&PaneId::Plugin(child)));
+}

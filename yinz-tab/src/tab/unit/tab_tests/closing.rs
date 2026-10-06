@@ -2904,3 +2904,191 @@ fn buffered_hold_requeues_the_last_replacement_through_screen() {
     assert!(!tab.rerun_terminal_pane_with_id(TerminalId::new(999), None));
     assert!(!tab.run_command_in_pane_with_id(TerminalId::new(999), command("missing"), false));
 }
+
+#[test]
+fn navigation_recovers_only_the_lowest_eligible_parked_terminal() {
+    for excluded in [
+        "service",
+        "held",
+        "exited",
+        "replacement",
+        "stack",
+        "plugin",
+        "overlay",
+    ] {
+        let client = ClientId::new(1);
+        let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+        let (sender, _receiver) = unbounded();
+        tab.senders
+            .replace_to_plugin(SenderWithContext::new(sender));
+        let original = PaneId::Terminal(TerminalId::new(1));
+        let excluded_id = match excluded {
+            "plugin" => {
+                let plugin = PaneId::Plugin(crate::PluginId::new(1));
+                tab.new_pane(
+                    plugin,
+                    None,
+                    None,
+                    true,
+                    false,
+                    NewPanePlacement::default(),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+                tab.close_pane(original, false, None);
+                plugin
+            },
+            "overlay" => {
+                let overlay = PaneId::Terminal(TerminalId::new(2));
+                tab.new_pane(
+                    overlay,
+                    None,
+                    None,
+                    false,
+                    false,
+                    NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+                tab.hide_overlay_pane(overlay);
+                tab.close_pane(original, false, None);
+                overlay
+            },
+            _ => {
+                match excluded {
+                    "held" | "exited" => {
+                        tab.hold_pane(original, Some(0), excluded == "held", RunCommand::default());
+                    },
+                    _ => {},
+                }
+                tab.suppress_pane(original, None);
+                if excluded == "service" {
+                    tab.suppressed_panes
+                        .get_mut(&original)
+                        .unwrap()
+                        .pane
+                        .set_selectable(false);
+                }
+                if excluded == "replacement" {
+                    tab.suppressed_panes.get_mut(&original).unwrap().restored_by =
+                        Some(crate::tab::StandIn {
+                            pane_id: PaneId::Plugin(crate::PluginId::new(7)),
+                            is_scrollback_editor: true,
+                        });
+                }
+                if excluded == "stack" {
+                    tab.stack_list_of_member.insert(original, 0);
+                    tab.stack_lists.insert(
+                        0,
+                        crate::tab::StackList {
+                            members: vec![original],
+                            visible: original,
+                        },
+                    );
+                }
+                original
+            },
+        };
+        assert!(
+            !tab.recover_suppressed_terminal_for_navigation(client)
+                .unwrap(),
+            "{excluded}"
+        );
+        for id in [9, 8] {
+            tab.new_pane(
+                PaneId::Terminal(TerminalId::new(id)),
+                None,
+                None,
+                true,
+                false,
+                NewPanePlacement::default(),
+                Some(client),
+                None,
+            )
+            .unwrap();
+        }
+        assert!(!tab.has_selectable_panes(), "{excluded}");
+        assert!(
+            tab.recover_suppressed_terminal_for_navigation(client)
+                .unwrap_or_else(|error| panic!("{excluded}: {error:#}")),
+            "{excluded}"
+        );
+        assert_eq!(
+            tab.get_active_pane_id(client),
+            Some(PaneId::Terminal(TerminalId::new(8))),
+            "{excluded}"
+        );
+        assert!(tab
+            .suppressed_panes
+            .contains_key(&PaneId::Terminal(TerminalId::new(9))));
+        assert!(tab.has_pane_with_pid(&excluded_id));
+        assert!(!tab
+            .recover_suppressed_terminal_for_navigation(client)
+            .unwrap());
+        if excluded != "overlay" {
+            assert!(tab.suppressed_panes.contains_key(&excluded_id));
+        } else {
+            assert!(tab.pane_is_overlay(excluded_id));
+        }
+    }
+}
+
+#[test]
+fn navigation_recovery_retains_the_terminal_when_resize_channel_is_closed() {
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    tab.handle_pty_bytes(TerminalId::new(1), b"retained transcript".to_vec())
+        .unwrap();
+    tab.suppress_pane(pane, None);
+    let (sender, receiver) = unbounded();
+    tab.senders
+        .replace_to_pty_writer(SenderWithContext::new(sender));
+    tab.senders.should_silently_fail = false;
+    drop(receiver);
+    assert!(tab
+        .recover_suppressed_terminal_for_navigation(client)
+        .is_err());
+    assert!(tab.floating_panes.panes_contain(&pane));
+    assert!(tab
+        .get_pane_with_id(pane)
+        .unwrap()
+        .dump_screen(true, None)
+        .contains("retained transcript"));
+}
+
+#[test]
+fn pending_tab_navigation_leaves_suppressed_work_untouched() {
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    tab.suppress_pane(pane, None);
+    tab.is_pending = true;
+    assert!(!tab
+        .recover_suppressed_terminal_for_navigation(client)
+        .unwrap());
+    assert!(tab.suppressed_panes.contains_key(&pane));
+}
+
+#[test]
+fn navigation_leaves_editor_restoration_ownership_intact() {
+    let client = ClientId::new(1);
+    let mut tab = create_new_tab(Size { cols: 80, rows: 24 }, true);
+    let original = PaneId::Terminal(TerminalId::new(1));
+    let editor = PaneId::Terminal(TerminalId::new(2));
+    tab.replace_active_pane_with_editor_pane(editor, client)
+        .unwrap();
+    tab.set_pane_selectable(editor, false);
+    assert!(!tab
+        .recover_suppressed_terminal_for_navigation(client)
+        .unwrap());
+    assert_eq!(
+        tab.suppressed_panes[&original].restored_by.unwrap().pane_id,
+        editor
+    );
+    tab.close_pane(editor, false, None);
+    assert!(tab.has_non_suppressed_pane_with_pid(&original));
+    assert!(!tab.suppressed_panes.contains_key(&original));
+}

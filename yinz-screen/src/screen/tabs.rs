@@ -624,6 +624,38 @@ impl Screen {
         }
     }
 
+    /// User tab navigation may reveal parked work; automatic relocation must not.
+    pub(super) fn navigate_to_tab(
+        &mut self,
+        position: TabPosition,
+        direction: Option<Direction>,
+        update_mode_infos: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let same_tab = self
+            .get_active_tab(client_id)
+            .is_ok_and(|tab| tab.position == position);
+        if let Some(tab) = self.tabs.values_mut().find(|tab| tab.position == position) {
+            let recovered = match tab
+                .recover_suppressed_terminal_for_navigation(client_id)
+                .context("failed to recover hidden terminal on tab navigation")
+            {
+                Ok(recovered) => recovered,
+                Err(error) => {
+                    Err::<(), _>(error).non_fatal();
+                    return Ok(());
+                },
+            };
+            // Switching to the current tab returns early, but recovery still needs publishing.
+            if recovered && same_tab {
+                self.log_and_report_session_state()
+                    .context("failed to publish recovered tab")?;
+                return self.render().context("failed to render recovered tab");
+            }
+        }
+        self.switch_active_tab(position, direction, update_mode_infos, client_id)
+    }
+
     /// A helper function to switch to a new tab at specified position.
     pub(super) fn switch_active_tab(
         &mut self,
@@ -745,7 +777,7 @@ impl Screen {
     ) -> Result<bool> {
         match self.tabs.values().find(|t| t.name == name) {
             Some(new_tab) => {
-                self.switch_active_tab(new_tab.position, None, true, client_id)?;
+                self.navigate_to_tab(new_tab.position, None, true, client_id)?;
                 Ok(true)
             },
             None => Ok(false),
@@ -773,7 +805,7 @@ impl Screen {
                     let active_tab_pos = active_tab.position;
                     let new_tab_pos =
                         TabPosition::new((active_tab_pos.get() + 1) % self.tabs.len());
-                    return self.switch_active_tab(
+                    return self.navigate_to_tab(
                         new_tab_pos,
                         should_change_pane_focus,
                         update_mode_infos,
@@ -811,7 +843,7 @@ impl Screen {
                         active_tab_pos.get() - 1
                     });
 
-                    return self.switch_active_tab(
+                    return self.navigate_to_tab(
                         new_tab_pos,
                         should_change_pane_focus,
                         update_mode_infos,
@@ -825,7 +857,7 @@ impl Screen {
     }
 
     pub fn go_to_tab(&mut self, tab_index: TabNumber, client_id: ClientId) -> Result<()> {
-        self.switch_active_tab(tab_index.position(), None, true, client_id)
+        self.navigate_to_tab(tab_index.position(), None, true, client_id)
     }
 
     pub fn go_to_tab_name(&mut self, name: String, client_id: ClientId) -> Result<bool> {
@@ -973,7 +1005,7 @@ impl Screen {
     ) -> Result<()> {
         for (tab_id, client_id) in switches.drain() {
             if let Some(position) = self.get_tab_position_by_id(tab_id) {
-                self.switch_active_tab(position, None, true, client_id)?;
+                self.navigate_to_tab(position, None, true, client_id)?;
             }
         }
         Ok(())

@@ -690,6 +690,9 @@ impl<'a> FloatingPaneGrid<'a> {
         viewport: Viewport,
         pane_geoms: &[PaneGeom],
     ) -> Option<PaneGeom> {
+        if viewport.cols < MIN_TERMINAL_WIDTH || viewport.rows < MIN_TERMINAL_HEIGHT {
+            return None;
+        }
         macro_rules! find_unoccupied_offset {
             ($get_geom_with_offset:expr, $viewport:expr, $other_geoms:expr) => {
                 let mut offset = 0;
