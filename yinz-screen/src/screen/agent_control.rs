@@ -1296,13 +1296,15 @@ impl Screen {
                         && pending.prompt.is_some()
                         && (!pending.abandoned || pending.delivery.is_some())
                 });
-                // An empty pin recovers only a pane that reports no session - a fresh
-                // Muse pane before its first turn binds one. Against a pinned pane it
-                // fails closed, the way a wrong conversation does.
-                let refusal = if !confirm_empty
-                    || (expected_session_id.is_empty() && status.agent.session_id.is_some())
-                {
+                // An empty pin recovers only a pane that reports no session.
+                // Codex binds at startup, before its first turn; Muse binds later.
+                let refusal = if !confirm_empty {
                     Some("recovery requires --conversation and --confirm-empty".to_owned())
+                } else if expected_session_id.is_empty() && status.agent.session_id.is_some() {
+                    Some(
+                        "agent already has a conversation; pass its session_id as --conversation"
+                            .to_owned(),
+                    )
                 } else if !status.prompt_supported {
                     Some("recovery requires an agent that accepts prompts".to_owned())
                 } else if in_flight {
@@ -2893,16 +2895,22 @@ impl Screen {
             },
             "codex" => {
                 let top = rows[..=y].iter().rposition(|row| row.starts_with("› "))?;
-                let bottom = y
-                    + 1
-                    + rows[y + 1..].iter().position(|row| {
-                        row.starts_with("  ") && row.contains(" · ") && !row.trim().is_empty()
-                    })?;
+                let is_footer = |row: &String| row.starts_with("  ") && row.contains(" · ");
+                let bottom = y + 1 + rows[y + 1..].iter().position(is_footer)?;
+                // Shift+Tab can leave the collaboration-mode footer above the
+                // normal status row, occupying the editor's trailing blank row.
+                let mode_footer = rows[bottom].trim_end().ends_with("Plan mode")
+                    || rows[bottom].trim_end().ends_with("Default mode");
+                let mut footer = rows[bottom + 1..]
+                    .iter()
+                    .filter(|row| !row.trim().is_empty());
+                let extra_footer = footer.next();
+                let two_row_mode = mode_footer && extra_footer.is_some_and(is_footer);
                 if top == 0
                     || !rows[top - 1].trim().is_empty()
-                    || bottom <= y + 1
-                    || !rows[bottom - 1].trim().is_empty()
-                    || rows[bottom + 1..].iter().any(|row| !row.trim().is_empty())
+                    || (!two_row_mode && (bottom <= y + 1 || !rows[bottom - 1].trim().is_empty()))
+                    || (extra_footer.is_some() && !two_row_mode)
+                    || footer.next().is_some()
                     || rows[top + 1..bottom]
                         .iter()
                         .any(|row| !row.is_empty() && !row.starts_with("  "))
@@ -2933,8 +2941,9 @@ impl Screen {
             || rows[top..].iter().any(|row| {
                 row.contains("[Image") || row.contains("[Pasted") || row.contains("[Attached")
             });
-        // Captured Codex 0.160.0 and Claude 2.1.289 placeholders are dim;
-        // identically spelled typed drafts are not. Unstyled suggestions fail closed.
+        // Captured Codex 0.160.x and Claude 2.1.289 placeholders are dim;
+        // identically spelled typed drafts are not. Codex can style padding
+        // after the hint, so a reset immediately after it is not required.
         let hint: String = rows[top].chars().skip(prefix).collect();
         let hint = hint.trim_end();
         let known_hint = match kind {
@@ -2947,7 +2956,7 @@ impl Screen {
                 .pane_contents_with_ansi(None, false, None)
                 .viewport
                 .get(top)
-                .is_some_and(|row| row.ends_with(&format!("\x1b[2m\x1b[23m{hint}\x1b[m")));
+                .is_some_and(|row| row.contains(&format!("\x1b[2m\x1b[23m{hint}")));
         let empty = !indicators
             && y == top
             && x == prefix

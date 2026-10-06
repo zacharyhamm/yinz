@@ -7040,15 +7040,41 @@ fn clear_draft_codex_placeholder_requires_captured_dim_style() {
     }
 }
 
+fn captured_composer_frame(screen: &mut Screen, fixture: &serde_json::Value, now: Instant) {
+    let cursor = fixture["cursor"]
+        .as_array()
+        .map(|pair| (pair[0].as_u64().unwrap(), pair[1].as_u64().unwrap()));
+    let mut frame = format!(
+        "\x1b[2J\x1b[H{}",
+        fixture["ansi"].as_str().unwrap().replace('\n', "\r\n")
+    );
+    if let Some((x, y)) = cursor {
+        frame += &format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1);
+    } else {
+        frame += "\x1b[?25l";
+    }
+    screen
+        .tabs
+        .get_mut(&TabId::new(0))
+        .unwrap()
+        .handle_pty_bytes(TerminalId::new(7), frame.into_bytes())
+        .unwrap();
+    screen.pane_output_activity.insert(PANE, now);
+}
+
 #[test]
 fn clear_draft_captured_default_composers_do_not_confuse_suggestions_with_input() {
     for raw in [
         include_str!("../fixtures/agent-composers/claude-empty.json"),
         include_str!("../fixtures/agent-composers/claude-colored-empty.json"),
         include_str!("../fixtures/agent-composers/codex-empty.json"),
+        include_str!("../fixtures/agent-composers/codex-plan-empty.json"),
+        include_str!("../fixtures/agent-composers/codex-plan-two-row-footer.json"),
+        include_str!("../fixtures/agent-composers/codex-default-switched.json"),
         include_str!("../fixtures/agent-composers/pi-empty.json"),
         include_str!("../fixtures/agent-composers/claude-multiline-draft.json"),
         include_str!("../fixtures/agent-composers/codex-multiline-draft.json"),
+        include_str!("../fixtures/agent-composers/codex-plan-multiline-draft.json"),
     ] {
         let fixture: serde_json::Value = serde_json::from_str(raw).unwrap();
         let kind = fixture["provider"].as_str().unwrap();
@@ -7061,25 +7087,8 @@ fn clear_draft_captured_default_composers_do_not_confuse_suggestions_with_input(
             },
         );
         report_kind(&mut screen, kind, hook("SessionStart"));
-        let cursor = fixture["cursor"]
-            .as_array()
-            .map(|pair| (pair[0].as_u64().unwrap(), pair[1].as_u64().unwrap()));
-        let mut frame = format!(
-            "\x1b[2J\x1b[H{}",
-            fixture["ansi"].as_str().unwrap().replace('\n', "\r\n")
-        );
-        if let Some((x, y)) = cursor {
-            frame += &format!("\x1b[{};{}H\x1b[?25h", y + 1, x + 1);
-        } else {
-            frame += "\x1b[?25l";
-        }
-        screen
-            .tabs
-            .get_mut(&TabId::new(0))
-            .unwrap()
-            .handle_pty_bytes(TerminalId::new(7), frame.into_bytes())
-            .unwrap();
         let now = Instant::now();
+        captured_composer_frame(&mut screen, &fixture, now);
         screen.agent_control_at(
             draft_request(&screen),
             crate::screen::agent_control::Reply::Client(CLIENT),
@@ -7112,6 +7121,158 @@ fn clear_draft_captured_default_composers_do_not_confuse_suggestions_with_input(
             _ => unreachable!(),
         }
     }
+}
+
+#[test]
+fn codex_collaboration_composers_clear_and_correlate_guarded_prompts() {
+    for raw in [
+        include_str!("../fixtures/agent-composers/codex-plan-empty.json"),
+        include_str!("../fixtures/agent-composers/codex-plan-two-row-footer.json"),
+        include_str!("../fixtures/agent-composers/codex-default-switched.json"),
+    ] {
+        let fixture: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let (mut screen, messages, writes) =
+            setup_with_size("codex", PaneTarget::Local, Size { cols: 67, rows: 38 });
+        report(&mut screen, hook("SessionStart"));
+        // Mode changes are terminal input, with no lifecycle acknowledgement.
+        screen.agent_control(
+            AgentRequest::SendKeys {
+                pane_id: PANE,
+                expected_session_id: None,
+                keys: vec![KeyWithModifier::new(BareKey::Tab).with_shift_modifier()],
+            },
+            ClientId::new(2),
+        );
+        finish_paste(&writes);
+        let now = Instant::now();
+        captured_composer_frame(&mut screen, &fixture, now);
+        let status = screen.agent_status_for_test();
+        assert!(status.ready && status.clear_draft_supported, "{raw}");
+        screen.agent_control_at(
+            identified_prompt("plan", true),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        let bytes = finish_paste(&writes);
+        let marker = std::str::from_utf8(&bytes)
+            .unwrap()
+            .strip_prefix("\x1b[200~")
+            .unwrap()
+            .strip_suffix("\x1b[201~")
+            .unwrap();
+        let mut marked = fixture.clone();
+        marked["ansi"] = fixture["ansi"]
+            .as_str()
+            .unwrap()
+            .replace("Ask Codex to do anything", marker)
+            .into();
+        marked["cursor"][0] = (2 + marker.len()).into();
+        captured_composer_frame(&mut screen, &marked, now + Duration::from_millis(1));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(2));
+        assert_eq!(finish_paste(&writes), [3]);
+        captured_composer_frame(&mut screen, &fixture, now + Duration::from_millis(3));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(4));
+        screen.refresh_agent_controls_at(now + Duration::from_millis(254));
+        assert_eq!(finish_paste(&writes), b"\x1b[200~review\x1b[201~");
+        screen.refresh_agent_controls_at(now + Duration::from_millis(255));
+        screen.refresh_agent_controls_at(now + Duration::from_secs(1));
+        assert_eq!(finish_paste(&writes), b"\r");
+        assert!(replies(&messages, CLIENT).is_empty());
+        report(&mut screen, hook("UserPromptSubmit"));
+        report(&mut screen, hook("Stop"));
+        let result = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(result.outcome, AgentOutcome::Completed);
+        assert!(result.acknowledged);
+        assert_eq!(result.submission_id.as_deref(), Some("plan"));
+        assert_eq!(result.turn_id.as_deref(), Some("turn"));
+        screen.agent_control(wait_submission("plan"), CLIENT);
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Completed
+        );
+    }
+}
+
+#[test]
+fn codex_mode_footer_does_not_authorize_hidden_composers_or_extra_panels() {
+    for invalid in ["hidden", "panel", "third-footer", "not-mode"] {
+        let mut fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../fixtures/agent-composers/codex-plan-two-row-footer.json"
+        ))
+        .unwrap();
+        match invalid {
+            "hidden" => fixture["cursor"] = serde_json::Value::Null,
+            "panel" => {
+                fixture["ansi"] =
+                    format!("{}\n  Continue? (y/n)", fixture["ansi"].as_str().unwrap()).into()
+            },
+            "third-footer" => {
+                fixture["ansi"] = format!(
+                    "{}\n  GPT-6-Astra medium · /work",
+                    fixture["ansi"].as_str().unwrap()
+                )
+                .into()
+            },
+            "not-mode" => {
+                fixture["ansi"] = fixture["ansi"]
+                    .as_str()
+                    .unwrap()
+                    .replace("Plan mode", "unknown panel")
+                    .into()
+            },
+            _ => unreachable!(),
+        }
+        let (mut screen, messages, writes) =
+            setup_with_size("codex", PaneTarget::Local, Size { cols: 67, rows: 46 });
+        report(&mut screen, hook("SessionStart"));
+        let now = Instant::now();
+        captured_composer_frame(&mut screen, &fixture, now);
+        assert!(
+            !screen.agent_status_for_test().clear_draft_supported,
+            "{invalid}"
+        );
+        screen.agent_control_at(
+            draft_request(&screen),
+            crate::screen::agent_control::Reply::Client(CLIENT),
+            now,
+        );
+        assert_eq!(
+            replies(&messages, CLIENT)[0].outcome,
+            AgentOutcome::Rejected,
+            "{invalid}"
+        );
+        assert!(finish_paste(&writes).is_empty());
+    }
+}
+
+#[test]
+fn codex_startup_recovery_requires_the_already_bound_conversation() {
+    let (mut screen, messages, writes) = setup("codex");
+    report(&mut screen, hook("SessionStart"));
+    for (conversation, outcome) in [
+        ("", AgentOutcome::Rejected),
+        ("wrong", AgentOutcome::TargetChanged),
+        ("conversation", AgentOutcome::Ok),
+    ] {
+        screen.agent_control(
+            AgentRequest::Recover {
+                pane_id: PANE,
+                expected_session_id: conversation.into(),
+                confirm_empty: true,
+                interrupted: false,
+            },
+            CLIENT,
+        );
+        let response = replies(&messages, CLIENT).pop().unwrap();
+        assert_eq!(response.outcome, outcome);
+        if conversation.is_empty() {
+            assert!(response
+                .message
+                .unwrap()
+                .contains("already has a conversation"));
+        }
+    }
+    assert!(finish_paste(&writes).is_empty());
 }
 
 #[test]

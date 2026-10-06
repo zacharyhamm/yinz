@@ -1,0 +1,14 @@
+{
+  "provider": "codex",
+  "version": "0.160.1",
+  "width": 67,
+  "height": 17,
+  "cursor": [
+    2,
+    12
+  ],
+  "ansi": "\n\u001b[m  \u001b[38;2;99;168;248m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[22m\u001b[23m>_ \u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[1m\u001b[24m\u001b[22m\u001b[1m\u001b[23mOpenAI Codex\u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[2m\u001b[23m (v0.160.1)\n\u001b[m     \u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[2m\u001b[23m~/yinz/.worktrees/fix-codex-plan-mode-prompt\n\n\u001b[m  \u001b[38;2;99;168;248m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[22m\u001b[23mThis looks like the start of a perfectly reasonable rabbit hole.\n\n\u001b[m  \u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[1m\u001b[24m\u001b[22m\u001b[1m\u001b[23mTip:\u001b[m Use \u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[1m\u001b[24m\u001b[22m\u001b[1m\u001b[23m/skills\u001b[m to list available skills or ask Codex to use\n\u001b[m  one.\n\n\u001b[39m\u001b[49m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[2m\u001b[23m• \u001b[mModel changed to gpt-6-astra high for Plan mode.\n\n\u001b[39m\u001b[48;2;39;41;44m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[22m\u001b[23m                                                                   \n\u001b[39m\u001b[48;2;39;41;44m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[1m\u001b[24m\u001b[22m\u001b[1m\u001b[23m›\u001b[39m\u001b[48;2;39;41;44m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[22m\u001b[23m \u001b[39m\u001b[48;2;39;41;44m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[2m\u001b[23mAsk Codex to do anything\u001b[39m\u001b[48;2;39;41;44m\u001b[29m\u001b[28m\u001b[27m\u001b[25m\u001b[25m\u001b[22m\u001b[24m\u001b[22m\u001b[23m                                         \n\u001b[m              high · ~/yinz/.worktrees/fix-plugin-kit… Plan mode\n\u001b[m  GPT-6-Astra medium · ~/yinz/.worktrees/fix-plugin-kitty-images\n\n\u001b[m\n",
+  "draft": false,
+  "cursor_coordinates": "zero-based content coordinates, excluding pane title",
+  "capture": "Two-row footer from the reported 0.160.1 reproduction, combined with captured styled composer; not a live capture of the transition."
+}
