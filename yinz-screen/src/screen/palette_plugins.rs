@@ -155,7 +155,7 @@ impl CommandPaletteState {
     }
 
     fn sections(&mut self, registry: &Registry) {
-        if self.agents.owns_view(self.widget.view) {
+        if self.agents.owns_view(self.widget.view) || super::notes::owns_view(self.widget.view) {
             return;
         }
         if let Some(nested) = self.plugins.views.get(&self.widget.view) {
@@ -333,10 +333,14 @@ impl Screen {
     }
 
     pub(super) fn refresh_plugin_palette(&mut self, client: ClientId, debounce: bool) {
+        if self.refresh_note_search(client, debounce) {
+            return;
+        }
         self.remove_unavailable_palette_providers();
         let Some(state) = self.command_palettes.get_mut(&client) else {
             return;
         };
+        state.notes.cancel();
         if state.agents.owns_view(state.widget.view) || state.agents.pending() {
             return;
         }
@@ -519,6 +523,42 @@ impl Screen {
 
     pub(crate) fn plugin_palette_instruction(&mut self, instruction: Instruction) -> bool {
         match instruction {
+            Instruction::NoteDiscover {
+                client,
+                token,
+                revision,
+            } => {
+                self.discover_note_search(client, token, revision);
+                true
+            },
+            Instruction::NoteSearch {
+                client,
+                token,
+                revision,
+                reply,
+            } => {
+                self.note_search_reply(client, token, revision, reply);
+                true
+            },
+            Instruction::NoteReady {
+                client,
+                token,
+                revision,
+                path,
+                exit,
+            } => {
+                self.note_editor_ready(client, token, revision, path, exit);
+                true
+            },
+            Instruction::NoteFinished {
+                client,
+                token,
+                revision,
+                result,
+            } => {
+                self.note_editor_finished(client, token, revision, result);
+                true
+            },
             Instruction::AgentReply {
                 client,
                 opening,

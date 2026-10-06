@@ -200,7 +200,9 @@ impl Screen {
                     .or_else(|| self.get_first_client_id());
                 (source, client_id, false)
             },
-            ClientTabIndexOrPaneId::TabIndex(_) | ClientTabIndexOrPaneId::TabIndexNoFocus(_) => {
+            ClientTabIndexOrPaneId::TabIndex(_)
+            | ClientTabIndexOrPaneId::TabIndexNoFocus(_)
+            | ClientTabIndexOrPaneId::TabIndexForClient(_, _) => {
                 return AgentPlacement::unchanged(target);
             },
         };

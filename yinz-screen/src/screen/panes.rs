@@ -334,7 +334,8 @@ impl Screen {
             c.created_tab_id = c.created_tab_id.or(created_tab_id);
             let tab_id = match client_or_tab_index {
                 ClientTabIndexOrPaneId::TabIndex(id)
-                | ClientTabIndexOrPaneId::TabIndexNoFocus(id) => Some(id),
+                | ClientTabIndexOrPaneId::TabIndexNoFocus(id)
+                | ClientTabIndexOrPaneId::TabIndexForClient(id, _) => Some(id),
                 ClientTabIndexOrPaneId::ClientId(id)
                 | ClientTabIndexOrPaneId::ClientIdNoFocus(id) => {
                     self.tab_a_client_is_looking_at(id)
@@ -375,9 +376,16 @@ impl Screen {
                     }
                 },
                 ClientTabIndexOrPaneId::TabIndex(tab_index)
-                | ClientTabIndexOrPaneId::TabIndexNoFocus(tab_index) => {
-                    let should_focus_pane =
-                        matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_));
+                | ClientTabIndexOrPaneId::TabIndexNoFocus(tab_index)
+                | ClientTabIndexOrPaneId::TabIndexForClient(tab_index, _) => {
+                    let requesting_client = match client_or_tab_index {
+                        ClientTabIndexOrPaneId::TabIndexForClient(_, client) => Some(client),
+                        _ => None,
+                    };
+                    let should_focus_pane = requesting_client.map_or_else(
+                        || matches!(client_or_tab_index, ClientTabIndexOrPaneId::TabIndex(_)),
+                        |client| self.active_tab_ids.get(&client) == Some(&tab_index),
+                    );
                     // Some placements (directional split, stacked without a
                     // target pane) need a client_id to know which pane to
                     // split relative to. Only resolve one when required.
@@ -391,7 +399,9 @@ impl Screen {
                             ..
                         }
                     );
-                    let client_id = if needs_client_id {
+                    let client_id = if requesting_client.is_some() {
+                        requesting_client
+                    } else if needs_client_id {
                         self.active_tab_ids
                             .iter()
                             .find(|(_, tid)| **tid == tab_index)

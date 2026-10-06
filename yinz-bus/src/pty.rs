@@ -71,6 +71,7 @@ pub enum ClientTabIndexOrPaneId {
     ClientId(ClientId),
     ClientIdNoFocus(ClientId),
     TabIndex(TabId),
+    TabIndexForClient(TabId, ClientId),
     TabIndexNoFocus(TabId),
     PaneId(PaneId),
     /// Beside `PaneId`, or - when no tab holds it - in the tab `ClientId` is looking at.
@@ -262,6 +263,16 @@ pub enum PtyInstruction {
     /// asked for are resolved and started (or failed), and the pty thread can
     /// finish the job the way it would have had the spawn been local.
     SpawnResolved(PendingSpawn),
+    OpenNoteEditor {
+        path: PathBuf,
+        client: ClientId,
+        tab: TabId,
+        exit: crate::command_palette::NoteEditorCompletion,
+    },
+    NoteEditorExited {
+        pane: PaneId,
+        status: Option<i32>,
+    },
     OpenInPlaceEditor(
         PathBuf,
         Option<usize>,

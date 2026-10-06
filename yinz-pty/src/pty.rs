@@ -558,6 +558,11 @@ fn terminal_quit_callback(
     })
 }
 
+struct NoteEditor {
+    exit: yinz_bus::command_palette::NoteEditorCompletion,
+    pending_error: Option<String>,
+}
+
 pub struct Pty {
     pub(crate) active_panes: HashMap<ClientId, PaneId>,
     pub(crate) bus: Bus<PtyInstruction>,
@@ -598,6 +603,7 @@ pub struct Pty {
     /// Per pane, the rerun off-thread now and the ones waiting behind it.
     reruns: HashMap<TerminalId, RerunState>,
     next_rerun_generation: u64,
+    note_editors: HashMap<TerminalId, NoteEditor>,
 }
 
 pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
@@ -702,6 +708,19 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                         },
                     },
                 )?;
+            },
+            PtyInstruction::OpenNoteEditor {
+                path,
+                client,
+                tab,
+                exit,
+            } => {
+                if let Err(error) = pty.open_note_editor(path, tab, client, exit.clone()) {
+                    let _ = exit.send(Err(format!("Cannot start note editor: {error:#}")));
+                }
+            },
+            PtyInstruction::NoteEditorExited { pane, status } => {
+                pty.note_editor_exited(pane, status);
             },
             PtyInstruction::OpenInPlaceEditor(
                 temp_file,
@@ -1297,6 +1316,7 @@ impl Pty {
             pending_agent_spawns: HashMap::new(),
             reruns: HashMap::new(),
             next_rerun_generation: 0,
+            note_editors: HashMap::new(),
         }
     }
     pub(crate) fn get_default_terminal(
@@ -1444,7 +1464,9 @@ impl Pty {
                 self.fill_cwd(&mut terminal_action, client_id);
                 terminal_action
             },
-            ClientTabIndexOrPaneId::TabIndex(_) | ClientTabIndexOrPaneId::TabIndexNoFocus(_) => {
+            ClientTabIndexOrPaneId::TabIndex(_)
+            | ClientTabIndexOrPaneId::TabIndexNoFocus(_)
+            | ClientTabIndexOrPaneId::TabIndexForClient(_, _) => {
                 terminal_action.unwrap_or_else(|| self.get_default_terminal(None, None))
             },
             ClientTabIndexOrPaneId::PaneId(pane_id)
@@ -1895,6 +1917,103 @@ impl Pty {
 
         let starts_held = false;
         Ok((terminal_id, starts_held))
+    }
+
+    fn note_editor_exited(&mut self, pane: PaneId, status: Option<i32>) {
+        if let PaneId::Terminal(id) = pane {
+            if let Some(editor) = self.note_editors.remove(&id) {
+                self.bus
+                    .senders
+                    .send_to_screen(ScreenInstruction::ClosePane(pane, None, None, status))
+                    .context("closing note editor")
+                    .non_fatal();
+                let result = match editor.pending_error {
+                    Some(error) => Err(error),
+                    None if status == Some(0) => Ok(()),
+                    None => Err(format!("Note editor exited unsuccessfully ({status:?})")),
+                };
+                let _ = editor.exit.send(result);
+            }
+        }
+    }
+
+    fn open_note_editor(
+        &mut self,
+        path: PathBuf,
+        tab: TabId,
+        client: ClientId,
+        exit: yinz_bus::command_palette::NoteEditorCompletion,
+    ) -> Result<()> {
+        // OpenFile always resolves a local editor, even if the source pane is remote.
+        let action = TerminalAction::OpenFile(OpenFilePayload::new(
+            path.clone(),
+            None,
+            path.parent().map(|directory| directory.to_path_buf()),
+        ));
+        let senders = self.bus.senders.clone();
+        // Register before starting the child; even an immediate exit returns through PTY.
+        let callback = Box::new(move |pane, status, _command| {
+            senders
+                .send_to_pty(PtyInstruction::NoteEditorExited { pane, status })
+                .context("reporting note editor exit")
+                .non_fatal();
+        });
+        let (id, reader, child_pid) = self
+            .bus
+            .os_input
+            .as_mut()
+            .context("no OS I/O interface found")?
+            .spawn_terminal(action.clone(), callback, self.default_editor.clone())
+            .context("spawning local note editor")?;
+        self.note_editors.insert(
+            id,
+            NoteEditor {
+                exit,
+                pending_error: None,
+            },
+        );
+        let placement =
+            NewPanePlacement::Overlay(OverlayPlacement::modal(FloatingPaneCoordinates::new(
+                None,
+                Some("15%".into()),
+                Some("120".into()),
+                Some("70%".into()),
+                None,
+                None,
+            )));
+        let placed = self.bus.senders.send_to_screen(ScreenInstruction::NewPane(
+            PaneId::Terminal(id),
+            Some("Project note".into()),
+            None,
+            Some(Run::EditFile(path, None, None)),
+            placement,
+            false,
+            ClientTabIndexOrPaneId::TabIndexForClient(tab, client),
+            None,
+            false,
+        ));
+        if let Err(error) = placed {
+            if let Some(editor) = self.note_editors.get_mut(&id) {
+                editor.pending_error = Some(format!(
+                    "Cannot start note editor: placing note editor: {error:#}"
+                ));
+            }
+            self.id_to_child_pid.extend(child_pid.map(|pid| (id, pid)));
+            self.close_pane(PaneId::Terminal(id))
+                .context("closing unplaced note editor")
+                .non_fatal();
+            // Forced completion waits for process exit independently of the callback.
+            return Ok(());
+        }
+        self.start_spawned_terminal(
+            &action,
+            SpawnedTerminal {
+                terminal_id: id,
+                reader,
+                child_pid,
+            },
+        );
+        Ok(())
     }
 
     fn start_spawned_terminal(
@@ -2849,6 +2968,8 @@ impl Pty {
         let err_context = || format!("failed to close for pane {id:?}");
         match id {
             PaneId::Terminal(id) => {
+                let note_editor = self.note_editors.remove(&id);
+                let child_pid = self.id_to_child_pid.get(&id).copied();
                 self.pending_remote_spawns.remove(&id);
                 if let Some(mut agent) = self.pending_agent_spawns.remove(&id) {
                     if let Some(completion) = agent.completion_tx.as_mut() {
@@ -2875,13 +2996,37 @@ impl Pty {
                 self.forget_terminal_host(id);
                 self.terminal_cmds.remove(&id);
                 self.forget_terminal_foreground(id);
-                self.bus
+                let teardown = self
+                    .bus
                     .os_input
                     .as_ref()
                     .context("no OS I/O interface found")
                     .and_then(|os_input| os_input.clear_terminal_id(id))
-                    .with_context(err_context)
-                    .non_fatal();
+                    .with_context(err_context);
+                if let Some(editor) = note_editor {
+                    let os = self.bus.os_input.as_ref().map(|os| os.box_clone());
+                    async_runtime().spawn_blocking(move || {
+                        let mut error = editor.pending_error.unwrap_or_else(|| {
+                            "Note editor was closed before a successful exit".into()
+                        });
+                        if let Err(teardown_error) = teardown {
+                            error.push_str(&format!("; {teardown_error:#}"));
+                        }
+                        let confirmed = (|| {
+                            let os = os.context("no OS I/O interface found")?;
+                            let pid =
+                                child_pid.context("note editor process identity unavailable")?;
+                            os.wait_for_process_exit(pid, Duration::from_secs(5))
+                                .context("confirming note editor exit")
+                        })();
+                        if let Err(confirmation_error) = confirmed {
+                            error.push_str(&format!("; {confirmation_error:#}"));
+                        }
+                        let _ = editor.exit.send(Err(error));
+                    });
+                } else {
+                    teardown.non_fatal();
+                }
             },
             PaneId::Plugin(pid) => drop(
                 self.bus

@@ -2751,6 +2751,7 @@ impl Tab {
                 start_suppressed,
                 should_focus_pane,
                 overlay,
+                client_id,
                 blocking_notification,
             ),
             NewPanePlacement::InPlace {
@@ -3088,6 +3089,7 @@ impl Tab {
                 start_suppressed,
                 should_focus_pane,
                 placement,
+                None,
                 blocking_notification,
             );
         }
@@ -3132,6 +3134,7 @@ impl Tab {
         start_suppressed: bool,
         should_focus_pane: bool,
         placement: OverlayPlacement,
+        client_id: Option<ClientId>,
         blocking_notification: Option<NotificationEnd>,
     ) -> Result<()> {
         placement.validate().map_err(|error| anyhow!(error))?;
@@ -3150,7 +3153,7 @@ impl Tab {
                 ..Default::default()
             },
             should_focus_pane,
-            None,
+            client_id,
         )
     }
 

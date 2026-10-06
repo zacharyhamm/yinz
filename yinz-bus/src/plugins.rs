@@ -112,6 +112,7 @@ pub enum PluginInstruction {
     InputBarrier(PluginId, NotificationEnd),
     DenoTick(PluginId, ClientId, u64),
     DenoPalette(crate::command_palette::Delivery),
+    PaletteNote(Box<crate::command_palette::NoteRequest>),
     PaletteAgent(Box<crate::command_palette::AgentRequest>),
     DenoEvent(PluginId, ClientId, u64, Event),
     DenoDispose(PluginId, u64),
@@ -377,9 +378,9 @@ impl From<&PluginInstruction> for PluginContext {
         match plugin_instruction {
             PluginInstruction::DataRequest { .. } => PluginContext::Update,
             PluginInstruction::InputBarrier(..) => PluginContext::Update,
-            PluginInstruction::PaletteAgent(..) | PluginInstruction::DenoPalette(..) => {
-                PluginContext::Update
-            },
+            PluginInstruction::PaletteNote(..)
+            | PluginInstruction::PaletteAgent(..)
+            | PluginInstruction::DenoPalette(..) => PluginContext::Update,
             PluginInstruction::DenoTick(..) => PluginContext::Update,
             PluginInstruction::DenoEvent(..) => PluginContext::Update,
             PluginInstruction::DenoDispose(..) => PluginContext::Unload,

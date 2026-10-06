@@ -1092,7 +1092,8 @@ fn internal_tab_closure_waits_for_a_loaded_destination() {
                 NewPanePlacement::Overlay(OverlayPlacement::dismissible(None)),
             ),
         ] {
-            tab.new_pane(id, None, None, false, true, placement, Some(client), None)
+            // Both clients need focus on the overlay before the tiled pane is suppressed.
+            tab.new_pane(id, None, None, false, true, placement, None, None)
                 .unwrap();
         }
         tab.suppress_pane(hidden, None);

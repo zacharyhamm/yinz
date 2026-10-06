@@ -3281,6 +3281,28 @@ impl WasmBridge {
             .unwrap()
             .all_plugin_ids_for_plugin_location(plugin_location, plugin_configuration)
     }
+    pub(crate) fn palette_note(&self, request: yinz_bus::command_palette::NoteRequest) {
+        let data = self.data_access.clone();
+        let senders = self.senders.clone();
+        let generations = self.deno_watch_generations.clone();
+        yinz_bus::global_async_runtime::get_tokio_runtime().spawn_blocking(move || {
+            let editing = matches!(
+                request.action,
+                yinz_bus::command_palette::NoteAction::Open(_)
+            );
+            crate::yinz_exports::palette_notes::handle(request, &senders, &data);
+            if editing {
+                crate::yinz_exports::notify_data_watchers(
+                    data.plugin_data(),
+                    &generations,
+                    &senders,
+                    project_data::store::SHARED,
+                    &std::collections::BTreeSet::from(["note".into()]),
+                );
+            }
+        });
+    }
+
     pub(crate) fn cli_data(&self, request: yinz_types::cli::DataRequest) -> anyhow::Result<String> {
         crate::cli_data::run(
             self.data_access.plugin_data(),

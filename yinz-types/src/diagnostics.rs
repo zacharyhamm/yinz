@@ -384,6 +384,8 @@ pub enum PtyContext {
     WorkflowSignal,
     SpawnTerminal,
     SpawnResolved,
+    OpenNoteEditor,
+    NoteEditorExited,
     OpenInPlaceEditor,
     UpdateActivePane,
     GoToTab,
