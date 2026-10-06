@@ -2948,8 +2948,8 @@ pub fn screen_thread_main(
                     if let Some(client_id) = client_id_to_switch {
                         // Get the position from the ID
                         if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
-                            // switch_active_tab expects 0-based position
-                            screen.switch_active_tab(tab_position, None, true, client_id)?;
+                            // Navigation uses a 0-based display position.
+                            screen.navigate_to_tab(tab_position, None, true, client_id)?;
                             screen.render()?;
 
                             screen

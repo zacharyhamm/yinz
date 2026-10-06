@@ -1186,26 +1186,86 @@ fn failed_pending_destination_does_not_block_internal_tab_closure() {
 
 #[test]
 fn hidden_only_non_last_tab_keeps_its_identity_and_terminal() {
-    let (mut screen, _, _, plugins) = screen_with_plugin_senders_and_clients(
-        &[TabId::new(1), TabId::new(2)],
-        &[crate::ClientId::new(1)],
-    );
-    screen
-        .go_to_tab(
-            yinz_types::internal_ids::TabNumber::new(1),
-            crate::ClientId::new(1),
-        )
-        .unwrap();
-    let id = PaneId::Terminal(crate::TerminalId::new(1));
-    screen
-        .tabs
-        .get_mut(&TabId::new(1))
-        .unwrap()
-        .suppress_pane(id, None);
-    screen.settle_tabs().unwrap();
-    assert!(screen.tabs[&TabId::new(1)].has_pane_with_pid(&id));
-    assert!(requested_tabs(&plugins).is_empty());
-    assert_every_client_has_a_tab(&screen);
+    for mirrored in [false, true] {
+        for route in [
+            "number", "name", "next", "previous", "history", "left", "right", "deferred",
+        ] {
+            let source = TabId::new(1);
+            let destination = TabId::new(2);
+            let client = ClientId::new(1);
+            let other = ClientId::new(2);
+            let (mut screen, _, _, plugins) =
+                screen_with_plugin_senders_and_clients(&[source, destination], &[client, other]);
+            screen.session_is_mirrored = mirrored;
+            screen
+                .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+                .unwrap();
+            let id = PaneId::Terminal(TerminalId::new(1));
+            let tab = screen.tabs.get_mut(&source).unwrap();
+            tab.name = "parked".into();
+            tab.handle_pty_bytes(TerminalId::new(1), b"saved parked output".to_vec())
+                .unwrap();
+            for plugin in [PluginId::new(41), PluginId::new(42)] {
+                let bar = PaneId::Plugin(plugin);
+                tab.new_pane(
+                    bar,
+                    None,
+                    None,
+                    false,
+                    true,
+                    NewPanePlacement::default(),
+                    Some(client),
+                    None,
+                )
+                .unwrap();
+                tab.set_pane_selectable(bar, false);
+            }
+            tab.suppress_pane(id, None);
+            screen.settle_tabs().unwrap();
+            assert_eq!(screen.active_tab_ids[&client], destination);
+            assert!(!screen.tabs[&source].has_selectable_panes());
+            assert!(screen.tabs[&source].has_pane_with_pid(&id));
+            assert!(requested_tabs(&plugins).is_empty());
+            match route {
+                "number" => screen
+                    .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+                    .unwrap(),
+                "name" => assert!(screen.go_to_tab_name("parked".into(), client).unwrap()),
+                "next" => screen.switch_tab_next(None, true, client).unwrap(),
+                "previous" => screen.switch_tab_prev(None, true, client).unwrap(),
+                "history" => screen.toggle_tab(client).unwrap(),
+                "deferred" => screen
+                    .apply_deferred_tab_switches(&mut HashSet::from([(source, client)]))
+                    .unwrap(),
+                "left" => screen
+                    .switch_tab_prev(Some(Direction::Left), true, client)
+                    .unwrap(),
+                "right" => screen
+                    .switch_tab_next(Some(Direction::Right), true, client)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            for _ in 0..3 {
+                screen.settle_tabs().unwrap();
+                assert_eq!(
+                    screen.active_tab_ids[&client], source,
+                    "{route}, mirrored={mirrored}"
+                );
+                assert_eq!(screen.tabs[&source].get_active_pane_id(client), Some(id));
+                assert!(screen.tabs[&source].are_floating_panes_visible());
+            }
+            assert_eq!(
+                screen.active_tab_ids[&other],
+                if mirrored { source } else { destination }
+            );
+            assert!(screen.tabs[&source]
+                .get_pane_with_id(id)
+                .unwrap()
+                .dump_screen(true, None)
+                .contains("saved parked output"));
+            assert_every_client_has_a_tab(&screen);
+        }
+    }
 }
 
 #[test]
@@ -2029,4 +2089,285 @@ fn background_tab_overlays_skip_pending_destinations() {
     screen.close_tab_by_id(TabId::new(1)).unwrap();
     assert!(screen.tabs[&TabId::new(3)].has_pane_with_pid(&id));
     assert!(!screen.tabs[&TabId::new(2)].has_pane_with_pid(&id));
+}
+
+#[test]
+fn navigating_by_stable_id_recovers_suppressed_terminal_through_screen_thread() {
+    let size = Size { cols: 80, rows: 24 };
+    let mut mock = MockScreen::new(size);
+    let client = mock.main_client_id;
+    let screen_thread = mock.run(None, vec![]);
+    let renders = Watched::new(vec![]);
+    let receiver = mock.server_receiver.take().unwrap();
+    let server_thread = log_actions_in_thread!(renders, ServerInstruction::KillSession, receiver);
+    let pty = mock.pty_receiver.take().unwrap();
+    let writer = mock.pty_writer_receiver.take().unwrap();
+    for instruction in [
+        ScreenInstruction::PtyBytes(TerminalId::new(0), b"parked transcript".to_vec()),
+        ScreenInstruction::NewTab(
+            None,
+            None,
+            Some(TiledPaneLayout::default()),
+            vec![],
+            None,
+            (Some(vec![]), Some(vec![])),
+            None,
+            false,
+            true,
+            client,
+            None,
+        ),
+        ScreenInstruction::ApplyLayout(
+            TiledPaneLayout::default(),
+            vec![],
+            vec![(TerminalId::new(9), None)],
+            vec![],
+            vec![],
+            HashMap::new(),
+            TabId::new(1),
+            true,
+            client,
+            None,
+            None,
+        ),
+        ScreenInstruction::SuppressPane(PaneId::Terminal(TerminalId::new(0)), client),
+        ScreenInstruction::PtyBytes(TerminalId::new(9), b"other tab".to_vec()),
+    ] {
+        mock.to_screen.send(instruction).unwrap();
+    }
+    wait_for_settled_render(&renders, size, "hidden work stays hidden", |frame| {
+        frame.contains("other tab") && !frame.contains("parked transcript")
+    });
+    let small_size = Size { cols: 80, rows: 4 };
+    for instruction in [
+        ScreenInstruction::RecomputeTabSize(client, small_size),
+        ScreenInstruction::GoToTabWithId(TabId::new(0), Some(client), None),
+        ScreenInstruction::PtyBytes(TerminalId::new(9), b" still active".to_vec()),
+    ] {
+        mock.to_screen.send(instruction).unwrap();
+    }
+    wait_for_settled_render(
+        &renders,
+        small_size,
+        "failed recovery keeps the screen running on the current tab",
+        |frame| frame.contains("other tab still active") && !frame.contains("parked transcript"),
+    );
+    mock.to_screen
+        .send(ScreenInstruction::RecomputeTabSize(client, size))
+        .unwrap();
+    mock.to_screen
+        .send(ScreenInstruction::GoToTabWithId(
+            TabId::new(0),
+            Some(client),
+            None,
+        ))
+        .unwrap();
+    // Output received after navigation is rendered only if post-instruction settlement kept us here.
+    mock.to_screen
+        .send(ScreenInstruction::PtyBytes(
+            TerminalId::new(0),
+            b" recovered".to_vec(),
+        ))
+        .unwrap();
+    wait_for_settled_render(
+        &renders,
+        size,
+        "navigation retains the recovered tab",
+        |frame| frame.contains("parked transcript recovered") && !frame.contains("other tab"),
+    );
+    mock.teardown(vec![server_thread, screen_thread]);
+    assert!(pty.try_iter().all(|(instruction, _)| !matches!(
+        instruction,
+        PtyInstruction::ClosePane(..)
+            | PtyInstruction::SpawnTerminal(..)
+            | PtyInstruction::ReRunCommandInPane(..)
+    )));
+    assert!(writer
+        .try_iter()
+        .all(|(instruction, _)| !matches!(instruction, PtyWriteInstruction::Write(..))));
+}
+
+#[test]
+fn navigation_recovers_parked_work_after_visible_pane_closes() {
+    for replace_existing in [false, true] {
+        let source = TabId::new(1);
+        let client = ClientId::new(1);
+        let (mut screen, _, _, _) =
+            screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
+        screen
+            .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+            .unwrap();
+        let original = PaneId::Terminal(TerminalId::new(1));
+        let added = PaneId::Terminal(TerminalId::new(3));
+        let tab = screen.tabs.get_mut(&source).unwrap();
+        tab.new_pane(
+            added,
+            None,
+            None,
+            !replace_existing,
+            false,
+            NewPanePlacement::default(),
+            Some(client),
+            None,
+        )
+        .unwrap();
+        let (hidden, visible) = if replace_existing {
+            let replacement = tab.extract_pane(added, true).unwrap();
+            tab.suppress_pane_and_replace_with_other_pane(original, replacement, None);
+            (original, added)
+        } else {
+            (added, original)
+        };
+        screen.settle_tabs().unwrap();
+        assert!(
+            screen.tabs[&source]
+                .get_pane_info(hidden)
+                .unwrap()
+                .is_suppressed
+        );
+        screen
+            .tabs
+            .get_mut(&source)
+            .unwrap()
+            .close_pane(visible, false, None);
+        screen.settle_tabs().unwrap();
+        assert_ne!(screen.active_tab_ids[&client], source);
+        screen
+            .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+            .unwrap();
+        screen.settle_tabs().unwrap();
+        assert_eq!(screen.active_tab_ids[&client], source);
+        assert_eq!(
+            screen.tabs[&source].get_active_pane_id(client),
+            Some(hidden)
+        );
+    }
+}
+
+#[test]
+fn navigation_with_no_floating_room_preserves_hidden_terminal_for_retry() {
+    let source = TabId::new(1);
+    let client = ClientId::new(1);
+    let hidden = PaneId::Terminal(TerminalId::new(1));
+    let (mut screen, _, _, _) =
+        screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
+    let tab = screen.tabs.get_mut(&source).unwrap();
+    tab.suppress_pane(hidden, None);
+    tab.resize_whole_tab(Size { cols: 1, rows: 1 }).unwrap();
+    screen.settle_tabs().unwrap();
+    screen
+        .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+        .unwrap();
+    assert_eq!(screen.active_tab_ids[&client], TabId::new(2));
+    assert!(
+        screen.tabs[&source]
+            .get_pane_info(hidden)
+            .unwrap()
+            .is_suppressed
+    );
+    screen
+        .tabs
+        .get_mut(&source)
+        .unwrap()
+        .resize_whole_tab(Size { cols: 80, rows: 24 })
+        .unwrap();
+    screen
+        .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.active_tab_ids[&client], source);
+    assert_eq!(
+        screen.tabs[&source].get_active_pane_id(client),
+        Some(hidden)
+    );
+}
+
+#[test]
+fn navigating_to_the_current_tab_recovers_its_hidden_terminal() {
+    let source = TabId::new(1);
+    let client = ClientId::new(1);
+    let hidden = PaneId::Terminal(TerminalId::new(1));
+    let (mut screen, _, _, _) = screen_with_plugin_senders_and_clients(&[source], &[client]);
+    screen
+        .tabs
+        .get_mut(&source)
+        .unwrap()
+        .suppress_pane(hidden, None);
+    screen
+        .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+        .unwrap();
+    assert_eq!(
+        screen.tabs[&source].get_active_pane_id(client),
+        Some(hidden)
+    );
+    assert!(screen.tabs[&source].are_floating_panes_visible());
+}
+
+#[test]
+fn explicit_pane_focus_does_not_recover_an_unrequested_terminal() {
+    let client = ClientId::new(1);
+    let source = TabId::new(1);
+    let (mut screen, _, _, _) =
+        screen_with_plugin_senders_and_clients(&[source, TabId::new(2)], &[client]);
+    let requested = PaneId::Terminal(TerminalId::new(9));
+    let other = PaneId::Terminal(TerminalId::new(1));
+    let tab = screen.tabs.get_mut(&source).unwrap();
+    tab.new_pane(
+        requested,
+        None,
+        None,
+        true,
+        false,
+        NewPanePlacement::default(),
+        Some(client),
+        None,
+    )
+    .unwrap();
+    tab.suppress_pane(other, None);
+    screen
+        .focus_pane_with_id(requested, true, false, client)
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.active_tab_ids[&client], source);
+    assert_eq!(
+        screen.tabs[&source].get_active_pane_id(client),
+        Some(requested)
+    );
+    assert!(
+        screen.tabs[&source]
+            .get_pane_info(other)
+            .unwrap()
+            .is_suppressed
+    );
+}
+
+#[test]
+fn moving_a_pane_to_a_hidden_only_tab_does_not_recover_parked_work() {
+    let client = ClientId::new(1);
+    let source = TabId::new(1);
+    let destination = TabId::new(2);
+    let (mut screen, _, _, _) =
+        screen_with_plugin_senders_and_clients(&[source, destination], &[client]);
+    screen
+        .go_to_tab(yinz_types::internal_ids::TabNumber::new(1), client)
+        .unwrap();
+    let hidden = PaneId::Terminal(TerminalId::new(2));
+    screen
+        .tabs
+        .get_mut(&destination)
+        .unwrap()
+        .suppress_pane(hidden, None);
+    screen
+        .break_pane_to_new_tab(Direction::Right, client)
+        .unwrap();
+    screen.settle_tabs().unwrap();
+    assert_eq!(screen.active_tab_ids[&client], destination);
+    assert!(
+        screen.tabs[&destination]
+            .get_pane_info(hidden)
+            .unwrap()
+            .is_suppressed
+    );
+    assert!(screen.tabs[&destination]
+        .has_non_suppressed_pane_with_pid(&PaneId::Terminal(TerminalId::new(1))));
 }

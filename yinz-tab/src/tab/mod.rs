@@ -6517,6 +6517,42 @@ impl Tab {
             .count();
         tiled_panes_count + floating_panes_count + hidden_stack_list_members_count + 1
     }
+    /// Recover one parked terminal only when explicit tab navigation has no selectable target.
+    pub fn recover_suppressed_terminal_for_navigation(
+        &mut self,
+        client_id: ClientId,
+    ) -> Result<bool> {
+        if self.is_pending || self.has_selectable_panes() {
+            return Ok(false);
+        }
+        let pane_id = self
+            .suppressed_panes
+            .iter()
+            .filter_map(|(id, suppressed)| {
+                let pane = &suppressed.pane;
+                (matches!(id, PaneId::Terminal(_))
+                    && suppressed.restored_by.is_none()
+                    && pane.selectable()
+                    && !pane.is_held()
+                    && !pane.exited()
+                    && !run_requests_overlay(pane.invoked_with())
+                    && !self.pane_is_stack_list_member(id)
+                    && self.pane_tabs_of(*id).is_none())
+                .then_some(*id)
+            })
+            .min();
+        let Some(pane_id) = pane_id else {
+            return Ok(false);
+        };
+        // Focus takes ownership out of suppression, so establish capacity before calling it.
+        self.floating_panes
+            .find_room_for_new_pane()
+            .context("no room to recover hidden terminal; leaving it suppressed")?;
+        self.focus_pane_with_id(pane_id, true, false, client_id)
+            .context("failed to focus recovered terminal")?;
+        Ok(true)
+    }
+
     pub fn has_selectable_panes(&self) -> bool {
         let selectable_tiled_panes = self.tiled_panes.get_panes().filter(|(_, p)| p.selectable());
         let selectable_floating_panes = self
@@ -9529,8 +9565,9 @@ impl Tab {
                 pane.set_content_offset(Offset::frame(1)); // floating panes always have a frame
                 pane.render_full_viewport(); // to make sure the frame is re-rendered
             }
-            resize_pty!(pane, self.os_api, self.senders, self.character_cell_size)
-                .with_context(err_context)?;
+            let resize_result =
+                resize_pty!(pane, self.os_api, self.senders, self.character_cell_size);
+            // Retain ownership even if the PTY writer has disconnected.
             self.floating_panes.add_pane(pane_id, pane);
             if should_focus_new_pane {
                 // an overlay outranks the floating layer in `get_active_pane_id`, so unless a
@@ -9550,6 +9587,7 @@ impl Tab {
                     },
                 }
             }
+            resize_result.with_context(err_context)?;
         }
         if self.auto_layout && !self.swap_layouts.is_floating_damaged() {
             // only do this if we're already in this layout, otherwise it might be
@@ -9709,9 +9747,8 @@ impl Tab {
         if self.has_pane_with_pid(&pane_id) {
             AcceptedPane::Accepted
         } else {
-            // `add_floating_pane` also drops the pane when `resize_pty!` fails, which
-            // only happens when the pty thread is already gone. The box is consumed, so
-            // it cannot be handed back - say so rather than claim the pane moved.
+            // A failed insertion consumed the box, so it cannot be handed back.
+            // Say so rather than claim the pane moved.
             AcceptedPane::LostInAdd
         }
     }

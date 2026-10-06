@@ -2964,7 +2964,7 @@ impl Screen {
             .context("failed to toggle tabs")?;
         if let Some(t) = tab {
             let position = t.position;
-            self.switch_active_tab(position, None, true, client_id)
+            self.navigate_to_tab(position, None, true, client_id)
                 .context("failed to toggle tabs")?;
         };
 
