@@ -53,7 +53,7 @@ pub enum AgentSource {
     /// The pane was opened as an agent pane, and nothing has been heard from the agent since:
     /// the state is what the session can see (running, exited), not what the agent says.
     Spawned,
-    /// A person named the pane's agent by hand (hocus's `agent_register`), and nothing has been
+    /// A person named the pane's agent by hand (agent's `agent_register`), and nothing has been
     /// heard from the agent itself: the kind is theirs, the state is a placeholder.
     Registered,
     /// The agent itself said so — its hooks through `yinz action agent-report`, or a plugin
@@ -140,8 +140,8 @@ impl AgentSource {
     }
 }
 
-/// Everything it takes to start a coding agent, in terms every caller has: hocus's
-/// `agent_spawn` tool, the `hocus-new-agent` modal, and a TypeScript plugin's `yinz.agent.spawn`.
+/// Everything it takes to start a coding agent, in terms every caller has: agent's
+/// `agent_spawn` tool, the `new-agent` modal, and a TypeScript plugin's `yinz.agent.spawn`.
 ///
 /// Every field is optional because every caller has partial inputs - a form with blank
 /// fields, a tool call with omitted keys, a TypeScript object naming two of them - and the defaults

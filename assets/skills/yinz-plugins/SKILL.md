@@ -31,7 +31,7 @@ The batch is checked and formatted before writing. Missing or ambiguous matches,
 compiler errors, and stale source during checking leave the original intact.
 
 For background plugins, use `plugins reload NAME --headless`; this requires
-`hocus-agentd`. Its JSON result reports dispatch. Inspect logs and exercise the
+`agent-service`. Its JSON result reports dispatch. Inspect logs and exercise the
 plugin to verify that loading completed. `plugins check --json` emits structured
 diagnostics even on failure; always check process status. Use `plugins test --help`
 for unit/integration selection and bounded timeouts. A plugin reload can discard

@@ -25,6 +25,7 @@ const MIGRATIONS: &[Step] = &[
     create_registry,
     add_rev_to_every_entity,
     separate_private_namespaces,
+    rename_builtin_project_entities,
 ];
 
 /// The key `store_meta` holds the schema version under.
@@ -125,6 +126,80 @@ fn separate_private_namespaces(exec: &mut dyn Executor) -> Result<(), DataError>
             &params.into_values(),
         )
         .context("failed to separate a private plugin namespace")?;
+    }
+    Ok(())
+}
+
+/// 4: rename builtin metadata without touching entity tables or their rows.
+/// All servers sharing this database must be stopped before upgrading.
+fn rename_builtin_project_entities(exec: &mut dyn Executor) -> Result<(), DataError> {
+    let rows = query_all(
+        exec,
+        "SELECT id, namespace, owner_plugin, entity FROM store_entities",
+        &[],
+        &[
+            AttrKind::Int,
+            AttrKind::Text,
+            AttrKind::Text,
+            AttrKind::Text,
+        ],
+    )?;
+    let renames = [
+        ("yinz:hocus", "yinz:retired-chat"),
+        ("yinz:hocus-agents", "yinz:agents"),
+        ("yinz:hocus-agentd", "yinz:agent-service"),
+        ("yinz:hocus-todos", "yinz:todos"),
+        ("yinz:hocus-vms", "yinz:vms"),
+        ("yinz:hocus-swamp", "yinz:swamp-issues"),
+        ("yinz:hocus-new-agent", "yinz:new-agent"),
+        ("yinz:hocus-store", "yinz:project-store"),
+        ("yinz:hocus-proto", "yinz:agent-proto"),
+        ("yinz:hocus-data", "yinz:project-data"),
+    ];
+    let mut destinations = std::collections::BTreeSet::new();
+    let mut updates = Vec::new();
+    for row in rows {
+        let [DataValue::Int(id), DataValue::Text(namespace), DataValue::Text(owner), DataValue::Text(name)] =
+            row.as_slice()
+        else {
+            return Err(DataError::Storage(
+                "invalid entity ownership in registry".into(),
+            ));
+        };
+        let mut destination = namespace.clone();
+        if namespace == "shared:hocus" {
+            destination = if name == "job" {
+                "plugin:yinz:retired-chat"
+            } else {
+                "shared:yinz"
+            }
+            .into();
+        }
+        let mut new_owner = owner.clone();
+        for (old, new) in renames {
+            if owner == old {
+                new_owner = new.into();
+            }
+            if namespace == &super::private_namespace(old) {
+                destination = super::private_namespace(new);
+            }
+        }
+        if !destinations.insert((destination.clone(), name.clone())) {
+            return Err(DataError::Storage(format!(
+                "builtin rename collides with entity `{name}` in `{destination}`"
+            )));
+        }
+        if destination != *namespace || new_owner != *owner {
+            updates.push((*id, destination, new_owner));
+        }
+    }
+    for (id, namespace, owner) in updates {
+        let mut params = super::dialect::Params::new(exec.dialect());
+        let namespace = params.bind(DataValue::Text(namespace));
+        let owner = params.bind(DataValue::Text(owner));
+        let id = params.bind(DataValue::Int(id));
+        exec.execute(&format!("UPDATE store_entities SET namespace = {namespace}, owner_plugin = {owner} WHERE id = {id}"), &params.into_values())
+            .context("failed to rename builtin entity metadata")?;
     }
     Ok(())
 }

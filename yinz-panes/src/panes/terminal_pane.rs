@@ -25,7 +25,7 @@ use yinz_runtime::shared::make_terminal_title;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 use yinz_types::animation::Easing;
 use yinz_types::data::PaneContents;
-use yinz_types::data::HOCUS_AGENT_PANE_CONTEXT;
+use yinz_types::data::AGENT_PANE_CONTEXT;
 use yinz_types::input::command::RunCommand;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::SessionName;
@@ -122,7 +122,7 @@ pub struct TerminalPane {
     /// A decoration composed in front of the title, whatever the title is.
     ///
     /// Deliberately not `pane_name`: that slot has three writers already (the
-    /// user's rename, the pane's own OSC title, and hocus-agentd's idle
+    /// user's rename, the pane's own OSC title, and agent-service's idle
     /// summary), so anything put there is erased by the next one. A pane's
     /// checkout is a fact about the pane rather than a name for it, and the
     /// remote host beside this field is the same kind of fact.
@@ -1758,7 +1758,7 @@ fn agent_from_run(invoked_with: Option<&Run>) -> Option<AgentInfo> {
         return None;
     };
     let kind = match &run_command.originating_plugin {
-        Some(plugin) => match plugin.context.get(HOCUS_AGENT_PANE_CONTEXT)?.trim() {
+        Some(plugin) => match plugin.context.get(AGENT_PANE_CONTEXT)?.trim() {
             "" | "true" => {
                 yinz_types::agent::agent_kind_of(&run_command.command, &run_command.args)?
             },
@@ -1839,7 +1839,7 @@ impl TerminalPane {
     /// The frame's title: the pane's id, then [`Pane::display_title`].
     ///
     /// The id leads because it is how the pane is addressed from outside — a
-    /// `--pane-id` argument, hocus's agent list, a line in the log — and nothing
+    /// `--pane-id` argument, agent's agent list, a line in the log — and nothing
     /// else on screen says what it is. Bracketed so it reads as a label rather
     /// than as the first word of the title.
     ///

@@ -44,7 +44,7 @@ fn keybind_pipe_preserves_fields_in_actions_and_rebound_keys() {
             name: Some("message".into()),
             payload: Some("quotes `and`\nnewlines".into()),
             args: args.clone(),
-            plugin: Some("yinz:hocus".into()),
+            plugin: Some("yinz:agents".into()),
             plugin_id: Some(PluginId::new(u32::MAX)),
             configuration: args,
             launch_new: true,

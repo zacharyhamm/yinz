@@ -20,20 +20,20 @@ fn repository() -> (tempfile::TempDir, DataAccess) {
         ],
     );
     let data = DataAccess::sqlite(&temp.path().join("data"));
-    for definition in hocus_data::store::shared_defs() {
+    for definition in project_data::store::shared_defs() {
         data.plugin_data()
-            .define_entity(hocus_data::store::SHARED, "test", &definition, false)
+            .define_entity(project_data::store::SHARED, "test", &definition, false)
             .unwrap();
     }
     let mut project =
-        hocus_data::projects::validate("project", temp.path().to_str().unwrap()).unwrap();
+        project_data::projects::validate("project", temp.path().to_str().unwrap()).unwrap();
     project.remote = Some("git@example.com:team/repository.git".into());
     project.worktree_dir = Some("custom-checkouts".into());
     project.firecracker_image = Some("rust-dev".into());
     data.plugin_data()
         .apply(
-            hocus_data::store::SHARED,
-            &[hocus_data::projects::to_mutation(&project)],
+            project_data::store::SHARED,
+            &[project_data::projects::to_mutation(&project)],
         )
         .unwrap();
     (temp, data)

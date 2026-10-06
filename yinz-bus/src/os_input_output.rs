@@ -318,7 +318,7 @@ pub trait ServerOsApi: Send + Sync {
     }
     /// What git last said about a remote pane's working directory, unparsed.
     ///
-    /// Raw on purpose: `hocus-agentd`'s `poll::repository` already turns exactly
+    /// Raw on purpose: `agent-service`'s `poll::repository` already turns exactly
     /// this into a checkout identity, including the awkward part where a
     /// repository with no commits writes its identity to stdout and *then* exits
     /// 128. Parsing here would duplicate that and drift from it.

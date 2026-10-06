@@ -183,7 +183,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-tile",
             "yinz-tile-markdown",
             "yinz-test-support",
-            "hocus-data",
+            "project-data",
         ],
     ),
     (
@@ -218,7 +218,7 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-test-support",
         ],
     ),
-    ("hocus-data", &["yinz-tile", "yinz-storage"]),
+    ("project-data", &["yinz-tile", "yinz-storage"]),
 ];
 
 /// Edges `LIBRARY_DEPENDENCIES` allows only as dev-dependencies. The client/server transport and
@@ -258,8 +258,8 @@ const TEST_ONLY_FEATURES: &[&str] = &["test-support"];
 
 /// Crates that must build no JavaScript or Wasm engine and nothing that links one.
 /// `yinz-plugin-authoring` reaches V8 and SWC only through the compilation worker subprocess,
-/// and Hocus's native tests check plugin sources through it without waiting for the plugin host.
-const ENGINE_FREE: &[&str] = &["yinz-plugin-authoring", "hocus"];
+/// and Agent's native tests check plugin sources through it without waiting for the plugin host.
+const ENGINE_FREE: &[&str] = &["yinz-plugin-authoring"];
 const ENGINES: &[&str] = &[
     "deno_core",
     "deno_ast",
@@ -414,9 +414,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Every library with all its allowed edges, and Hocus with its authoring dev-dependency.
+    /// Every library with all its allowed edges, and Agent with its authoring dev-dependency.
     fn allowed_workspace() -> Value {
-        let mut metadata = json!({
+        json!({
             "packages": LIBRARY_DEPENDENCIES.iter().map(|(name, allowed)| json!({
                 "id": name, "name": name,
                 "dependencies": allowed.iter().map(|target| {
@@ -427,16 +427,7 @@ mod tests {
                 }).collect::<Vec<_>>()
             })).collect::<Vec<_>>(),
             "workspace_members": LIBRARY_DEPENDENCIES.iter().map(|(name, _)| name).collect::<Vec<_>>()
-        });
-        metadata["packages"].as_array_mut().unwrap().push(json!({
-            "id": "hocus", "name": "hocus",
-            "dependencies": [{"name": "yinz-plugin-authoring", "kind": "dev", "target": null}]
-        }));
-        metadata["workspace_members"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("hocus"));
-        metadata
+        })
     }
 
     #[test]
@@ -490,7 +481,7 @@ mod tests {
             ("yinz-routing", "yinz-plugin-host"),
             ("yinz-routing", "yinz-server"),
             ("yinz-routing", "yinz-panes"),
-            // Authoring reads its two constants from the runtime so Hocus's native tests do not
+            // Authoring reads its two constants from the runtime so Agent's native tests do not
             // build configuration.
             ("yinz-plugin-authoring", "yinz-config"),
         ] {
@@ -602,8 +593,6 @@ mod tests {
         let allowed = allowed_workspace();
         const AUTHORING: &str = "yinz-plugin-authoring";
         for (source, destination, kind, rejected_for) in [
-            ("hocus", "yinz-plugin-host", "dev", Some("hocus")),
-            ("hocus", "deno_core", "build", Some("hocus")),
             (AUTHORING, "wasmi", "dev", Some(AUTHORING)),
             (AUTHORING, "v8", "normal", Some(AUTHORING)),
             (AUTHORING, "wasmi_wasi", "normal", Some(AUTHORING)),

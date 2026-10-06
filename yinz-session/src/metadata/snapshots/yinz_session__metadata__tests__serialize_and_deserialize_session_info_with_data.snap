@@ -65,7 +65,7 @@ panes {
         pane_content_columns 21
         cursor_coordinates_in_pane 0 0
         terminal_command "foo"
-        cwd "/work/hocus"
+        cwd "/work/agent"
         is_selectable true
         tab_position 0
     }

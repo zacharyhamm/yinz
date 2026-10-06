@@ -1,5 +1,5 @@
 //! Naming a plugin in the user's plugin folder, for everything that writes one: `yinz plugins
-//! write`, and hocus's `plugin_write`, which spells the same rules in wasm-flavoured paths.
+//! write`, and agent's `plugin_write`, which spells the same rules in wasm-flavoured paths.
 //!
 //! A name is `keys` or `folder/module` - a file, or one folder deep for a module a plugin
 //! imports - and defaults to `<dir>/<name>.ts`. The CLI also accepts explicit JS/TS

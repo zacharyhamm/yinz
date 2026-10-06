@@ -22,7 +22,7 @@ fn cell_width(text: &str) -> usize {
     text.chars().map(|ch| ch.width().unwrap_or(0)).sum()
 }
 
-/// Hocus's window: grow rightward then leftward around `keep`, reserving overflow arrows.
+/// Agent's window: grow rightward then leftward around `keep`, reserving overflow arrows.
 pub fn overflow(
     labels: &[String],
     width: usize,

@@ -898,7 +898,7 @@ fn duplicate_agent_has_one_instance_across_client_attachments() {
     test.bridge.add_client(first).unwrap();
     test.bridge.add_client(ClientId::new(2)).unwrap();
     let mut run = RunPlugin {
-        location: RunPluginLocation::Yinz(PluginTag::new("hocus-new-agent")),
+        location: RunPluginLocation::Yinz(PluginTag::new("new-agent")),
         ..Default::default()
     };
     run.configuration.insert("duplicate_focused", "true");

@@ -9,7 +9,7 @@ fn builtin_provider_metadata_comes_from_typescript() {
     assert!(definition.hooks[0]
         .content
         .contains("JSON.stringify(toHookEvent(payload))"));
-    assert_eq!(definition.hooks[0].path, "opencode/plugin/hocus.js");
+    assert_eq!(definition.hooks[0].path, "opencode/plugin/yinz.js");
 }
 
 #[test]

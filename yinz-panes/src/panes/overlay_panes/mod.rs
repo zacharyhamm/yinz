@@ -393,7 +393,7 @@ impl OverlayPanes {
         let fullscreen = self.panes[&id].fullscreen;
         // The keyboard travels only with a client still on this tab. One that has already
         // switched away left its entry behind - leaving a tab does not clear it - and carrying
-        // that would take the keys back from the tab the client went to: hocus carries its panel
+        // that would take the keys back from the tab the client went to: agent carries its panel
         // after a tab switch or `Ctrl t n` (`follow_tab`), and it lands drawn but unfocused, so
         // the new tab's pane keeps them. A break or a tab close done while the client is still
         // here keeps its focus, and an explicit focus once the container lands wins either way.
@@ -880,7 +880,7 @@ impl OverlayPanes {
     }
     /// `client_id` asked for `pane_id` while a modal holds its keyboard. The modal keeps the
     /// keyboard (`may_be_focused`), but the named pane is where the user now means to be, so it
-    /// is where the modal hands the keyboard when it goes: `hocus-new-agent` names the agent it
+    /// is where the modal hands the keyboard when it goes: `new-agent` names the agent it
     /// started and then closes itself. `pane_id` is one of ours or a pane on the layers beneath;
     /// a modal named is focused in its own right and changes nothing here.
     pub fn return_from_modal_to(&mut self, client_id: ClientId, pane_id: PaneId) {
@@ -1657,7 +1657,7 @@ impl OverlayPanes {
                 continue;
             }
             let eligible = enabled && overlay.framed()
-                && overlay.children.as_slice().iter().any(|(_, pane)| pane.invoked_with().as_ref().and_then(|run| run.get_run_plugin()).is_some_and(|plugin| matches!(plugin.location, yinz_types::input::layout::RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "hocus" | "hocus-agents"))));
+                && overlay.children.as_slice().iter().any(|(_, pane)| pane.invoked_with().as_ref().and_then(|run| run.get_run_plugin()).is_some_and(|plugin| matches!(plugin.location, yinz_types::input::layout::RunPluginLocation::Yinz(tag) if matches!(tag.to_string().as_str(), "agents"))));
             if !eligible {
                 overlay.carry.opening_started = None;
             } else if !overlay.carry.opening_seen {

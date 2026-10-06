@@ -667,7 +667,7 @@ pub enum InputMode {
     /// `Tmux` mode allows for basic tmux keybindings functionality
     #[serde(alias = "tmux")]
     Tmux,
-    /// `Agent` mode gathers the hocus agent actions behind a single leader.
+    /// `Agent` mode gathers coding-agent actions behind a single leader.
     #[serde(alias = "agent")]
     Agent,
     /// `Select` mode extends a text selection in the focused pane.
@@ -1682,7 +1682,7 @@ pub enum GetPaneCwdResponse {
 
 /// What Git said about a remote pane's working directory, unparsed.
 ///
-/// Raw on purpose. `hocus-agentd`'s `poll::repository` already turns exactly
+/// Raw on purpose. `agent-service`'s `poll::repository` already turns exactly
 /// these three things into a checkout identity, including the awkward parts — a
 /// repository with no commits writes its identity to stdout and *then* exits
 /// 128, so the exit code cannot gate the parse. Shipping the bytes means that
@@ -2463,8 +2463,8 @@ pub struct OriginatingPlugin {
     pub context: Context,
 }
 
-/// Marks command panes opened by the Hocus new/duplicate agent actions.
-pub const HOCUS_AGENT_PANE_CONTEXT: &str = "hocus_agent_pane";
+/// Marks command panes opened by the new/duplicate agent actions.
+pub const AGENT_PANE_CONTEXT: &str = "agent_pane";
 
 impl OriginatingPlugin {
     pub fn new(
@@ -2495,7 +2495,7 @@ pub enum OverlayKind {
     Dismissible,
     /// Closes only on Esc, on submit, or on `Event::Visible(false)`. It has no way to learn that
     /// it lost focus, so taking focus from it strands it on screen while the keyboard goes
-    /// somewhere else - `hocus-new-agent`, `quit-confirmation`.
+    /// somewhere else - `new-agent`, `quit-confirmation`.
     Modal,
 }
 
@@ -3396,8 +3396,8 @@ pub enum PluginCommand {
         source: String,
         expected: Option<String>,
     },
-    /// Start a coding agent in a command pane near this plugin, the way hocus's `agent_spawn`
-    /// and the `hocus-new-agent` modal do: plan its argv with `agent::launch::plan` (per-kind
+    /// Start a coding agent in a command pane near this plugin, the way the CLI
+    /// and the `new-agent` modal do: plan its argv with `agent::launch::plan` (per-kind
     /// flags, permission mode, resume, the inline Claude Code hooks), make the branch or
     /// worktree `spec` asks for, open the pane there and record it as an agent pane
     /// (`AgentSource::Spawned`). Answers with the pane id, or the error text.
@@ -3437,9 +3437,7 @@ pub enum PluginCommand {
     /// plugin last said. `guard` is whether closing the session's *last* pane should raise that
     /// confirmation instead of ending the session there and then.
     ///
-    /// The two are independent: a plugin may have something worth saying about a quit without
-    /// wanting to stand in the way of one - hocus with three settled conversations open says so
-    /// and lets the quit through, and only guards while a reply or a tool is still outstanding.
+    /// The two are independent: a plugin can report unfinished work without blocking a quit.
     ///
     /// Held per plugin and dropped when its pane closes, so a plugin that goes away cannot leave
     /// a guard behind that nothing can lift.
@@ -3453,7 +3451,7 @@ pub enum PluginCommand {
     ReloadPluginByUrl(String),
     /// The last `lines` lines of yinz's own log about the plugin `name`: what its
     /// `yinz.log`/`console` wrote, tagged `[deno:<file>]`, and any loader error naming its file.
-    /// `name` is a plugin name as `plugin_write` spells it (`keys`, `hocus/weather`), resolved in
+    /// `name` is a plugin name as `plugin_write` spells it (`keys`, `agent/weather`), resolved in
     /// the user's plugin folder the way `yinz plugins log` resolves it, or a builtin's tag.
     ///
     /// Answers synchronously with the lines, or the reason there are none. The log file is

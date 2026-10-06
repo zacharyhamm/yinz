@@ -242,60 +242,6 @@ fn deno_widget_cursors_belong_only_to_accepted_client_frames() {
 }
 
 #[test]
-fn deno_hocus_registration_replacement_rpc_provenance_and_async_clients() {
-    let mut runtime = sdk();
-    run(&mut runtime,r#"
-        globalThis.pipeCount = 0;
-        globalThis.finishTool = null;
-        bind({load() {
-          check(yinz.hocus.launch().namespace === 'weather');
-          yinz.hocus.tools({forecast:{handler: async (args,call) => {
-            await new Promise(resolve => { finishTool = resolve; });
-            return {client:yinz.getPluginIds().client_id,source:call.source.Plugin,city:args.city};
-          }}, failure:{handler() {throw Error('tool failed');}}});
-        },pipe() {pipeCount++;}});
-        bridge('load',{hocus_extension_name:'weather',hocus_extension_path:'/plugins/hocus/weather.ts'},1);
-        globalThis.message = (name,payload,source={Plugin:7}) => ({name,payload:JSON.stringify(payload),source,args:{},is_private:true,pane_id:null});
-        bridge('pipe',message('hocus_extension_discover',{}),2);
-        bridge('pipe',message('yinz_rpc_call',{version:1,call_id:'a',name:'hocus_tool:forecast',payload:{city:'Austin'},source:{Plugin:99},reply_to:99}),3);
-        bridge('pipe',message('yinz_rpc_call',{version:1,call_id:'b',name:'hocus_tool:failure'}),4);
-        bridge('pipe',message('yinz_rpc_call',{version:2,call_id:'bad',name:'hocus_tool:failure'}),4);
-        bridge('pipe',message('yinz_rpc_call',{version:1,call_id:'forged',name:'hocus_tool:failure',reply_to:7},'Keybind'),4);
-        bridge('pipe',message('ordinary',{}),4);
-        check(pipeCount === 1);
-        finishTool();
-    "#);
-    capture_commands(&mut runtime);
-    run(&mut runtime,r#"
-        const messages = sent.filter(([cmd]) => cmd.MessageToPlugin).map(([cmd,client]) => [cmd.MessageToPlugin,client]);
-        check(messages.filter(([m]) => m.message_name === 'hocus_extension_register').length === 2);
-        const replies = messages.filter(([m]) => m.message_name === 'yinz_rpc_reply');
-        check(replies.length === 2 && replies.every(([m]) => m.destination_plugin_id === 7));
-        const [asyncReply,client] = replies.find(([m]) => JSON.parse(m.message_payload).call_id === 'a');
-        check(client === 3 && JSON.parse(asyncReply.message_payload).result.client === 3);
-        check(JSON.parse(asyncReply.message_payload).result.source === 7);
-        check(JSON.parse(replies.find(([m]) => JSON.parse(m.message_payload).call_id === 'b')[0].message_payload).error.includes('tool failed'));
-        bind({load() {yinz.hocus.tools({replacement:{handler: () => 'new'}});}});
-        bridge('load',{hocus_extension_name:'weather',hocus_extension_path:'/plugins/hocus/weather.ts'},1);
-        bridge('pipe',message('yinz_rpc_call',{version:1,call_id:'removed',name:'hocus_tool:forecast'}),1);
-        bridge('pipe',message('yinz_rpc_call',{version:1,call_id:'new',name:'hocus_tool:replacement'}),1);
-    "#);
-    capture_commands(&mut runtime);
-    run(&mut runtime,r#"
-        const last = sent.filter(([cmd]) => cmd.MessageToPlugin).slice(-3).map(([cmd]) => JSON.parse(cmd.MessageToPlugin.message_payload));
-        check(last[0].tools.length === 1 && last[0].tools[0].name === 'replacement');
-        check(last[1].error.includes('no rpc handler') && last[2].result === 'new');
-    "#);
-    runtime.op_state().borrow_mut().borrow_mut::<TestHost>().fail_command = Some("MessageToPlugin");
-    run(&mut runtime,r#"
-        bind({load() {let denied = false; try {yinz.hocus.tools({bad:{handler:()=>''}});} catch (_) {denied=true;} check(denied);}});
-        bridge('load',{hocus_extension_name:'weather',hocus_extension_path:'/plugins/hocus/weather.ts'},1);
-        bind({load() {check(yinz.hocus.launch() === null); yinz.hocus.tools({unlaunched:{handler:()=>''}});}});
-        bridge('load',{},1);
-    "#);
-}
-
-#[test]
 fn deno_dialog_rendering_matches_rust_and_reports_intent() {
     use yinz_tile::ui_components::{forms::*, Text};
     let mut runtime = sdk();

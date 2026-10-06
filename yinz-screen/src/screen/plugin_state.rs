@@ -291,7 +291,7 @@ impl Screen {
     /// Whichever name wins then carries the exit marker of a lone pane
     /// that has stopped ([`Tab::exit_marker`]). That is not a name and does
     /// not compete with the others: it says the pane is finished, which is worth
-    /// saying about a tab called "hocus" as much as about one called "vim README".
+    /// saying about a tab called "agents" as much as about one called "vim README".
     ///
     /// A tab down to one pane leads whichever name won with that pane's id
     /// ([`Tab::lone_pane_id_marker`]). Same story as the marker: not a name, just

@@ -2352,7 +2352,7 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
         let mut node = KdlNode::new("background_opacity");
         node.push(format!("{opacity}%"));
         if add_comments {
-            node.set_leading("\n// Background opacity for Hocus, the command palette and translucent overlays (default: 85%).\n// Text and controls remain opaque. 0 is clear; 100 is solid.\n");
+            node.set_leading("\n// Background opacity for Agent, the command palette and translucent overlays (default: 85%).\n// Text and controls remain opaque. 0 is clear; 100 is solid.\n");
         }
         nodes.push(node);
     }

@@ -126,8 +126,8 @@ fn plugin_configuration_keys_named_global_edge_and_size_round_trip() {
 /// `awaits_placement` reaches the configuration map beside `overlay`, and nothing else does.
 ///
 /// The map is plugin identity, and this key has to be in it for the same reason `overlay` is:
-/// hocus's two halves are opened both by these keybindings and by each other
-/// (`hocus_proto::launch::overlay_configuration`), and a launch whose configuration differs by one
+/// agent's two halves are opened both by these keybindings and by each other
+/// (`agent_proto::launch::overlay_configuration`), and a launch whose configuration differs by one
 /// key addresses a different instance - which shows up as a duplicate pane rather than an error.
 /// The pair asserted below is exactly what that function writes; `floating` and
 /// `move_to_focused_tab` are launch properties rather than configuration and stay out of it.
@@ -139,7 +139,7 @@ fn awaits_placement_reaches_the_configuration_beside_overlay() {
             keybinds {{
                 normal {{
                     bind "Ctrl o" {{
-                        LaunchOrFocusPlugin "hocus" {{
+                        LaunchOrFocusPlugin "agents" {{
                             {block}
                         }}
                     }}
@@ -194,7 +194,7 @@ fn awaits_placement_reaches_the_configuration_beside_overlay() {
         keybinds {
             normal {
                 bind "Ctrl o" {
-                    LaunchOrFocusPlugin "hocus" {
+                    LaunchOrFocusPlugin "agents" {
                         floating true
                         overlay true
                         awaits_placement true

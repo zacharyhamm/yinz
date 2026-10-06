@@ -143,7 +143,7 @@ mod tests {
     fn a_notice_is_shown_and_makes_the_dialog_taller() {
         let plain = confirmation_dialog(None, false);
         let with_notice =
-            confirmation_dialog(Some("hocus is still working\nan agent is busy"), false);
+            confirmation_dialog(Some("agent is still working\nan agent is busy"), false);
         assert!(
             with_notice.height() > plain.height(),
             "a notice needs a row of its own: {} vs {}",
@@ -156,7 +156,7 @@ mod tests {
     /// the one where a stray Enter costs the most - the user did not press anything to get here.
     #[test]
     fn cancel_is_still_the_default_on_the_last_pane_path() {
-        let mut dialog = confirmation_dialog(Some("hocus is still working"), true);
+        let mut dialog = confirmation_dialog(Some("agent is still working"), true);
         assert_eq!(
             dialog.handle_key(KeyWithModifier::new(BareKey::Enter)),
             FormEvent::ButtonPressed(CANCEL.to_owned())

@@ -34,15 +34,15 @@ childProcess.spawn = (binary, args, options) => {
 }
 syncBuiltinESMExports()
 const exports = await import(pathToFileURL(process.argv[2]))
-assert.deepEqual(Object.keys(exports), ["Hocus"], "only the plugin initializer is public")
-const { Hocus } = exports
+assert.deepEqual(Object.keys(exports), ["Agent"], "only the plugin initializer is public")
+const { Agent } = exports
 // Expose the pure adapter only in the test module, never to OpenCode's plugin loader.
 const instrumented = readFileSync(process.argv[2], "utf8") + "\nexport { toHookEvent };"
 const { toHookEvent } = await import(`data:text/javascript;base64,${Buffer.from(instrumented).toString("base64")}`)
 const lookups = []
 let lookupFailure
 let releaseLookup
-const hooks = await Hocus({ directory: "/work", client: { session: {
+const hooks = await Agent({ directory: "/work", client: { session: {
   get: async ({ path: { id } }) => {
     lookups.push(id)
     if (id === "delayed") await new Promise(resolve => { releaseLookup = resolve })

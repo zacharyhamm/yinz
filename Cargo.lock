@@ -18,6 +18,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-proto"
+version = "0.1.0"
+dependencies = [
+ "project-data",
+ "regex",
+ "serde",
+ "serde_json",
+ "swamp-lab",
+ "unicode-width 0.2.2",
+ "url",
+ "yinz-tile",
+ "yinz-tile-markdown",
+ "yinz-types",
+]
+
+[[package]]
+name = "agent-service"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "serde",
+ "serde_json",
+ "yinz-runtime",
+ "yinz-tile",
+]
+
+[[package]]
+name = "agents"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "serde_json",
+ "unicode-width 0.2.2",
+ "yinz-tile",
+ "yinz-types",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2019,127 +2057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hocus"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "hocus-proto",
- "isahc",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-width 0.2.2",
- "yinz-plugin-authoring",
- "yinz-tile",
- "yinz-types",
-]
-
-[[package]]
-name = "hocus-agentd"
-version = "0.1.0"
-dependencies = [
- "hocus-proto",
- "serde",
- "serde_json",
- "yinz-runtime",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-agents"
-version = "0.1.0"
-dependencies = [
- "hocus-proto",
- "serde_json",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-data"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tempfile",
- "url",
- "yinz-storage",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-new-agent"
-version = "0.1.0"
-dependencies = [
- "hocus-proto",
- "serde_json",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-proto"
-version = "0.1.0"
-dependencies = [
- "hocus-data",
- "regex",
- "serde",
- "serde_json",
- "swamp-lab",
- "unicode-width 0.2.2",
- "url",
- "yinz-tile",
- "yinz-tile-markdown",
- "yinz-types",
-]
-
-[[package]]
-name = "hocus-store"
-version = "0.1.0"
-dependencies = [
- "hocus-proto",
- "serde",
- "serde_json",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-swamp"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hocus-proto",
- "isahc",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-todos"
-version = "0.1.0"
-dependencies = [
- "hocus-proto",
- "tempfile",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
-name = "hocus-vms"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "hocus-proto",
- "serde_json",
- "unicode-width 0.2.2",
- "yinz-tile",
-]
-
-[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2994,6 +2911,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "new-agent"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "serde_json",
+ "yinz-tile",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3597,6 +3523,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "project-data"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+ "yinz-storage",
+ "yinz-tile",
+]
+
+[[package]]
+name = "project-store"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "serde",
+ "serde_json",
+ "yinz-tile",
 ]
 
 [[package]]
@@ -4488,6 +4436,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7401a30af6cb5818bb64852270bb722533397edcfc7344954a38f420819ece2"
 
 [[package]]
+name = "swamp-issues"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "chrono",
+ "isahc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "unicode-width 0.2.2",
+ "yinz-tile",
+]
+
+[[package]]
 name = "swamp-lab"
 version = "0.1.0"
 dependencies = [
@@ -5204,6 +5167,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "todos"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "tempfile",
+ "unicode-width 0.2.2",
+ "yinz-tile",
+]
+
+[[package]]
 name = "tokio"
 version = "1.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5505,6 +5478,17 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vms"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "chrono",
+ "serde_json",
+ "unicode-width 0.2.2",
+ "yinz-tile",
+]
 
 [[package]]
 name = "vsimd"
@@ -6704,7 +6688,6 @@ dependencies = [
  "deno_core",
  "deno_error",
  "hegeltest",
- "hocus-data",
  "insta",
  "kdl",
  "lazy_static",
@@ -6713,6 +6696,7 @@ dependencies = [
  "nix",
  "notify-debouncer-full",
  "num_cpus",
+ "project-data",
  "prost",
  "regex",
  "serde",

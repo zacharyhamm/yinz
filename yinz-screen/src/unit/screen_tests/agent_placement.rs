@@ -14,7 +14,7 @@ use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::pane_size::Viewport;
-use {yinz_types::data::OriginatingPlugin, yinz_types::data::HOCUS_AGENT_PANE_CONTEXT};
+use {yinz_types::data::OriginatingPlugin, yinz_types::data::AGENT_PANE_CONTEXT};
 
 const SURFACE: Size = Size { cols: 80, rows: 20 };
 const FLOOR: Size = Size { cols: 40, rows: 10 };
@@ -34,7 +34,7 @@ fn marked_run(command: &str) -> Run {
         originating_plugin: Some(OriginatingPlugin::new(
             yinz_types::internal_ids::PluginId::new(2),
             crate::ClientId::new(1),
-            BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+            BTreeMap::from([(AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
         )),
         ..Default::default()
     })

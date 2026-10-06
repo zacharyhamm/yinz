@@ -189,6 +189,36 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "agent-service": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agent-service",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "agents": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "agents",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "compact-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -228,6 +258,21 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "duplicate-agent": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "new-agent",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "duplicate_focused": "true",
+                    },
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "file-finder": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
@@ -256,71 +301,11 @@ Config {
                 ),
                 relative_path: None,
             },
-            "hocus": RunPlugin {
+            "fork-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
                     PluginTag(
-                        "hocus",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "shared": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-agentd": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-agentd",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "shared": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-agents": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-agents",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "shared": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-duplicate-agent": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-new-agent",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "duplicate_focused": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-fork-agent": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-new-agent",
+                        "new-agent",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
@@ -331,65 +316,11 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
-            "hocus-new-agent": RunPlugin {
+            "new-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
                     PluginTag(
-                        "hocus-new-agent",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-store": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-store",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {
-                        "shared": "true",
-                    },
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-swamp": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-swamp",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-todos": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-todos",
-                    ),
-                ),
-                configuration: PluginUserConfiguration(
-                    {},
-                ),
-                initial_cwd: None,
-                relative_path: None,
-            },
-            "hocus-vms": RunPlugin {
-                _allow_exec_host_cmd: false,
-                location: Yinz(
-                    PluginTag(
-                        "hocus-vms",
+                        "new-agent",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
@@ -407,6 +338,21 @@ Config {
                 ),
                 configuration: PluginUserConfiguration(
                     {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "project-store": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "project-store",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {
+                        "shared": "true",
+                    },
                 ),
                 initial_cwd: None,
                 relative_path: None,
@@ -450,11 +396,50 @@ Config {
                 initial_cwd: None,
                 relative_path: None,
             },
+            "swamp-issues": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "swamp-issues",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
             "tab-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
                 location: Yinz(
                     PluginTag(
                         "tab-bar",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "todos": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "todos",
+                    ),
+                ),
+                configuration: PluginUserConfiguration(
+                    {},
+                ),
+                initial_cwd: None,
+                relative_path: None,
+            },
+            "vms": RunPlugin {
+                _allow_exec_host_cmd: false,
+                location: Yinz(
+                    PluginTag(
+                        "vms",
                     ),
                 ),
                 configuration: PluginUserConfiguration(
@@ -505,7 +490,7 @@ Config {
         ),
         Alias(
             PluginAlias {
-                name: "hocus-agentd",
+                name: "agent-service",
                 configuration: Some(
                     PluginUserConfiguration(
                         {},
@@ -517,7 +502,7 @@ Config {
         ),
         Alias(
             PluginAlias {
-                name: "hocus-store",
+                name: "project-store",
                 configuration: Some(
                     PluginUserConfiguration(
                         {},

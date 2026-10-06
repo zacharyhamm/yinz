@@ -7498,7 +7498,7 @@ mod tests {
             // The click rides on the pane payload, so it is only offered where there is one -
             // see the encoder, which drops a click that has no pane to land in.
             let click = pane_id.map(|_| NotifyClick {
-                message: "hocus_toast_click".to_owned(),
+                message: "agent_toast_click".to_owned(),
                 payload: "42".to_owned(),
             });
             let protobuf: ProtobufPluginCommand =
@@ -7550,7 +7550,7 @@ mod tests {
         for (pane_id, label) in [
             (
                 PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(7)),
-                Some("hocus: send_input?".to_owned()),
+                Some("agent: send_input?".to_owned()),
             ),
             (
                 PaneId::Plugin(yinz_types::internal_ids::PluginId::new(3)),

@@ -830,7 +830,7 @@ mod tests {
             (
                 "yinz",
                 vec![
-                    "hocus",
+                    "agent",
                     "muse",
                     "--command",
                     "muse",
@@ -840,7 +840,7 @@ mod tests {
                     "--model",
                     "m",
                 ],
-                vec!["hocus", "muse", "--command", "muse", "--", "--model", "m"],
+                vec!["agent", "muse", "--command", "muse", "--", "--model", "m"],
             ),
             (
                 "/usr/bin/env",
@@ -964,7 +964,7 @@ mod tests {
                     ("muse", vec![]),
                     (
                         "yinz",
-                        strings(&["hocus", "muse", "--command", "muse", "--"]),
+                        strings(&["agent", "muse", "--command", "muse", "--"]),
                     ),
                 ] {
                     let expected = [prefix, workspace.clone()].concat();

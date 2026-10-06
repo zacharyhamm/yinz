@@ -9,7 +9,7 @@ description = "The yinz server's plugin host: Wasm and Deno plugin loading, exec
 workspace = true
 
 [dependencies]
-hocus-data = { path = "../default-plugins/hocus-data" }
+project-data = { path = "../default-plugins/project-data" }
 yinz-terminal = { path = "../yinz-terminal", version = "0.1.0" }
 vte = { workspace = true }
 yinz-routing = { path = "../yinz-routing", version = "0.1.0" }

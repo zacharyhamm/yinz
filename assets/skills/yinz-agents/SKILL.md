@@ -9,11 +9,11 @@ Outside a pane, run `yinz list-sessions --short` and select the intended name wi
 A sandboxed Codex cannot reach Yinz ("connection was not permitted"). Spawn Codex orchestrators with `--allow-yinz`, which also allows internet access, or `--permission-mode skip`.
 Use `agent list --project NAME` to filter by project. Explicit tab assignments take precedence over checkout discovery.
 `yinz action project-list` lists remembered projects; `yinz action context` also shows them with the caller's pane.
-Basic live operations do not require Hocus chat, `hocus-agentd`, or `hocus-store`.
-Registration requires `hocus-agentd`. Archive queries require `hocus-store`.
+Basic live operations do not require `agent-service` or `project-store`.
+Registration requires `agent-service`. Archive queries require `project-store`.
 
 Guarded prompts support Claude Code, Codex, Muse, Pi, and Antigravity (`agy`). Other kinds support launch and inspection.
-Before a first Codex, Muse, or AGY launch, check `yinz hocus hooks status --agent KIND` and install missing hooks with `yinz hocus hooks install --agent KIND` on the target host.
+Before a first Codex, Muse, or AGY launch, check `yinz hooks status --agent KIND` and install missing hooks with `yinz hooks install --agent KIND` on the target host.
 Claude receives inline hooks; refresh older installed Claude hooks with the install command to prevent duplicate reports. Local Pi launches inject their reporting extension automatically; SSH Pi needs the extension installed remotely, and Firecracker does not provision it.
 AGY completion additionally requires its hooks to inherit `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN` for the local completion API. AGY CLI 1.2.14 does not supply these automatically; without them completion cannot be confirmed.
 Do not replace unavailable guarded prompting with raw input. Use general pane input only for deliberate interaction with unsupported kinds.
@@ -146,7 +146,7 @@ Yinz cannot prompt it; relaunch it with `agent spawn` to control it.
 
 To mark yourself as a control agent, run `yinz agent control register --json` from your own pane. `yinz agent control unregister --json` removes the mark.
 Both act on the calling pane's live tracked agent through inherited `YINZ_PANE_REF`, take no pane argument, and fail outside a pane. An explicit `--session` must match the pane's owning session.
-This is separate from `agent register PANE_ID KIND`: control registration goes to the live server and does not need `hocus-agentd`.
+This is separate from `agent register PANE_ID KIND`: control registration goes to the live server and does not need `agent-service`.
 Registration grants no additional permissions. Repeating either command is safe, including unregistration after automatic cleanup.
 Users find control agents through the command palette's **Focus control agent** entry, which spans all live sessions on this host, searches pane title, pane ID, session, or tab, and ignores the current project.
 Registration ends when the agent exits, its conversation changes or clears (including `/clear` or `/new`), or its pane closes or leaves the session. A replacement agent must register again; session resurrection does not restore registrations.
@@ -189,7 +189,7 @@ latency. The existing fetch transport can return one oversized row.
 
 Results retain the maximum of 50 hits. `truncated: true` can mean older entries
 remain unsearched, the scope is incomplete, or more hits exist. Narrow the scope
-to search further. There are no tuning flags or continuation cursor. Hocus's
+to search further. There are no tuning flags or continuation cursor. Agent's
 `agent_history_search` tool accepts the same mode as `"regex": true`.
 
 Tool history includes `tool_call` and `tool_result` entries, with worker attribution and bounded,
@@ -197,7 +197,7 @@ redacted arguments, output, and errors. Search retained names or payload text wi
 `yinz agent history-search 'exec_command'`. Read the complete retained payload with
 `yinz agent run RUN_ID --from-revision REVISION --limit 1`. Normal pages set
 `tool.payload_omitted`, which differs from capture truncation. Upgrade all database-sharing
-Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
+Agent plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
 See [the agent CLI guide](../../../docs/AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
 and adapter refresh commands. No historical import is performed.
 

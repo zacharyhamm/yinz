@@ -80,7 +80,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             index_in_pane_group: Default::default(), // we don't serialize this
             default_fg: None,
             default_bg: None,
-            cwd: Some("/work/hocus".to_owned()),
+            cwd: Some("/work/agent".to_owned()),
         },
         PaneInfo {
             multipane: None,

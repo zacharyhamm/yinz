@@ -1499,7 +1499,7 @@ mod tests {
         // Without the rule, this would be a plugin naming another plugin's private namespace.
         for namespace in [
             "agents",
-            "plugin:hocus",
+            "plugin:agent",
             "shared",
             "shared:",
             "shared:Agents",

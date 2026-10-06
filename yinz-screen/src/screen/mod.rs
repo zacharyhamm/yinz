@@ -75,7 +75,7 @@ use {
     yinz_types::data::OverlayPlacement, yinz_types::data::PaneInfo, yinz_types::data::PluginTag,
     yinz_types::data::RemotePaneHandoff, yinz_types::data::SessionInfo, yinz_types::data::TabInfo,
     yinz_types::data::WarpedPane, yinz_types::data::WarpedTab,
-    yinz_types::data::HOCUS_AGENT_PANE_CONTEXT,
+    yinz_types::data::AGENT_PANE_CONTEXT,
 };
 use {yinz_types::input::command::RunCommand, yinz_types::input::command::TerminalAction};
 use {
@@ -2892,7 +2892,7 @@ impl Screen {
             };
             // A move that went nowhere while an overlay holds the keyboard is a no-op, not a hop
             // to another tab or the host session: a modal owns the keyboard, and a dismissible
-            // overlay is what the user is looking at - hocus would carry its panel into the new
+            // overlay is what the user is looking at - agent would carry its panel into the new
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
@@ -2937,7 +2937,7 @@ impl Screen {
             };
             // A move that went nowhere while an overlay holds the keyboard is a no-op, not a hop
             // to another tab or the host session: a modal owns the keyboard, and a dismissible
-            // overlay is what the user is looking at - hocus would carry its panel into the new
+            // overlay is what the user is looking at - agent would carry its panel into the new
             // tab. Across a multipane's divider the tab has already moved
             // (`Tab::move_focus_to_overlay_sibling`).
             if moved == Some(false) && !self.active_tab_overlay_holds_focus(client_id) {
@@ -3068,7 +3068,7 @@ impl Screen {
                 // display *position*. The two agree only until the first tab is closed or moved:
                 // `close_tab_by_id` renumbers positions and leaves ids alone. Handing the id over
                 // as a position took the client to whichever tab happened to sit at that number
-                // and then revealed the plugin on the tab it had just left - "revealing hocus
+                // and then revealed the plugin on the tab it had just left - "revealing agent
                 // just switches tabs" - and did nothing at all when the id ran past the end of
                 // the tab bar, which is why it only misbehaved sometimes.
                 //
@@ -3441,7 +3441,7 @@ impl Screen {
     ///
     /// The memory rather than the live record, because a clean exit clears the record first:
     /// Claude Code's `SessionEnd` hook runs before the process does, and `hook_outcome` reads
-    /// it as the end of the record. The context marker used to cover that for a pane hocus
+    /// it as the end of the record. The context marker used to cover that for a pane agent
     /// spawned, and only for one - a pane warped in from another session has none, because the
     /// supervisor drops an `originating_plugin` that names a plugin in the session it left.
     fn fire_agent_exit_hook(
@@ -3460,7 +3460,7 @@ impl Screen {
             return;
         }
         let context_says_agent = originating_plugin
-            .is_some_and(|plugin| plugin.context.contains_key(HOCUS_AGENT_PANE_CONTEXT));
+            .is_some_and(|plugin| plugin.context.contains_key(AGENT_PANE_CONTEXT));
         if !(pane_is_agent || context_says_agent) {
             return;
         }
@@ -3515,7 +3515,7 @@ impl Screen {
             .and_then(|tab| tab.pane_last_agent_kind(pane_id))
             .or_else(|| {
                 originating_plugin
-                    .and_then(|plugin| plugin.context.get(HOCUS_AGENT_PANE_CONTEXT).cloned())
+                    .and_then(|plugin| plugin.context.get(AGENT_PANE_CONTEXT).cloned())
             });
         if let Some(kind) = kind {
             payload.insert("agent_kind".to_owned(), kind);

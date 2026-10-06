@@ -92,7 +92,6 @@ const FILE_LEVEL_ALLOWS: &[(&str, &str)] = &[
     ("src/tests/e2e/cases.rs", "unused"),
     // plugin crates linted for the host triple, where nothing reaches what only the wasm
     // entry points call
-    ("default-plugins/hocus/src/tools.rs", "dead_code"),
     (
         "default-plugins/fixture-plugin-for-tests/src/main.rs",
         "dead_code",

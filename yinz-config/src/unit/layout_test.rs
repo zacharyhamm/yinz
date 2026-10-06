@@ -3356,12 +3356,9 @@ fn caller_context_does_not_change_plugin_alias_identity() {
         "duplicate_focused".to_owned(),
         "true".to_owned(),
     )]));
-    let requested = RunPluginOrAlias::Alias(PluginAlias::new(
-        "hocus-duplicate-agent",
-        &configuration,
-        None,
-    ));
-    let mut running = PluginAlias::new("hocus-duplicate-agent", &configuration, None);
+    let requested =
+        RunPluginOrAlias::Alias(PluginAlias::new("duplicate-agent", &configuration, None));
+    let mut running = PluginAlias::new("duplicate-agent", &configuration, None);
     running.set_caller_cwd_if_not_set(Some("/repo".into()));
     running
         .set_caller_terminal_pane_id_if_not_set(Some(yinz_types::internal_ids::TerminalId::new(7)));
@@ -3637,7 +3634,7 @@ fn pane_tabs_layout_validates_flat_named_plugins_and_selects_one_run() {
             r#"layout {{ {prefix}
             pane tabbed=true selected=1 {{
                 pane name="Files" {{ plugin location="yinz:strider"; }}
-                pane name="Todos" {{ plugin location="yinz:hocus-todos"; }}
+                pane name="Todos" {{ plugin location="yinz:todos"; }}
             }}; {suffix}
         }}"#
         );
@@ -3653,7 +3650,7 @@ fn pane_tabs_templates_merge_selection_and_keep_child_cwds() {
     let raw = r#"layout cwd="/project" {
         pane_template name="views" tabbed=true selected=1 {
             pane name="Files" { plugin location="strider" cwd="files"; }
-            pane name="Todos" { plugin location="yinz:hocus-todos" cwd="todos"; }
+            pane name="Todos" { plugin location="yinz:todos" cwd="todos"; }
         }
         views
         views selected=0
@@ -3701,7 +3698,7 @@ fn floating_pane_tabs_keep_their_child_cwds() {
         floating_panes {
             pane tabbed=true selected=1 {
                 pane name="Files" { plugin location="yinz:strider" cwd="files"; }
-                pane name="Todos" { plugin location="yinz:hocus-todos" cwd="todos"; }
+                pane name="Todos" { plugin location="yinz:todos" cwd="todos"; }
             }
         }
     }"#;
@@ -3769,7 +3766,7 @@ fn legacy_panel_tabs_resolve_aliases_after_merging_and_keep_their_working_direct
         aliases: BTreeMap::from([(
             "legacy-panel".into(),
             RunPlugin {
-                location: RunPluginLocation::Yinz(PluginTag::new("hocus-agents")),
+                location: RunPluginLocation::Yinz(PluginTag::new("agents")),
                 configuration: PluginUserConfiguration::new(BTreeMap::from([
                     ("view".into(), "swamp".into()),
                     ("shared".into(), "true".into()),
@@ -3780,7 +3777,7 @@ fn legacy_panel_tabs_resolve_aliases_after_merging_and_keep_their_working_direct
         )]),
     };
     for floating in [false, true] {
-        for location in ["yinz:hocus-agents", "legacy-panel"] {
+        for location in ["yinz:agents", "legacy-panel"] {
             for view in ["vms", "swamp"] {
                 let pane = format!(
                     r#"pane tabbed=true {{
@@ -3809,7 +3806,14 @@ fn legacy_panel_tabs_resolve_aliases_after_merging_and_keep_their_working_direct
                 };
                 let plugin = run.get_run_plugin().unwrap();
                 let descriptor = &tabs.tabs[0];
-                assert_eq!(descriptor.location, format!("yinz:hocus-{view}"));
+                assert_eq!(
+                    descriptor.location,
+                    if view == "vms" {
+                        "yinz:vms"
+                    } else {
+                        "yinz:swamp-issues"
+                    }
+                );
                 assert_eq!(descriptor.location, plugin.location.display());
                 assert_eq!(descriptor.configuration, *plugin.configuration.inner());
                 assert!(!descriptor.configuration.contains_key("view"));

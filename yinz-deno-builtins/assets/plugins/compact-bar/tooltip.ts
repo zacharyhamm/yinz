@@ -151,7 +151,7 @@ function predicates(mode: InputMode): Predicate[] {
         ...named("ActivateNotification", "ToggleNotificationDetail"),
       ];
     case "Agent":
-      return ["hocus-new-agent", "hocus-agents", "hocus"].map((alias) => launches(alias));
+      return ["new-agent", "agents"].map((alias) => launches(alias));
     case "EnterSearch":
     case "Prompt":
     case "RenamePane":

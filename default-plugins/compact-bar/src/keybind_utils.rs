@@ -803,9 +803,8 @@ impl KeybindProcessor {
             },
             InputMode::Agent => {
                 let ordered_predicates = vec![
-                    |action: &Action| action.launches_plugin("hocus-new-agent"),
-                    |action: &Action| action.launches_plugin("hocus-agents"),
-                    |action: &Action| action.launches_plugin("hocus"),
+                    |action: &Action| action.launches_plugin("new-agent"),
+                    |action: &Action| action.launches_plugin("agents"),
                 ];
                 Self::find_predetermined_actions(mode_info, mode, ordered_predicates)
             },

@@ -522,7 +522,7 @@ export default definePlugin({
     z.host.blockCliPipeInput(cli);
     try {
       const snapshot=z.waitForPipe('agent_snapshot');
-      z.command('MessageToPlugin',{plugin_url:'yinz:hocus-agentd',message_name:'agent_subscribe',
+      z.command('MessageToPlugin',{plugin_url:'yinz:agent-service',message_name:'agent_subscribe',
         destination_plugin_id:null,plugin_config:{},message_payload:null,message_args:{},new_plugin_args:null,floating_pane_coordinates:null});
       z.host.cliPipeOutput(cli,(await snapshot).payload ?? '');
     } finally {z.host.unblockCliPipeInput(cli);}
@@ -772,7 +772,7 @@ def foreground_smoke():
         until('decision view restored', lambda: any(p['id'] == view['id'] and p['is_plugin'] and not p['is_suppressed'] for p in json.loads(yinz('action', 'list-panes', '--json'))))
         if automatic:
             answer(reviewed, 'fork', 'foreground-fork')
-            until('fork picker', lambda: any(p.get('plugin_url') == 'yinz:hocus-new-agent' and not p['is_suppressed'] for p in json.loads(yinz('action', 'list-panes', '--json'))))
+            until('fork picker', lambda: any(p.get('plugin_url') == 'yinz:new-agent' and not p['is_suppressed'] for p in json.loads(yinz('action', 'list-panes', '--json'))))
             os.write(ui_fd, b'\x1b')
             fresh = until('cancelled fork returned to menu', lambda: pending(token, 'prepare'))
             assert fresh['attributes']['run'] != reviewed['attributes']['run']

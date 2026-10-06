@@ -1223,7 +1223,7 @@ fn reporting_hooks(cwd: &str, script: &Path, trust: &str) -> Value {
 #[test]
 fn capability_requires_all_the_installed_reporting_handlers() {
     let root = tempfile::tempdir().unwrap();
-    let script = root.path().join("hocus-hook.sh");
+    let script = root.path().join("yinz-hook.sh");
     yinz_test_support::write_warm_script(&script, "exit 0");
     for trust in ["trusted", "managed"] {
         verify_handlers(&reporting_hooks("/work", &script, trust), "/work", &script).unwrap();
@@ -1236,7 +1236,7 @@ fn capability_requires_all_the_installed_reporting_handlers() {
         ("async", json!(true)),
         ("async", json!("false")),
         ("matcher", json!("*")),
-        ("command", json!("'/unrelated/hocus-hook.sh'")),
+        ("command", json!("'/unrelated/yinz-hook.sh'")),
         ("handlerType", json!("prompt")),
     ] {
         // Every required event is independently checked; unrelated hooks cannot substitute.
@@ -1269,7 +1269,7 @@ fn capability_requires_all_the_installed_reporting_handlers() {
 #[tokio::test]
 async fn capability_connection_initializes_and_checks_the_selected_thread_and_directory() {
     let root = tempfile::tempdir().unwrap();
-    let script = root.path().join("hocus-hook.sh");
+    let script = root.path().join("yinz-hook.sh");
     yinz_test_support::write_warm_script(&script, "exit 0");
     for failure in [
         "none",

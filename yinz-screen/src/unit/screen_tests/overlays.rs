@@ -162,7 +162,7 @@ fn popup_coordinates() -> FloatingPaneCoordinates {
 /// by.
 ///
 /// `overlay true` alone puts the pane on screen at `base_geom`'s half-size-centered default, and
-/// its owner only moves it out of there a round trip later - which for hocus's two corner panels
+/// its owner only moves it out of there a round trip later - which for agent's two corner panels
 /// is a flash in the middle of the screen, on top of each other. With the flag the pane exists,
 /// can be focused, and is simply not painted until somebody places it.
 #[test]
@@ -247,14 +247,10 @@ fn an_overlay_that_awaits_placement_is_not_painted_until_it_is_placed() {
 
 #[test]
 fn self_sizing_builtins_and_resolved_aliases_await_placement_without_new_configuration() {
-    for url in ["yinz:hocus-new-agent", "yinz:quit-confirmation"] {
+    for url in ["yinz:new-agent", "yinz:quit-confirmation"] {
         let plugin = yinz_runtime::plugin_location::run_plugin_from_url(url).unwrap();
         assert!(RunPluginOrAlias::RunPlugin(plugin.clone()).awaits_placement());
-        for name in [
-            "custom-binding",
-            "hocus-duplicate-agent",
-            "hocus-fork-agent",
-        ] {
+        for name in ["custom-binding", "duplicate-agent", "fork-agent"] {
             assert!(RunPluginOrAlias::Alias(PluginAlias {
                 name: name.to_owned(),
                 run_plugin: Some(plugin.clone()),
@@ -277,7 +273,7 @@ fn self_sizing_builtins_and_resolved_aliases_await_placement_without_new_configu
 fn self_sizing_modals_never_paint_the_default_outline() {
     for columns in [80, 200] {
         for early in [false, true] {
-            for url in ["yinz:hocus-new-agent", "yinz:quit-confirmation"] {
+            for url in ["yinz:new-agent", "yinz:quit-confirmation"] {
                 let size = Size {
                     cols: columns,
                     rows: 40,
@@ -316,7 +312,7 @@ fn self_sizing_modals_never_paint_the_default_outline() {
                     (info, frames)
                 };
                 assert!(render_step().0.is_none());
-                let width = if url.ends_with("hocus-new-agent") {
+                let width = if url.ends_with("new-agent") {
                     columns.div_ceil(2).min(60)
                 } else {
                     columns * 40 / 100
@@ -414,7 +410,7 @@ fn waiting_modals_recover_on_error_or_resize_and_ordinary_modals_open_immediatel
         let url = if recovery == "ordinary" {
             "yinz:configuration"
         } else {
-            "yinz:hocus-new-agent"
+            "yinz:new-agent"
         };
         let mut plugin = yinz_runtime::plugin_location::run_plugin_from_url(url).unwrap();
         plugin.configuration.insert("modal", "true");
@@ -512,7 +508,7 @@ fn initially_suppressed_modals_accept_geometry_before_or_after_reveal() {
             let mut grid = grid_for_render_snapshot(size);
             render_frame_into(&mut screen, &server_rx, CLIENT_1, &mut grid);
             let mut plugin =
-                yinz_runtime::plugin_location::run_plugin_from_url("yinz:hocus-new-agent").unwrap();
+                yinz_runtime::plugin_location::run_plugin_from_url("yinz:new-agent").unwrap();
             plugin.configuration.insert("modal", "true");
             let run = RunPluginOrAlias::RunPlugin(plugin);
             let pane_id = PaneId::Plugin(PluginId::new(9));
@@ -884,7 +880,7 @@ fn a_new_pane_opened_over_a_modal_is_tiled() {
     );
 }
 
-/// A modal plugin overlay, focused, over the active tab - what `hocus-new-agent` is.
+/// A modal plugin overlay, focused, over the active tab - what `new-agent` is.
 fn add_modal_plugin_overlay(
     screen: &mut Screen,
     plugin_id: yinz_types::internal_ids::PluginId,
@@ -934,7 +930,7 @@ fn add_modal_plugin_overlay(
     modal_id
 }
 
-/// A modal overlay (e.g. hocus-new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
+/// A modal overlay (e.g. new-agent) only closes on Esc/submit/`Event::Visible(false)` - it
 /// has no way to learn it lost focus, unlike a dismissible overlay that watches `PaneUpdate`.
 /// Stealing its focus the way `a_new_pane_opened_over_a_modal_is_tiled` does for a plain overlay
 /// would leave it stuck on screen while input goes to the pane underneath, so it must keep focus.
@@ -1018,7 +1014,7 @@ fn an_overlay_answers_the_singular_pane_info_lookup() {
 }
 
 /// The other half of the test above: keeping focus is not the end of the story, or the pane the
-/// user asked for would stay unreachable. `hocus-new-agent` submits, focuses the agent pane it
+/// user asked for would stay unreachable. `new-agent` submits, focuses the agent pane it
 /// just opened, and only then closes itself - and this is that hand-off. Focusing the tiled pane
 /// while the overlay is still up moves nothing a client can see (`get_active_pane_id` prefers the
 /// overlay), it moves the tiled focus *underneath*, which is what the close then lands on. Doing
@@ -1068,7 +1064,7 @@ fn a_modal_overlay_hands_focus_to_the_pane_it_opened_when_it_closes() {
     );
 }
 
-/// A left/right multipane of two dismissible plugin overlays in `tab_id`, the way hocus composes
+/// A left/right multipane of two dismissible plugin overlays in `tab_id`, the way agent composes
 /// its panel from the agent list and the conversation, with the client's keyboard on the list.
 fn panel_multipane(screen: &mut Screen, tab_id: TabId) -> [PaneId; 2] {
     use yinz_types::multipane::*;
@@ -1099,7 +1095,7 @@ fn panel_multipane(screen: &mut Screen, tab_id: TabId) -> [PaneId; 2] {
     children
 }
 
-/// `hocus-new-agent` opened over the hocus panel, from the agent list half. Cancelled, it used to
+/// `new-agent` opened over the agent panel, from the agent list half. Cancelled, it used to
 /// close onto the topmost overlay left - the conversation half - so the next key went into the
 /// chat box while the list still drew its selection. Submitted, it named the new agent, but the
 /// keyboard went to the conversation all the same, over the agent it had just started.
@@ -2361,7 +2357,7 @@ fn open_overlay_with(screen: &mut Screen, pane_id: u32, coordinates: FloatingPan
 /// `OverlayPlacement::coordinates` is documented as "`None` centres it at a default size", and
 /// that is what every overlay born from plugin configuration asks for: `RunPlugin::overlay_placement`
 /// returns `modal(None)` / `dismissible(None)` for the `modal`/`overlay` keys, and the fork's own
-/// `hocus-new-agent` binding is one of them.
+/// `new-agent` binding is one of them.
 ///
 /// It used to be born 1x1 - a framed pane with no content area at all - and only recovered if the
 /// plugin happened to re-assert its placement afterwards.
@@ -4394,7 +4390,7 @@ fn a_directional_move_crosses_a_left_right_multipane_to_its_sibling() {
 
 /// Off the panel's outer edge the move carries on from the pane hidden under it, and that tab has
 /// one tiled pane, so nothing lies beyond the covered pane. While any overlay holds the keyboard
-/// that is a no-op, as it is under a modal: switching tabs would have hocus carry the panel into
+/// that is a no-op, as it is under a modal: switching tabs would have agent carry the panel into
 /// the new tab.
 #[test]
 fn a_focus_move_or_tab_at_the_edge_under_a_dismissible_overlay_does_not_switch_tabs() {
@@ -4552,7 +4548,7 @@ fn a_focus_move_or_tab_past_the_panel_edge_moves_to_the_tiled_pane_beyond_the_co
     assert_eq!(position(&screen), TabPosition::new(1), "and no tab switch");
 }
 
-/// hocus carries its panel into the tab its client just switched to (`follow_tab`, after a tab
+/// agent carries its panel into the tab its client just switched to (`follow_tab`, after a tab
 /// switch or `Ctrl t n`). By then the client is no longer on the panel's tab, so the panel lands
 /// drawn but unfocused and the pane the client went to keeps the keyboard. A break done while the
 /// client is still on the panel's tab is the counterpart: the list keeps it.
@@ -5203,7 +5199,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
         second_tab.overlays_are_rendered(),
         "the reveal half of the move still happens - a pane asked for by name comes back shown"
     );
-    // the plugin restating its placement, as hocus does the instant it hears where it landed
+    // the plugin restating its placement, as agent does the instant it hears where it landed
     screen.change_overlay_coordinates(vec![(popup_id, coordinates)], false);
     let after = screen.tabs[&TabId::new(1)]
         .get_pane_with_id(popup_id)
@@ -5219,7 +5215,7 @@ fn a_dragged_overlay_revealed_onto_another_tab_arrives_shown_and_still_dragged()
 // ---------------------------------------------------------------------------
 // Per-pane suppression: an overlay set aside without being unloaded.
 //
-// hocus draws itself as an overlay column in the bottom-left corner, and Esc has to put it away
+// agent draws itself as an overlay column in the bottom-left corner, and Esc has to put it away
 // while keeping the conversation, the parked chats and anything still streaming. That is what
 // `SuppressPane` on an overlay now means. These pin the instruction routing; the collection's own
 // rules are pinned in `overlay_panes/unit/overlay_panes_tests.rs`.
@@ -5468,7 +5464,7 @@ fn a_tab_holding_only_a_hidden_overlay_has_no_overlays_to_render() {
 
 /// An overlay in a tab nobody is looking at still hears broadcast events.
 ///
-/// This is what lets hocus follow tab switches at all: it moves itself when it sees the
+/// This is what lets agent follow tab switches at all: it moves itself when it sees the
 /// `TabUpdate`, and the overlay it moves is by definition sitting in the tab the user just left.
 /// The active-tab walk in `targeted_plugin_ids` would never reach it.
 #[test]
@@ -5573,7 +5569,7 @@ fn an_overlay_would_be_caught_by_the_tab_suppression_loop() {
 
 /// A plugin's `show_pane_with_id(.., should_focus_pane = false)` arrives as
 /// `ScreenInstruction::UnsuppressOrExpandPane`, whose overlay arm is `Tab::show_overlay_pane` -
-/// the "put it back on screen, don't move the keyboard" path hocus uses to restore its agent list.
+/// the "put it back on screen, don't move the keyboard" path agent uses to restore its agent list.
 ///
 /// For a *modal* that separation does not exist. The modal lock is re-armed by this very
 /// statement, so a modal restored without its keyboard is a dialog nobody can type into that
@@ -5622,7 +5618,7 @@ fn unsuppressing_a_modal_overlay_gives_it_the_keyboard_back() {
     );
 }
 
-/// `Ctrl e c` on a hocus that was put away with Esc. `LaunchOrFocusPlugin` is the user asking for
+/// `Ctrl e c` on a agent that was put away with Esc. `LaunchOrFocusPlugin` is the user asking for
 /// the pane back, so it has to come back *and* take the keyboard - a pane that reappears while
 /// typing still goes to whatever is underneath is worse than one that never reappeared.
 #[test]
@@ -5641,7 +5637,7 @@ fn launch_or_focus_plugin_focuses_a_hidden_overlay() {
         Some(popup_id)
     );
 
-    // Esc in hocus: `hide_self` -> `ScreenInstruction::SuppressPane` -> `hide_overlay_pane`
+    // Esc in agent: `hide_self` -> `ScreenInstruction::SuppressPane` -> `hide_overlay_pane`
     screen
         .tabs
         .get_mut(&TabId::new(0))
@@ -5707,15 +5703,15 @@ fn screen_with_diverging_tab_ids(size: Size) -> Screen {
     screen
 }
 
-/// `Ctrl e c` on a hocus that is already in the tab the user is standing in - which is where it
+/// `Ctrl e c` on a agent that is already in the tab the user is standing in - which is where it
 /// almost always is, since every shipped `LaunchOrFocusPlugin` binding carries
 /// `move_to_focused_tab` and so keeps the pane with the client.
 ///
 /// A reveal must not move the client. The tab holding the plugin is found by `self.tabs` key,
 /// which is a stable *id*, while `go_to_tab` names a tab by its *display position*; the two agree
 /// only until a tab is closed or moved. Reading the id as a position walked the client to
-/// whichever tab now sits at that number and then unhid hocus on the one it had just left - a tab
-/// switch, and no hocus.
+/// whichever tab now sits at that number and then unhid agent on the one it had just left - a tab
+/// switch, and no agent.
 #[test]
 fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
     let mut screen = screen_with_diverging_tab_ids(Size { cols: 80, rows: 12 });
@@ -5725,7 +5721,7 @@ fn revealing_a_plugin_overlay_in_the_focused_tab_does_not_switch_tabs() {
         TabId::new(1),
         popup_coordinates(),
     );
-    // Esc in hocus
+    // Esc in agent
     screen
         .tabs
         .get_mut(&TabId::new(1))
@@ -5902,7 +5898,7 @@ fn a_plugin_pane_is_not_extracted_for_a_client_with_no_tab() {
     );
 }
 
-/// `Ctrl e c` with no hocus running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
+/// `Ctrl e c` with no agent running. `focus_plugin_pane` finds nothing, so `LaunchOrFocusPlugin`
 /// creates the pane instead - the `AddPlugin` path, which is what this mirrors: `should_focus`
 /// defaults to true and the placement is an overlay.
 #[test]
@@ -5940,7 +5936,7 @@ fn a_newly_created_overlay_plugin_takes_the_keyboard() {
     );
 }
 
-/// The arrangement hocus actually runs: two overlay plugins side by side, the conversation and
+/// The arrangement agent actually runs: two overlay plugins side by side, the conversation and
 /// the agent list. Esc in the conversation hands the keyboard to the list (`move_clients_out_of_pane`
 /// walks focus down the stack rather than off it), so `Ctrl e c` has to take it back off a
 /// *sibling overlay* rather than off a tiled pane - a different arm of `focus_pane_with_id`.
@@ -6223,7 +6219,7 @@ fn screen_with_an_overlay_on_the_second_tab(size: Size) -> (Screen, PaneId) {
     (screen, popup_id)
 }
 
-/// An overlay belongs to a `Tab` but is drawn over the whole session surface, and hocus keeps a
+/// An overlay belongs to a `Tab` but is drawn over the whole session surface, and agent keeps a
 /// session's worth of conversation in one. Closing the tab it happens to be sitting on used to
 /// take it with the tab - `get_all_pane_ids` reports overlays, so the overlay was named in the
 /// `PtyInstruction::CloseTab` that ends in `PluginInstruction::Unload`.
@@ -6359,7 +6355,7 @@ fn an_overlay_on_a_tab_nobody_is_on_falls_back_to_the_first_tab() {
     );
 }
 
-/// hocus and its agent list are two panes drawn as one panel. They are carried between tabs
+/// agent and its agent list are two panes drawn as one panel. They are carried between tabs
 /// together everywhere else, and a tab closing must not be the one thing that parts them.
 #[test]
 fn both_halves_of_a_panel_land_on_the_same_tab_when_their_tab_closes() {

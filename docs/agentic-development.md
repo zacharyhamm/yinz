@@ -8,17 +8,17 @@ The implementation has five main parts:
 
 | Part | Role | Source |
 | --- | --- | --- |
-| Agent launcher | Select an agent, project, branch, worktree, and execution environment | `default-plugins/hocus-new-agent/src/main.rs`, `yinz-runtime/src/agent/launch.rs` |
-| State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/hocus-agentd/src/main.rs`, `default-plugins/hocus-proto/src/agents.rs` |
-| Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/hocus-agents/src/main.rs` |
-| Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/hocus-store/`, `default-plugins/hocus-data/src/todos.rs`, `yinz-cli/src/notes_todos.rs` |
+| Agent launcher | Select an agent, project, branch, worktree, and execution environment | `default-plugins/new-agent/src/main.rs`, `yinz-runtime/src/agent/launch.rs` |
+| State and history | Receive agent hooks, track panes, record runs, and produce summaries | `default-plugins/agent-service/src/main.rs`, `default-plugins/agent-proto/src/agents.rs` |
+| Agent panel | Browse live agents and archived runs, read transcripts, and resume conversations | `default-plugins/agents/src/main.rs` |
+| Project memory | Share projects, nested todos, and linked notes across tools and the CLI | `default-plugins/project-store/`, `default-plugins/project-data/src/todos.rs`, `yinz-cli/src/notes_todos.rs` |
 | Development workflows | Run project-owned validation, review, repair, and integration steps | `yinz-deno-builtins/assets/plugins/workflow-view.ts`, `workflows/`, `extensions/models/` |
 
 Use the shipped keybindings to open **New agent** with `Ctrl e`, then `n`.
 Open the agent panel with `Ctrl e`, then `a`.
-Custom configurations can bind the `hocus-new-agent` and `hocus-agents` aliases to other keys.
+Custom configurations can bind the `new-agent` and `agents` aliases to other keys.
 
-The panel is the agent list on the left and the hocus conversation on the right.
+The panel is the agent list on the left and the agent conversation on the right.
 The list has four tabs: **Agents**, **Todos**, **VMs**, and **Swamp**.
 Its own tab bar is the keyboard route between them: `Shift+Tab` from a tab's list reaches the bar, `←` and `→` switch tabs, and `Enter`, `↓`, `Tab`, or `Esc` return to the tab's list.
 `Tab` and `Shift+Tab` walk one ring of five stops: the panel's tab bar, the tab's list, its second half (the history on Agents, the details on VMs), the conversation's tab bar, and the conversation's input box.
@@ -33,8 +33,8 @@ The panel follows you to another tab without the keyboard.
 Moving the keyboard to another pane there puts it away, but clicking the pane that already has the keyboard changes nothing: click the panel or press `Ctrl e a` first, then `Esc`.
 `Ctrl e a` brings it back on the same tab, with the keyboard in that tab's list. `Ctrl e o` moves it one corner clockwise.
 Drag the divider, or type `/split 40` or `/split 35%` in the conversation, to change how the width is shared.
-The `width`, `height`, `split`, and `pad` keys in the `hocus` block of `config.kdl` set the starting size (60%, 66%, 50%, and 3 by default).
-hocus reports a value it cannot read in the conversation and uses the default instead.
+The `width`, `height`, `split`, and `pad` keys in the `agent` block of `config.kdl` set the starting size (60%, 66%, 50%, and 3 by default).
+agent reports a value it cannot read in the conversation and uses the default instead.
 
 In the **Agents** list, press `w` to show only the agents waiting for input.
 While an agent is waiting, the list and history footers start with `w waiting (N)`; a search or previous-runs view shows it right after `Esc/c clear`, and the waiting view reads `Esc/w all · N waiting`.
@@ -65,7 +65,7 @@ The **Swamp** tab lists swamp-club issues as the host's `swamp auth login` sees 
 Opening the tab does not ask for permission. Press `r` to allow it; once allowed, later loads ask by themselves.
 `/` searches titles and bodies, `s`, `t`, `f`, and `u` filter by status, type, source, and assignee, `o` changes the sort, and `c` or `Esc` clears the search and every filter.
 `Enter` opens an issue and `Esc` returns to the list, with the search and filters still applied.
-`a` asks, then sends the selected issue to the hocus conversation to triage.
+`a` asks, then sends the selected issue to the agent conversation to triage.
 `Ctrl r`, or `r`, reloads the issues. On every tab, `Ctrl r` refreshes what that tab shows.
 
 The launcher now offers **Reasoning effort** and **Approval mode** alongside **Model**.
@@ -98,7 +98,7 @@ Omit `--permission-mode` to resume through Yinz's bridge, or start a new convers
 Yinz rejects this combination before it creates a pane, branch, worktree, or VM.
 JSON launches with `hooks:false` bypass the bridge and retain native Codex argument handling.
 
-On each host with installed Claude hooks, rerun `yinz hocus hooks install --agent claude` after this update.
+On each host with installed Claude hooks, rerun `yinz hooks install --agent claude` after this update.
 Refresh project installations with `--project` or `--project-dir PATH` too.
 Version 10 scripts skip reporting when a structured launch supplies inline hooks.
 Older scripts still produce duplicate reports until refreshed. Third-party hooks remain unchanged.
@@ -127,6 +127,6 @@ redacted arguments, output, and errors. Search retained names or payload text wi
 `yinz agent history-search 'exec_command'`. Read the complete retained payload with
 `yinz agent run RUN_ID --from-revision REVISION --limit 1`. Normal pages set
 `tool.payload_omitted`, which differs from capture truncation. Upgrade all database-sharing
-Hocus plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
+Agent plugins and servers together for schema v4. Refresh Pi/OpenCode hooks on remote hosts too.
 See [the agent CLI guide](AGENT_CLI.md#durable-tool-history) for payload fields, limits, redaction caveats, provider gaps,
 and adapter refresh commands. No historical import is performed.

@@ -4,7 +4,7 @@ description: Manage Yinz projects, guarded project configuration, durable notes,
 ---
 
 Use `yinz action` to access the shared notes and todo store. A session must have
-`hocus-store` loaded. Use `yinz --session NAME action ...` to select a session
+`project-store` loaded. Use `yinz --session NAME action ...` to select a session
 explicitly. Without that option, normal Yinz session selection applies.
 
 Discover projects with `project-list`. A project selector is a remembered name or
@@ -109,7 +109,7 @@ yinz action project-config-read product
 yinz action project-config-write product --file config-change.json
 ```
 
-Assignment/open/configuration require background `hocus-agentd`. The write file
+Assignment/open/configuration require background `agent-service`. The write file
 contains `source` and `expected`: use the exact source returned by the read, or
 null for an absent file. Stale writes fail. Merge preserves the target's settings
 and moves linked records atomically; inspect both projects before merging.

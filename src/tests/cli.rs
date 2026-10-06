@@ -317,91 +317,76 @@ fn recordings_state_strings() {
 }
 
 // ---------------------------------------------------------------------------
-// `yinz hocus hooks`
+// `yinz hooks`
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cli_hocus_hooks_parses_its_three_subcommands() {
-    use {yinz_cli::args::Hocus, yinz_cli::args::HocusHooks};
+fn cli_agent_hooks_parses_its_three_subcommands() {
+    use yinz_cli::args::Hooks;
 
-    let install = try_parse_cli(["yinz", "hocus", "hooks", "install"]).expect("parsed");
+    let install = try_parse_cli(["yinz", "hooks", "install"]).expect("parsed");
     assert!(matches!(
         install.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+        Some(Command::Hooks(Hooks::Install {
             agent: None,
             project: false,
             project_dir: None,
             dry_run: false
-        })))
+        }))
     ));
 
-    let project_dir = try_parse_cli([
-        "yinz",
-        "hocus",
-        "hooks",
-        "install",
-        "--project-dir",
-        "/work/app",
-    ])
-    .expect("parsed");
+    let project_dir =
+        try_parse_cli(["yinz", "hooks", "install", "--project-dir", "/work/app"]).expect("parsed");
     match project_dir.command {
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+        Some(Command::Hooks(Hooks::Install {
             project_dir: Some(dir),
             ..
-        }))) => assert_eq!(dir, std::path::PathBuf::from("/work/app")),
+        })) => assert_eq!(dir, std::path::PathBuf::from("/work/app")),
         other => panic!("expected an install with a project dir, got {other:?}"),
     }
 
-    let project =
-        try_parse_cli(["yinz", "hocus", "hooks", "install", "--project"]).expect("parsed");
+    let project = try_parse_cli(["yinz", "hooks", "install", "--project"]).expect("parsed");
     assert!(matches!(
         project.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
-            project: true,
-            ..
-        })))
+        Some(Command::Hooks(Hooks::Install { project: true, .. }))
     ));
 
-    let status = try_parse_cli(["yinz", "hocus", "hooks", "status"]).expect("parsed");
+    let status = try_parse_cli(["yinz", "hooks", "status"]).expect("parsed");
     assert!(matches!(
         status.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Status {
-            agent: None
-        })))
+        Some(Command::Hooks(Hooks::Status { agent: None }))
     ));
 
-    let codex =
-        try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "codex"]).expect("parsed");
+    let codex = try_parse_cli(["yinz", "hooks", "install", "--agent", "codex"]).expect("parsed");
     assert!(matches!(
         codex.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+        Some(Command::Hooks(Hooks::Install {
             agent: Some(agent),
             ..
-        }))) if agent == "codex"
+        })) if agent == "codex"
     ));
 
-    let opencode = try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "opencode"])
-        .expect("parsed");
+    let opencode =
+        try_parse_cli(["yinz", "hooks", "install", "--agent", "opencode"]).expect("parsed");
     assert!(matches!(
         opencode.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+        Some(Command::Hooks(Hooks::Install {
             agent: Some(agent),
             ..
-        }))) if agent == "opencode"
+        })) if agent == "opencode"
     ));
 
-    let muse =
-        try_parse_cli(["yinz", "hocus", "hooks", "install", "--agent", "muse"]).expect("parsed");
+    let muse = try_parse_cli(["yinz", "hooks", "install", "--agent", "muse"]).expect("parsed");
     assert!(matches!(
         muse.command,
-        Some(Command::Hocus(Hocus::Hooks(HocusHooks::Install {
+        Some(Command::Hooks(Hooks::Install {
             agent: Some(agent),
             ..
-        }))) if agent == "muse"
+        })) if agent == "muse"
     ));
 
     assert!(
-        try_parse_cli(["yinz", "hocus", "hooks"]).is_err(),
+        try_parse_cli(["yinz", "hooks"]).is_err(),
         "`hooks` on its own names no action"
     );
 }
@@ -410,7 +395,7 @@ fn cli_hocus_hooks_parses_its_three_subcommands() {
 /// it may add and remove its own entries and it may touch nothing else.
 #[test]
 fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
-    use crate::hocus_hooks::{install_into, installed_events, uninstall_from};
+    use crate::agent_hooks::{install_into, installed_events, uninstall_from};
     use serde_json::json;
 
     let original = json!({
@@ -428,7 +413,7 @@ fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
         }
     });
 
-    let installed = install_into(original.clone(), "/home/me/.claude/hocus/hocus-hook.sh")
+    let installed = install_into(original.clone(), "/home/me/.claude/yinz/yinz-hook.sh")
         .expect("valid settings");
     assert_eq!(installed["model"], "opus");
     assert_eq!(installed["permissions"]["defaultMode"], "auto");
@@ -449,10 +434,10 @@ fn installing_hooks_leaves_the_rest_of_the_settings_alone() {
 /// Running the installer twice is a thing people do, and a thing an upgrade does.
 #[test]
 fn installing_twice_wires_each_event_once() {
-    use crate::hocus_hooks::{install_into, installed_events};
+    use crate::agent_hooks::{install_into, installed_events};
     use serde_json::{json, Value};
 
-    let script = "/home/me/.claude/hocus/hocus-hook.sh";
+    let script = "/home/me/.claude/yinz/yinz-hook.sh";
     let once = install_into(Value::Object(Default::default()), script).expect("valid settings");
     let twice = install_into(once.clone(), script).expect("valid settings");
     assert_eq!(once, twice);
@@ -462,7 +447,7 @@ fn installing_twice_wires_each_event_once() {
     // here is a test that goes stale silently the next time it does.
     assert_eq!(
         events.len(),
-        crate::hocus_hooks::CLAUDE_EVENTS.len(),
+        crate::agent_hooks::CLAUDE_EVENTS.len(),
         "{events:?}"
     );
     for event in &events {
@@ -474,21 +459,21 @@ fn installing_twice_wires_each_event_once() {
     }
 
     // A path that moved still counts as ours, so it is replaced rather than doubled.
-    let moved = install_into(twice, "/opt/hocus/hocus-hook.sh").expect("valid settings");
+    let moved = install_into(twice, "/opt/yinz/yinz-hook.sh").expect("valid settings");
     assert_eq!(
         moved["hooks"]["Stop"].as_array().expect("an array").len(),
         1
     );
     assert_eq!(
         moved["hooks"]["Stop"][0]["hooks"][0]["command"],
-        json!("/opt/hocus/hocus-hook.sh")
+        json!("/opt/yinz/yinz-hook.sh")
     );
 }
 
 /// Uninstalling from a file that has nothing of ours in it is not a licence to tidy it.
 #[test]
 fn uninstalling_removes_only_what_we_wrote() {
-    use crate::hocus_hooks::uninstall_from;
+    use crate::agent_hooks::uninstall_from;
     use serde_json::json;
 
     let theirs = json!({
@@ -496,9 +481,9 @@ fn uninstalling_removes_only_what_we_wrote() {
             "Stop": [
                 { "hooks": [
                     { "type": "command", "command": "/usr/local/bin/mine.sh" },
-                    { "type": "command", "command": "/home/me/.claude/hocus/hocus-hook.sh" }
+                    { "type": "command", "command": "/home/me/.claude/yinz/yinz-hook.sh" }
                 ] },
-                { "hooks": [ { "type": "command", "command": "/home/me/.claude/hocus/hocus-hook.sh" } ] }
+                { "hooks": [ { "type": "command", "command": "/home/me/.claude/yinz/yinz-hook.sh" } ] }
             ]
         }
     });
@@ -515,7 +500,7 @@ fn uninstalling_removes_only_what_we_wrote() {
     // A file with nothing but our entries loses the `hooks` key entirely rather than
     // keeping a husk of empty arrays.
     let ours_only = json!({ "model": "opus", "hooks": { "Stop": [
-        { "hooks": [ { "type": "command", "command": "hocus-hook.sh" } ] }
+        { "hooks": [ { "type": "command", "command": "yinz-hook.sh" } ] }
     ] } });
     assert_eq!(uninstall_from(ours_only), json!({ "model": "opus" }));
 
@@ -526,20 +511,20 @@ fn uninstalling_removes_only_what_we_wrote() {
 
 #[test]
 fn installing_hooks_rejects_settings_shapes_it_cannot_merge() {
-    use crate::hocus_hooks::install_into;
+    use crate::agent_hooks::install_into;
     use serde_json::json;
 
-    assert!(install_into(json!({ "hooks": [] }), "hocus-hook.sh").is_err());
+    assert!(install_into(json!({ "hooks": [] }), "yinz-hook.sh").is_err());
     assert!(install_into(
         json!({ "hooks": { "Stop": { "hooks": [] } } }),
-        "hocus-hook.sh"
+        "yinz-hook.sh"
     )
     .is_err());
 }
 
 #[test]
 fn uninstalling_hooks_preserves_user_authored_empty_events() {
-    use crate::hocus_hooks::uninstall_from;
+    use crate::agent_hooks::uninstall_from;
     use serde_json::json;
 
     let settings = json!({
@@ -547,7 +532,7 @@ fn uninstalling_hooks_preserves_user_authored_empty_events() {
             "SomeEvent": [],
             "Stop": [
                 { "hooks": [] },
-                { "hooks": [{ "command": "hocus-hook.sh" }] }
+                { "hooks": [{ "command": "yinz-hook.sh" }] }
             ]
         }
     });

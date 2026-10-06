@@ -3514,7 +3514,7 @@ fn serialize_session_update_event_with_non_default_values() {
             target: PaneTarget::Firecracker {
                 vm: "review".to_owned(),
                 image: Some("rust-dev".to_owned()),
-                worktree: Some(PathBuf::from("/work/hocus")),
+                worktree: Some(PathBuf::from("/work/agent")),
             },
             agent: None,
             id: yinz_types::pane_id::PaneId::from_legacy(1, false),
@@ -3543,7 +3543,7 @@ fn serialize_session_update_event_with_non_default_values() {
             index_in_pane_group: index_in_pane_group_1,
             default_fg: None,
             default_bg: None,
-            cwd: Some("/work/hocus".to_owned()),
+            cwd: Some("/work/agent".to_owned()),
         },
         PaneInfo {
             pane_tabs: None,

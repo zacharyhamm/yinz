@@ -183,33 +183,32 @@ fn plugin_stamp_follows_the_dep_info_not_mtimes_or_unlisted_files() {
     }
 }
 
-/// Hocus compiles in the SDK typings, the example plugins and its bundled skill, none of them Rust
-/// and some outside any crate that plugins build.
+/// Non-Rust includes can live outside the plugin crate.
 #[test]
 fn an_include_str_input_invalidates_the_plugin_stamp() {
     let root = checkout();
     let root = root.path();
     let included = [
-        "default-plugins/hocus/skills/project-setup/SKILL.md",
+        "default-plugins/example/assets/help.md",
         "example-plugins/clock.ts",
         "example-plugins/with space.ts",
         "yinz-plugin-host/Cargo.toml",
         "yinz-plugin-host/src/deno/sdk.d.ts",
     ];
     for file in included.iter().chain(&[
-        "default-plugins/hocus/Cargo.toml",
-        "default-plugins/hocus/src/main.rs",
+        "default-plugins/example/Cargo.toml",
+        "default-plugins/example/src/main.rs",
     ]) {
         write(root, file, file);
     }
-    // How rustc records an `include_str!("../../../…")` in `default-plugins/hocus/src`.
-    let from_src = |file: &str| format!("default-plugins/hocus/src/../../../{file}");
+    // How rustc records an `include_str!("../../../…")` in `default-plugins/example/src`.
+    let from_src = |file: &str| format!("default-plugins/example/src/../../../{file}");
     let dep_infos = [write_dep_info(
         root,
-        "hocus",
+        "agents",
         &[
-            "default-plugins/hocus/skills/project-setup/SKILL.md",
-            "default-plugins/hocus/src/main.rs",
+            "default-plugins/example/assets/help.md",
+            "default-plugins/example/src/main.rs",
             &from_src("example-plugins/clock.ts"),
             &from_src("example-plugins/with space.ts"),
             &from_src("yinz-plugin-host/Cargo.toml"),

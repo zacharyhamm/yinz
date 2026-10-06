@@ -1,6 +1,6 @@
 //! Wrapping text to a terminal pane's width.
 //!
-//! Lived in `hocus::ui` while the conversation was the only pane that wrapped anything. The
+//! Lived in `agent::ui` while the conversation was the only pane that wrapped anything. The
 //! agents pane wraps too now - the idle-summary box under its list is drawn from these lines -
 //! and one wrapper measuring one way is the whole point of moving it: a box whose rows disagree
 //! about how wide a character is does not close.

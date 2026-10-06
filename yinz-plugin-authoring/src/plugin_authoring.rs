@@ -113,7 +113,7 @@ pub struct Written {
 /// - a source that does not compile.
 ///
 /// An overwrite keeps the version it replaced as `<name>.bak.<extension>`, which is the same thing
-/// hocus's `plugin_write` does: a rewrite that dropped a feature is then one read away from
+/// agent's `plugin_write` does: a rewrite that dropped a feature is then one read away from
 /// the file it dropped it from, whichever surface did the rewriting. A backup that cannot be
 /// kept refuses the write rather than proceeding without one - see [`keep_backup`].
 pub fn write(

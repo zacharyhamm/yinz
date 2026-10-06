@@ -1,7 +1,7 @@
 //! Starting a coding agent: what to run, and what Git setup to do first.
 //!
-//! Three callers ask for the same thing by three different routes — the `hocus-new-agent`
-//! modal, where a person fills in a form; hocus's `agent_spawn` tool, where a model fills in
+//! Three callers ask for the same thing by three different routes — the `new-agent`
+//! modal, where a person fills in a form; agent's `agent_spawn` tool, where a model fills in
 //! a JSON object; and a TypeScript plugin's `yinz.agent.spawn { … }`, which the server answers
 //! through `PluginCommand::SpawnAgent`. All of them mean "start `claude` on a fresh worktree
 //! off `main`", and none has any business deciding separately what that means: a default
@@ -12,7 +12,7 @@
 //! [`AgentSpawnSpec`] (aliased [`Spec`]) is the request in terms every caller can fill in and
 //! [`plan`] turns it into the pair Yinz wants. Everything here is pure and tests on the
 //! host triple; the host call that acts on the plan is the server's `spawn_agent` handler,
-//! and hocus-proto's `open` for the wasm plugins.
+//! and agent-proto's `open` for the wasm plugins.
 
 use std::collections::BTreeMap;
 
@@ -37,7 +37,7 @@ pub const WORKTREE_PREFIX: &str = ".worktrees/";
 
 /// The agents a chooser offers, in the order it should offer them.
 ///
-/// Not every kind hocus-proto's `agents` can *recognise* — that list is what detection
+/// Not every kind agent-proto's `agents` can *recognise* — that list is what detection
 /// knows about, which is deliberately wider than what we will start on request. This
 /// one is shared so the modal's select and the tool's schema enum cannot come to
 /// disagree about which agents you may ask for.
@@ -202,7 +202,7 @@ pub fn kind_for_spec(spec: &Spec) -> Option<String> {
 
 /// Route a Codex UI through the pane-aware launcher, retaining its original arguments.
 pub fn wrap_codex(program: String, args: Vec<String>) -> (String, Vec<String>) {
-    wrap_hocus_launcher("codex", program, args)
+    wrap_agent_launcher("codex", program, args)
 }
 
 /// Route a Muse session through the pane-aware launcher, retaining its original
@@ -210,16 +210,16 @@ pub fn wrap_codex(program: String, args: Vec<String>) -> (String, Vec<String>) {
 /// an inherited pane variable, routes reports back to the pane - the same reason
 /// Codex is wrapped.
 pub fn wrap_muse(program: String, args: Vec<String>) -> (String, Vec<String>) {
-    wrap_hocus_launcher("muse", program, args)
+    wrap_agent_launcher("muse", program, args)
 }
 
-fn wrap_hocus_launcher(
+fn wrap_agent_launcher(
     launcher: &str,
     program: String,
     args: Vec<String>,
 ) -> (String, Vec<String>) {
     let mut wrapped = vec![
-        "hocus".to_owned(),
+        "agent".to_owned(),
         launcher.to_owned(),
         "--command".to_owned(),
         program,
@@ -401,7 +401,7 @@ fn builtin_shape_args(
         },
         Some("muse") => {
             // No hooks are handed over here: Muse takes no inline hook settings, so a
-            // spawned pane reports itself only when `yinz hocus hooks install` has run -
+            // spawned pane reports itself only when `yinz hooks install` has run -
             // the same shape Codex has, for the same reason.
             match mode {
                 None => {},
@@ -658,7 +658,7 @@ fn launch_environment(
 /// What to run, and what to do to the repository before running it.
 ///
 /// The error strings are the ones shown to whoever asked — the modal puts them in its
-/// status row, hocus hands them back to the model as the tool result — so they say what
+/// status row, agent hands them back to the model as the tool result — so they say what
 /// is missing rather than that something is.
 pub fn plan(spec: &Spec) -> Result<(CommandToRun, GitCheckout), String> {
     let target = PaneTarget::from_parts(
@@ -889,7 +889,7 @@ pub fn resume_command(
                 .find(|mount| cwd.starts_with(mount))
         }) {
             return Err(format!(
-                "hocus cannot open a pane under {mount}: the plugin mounts claim it"
+                "agent cannot open a pane under {mount}: the plugin mounts claim it"
             ));
         }
     }
@@ -1192,7 +1192,7 @@ mod tests {
     }
 
     /// A `claude` pane reports its own state: the hook wiring rides along as `--settings`,
-    /// and lists exactly the events `yinz hocus hooks install` would wire.
+    /// and lists exactly the events `yinz hooks install` would wire.
     #[test]
     fn claude_spawns_carry_the_hook_settings() {
         let (command, _) = plan(&spec("claude")).unwrap();
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(command.args, ["YINZ_CLAUDE_INLINE_HOOKS=0", "claude"]);
         let (command, _) = plan(&spec("codex")).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
-        assert_eq!(command.args, ["hocus", "codex", "--command", "codex", "--"]);
+        assert_eq!(command.args, ["agent", "codex", "--command", "codex", "--"]);
         assert_eq!(
             crate::agent::agent_kind_of(&command.path, &command.args).as_deref(),
             Some("codex")
@@ -1471,7 +1471,7 @@ mod tests {
     }
 
     /// `muse resume` is a subcommand like Codex's, the approval policy is an ordinary
-    /// flag, and the pane runs behind the hocus launcher so the session id routes
+    /// flag, and the pane runs behind the agent launcher so the session id routes
     /// reports back to it - Muse hooks inherit no pane variables to route on.
     #[test]
     fn muse_resume_is_a_subcommand_behind_the_launcher() {
@@ -1522,7 +1522,7 @@ mod tests {
         // Behind the launcher by default, and bare with hooks off.
         let (command, _) = plan(&spec("muse")).unwrap();
         assert_eq!(command.path, PathBuf::from("yinz"));
-        assert_eq!(command.args, ["hocus", "muse", "--command", "muse", "--"]);
+        assert_eq!(command.args, ["agent", "muse", "--command", "muse", "--"]);
         let (command, _) = plan(&without_hooks("muse")).unwrap();
         assert_eq!(command.path, PathBuf::from("muse"));
         assert!(command.args.is_empty());
@@ -1531,7 +1531,7 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
-                "hocus",
+                "agent",
                 "muse",
                 "--command",
                 "muse",
@@ -1702,7 +1702,7 @@ mod tests {
         assert_eq!(
             command.args,
             vec![
-                "hocus",
+                "agent",
                 "codex",
                 "--command",
                 "codex",

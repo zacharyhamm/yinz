@@ -135,7 +135,7 @@ export interface Yinz {
   readonly workflowSignal?: (request: {terminal_id: number; owner: string; process?: number; supervisor: string; kill: boolean}) => void;
   readonly workflowRemotePanes?: () => {terminal_id: number; host_id: string; remote_host: string; pane_token: string; owner: string | null; child_group_terminated?: boolean}[];
   readonly agent: Agents;
-  readonly hocus: HocusExtensions;
+  readonly llm: Llm;
   readonly rpc: Rpc;
   readonly ui: UserInterface;
   readonly text: TerminalText;
@@ -741,12 +741,11 @@ export interface DataStore {
 }
 
 export type PluginCheckMode = 'Syntax' | 'Semantic' | 'Format' | 'Prepare';
-export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | 'Function' | 'Handler' | 'Define' | 'Registration' | 'Tool'; text: string}
+export interface OutlineEntry {line: Integer; kind: 'Require' | 'Permission' | 'Function' | 'Handler' | 'Define'; text: string}
 export interface PluginCheckReport {diagnostics: string[]; outline: OutlineEntry[]; permissions: Permission[]; warnings: string[]; formatted_source?: string}
 
-/** Tool handlers answer version-1 Hocus RPC calls. Source is supplied by the host. */
+/** Tool handlers answer version-1 Agent RPC calls. Source is supplied by the host. */
 export interface RpcCall { version: 1; callId: string; name: string; payload: Json; source: {Plugin: number}; progress(payload: Json): void; }
-export type HocusToolCall = RpcCall;
 export type RpcOptions = { name: string; payload?: Json | undefined; timeoutMs?: number | undefined; onProgress?: ((payload: Json) => void) | undefined } & (
   { pluginId: number; pluginUrl?: never; pluginConfig?: never } |
   { pluginUrl: string; pluginId?: never; pluginConfig?: Record<string, string> }
@@ -755,19 +754,8 @@ export interface Rpc {
   handle(name: string, handler: (payload: Json, call: RpcCall) => Json | void | Promise<Json | void>): void;
   call(options: RpcOptions): CancellablePromise<Json>;
 }
-export interface HocusToolDefinition {
-  description?: string;
-  parameters?: {type: 'object'; [key: string]: Json};
-  safety?: 'read_only' | 'automatic' | 'confirm';
-  /** Required for confirm. */
-  consequence?: string;
-  handler(payload: Json, call: HocusToolCall): Json | void | Promise<Json | void>;
-}
-export interface HocusExtensions {
+export interface Llm {
   complete(options: CompletionOptions): CancellablePromise<CompletionResult>;
-  /** Requires MessageAndLaunchOtherPlugins. Replaces all handlers and registrations. */
-  tools(definitions: Record<string, HocusToolDefinition>): void;
-  launch(): {namespace: string; path: string} | null;
 }
 export interface Viewport { x?: number; y?: number; width: number; height: number; }
 export interface MarkdownViewport extends Viewport { scroll?: number; }

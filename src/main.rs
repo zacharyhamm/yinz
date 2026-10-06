@@ -1,8 +1,9 @@
+use yinz_runtime::errors::prelude::*;
 mod agent;
+mod agent_hooks;
 mod agent_report;
 mod commands;
-mod hocus_hooks;
-mod hocus_skills;
+mod portable_skills;
 mod session_menu;
 #[cfg(test)]
 mod tests;
@@ -108,9 +109,11 @@ fn main() {
     }
     if matches!(
         &opts.command,
-        Some(Command::Hocus(yinz_cli::args::Hocus::CodexReport))
+        Some(Command::Agent(yinz_cli::args::Agent::CodexReport))
     ) {
-        let result = hocus_hooks::hocus(yinz_cli::args::Hocus::CodexReport);
+        let result = std::env::current_exe()
+            .context("find this yinz binary")
+            .and_then(|binary| yinz_codex::report(&binary));
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
     configure_logger();
@@ -169,8 +172,8 @@ fn main() {
     // Local file work only - a hook is installed into Claude Code's settings, not
     // into a session - so it branches here beside the other two commands that need
     // neither a client nor a server.
-    if let Some(Command::Hocus(hocus)) = opts.command.clone() {
-        if let Err(e) = hocus_hooks::hocus(hocus) {
+    if let Some(Command::Hooks(hooks)) = opts.command.clone() {
+        if let Err(e) = agent_hooks::run(hooks) {
             eprintln!("Error: {e:#}");
             std::process::exit(1);
         }
@@ -178,7 +181,7 @@ fn main() {
     }
 
     if let Some(Command::Skills(command)) = opts.command.clone() {
-        if let Err(error) = hocus_skills::run(command) {
+        if let Err(error) = portable_skills::run(command) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

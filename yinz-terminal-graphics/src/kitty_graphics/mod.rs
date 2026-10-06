@@ -39,7 +39,7 @@
 //!   advances a frame on its own. A clock would need a wakeup source per animating image and a
 //!   retransmission to the host on every tick, and is deliberately left for later. A client that
 //!   asks the terminal to play an animation is told OK and sees a still image, which is the one
-//!   place in this module where a success reply overstates what happened. hocus's empty-chat wand
+//!   place in this module where a success reply overstates what happened. agent's empty-chat wand
 //!   is the in-tree example of the other half of that bargain: a client that drives its own frames
 //!   animates fine.
 //! * **A full store never evicts displayed images.** The specification says images without

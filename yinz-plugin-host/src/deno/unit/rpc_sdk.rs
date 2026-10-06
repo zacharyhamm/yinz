@@ -14,9 +14,6 @@ fn rpc_dispatches_general_handlers_and_keeps_pipes_public() {
       yinz.rpc.handle('nil', () => {});
       const invalid = [undefined, NaN, Infinity, 1n, new Uint8Array([1]), () => {}, Symbol(), new Date(), {x:undefined}, [undefined], Array(1), {get x() {throw Error('getter ran');}}, new Proxy({}, {}), Object.defineProperty({}, 'x', {value:1}), 'x'.repeat(1048576)];
       invalid.forEach((value, i) => yinz.rpc.handle('invalid'+i, () => ({value})));
-      let reserved = false;
-      try {yinz.rpc.handle('hocus_tool:x', () => null);} catch (_) {reserved = true;}
-      check(reserved);
       bind({load() {yinz.waitForPipe('ordinary').then(() => waited = true);}, pipe() {pipes++;}});
       bridge('load', {}, 1);
       for (const [i, name] of ['echo','async','throw','reject','nil','unknown',...invalid.map((_,i) => 'invalid'+i)].entries())
@@ -208,7 +205,7 @@ fn rpc_bounds_error_replies_even_with_a_full_size_call_id() {
 }
 
 #[test]
-fn rpc_carries_report_chunks_and_large_snapshots_without_raising_hocus_limits() {
+fn rpc_carries_report_chunks_and_large_snapshots_without_raising_agent_limits() {
     let mut runtime = sdk();
     run(&mut runtime, r#"
       globalThis.values=['😀'.repeat(16384), '\u0000'.repeat(32768), 'snapshot'.repeat(20000)];
@@ -216,12 +213,10 @@ fn rpc_carries_report_chunks_and_large_snapshots_without_raising_hocus_limits() 
       yinz.rpc.handle('report', payload=>payload);
       bind({load(){
         for(const payload of values) yinz.rpc.call({pluginId:7,name:'report',payload}).then(result=>results.push(result));
-        yinz.rpc.call({pluginId:7,name:'hocus_tool:report',payload:values[0]}).catch(error=>rejected.push(error.message));
       }});bridge('load',{},2);
     "#);
     capture_commands(&mut runtime);
     run(&mut runtime, r#"
-      check(rejected.length===1 && rejected[0].includes('64000'));
       const calls=sent.filter(([c])=>c.MessageToPlugin).map(([c])=>c.MessageToPlugin);
       check(calls.length===3);
       for(const call of calls){

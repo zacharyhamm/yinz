@@ -11,8 +11,8 @@ select a session; use an explicit `--session` when pane context is unavailable.
 Context reports missing caller/project information and
 candidates. Select an explicit session, pane, or project when context is incomplete.
 Do not infer the caller from whichever pane is focused.
-Background operations require `hocus-agentd`; notes and project registry actions
-require `hocus-store`. These are background plugins; opening Hocus chat is not required.
+Background operations require `agent-service`; notes and project registry actions
+require `project-store`. These are background plugins.
 
 Inspect targets before changing them. Use actual pane IDs from the responses, not the example IDs:
 

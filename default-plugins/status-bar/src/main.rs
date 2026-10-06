@@ -1047,25 +1047,25 @@ pub mod tests {
         let keymap = vec![
             (
                 KeyWithModifier::new(BareKey::Char('n')),
-                vec![launches("hocus-new-agent"), TO_NORMAL],
+                vec![launches("new-agent"), TO_NORMAL],
             ),
             (
                 KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier(),
-                vec![launches("hocus")],
+                vec![launches("agents")],
             ),
             (
                 KeyWithModifier::new(BareKey::Char('c')),
-                vec![launches("hocus"), TO_NORMAL],
+                vec![launches("agents"), TO_NORMAL],
             ),
         ];
 
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus-new-agent"),
+            plugin_launch_key(&keymap, "new-agent"),
             vec![KeyWithModifier::new(BareKey::Char('n'))]
         );
 
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus"),
+            plugin_launch_key(&keymap, "agents"),
             vec![KeyWithModifier::new(BareKey::Char('c'))]
         );
     }
@@ -1074,11 +1074,11 @@ pub mod tests {
     fn plugin_launch_key_falls_back_to_a_modified_key_when_that_is_all_there_is() {
         let keymap = vec![(
             KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier(),
-            vec![launches("hocus")],
+            vec![launches("agents")],
         )];
 
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus"),
+            plugin_launch_key(&keymap, "agents"),
             vec![KeyWithModifier::new(BareKey::Char('`')).with_ctrl_modifier()]
         );
     }
@@ -1088,28 +1088,28 @@ pub mod tests {
         let keymap = vec![
             (
                 KeyWithModifier::new(BareKey::Char('a')),
-                vec![launches("hocus-agents"), TO_NORMAL],
+                vec![launches("agents"), TO_NORMAL],
             ),
             (
                 KeyWithModifier::new(BareKey::Char('c')),
-                vec![launches("hocus"), TO_NORMAL],
+                vec![launches("todos"), TO_NORMAL],
             ),
             (
                 KeyWithModifier::new(BareKey::Char('k')),
-                vec![launches("hocus-new-agent"), TO_NORMAL],
+                vec![launches("new-agent"), TO_NORMAL],
             ),
         ];
 
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus-agents"),
+            plugin_launch_key(&keymap, "agents"),
             vec![KeyWithModifier::new(BareKey::Char('a'))]
         );
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus"),
+            plugin_launch_key(&keymap, "todos"),
             vec![KeyWithModifier::new(BareKey::Char('c'))]
         );
         assert_eq!(
-            plugin_launch_key(&keymap, "hocus-new-agent"),
+            plugin_launch_key(&keymap, "new-agent"),
             vec![KeyWithModifier::new(BareKey::Char('k'))]
         );
     }
@@ -1146,7 +1146,7 @@ pub mod tests {
             ),
             (
                 KeyWithModifier::new(BareKey::Char('c')),
-                vec![launches("hocus"), TO_NORMAL],
+                vec![launches("agents"), TO_NORMAL],
             ),
         ];
 
@@ -1156,7 +1156,7 @@ pub mod tests {
         );
         assert_eq!(keybind_pipe_key(&keymap, "nothing_sends_this"), vec![]);
         // A plugin launch is not a message, whatever it is called.
-        assert_eq!(keybind_pipe_key(&keymap[2..], "hocus"), vec![]);
+        assert_eq!(keybind_pipe_key(&keymap[2..], "agents"), vec![]);
     }
 
     // The Wasm bar's keymap comes over the plugin API, which drops a pipe's name. Were a nameless

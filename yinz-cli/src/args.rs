@@ -300,7 +300,7 @@ pub enum Skills {
         names: Vec<String>,
         /// Install for one agent (default: all agents). --dest overrides its skills directory.
         #[clap(long, value_enum)]
-        agent: Option<HocusHookAgent>,
+        agent: Option<HookAgent>,
         /// Install directly into this skills directory instead of agent defaults.
         #[clap(long)]
         dest: Option<PathBuf>,
@@ -311,37 +311,8 @@ pub enum Skills {
     },
 }
 
-/// The hocus side of the CLI: things about the agent plugins that a person, or an
-/// agent's own hook, runs from a shell.
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum Hocus {
-    /// Run Codex with pane tracking while retaining its shared background daemon.
-    Codex {
-        #[clap(long, default_value = "codex")]
-        command: PathBuf,
-        #[clap(last = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Receive a Codex hook and route it by its conversation id.
-    #[clap(hide = true)]
-    CodexReport,
-    /// Run Muse with pane tracking, binding its session id back to this pane.
-    Muse {
-        #[clap(long, default_value = "muse")]
-        command: PathBuf,
-        #[clap(last = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Receive a Muse hook and route it by its session id.
-    #[clap(hide = true)]
-    MuseReport,
-    /// Wire coding-agent hooks up to the agent plugins, so panes report their own state.
-    #[clap(subcommand)]
-    Hooks(HocusHooks),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-pub enum HocusHookAgent {
+pub enum HookAgent {
     Claude,
     Codex,
     Opencode,
@@ -352,7 +323,7 @@ pub enum HocusHookAgent {
 }
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum HocusHooks {
+pub enum Hooks {
     /// Write hook scripts and add them to the agents' settings.
     ///
     /// Idempotent: running it again rewrites the script and replaces the entries it
@@ -510,9 +481,9 @@ pub enum Command {
     #[clap(subcommand)]
     Plugins(Plugins),
 
-    /// The hocus agent plugins.
+    /// Install, inspect or remove coding-agent hooks.
     #[clap(subcommand)]
-    Hocus(Hocus),
+    Hooks(Hooks),
 
     /// Manage session-scoped Firecracker VMs.
     #[clap(subcommand)]
@@ -565,6 +536,9 @@ impl Agent {
     /// replies are JSON either way.
     pub fn json(&self) -> bool {
         match self {
+            Agent::Codex { .. } | Agent::CodexReport | Agent::Muse { .. } | Agent::MuseReport => {
+                false
+            },
             Agent::Archive(archive) => archive.json(),
             Agent::Control(AgentControl::Register { json } | AgentControl::Unregister { json }) => {
                 *json
@@ -620,6 +594,27 @@ pub struct AgentWatchFilters {
 
 #[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
 pub enum Agent {
+    /// Run Codex with pane tracking while retaining its shared background daemon.
+    Codex {
+        #[clap(long, default_value = "codex")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Receive a Codex hook and route it by its conversation id.
+    #[clap(hide = true)]
+    CodexReport,
+    /// Run Muse with pane tracking, binding its session id back to this pane.
+    Muse {
+        #[clap(long, default_value = "muse")]
+        command: PathBuf,
+        #[clap(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Receive a Muse hook and route it by its session id.
+    #[clap(hide = true)]
+    MuseReport,
+
     /// Register this pane as a control agent, or remove its registration.
     #[clap(subcommand)]
     Control(AgentControl),
@@ -663,7 +658,7 @@ pub enum Agent {
     },
     /// Launch an agent with the shared launch planner and return its actual pane and checkout.
     /// Preserve keyboard focus, including when the worker needs another tab.
-    /// Refresh existing Claude hooks with `yinz hocus hooks install --agent claude` to prevent duplicate reports.
+    /// Refresh existing Claude hooks with `yinz hooks install --agent claude` to prevent duplicate reports.
     Spawn {
         /// Initial destination: stable numeric tab ID, including zero, not tab-bar position.
         /// Does not assign a project or change focus. Requires a matching running server.
@@ -2544,7 +2539,7 @@ mod tests {
             vec!["yinz", "action", "agent-list"],
             vec!["yinz", "action", "agent-wait", "terminal_7", "idle"],
             vec!["yinz", "action", "agent-runs"],
-            vec!["yinz", "hocus", "skills", "install"],
+            vec!["yinz", "agents", "skills", "install"],
             vec!["yinz", "workflow", "show", "run-id", "--json"],
         ] {
             assert!(try_parse_cli(args).is_err());
@@ -2611,7 +2606,7 @@ mod tests {
 
     #[test]
     fn a_plugin_launch_takes_the_url_and_nothing_else_by_default() {
-        let cli = try_parse_cli(["yinz", "action", "launch-or-focus-plugin", "hocus"]).unwrap();
+        let cli = try_parse_cli(["yinz", "action", "launch-or-focus-plugin", "agents"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Action(action))
@@ -3047,6 +3042,23 @@ mod tests {
         assert_eq!(EventType::from_cli_name("NotAnEvent"), None);
         for name in EventType::cli_streamable_names() {
             assert!(EventType::from_cli_name(&name).is_some(), "{name}");
+        }
+    }
+    #[test]
+    fn neutral_agent_cli_and_hooks_have_no_hocus_alias() {
+        for args in [
+            vec!["yinz", "hooks", "status"],
+            vec!["yinz", "agent", "codex", "--", "--model", "local"],
+            vec!["yinz", "agent", "muse-report"],
+        ] {
+            assert!(try_parse_cli(args).is_ok());
+        }
+        for args in [
+            vec!["yinz", "hocus", "hooks", "status"],
+            vec!["yinz", "hocus", "codex"],
+            vec!["yinz", "agent", "hooks", "status"],
+        ] {
+            assert!(try_parse_cli(args).is_err());
         }
     }
 }

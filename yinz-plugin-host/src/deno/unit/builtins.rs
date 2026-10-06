@@ -1364,11 +1364,11 @@ fn the_typescript_forms_example_routes_keys_paste_and_mouse() {
     assert!(!frame(&mut plugin, 24, 60).is_empty());
 }
 
-/// The Hocus todo example reads a project list out of the shared namespace another plugin
+/// The Agent todo example reads a project list out of the shared namespace another plugin
 /// declared, on the real SQLite store. See
-/// `the_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace`.
+/// `the_todos_example_reads_a_project_list_out_of_the_shared_namespace`.
 #[test]
-fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
+fn the_typescript_todos_example_reads_a_project_list_out_of_the_shared_namespace() {
     use yinz_storage::data_access::DataAccess;
     use yinz_types::data::{AttrDef, EntityDef, Mutation};
     let store_dir = tempfile::tempdir().unwrap();
@@ -1376,8 +1376,8 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
     let store = data_access.plugin_data();
     store
         .define_entity(
-            "shared:hocus",
-            "yinz:hocus-store",
+            "shared:yinz",
+            "yinz:project-store",
             &EntityDef::new("project", 1)
                 .attr(AttrDef::text("name").required())
                 .attr(AttrDef::text("root").indexed().required()),
@@ -1386,8 +1386,8 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
         .unwrap();
     store
         .define_entity(
-            "shared:hocus",
-            "yinz:hocus-store",
+            "shared:yinz",
+            "yinz:project-store",
             &EntityDef::new("todo", 1)
                 .attr(AttrDef::text("root").indexed().required())
                 .attr(AttrDef::int("parent_id"))
@@ -1398,7 +1398,7 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
         .unwrap();
     store
         .apply(
-            "shared:hocus",
+            "shared:yinz",
             &[
                 Mutation::put("project")
                     .uid("work")
@@ -1415,7 +1415,7 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
         .unwrap();
     let parent = store
         .apply(
-            "shared:hocus",
+            "shared:yinz",
             &[Mutation::put("todo")
                 .set("root", ".")
                 .set("text", "ship it")
@@ -1427,7 +1427,7 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
         .ids[0];
     store
         .apply(
-            "shared:hocus",
+            "shared:yinz",
             &[Mutation::put("todo")
                 .set("root", ".")
                 .set("parent_id", parent)
@@ -1439,9 +1439,8 @@ fn the_typescript_hocus_todos_example_reads_a_project_list_out_of_the_shared_nam
     let mut env = test_env();
     env.permissions = Arc::new(Mutex::new(Some(PermissionType::iter().collect())));
     env.data_access = data_access;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/hocus-todos.ts");
-    let mut plugin =
-        DenoPlugin::new(&example("hocus-todos.ts"), &path, env, Arc::default()).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../example-plugins/todos.ts");
+    let mut plugin = DenoPlugin::new(&example("todos.ts"), &path, env, Arc::default()).unwrap();
     plugin.load(&BTreeMap::new()).unwrap();
     grant_requested_permissions(&mut plugin);
     let rendered = frame(&mut plugin, 10, 60);

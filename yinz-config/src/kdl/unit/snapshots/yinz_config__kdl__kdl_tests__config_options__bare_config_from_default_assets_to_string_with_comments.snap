@@ -142,16 +142,7 @@ keybinds clear-defaults=true {
     }
     agent {
         bind "a" {
-            LaunchOrFocusPlugin "hocus-agents" {
-                floating true
-                move_to_focused_tab true
-                awaits_placement true
-                overlay true
-            }
-            SwitchToMode "normal"
-        }
-        bind "c" {
-            LaunchOrFocusPlugin "hocus" {
+            LaunchOrFocusPlugin "agents" {
                 floating true
                 move_to_focused_tab true
                 awaits_placement true
@@ -160,7 +151,7 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
         bind "d" {
-            LaunchOrFocusPlugin "hocus-duplicate-agent" {
+            LaunchOrFocusPlugin "duplicate-agent" {
                 floating true
                 move_to_focused_tab true
                 modal true
@@ -170,7 +161,7 @@ keybinds clear-defaults=true {
         }
         bind "Ctrl e" { SwitchToMode "normal"; }
         bind "f" {
-            LaunchOrFocusPlugin "hocus-fork-agent" {
+            LaunchOrFocusPlugin "fork-agent" {
                 floating true
                 move_to_focused_tab true
                 modal true
@@ -179,7 +170,7 @@ keybinds clear-defaults=true {
             SwitchToMode "normal"
         }
         bind "n" {
-            LaunchOrFocusPlugin "hocus-new-agent" {
+            LaunchOrFocusPlugin "new-agent" {
                 floating true
                 move_to_focused_tab true
                 modal true
@@ -347,40 +338,37 @@ keybinds clear-defaults=true {
 plugins {
     agent-exit location="yinz:agent-exit"
     agent-policy location="yinz:agent-policy"
+    agent-service location="yinz:agent-service" {
+        shared true
+    }
+    agents location="yinz:agents" {
+        shared true
+    }
     compact-bar location="yinz:compact-bar"
     configuration location="yinz:configuration"
     context-menu location="yinz:context-menu"
+    duplicate-agent location="yinz:new-agent" {
+        duplicate_focused true
+    }
     file-finder location="yinz:file-finder"
     filepicker location="yinz:strider" {
         cwd "/"
     }
-    hocus location="yinz:hocus" {
-        shared true
-    }
-    hocus-agentd location="yinz:hocus-agentd" {
-        shared true
-    }
-    hocus-agents location="yinz:hocus-agents" {
-        shared true
-    }
-    hocus-duplicate-agent location="yinz:hocus-new-agent" {
-        duplicate_focused true
-    }
-    hocus-fork-agent location="yinz:hocus-new-agent" {
+    fork-agent location="yinz:new-agent" {
         fork_focused true
     }
-    hocus-new-agent location="yinz:hocus-new-agent"
-    hocus-store location="yinz:hocus-store" {
+    new-agent location="yinz:new-agent"
+    plugin-manager location="yinz:plugin-manager"
+    project-store location="yinz:project-store" {
         shared true
     }
-    hocus-swamp location="yinz:hocus-swamp"
-    hocus-todos location="yinz:hocus-todos"
-    hocus-vms location="yinz:hocus-vms"
-    plugin-manager location="yinz:plugin-manager"
     session-manager location="yinz:session-manager"
     status-bar location="yinz:status-bar"
     strider location="yinz:strider"
+    swamp-issues location="yinz:swamp-issues"
     tab-bar location="yinz:tab-bar"
+    todos location="yinz:todos"
+    vms location="yinz:vms"
     welcome-screen location="yinz:session-manager" {
         welcome_screen true
     }
@@ -390,8 +378,8 @@ plugins {
 // eg. "file:/path/to/my-plugin.wasm" or "file:/path/to/my-plugin.ts"
 load_plugins {
     yinz:link
-    hocus-agentd
-    hocus-store
+    agent-service
+    project-store
 }
 hooks {
     agent_exit "yinz:agent-exit"
@@ -673,7 +661,7 @@ context_menu {
 // 
 // scrollback_lines_to_serialize 10000
 
-// Background opacity for Hocus, the command palette and translucent overlays (default: 85%).
+// Background opacity for Agent, the command palette and translucent overlays (default: 85%).
 // Text and controls remain opaque. 0 is clear; 100 is solid.
 background_opacity "85%"
  

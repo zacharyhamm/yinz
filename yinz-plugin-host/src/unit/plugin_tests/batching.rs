@@ -362,9 +362,9 @@ pub fn a_shared_plugin_sees_each_event_under_its_acting_client() {
 /// `render_plugin_for_clients` reads `rows`/`columns` off the instance once and then loops the
 /// clients, and the session itself is reflowed to the *smallest* attached client
 /// (`screen/sizing.rs`), so two terminals of different sizes do not give one plugin two
-/// viewports. hocus leans on exactly this: it keeps a single `transcript_rows` and a single
+/// viewports. agent leans on exactly this: it keeps a single `transcript_rows` and a single
 /// measured `max_offset` for every client, and per-client state there would be dead weight.
-/// If that ever stops being true, hocus's viewport bookkeeping is silently wrong — so fail
+/// If that ever stops being true, agent's viewport bookkeeping is silently wrong — so fail
 /// here, next to the host code that decides it, rather than there.
 #[test]
 #[serial(plugin_tests)]

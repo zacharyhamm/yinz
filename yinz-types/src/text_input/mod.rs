@@ -2,14 +2,14 @@
 //!
 //! This is the merge of two copies that had been maintained by hand and drifted
 //! — `default-plugins/layout-manager/src/text_input.rs` and
-//! `default-plugins/hocus-proto/src/text_input.rs`. The layout-manager header
+//! `default-plugins/agent-proto/src/text_input.rs`. The layout-manager header
 //! explained why both existed:
 //!
 //!   This is a duplicate of the same file in the sequence (and possibly other) plugins
 //!   Right now there's no good place to put them for shared logic except the yinz-tile-utils crate
 //!   (which I'd rather eliminate), hence the duplication.
 //!
-//! This module is that place. The behaviour is hocus-proto's, which was the
+//! This module is that place. The behaviour is agent-proto's, which was the
 //! superset (shell-style history, `replace_text`); the state-machine tests come
 //! from layout-manager, which was the only copy that had them.
 //!

@@ -1102,9 +1102,9 @@ pub fn plugin_thread_main(
                     ) =>
                     {
                         match wasm_bridge.builtin_service_instance(match name.as_str() {
-                            "agent_action" => "hocus-agentd",
+                            "agent_action" => "agent-service",
                             "workflow_action" | "swamp" => "swamp-bridge",
-                            _ => "hocus-store",
+                            _ => "project-store",
                         }) {
                             Ok((plugin_id, client_id)) => pipe_messages.push((
                                 Some(plugin_id),
@@ -1151,7 +1151,7 @@ pub fn plugin_thread_main(
                     } else {
                         Err(format!(
                             "Plugin destination is unavailable: {}",
-                            plugin.as_deref().unwrap_or("hocus-store")
+                            plugin.as_deref().unwrap_or("project-store")
                         ))
                     };
                     wasm_bridge.finish_empty_pipe(&pipe_id, result);
@@ -1162,14 +1162,14 @@ pub fn plugin_thread_main(
                 wasm_bridge.pipe_messages(pipe_messages, shutdown_send.clone(), None)?;
             },
             PluginInstruction::ArrangePanesByProject => {
-                let store = wasm_bridge.builtin_service_instance("hocus-store");
+                let store = wasm_bridge.builtin_service_instance("project-store");
                 if store.is_err()
                     || wasm_bridge
-                        .builtin_service_instance("hocus-agentd")
+                        .builtin_service_instance("agent-service")
                         .is_err()
                 {
                     bus.senders.send_to_screen(ScreenInstruction::Notify(
-                        "Arrange panes requires the hocus-store and hocus-agentd builtins"
+                        "Arrange panes requires the project-store and agent-service builtins"
                             .to_owned(),
                         None,
                         None,
@@ -2258,7 +2258,7 @@ fn drain_updates(
 ///
 /// A reload is a full unload and load, on the plugin thread and under the global plugin map
 /// lock, so it is the most expensive instruction there is — and a plugin can ask for one with a
-/// single host call. One that asks in a loop (hocus once did, thousands of times a second) fills
+/// single host call. One that asks in a loop (agent once did, thousands of times a second) fills
 /// this bus with reloads faster than one can run, and every other plugin's events wait behind
 /// them: the whole plugin subsystem reads as frozen. `pending_plugin_reloads` already folds
 /// reloads that arrive *while* one is in flight into a single follow-up; this closes the gap

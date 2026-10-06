@@ -6,7 +6,7 @@ description: Discover, validate, inspect, and control project workflows through 
 Run `yinz --session NAME workflow ...` from the project's Git control checkout,
 initialized as a Swamp repository (`swamp repo init --tool none` for a new one).
 The background `swamp-bridge` plugin provides the same validated operations used
-by Hocus; chat is not required. `yinz action context` reports service availability.
+by background plugins. `yinz action context` reports service availability.
 Use `workflow server status` for the managed server. Use native file tools for
 ordinary repository work and external service tools for GitHub and web access.
 

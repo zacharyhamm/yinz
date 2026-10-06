@@ -123,8 +123,8 @@ fn switch_to_agent_mode() {
         " Fork ",
         " a ",
         " Agents ",
-        " c ",
-        " Chat ",
+        " o ",
+        " Move ",
     ] {
         let found = rest.find(expected).unwrap_or_else(|| {
             panic!("agent hints lost {expected:?} in order, got: {hints:?}");

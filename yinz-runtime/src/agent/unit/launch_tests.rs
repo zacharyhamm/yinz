@@ -17,7 +17,7 @@ fn custom_executables_keep_their_path_and_receive_their_agent_launch_support() {
         assert_eq!(
             &command.args[..7],
             &[
-                "hocus",
+                "agent",
                 "codex",
                 "--command",
                 "/opt/tools/codex-cli",

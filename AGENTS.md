@@ -100,7 +100,7 @@ Run full `cargo x test` and `cargo x integration-test -j 16` for changes to:
 - Shared libraries, plugin-facing APIs, or assets under `yinz-config/`,
   `yinz-project-config/`, `yinz-deno-builtins/`, `yinz-plugin-api/`,
   `yinz-plugin-location/`, `yinz-ipc/`, `yinz-host-protocol/`, or
-  `default-plugins/hocus-data/` (linked by the hocus plugins and the plugin host).
+  `default-plugins/project-data/` (linked by the agent plugins and the plugin host).
 - Render paths in `yinz-panes/`, `yinz-terminal/` or `yinz-terminal-graphics/`,
   key encoding in `yinz-key-codec/`, screen/tab/pty plumbing (`yinz-screen/`,
   `yinz-tab/`, `yinz-pty/`), `yinz-plugin-host/`, or `yinz-plugin-authoring/`.
@@ -163,7 +163,7 @@ escalation on the first attempt.
 | `yinz-process/` | Pane supervisors, local/remote protocols, SSH, Firecracker client |
 | `yinz-firecracker-provider/` | The `yinz-firecracker` VM provider (Linux only) |
 | `yinz-swamp/` | Managed Swamp servers and the workflow client |
-| `yinz-codex/` | Codex conversation-to-pane binding for `yinz hocus codex` |
+| `yinz-codex/` | Codex conversation-to-pane binding for `yinz agent codex` |
 | `yinz-terminal/` | Terminal emulation (`Grid`) and output serialization; drives the graphics engine and emits host queries |
 | `yinz-terminal-graphics/` | Kitty graphics and Sixel protocol engine; re-exported as `yinz_terminal::panes::{kitty_graphics, sixel}` |
 | `yinz-client/` | Input handling and terminal I/O |
@@ -179,7 +179,7 @@ escalation on the first attempt.
 | `yinz-tile-markdown/` | CommonMark to styled terminal lines for plugins |
 | `yinz-test-support/` | Condition waits and warm scripts for tests |
 | `default-plugins/` | Builtin Wasm crates |
-| `default-plugins/hocus-data/` | Hocus store seam, entity schemas, project/todo/note registry; re-exported by `hocus-proto`, linked by the plugin host |
+| `default-plugins/project-data/` | Agent store seam, entity schemas, project/todo/note registry; re-exported by `agent-proto`, linked by the plugin host |
 | `yinz-integration-tests/` | Whole-app tests |
 | `src/tests/e2e/`, `yinz-server/tests/` | Docker E2E and remote-pane tests |
 | `docker/`, `docker-compose.postgres.yml` | Test containers |
@@ -208,7 +208,7 @@ One `plugin-data.db` serves all local servers. With `plugin_data_url` set to
 Postgres, one database can serve multiple machines.
 
 - Scope server rows by **both `host_id` and `yinz_session_name`**, using
-  `hocus_proto::agents::rows::Owner`. Carry `PluginIds.host_id` from startup.
+  `agent_proto::agents::rows::Owner`. Carry `PluginIds.host_id` from startup.
   Do not call `get_plugin_ids()` in library code: it reads real stdin in native tests.
 - An empty `host_id` marks legacy data. Preserve legacy runs and import markers
   when adding host-specific claims (`store::import_recorded`). Delete legacy
@@ -250,10 +250,8 @@ Use the `swamp` skill for Swamp authoring, operations, and diagnostics:
 - For Kitty graphics conformance, read
   [the graphics instructions](yinz-terminal-graphics/src/kitty_graphics/CLAUDE.md).
 - For render benchmarks, use [the bench skill](.agents/skills/bench/SKILL.md).
-- `yinz hocus hooks install` connects Claude/Codex state hooks to
+- `yinz hooks install` connects Claude/Codex state hooks to
   `yinz action agent-report`, updating `PaneInfo.agent` and notifying plugins.
   This differs from the session `hooks { … }` config in `yinz-types/src/input/hooks.rs`.
-- Hocus reads `SKILL.md` prompts for `/<name> [text]` only from
-  `<project root>/.hocus/skills/<name>/` and
-  `~/.config/yinz/plugins/hocus/skills/<name>/`, never `.claude/skills`.
-  Implementation: `default-plugins/hocus/src/skills.rs`.
+- `yinz skills list/show/install` manages portable skills for external coding agents.
+  Implementation: `src/portable_skills.rs`.

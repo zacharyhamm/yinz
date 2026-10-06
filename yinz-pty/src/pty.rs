@@ -3928,7 +3928,7 @@ impl Pty {
     ) -> GetPaneRunningCommandResponse {
         match pane_id {
             PaneId::Terminal(terminal_id) => {
-                // `hocus-agentd` calls this directly to repair panes the
+                // `agent-service` calls this directly to repair panes the
                 // activity-flag poll missed, so a remote pane has to answer it
                 // too — otherwise a remote agent would only ever be classified
                 // from its title.

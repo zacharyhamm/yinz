@@ -39,7 +39,7 @@ fn a_client_focused_inside_a_tab_is_not_dragged_out_of_it() {
     screen
         .reveal_pane_with_id(
             PaneId::Terminal(crate::TerminalId::new(2)),
-            Some("hocus: send_input?".into()),
+            Some("agent: send_input?".into()),
             client_id,
         )
         .expect("TEST");
@@ -62,7 +62,7 @@ fn a_pane_that_cannot_be_revealed_is_still_marked() {
     screen
         .reveal_pane_with_id(
             PaneId::Terminal(crate::TerminalId::new(2)),
-            Some("hocus: send_input?".into()),
+            Some("agent: send_input?".into()),
             client_id,
         )
         .expect("TEST");
@@ -87,7 +87,7 @@ fn the_mark_is_drawn_only_for_the_client_it_was_raised_for() {
     screen
         .reveal_pane_with_id(
             PaneId::Terminal(crate::TerminalId::new(2)),
-            Some("hocus: send_input?".into()),
+            Some("agent: send_input?".into()),
             crate::ClientId::new(asking_client),
         )
         .expect("TEST");

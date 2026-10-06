@@ -440,7 +440,7 @@ fn opencode_events_are_read_at_the_seam_and_the_translated_event_is_what_travels
     assert_eq!(event.tool_name.as_deref(), Some("Bash"));
     assert_eq!(event.session_id, "ses_1");
     assert_eq!(event.cwd.as_deref(), Some("/work"));
-    // `raw` is a `HookEvent`, which is what the broker and hocus-agentd require of it.
+    // `raw` is a `HookEvent`, which is what the broker and agent-service require of it.
     let raw_event: HookEvent = serde_json::from_str(&raw).unwrap();
     assert_eq!(raw_event, event);
     assert_eq!(raw_event.tool_name.as_deref(), Some("Bash"));

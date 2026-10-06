@@ -38,7 +38,7 @@ pub enum InputMode {
     Prompt = 12,
     /// / `Tmux` mode allows for basic tmux keybindings functionality
     Tmux = 13,
-    /// / `Agent` mode gathers the hocus agent actions behind a single leader.
+    /// / `Agent` mode gathers coding-agent actions behind a single leader.
     Agent = 14,
     /// / `Select` mode extends a text selection in the focused pane.
     Select = 15,

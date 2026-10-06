@@ -505,7 +505,7 @@ impl PaneFleet {
                     CharacterChunk::new(vec![TerminalCharacter::new(' '); rect.cols], rect.x, y);
                 if y == rect.y {
                     row.terminal_characters[..5].clone_from_slice(
-                        &"Hocus"
+                        &"Agent"
                             .chars()
                             .map(TerminalCharacter::new)
                             .collect::<Vec<_>>(),

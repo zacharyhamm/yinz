@@ -160,7 +160,7 @@ fn rev_can_be_selected_filtered_and_sorted_on() {
     assert_eq!(texts(&sorted, "project"), vec!["busy", "quiet"]);
 }
 
-/// A guarded update spelled by hand: the whole point of the column, and the shape the hocus
+/// A guarded update spelled by hand: the whole point of the column, and the shape the agent
 /// read-modify-write paths take.
 #[test]
 fn an_update_guarded_on_a_stale_rev_matches_nothing() {

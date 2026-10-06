@@ -5336,7 +5336,7 @@ impl Tab {
             }
         }
         // Adopting the tab's working panes must not make settlement destroy them. A panel
-        // made only from existing overlays (hocus) keeps its previous session-lifetime policy.
+        // made only from existing overlays (agent) keeps its previous session-lifetime policy.
         let retains_tab = children
             .iter()
             .any(|id| !self.pane_is_overlay(*id) && !self.suppressed_panes.contains_key(id));
@@ -7281,7 +7281,7 @@ impl Tab {
     /// Every overlay this tab holds, hidden ones included.
     ///
     /// Hidden ones on purpose: an overlay that has been set aside still has to hear the events it
-    /// will act on when it comes back - a hidden hocus learns which tab to reappear on from the
+    /// will act on when it comes back - a hidden agent learns which tab to reappear on from the
     /// `TabUpdate`s it receives while hidden.
     pub fn overlay_plugin_ids(&self) -> Vec<PluginId> {
         self.overlay_panes
@@ -8614,7 +8614,7 @@ impl Tab {
         // Suppressed panes are deliberately still left out - `suppress_pane`
         // extracts them from both collections, and a hidden plugin is not on
         // screen to begin with. A hidden *overlay* is the same statement about
-        // the same thing, so it is filtered here rather than extracted: hocus
+        // the same thing, so it is filtered here rather than extracted: agent
         // set aside with Esc must not be told the tab it is not being drawn on
         // just became visible. The same goes for a floating plugin while the
         // floating surface is down: it is told about the surface by
@@ -8689,7 +8689,7 @@ impl Tab {
     ///
     /// The `bool` is what lets the caller skip the repaint and the session-state
     /// report for a rename that changes nothing. A plugin that reasserts its own
-    /// title every render — hocus did, ten times a second while streaming a
+    /// title every render — agent did, ten times a second while streaming a
     /// reply — would otherwise have the screen rebuild every tab's pane manifest
     /// and push `PaneUpdate`/`TabUpdate` at every subscribed plugin each time,
     /// landing that traffic in the same queues the user's keystrokes travel.
@@ -10068,7 +10068,7 @@ impl Tab {
     /// Take this tab's dismissible overlays out of it, ready to be given to another tab.
     ///
     /// An overlay is drawn over the whole session surface rather than inside this tab's
-    /// viewport, and hocus - the one thing that lives in one for a whole session - holds state no
+    /// viewport, and agent - the one thing that lives in one for a whole session - holds state no
     /// other pane does. So a tab going away is not a reason for one to be unloaded: `close_tab_by_id`
     /// takes them out here and re-homes them, exactly as it already does for suppressed panes.
     ///

@@ -31,7 +31,7 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
         bind "{entry_key}" {{ SwitchToMode "Normal"; }}
         bind "Enter" "Esc" {{ SwitchToMode "{exit_mode}"; }}
         bind "n" {{
-            LaunchOrFocusPlugin "hocus-new-agent" {{
+            LaunchOrFocusPlugin "new-agent" {{
                 floating true
                 overlay true
                 modal true
@@ -40,7 +40,7 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             SwitchToMode "{exit_mode}"
         }}
         bind "d" {{
-            LaunchOrFocusPlugin "hocus-duplicate-agent" {{
+            LaunchOrFocusPlugin "duplicate-agent" {{
                 floating true
                 overlay true
                 modal true
@@ -49,7 +49,7 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             SwitchToMode "{exit_mode}"
         }}
         bind "f" {{
-            LaunchOrFocusPlugin "hocus-fork-agent" {{
+            LaunchOrFocusPlugin "fork-agent" {{
                 floating true
                 overlay true
                 modal true
@@ -58,16 +58,7 @@ fn agent_keybinds(entry_key: &str, exit_mode: &str, plain_entry: bool) -> String
             SwitchToMode "{exit_mode}"
         }}
         bind "a" {{
-            LaunchOrFocusPlugin "hocus-agents" {{
-                floating true
-                overlay true
-                awaits_placement true
-                move_to_focused_tab true
-            }};
-            SwitchToMode "{exit_mode}"
-        }}
-        bind "c" {{
-            LaunchOrFocusPlugin "hocus" {{
+            LaunchOrFocusPlugin "agents" {{
                 floating true
                 overlay true
                 awaits_placement true
@@ -1678,14 +1669,14 @@ mod tests {
                         }]
                     );
                 }
-                // `o` asks a running hocus to move the panel: a message that names no plugin,
+                // `o` asks a running agent to move the panel: a message that names no plugin,
                 // so it reaches the plugins already running and launches none.
                 assert!(matches!(
                     &agent[&"o".parse().unwrap()][0],
                     Action::KeybindPipe { name: Some(name), plugin: None, launch_new: false, .. }
                         if name == "agent_strip_reposition"
                 ));
-                for key in ["n", "d", "a", "c", "o"] {
+                for key in ["n", "d", "a", "o"] {
                     let key: KeyWithModifier = key.parse().unwrap();
                     let actions = &agent[&key];
                     assert_eq!(actions.len(), 2);

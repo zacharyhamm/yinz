@@ -1,5 +1,5 @@
 //! Offline TypeScript plugin authoring: checking, writing and formatting plugin sources, as
-//! `yinz plugins`, the plugin host's authoring commands and Hocus's native tests do it.
+//! `yinz plugins`, the plugin host's authoring commands and Agent's native tests do it.
 //!
 //! Nothing here parses or evaluates a plugin. Every parse, analysis, type check and strict
 //! authoring run happens in a `--deno-compilation-worker` subprocess of the server binary, so

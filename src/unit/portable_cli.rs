@@ -123,7 +123,7 @@ impl Session {
             .status()
             .unwrap()
             .success());
-        std::fs::write(dir.join("config.kdl"), "plugins { hocus-store location=\"yinz:hocus-store\"; hocus-agentd location=\"yinz:hocus-agentd\"; swamp-bridge location=\"yinz:swamp-bridge\"; }\nload_plugins clear-defaults=true { \"hocus-store\"; \"hocus-agentd\"; \"swamp-bridge\"; }\ndetachable_panes false\n").unwrap();
+        std::fs::write(dir.join("config.kdl"), "plugins { project-store location=\"yinz:project-store\"; agent-service location=\"yinz:agent-service\"; swamp-bridge location=\"yinz:swamp-bridge\"; }\nload_plugins clear-defaults=true { \"project-store\"; \"agent-service\"; \"swamp-bridge\"; }\ndetachable_panes false\n").unwrap();
         std::fs::write(dir.join("layout.kdl"), "layout { pane command=\"/bin/sh\" { args \"-c\" \"printf 'PORTABLE READY\\n'; exec /bin/sh\"; }; }\n").unwrap();
         setup(dir);
         let out = command(dir)
@@ -221,14 +221,7 @@ impl Session {
     }
     fn fetch(&self, request: FetchRequest) -> DataRows {
         serde_json::from_value(success(self.run(
-            &[
-                "data",
-                "fetch",
-                "--namespace",
-                "shared:hocus",
-                "--file",
-                "-",
-            ],
+            &["data", "fetch", "--namespace", "shared:yinz", "--file", "-"],
             Some(&serde_json::to_string(&request).unwrap()),
         )))
         .unwrap()
@@ -374,14 +367,7 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
     let guarded = |revision| json!({"Update":{"entity":"project","filter":{"Eq":["id",{"Int":row_id}]},"values":[["worktree_dir",{"Text":"trees"}]],"expect_rev":revision}});
     let apply = |mutations: Value| {
         session.run(
-            &[
-                "data",
-                "apply",
-                "--namespace",
-                "shared:hocus",
-                "--file",
-                "-",
-            ],
+            &["data", "apply", "--namespace", "shared:yinz", "--file", "-"],
             Some(&mutations.to_string()),
         )
     };
@@ -439,7 +425,7 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|pane| pane["plugin_url"] == "hocus"));
+        .any(|pane| pane["plugin_url"] == "agents"));
 
     assert!(Command::new("git")
         .current_dir(session.0.path())
@@ -496,7 +482,7 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
     // Reload the metadata owner with no chat loaded, then query its persisted assignment.
     assert!(session
         .run(
-            &["action", "start-or-reload-plugin", "yinz:hocus-agentd"],
+            &["action", "start-or-reload-plugin", "yinz:agent-service"],
             None
         )
         .status

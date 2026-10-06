@@ -473,7 +473,7 @@ fn plugin_agent_control_resolves_only_local_relative_directories() {
     std::fs::create_dir(&child).unwrap();
     let mut env = crate::test_env::test_env();
     env.plugin_config.location = yinz_types::input::layout::RunPluginLocation::Yinz(
-        yinz_types::data::PluginTag::new("hocus"),
+        yinz_types::data::PluginTag::new("agents"),
     );
     env.plugin_cwd = root.clone();
     env.data_access = std::sync::Arc::new(DataAccess::sqlite(&root.join("data")));
@@ -735,16 +735,16 @@ fn agent_destination_is_carried_for_local_ssh_and_guest_only_vm_spawns() {
     use yinz_types::internal_ids::TabId;
     for target in ["local", "ssh", "vm"] {
         let (_directory, root, data) = launch_failure_repository();
-        for def in hocus_data::store::shared_defs() {
+        for def in project_data::store::shared_defs() {
             data.plugin_data()
-                .define_entity(hocus_data::store::SHARED, "test", &def, false)
+                .define_entity(project_data::store::SHARED, "test", &def, false)
                 .unwrap();
         }
-        let project = hocus_data::projects::validate("work", root.to_str().unwrap()).unwrap();
+        let project = project_data::projects::validate("work", root.to_str().unwrap()).unwrap();
         data.plugin_data()
             .apply(
-                hocus_data::store::SHARED,
-                &[hocus_data::projects::to_mutation(&project)],
+                project_data::store::SHARED,
+                &[project_data::projects::to_mutation(&project)],
             )
             .unwrap();
         let (to_screen, screen_rx) = channels::unbounded();

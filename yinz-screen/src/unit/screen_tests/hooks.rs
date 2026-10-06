@@ -1,7 +1,7 @@
 //! The hooks the screen fires, from the moment to the plugin thread being asked to run them.
 //!
 //! `agent_exit` used to be a branch in the terminal emulator - `TerminalPane::hold` painted a
-//! fixed question over any pane whose originating plugin carried `hocus_agent_pane`. What the
+//! fixed question over any pane whose originating plugin carried `agent_pane`. What the
 //! screen does now is fire a hook, and it fires several: `pane_exit` for any command pane,
 //! `agent_exit` for an agent's, `agent_start` and `agent_waiting` off the edges of an agent
 //! record. These check each moment fires what it should, and nothing else.
@@ -18,7 +18,7 @@ use std::path::Path;
 use yinz_types::agent::{AgentInfo, AgentSource, AgentState};
 use yinz_types::data::HookPayload;
 use yinz_types::data::OriginatingPlugin;
-use yinz_types::data::HOCUS_AGENT_PANE_CONTEXT;
+use yinz_types::data::AGENT_PANE_CONTEXT;
 use yinz_types::input::hooks::HookPoint;
 use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::TabId;
@@ -90,7 +90,7 @@ fn agent_command(cwd: &str) -> RunCommand {
         originating_plugin: Some(OriginatingPlugin::new(
             yinz_types::internal_ids::PluginId::new(2),
             crate::ClientId::new(1),
-            BTreeMap::from([(HOCUS_AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
+            BTreeMap::from([(AGENT_PANE_CONTEXT.to_owned(), "true".to_owned())]),
         )),
         ..Default::default()
     }
@@ -688,7 +688,7 @@ fn an_ordinary_command_pane_fires_no_agent_hook() {
 
 #[test]
 fn a_command_pane_from_a_plugin_that_is_not_an_agent_fires_no_agent_hook() {
-    // Having an originating plugin is not enough: it is the `hocus_agent_pane` marker in its
+    // Having an originating plugin is not enough: it is the `agent_pane` marker in its
     // context that says this pane was an agent.
     let from_a_plugin = RunCommand {
         command: PathBuf::from("echo"),

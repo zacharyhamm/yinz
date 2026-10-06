@@ -272,11 +272,11 @@ fn status_bar_wasm_deno_custom_bindings_unicode_and_reconfiguration() {
                 bind "e" { LaunchOrFocusPlugin "plugin-manager"; }
             }
             agent {
-                bind "n" { LaunchOrFocusPlugin "hocus-new-agent"; }
-                bind "d" { LaunchOrFocusPlugin "hocus-duplicate-agent"; }
-                bind "f" { LaunchOrFocusPlugin "hocus-fork-agent"; }
-                bind "a" { LaunchOrFocusPlugin "hocus-agents"; }
-                bind "c" { LaunchOrFocusPlugin "hocus"; }
+                bind "n" { LaunchOrFocusPlugin "new-agent"; }
+                bind "d" { LaunchOrFocusPlugin "duplicate-agent"; }
+                bind "f" { LaunchOrFocusPlugin "fork-agent"; }
+                bind "a" { LaunchOrFocusPlugin "agents"; }
+                bind "c" { LaunchOrFocusPlugin "agents"; }
             }
         }
     "#,

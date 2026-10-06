@@ -1,7 +1,7 @@
 //! Who is calling, and which server they are calling.
 //!
 //! Resolution follows the `swamp` CLI's `AuthRepository.load` exactly, so a
-//! `swamp auth login` on this machine serves hocus too and neither can see a
+//! `swamp auth login` on this machine serves agent too and neither can see a
 //! different server from the other:
 //!
 //! 1. `SWAMP_API_KEY` wins. The server is `SWAMP_CLUB_URL`, or the default. The

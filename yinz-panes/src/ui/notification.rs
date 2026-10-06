@@ -811,8 +811,8 @@ mod tests {
     #[test]
     fn explicit_newlines_start_a_new_row() {
         assert_eq!(
-            notification_lines("hocus needs confirmation\nsend_input", 40),
-            vec!["hocus needs confirmation", "send_input"]
+            notification_lines("agent needs confirmation\nsend_input", 40),
+            vec!["agent needs confirmation", "send_input"]
         );
     }
 
@@ -933,18 +933,18 @@ mod tests {
         }
     }
 
-    /// The shape this whole change exists for: hocus's confirmation block, rendered as written.
+    /// The shape this whole change exists for: agent's confirmation block, rendered as written.
     #[test]
-    fn the_hocus_confirmation_block_renders_as_written() {
+    fn the_agent_confirmation_block_renders_as_written() {
         let style = Style::default();
-        let text = "hocus needs confirmation\nsend_input\n  pane_id: 3\n  text: git push";
+        let text = "agent needs confirmation\nsend_input\n  pane_id: 3\n  text: git push";
         let width = notification_width(text, 80).expect("wide enough");
         let lines = notification_lines(text, width);
 
         assert_eq!(
             lines,
             vec![
-                "hocus needs confirmation",
+                "agent needs confirmation",
                 "send_input",
                 "  pane_id: 3",
                 "  text: git push",
@@ -954,7 +954,7 @@ mod tests {
         let painted = rows(&notification_chunks(&lines, 0, 0, width, &style, 1.0));
         assert_eq!(painted.len(), notification_height(4));
         assert!(painted[0].starts_with('╭'), "got {:?}", painted[0]);
-        assert_eq!(painted[1], "│ hocus needs confirmation │");
+        assert_eq!(painted[1], "│ agent needs confirmation │");
         assert_eq!(painted[3], "│   pane_id: 3             │");
         assert!(painted[5].starts_with('╰'), "got {:?}", painted[5]);
     }

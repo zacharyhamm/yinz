@@ -1234,7 +1234,7 @@ fn install_agent_hooks(state: &VmState, config: &Config) -> Result<()> {
     run_capturing(
         ssh_command(state, config)
             .arg(GUEST_YINZ)
-            .args(["hocus", "hooks", "install"]),
+            .args(["hooks", "install"]),
         "failed to install the coding-agent hooks in the guest",
     )
     .map(drop)
@@ -6650,10 +6650,10 @@ mod tests {
         // A VM an agent got to itself mirrors nothing, and says so.
         assert_eq!(response(&config, &state).worktree, None);
 
-        state.worktree = Some(PathBuf::from("/work/hocus"));
+        state.worktree = Some(PathBuf::from("/work/agent"));
         assert_eq!(
             response(&config, &state).worktree,
-            Some(PathBuf::from("/work/hocus"))
+            Some(PathBuf::from("/work/agent"))
         );
     }
 

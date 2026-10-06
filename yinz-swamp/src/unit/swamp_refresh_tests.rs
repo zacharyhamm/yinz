@@ -349,14 +349,14 @@ fn external_source_fingerprints_track_configured_directories_and_membership() {
 
 #[tokio::test]
 #[ignore = "requires a built Yinz and compatible Swamp; see docs/SWAMP_WORKFLOWS.md"]
-async fn hocus_workflow_definition_and_execution_lifecycle() {
+async fn agent_workflow_definition_and_execution_lifecycle() {
     assert!(std::env::var_os("YINZ_TEST_BINARY").is_some());
     let root = tempfile::tempdir()
         .unwrap()
         .into_path()
         .canonicalize()
         .unwrap();
-    eprintln!("Hocus workflow fixture: {}", root.display());
+    eprintln!("Agent workflow fixture: {}", root.display());
     let cleanup = ServiceCleanup(root.clone());
     assert!(Command::new("git")
         .args(["init", "-q"])
@@ -420,13 +420,13 @@ async fn hocus_workflow_definition_and_execution_lifecycle() {
     }
     let result = async {
         call(root.clone(), "workflow.schema", json!({})).await?;
-        let created = call(root.clone(), "workflow.create", json!({"name":"hocus-probe"})).await?;
+        let created = call(root.clone(), "workflow.create", json!({"name":"agent-probe"})).await?;
         let id = created["id"].as_str().context("no workflow ID")?;
         let mut expected = definitions::get(root.clone(), id, &|_| {}).await?;
         let definition = |command: &str, approval: bool| {
             let mut steps = vec![json!({"name":"probe","task":{"type":"model_method","modelIdOrName":"probe","methodName":"execute","inputs":{"run":command}}})];
             if approval { steps.push(json!({"name":"approval","dependsOn":[{"step":"probe","condition":{"type":"succeeded"}}],"task":{"type":"manual_approval","prompt":"Probe approval"}})); }
-            json!({"id":id,"name":"hocus-probe","version":1,"inputs":{"type":"object","properties":{},"additionalProperties":false},"jobs":[{"name":"main","steps":steps}]})
+            json!({"id":id,"name":"agent-probe","version":1,"inputs":{"type":"object","properties":{},"additionalProperties":false},"jobs":[{"name":"main","steps":steps}]})
         };
         let mut complete = definition("true", false);
         complete["jobs"][0]["concurrency"] = json!(2);
@@ -454,13 +454,13 @@ async fn hocus_workflow_definition_and_execution_lifecycle() {
         expected = definitions::get(root.clone(), id, &|_| {}).await?;
         let mut invalid = definition("true", false); invalid["id"] = json!("changed");
         assert!(definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":invalid.to_string()}), &|_| {}).await.is_err());
-        assert!(definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":json!({"id":id,"name":"hocus-probe","jobs":"invalid"}).to_string()}), &|_| {}).await.is_err());
+        assert!(definitions::change(root.clone(), "workflow.edit", json!({"workflowIdOrName":id,"expected":expected,"content":json!({"id":id,"name":"agent-probe","jobs":"invalid"}).to_string()}), &|_| {}).await.is_err());
         assert_eq!(definitions::get(root.clone(), id, &|_| {}).await?, expected);
         assert_eq!(call(root.clone(), "workflow.validate", json!({"workflowIdOrName":id})).await?["passed"], true);
         let run = execution(&root, "workflow.run", json!({"workflowIdOrName":id,"noSupersede":true})).await?;
         assert_eq!(call(root.clone(), "workflow.history.get", json!({"workflowIdOrName":run})).await?["status"], "failed");
         // Inspect generated reports and output before repairing the failed definition.
-        let reports = call(root.clone(), "report.get", json!({"reportName":"@swamp/workflow-summary","workflow":"hocus-probe"})).await?;
+        let reports = call(root.clone(), "report.get", json!({"reportName":"@swamp/workflow-summary","workflow":"agent-probe"})).await?;
         assert!(!reports.is_null());
         let outputs = call(root.clone(), "data.query", json!({"predicate":format!("has(tags.workflowRunId) && tags.workflowRunId == {}", json!(run)),"select":"{\"name\":name,\"version\":version}"})).await?;
         assert!(!outputs.is_null());

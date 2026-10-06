@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 /// Bumped whenever [`PI_EXTENSION_TEMPLATE`]'s substitutions-bearing body changes, or the
 /// set of events it wires does, so a data-dir copy from an older yinz is replaced rather
-/// than pointed at. The same discipline `src/hocus_hooks.rs` keeps for its script.
+/// than pointed at. The same discipline `src/agent_hooks.rs` keeps for its script.
 pub const PI_EXTENSION_VERSION: u32 = 7;
 
 /// What marks the generated file as ours, for install/uninstall/status and for nothing
@@ -24,7 +24,7 @@ pub const PANE_TOKEN_ENV: &str = "YINZ_REMOTE_PANE_TOKEN";
 
 /// The pi events the extension reports, in wiring order.
 ///
-/// The count is what `yinz hocus hooks install --agent pi` says it wired, and the
+/// The count is what `yinz hooks install --agent pi` says it wired, and the
 /// installer's tests assert the template carries every one of them - the same contract
 /// `OPENCODE_HOOK_EVENTS` keeps.
 pub const PI_HOOK_EVENTS: &[&str] = &[
@@ -104,7 +104,7 @@ pub fn render_pi_extension(yinz: &Path) -> String {
 ///
 /// The file lives in *this* machine's data dir, and a path that does not exist where
 /// the command runs is a pi that refuses to start. A far machine with yinz installed
-/// reports through its own copy - `yinz hocus hooks install --agent pi` - which is the
+/// reports through its own copy - `yinz hooks install --agent pi` - which is the
 /// same shape every install-required agent keeps. Only the planner's own pair goes: a
 /// caller's `--extension` of their own is theirs, wherever the pane opens.
 pub fn strip_extension(args: &mut Vec<String>) {

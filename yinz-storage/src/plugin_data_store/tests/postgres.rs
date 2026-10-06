@@ -96,6 +96,24 @@ fn set_store_version(guard: &Guard, version: i64) {
         .unwrap();
 }
 
+fn store_version(guard: &Guard) -> i64 {
+    PgConfig::from_str(&guard.url)
+        .unwrap()
+        .connect(NoTls)
+        .unwrap()
+        .query_one(
+            &format!(
+                "SELECT value FROM \"{}\".store_meta WHERE key = 'schema_version'",
+                guard.schema
+            ),
+            &[],
+        )
+        .unwrap()
+        .get::<_, String>(0)
+        .parse()
+        .unwrap()
+}
+
 fn defined() -> (PluginDataStore, Guard) {
     let (store, guard) = store();
     store.define_entity(NS, OWNER, &agent_def(), false).unwrap();

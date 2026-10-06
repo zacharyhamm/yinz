@@ -55,7 +55,7 @@ fn click_target(payload: &str) -> NotificationClick {
     NotificationClick {
         plugin_id: crate::PluginId::new(7),
         client_id: ClientId::new(1),
-        message: "hocus_toast_click".to_owned(),
+        message: "agent_toast_click".to_owned(),
         payload: payload.to_owned(),
     }
 }
@@ -360,7 +360,7 @@ fn activating_an_entry_does_what_clicking_its_toast_does_and_leaves_the_mode() {
     let (mut screen, client_id) = browsing(vec![
         record(
             0,
-            "hocus has a plan",
+            "agent has a plan",
             Some(PaneId::Terminal(crate::TerminalId::new(1))),
             Some(click_target("42")),
         ),
@@ -371,7 +371,7 @@ fn activating_an_entry_does_what_clicking_its_toast_does_and_leaves_the_mode() {
     screen.bus.senders.to_server = Some(SenderWithContext::new(server_tx));
     screen
         .notifications
-        .push(settled_toast(0, "hocus has a plan"));
+        .push(settled_toast(0, "agent has a plan"));
     let now = Instant::now();
     screen.pinned_now = Some(now);
 

@@ -1205,7 +1205,7 @@ fn closing_an_overlay_mid_drag_releases_the_mouse() {
 // ---- a dragged position is the user's ---------------------------------------------------------
 
 /// What a plugin re-asserting its placement sends: a size, a `y`, and no `x` at all - the shape
-/// `hocus-new-agent` sends on every `TabUpdate`.
+/// `new-agent` sends on every `TabUpdate`.
 fn plugin_placement(y: &str, width: &str, height: &str) -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::new(
         None,
@@ -1785,7 +1785,7 @@ fn the_keyboard_path_resizes_the_client_s_own_overlay() {
 
 // ---- per-pane suppression --------------------------------------------------------------------
 //
-// `hide_pane` sets one overlay aside without unloading it, so hocus's Esc can put the sidebar away
+// `hide_pane` sets one overlay aside without unloading it, so agent's Esc can put the sidebar away
 // and keep the conversation. What these pin is the line between the queries that must stop seeing
 // a hidden overlay (everything that draws, occludes, hit-tests or focuses) and the ones that must
 // keep seeing it (everything that identifies it, so a `LaunchOrFocusPlugin` can find it again).
@@ -1909,7 +1909,7 @@ fn a_hidden_overlay_may_not_be_focused_until_it_is_shown() {
 
 #[test]
 fn focusing_a_hidden_overlay_by_id_reveals_it() {
-    // the reveal path: `LaunchOrFocusPlugin` naming a hidden hocus is the user asking for it back,
+    // the reveal path: `LaunchOrFocusPlugin` naming a hidden agent is the user asking for it back,
     // and `Tab::focus_pane_with_id` routes through here
     let mut panes = overlay_panes(80, 20);
     panes
@@ -2029,7 +2029,7 @@ fn a_hidden_overlay_reports_itself_suppressed_and_unfocused() {
     );
     assert!(
         hidden[0].is_suppressed,
-        "the one bit a plugin can read to tell it was hidden - hocus keys its reveal off this"
+        "the one bit a plugin can read to tell it was hidden - agent keys its reveal off this"
     );
     assert!(!hidden[0].is_focused);
 }
@@ -2308,8 +2308,8 @@ fn showing_a_modal_gives_it_to_every_connected_client() {
     );
 }
 
-/// The other half of the contract, and the one hocus depends on: showing an *ordinary* overlay is
-/// still only about drawing it. hocus restores its agent list beside itself without wanting the
+/// The other half of the contract, and the one agent depends on: showing an *ordinary* overlay is
+/// still only about drawing it. agent restores its agent list beside itself without wanting the
 /// keyboard to leave the conversation.
 #[test]
 fn showing_a_hidden_dismissible_overlay_still_leaves_the_keyboard_alone() {
@@ -2373,7 +2373,7 @@ fn focusing_a_hidden_modal_by_id_reveals_it_and_still_reports_it_is_ours() {
 
 // ---- an overlay that is placed by its owner ---------------------------------------------------
 //
-// A launch that named no coordinates is born half the surface, *centered*. For hocus's pair of
+// A launch that named no coordinates is born half the surface, *centered*. For agent's pair of
 // corner panels that is squarely on top of each other, and only their owner moves them out of
 // there - a round trip later, once the pane is on a tab for the placement to find. The flag says
 // "do not paint me until somebody has placed me"; see `OverlayCarry::awaiting_placement`.
@@ -3351,7 +3351,7 @@ fn multipane_transfer_and_replacement_keep_ownership_focus_and_placement() {
 }
 
 /// A client that has already left the source tab does not take the keyboard back when the
-/// container lands: that is hocus carrying its panel after a tab switch, and the tab the client
+/// container lands: that is agent carrying its panel after a tab switch, and the tab the client
 /// went to keeps the keys. A client still on the source tab keeps its half.
 #[test]
 fn a_container_taken_after_its_client_left_arrives_unfocused() {
@@ -3496,7 +3496,7 @@ fn close(panes: &mut OverlayPanes, pane_id: PaneId) {
     panes.remove_pane(pane_id);
 }
 
-/// A modal opened from the first half of a multipane, as `hocus-new-agent` is from the agent
+/// A modal opened from the first half of a multipane, as `new-agent` is from the agent
 /// list, used to close onto whichever overlay was topmost - the panel's other half - so the next
 /// key went into the conversation while the list still drew its selection.
 #[test]
@@ -3564,7 +3564,7 @@ fn hiding_a_modal_hands_the_keyboard_back_to_the_overlay_it_took_it_from() {
 }
 
 /// A pane named while the modal holds the keyboard is where the keyboard goes when the modal
-/// closes: `hocus-new-agent` names the agent it has just started, then closes itself. The modal
+/// closes: `new-agent` names the agent it has just started, then closes itself. The modal
 /// keeps the keyboard until then.
 #[test]
 fn a_pane_named_under_a_modal_takes_the_keyboard_when_the_modal_closes() {
@@ -3664,7 +3664,7 @@ fn a_multipane_child_finds_its_sibling_only_along_the_split() {
     }
 }
 
-/// hocus asks for 24 columns a half. A ratio outside that is drawn at the floor without being
+/// agent asks for 24 columns a half. A ratio outside that is drawn at the floor without being
 /// rewritten, and a divider dragged past it stops there on either side.
 #[test]
 fn a_multipane_floor_holds_against_the_ratio_and_the_divider() {

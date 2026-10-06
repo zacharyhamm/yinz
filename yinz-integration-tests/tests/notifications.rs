@@ -490,10 +490,10 @@ fn multi_line_notification_text_wraps_into_a_taller_box() {
         .start();
     claim_first_terminal_and_wait_for_prompt(&yinz);
 
-    notify(&yinz, "hocus needs confirmation\n  pane_id: 3");
+    notify(&yinz, "agent needs confirmation\n  pane_id: 3");
 
     let snapshot = yinz.wait_until("both rows of the message are drawn", |grid_snapshot| {
-        grid_snapshot.contains("hocus needs confirmation")
+        grid_snapshot.contains("agent needs confirmation")
             && grid_snapshot.contains("pane_id: 3")
             && a_toast_is_fully_revealed(grid_snapshot)
     });
@@ -517,7 +517,7 @@ fn multi_line_notification_text_wraps_into_a_taller_box() {
         snapshot
     );
     assert_eq!(bottom - top, 3, "two text rows between the borders");
-    assert!(lines[top + 1].contains("hocus needs confirmation"));
+    assert!(lines[top + 1].contains("agent needs confirmation"));
     assert!(
         lines[top + 2].contains("  pane_id: 3"),
         "the indentation survives, got {:?}",

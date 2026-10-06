@@ -14,7 +14,7 @@ use std::path::Path;
 
 /// The Claude Code hook events a record is read from, in the order Claude Code fires them.
 ///
-/// One list for the two things that wire it: `yinz hocus hooks install`, which writes it
+/// One list for the two things that wire it: `yinz hooks install`, which writes it
 /// into a settings file, and a spawned Claude Code pane, which is handed it inline as
 /// `--settings`. A `Notification` matcher would have to name the notification kinds that mean
 /// "blocked on the user" - a list Claude Code adds to between versions, and one already written
@@ -134,7 +134,7 @@ pub const CLAUDE_HOOK_REPORT_COMMAND: &str = r#"command -v yinz >/dev/null 2>&1 
 /// pane it fired in and the agent it came from.
 ///
 /// `agent-report --hook-json` sets the pane's record *and* hands the event itself to whatever
-/// plugin wants more than a record holds - hocus's daemon reads `last_assistant_message` off a
+/// plugin wants more than a record holds - agent's daemon reads `last_assistant_message` off a
 /// `SessionEnd` to know a run is over and worth summarising, and tool arguments to keep
 /// its history. Spelled here rather than in the plugin crate so
 /// the two ends cannot drift: a pipe name that does not match is silent.
@@ -219,7 +219,7 @@ pub fn hook_handler(command: &str, timeout: u64) -> Value {
 }
 
 /// A Claude Code settings document whose `hooks` wire every event in [`CLAUDE_HOOK_EVENTS`]
-/// to `command`. What `yinz hocus hooks install` merges into a settings file, and what a
+/// to `command`. What `yinz hooks install` merges into a settings file, and what a
 /// spawned pane is handed whole as `--settings`; the two cannot disagree about the events
 /// because this is the one place they are listed.
 pub fn claude_hook_settings(command: &str) -> Value {
@@ -232,7 +232,7 @@ pub fn codex_hook_settings(command: &str) -> Value {
 }
 
 /// A Muse `settings.json` hooks block wiring every event in [`MUSE_HOOK_EVENTS`].
-/// What `yinz hocus hooks install` merges into the user's settings file.
+/// What `yinz hooks install` merges into the user's settings file.
 pub fn muse_hook_settings(command: &str) -> Value {
     hook_settings(MUSE_HOOK_EVENTS, command, MUSE_HOOK_TIMEOUT_SECONDS)
 }
@@ -253,15 +253,15 @@ pub fn hook_settings(events: &[&str], command: &str, timeout: u64) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// The program and arguments behind an `env(1)` or a `yinz hocus` agent launcher
+/// The program and arguments behind an `env(1)` or a `yinz agent` agent launcher
 /// wrapper. Other commands are returned unchanged.
 pub fn unwrapped_program_and_args<'a>(
     program: &'a Path,
     args: &'a [String],
 ) -> Option<(&'a Path, &'a [String])> {
     if program.file_name()? == "yinz" {
-        if let [hocus, launcher, flag, command, separator, rest @ ..] = args {
-            if hocus == "hocus"
+        if let [agent, launcher, flag, command, separator, rest @ ..] = args {
+            if agent == "agent"
                 && matches!(launcher.as_str(), "codex" | "muse")
                 && flag == "--command"
                 && separator == "--"
@@ -269,8 +269,8 @@ pub fn unwrapped_program_and_args<'a>(
                 return Some((Path::new(command), rest));
             }
         }
-        if let [hocus, launcher, separator, rest @ ..] = args {
-            if hocus == "hocus"
+        if let [agent, launcher, separator, rest @ ..] = args {
+            if agent == "agent"
                 && matches!(launcher.as_str(), "codex" | "muse")
                 && separator == "--"
             {
@@ -322,7 +322,7 @@ pub fn agent_kind_of(program: &Path, args: &[String]) -> Option<String> {
 /// table could have listed: an installer that drops `muse-bin-0.1.0-R708.1` on the
 /// path names the same agent as one that drops `muse`.
 ///
-/// One list for everyone who asks what an agent is: `hocus-agentd`, which latches a pane's
+/// One list for everyone who asks what an agent is: `agent-service`, which latches a pane's
 /// "detected" kind from its command, and the server, which decides where a spawned agent
 /// pane goes before the process has said anything. Two lists would be two answers.
 pub const KINDS: &[&str] = &[
@@ -386,13 +386,13 @@ pub fn kind_of(word: &str) -> Option<String> {
 /// install` shell an agent, and an agent is something the model may send input to.
 ///
 /// This is the half of detection that can be *trusted over time*: a pane that is
-/// running an agent right now is one, whatever it is called. `hocus-agentd` latches
+/// running an agent right now is one, whatever it is called. `agent-service` latches
 /// on this and nothing else.
 pub fn kind_from_command(command: &str) -> Option<String> {
     let mut words = command.split_whitespace();
     let first = words.next().unwrap_or_default();
-    if program(first) == "yinz" && words.next() == Some("hocus") {
-        // The launchers only: `yinz hocus hooks install` is maintenance, not an agent.
+    if program(first) == "yinz" && words.next() == Some("agent") {
+        // The launchers only: `yinz hooks install` is maintenance, not an agent.
         match words.next() {
             Some("codex") => return Some("codex".to_owned()),
             Some("muse") => return Some("muse".to_owned()),
@@ -418,7 +418,7 @@ pub fn kind_from_command(command: &str) -> Option<String> {
 ///
 /// Reads the *program* and nothing else: the `env(1)`-unwrapped program word, or, behind an
 /// interpreter, the script the interpreter runs. [`kind_from_command`] scans every word behind
-/// an interpreter, and that is fine for the label `hocus-agentd` puts on a pane, but this
+/// an interpreter, and that is fine for the label `agent-service` puts on a pane, but this
 /// decides where the pane *goes*, and a `python3 gemini_test.py --api gemini` moved to another
 /// tab costs the user a layout, where a wrong label costs nothing.
 ///
@@ -500,7 +500,7 @@ pub const WAITING_NOTIFICATIONS: &[&str] = &[
 /// wait - so a tool named here needs no special case on the way out.
 ///
 /// `request_user_input` is Codex's equivalent. Every reporting path reads this list through
-/// [`hook_state_for`], including the pane record and Hocus's feed.
+/// [`hook_state_for`], including the pane record and Agent's feed.
 pub const WAITING_TOOLS: &[&str] = &[
     "AskUserQuestion",
     "ExitPlanMode",
@@ -947,7 +947,7 @@ fn truncate_within(text: &str, chars: usize, bytes: usize) -> String {
 /// a row names in passing.
 ///
 /// A plan and a question are the two things a hook event carries that become *history* — see
-/// `run_entry` in hocus-proto — and the history has a wrapping, scrolling half-pane to show
+/// `run_entry` in agent-proto — and the history has a wrapping, scrolling half-pane to show
 /// them in. Everything else under `tool_input` is read for a word or two.
 const PRUNED_HISTORY_KEYS: &[&str] = &["plan", "step", "question", "header"];
 
@@ -1487,7 +1487,7 @@ mod tests {
 
     #[test]
     fn the_muse_settings_wire_its_events_and_not_the_llm_firehose() {
-        let command = "/root/.config/muse/hocus/hocus-hook.sh";
+        let command = "/root/.config/muse/yinz/yinz-hook.sh";
         let settings = muse_hook_settings(command);
         let hooks = settings["hooks"].as_object().unwrap();
         assert_eq!(hooks.len(), MUSE_HOOK_EVENTS.len());
@@ -1533,14 +1533,14 @@ mod tests {
     }
 
     #[test]
-    fn a_hocus_launcher_is_looked_through_for_the_agents_name() {
+    fn a_agent_launcher_is_looked_through_for_the_agents_name() {
         let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
         for launcher in ["codex", "muse"] {
             assert_eq!(
                 agent_kind_of(
                     Path::new("yinz"),
                     &args(&[
-                        "hocus",
+                        "agent",
                         launcher,
                         "--command",
                         launcher,
@@ -1556,14 +1556,14 @@ mod tests {
             assert_eq!(
                 agent_kind_of(
                     Path::new("yinz"),
-                    &args(&["hocus", launcher, "--", "--model", "x"])
+                    &args(&["agent", launcher, "--", "--model", "x"])
                 )
                 .as_deref(),
                 Some(launcher)
             );
-            // Anything else under `hocus` is maintenance, not an agent pane.
+            // Anything else under `agent` is maintenance, not an agent pane.
             assert_eq!(
-                agent_kind_of(Path::new("yinz"), &args(&["hocus", "hooks", "install"])).as_deref(),
+                agent_kind_of(Path::new("yinz"), &args(&["agent", "hooks", "install"])).as_deref(),
                 Some("yinz")
             );
         }
@@ -1578,8 +1578,8 @@ mod tests {
             ("/Users/x/.local/bin/muse-bin-0.1.0-R708.1 --resume", "muse"),
             ("node /opt/bin/gemini", "gemini"),
             ("pi-agent", "pi"),
-            ("yinz hocus codex --command codex -- resume --last", "codex"),
-            ("yinz hocus muse --command muse -- resume --last", "muse"),
+            ("yinz agent codex --command codex -- resume --last", "codex"),
+            ("yinz agent muse --command muse -- resume --last", "muse"),
         ] {
             assert_eq!(
                 kind_from_command(command).as_deref(),
@@ -1591,7 +1591,7 @@ mod tests {
             "zsh",
             "pipenv run pi",
             "git commit -m 'ask claude'",
-            "yinz hocus hooks install",
+            "yinz hooks install",
             "",
         ] {
             assert_eq!(kind_from_command(command), None, "{command}");

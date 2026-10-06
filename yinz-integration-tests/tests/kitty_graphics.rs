@@ -78,7 +78,7 @@ fn setup_kitty_host(yinz: &TestSession, terminal: &FakePtyHandle) {
 fn deno_plugin_images_reach_the_terminal_through_the_shared_render_path() {
     let directory = tempfile::tempdir().unwrap();
     let plugin = directory.path().join("image.ts");
-    let png = include_bytes!("../../default-plugins/hocus/assets/wand/frame-00.png");
+    let png = include_bytes!("../../yinz-test-support/assets/graphics.png");
     std::fs::write(
         &plugin,
         format!(
@@ -127,31 +127,6 @@ export default {{
     });
     yinz.send_stdin(&keys::key('y'));
     yinz.wait_until_raw_output("Deno image reaches the terminal", |bytes| {
-        contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
-            && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
-            && contains_bytes(bytes, "\u{10eeee}".as_bytes())
-    });
-    yinz.quit();
-}
-
-#[test]
-fn hocus_wand_uses_the_startup_kitty_probe() {
-    let mut yinz = TestRunner::new(TERMINAL_SIZE)
-        .with_config("load_plugins clear-defaults=true {}")
-        .with_layout(yinz_integration_tests::LayoutInfo::Stringified(
-            "layout { pane { plugin location=\"yinz:hocus\" { shared true; }; }; }".to_owned(),
-        ))
-        .start();
-    yinz.wait_until_raw_output("client sent its graphics probe", |bytes| {
-        contains_bytes(bytes, b"\x1b_Ga=q,i=31,")
-    });
-    // Answer as soon as the query is written, before waiting for Hocus to load.
-    yinz.send_stdin(b"\x1b[6;21;8t\x1b_Gi=31;OK\x1b\\\x1b[?62;22c");
-    yinz.wait_until("Hocus asks for permissions", |screen| {
-        screen.contains("Allow? (y/n)")
-    });
-    yinz.send_stdin(&keys::key('y'));
-    yinz.wait_until_raw_output("Hocus wand image reaches the terminal", |bytes| {
         contains_bytes(bytes, b"\x1b_Ga=t,q=2,")
             && contains_bytes(bytes, b"\x1b_Ga=p,q=2,")
             && contains_bytes(bytes, "\u{10eeee}".as_bytes())

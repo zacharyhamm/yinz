@@ -43,7 +43,7 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
                 std::fs::copy(&binary, &copy).unwrap();
                 yinz_test_support::write_warm_script(
                     &copy.with_extension("new"),
-                    "[ \"$*\" = 'hocus codex --command codex --' ] || exit 1\nprintf '%s\\n' \"${SETTING-}\" >> \"$0.runs\"\n",
+                    "[ \"$*\" = 'agent codex --command codex --' ] || exit 1\nprintf '%s\\n' \"${SETTING-}\" >> \"$0.runs\"\n",
                 );
                 binary = copy;
             }
@@ -129,7 +129,7 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
         ("yinz", vec!["action", "new-pane"]),
         ("env", vec!["SETTING=value", "codex"]),
         ("env", vec!["SETTING=value", "yinz", "action", "new-pane"]),
-        ("/other/yinz", vec!["hocus", "codex", "--"]),
+        ("/other/yinz", vec!["agent", "codex", "--"]),
     ] {
         let requested = RunCommand {
             command: program.into(),
@@ -246,7 +246,7 @@ fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
     yinz_test_support::write_warm_script(
         &path,
         "printf '{\"version\":2,\"ssh_host\":\"build-box\",\"cwd\":\"/workspace\",\
-         \"worktree\":\"/work/hocus\"}'\n",
+         \"worktree\":\"/work/agent\"}'\n",
     );
 
     let server = make_server();
@@ -267,7 +267,7 @@ fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
     let (resolved, rerun, _) = server.resolve_target(joined, None).unwrap();
     assert_eq!(
         resolved.target.firecracker_worktree(),
-        Some(Path::new("/work/hocus"))
+        Some(Path::new("/work/agent"))
     );
     // The rerun command too, so a held pane that is run again keeps the identity rather
     // than waiting for the next ensure to hand it back. Not redundant with the resolved
@@ -276,7 +276,7 @@ fn a_firecracker_pane_adopts_the_worktree_the_provider_names() {
     // and never the pane's `invoked_with`.
     assert_eq!(
         rerun.target.firecracker_worktree(),
-        Some(Path::new("/work/hocus"))
+        Some(Path::new("/work/agent"))
     );
 
     // What the caller named is what the VM was ensured with, so it is never overridden.

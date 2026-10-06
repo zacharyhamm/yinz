@@ -464,7 +464,7 @@ impl Screen {
 
     /// Give a closed tab's overlays to a tab that is still here.
     ///
-    /// An overlay belongs to a `Tab` but is drawn over the whole session surface, and hocus
+    /// An overlay belongs to a `Tab` but is drawn over the whole session surface, and agent
     /// keeps a session's worth of conversation in one. Closing the tab it happens to be sitting
     /// on is not a request to throw that away - so `close_tab_by_id` extracts them
     /// ([`Tab::extract_overlay_panes`]) and they land here.
@@ -475,8 +475,8 @@ impl Screen {
     /// user with no visible second hop.
     ///
     /// Following the *client* rather than a neighbouring tab position is also the only answer
-    /// hocus cannot recover from getting wrong. `log_and_report_session_state` reports the panes
-    /// before the tabs, so hocus's `on_panes` has already set `own_tab_index` to wherever we put
+    /// agent cannot recover from getting wrong. `log_and_report_session_state` reports the panes
+    /// before the tabs, so agent's `on_panes` has already set `own_tab_index` to wherever we put
     /// it by the time `on_tabs` asks `overlay::tab_to_follow` - which then sees a pane that is
     /// where it belongs and asks for nothing. A pane left on a tab nobody is on therefore stays
     /// there, unseen, until somebody wanders onto that tab.
@@ -487,7 +487,7 @@ impl Screen {
     ///
     /// A panel that had a client's keys **keeps them**: `close_tab_by_id` extracts it while that
     /// client is still on the closing tab, so the keyboard goes where the user goes. Only a panel
-    /// carried after its client switched tabs - hocus following a tab switch itself - arrives
+    /// carried after its client switched tabs - agent following a tab switch itself - arrives
     /// unfocused (`OverlayPanes::take_container`). Modals never reach here - see
     /// [`Tab::extract_overlay_panes`] for why they close with their tab instead.
     fn move_overlay_panes_from_closed_tab(
@@ -1095,7 +1095,7 @@ impl Screen {
         let mut pane_ids = tab_to_close.get_all_pane_ids();
 
         // The same treatment, and for a stronger reason: an overlay is drawn over the whole
-        // session surface rather than inside this tab, and hocus keeps a session's worth of
+        // session surface rather than inside this tab, and agent keeps a session's worth of
         // conversation in one. Taken out here so that the teardown below - `PaneClosed`, the
         // subscriber notification, and the `CloseTab` that ends in `PluginInstruction::Unload` -
         // never names them, and re-homed further down once it is known where the clients went.
