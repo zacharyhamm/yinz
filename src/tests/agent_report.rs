@@ -1138,3 +1138,6 @@ fn agy_observer_reports_only_after_api_idle() {
 
 #[path = "../unit/pane_routing.rs"]
 mod pane_routing;
+
+#[path = "../unit/hooks_status.rs"]
+mod hooks_status;

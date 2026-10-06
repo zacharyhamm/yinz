@@ -572,3 +572,98 @@ fn spawn_tab_file_forms_and_cli_placement_precedence() {
         assert_eq!(spawn_args(&flags, input)["placement"], expected);
     }
 }
+
+#[test]
+fn spawn_placement_waits_for_support_reply_before_sending_spawn() {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use yinz_types::{agent::control::AgentPlacement, internal_ids::TabId};
+
+    for placement in [
+        AgentPlacement::Tab(TabId::new(7)),
+        AgentPlacement::NewTab(Some("images".into())),
+    ] {
+        for ack_first in [true, false] {
+            for supported in [true, false] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("session.sock");
+                let listener = ListenerOptions::new()
+                    .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
+                    .create_sync()
+                    .unwrap();
+                let request = AgentRequest::Spawn {
+                    placement: placement.clone(),
+                    spec: AgentSpawnSpec::default(),
+                    cwd: None,
+                    project: None,
+                    remote_host: None,
+                    automatic_firecracker_vm: false,
+                };
+                let expected = request.clone();
+                let server = std::thread::spawn(move || {
+                    let mut sender =
+                        IpcSenderWithContext::<ServerToClientMsg>::new(listener.accept().unwrap());
+                    let mut receiver = sender.get_receiver::<ClientToServerMsg>().unwrap();
+                    receiver
+                        .set_recv_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    assert!(matches!(
+                        receiver.recv_client_msg(),
+                        IpcRecv::Msg(
+                            ClientToServerMsg::AgentControl(AgentRequest::SpawnPlacementSupport),
+                            _
+                        )
+                    ));
+                    let mut response = AgentResponse::new(AgentOutcome::Ok);
+                    response.output = supported.then(|| "agent-tab-placement-v1".into());
+                    // Deterministically exercise both router/screen scheduling orders.
+                    if ack_first {
+                        sender
+                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                            .unwrap();
+                    }
+                    sender
+                        .send_server_msg(ServerToClientMsg::AgentControl(response))
+                        .unwrap();
+                    if !ack_first && supported {
+                        sender
+                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                            .unwrap();
+                    }
+                    if supported {
+                        assert!(
+                            matches!(receiver.recv_client_msg(), IpcRecv::Msg(ClientToServerMsg::AgentControl(request), _) if request == expected)
+                        );
+                        sender
+                            .send_server_msg(ServerToClientMsg::UnblockInputThread)
+                            .unwrap();
+                        sender
+                            .send_server_msg(ServerToClientMsg::AgentControl(AgentResponse::new(
+                                AgentOutcome::Submitted,
+                            )))
+                            .unwrap();
+                        assert!(matches!(
+                            receiver.recv_client_msg(),
+                            IpcRecv::Msg(ClientToServerMsg::ClientExited, _)
+                        ));
+                    } else {
+                        assert!(
+                            matches!(receiver.recv_client_msg(), IpcRecv::Eof),
+                            "unsupported placement must not send a spawn"
+                        );
+                    }
+                });
+                let socket = yinz_ipc::consts::ipc_connect(&path).unwrap();
+                let result = exchange_on_socket(socket, request, Duration::from_secs(5));
+                server.join().unwrap();
+                if supported {
+                    assert_eq!(result.unwrap().outcome, AgentOutcome::Submitted);
+                } else {
+                    assert!(result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("spawn was not sent"));
+                }
+            }
+        }
+    }
+}

@@ -166,6 +166,12 @@ fn remove_legacy_opencode(path: &Path, marker: &str, dry_run: bool) -> Result<()
     Ok(())
 }
 
+fn status_line(message: std::fmt::Arguments<'_>) -> Result<()> {
+    crate::agent::allow_closed_stdout(
+        writeln!(std::io::stdout().lock(), "{message}").context("cannot write hooks status"),
+    )
+}
+
 fn provider_status(
     path: &Path,
     hook: &yinz_types::agent::provider::AgentHookArtifact,
@@ -182,7 +188,7 @@ fn provider_status(
         Some(_) => "outdated; run install again",
         None => "missing",
     };
-    println!("hook: {} ({status})", path.display());
+    status_line(format_args!("hook: {} ({status})", path.display()))?;
     Ok(())
 }
 
@@ -246,7 +252,7 @@ pub(crate) fn run(hooks: Hooks) -> Result<()> {
                     // Two reports run together otherwise, and the second agent's heading reads
                     // as another line of the first one's.
                     if !std::mem::take(&mut first) {
-                        println!();
+                        status_line(format_args!(""))?;
                     }
                     if agent == HookAgent::Opencode {
                         return provider_command(&opencode_hooks).map(|_| ());
@@ -262,7 +268,7 @@ pub(crate) fn run(hooks: Hooks) -> Result<()> {
             );
             // A fact about this shell rather than about either agent: said once, and said
             // even when a settings file could not be read.
-            pane_line();
+            pane_line()?;
             reported
         },
     }
@@ -1329,33 +1335,45 @@ fn status(files: &Files) -> Result<()> {
     if files.agent == HookAgent::Pi {
         let marker = yinz_runtime::agent::pi::PI_EXTENSION_MARKER;
         let version = yinz_runtime::agent::pi::PI_EXTENSION_VERSION;
-        println!("{}:", files.name());
+        status_line(format_args!("{}:", files.name()))?;
         match read_generated(&files.script)? {
             Some(text) if text.contains(&format!("{marker} v{version}")) => {
-                println!("extension:  {} (current)", files.script.display());
+                status_line(format_args!(
+                    "extension:  {} (current)",
+                    files.script.display()
+                ))?;
             },
-            Some(text) if !text.contains(marker) => println!(
+            Some(text) if !text.contains(marker) => status_line(format_args!(
                 "extension:  {} (foreign file - move it aside before install)",
                 files.script.display()
-            ),
-            Some(_) => println!(
+            ))?,
+            Some(_) => status_line(format_args!(
                 "extension:  {} (older than this yinz - run `install` again)",
                 files.script.display()
-            ),
-            None => println!("extension:  {} (missing)", files.script.display()),
+            ))?,
+            None => status_line(format_args!(
+                "extension:  {} (missing)",
+                files.script.display()
+            ))?,
         }
         return Ok(());
     }
-    println!("{}:", files.name());
+    status_line(format_args!("{}:", files.name()))?;
     match std::fs::read_to_string(&files.script) {
         Ok(text) if text.contains(&format!("yinz-hook v{SCRIPT_VERSION} ")) => {
-            println!("script:  {} (current)", files.script.display());
+            status_line(format_args!(
+                "script:  {} (current)",
+                files.script.display()
+            ))?;
         },
-        Ok(_) => println!(
+        Ok(_) => status_line(format_args!(
             "script:  {} (older than this yinz - run `install` again)",
             files.script.display()
-        ),
-        Err(_) => println!("script:  {} (missing)", files.script.display()),
+        ))?,
+        Err(_) => status_line(format_args!(
+            "script:  {} (missing)",
+            files.script.display()
+        ))?,
     }
 
     let mut checks = vec![("user", files.user_settings.clone())];
@@ -1372,23 +1390,23 @@ fn status(files: &Files) -> Result<()> {
         let settings = match read_settings(&path) {
             Ok(settings) => settings,
             Err(error) => {
-                println!("{heading:<9}{} ({error:#})", path.display());
+                status_line(format_args!("{heading:<9}{} ({error:#})", path.display()))?;
                 continue;
             },
         };
         let events = files.installed_events(&settings);
         wired_anywhere += usize::from(!events.is_empty());
-        println!(
+        status_line(format_args!(
             "{heading:<9}{} - {} of {} events wired",
             path.display(),
             events.len(),
             files.events().len()
-        );
+        ))?;
         if label == "legacy" {
-            println!(
+            status_line(format_args!(
                 "            an older project install; `install --project` moves it to \
                  settings.local.json"
-            );
+            ))?;
         }
         // One line rather than one per event: an upgrade that wires new events leaves a
         // working install several short, and a column of them reads as a list of faults
@@ -1400,40 +1418,48 @@ fn status(files: &Files) -> Result<()> {
             .filter(|event| !events.iter().any(|wired| wired == event))
             .collect();
         if !events.is_empty() && !missing.is_empty() {
-            println!("            missing: {}", missing.join(", "));
-            println!("            run `install` again to add them");
+            status_line(format_args!("            missing: {}", missing.join(", ")))?;
+            status_line(format_args!("            run `install` again to add them"))?;
         }
         // The two ways a correctly written hook never runs.
         if settings.get("disableAllHooks") == Some(&Value::Bool(true)) {
-            println!("            disableAllHooks is on: nothing here runs");
+            status_line(format_args!(
+                "            disableAllHooks is on: nothing here runs"
+            ))?;
         }
         if settings.get("allowManagedHooksOnly") == Some(&Value::Bool(true)) {
-            println!("            allowManagedHooksOnly is on: nothing here runs");
+            status_line(format_args!(
+                "            allowManagedHooksOnly is on: nothing here runs"
+            ))?;
         }
         if files.agent == HookAgent::Muse
             && settings.get("schema_version").is_none()
             && path.exists()
         {
-            println!("            schema_version is missing: muse refuses to run without it");
+            status_line(format_args!(
+                "            schema_version is missing: muse refuses to run without it"
+            ))?;
         }
     }
     if files.agent == HookAgent::Claude && wired_anywhere > 1 {
-        println!(
+        status_line(format_args!(
             "note:    wired in more than one file. Claude Code merges hooks rather than \
              overriding, so every event fires twice"
-        );
+        ))?;
     }
 
     if files.agent == HookAgent::Codex && wired_anywhere > 0 {
-        println!("trust:   review the installed hooks with `/hooks` inside Codex");
-        println!(
+        status_line(format_args!(
+            "trust:   review the installed hooks with `/hooks` inside Codex"
+        ))?;
+        status_line(format_args!(
             "launch:  `yinz agent codex -- [codex arguments]` (automatic for Yinz agent launches)"
-        );
+        ))?;
     }
     if files.agent == HookAgent::Muse && wired_anywhere > 0 {
-        println!(
+        status_line(format_args!(
             "launch:  `yinz agent muse -- [muse arguments]` (automatic for Yinz agent launches)"
-        );
+        ))?;
     }
     Ok(())
 }
@@ -1442,24 +1468,27 @@ fn status(files: &Files) -> Result<()> {
 ///
 /// Outside [`status`] because it is about the shell rather than about an agent: a report
 /// covering both of them would otherwise say it twice.
-fn pane_line() {
+fn pane_line() -> Result<()> {
     // Same order the script keeps, and for the same reason: a remote pane carries both,
     // and only the token names the pane the report will actually reach.
     let token = yinz_server::pty_host::remote::broker::PANE_TOKEN_ENV;
     if std::env::var_os(token).is_some_and(|value| !value.is_empty()) {
-        println!("pane:    this shell is a remote yinz pane, reporting through its broker");
-        return;
+        status_line(format_args!(
+            "pane:    this shell is a remote yinz pane, reporting through its broker"
+        ))?;
+        return Ok(());
     }
     match yinz_process::pane_context::current_pane() {
-        Ok(Some((session, pane_id))) => {
-            println!("pane:    this shell is yinz pane {pane_id} in {session}")
-        },
-        Err(error) => println!("pane:    {error:#}"),
-        Ok(None) => println!(
+        Ok(Some((session, pane_id))) => status_line(format_args!(
+            "pane:    this shell is yinz pane {pane_id} in {session}"
+        ))?,
+        Err(error) => status_line(format_args!("pane:    {error:#}"))?,
+        Ok(None) => status_line(format_args!(
             "pane:    this shell is not in a yinz pane, so an agent started here \
              would report nothing"
-        ),
+        ))?,
     }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
