@@ -31,6 +31,31 @@ if [ ! -d "$HOME/repo/.git" ]; then
   if [ ! -e "$HOME/unmerged" ]; then
     "$git" -C "$HOME/repo" merge -q --ff-only topic
   fi
+  base=main
+  if [ -e "$HOME/trunk" ]; then
+    "$git" -C "$HOME/repo" branch -m main trunk
+    base=trunk
+    mkdir -p "$HOME/repo/.yinz"
+    printf 'agent_exit { default_branch "trunk"; }' > "$HOME/repo/.yinz/swamp-workflows.kdl"
+  fi
+  if [ -e "$HOME/remote" ]; then
+    "$git" init --bare -q "$HOME/origin.git"
+    "$git" -C "$HOME/repo" remote add origin "$HOME/origin.git"
+    base_head=$("$git" -C "$HOME/repo" rev-parse topic^)
+    "$git" -C "$HOME/origin.git" fetch -q "$HOME/repo" "$base_head:refs/heads/$base"
+    "$git" -C "$HOME/repo" fetch -q origin
+    if [ -e "$HOME/remote-merged" ]; then
+      "$git" -C "$HOME/origin.git" fetch -q "$HOME/repo" "topic:refs/heads/$base"
+    fi
+    if [ -e "$HOME/fetch-fails" ]; then
+      "$git" -C "$HOME/repo" update-ref "refs/remotes/origin/$base" topic
+      "$git" -C "$HOME/repo" remote set-url origin "$HOME/missing.git"
+    fi
+  fi
+  if [ -e "$HOME/missing-local" ]; then
+    "$git" -C "$HOME/repo" checkout -q --detach
+    "$git" -C "$HOME/repo" branch -q -D "$base"
+  fi
   [ ! -e "$HOME/dirty-tracked" ] || printf dirty > "$HOME/topic/file"
   [ ! -e "$HOME/dirty-untracked" ] || printf dirty > "$HOME/topic/untracked"
   if [ -e "$HOME/dirty-staged" ]; then
@@ -40,6 +65,9 @@ if [ ! -d "$HOME/repo/.git" ]; then
 fi
 if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "worktree" ] && [ "\${4:-}" = "remove" ]; then
   [ ! -e "$HOME/require-vm-close" ] || [ -e "$HOME/vm-closed" ]
+fi
+if [ "\${3:-}" = fetch ] && [ -e "$HOME/change-during-fetch" ]; then
+  printf dirty > "$HOME/topic/during-fetch"
 fi
 exec "$git" "$@"
 `;
@@ -125,7 +153,7 @@ test(
     session.key("Delete");
     session.resize(30, 100);
     await session.waitForText("Delete again");
-    await session.waitForText("commits merged into the base branch");
+    await session.waitForText("commits merged into the local base branch");
     session.key("Delete");
     await session.waitFor(
       "confirmed deletion closes the exit view",
@@ -141,8 +169,49 @@ test(
   },
 );
 
+for (const [name, markers, succeeds] of [
+  ["remote ahead of local", ["unmerged", "remote-merged"], true],
+  ["local ahead of remote", [], true],
+  ["neither merged", ["unmerged"], false],
+  ["failed fetch with local proof", ["fetch-fails"], true],
+  ["failed fetch with stale remote proof", ["unmerged", "fetch-fails"], false],
+  ["missing local branch", ["unmerged", "remote-merged", "missing-local"], true],
+  ["configured trunk", ["unmerged", "remote-merged", "trunk"], true],
+  ["changes during fetch", ["remote-merged", "change-during-fetch"], false],
+] as const) {
+  test(`agent-exit fetch cleanup: ${name}`, { grants: ["ReadFiles", "RunCommands"] }, async () => {
+    const files: Record<string, string> = { remote: "" };
+    for (const marker of markers) files[marker] = "";
+    const root = session.fixture(files, { git: gitFixture });
+    session.start();
+    session.loadPlugin("yinz:agent-exit", {
+      configuration: { agent_cwd: `${root}/topic`, agent_target: "local" },
+    });
+    await session.waitForText("Delete: Delete worktree & branch and close pane");
+    session.key("Delete");
+    await session.waitForText("Delete again");
+    session.key("Delete");
+    if (!succeeds) {
+      await session.waitForText("Deletion failed");
+      session.key("Esc");
+    }
+    await session.waitFor(
+      "exit view closes",
+      () => !session.panes.some((pane) => pane.plugin_url === "yinz:agent-exit"),
+    );
+    await session.waitForText("yinz-test>");
+    session.text(
+      succeeds
+        ? 'test ! -d "$HOME/topic" && ! /usr/bin/git -C "$HOME/repo" show-ref --verify --quiet refs/heads/topic && printf "VERIFIED_%s\\n" OK'
+        : 'test -d "$HOME/topic" && /usr/bin/git -C "$HOME/repo" show-ref --verify --quiet refs/heads/topic && printf "VERIFIED_%s\\n" OK',
+    );
+    session.key("Enter");
+    await session.waitForText("VERIFIED_OK");
+  });
+}
+
 for (const [marker, reason] of [
-  ["unmerged", "not merged into main"],
+  ["unmerged", "merged into local main"],
   ["dirty-tracked", "uncommitted changes"],
   ["dirty-untracked", "uncommitted changes"],
   ["dirty-staged", "uncommitted changes"],

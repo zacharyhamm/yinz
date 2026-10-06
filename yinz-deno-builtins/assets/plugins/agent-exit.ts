@@ -42,13 +42,29 @@ let firecracker:
 async function command(
   argv: readonly string[],
   envVariables: Readonly<Record<string, string>> = {},
+  timeoutMs?: number,
 ): Promise<string> {
-  const result = await z.runCommand({
+  const pending = z.runCommand({
     command: [...argv],
     cwd: "/",
     envVariables: { ...envVariables },
     maxBytesReturned: 1048576,
   });
+  let timedOut = false;
+  const timer =
+    timeoutMs == null
+      ? undefined
+      : z.after(timeoutMs, () => {
+          timedOut = true;
+          // Cancellation stops waiting and ignores late results; Git keeps running.
+          pending.cancel();
+        });
+  const result = await pending
+    .catch((error: unknown) => {
+      if (timedOut) throw new Error(`${argv[0]} timed out after ${timeoutMs} ms`);
+      throw error;
+    })
+    .finally(() => timer?.cancel());
   const stdout = z.decodeUtf8(result.stdout);
   if (result.exitCode !== 0) {
     const stderr = z.decodeUtf8(result.stderr).trim();
@@ -213,6 +229,29 @@ async function closeVm(): Promise<void> {
 async function deleteCheckout(): Promise<void> {
   const original = required(checkout);
   if (!removedWorktree) {
+    const config = z.projectConfig.read(original.path);
+    if (config.error) throw new Error(config.error);
+    const base = config.config.default_branch ?? "main";
+    const references = [`refs/heads/${base}`];
+    const diagnostics: string[] = [];
+    try {
+      await command(
+        [
+          "git",
+          "-C",
+          original.primary,
+          "fetch",
+          "--no-tags",
+          "origin",
+          `+refs/heads/${base}:refs/remotes/origin/${base}`,
+        ],
+        {},
+        10000,
+      );
+      references.push(`refs/remotes/origin/${base}`);
+    } catch (error) {
+      diagnostics.push(`Fetch origin/${base}: ${String(error)}`);
+    }
     const listed = worktrees(
       await command(["git", "-C", original.primary, "worktree", "list", "--porcelain", "-z"]),
     );
@@ -224,9 +263,6 @@ async function deleteCheckout(): Promise<void> {
       found.branch !== original.branch
     )
       throw new Error("The worktree identity changed; deletion was refused.");
-    const config = z.projectConfig.read(original.path);
-    if (config.error) throw new Error(config.error);
-    const base = config.config.default_branch ?? "main";
     const changes = await command([
       "git",
       "-C",
@@ -239,18 +275,30 @@ async function deleteCheckout(): Promise<void> {
       throw new Error(
         "Worktree has uncommitted changes (including untracked files); worktree and branch preserved.",
       );
-    const unmerged = await command([
-      "git",
-      "-C",
-      original.primary,
-      "rev-list",
-      "--max-count=1",
-      `refs/heads/${base}..${original.head}`,
-      "--",
-    ]);
-    if (unmerged.trim())
+    let merged = false;
+    for (const reference of references) {
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- Stop at the first successful ancestry proof.
+        const unmerged = await command([
+          "git",
+          "-C",
+          original.primary,
+          "rev-list",
+          "--max-count=1",
+          `${reference}..${original.head}`,
+          "--",
+        ]);
+        if (!unmerged.trim()) {
+          merged = true;
+          break;
+        }
+      } catch (error) {
+        diagnostics.push(`${reference}: ${String(error)}`);
+      }
+    }
+    if (!merged)
       throw new Error(
-        `Worktree contains commits not merged into ${base}; worktree and branch preserved.`,
+        `Cannot verify commits merged into local ${base} or freshly fetched origin/${base}; worktree and branch preserved.\n${diagnostics.join("\n")}`,
       );
     if (firecracker) await closeVm();
     else await command(["git", "-C", original.primary, "worktree", "remove", "--", original.path]);
@@ -558,7 +606,7 @@ export default definePlugin({
         `Revision: ${checkout.head}`,
         ...(firecracker ? [`VM: ${firecracker.name}`] : []),
         "This cancels the workflow.",
-        "Deletion requires a clean worktree and commits merged into the base branch.",
+        "Deletion requires a clean worktree and commits merged into the local base branch or its freshly fetched origin branch.",
         "Delete again: confirm deletion. Esc: cancel.",
       ]);
       confirmationVisible = cols > 0 && lines.length <= rows;
