@@ -21,6 +21,7 @@ use crate::ui::damage::CellRect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
+    Agent,
     ControlAgent,
     SetControlAgent,
     Command,
@@ -45,6 +46,7 @@ impl EntryKind {
             Self::WarpPane => Some("Warp pane"),
             Self::Project => Some("Switch current project"),
             Self::Command | Self::Plugin => None,
+            Self::Agent => Some("Agents"),
             Self::ControlAgent => Some("Focus control agent"),
             Self::SetControlAgent => Some("Set control agent"),
             Self::Pane => Some("Focus pane"),
@@ -71,6 +73,7 @@ pub enum Outcome {
     Dismiss,
     Cancel,
     Activate(String),
+    FocusAgent(String),
     Submit { id: String, values: Vec<String> },
 }
 
@@ -160,6 +163,13 @@ pub struct CommandPalette {
     pub view: u64,
     pub busy: bool,
     pub pending: bool,
+    pub agent_metadata:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    pub metadata: Option<String>,
+    metadata_offset: usize,
+    metadata_focus: u8,
+    metadata_rows: Cell<usize>,
+    metadata_total: Cell<usize>,
     history: Vec<CommandPalette>,
     native_entries: Vec<Entry>,
     sections: Vec<PluginSection>,
@@ -193,6 +203,8 @@ pub struct CommandPaletteLayout {
     picker_heading_y: Option<usize>,
     result_rows: Vec<ResultRow>,
     text_lines: Vec<String>,
+    metadata_lines: Vec<String>,
+    metadata_y: usize,
 }
 
 enum ResultRow {
@@ -272,6 +284,7 @@ impl CommandPalette {
         } else {
             self.selected = 0;
         }
+        self.normalize_region_selection();
     }
 
     pub fn push_view(&mut self, id: u64, title: String) {
@@ -300,20 +313,74 @@ impl CommandPalette {
         self.pending = false;
     }
 
-    fn selected_entry(&self) -> Option<&Entry> {
+    pub fn select_id(&mut self, id: &str) {
+        if let Some(index) = self.matches.iter().position(|i| self.entries[*i].id == id) {
+            self.selected = index;
+            self.selected_status = None;
+        }
+    }
+
+    pub fn set_query(&mut self, query: String) {
+        self.input = TextInput::new(query);
+        self.rematch_query();
+    }
+
+    pub fn agent_picker(&self) -> bool {
+        self.picker == Some(EntryKind::Agent)
+    }
+
+    pub fn selected_entry(&self) -> Option<&Entry> {
         if self.selected_status.is_some() {
             return None;
         }
-        self.matches.get(self.selected).map(|i| &self.entries[*i])
+        self.matches
+            .get(self.selected)
+            .map(|i| &self.entries[*i])
+            .filter(|entry| self.in_focused_region(entry))
+    }
+
+    fn in_focused_region(&self, entry: &Entry) -> bool {
+        self.metadata.is_none()
+            || (self.metadata_focus != 0
+                && entry.id.contains("event:") == (self.metadata_focus == 1))
+    }
+
+    fn normalize_region_selection(&mut self) {
+        if self.metadata.is_none() || self.metadata_focus == 0 {
+            return;
+        }
+        if self.selected_entry().is_none() {
+            self.selected = self
+                .matches
+                .iter()
+                .position(|i| self.in_focused_region(&self.entries[*i]))
+                .unwrap_or(self.matches.len());
+        }
+        self.selected_status = None;
     }
 
     fn rematch(&mut self) {
+        let agent_query = yinz_bus::command_palette::query::AgentQuery::parse(
+            self.input.get_text(),
+            yinz_bus::command_palette::query::LIVE_FIELDS,
+        );
         let pattern = Pattern::new(
             self.input.get_text(),
             CaseMatching::Ignore,
             Normalization::Smart,
             AtomKind::Fuzzy,
         );
+        let agent_pattern = Pattern::new(
+            agent_query.as_ref().map(|q| q.text.as_str()).unwrap_or(""),
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+        if (self.is_root() || self.agent_picker()) && self.form.is_none() {
+            if let Err(error) = &agent_query {
+                self.error = Some(error.clone());
+            }
+        }
         let mut buffer = Vec::new();
         let mut matches: Vec<_> = self
             .entries
@@ -333,15 +400,32 @@ impl CommandPalette {
                     ),
                     |kind| {
                         entry.kind == kind
+                            || (kind == EntryKind::Agent && entry.id == "agent-filters")
                             || (kind == EntryKind::Session
                                 && entry.kind == EntryKind::ExitedSession)
                     },
                 )
             })
             .filter_map(|(index, entry)| {
+                if self.picker == Some(EntryKind::Agent) && entry.id == "agent-filters" {
+                    return Some((index, u32::MAX));
+                }
                 if self.entry_sections[index].is_some_and(|i| self.sections[i].semantic) {
                     return Some((index, 0));
                 }
+                let pattern = if entry.kind == EntryKind::Agent {
+                    let query = agent_query.as_ref().ok()?;
+                    if !self
+                        .agent_metadata
+                        .get(&entry.id)
+                        .is_some_and(|m| query.matches(m))
+                    {
+                        return None;
+                    }
+                    &agent_pattern
+                } else {
+                    &pattern
+                };
                 std::iter::once(&entry.label)
                     .chain(entry.aliases.iter())
                     .filter_map(|text| {
@@ -437,6 +521,71 @@ impl CommandPalette {
         if self.busy {
             return Outcome::None;
         }
+        if self.metadata.is_some() && key.bare_key == BareKey::Tab {
+            self.metadata_focus = (self.metadata_focus
+                + if key.has_modifiers(&[KeyModifier::Shift]) {
+                    2
+                } else {
+                    1
+                })
+                % 3;
+            self.normalize_region_selection();
+            return Outcome::None;
+        }
+        if self.metadata.is_some() && self.metadata_focus == 0 {
+            let page = self.metadata_rows.get().max(1);
+            self.metadata_offset = self
+                .metadata_offset
+                .min(self.metadata_total.get().saturating_sub(page));
+            match key.bare_key {
+                BareKey::Up => self.metadata_offset = self.metadata_offset.saturating_sub(1),
+                BareKey::Down => self.metadata_offset = self.metadata_offset.saturating_add(1),
+                BareKey::PageUp => self.metadata_offset = self.metadata_offset.saturating_sub(page),
+                BareKey::PageDown => {
+                    self.metadata_offset = self.metadata_offset.saturating_add(page)
+                },
+                BareKey::Home => self.metadata_offset = 0,
+                BareKey::End => self.metadata_offset = usize::MAX,
+                _ => {},
+            }
+            return Outcome::None;
+        }
+        if self.metadata.is_some()
+            && matches!(
+                key.bare_key,
+                BareKey::Up
+                    | BareKey::Down
+                    | BareKey::PageUp
+                    | BareKey::PageDown
+                    | BareKey::Home
+                    | BareKey::End
+            )
+        {
+            self.normalize_region_selection();
+            let region: Vec<_> = self
+                .matches
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| self.in_focused_region(&self.entries[**i]))
+                .map(|(position, _)| position)
+                .collect();
+            if !region.is_empty() {
+                let current = region.iter().position(|i| *i == self.selected).unwrap_or(0);
+                let page = self.page_rows.get().max(1);
+                let next = match key.bare_key {
+                    BareKey::Up => current.saturating_sub(1),
+                    BareKey::Down => current.saturating_add(1),
+                    BareKey::PageUp => current.saturating_sub(page),
+                    BareKey::PageDown => current.saturating_add(page),
+                    BareKey::Home => 0,
+                    BareKey::End => region.len() - 1,
+                    _ => current,
+                };
+                self.selected = region[next.min(region.len() - 1)];
+                self.selected_status = None;
+            }
+            return Outcome::None;
+        }
         if self.text.is_some() {
             let page = self.page_rows.get().max(1);
             let end = self.text_rows.get().saturating_sub(page);
@@ -502,6 +651,23 @@ impl CommandPalette {
             return Outcome::None;
         }
         match key.bare_key {
+            BareKey::Enter if key.has_only_modifiers(&[KeyModifier::Ctrl]) => {
+                if let Some(entry) = self
+                    .selected_entry()
+                    .filter(|entry| entry.kind == EntryKind::Agent)
+                {
+                    return Outcome::FocusAgent(entry.id.clone());
+                }
+            },
+            BareKey::PageUp => {
+                self.selected = self.selected.saturating_sub(self.page_rows.get().max(1))
+            },
+            BareKey::PageDown => {
+                self.selected = self
+                    .selected
+                    .saturating_add(self.page_rows.get().max(1))
+                    .min(self.matches.len().saturating_sub(1))
+            },
             BareKey::Up | BareKey::Down if key.has_no_modifiers() => {
                 let rows = self.result_rows(1);
                 let selected = rows
@@ -566,6 +732,7 @@ impl CommandPalette {
         if let Some(index) = selected {
             self.selected = self.matches.iter().position(|i| *i == index).unwrap_or(0);
         }
+        self.normalize_region_selection();
     }
 
     fn selection(&self) -> usize {
@@ -576,7 +743,7 @@ impl CommandPalette {
 
     fn row_selected(&self, row: &ResultRow) -> bool {
         match row {
-            ResultRow::Entry(index) => self.selected_status.is_none() && *index == self.selected,
+            ResultRow::Entry(index) => self.selected_entry().is_some() && *index == self.selected,
             ResultRow::Status(section, _) => self.selected_status == Some(*section),
             ResultRow::Heading(_) => false,
         }
@@ -692,8 +859,9 @@ impl CommandPalette {
     }
 
     pub fn layout(&self, surface: Viewport) -> CommandPaletteLayout {
-        let cols = surface.cols.min(64);
-        let rows = surface.rows.min(11);
+        let expanded = self.metadata.is_some() || self.text.is_some();
+        let cols = surface.cols.min(if expanded { 110 } else { 64 });
+        let rows = surface.rows.min(if expanded { 36 } else { 11 });
         let rect = CellRect {
             x: surface.x + (surface.cols - cols) / 2,
             y: surface.y
@@ -705,7 +873,30 @@ impl CommandPalette {
         };
         let border = usize::from(cols >= 3 && rows >= 4);
         let input_y = rect.y + border;
-        let options_y = input_y + 1 + usize::from(rows >= 6);
+        let metadata_y = input_y + 1 + usize::from(rows >= 6);
+        let mut metadata_lines = self
+            .metadata
+            .as_ref()
+            .map(|text| {
+                crate::ui::notification::wrapped_text_lines(text, cols.saturating_sub(2 * border))
+            })
+            .unwrap_or_default();
+        let metadata_height = if self.metadata.is_some() {
+            rows.saturating_sub(7).min(rows / 3)
+        } else {
+            0
+        };
+        self.metadata_total.set(metadata_lines.len());
+        let offset = self
+            .metadata_offset
+            .min(metadata_lines.len().saturating_sub(metadata_height));
+        self.metadata_rows.set(metadata_height);
+        metadata_lines = metadata_lines
+            .into_iter()
+            .skip(offset)
+            .take(metadata_height)
+            .collect();
+        let options_y = metadata_y + metadata_height;
         let footer_y = (rows >= 5).then_some(rect.y + rows.saturating_sub(border + 1));
         let options_rows = footer_y
             .unwrap_or(rect.y + rows - border)
@@ -724,6 +915,8 @@ impl CommandPalette {
             .min(text_lines.len().saturating_sub(options_rows));
         CommandPaletteLayout {
             rect,
+            metadata_lines,
+            metadata_y,
             border,
             input_y,
             options_y,
@@ -756,12 +949,26 @@ impl CommandPalette {
                 }
             } else if let Some(row) = layout.result_rows.get(y - layout.options_y) {
                 self.select_row(row);
+                if self.metadata.is_some() {
+                    if let ResultRow::Entry(index) = row {
+                        self.metadata_focus =
+                            if self.entries[self.matches[*index]].id.contains("event:") {
+                                1
+                            } else {
+                                2
+                            };
+                    }
+                }
             }
         }
     }
 
     pub fn cursor(&self, layout: &CommandPaletteLayout) -> Option<(usize, usize)> {
-        if layout.rect.is_empty() || self.text.is_some() || self.busy {
+        if layout.rect.is_empty()
+            || self.text.is_some()
+            || self.busy
+            || (self.metadata.is_some() && self.metadata_focus == 0)
+        {
             return None;
         }
         if let Some(form) = &self.form {
@@ -823,10 +1030,11 @@ impl CommandPalette {
                         format!(
                             "╭{}╮",
                             fit(
-                                &format!(
-                                    " Do · Project: {} ",
-                                    self.current_project.as_deref().unwrap_or("None")
-                                ),
+                                &if self.metadata.is_some() {
+                                    format!(" Agent info · {} ", ["Metadata", "Timeline", "Actions"][self.metadata_focus as usize])
+                                } else {
+                                    format!(" Do · Project: {} ", self.current_project.as_deref().unwrap_or("None"))
+                                },
                                 width,
                                 '─'
                             )
@@ -863,10 +1071,14 @@ impl CommandPalette {
                             self.error.clone().unwrap_or_else(|| {
                                 if self.busy {
                                     "Working…  Esc Cancel"
+                                } else if self.metadata.is_some() {
+                                    "Tab Metadata/Timeline/Actions · ↑↓ PgUp/PgDn · Enter Open · Esc Back"
                                 } else if self.text.is_some() {
                                     "↑↓ Scroll  PgUp/PgDn Page  Home/End  Esc Back"
                                 } else if self.form.is_some() {
                                     "Tab/↑↓/Ctrl+n/p Fields  Enter Submit  Esc Back"
+                                } else if self.selected_entry().is_some_and(|entry| entry.kind == EntryKind::Agent) {
+                                    "↑↓ Select · Enter Info · Ctrl+Enter Focus · Esc Back"
                                 } else if self.picker.is_some() || self.view != 0 {
                                     "↑↓/Ctrl+n/p Select  Enter Choose  Esc Back"
                                 } else {
@@ -880,6 +1092,8 @@ impl CommandPalette {
                                 heading.clone()
                             },
                         )
+                    } else if (layout.metadata_y..layout.options_y).contains(&y) {
+                        (layout.metadata_lines.get(y - layout.metadata_y).cloned().unwrap_or_default(), if self.metadata_focus == 0 { fill.clone() } else { heading.clone() })
                     } else if (layout.options_y..layout.options_y + layout.options_rows)
                         .contains(&y)
                     {

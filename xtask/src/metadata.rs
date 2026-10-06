@@ -185,6 +185,8 @@ const LIBRARY_DEPENDENCIES: &[(&str, &[&str])] = &[
             "yinz-tile-markdown",
             "yinz-test-support",
             "project-data",
+            // Native palette workers reuse the shared archive readers.
+            "agent-proto",
         ],
     ),
     (

@@ -1,5 +1,7 @@
 #[path = "palette_agents.rs"]
 pub(super) mod agents;
+#[path = "palette_history.rs"]
+pub(super) mod history;
 #[path = "palette_notes.rs"]
 pub(super) mod notes;
 #[path = "palette_plugins.rs"]
@@ -240,7 +242,9 @@ impl Screen {
                 state.widget.is_root(),
             );
         let query_changed = before.1 != state.widget.query();
+        let history_query_changed = query_changed && before.0 == state.widget.view;
         if changed {
+            self.refresh_palette_history(client_id, history_query_changed);
             self.refresh_plugin_palette(client_id, query_changed);
         }
         self.handle_palette_outcome(client_id, outcome);
@@ -363,6 +367,9 @@ impl Screen {
 #[derive(Clone)]
 enum Builtin {
     SearchNotes,
+    Inspect(history::LiveAgent),
+    Archive,
+    AgentFilters,
     ControlAgent(Action),
     SetControlAgent(PaneId),
     Agent(yinz_bus::command_palette::AgentAction),
@@ -464,6 +471,24 @@ impl Screen {
             "Search project notes…",
             &["find notes markdown"],
             Builtin::SearchNotes,
+        );
+        command(
+            "agents",
+            "Agents…",
+            &["find live agents"],
+            Builtin::Picker(EntryKind::Agent),
+        );
+        command(
+            "archived-agents",
+            "Archived agents…",
+            &["history resume"],
+            Builtin::Archive,
+        );
+        command(
+            "agent-filters",
+            "Agent filters…",
+            &["filter agents"],
+            Builtin::AgentFilters,
         );
         command(
             "focus-control-agent",
@@ -701,6 +726,26 @@ impl Screen {
                 ));
             }
         }
+        let live = self.live_palette_agents();
+        state.widget.agent_metadata = live.iter().map(|a| (a.id(), a.metadata.clone())).collect();
+        entries.extend(live.into_iter().map(|agent| {
+            (
+                Entry {
+                    id: agent.id(),
+                    label: agent.pane.title.clone(),
+                    description: agent.description(),
+                    shortcut: String::new(),
+                    aliases: vec![agent
+                        .metadata
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ")],
+                    kind: EntryKind::Agent,
+                },
+                Builtin::Inspect(agent),
+            )
+        }));
         entries.extend(
             self.control_agent_entries()
                 .into_iter()
@@ -1184,6 +1229,9 @@ impl Screen {
         if self.note_palette_outcome(client, &outcome) {
             return;
         }
+        if self.history_palette_outcome(client, &outcome) {
+            return;
+        }
         if self.agent_palette_outcome(client, &outcome) {
             return;
         }
@@ -1214,6 +1262,18 @@ impl Screen {
         };
         let create_session = matches!(builtin, Builtin::Form(FormKind::NewSession));
         let result = match builtin {
+            Builtin::Inspect(agent) => {
+                self.open_palette_history(client, Some(agent), None);
+                return;
+            },
+            Builtin::Archive => {
+                self.open_palette_history(client, None, None);
+                return;
+            },
+            Builtin::AgentFilters => {
+                self.open_agent_filters(client);
+                return;
+            },
             Builtin::SetControlAgent(target) => {
                 if self
                     .get_pane_info(target)

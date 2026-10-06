@@ -14,11 +14,12 @@ static OPENING: AtomicU64 = AtomicU64::new(1);
 const FIRST_VIEW: u64 = 1 << 63;
 
 pub(super) struct State {
-    opening: u64,
-    step: u64,
+    pub(super) opening: u64,
+    pub(super) step: u64,
     source: PaneInfo,
     pending: Option<(u64, Arc<AtomicBool>)>,
     actions: HashMap<String, AgentAction>,
+    pub(super) browsers: HashMap<u64, super::history::Browser>,
     submitted: bool,
     pub(super) values: HashMap<String, String>,
 }
@@ -31,6 +32,7 @@ impl State {
             source,
             pending: None,
             actions: HashMap::new(),
+            browsers: HashMap::new(),
             submitted: false,
             values: HashMap::new(),
         }
@@ -80,11 +82,12 @@ impl Screen {
             AgentAction::Current { .. }
                 | AgentAction::Duplicate { .. }
                 | AgentAction::Launch { .. }
+                | AgentAction::History(yinz_bus::command_palette::HistoryAction::Resume { .. })
         ) || matches!(&action, AgentAction::Checkout { path, .. } if path.is_some() || value.is_some());
         state.agents.step += 1;
         let active = Arc::new(AtomicBool::new(true));
         state.agents.pending = Some((state.widget.view, active.clone()));
-        state.widget.busy = true;
+        state.widget.busy = !matches!(action, AgentAction::History(ref a) if !matches!(a, yinz_bus::command_palette::HistoryAction::Resume { .. }));
         state.widget.clear_error();
         let request = AgentRequest {
             client,
@@ -95,6 +98,32 @@ impl Screen {
             value,
             active,
         };
+        if matches!(&request.action, AgentAction::History(action) if !matches!(action, yinz_bus::command_palette::HistoryAction::Resume { .. }))
+        {
+            let senders = self.bus.senders.clone();
+            crate::global_async_runtime::get_tokio_runtime().spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                if !request.active.load(Ordering::Acquire) {
+                    return;
+                }
+                let (opening, step) = (request.opening, request.step);
+                if let Err(error) =
+                    senders.send_to_plugin(PluginInstruction::PaletteAgent(Box::new(request)))
+                {
+                    senders
+                        .send_to_screen(yinz_bus::screen::ScreenInstruction::CommandPalette(
+                            yinz_bus::command_palette::Instruction::AgentReply {
+                                client,
+                                opening,
+                                step,
+                                reply: Err(format!("Could not read archive: {error}")),
+                            },
+                        ))
+                        .non_fatal();
+                }
+            });
+            return;
+        }
         if let Err(error) = self
             .bus
             .senders
@@ -160,6 +189,9 @@ impl Screen {
             Err(error) => {
                 state.agents.submitted = false;
                 state.widget.set_error(error);
+            },
+            Ok(AgentReply::History(reply)) => {
+                self.palette_history_reply(client, reply);
             },
             Ok(AgentReply::Choices { title, choices }) => {
                 state.agents.submitted = false;

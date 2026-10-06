@@ -764,24 +764,24 @@ pub fn search(
             limit,
         )?
     } else {
-        (
-            match scope {
-                Some(ids) => {
-                    let mut hits = Vec::new();
-                    for chunk in ids.chunks(IN_CHUNK) {
-                        hits.extend(hits_for(
-                            backend,
-                            query,
-                            Some(Pred::is_in("run_id", chunk.to_vec())),
-                            limit,
-                        )?);
-                    }
-                    hits
-                },
-                None => hits_for(backend, query, None, limit)?,
+        match scope {
+            Some(ids) => {
+                let mut hits = Vec::new();
+                let mut truncated = false;
+                for chunk in ids.chunks(IN_CHUNK) {
+                    let (page, cut) = hits_for(
+                        backend,
+                        query,
+                        Some(Pred::is_in("run_id", chunk.to_vec())),
+                        limit,
+                    )?;
+                    hits.extend(page);
+                    truncated |= cut;
+                }
+                (hits, truncated)
             },
-            false,
-        )
+            None => hits_for(backend, query, None, limit)?,
+        }
     };
     let truncated = hits.len() > limit || partial_scope || scan_cut;
     let hits: Vec<Hit> = hits.into_iter().take(limit).collect();
@@ -912,6 +912,15 @@ fn regex_snippet(text: &str, at: usize) -> String {
 
 /// Search the panel's distinct runs, retaining one representative entry per valid run.
 pub fn search_runs(backend: &impl Backend, query: &str) -> Result<Found, String> {
+    search_runs_filtered(backend, query, |_| true)
+}
+
+/// Distinct runs filtered before the result limit; scanning is explicitly bounded.
+pub fn search_runs_filtered(
+    backend: &impl Backend,
+    query: &str,
+    keeps: impl Fn(&AgentRunHeader) -> bool,
+) -> Result<Found, String> {
     const PAGE: u32 = 100;
     let query = query.trim();
     let mut found = Found::default();
@@ -932,9 +941,12 @@ pub fn search_runs(backend: &impl Backend, query: &str) -> Result<Found, String>
         page = backend.fetch(&request)?;
     }
     let mut offset = 0;
+    let mut scanned = 0;
+    let mut tools = false;
     let mut seen = BTreeSet::new();
     loop {
-        let hits = hits_from_rows(&page, query);
+        scanned += page.len();
+        let hits = hits_from_rows(&page, query, tools);
         let ids = hits
             .iter()
             .filter(|hit| !seen.contains(&hit.run_id))
@@ -948,6 +960,9 @@ pub fn search_runs(backend: &impl Backend, query: &str) -> Result<Found, String>
             let Some(header) = headers.get(&hit.run_id) else {
                 continue;
             };
+            if !keeps(header) {
+                continue;
+            }
             if found.hits.len() == MAX_RUNS {
                 found.truncated = true;
                 return Ok(found);
@@ -955,11 +970,31 @@ pub fn search_runs(backend: &impl Backend, query: &str) -> Result<Found, String>
             found.runs.insert(hit.run_id.clone(), header.clone());
             found.hits.push(hit);
         }
-        if page.is_empty() || (page.len() < PAGE as usize && !page.truncated) {
+        let exhausted = page.is_empty() || !page.truncated;
+        if exhausted && tools {
             return Ok(found);
         }
-        offset += page.len() as u32;
-        page = backend.fetch(&request.clone().offset(offset))?;
+        if scanned >= MAX_SCOPE_SCAN {
+            found.truncated = true;
+            return Ok(found);
+        }
+        if exhausted {
+            tools = true;
+            offset = 0;
+            request = FetchRequest::entity(rows::ENTRY_ENTITY)
+                .filter(Pred::not_null("tool"))
+                .sort_by("created_at_ms", SortDir::Desc)
+                .sort_by("uid", SortDir::Asc)
+                .limit(PAGE);
+        } else {
+            offset += page.len() as u32;
+        }
+        page = backend.fetch(
+            &request
+                .clone()
+                .offset(offset)
+                .limit(PAGE.min((MAX_SCOPE_SCAN - scanned) as u32)),
+        )?;
     }
 }
 
@@ -969,7 +1004,7 @@ fn hits_for(
     query: &str,
     scope: Option<Pred>,
     limit: usize,
-) -> Result<Vec<Hit>, String> {
+) -> Result<(Vec<Hit>, bool), String> {
     // One more than asked for, so the caller can tell a full page from a cut one.
     let want = limit.saturating_add(1) as u32;
     let scoped = |request: FetchRequest| match scope.clone() {
@@ -1007,19 +1042,71 @@ fn hits_for(
                 .limit(want),
         ))?;
     }
-    Ok(hits_from_rows(&rows, query))
+    let mut hits = hits_from_rows(&rows, query, false);
+    let request = scoped(
+        FetchRequest::entity(rows::ENTRY_ENTITY)
+            .filter(Pred::not_null("tool"))
+            .sort_by("created_at_ms", SortDir::Desc)
+            .sort_by("uid", SortDir::Asc),
+    );
+    let mut scanned = 0;
+    let mut scan_cut = false;
+    let mut tool_matches = 0;
+    // Keep the tool pass even when text filled the page: tool hits can be newer.
+    while tool_matches < want as usize {
+        let page = backend.fetch(
+            &request
+                .clone()
+                .offset(scanned as u32)
+                .limit(100.min((MAX_SCOPE_SCAN - scanned) as u32)),
+        )?;
+        scanned += page.len();
+        for hit in hits_from_rows(&page, query, true) {
+            tool_matches += 1;
+            if !hits
+                .iter()
+                .any(|old| old.run_id == hit.run_id && old.revision == hit.revision)
+            {
+                hits.push(hit);
+            }
+        }
+        if !page.truncated {
+            break;
+        }
+        if page.is_empty() || scanned == MAX_SCOPE_SCAN || tool_matches >= want as usize {
+            scan_cut = true;
+            break;
+        }
+    }
+    hits.sort_by(|a, b| {
+        b.created_at_ms
+            .cmp(&a.created_at_ms)
+            .then_with(|| b.revision.cmp(&a.revision))
+    });
+    Ok((hits, rows.truncated || scan_cut))
 }
 
-fn hits_from_rows(rows: &yinz_tile::prelude::DataRows, query: &str) -> Vec<Hit> {
+fn hits_from_rows(rows: &yinz_tile::prelude::DataRows, query: &str, tools_only: bool) -> Vec<Hit> {
     let mut hits = Vec::new();
+    let query_lower = query.to_lowercase();
     for (run_id, entries) in rows::entries_from_rows(rows) {
         for entry in entries {
+            let tool = entry.tool.as_ref().map(|tool| tool.text());
+            let matching_tool = tool
+                .as_deref()
+                .filter(|text| text.to_lowercase().contains(&query_lower));
+            if tools_only && matching_tool.is_none() {
+                continue;
+            }
+            let text = matching_tool
+                .filter(|_| !entry.text.to_lowercase().contains(&query_lower))
+                .unwrap_or(&entry.text);
             hits.push(Hit {
                 run_id: run_id.clone(),
                 revision: entry.revision,
                 kind: entry.kind,
                 created_at_ms: entry.created_at_ms,
-                snippet: snippet(&entry.text, query),
+                snippet: snippet(text, query),
             });
         }
     }
@@ -1354,6 +1441,222 @@ mod tests {
     }
 
     // -- searching ------------------------------------------------------
+
+    #[test]
+    fn retained_tool_payloads_are_searchable_and_hits_stay_distinct() {
+        let backend = backend();
+        let mut r = run("tool-run", "codex", "main", 1);
+        let mut e = entry(1, RunEntryKind::Message, "Tool finished", 1);
+        e.tool = yinz_tile::agent::tool_capture::prepare(
+            "codex",
+            &yinz_tile::agent::HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                tool_name: Some("exec".into()),
+                tool_response: Some(serde_json::json!("captured-payload-needle")),
+                ..Default::default()
+            },
+        );
+        assert!(e.tool.is_some());
+        r.entries = vec![e];
+        write(&backend, &r);
+        let found = search_runs_filtered(&backend, "captured-payload-needle", |_| true).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert!(found.hits[0].snippet.contains("captured-payload-needle"));
+        let found = search(
+            &backend,
+            &Default::default(),
+            Some(&r.id),
+            "captured-payload-needle",
+            false,
+            50,
+        )
+        .unwrap();
+        assert_eq!(found.hits.len(), 1);
+        r.entries[0].text = "captured-payload-needle".into();
+        write(&backend, &r);
+        assert_eq!(
+            search_runs(&backend, "captured-payload-needle")
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn literal_tool_search_decodes_payloads_and_preserves_scope() {
+        let backend = backend();
+        let mut r = run("literal-tools", "codex", "main", 1);
+        let payload = r#"said "Hello World" at C:\Work\File"#;
+        let mut e = entry(1, RunEntryKind::Message, "Tool finished", 1);
+        e.tool = yinz_tile::agent::tool_capture::prepare(
+            "codex",
+            &yinz_tile::agent::HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                tool_name: Some("exec".into()),
+                tool_response: Some(serde_json::json!(payload)),
+                ..Default::default()
+            },
+        );
+        r.entries = vec![e];
+        write(&backend, &r);
+        let scoped = Filter {
+            kind: Some("codex".into()),
+            ..Default::default()
+        };
+        for query in [
+            r#""hello world""#,
+            r#"c:\work\file"#,
+            "absent",
+            "payload_omitted",
+        ] {
+            let expected = usize::from(payload.to_lowercase().contains(query));
+            let mut results = vec![search_runs(&backend, query).unwrap()];
+            for (filter, id) in [
+                (Filter::default(), None),
+                (scoped.clone(), None),
+                (Filter::default(), Some(r.id.as_str())),
+            ] {
+                results.push(search(&backend, &filter, id, query, false, 50).unwrap());
+            }
+            for found in results {
+                assert_eq!(found.hits.len(), expected, "{query}");
+                assert!(!found.truncated);
+                if expected > 0 {
+                    assert!(found.hits[0].snippet.to_lowercase().contains(query));
+                }
+            }
+            assert!(search(
+                &backend,
+                &Filter {
+                    kind: Some("claude".into()),
+                    ..Default::default()
+                },
+                None,
+                query,
+                false,
+                50,
+            )
+            .unwrap()
+            .hits
+            .is_empty());
+            assert!(
+                search_runs_filtered(&backend, query, |header| header.kind == "claude")
+                    .unwrap()
+                    .hits
+                    .is_empty()
+            );
+        }
+        r.entries[0].text = payload.into();
+        write(&backend, &r);
+        for id in [None, Some(r.id.as_str())] {
+            let found = search(&backend, &scoped, id, "Hello", false, 50).unwrap();
+            assert_eq!(found.hits.len(), 1);
+            assert!(!found.truncated);
+        }
+        assert_eq!(search_runs(&backend, "Hello").unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn tool_search_pages_nonmatches_and_reports_scan_ceiling() {
+        let backend = backend();
+        let mut r = run("paged-tools", "codex", "main", 1);
+        let capture = yinz_tile::agent::tool_capture::prepare(
+            "codex",
+            &yinz_tile::agent::HookEvent {
+                hook_event_name: "PostToolUse".into(),
+                tool_name: Some("exec".into()),
+                tool_response: Some(serde_json::json!("unrelated output")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        r.entries = (1..=102)
+            .map(|n| {
+                let mut e = entry(n, RunEntryKind::Message, "Tool finished", n as i64);
+                e.tool = Some(capture.clone());
+                e
+            })
+            .collect();
+        r.entries[0]
+            .tool
+            .as_mut()
+            .unwrap()
+            .output
+            .as_mut()
+            .unwrap()
+            .text = r#"found "Needle" at C:\Work\File"#.into();
+        write(&backend, &r);
+        for query in [r#""needle""#, r#"c:\work\file"#] {
+            let mut results = vec![search_runs(&backend, query).unwrap()];
+            for id in [None, Some(r.id.as_str())] {
+                results.push(search(&backend, &Filter::default(), id, query, false, 50).unwrap());
+            }
+            for found in results {
+                assert_eq!(found.hits.len(), 1);
+                assert_eq!(found.hits[0].revision, 1);
+                assert!(!found.truncated);
+            }
+        }
+        let mut older = run("older-text", "codex", "main", 0);
+        older.entries = vec![entry(1, RunEntryKind::Message, "Needle", 0)];
+        write(&backend, &older);
+        let found = search(&backend, &Filter::default(), None, "needle", false, 1).unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, r.id);
+        assert!(found.truncated);
+        r.entries.extend((103..=4001).map(|n| {
+            let mut e = entry(n, RunEntryKind::Message, "Tool finished", n as i64);
+            e.tool = Some(capture.clone());
+            e
+        }));
+        write(&backend, &r);
+        let mut results = vec![search_runs(&backend, r#"c:\work\file"#).unwrap()];
+        for id in [None, Some(r.id.as_str())] {
+            results.push(
+                search(
+                    &backend,
+                    &Filter::default(),
+                    id,
+                    r#"c:\work\file"#,
+                    false,
+                    50,
+                )
+                .unwrap(),
+            );
+        }
+        for found in results {
+            assert!(found.hits.is_empty());
+            assert!(found.truncated);
+        }
+    }
+
+    #[test]
+    fn distinct_run_filters_apply_before_limits_and_report_scan_ceiling() {
+        let backend = backend();
+        for n in 0..65 {
+            let mut r = run(
+                &format!("run-{n}"),
+                if n == 64 { "codex" } else { "claude" },
+                "main",
+                n,
+            );
+            r.entries = vec![entry(1, RunEntryKind::Message, "needle", n)];
+            write(&backend, &r);
+        }
+        let found = search_runs_filtered(&backend, "needle", |r| r.kind == "codex").unwrap();
+        assert_eq!(found.hits.len(), 1);
+        assert_eq!(found.hits[0].run_id, "run-64");
+        assert!(!found.truncated);
+        let mut r = run("verbose", "claude", "main", 999);
+        r.entries = (1..=4100)
+            .map(|n| entry(n, RunEntryKind::Message, "ceiling", n as i64))
+            .collect();
+        write(&backend, &r);
+        let found = search_runs_filtered(&backend, "ceiling", |_| false).unwrap();
+        assert!(found.hits.is_empty());
+        assert!(found.truncated);
+    }
 
     #[test]
     fn distinct_runs_page_past_a_talkative_run_and_measure_overflow() {
