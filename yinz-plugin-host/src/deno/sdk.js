@@ -42,6 +42,8 @@
   });
 
   let plugin = {};
+  let unloading = false, unloaded = false;
+  const operations = new Set();
   let workers = new Map();
   let worker = null;
   let workerQueue = Promise.resolve();
@@ -152,6 +154,7 @@
       const settle = (finish, value, outcome) => {
         if (!operation.active) return;
         operation.active = false;
+        operations.delete(operation);
         operation.cleanup();
         terminal(outcome);
         finish(value);
@@ -164,6 +167,7 @@
       error.name = "AbortError";
       operation.reject(error, "cancelled");
     };
+    operations.add(operation);
     try { start(operation); } catch (error) { operation.reject(error); }
     return promise;
   }
@@ -1627,10 +1631,10 @@
       paletteHandles.clear(); paletteProviders.clear();
     }
     const listeners = [...(handlers.get(type) ?? [])];
-    const waiters = name === "pipe" ? [...pipeWaiters] : [];
+    const waiters = !unloading && name === "pipe" ? [...pipeWaiters] : [];
     // Starts are ordered by the executor. Promises are observed, never awaited here:
     // load may be waiting for the very permission event that update must deliver.
-    if (typeof plugin[name] === "function") {
+    if (!unloading && typeof plugin[name] === "function") {
       track(plugin[name](arg), (result) => { if (result === true || name === "load") invalidate(); });
     }
     for (const waiter of waiters) waiter(arg);
@@ -1659,6 +1663,7 @@
     }
   }
   function render(rows, columns) {
+    if (unloading) return "";
     let frame = frames.get(client);
     if (!frame) {
       frame = { rows, columns, version: -1, pending: false, text: "" };
@@ -1727,7 +1732,7 @@
         if (plugin === null || typeof plugin !== "object") {
           throw new TypeError("plugin must default-export a lifecycle object");
         }
-        for (const name of ["load", "update", "pipe", "render"]) {
+        for (const name of ["load", "update", "pipe", "render", "unload"]) {
           if (plugin[name] !== undefined && typeof plugin[name] !== "function") {
             throw new TypeError(`${name} must be a function`);
           }
@@ -1736,6 +1741,20 @@
         workers = new Map(Object.entries(plugin.workers === undefined ? {} : record(plugin.workers, "workers")));
         for (const [name, callback] of workers) {
           if (typeof callback !== "function") throw new TypeError(`worker ${name} must be a function`);
+        }
+      } else if (action === "unload") {
+        if (!unloading) {
+          unloading = true;
+          const finish = () => { unloaded = true; };
+          const reject = error => { logLine(`unload failed: ${error?.stack ?? error}`); finish(); };
+          try { track(plugin.unload?.(), finish, reject); } catch (error) { reject(error); }
+        }
+        return unloaded;
+      } else if (action === "unloaded") return unloaded;
+      else if (action === "cancelPending") {
+        for (const operation of [...operations]) {
+          const error = new Error("operation cancelled"); error.name = "AbortError";
+          operation.reject(error, "cancelled");
         }
       } else if (action === "workers") return [...workers.keys()];
       else if (action === "workerBind") {

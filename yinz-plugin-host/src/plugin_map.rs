@@ -1084,12 +1084,12 @@ impl RunningPlugin {
 
     /// Release thread-bound runtime state while still on the assigned executor.
     pub fn dispose(&mut self) {
+        if let PluginBackend::Deno(deno) = &mut self.backend {
+            deno.dispose_with_cleanup(!self.failed);
+        }
         self.env().unavailable.store(true, Ordering::Release);
         self.env_mut().filesystem_watcher.take();
         crate::deno::testing::cancel_instance(self.env());
-        if let PluginBackend::Deno(deno) = &mut self.backend {
-            deno.dispose();
-        }
         if !self.pipes_released {
             self.pipes_released = true;
             self.env()

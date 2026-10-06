@@ -679,9 +679,88 @@ impl DenoPlugin {
         })
     }
 
+    fn unload(&mut self) {
+        // A terminated or failed isolate cannot safely run guest code again. Workers
+        // bind an empty lifecycle object, so they have no pane cleanup to invoke.
+        if self.thread != thread::current().id()
+            || self.is_disposed()
+            || self.env().cancel_tripped.load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.env().cancel.store(false, Ordering::Release);
+        let replies = yinz_bus::thread_bus::UnloadReplies::new(self.generation);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let terminate = self.terminate.clone();
+        let (finished, completion) = std::sync::mpsc::channel();
+        // Interrupt synchronous loops as well as promises that never settle. Unlike
+        // the shared cancellation token, this cannot poison a replacement instance.
+        let watchdog = thread::spawn(move || {
+            if matches!(
+                completion
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                terminate.terminate_execution();
+                true
+            } else {
+                false
+            }
+        });
+        let result = self.with_runtime(|runtime, client| {
+            runtime
+                .call("unload", Value::Null, Some(client))
+                .context("starting unload hook")?;
+            loop {
+                runtime.poll().context("polling unload cleanup")?;
+                if runtime
+                    .call("unloaded", Value::Null, None)
+                    .context("checking unload completion")?
+                    .as_bool()
+                    == Some(true)
+                {
+                    runtime
+                        .call("cancelPending", Value::Null, Some(client))
+                        .context("cancelling pending SDK operations")?;
+                    runtime.poll().context("polling unload cleanup")?;
+                    return Ok(());
+                }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    bail!("unload exceeded its two-second deadline");
+                }
+                if let Ok((client, event)) = replies
+                    .receiver
+                    .recv_timeout(remaining.min(Duration::from_millis(10)))
+                {
+                    runtime
+                        .call_event(&event, Some(client))
+                        .context("delivering unload reply")?;
+                }
+            }
+        });
+        let _ = finished.send(());
+        let timed_out = watchdog.join().unwrap_or(false);
+        if timed_out || std::time::Instant::now() >= deadline {
+            log::warn!(
+                "plugin {} unload exceeded its two-second deadline; forcing teardown",
+                self.env().plugin_id
+            );
+        } else if let Err(error) = result {
+            log::error!("plugin {} unload failed: {error:#}", self.env().plugin_id);
+        }
+    }
+
     pub fn dispose(&mut self) {
+        self.dispose_with_cleanup(true);
+    }
+
+    pub(crate) fn dispose_with_cleanup(&mut self, run_unload: bool) {
         if self.disposed {
             return;
+        }
+        if run_unload {
+            self.unload();
         }
         self.env_mut().filesystem_watcher.take();
         testing::cancel_instance(self.env());
