@@ -205,3 +205,6 @@ fn pressing_the_keybinding_again_returns_focus_to_the_open_finder() {
 
 #[path = "unit/file_finder/host_paths.rs"]
 mod host_paths;
+
+#[path = "unit/file_finder/structured_openers.rs"]
+mod structured_openers;

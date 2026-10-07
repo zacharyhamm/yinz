@@ -32,30 +32,146 @@ pub enum Opener {
     YinzEditor,
     /// Run a specific command, already resolved down to argv.
     Command { path: String, args: Vec<String> },
+    Plugin {
+        destination: String,
+        message: String,
+    },
 }
 
 /// Pick an opener for `file` out of the plugin's configuration map.
 ///
 /// Extensions are matched case-insensitively, so `open_png` covers `SCREENSHOT.PNG`.
-/// A file with no extension, or one whose extension has no `open_<ext>` entry, uses
-/// `open_default` if set and Yinz's editor otherwise.
-pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Opener {
-    let by_extension = file
+/// Structured extension entries precede legacy extension entries, followed by
+/// structured and legacy defaults, then the editor. Validate the entire structured
+/// map before choosing, so invalid configuration never silently runs a fallback.
+pub fn opener_for(config: &BTreeMap<String, String>, file: &Path) -> Result<Opener, String> {
+    // Validate every entry, including entries unrelated to this selection.
+    let mut structured = BTreeMap::new();
+    if let Some(json) = config
+        .get("openers_json")
+        .filter(|json| !json.trim().is_empty())
+    {
+        let entries: BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(json).map_err(|error| format!("openers_json: {error}"))?;
+        for (extension, value) in entries {
+            let entry = || -> Result<Opener, String> {
+                if extension.is_empty()
+                    || extension.starts_with('.')
+                    || extension != extension.to_lowercase()
+                    || extension.contains('\0')
+                {
+                    return Err(
+                        "expected a lowercase, nonempty extension without a leading dot".into(),
+                    );
+                }
+                if value.is_null() {
+                    return Ok(Opener::YinzEditor);
+                }
+                let entry: Structured = serde_json::from_value(value)
+                    .map_err(|error| format!("expected argv or plugin/message fields: {error}"))?;
+                match entry {
+                    Structured::Argv { argv } => {
+                        let Some((executable, arguments)) = argv.split_first() else {
+                            return Err("argv must contain an executable".into());
+                        };
+                        nonblank(executable, "executable")?;
+                        if argv.iter().any(|arg| arg.contains('\0')) {
+                            return Err("argv must not contain NUL".into());
+                        }
+                        let raw_path = file.to_string_lossy();
+                        let mut args: Vec<_> = arguments
+                            .iter()
+                            .map(|arg| arg.replace(PLACEHOLDER, &raw_path))
+                            .collect();
+                        if !arguments.iter().any(|arg| arg.contains(PLACEHOLDER)) {
+                            args.push(raw_path.into_owned());
+                        }
+                        Ok(Opener::Command {
+                            path: executable.clone(),
+                            args,
+                        })
+                    },
+                    Structured::Plugin { plugin, message } => {
+                        nonblank(&message, "message")?;
+                        Ok(Opener::Plugin {
+                            destination: plugin_destination(&plugin)?,
+                            message,
+                        })
+                    },
+                }
+            };
+            structured.insert(
+                extension.clone(),
+                entry().map_err(|error| format!("openers_json.{extension}: {error}"))?,
+            );
+        }
+    }
+    let extension = file
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| format!("{}{}", OPEN_PREFIX, ext.to_lowercase()))
-        .and_then(|key| config.get(&key));
+        .map(str::to_lowercase);
+    if let Some(extension) = extension {
+        if let Some(opener) = structured.remove(&extension) {
+            return Ok(opener);
+        }
+        if let Some(command) = config.get(&format!("{OPEN_PREFIX}{extension}")) {
+            return Ok(build_command(command, file).unwrap_or(Opener::YinzEditor));
+        }
+    }
+    Ok(structured.remove("default").unwrap_or_else(|| {
+        config
+            .get(OPEN_DEFAULT)
+            .and_then(|command| build_command(command, file))
+            .unwrap_or(Opener::YinzEditor)
+    }))
+}
 
-    let command = match by_extension.or_else(|| config.get(OPEN_DEFAULT)) {
-        Some(command) => command,
-        None => return Opener::YinzEditor,
-    };
+#[derive(serde::Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum Structured {
+    Argv {
+        argv: Vec<String>,
+    },
+    Plugin {
+        plugin: String,
+        #[serde(default = "default_message")]
+        message: String,
+    },
+}
 
-    // An empty or whitespace-only value is how a user disables an inherited entry;
-    // treat it as "no opener configured" rather than trying to exec the empty string.
-    match build_command(command, file) {
-        Some(opener) => opener,
-        None => Opener::YinzEditor,
+fn default_message() -> String {
+    "open".into()
+}
+
+fn nonblank(value: &str, name: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.contains('\0') {
+        Err(format!("{name} must be nonblank and contain no NUL"))
+    } else {
+        Ok(())
+    }
+}
+
+fn plugin_destination(value: &str) -> Result<String, String> {
+    nonblank(value, "plugin destination")?;
+    if Path::new(value).is_absolute() {
+        return url::Url::from_file_path(value)
+            .map(String::from)
+            .map_err(|()| "plugin path must be absolute".into());
+    }
+    if !value.contains(':') {
+        return if value.contains('/') || value.contains('\\') || value.starts_with('.') {
+            Err("plugin destination must be an alias or an absolute path".into())
+        } else {
+            Ok(value.into())
+        };
+    }
+    let url = url::Url::parse(value).map_err(|error| format!("invalid plugin URL: {error}"))?;
+    match url.scheme() {
+        "yinz" if !url.path().is_empty() && url.host_str().is_none()
+            && url.query().is_none() && url.fragment().is_none() => Ok(value.into()),
+        "file" if value.starts_with("file:/") && url.host_str().is_none()
+            && url.query().is_none() && url.fragment().is_none() => Ok(value.into()),
+        _ => Err("expected an alias, yinz: URL, absolute path, or absolute local file: URL without query/fragment; escape literal # and ? in URL paths".into()),
     }
 }
 
@@ -112,34 +228,34 @@ mod tests {
     #[test]
     fn unconfigured_extension_uses_the_yinz_editor() {
         let config = config(&[("open_md", "glow")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/src/main.rs"));
+        let opener = opener_for(&config, &PathBuf::from("/p/src/main.rs")).unwrap();
         assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
     fn empty_config_uses_the_yinz_editor() {
-        let opener = opener_for(&BTreeMap::new(), &PathBuf::from("/p/README.md"));
+        let opener = opener_for(&BTreeMap::new(), &PathBuf::from("/p/README.md")).unwrap();
         assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
     fn matching_extension_selects_its_command() {
         let config = config(&[("open_md", "glow -p")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
+        let opener = opener_for(&config, &PathBuf::from("/p/README.md")).unwrap();
         assert_eq!(opener, command("glow", &["-p", "/p/README.md"]));
     }
 
     #[test]
     fn extension_matching_is_case_insensitive() {
         let config = config(&[("open_png", "chafa")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/Shot.PNG"));
+        let opener = opener_for(&config, &PathBuf::from("/p/Shot.PNG")).unwrap();
         assert_eq!(opener, command("chafa", &["/p/Shot.PNG"]));
     }
 
     #[test]
     fn placeholder_is_substituted_in_place_rather_than_appended() {
         let config = config(&[("open_pdf", "zathura {} --mode fullscreen")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/book.pdf"));
+        let opener = opener_for(&config, &PathBuf::from("/p/book.pdf")).unwrap();
         assert_eq!(
             opener,
             command("zathura", &["/p/book.pdf", "--mode", "fullscreen"])
@@ -149,28 +265,28 @@ mod tests {
     #[test]
     fn placeholder_embedded_in_an_argument_is_substituted() {
         let config = config(&[("open_log", "less +F{}")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/run.log"));
+        let opener = opener_for(&config, &PathBuf::from("/p/run.log")).unwrap();
         assert_eq!(opener, command("less", &["+F/p/run.log"]));
     }
 
     #[test]
     fn open_default_covers_unmatched_extensions() {
         let config = config(&[("open_md", "glow"), ("open_default", "bat")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/main.rs"));
+        let opener = opener_for(&config, &PathBuf::from("/p/main.rs")).unwrap();
         assert_eq!(opener, command("bat", &["/p/main.rs"]));
     }
 
     #[test]
     fn extension_entry_wins_over_open_default() {
         let config = config(&[("open_md", "glow"), ("open_default", "bat")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
+        let opener = opener_for(&config, &PathBuf::from("/p/README.md")).unwrap();
         assert_eq!(opener, command("glow", &["/p/README.md"]));
     }
 
     #[test]
     fn file_without_an_extension_uses_open_default() {
         let config = config(&[("open_default", "bat")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/Makefile"));
+        let opener = opener_for(&config, &PathBuf::from("/p/Makefile")).unwrap();
         assert_eq!(opener, command("bat", &["/p/Makefile"]));
     }
 
@@ -179,21 +295,21 @@ mod tests {
         // Path::extension() returns None for ".gitignore" — the leading dot marks a
         // hidden file, not an extension.
         let config = config(&[("open_gitignore", "never"), ("open_default", "bat")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/.gitignore"));
+        let opener = opener_for(&config, &PathBuf::from("/p/.gitignore")).unwrap();
         assert_eq!(opener, command("bat", &["/p/.gitignore"]));
     }
 
     #[test]
     fn blank_opener_falls_back_to_the_yinz_editor() {
         let config = config(&[("open_md", "   ")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
+        let opener = opener_for(&config, &PathBuf::from("/p/README.md")).unwrap();
         assert_eq!(opener, Opener::YinzEditor);
     }
 
     #[test]
     fn unrelated_config_keys_are_ignored() {
         let config = config(&[("floating", "true"), ("width", "80%")]);
-        let opener = opener_for(&config, &PathBuf::from("/p/README.md"));
+        let opener = opener_for(&config, &PathBuf::from("/p/README.md")).unwrap();
         assert_eq!(opener, Opener::YinzEditor);
     }
 
@@ -224,7 +340,7 @@ mod tests {
         let expected_argv: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
         let path = file.to_string_lossy().to_string();
 
-        match opener_for(&config, &file) {
+        match opener_for(&config, &file).unwrap() {
             Opener::Command {
                 path: executable,
                 args,
@@ -246,10 +362,14 @@ mod tests {
                 );
                 assert_eq!(args.len(), expected_argv.len(), "no words may be dropped");
             },
-            Opener::YinzEditor => panic!(
+            Opener::YinzEditor | Opener::Plugin { .. } => panic!(
                 "a configured, non-blank opener {:?} should not fall through to the editor",
                 command
             ),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/structured_openers.rs"]
+mod structured_tests;

@@ -1,0 +1,349 @@
+use super::*;
+use yinz_cli::args::CliAction;
+use yinz_types::data::{PaneId, PaneListEntry};
+
+fn panes(yinz: &TestSession) -> Vec<PaneListEntry> {
+    let (status, json) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0, "{json}");
+    serde_json::from_str(&json).unwrap()
+}
+
+fn is_reader(pane: &PaneListEntry, url: &str) -> bool {
+    let display = format!(
+        "file:{}",
+        url::Url::parse(url)
+            .unwrap()
+            .to_file_path()
+            .unwrap()
+            .display()
+    );
+    matches!(pane.pane_info.plugin_url.as_deref(), Some("reader"))
+        || pane.pane_info.plugin_url.as_deref() == Some(display.as_str())
+}
+
+fn receiver(root: &Path) -> String {
+    let path = root.join("reader '雪,%2C.ts");
+    std::fs::write(
+        &path,
+        r#"
+import z from 'yinz:plugin';
+let ready, payload = '', source = '', count = 0, settings = '';
+let release;
+ready = new Promise(resolve => { release = resolve; });
+export default {
+  async load(config) {
+    settings = config.fit ?? '';
+    z.subscribe(['Key']);
+    try { await z.waitForPermissions(['ChangeApplicationState']); release(true); }
+    catch { release(false); }
+  },
+  async pipe(message) {
+    if (!await ready) { payload = 'DENIED'; return true; }
+    payload = message.payload;
+    source = JSON.stringify(message.source);
+    count++;
+    return true;
+  },
+  update(event) {
+    if (event.Key?.bare_key?.Char === 'h') z.command('HideSelf');
+    return true;
+  },
+  render() { return `RECEIVED ${count} ${settings}\n${payload}\nSOURCE ${source}`; },
+};
+"#,
+    )
+    .unwrap();
+    url::Url::from_file_path(&path).unwrap().to_string()
+}
+
+fn session(json: &str, aliases: &str) -> TestSession {
+    let yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(&format!("{NO_BACKGROUND_PLUGINS}plugins {{\n{aliases}\nfile-finder location=\"yinz:file-finder\" {{\nopeners_json r#\"{json}\"#\n}}\n}}"))
+        .start();
+    yinz.expect_pty_spawn().output(PROMPT);
+    yinz.wait_for_app_load();
+    yinz
+}
+
+fn assert_retired(yinz: &TestSession, finder: &FakePtyHandle, selection: &Path) {
+    yinz.wait_until("finder driver and overlay retired", |_| {
+        !selection.exists()
+            && panes(yinz).iter().all(|p| {
+                p.pane_info.id != PaneId::Terminal(finder.terminal_id())
+                    && p.pane_info.plugin_url.as_deref() != Some("file-finder")
+            })
+    });
+}
+
+#[test]
+fn plugin_handoff_survives_permissions_and_reuses_hidden_reader() {
+    let root = tempfile::tempdir().unwrap();
+    let url = receiver(root.path());
+    let mut yinz = session(
+        r#"{"pdf":{"plugin":"reader"}}"#,
+        &format!("reader location={url:?} {{ fit \"width\"; }}"),
+    );
+    let chosen = "/tmp/a '雪,\"#?%2C.pdf";
+    let (finder, selection) = open_finder(&yinz);
+    let driver = panes(&yinz)
+        .into_iter()
+        .find(|p| p.pane_info.plugin_url.as_deref() == Some("file-finder"))
+        .unwrap()
+        .pane_info
+        .id;
+    choose(&finder, &selection, chosen);
+    yinz.wait_until("reader asks for its own permissions", |g| {
+        g.contains("Allow? (y/n)")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    yinz.send_stdin(b"y");
+    yinz.wait_until(
+        "reader receives exact raw path after permission grant",
+        |g| g.contains(chosen) && g.contains("RECEIVED 1 width"),
+    );
+    let reader = panes(&yinz)
+        .into_iter()
+        .find(|p| is_reader(p, &url))
+        .unwrap();
+    assert!(
+        reader.pane_info.is_focused
+            && reader.pane_info.is_floating
+            && !reader.pane_info.is_suppressed
+    );
+    assert!(yinz.snapshot().contains(&format!(
+        "SOURCE {{\"Plugin\":{}}}",
+        match driver {
+            PaneId::Plugin(id) => id.to_string(),
+            _ => unreachable!(),
+        }
+    )));
+    assert_eq!(
+        panes(&yinz)
+            .iter()
+            .filter(|p| !p.pane_info.is_plugin())
+            .count(),
+        1
+    );
+    assert_eq!(
+        yinz.run_cli_action(CliAction::HideFloatingPanes {
+            tab_id: Some(reader.tab_id)
+        }),
+        0
+    );
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/second.pdf");
+    yinz.wait_until("hidden reader is revealed with second payload", |g| {
+        g.contains("RECEIVED 2 width") && g.contains("/tmp/second.pdf")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    let readers: Vec<_> = panes(&yinz)
+        .into_iter()
+        .filter(|p| is_reader(p, &url))
+        .collect();
+    assert_eq!(readers.len(), 1);
+    assert_eq!(readers[0].pane_info.id, reader.pane_info.id);
+    assert!(readers[0].pane_info.is_focused);
+    yinz.send_stdin(b"h");
+    yinz.wait_until("reader suppresses itself", |_| {
+        panes(&yinz)
+            .iter()
+            .any(|p| p.pane_info.id == reader.pane_info.id && p.pane_info.is_suppressed)
+    });
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/suppressed.pdf");
+    yinz.wait_until("suppressed reader is revealed", |g| {
+        g.contains("RECEIVED 3 width") && g.contains("/tmp/suppressed.pdf")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    assert_eq!(
+        yinz.run_cli_action(CliAction::NewTab {
+            layout: None,
+            layout_string: Some("layout { pane; }".into()),
+            layout_dir: None,
+            name: Some("elsewhere".into()),
+            cwd: None,
+            initial_command: vec![],
+            initial_plugin: None,
+            close_on_exit: false,
+            start_suspended: false,
+            block_until_exit_success: false,
+            block_until_exit_failure: false,
+            block_until_exit: false,
+            no_focus: false,
+        }),
+        0
+    );
+    yinz.expect_pty_spawn().output(b"OTHER TAB READY\r\n");
+    yinz.wait_until("another tab is active", |g| g.contains("OTHER TAB READY"));
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/other-tab.pdf");
+    yinz.wait_until("reader's original tab is focused", |g| {
+        g.contains("RECEIVED 4 width") && g.contains("/tmp/other-tab.pdf")
+    });
+    assert_retired(&yinz, &finder, &selection);
+    assert!(panes(&yinz)
+        .iter()
+        .any(|p| p.pane_info.id == reader.pane_info.id
+            && p.tab_id == reader.tab_id
+            && p.pane_info.is_focused));
+    assert_eq!(
+        yinz.run_cli_action(CliAction::ClosePane {
+            pane_id: Some(reader.pane_info.id.to_string())
+        }),
+        0
+    );
+    yinz.wait_until("reader closes normally", |_| {
+        !panes(&yinz)
+            .iter()
+            .any(|p| p.pane_info.id == reader.pane_info.id)
+    });
+    let (finder, selection) = open_finder(&yinz);
+    finder.exit(Some(130));
+    assert_retired(&yinz, &finder, &selection);
+    yinz.quit();
+}
+
+#[test]
+fn malformed_configuration_and_unknown_alias_retire_the_finder() {
+    for json in [
+        r#"{"pdf":{"argv":[]}}"#,
+        r#"{"pdf":{"plugin":"missing-reader-alias"}}"#,
+    ] {
+        let mut yinz = session(json, "");
+        let (finder, selection) = open_finder(&yinz);
+        choose(&finder, &selection, "/tmp/test.pdf");
+        yinz.wait_until("opening failure is visible", |g| g.contains("file-finder:"));
+        assert_retired(&yinz, &finder, &selection);
+        assert_eq!(
+            panes(&yinz)
+                .iter()
+                .filter(|p| !p.pane_info.is_plugin())
+                .count(),
+            1
+        );
+        yinz.quit();
+    }
+}
+
+#[test]
+fn structured_argv_reaches_the_terminal_without_shell_parsing() {
+    let mut yinz = session(
+        r#"{"pdf":{"argv":["/opt/Image Tools/viewer", "", "a 'quote'", "{}:{}"]}}"#,
+        "",
+    );
+    let (finder, selection) = open_finder(&yinz);
+    let chosen = "/tmp/ '雪,\"#?%2C.pdf";
+    choose(&finder, &selection, chosen);
+    let viewer = yinz.expect_pty_spawn();
+    assert_eq!(
+        spawned_command(&viewer),
+        (
+            "/opt/Image Tools/viewer".into(),
+            vec!["".into(), "a 'quote'".into(), format!("{chosen}:{chosen}")]
+        )
+    );
+    viewer.exit(Some(0));
+    assert_retired(&yinz, &finder, &selection);
+    yinz.quit();
+}
+
+#[test]
+fn reader_permission_denial_and_missing_source_leave_no_finder() {
+    let root = tempfile::tempdir().unwrap();
+    let url = receiver(root.path());
+    let json = serde_json::json!({"pdf": {"plugin": url}}).to_string();
+    let mut yinz = session(&json, "");
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/denied.pdf");
+    yinz.wait_until("reader permission prompt", |g| g.contains("Allow? (y/n)"));
+    assert_retired(&yinz, &finder, &selection);
+    yinz.send_stdin(b"n");
+    yinz.wait_until("receiver handles denial", |g| g.contains("DENIED"));
+    yinz.quit();
+
+    let missing = root.path().join("missing.ts");
+    let json = serde_json::json!({"pdf": {"plugin": missing}}).to_string();
+    let mut yinz = session(&json, "");
+    let (finder, selection) = open_finder(&yinz);
+    choose(&finder, &selection, "/tmp/missing.pdf");
+    assert_retired(&yinz, &finder, &selection);
+    yinz.wait_until("missing reader load error is visible", |g| {
+        g.contains("ERROR") || g.contains("Error") || g.contains("Failed")
+    });
+    yinz.quit();
+}
+
+#[test]
+fn alias_settings_narrow_reuse_and_lowest_matching_id_wins() {
+    let root = tempfile::tempdir().unwrap();
+    let url = receiver(root.path());
+    let json = serde_json::json!({"pdf":{"plugin":"reader"},"txt":{"plugin":url}}).to_string();
+    let mut yinz = session(
+        &json,
+        &format!("reader location={url:?} {{ fit \"width\"; }}"),
+    );
+    let mut ids = vec![];
+    for fit in ["height", "width", "width"] {
+        assert_eq!(
+            yinz.run_cli_action(CliAction::LaunchPlugin {
+                floating: true,
+                in_place: false,
+                close_replaced_pane: false,
+                url: url.parse().unwrap(),
+                configuration: None,
+                configuration_json: Some(yinz_types::input::layout::PluginUserConfiguration::new(
+                    std::collections::BTreeMap::from([("fit".into(), fit.into())])
+                )),
+                skip_plugin_cache: false,
+                no_focus: false,
+                tab_id: None,
+            }),
+            0
+        );
+        if ids.is_empty() {
+            yinz.wait_until("first reader permission prompt", |g| {
+                g.contains("Allow? (y/n)")
+            });
+            yinz.send_stdin(b"y");
+        }
+        yinz.wait_until("new reader ready", |g| {
+            g.contains(&format!("RECEIVED 0 {fit}"))
+                && panes(&yinz).iter().filter(|p| is_reader(p, &url)).count() == ids.len() + 1
+        });
+        ids.push(
+            panes(&yinz)
+                .into_iter()
+                .filter(|p| is_reader(p, &url))
+                .map(|p| p.pane_info.id)
+                .max()
+                .unwrap(),
+        );
+    }
+    for (path, expected, fit) in [
+        ("/tmp/alias.pdf", ids[1], "width"),
+        ("/tmp/any.txt", ids[0], "height"),
+    ] {
+        let (finder, selection) = open_finder(&yinz);
+        choose(&finder, &selection, path);
+        yinz.wait_until("exactly one matching reader receives the path", |g| {
+            g.contains(path) && g.contains(&format!("RECEIVED 1 {fit}"))
+        });
+        assert_retired(&yinz, &finder, &selection);
+        let matching: Vec<_> = panes(&yinz)
+            .into_iter()
+            .filter(|p| is_reader(p, &url))
+            .collect();
+        assert_eq!(matching.len(), 3);
+        assert!(matching
+            .iter()
+            .any(|p| p.pane_info.id == expected && p.pane_info.is_focused));
+    }
+    yinz.quit();
+}

@@ -34,6 +34,7 @@ tokio = { workspace = true, features = ["sync"] }
 vte = { workspace = true }
 
 [dev-dependencies]
+url = { workspace = true }
 agent-proto = { path = "../default-plugins/agent-proto" }
 yinz-storage = { workspace = true }
 yinz-deno-builtins = { workspace = true }

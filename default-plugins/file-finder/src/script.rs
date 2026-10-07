@@ -19,7 +19,7 @@ const FZF_ARGS: &str = "fzf_args";
 
 /// Lists tracked files plus untracked-but-not-ignored ones, which is what a person
 /// means by "the files in this project".
-const GIT_LIST: &str = "git ls-files --cached --others --exclude-standard";
+const GIT_LIST: &str = r"git ls-files --cached --others --exclude-standard -z | tr '\000' '\n'";
 
 /// Outside a git checkout there is no ignore file to honour, so list everything except
 /// the `.git` directory itself. `sed` strips the `./` that `find .` prefixes.
@@ -102,7 +102,7 @@ fn single_quote(value: &str) -> String {
 /// Returns `None` when the user cancelled — fzf exiting non-zero, an empty selection,
 /// or the file never being written at all.
 pub fn parse_selection(contents: &str) -> Option<&str> {
-    let selection = contents.lines().next().unwrap_or("").trim();
+    let selection = contents.split('\n').next().unwrap_or("");
     if selection.is_empty() {
         None
     } else {
@@ -196,13 +196,13 @@ mod tests {
     fn empty_selection_reads_as_a_cancel() {
         assert_eq!(parse_selection(""), None);
         assert_eq!(parse_selection("\n"), None);
-        assert_eq!(parse_selection("   \n"), None);
+        assert_eq!(parse_selection("   \n"), Some("   "));
     }
 
     /// Whatever the finder pane left behind — a crashed fzf, a partial write, a file
     /// full of blank lines — the plugin turns a `Some` straight into a `PathBuf` and
-    /// opens it. So a `Some` must always be a usable one-line path: non-empty, already
-    /// trimmed, no embedded newline, and genuinely taken from the file's first line.
+    /// opens it. So a `Some` must always be a usable one-line path: non-empty,
+    /// preserved, no embedded newline, and genuinely taken from the file's first line.
     ///
     /// The generator is deliberately unconstrained; garbage input is exactly the case
     /// this guards.
@@ -215,24 +215,25 @@ mod tests {
         };
 
         assert!(!selection.is_empty(), "a selection must not be empty");
-        assert_eq!(selection, selection.trim(), "a selection must be trimmed");
-        // Only `\n` is disqualifying. A bare `\r` is a legal character in a Unix
-        // filename and `str::lines` does not treat it as a break, so a selection may
-        // legitimately carry one; the CRLF case is already stripped by `lines`.
+        // Only the line delimiter is removed; a trailing CR can belong to the filename.
         assert!(
             !selection.contains('\n'),
             "a selection must not span lines: {:?}",
             selection
         );
         let first_line = contents
-            .lines()
+            .split('\n')
             .next()
             .expect("a Some means there was a line to take it from");
         assert!(
-            first_line.contains(selection),
+            first_line == selection,
             "{:?} did not come from the first line {:?}",
             selection,
             first_line
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/listing.rs"]
+mod listing_tests;

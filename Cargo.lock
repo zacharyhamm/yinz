@@ -1582,7 +1582,11 @@ name = "file-finder"
 version = "0.1.0"
 dependencies = [
  "hegeltest",
+ "serde",
+ "serde_json",
  "tempfile",
+ "url",
+ "yinz-test-support",
  "yinz-tile",
 ]
 
@@ -6560,6 +6564,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "url",
  "vte 0.15.0",
  "yinz-cli",
  "yinz-client",

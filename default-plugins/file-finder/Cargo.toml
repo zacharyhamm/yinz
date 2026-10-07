@@ -8,8 +8,12 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true, features = ["std"] }
 yinz-tile = { path = "../../yinz-tile" }
 
 [dev-dependencies]
+yinz-test-support = { path = "../../yinz-test-support" }
 hegeltest = "0.29.3"
 tempfile = { workspace = true }

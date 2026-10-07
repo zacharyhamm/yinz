@@ -350,6 +350,42 @@ plugins {
     //     open_png "chafa"
     //     open_pdf "zathura {}"
     //
+    // Legacy opener strings split on whitespace before substitution; they do not run
+    // through a shell. Quotes have no special meaning. Blank values select the editor.
+    // For literal arguments or a plugin reader, use one JSON object:
+    //
+    //     openers_json r#"{
+    //       "pdf": {"plugin": "pdf-reader", "message": "open"},
+    //       "png": {"argv": ["/opt/Image Tools/viewer", "--title", "Selected image", "{}"]},
+    //       "txt": null
+    //     }"#
+    //
+    // Keys are lowercase extensions without a leading dot, or "default". Resolution:
+    // structured extension, legacy extension, structured default, legacy open_default,
+    // editor. A selected null or blank legacy entry stops resolution at the editor.
+    // Missing/blank/{} JSON adds no entries; configuration merges replace the whole map.
+    // Invalid JSON or entries notify and cancel the opening; there is no legacy fallback.
+    // Entries accept only argv, or plugin with optional message (default "open").
+    // argv requires a nonblank executable. It stays literal; subsequent arguments replace
+    // every {} once with the path, or append the path if none contain {}. Empty arguments
+    // survive. Quotes, spaces, commas, Unicode and percent signs are literal. NUL is invalid.
+    //
+    // Readers receive the raw absolute selected path as a message payload. Configure
+    // reader settings in a normal plugin alias, e.g. pdf-reader location="file:/.../main.ts".
+    // Destinations accept aliases, yinz: URLs, absolute paths and absolute local file: URLs.
+    // Raw paths are file-URL encoded; URLs are decoded once by the host. Thus a raw %2C
+    // filename differs from URL %2C (a comma). Escape literal # and ? in URLs; raw paths
+    // need no escaping. Relative paths, remote authorities, queries and fragments fail.
+    // Lookup reuses the lowest matching reader ID and focuses its existing tab/layer.
+    // Alias settings narrow matching; empty settings match any configuration at that source.
+    // New readers float and keep their permission prompts. An alias cwd wins; otherwise
+    // cold readers start at /, while reused readers retain their cwd. caller_cwd metadata
+    // names the selected file's parent; it does not set reader cwd or carry the document.
+    // There is no delivery acknowledgement or retry. Async load errors use the reader's
+    // error pane; readers must handle messages arriving before their async load finishes.
+    // Concurrent finders can create duplicate readers. Sequential searches reuse readers.
+    // Filenames must be UTF-8 and contain no newline (the finder uses a line-based list).
+    //
     // Other keys: `file_command` replaces the file listing (default: git-tracked and
     // untracked-not-ignored files from the git root, or `find` outside a checkout),
     // `fzf_args` adds flags to fzf, and `x`/`y`/`width`/`height` size the overlay.
