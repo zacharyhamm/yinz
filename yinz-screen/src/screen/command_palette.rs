@@ -22,7 +22,7 @@ use yinz_types::mouse::{MouseEvent, MouseEventType};
 use yinz_types::pane_size::Viewport;
 
 use super::Screen;
-use crate::output::Output;
+use crate::output::{Output, TranslucentOverlayBacking};
 use crate::ui::command_palette::{CommandPalette, Entry, EntryKind, Field, Form, Outcome};
 use crate::ui::damage::CellRect;
 use crate::ClientId;
@@ -36,6 +36,9 @@ pub(super) struct CommandPaletteState {
     actions: HashMap<String, Builtin>,
     warp_source: Option<SessionName>,
     painted: Option<CellRect>,
+    backing: TranslucentOverlayBacking,
+    watcher_backing: TranslucentOverlayBacking,
+    backing_style: yinz_types::style::Style,
     shortcut_keybinds: KeybindsVec,
     shortcuts: HashMap<String, CachedShortcut>,
     #[cfg(test)]
@@ -124,6 +127,9 @@ impl Screen {
                 actions: HashMap::new(),
                 warp_source: None,
                 painted: None,
+                backing: TranslucentOverlayBacking::default(),
+                watcher_backing: TranslucentOverlayBacking::default(),
+                backing_style: self.style,
                 shortcut_keybinds: Vec::new(),
                 shortcuts: HashMap::new(),
                 #[cfg(test)]
@@ -154,6 +160,9 @@ impl Screen {
         dismiss_plugins: bool,
     ) -> Option<CommandPaletteState> {
         let mut state = self.command_palettes.remove(&client_id)?;
+        state.backing = TranslucentOverlayBacking::default();
+        state.watcher_backing = TranslucentOverlayBacking::default();
+        state.painted = None;
         state.agents.cancel();
         state.notes.cancel();
         if dismiss_plugins {
@@ -290,10 +299,19 @@ impl Screen {
         true
     }
 
-    pub(super) fn prepare_command_palette_render(&mut self, output: &mut Output) {
+    pub(super) fn invalidate_command_palette_backing(
+        &mut self,
+        client: ClientId,
+        damage: &[CellRect],
+    ) {
+        if let Some(state) = self.command_palettes.get_mut(&client) {
+            state.backing.invalidate(damage);
+        }
+    }
+
+    pub(super) fn prepare_command_palette_render(&mut self) {
         self.remove_unavailable_palette_providers();
         self.refresh_command_palettes();
-        output.set_input_overlay_clients(self.command_palettes.keys().copied());
         let layouts: Vec<_> = self
             .command_palettes
             .iter()
@@ -310,12 +328,32 @@ impl Screen {
                 .painted
                 .replace(rect)
                 .is_some_and(|previous| previous != rect);
-            // ponytail: repaint intersecting panes per frame; cache cells only if measured cost warrants it.
+            if state.backing_style != self.style {
+                state.backing = TranslucentOverlayBacking::default();
+                state.watcher_backing = TranslucentOverlayBacking::default();
+                state.backing_style = self.style;
+            }
+            let mut needs_backing = state.backing.prepare(
+                rect,
+                self.background_opacity,
+                *self.terminal_emulator_colors.borrow(),
+                self.style.colors.text_unselected.background,
+                &self.terminal_emulator_color_codes.borrow(),
+            );
+            if self.followed_client_id == Some(client) && !self.watcher_clients.is_empty() {
+                needs_backing |= state.watcher_backing.prepare(
+                    rect,
+                    self.background_opacity,
+                    *self.terminal_emulator_colors.borrow(),
+                    self.style.colors.text_unselected.background,
+                    &self.terminal_emulator_color_codes.borrow(),
+                );
+            }
             if let Some(tab) = self.tabs.get_mut(&state.context.tab_id) {
                 if geometry_changed {
                     tab.set_should_clear_display_before_rendering();
                     tab.set_force_render();
-                } else {
+                } else if needs_backing {
                     tab.force_render_panes_intersecting(&[rect]);
                 }
             }
@@ -324,15 +362,16 @@ impl Screen {
 
     /// Called after pane cursors: the palette's input cursor is the final instruction.
     pub(super) fn render_command_palettes(
-        &self,
+        &mut self,
         output: &mut Output,
         clients: impl Iterator<Item = ClientId>,
+        watcher: bool,
     ) -> Result<()> {
         for client in clients {
-            let Some(state) = self.command_palettes.get(&client) else {
+            let Some(surface) = self.command_palette_surface(client) else {
                 continue;
             };
-            let Some(surface) = self.command_palette_surface(client) else {
+            let Some(state) = self.command_palettes.get_mut(&client) else {
                 continue;
             };
             let layout = state.widget.layout(surface);
@@ -348,6 +387,11 @@ impl Screen {
                     *self.terminal_emulator_colors.borrow(),
                     self.style.colors.text_unselected.background,
                     &self.terminal_emulator_color_codes.borrow(),
+                    if watcher {
+                        &mut state.watcher_backing
+                    } else {
+                        &mut state.backing
+                    },
                 )
                 .context("failed to render command palette")?;
             if let Some((x, y)) = state.widget.cursor(&layout) {

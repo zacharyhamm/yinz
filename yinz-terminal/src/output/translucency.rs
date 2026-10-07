@@ -17,6 +17,79 @@ struct Cell {
 // Rows stay ordered; columns use direct indexing instead of a tree lookup for every cell.
 type Cells = BTreeMap<usize, Vec<Option<Cell>>>;
 
+/// Untinted backing cells for a screen overlay, bounded by its current rectangle.
+#[derive(Clone, Debug, Default)]
+pub struct TranslucentOverlayBacking {
+    composition: Option<Composition>,
+}
+
+impl TranslucentOverlayBacking {
+    /// Forget exposed overlay cells before underlying panes repaint their damage.
+    pub fn invalidate(&mut self, damage: &[CellRect]) {
+        let Some(composition) = &mut self.composition else {
+            return;
+        };
+        for rect in damage {
+            for cells in composition.layers.values_mut() {
+                for (_, row) in cells.range_mut(rect.y..rect.y + rect.rows) {
+                    let start = rect.x.saturating_sub(composition.left);
+                    let end = (rect.x + rect.cols).saturating_sub(composition.left);
+                    for cell in row.iter_mut().take(end).skip(start) {
+                        *cell = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns whether the caller must repaint the underlying panes before composing.
+    pub fn prepare(
+        &mut self,
+        rect: CellRect,
+        opacity: u8,
+        palette: yinz_types::style::Palette,
+        tint: PaletteColor,
+        terminal_emulator_color_codes: &HashMap<usize, String>,
+    ) -> bool {
+        let next = Composition::new(
+            vec![(1, rect, opacity)],
+            palette.fg,
+            palette.bg,
+            tint,
+            host_colors(terminal_emulator_color_codes),
+        );
+        if let Some(current) = &self.composition {
+            if current.overlays == next.overlays
+                && current.fg == next.fg
+                && current.bg == next.bg
+                && current.tint == next.tint
+                && current.host_colors == next.host_colors
+            {
+                return current.layers.is_empty();
+            }
+        }
+        self.composition = Some(next);
+        true
+    }
+
+    pub(super) fn update(
+        &mut self,
+        chunks: &[CharacterChunk],
+        display_cleared: bool,
+    ) -> Result<Composition> {
+        let composition = self
+            .composition
+            .as_mut()
+            .context("overlay backing was not prepared")?;
+        if display_cleared {
+            composition.layers.clear();
+        }
+        composition.add(chunks, 0);
+        // Only the copy receives the overlay, so its tint and lettering never enter the cache.
+        Ok(composition.clone())
+    }
+}
+
 pub(super) fn host_colors(codes: &HashMap<usize, String>) -> [Option<AnsiCode>; 256] {
     let mut colors = [None; 256];
     for (&index, value) in codes {

@@ -62,6 +62,7 @@ fn screen_overlay_composes_fresh_content_and_notifications_in_paint_order() {
                 },
                 TINT,
                 &HashMap::new(),
+                &mut TranslucentOverlayBacking::default(),
             )
             .unwrap();
         let chunks = output.client_character_chunks.remove(&client).unwrap();
@@ -78,6 +79,106 @@ fn screen_overlay_composes_fresh_content_and_notifications_in_paint_order() {
         );
         assert_eq!(cells[2].styles.background, Some(TINT.into()));
     }
+}
+
+#[test]
+fn screen_overlay_reuses_untinted_backing_and_resets_it_on_display_clear() {
+    let client = ClientId::new(1);
+    let mut backing = TranslucentOverlayBacking::default();
+    let palette = yinz_types::style::Palette {
+        fg: FG,
+        bg: BG,
+        ..Default::default()
+    };
+    let mut original = None;
+    for (under, over, cleared, expected) in [
+        (vec![chunk("abcdefgh", 0)], " X ", false, "abcXefgh"),
+        (vec![], "   ", false, "  cde"),
+        (vec![chunk("Z", 3)], "   ", false, "  cZe"),
+        (vec![], "   ", false, "  cZe"),
+        (vec![], "   ", true, "     "),
+    ] {
+        let mut output = Output::default();
+        output.add_clients(
+            &HashSet::from([client]),
+            Rc::new(RefCell::new(LinkHandler::new())),
+            None,
+        );
+        output
+            .add_character_chunks_to_client(client, under, None)
+            .unwrap();
+        if cleared {
+            output.mark_host_display_cleared_for_client(client);
+        }
+        output
+            .add_translucent_overlay(
+                client,
+                rect(2, 3),
+                75,
+                vec![chunk(over, 2)],
+                palette,
+                TINT,
+                &HashMap::new(),
+                &mut backing,
+            )
+            .unwrap();
+        assert!(!backing.prepare(rect(2, 3), 75, palette, TINT, &HashMap::new()));
+        let cells =
+            serialize_and_parse_row(output.client_character_chunks.remove(&client).unwrap(), 8);
+        assert_eq!(
+            cells.iter().map(|c| c.character).collect::<String>(),
+            expected
+        );
+        if !cleared {
+            assert_eq!(*original.get_or_insert(cells[2].clone()), cells[2]);
+        }
+    }
+}
+
+#[test]
+fn screen_overlay_backing_invalidates_only_exposed_cells() {
+    let mut backing = TranslucentOverlayBacking::default();
+    let palette = yinz_types::style::Palette {
+        fg: FG,
+        bg: BG,
+        ..Default::default()
+    };
+    backing.invalidate(&[rect(0, 10)]);
+    backing.prepare(rect(2, 5), 75, palette, TINT, &HashMap::new());
+    backing.update(&[chunk("abcde", 2)], false).unwrap();
+    backing.invalidate(&[rect(0, 3), rect(4, 1), rect(6, 10)]);
+    assert!(!backing.prepare(rect(2, 5), 75, palette, TINT, &HashMap::new()));
+    let mut composition = backing.update(&[], false).unwrap();
+    composition.add(&[chunk("     ", 2)], 1);
+    let cells = serialize_and_parse_row(composition.finish(), 7);
+    assert_eq!(
+        cells.iter().map(|cell| cell.character).collect::<String>(),
+        "   b d "
+    );
+}
+
+#[test]
+fn screen_overlay_backing_invalidates_for_geometry_and_colors() {
+    let mut backing = TranslucentOverlayBacking::default();
+    let mut palette = yinz_types::style::Palette {
+        fg: FG,
+        bg: BG,
+        ..Default::default()
+    };
+    let mut codes = HashMap::new();
+    for (area, tint) in [(rect(0, 5), TINT), (rect(2, 3), TINT), (rect(2, 3), BG)] {
+        assert!(backing.prepare(area, 75, palette, tint, &codes));
+        backing.update(&[chunk("abcdefgh", 0)], false).unwrap();
+        assert!(!backing.prepare(area, 75, palette, tint, &codes));
+    }
+    palette.fg = TINT;
+    assert!(backing.prepare(rect(2, 3), 75, palette, BG, &codes));
+    backing.update(&[chunk("abcdefgh", 0)], false).unwrap();
+    codes.insert(1, "rgb:00/ff/00".to_owned());
+    assert!(backing.prepare(rect(2, 3), 75, palette, BG, &codes));
+    // Newly exposed cells cannot retain old content before the caller's backing repaint.
+    let composition = backing.update(&[], false).unwrap();
+    assert!(composition.finish().is_empty());
 }
 
 #[test]
@@ -164,6 +265,7 @@ fn screen_overlay_clips_both_graphics_protocols_and_composes_over_a_translucent_
             },
             TINT,
             &HashMap::new(),
+            &mut TranslucentOverlayBacking::default(),
         )
         .unwrap();
     let cells = serialize_and_parse_row(output.client_character_chunks.remove(&client).unwrap(), 5);

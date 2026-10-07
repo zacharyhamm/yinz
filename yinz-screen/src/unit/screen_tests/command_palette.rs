@@ -1,4 +1,5 @@
 use super::*;
+use crate::output::Output;
 use std::time::Duration;
 use yinz_types::internal_ids::{PluginId, SessionName, TabNumber};
 use yinz_types::keys::{BareKey, KeyWithModifier};
@@ -310,6 +311,7 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
             .unwrap();
         let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert!(snapshot.contains(text), "{snapshot}");
+        let cells = grid.as_character_lines();
         // A query-only frame must tint fresh pane cells too, rather than clearing the backing text.
         screen.command_palette_handles_input(
             &Some(KeyWithModifier::new(BareKey::Left)),
@@ -319,6 +321,11 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
         );
         let unchanged = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
         assert_eq!(snapshot, unchanged);
+        assert_eq!(
+            cells,
+            grid.as_character_lines(),
+            "backing colors must not accumulate tint"
+        );
     }
     screen.close_command_palette(CLIENT);
     let snapshot = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -326,6 +333,280 @@ fn palette_repaints_its_background_on_frames_without_new_pane_output() {
         snapshot.contains("background two") && !snapshot.contains("Switch session"),
         "{snapshot}"
     );
+}
+
+#[test]
+fn palette_navigation_does_not_repaint_pane_contents_or_borders() {
+    for query in ["", "pane"] {
+        let mut screen = screen();
+        let mut config = test_screen_config();
+        config.pane_frame_style = PaneFrameStyle::Full;
+        screen
+            .reconfigure(config, Keybinds::default(), CLIENT)
+            .unwrap();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        screen.toggle_command_palette(CLIENT);
+        screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let original = grid.as_character_lines();
+        for key in [BareKey::Down, BareKey::Up, BareKey::Down, BareKey::Up] {
+            let before = grid.as_character_lines();
+            palette_key(&mut screen, key);
+            let mut output = Output::default();
+            output.pane_change_client = Some(CLIENT);
+            screen.prepare_command_palette_render();
+            output.set_input_overlay_clients(std::iter::once(CLIENT));
+            screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .render_panes(&mut output, None)
+                .unwrap();
+            assert!(
+                output.rendered_pane_contents.is_empty(),
+                "navigation repainted pane contents"
+            );
+            assert!(
+                output.rendered_pane_frames.is_empty(),
+                "navigation repainted pane frames"
+            );
+            assert!(
+                !output.rendered_pane_boundaries,
+                "navigation repainted pane boundaries"
+            );
+            screen
+                .render_command_palettes(&mut output, std::iter::once(CLIENT), false)
+                .unwrap();
+            let rendered = output.serialize().unwrap();
+            take_snapshot_and_cursor_coordinates(&rendered[&CLIENT], &mut grid);
+            assert_ne!(
+                before,
+                grid.as_character_lines(),
+                "navigation changes selection"
+            );
+        }
+        assert_eq!(original, grid.as_character_lines());
+    }
+}
+
+#[test]
+fn palette_backing_refreshes_terminal_colors_and_theme() {
+    use yinz_types::colors::PaletteColor;
+    let mut screen = screen();
+    let receiver = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    screen
+        .get_active_tab_mut(CLIENT)
+        .unwrap()
+        .handle_pty_bytes(
+            TerminalId::new(1),
+            b"\x1b[9;40Hdefault \x1b[31mindexed".to_vec(),
+        )
+        .unwrap();
+    screen.toggle_command_palette(CLIENT);
+    render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    for change in 0..8 {
+        let before = grid.as_character_lines();
+        match change {
+            0 => screen.terminal_emulator_colors.borrow_mut().fg = PaletteColor::Rgb((12, 34, 56)),
+            1 => screen.terminal_emulator_colors.borrow_mut().bg = PaletteColor::Rgb((65, 43, 21)),
+            2 => {
+                screen
+                    .terminal_emulator_color_codes
+                    .borrow_mut()
+                    .insert(1, "rgb:00/ff/00".into());
+            },
+            3..=6 => {
+                let osc = match change {
+                    3 | 5 => "\x1b]4;1;rgb:ff/00/ff\x07",
+                    4 => "\x1b]104;1\x07",
+                    _ => "\x1b]104\x07",
+                };
+                screen
+                    .get_active_tab_mut(CLIENT)
+                    .unwrap()
+                    .handle_pty_bytes(TerminalId::new(1), osc.as_bytes().to_vec())
+                    .unwrap();
+            },
+            _ => {
+                let mut config = test_screen_config();
+                config.theme.text_unselected.background = PaletteColor::Rgb((90, 80, 70));
+                screen
+                    .reconfigure(config, Keybinds::default(), CLIENT)
+                    .unwrap();
+            },
+        }
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let refreshed = grid.as_character_lines();
+        assert_ne!(before[8][39..54], refreshed[8][39..54]);
+        screen
+            .get_active_tab_mut(CLIENT)
+            .unwrap()
+            .set_force_render();
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(
+            refreshed,
+            grid.as_character_lines(),
+            "cached colors match a full repaint"
+        );
+    }
+}
+
+#[test]
+fn palette_backing_clears_exposed_notifications_outside_floating_panes() {
+    use yinz_types::animation::Tween;
+    for moved in [false, true] {
+        let mut screen = floating_only_screen();
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        let now = std::time::Instant::now();
+        screen.pinned_now = Some(now);
+        screen.toggle_command_palette(CLIENT);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let before = grid.as_character_lines()[5][60].clone();
+        assert_eq!(before.character, ' ');
+
+        let mut notification = crate::screen::Notification::new(
+            NotificationId::new(0),
+            "a toast over the empty tab background".into(),
+            None,
+            None,
+            now,
+        );
+        notification.reveal = Tween::settled(1.0);
+        screen.notifications.push(notification);
+        let surface = yinz_types::pane_size::Viewport {
+            x: 0,
+            y: 0,
+            cols: SIZE.cols,
+            rows: SIZE.rows,
+        };
+        let y = screen.notification_layout(surface, now)[0].y;
+        screen.notifications[0].y_offset = Tween::settled(5.0 - y as f32);
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(grid.as_character_lines()[5][60].character, '─');
+
+        if moved {
+            screen.notifications[0].y_offset = Tween::settled(7.0 - y as f32);
+        } else {
+            screen.notifications.clear();
+        }
+        render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert_eq!(grid.as_character_lines()[5][60], before, "moved: {moved}");
+    }
+}
+
+#[test]
+fn palette_backing_keeps_watcher_notifications_separate() {
+    use yinz_types::animation::Tween;
+    let mut screen = screen();
+    let watcher = ClientId::new(2);
+    screen.add_watcher_client(watcher).unwrap();
+    screen.set_watcher_size(watcher, SIZE);
+    screen.set_followed_client(CLIENT).unwrap();
+    let receiver = screen_wired_to_server(&mut screen);
+    let now = std::time::Instant::now();
+    screen.pinned_now = Some(now);
+    let mut notification = crate::screen::Notification::new(
+        NotificationId::new(0),
+        "a toast visible to regular clients".into(),
+        None,
+        None,
+        now,
+    );
+    notification.reveal = Tween::settled(1.0);
+    screen.notifications.push(notification);
+    let surface = yinz_types::pane_size::Viewport {
+        x: 0,
+        y: 0,
+        cols: SIZE.cols,
+        rows: SIZE.rows,
+    };
+    let y = screen.notification_layout(surface, now)[0].y;
+    screen.notifications[0].y_offset = Tween::settled(5.0 - y as f32);
+    screen.toggle_command_palette(CLIENT);
+    let mut grids = [
+        grid_for_render_snapshot(SIZE),
+        grid_for_render_snapshot(SIZE),
+    ];
+    let mut initial = None;
+    for _ in 0..3 {
+        palette_key(&mut screen, BareKey::Left);
+        screen.render_to_clients().unwrap();
+        for (instruction, _) in receiver.try_iter() {
+            if let ServerInstruction::Render(Some(rendered)) = instruction {
+                for (client, grid) in [CLIENT, watcher].into_iter().zip(&mut grids) {
+                    if let Some(bytes) = rendered.get(&client) {
+                        take_snapshot_and_cursor_coordinates(bytes, grid);
+                    }
+                }
+            }
+        }
+        let cells = grids
+            .each_ref()
+            .map(|grid| grid.as_character_lines()[5][60].clone());
+        assert_ne!(
+            cells[0], cells[1],
+            "only the regular client's backing contains the toast"
+        );
+        assert_eq!(*initial.get_or_insert(cells.clone()), cells);
+    }
+}
+
+#[test]
+#[ignore = "manual navigation timing and output-volume measurement"]
+fn palette_navigation_measurement() {
+    for size in [
+        SIZE,
+        Size {
+            cols: 240,
+            rows: 80,
+        },
+    ] {
+        for query in ["", "pane"] {
+            let mut screen = create_non_mirrored_screen(size);
+            new_tab(&mut screen, 1, TabId::new(0));
+            let receiver = screen_wired_to_server(&mut screen);
+            let paint = (1..size.rows)
+                .map(|row| format!("\x1b[{row};1H{}", "background ".repeat(size.cols / 11)))
+                .collect::<String>();
+            screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .handle_pty_bytes(TerminalId::new(1), paint.into_bytes())
+                .unwrap();
+            screen.toggle_command_palette(CLIENT);
+            screen.command_palette_handles_input(&None, query.as_bytes(), false, CLIENT);
+            screen.render_to_clients().unwrap();
+            receiver.try_iter().for_each(drop);
+            let started = std::time::Instant::now();
+            let mut bytes = 0;
+            // Direct screen calls, with no background runner: exactly one frame per key.
+            for index in 0..200 {
+                palette_key(
+                    &mut screen,
+                    if index % 2 == 0 {
+                        BareKey::Down
+                    } else {
+                        BareKey::Up
+                    },
+                );
+                screen.render_to_clients().unwrap();
+                for (instruction, _) in receiver.try_iter() {
+                    if let ServerInstruction::Render(Some(rendered)) = instruction {
+                        bytes += rendered.get(&CLIENT).map_or(0, String::len);
+                    }
+                }
+            }
+            eprintln!(
+                "palette {}x{} query={query:?}: {:?}/move, {} bytes/move",
+                size.cols,
+                size.rows,
+                started.elapsed() / 200,
+                bytes / 200
+            );
+        }
+    }
 }
 
 fn palette_key(screen: &mut Screen, key: BareKey) {

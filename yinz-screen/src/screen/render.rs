@@ -220,6 +220,7 @@ impl Screen {
             .iter()
             .any(|id| !self.watcher_clients.contains_key(id));
         let has_watchers = !self.watcher_clients.is_empty(); // No change needed
+        self.prepare_command_palette_render();
 
         // Track pane output consumed by regular clients for conditional watcher rendering.
         let mut replay_contents = HashSet::new();
@@ -245,7 +246,7 @@ impl Screen {
                 self.synchronized_output_capabilities.clone(),
             );
 
-            self.prepare_command_palette_render(&mut output);
+            output.set_input_overlay_clients(self.command_palettes.keys().copied());
 
             output.pane_change_client = self.followed_client_id.filter(|_| has_watchers);
 
@@ -372,7 +373,7 @@ impl Screen {
                         .is_some_and(|tab_id| self.deferred_render_tabs.contains(tab_id))
                 })
                 .collect();
-            self.render_command_palettes(&mut output, palette_clients.into_iter())
+            self.render_command_palettes(&mut output, palette_clients.into_iter(), false)
                 .context(err_context)?;
 
             let pane_render_report = output.drain_pane_render_report();
@@ -655,6 +656,7 @@ impl Screen {
                 self.render_command_palettes(
                     &mut watcher_output,
                     std::iter::once(followed_client_id),
+                    true,
                 )
                 .context(err_context)?;
 

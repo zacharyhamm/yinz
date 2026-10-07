@@ -1,4 +1,5 @@
 mod translucency;
+pub use translucency::TranslucentOverlayBacking;
 
 use crate::panes::Row;
 use crate::ui::damage::CellRect;
@@ -875,7 +876,7 @@ impl Output {
     }
 
     /// Compose a screen overlay over this client's already-composed panes and notifications.
-    /// The caller repaints intersecting panes each frame so these chunks contain fresh backing cells.
+    /// The caller repaints intersecting panes when `backing.prepare()` requests it.
     pub fn add_translucent_overlay(
         &mut self,
         client_id: ClientId,
@@ -885,18 +886,14 @@ impl Output {
         palette: yinz_types::style::Palette,
         tint: yinz_types::colors::PaletteColor,
         terminal_emulator_color_codes: &HashMap<usize, String>,
+        backing: &mut TranslucentOverlayBacking,
     ) -> Result<()> {
+        let display_cleared = self.host_display_cleared_for_client(client_id);
         let Some(chunks) = self.client_character_chunks.get_mut(&client_id) else {
             return Ok(());
         };
-        let mut composition = translucency::Composition::new(
-            vec![(1, rect, opacity)],
-            palette.fg,
-            palette.bg,
-            tint,
-            translucency::host_colors(terminal_emulator_color_codes),
-        );
-        composition.add(chunks, 0);
+        backing.prepare(rect, opacity, palette, tint, terminal_emulator_color_codes);
+        let mut composition = backing.update(chunks, display_cleared)?;
         composition.add(&overlay_chunks, 1);
         let mut outside = vec![];
         // Clip one at a time to preserve paint order where notifications overlap pane chunks.
