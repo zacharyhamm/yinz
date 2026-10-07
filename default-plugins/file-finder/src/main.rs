@@ -87,6 +87,7 @@ struct State {
     /// This plugin's own pane id, used to notice when focus lands back on it.
     plugin_id: yinz_tile::prelude::PluginId,
     stage: Stage,
+    pending_cwd: Option<PathBuf>,
 }
 
 register_plugin!(State);
@@ -100,14 +101,13 @@ impl YinzPlugin for State {
         // hides itself immediately, so the answer would never come.
         self.config = configuration;
 
-        // Map /host to the real filesystem root so the selection file can be read back.
-        change_host_folder(PathBuf::from("/"));
-
         let plugin_ids = get_plugin_ids();
         self.plugin_id = plugin_ids.plugin_id;
         self.out_path = selection_path(plugin_ids.yinz_pid, self.plugin_id);
 
         subscribe(&[
+            EventType::HostFolderChanged,
+            EventType::FailedToChangeHostFolder,
             EventType::CommandPaneExited,
             EventType::EditPaneExited,
             EventType::PaneClosed,
@@ -116,11 +116,22 @@ impl YinzPlugin for State {
         ]);
 
         hide_self();
-        self.open_finder();
+        self.pending_cwd = Some(plugin_ids.initial_cwd.join(focused_cwd()));
+        // Opening must wait until /host actually maps to the filesystem root.
+        change_host_folder(PathBuf::from("/"));
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
+            Event::HostFolderChanged(path) if path == Path::new("/") => {
+                if let Some(cwd) = self.pending_cwd.take() {
+                    self.open_finder(cwd);
+                }
+            },
+            Event::FailedToChangeHostFolder(reason) if self.pending_cwd.take().is_some() => {
+                eprintln!("file-finder: failed to mount filesystem root: {reason:?}");
+                close_self();
+            },
             Event::CommandPaneExited(pane_id, _exit_code, _context) => {
                 self.handle_pane_exited(pane_id);
             },
@@ -155,15 +166,11 @@ impl YinzPlugin for State {
 
 impl State {
     /// Launch fzf in a floating pane rooted at the focused pane's project.
-    fn open_finder(&mut self) {
+    fn open_finder(&mut self, cwd: PathBuf) {
         // Clear any selection left by a previous run, so a crashed fzf cannot make us
         // reopen the last file instead of reporting a cancel.
         let _ = std::fs::remove_file(self.host_out_path());
 
-        // `PaneInfo` carries no cwd, so ask the host for the focused pane's live working
-        // directory. The script walks up to the git root from there, and so does the
-        // title — asked once, so the two can never name different directories.
-        let cwd = focused_cwd();
         let title = finder_title(project::label(Path::new(HOST_MOUNT), &cwd));
 
         let command = CommandToRun {
@@ -172,7 +179,7 @@ impl State {
                 "-c".to_owned(),
                 script::build(&self.config, &self.out_path.to_string_lossy()),
             ],
-            cwd: Some(cwd),
+            cwd: Some(project::host_path(Path::new(HOST_MOUNT), &cwd)),
             ..Default::default()
         };
 
@@ -222,14 +229,17 @@ impl State {
             },
         };
 
-        let cwd = selection.parent().map(Path::to_path_buf);
+        let cwd = selection
+            .parent()
+            .map(|path| project::host_path(Path::new(HOST_MOUNT), path));
         let target = PaneId::Terminal(finder_pane_id);
 
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
         let opened = match opener_for(&self.config, &selection) {
             Opener::YinzEditor => {
-                let mut file = FileToOpen::new(&selection);
+                let mut file =
+                    FileToOpen::new(project::host_path(Path::new(HOST_MOUNT), &selection));
                 if let Some(cwd) = cwd {
                     file = file.with_cwd(cwd);
                 }
@@ -307,7 +317,7 @@ impl State {
 
     /// The selection file as this plugin sees it, through the `/host` mount.
     fn host_out_path(&self) -> PathBuf {
-        Path::new(HOST_MOUNT).join(self.out_path.strip_prefix("/").unwrap_or(&self.out_path))
+        project::host_path(Path::new(HOST_MOUNT), &self.out_path)
     }
 
     /// Where the finder pane sits on the session surface. Dismissible rather than modal: the
@@ -497,3 +507,7 @@ mod tests {
         assert_eq!(geometry(&config).width, "120");
     }
 }
+
+#[cfg(test)]
+#[path = "unit/host_paths.rs"]
+mod host_paths;

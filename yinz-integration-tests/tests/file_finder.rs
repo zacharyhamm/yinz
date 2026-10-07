@@ -202,3 +202,6 @@ fn pressing_the_keybinding_again_returns_focus_to_the_open_finder() {
     finder.exit(Some(130));
     yinz.quit();
 }
+
+#[path = "unit/file_finder/host_paths.rs"]
+mod host_paths;
