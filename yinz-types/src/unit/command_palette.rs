@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads() {
     let action = Action {
+        aliases: vec![],
         id: "id".into(),
         label: "Action".into(),
         description: String::new(),
@@ -67,4 +68,67 @@ fn palette_display_validation_rejects_ambiguous_controls_and_oversize_payloads()
     }
     .validate()
     .is_err());
+}
+
+#[test]
+fn palette_alias_defaults_validation_and_utf8_display_bound() {
+    let action: Action = serde_json::from_value(serde_json::json!({
+        "id": "pdf", "label": "Open PDF…", "handle": "1"
+    }))
+    .unwrap();
+    assert!(action.aliases.is_empty());
+    let command: Command = serde_json::from_value(serde_json::json!({
+        "type": "register", "id": "pdf", "title": "PDF", "registration": "1"
+    }))
+    .unwrap();
+    assert!(matches!(
+        command,
+        Command::Register {
+            static_actions: false,
+            ..
+        }
+    ));
+    for count in [0, 100, 101] {
+        let actions = (0..count)
+            .map(|i| Action {
+                id: i.to_string(),
+                ..action.clone()
+            })
+            .collect();
+        assert_eq!(Reply::Actions { actions }.validate().is_ok(), count <= 100);
+    }
+    for aliases in [
+        serde_json::json!("reader"),
+        serde_json::json!([1]),
+        serde_json::json!(null),
+    ] {
+        let mut value = serde_json::to_value(&action).unwrap();
+        value["aliases"] = aliases;
+        assert!(serde_json::from_value::<Action>(value).is_err());
+    }
+    for alias in ["", " ", "\n", "\t", "\u{1b}", "\u{85}"] {
+        let bad = Action {
+            aliases: vec![alias.into()],
+            ..action.clone()
+        };
+        assert!(Reply::Actions { actions: vec![bad] }.validate().is_err());
+    }
+    let mut reply = Reply::Actions {
+        actions: vec![Action {
+            aliases: vec!["読".into()],
+            ..action
+        }],
+    };
+    let remaining = MAX_DISPLAY_BYTES - serde_json::to_vec(&reply).unwrap().len();
+    let Reply::Actions { actions } = &mut reply else {
+        unreachable!()
+    };
+    actions[0].aliases[0].push_str(&"x".repeat(remaining));
+    assert_eq!(serde_json::to_vec(&reply).unwrap().len(), MAX_DISPLAY_BYTES);
+    assert!(reply.validate().is_ok());
+    let Reply::Actions { actions } = &mut reply else {
+        unreachable!()
+    };
+    actions[0].aliases[0].push('読');
+    assert!(reply.validate().is_err());
 }

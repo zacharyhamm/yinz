@@ -141,6 +141,7 @@ fn palette_commands_require_deno_parent_and_application_state_permission() {
     use crate::yinz_exports::{check_command_permission, run_plugin_command};
     use yinz_types::data::{PermissionStatus, PermissionType, PluginCommand};
     let command = PluginCommand::CommandPalette(yinz_types::command_palette::Command::Register {
+        static_actions: false,
         id: "id".into(), title: "Title".into(), registration: "1".into(),
     });
     let mut env = crate::test_env::test_env();
@@ -235,4 +236,123 @@ fn palette_example_limits_remote_actions_and_registers_cancellation() {
       });
     "#);
     run(&mut runtime, "check(cancellations.length === 1); cancellations[0](); check(cancelled);");
+}
+
+#[test]
+fn palette_sdk_static_registration_discovery_aliases_and_client_execution() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      globalThis.runs = 0;
+      globalThis.actions = [{id:'pdf',label:'Open PDF…',aliases:['reader','document'],
+        async run(context) {
+          runs++; await Promise.resolve();
+          check(context.clientId === 2 && yinz.getPluginIds().client_id === 2);
+          return {type:'actions',title:'Nested',actions:[{id:'child',label:'Child',aliases:['nested'],run(){}}]};
+        }}, {id:'other',label:'Unrelated',run(){runs++;}}];
+      bind({load() {
+        for (const source of [{}, {actions:[],provideActions:()=>[]}, {actions:()=>[]},
+            {actions:null}, {provideActions:[]}, {provideActions:null}, {actions:Array(101)}]) {
+          let rejected = false;
+          try { yinz.commandPalette.registerProvider({id:'bad',title:'Bad',...source}); }
+          catch (_) { rejected = true; }
+          check(rejected);
+        }
+        globalThis.register = () => yinz.commandPalette.registerProvider({id:'pdf',title:'PDF',actions});
+        globalThis.unregister = register();
+      }}); bridge('load',{},1);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      globalThis.registration = sent.at(-1)[0].CommandPalette;
+      check(registration.staticActions === true);
+      globalThis.scope = {registration:registration.registration,opening:1,view:0,revision:1};
+      globalThis.context = {clientId:2,paneId:{Terminal:7},tabId:3,currentProject:null};
+      bridge('palette',{type:'discover',scope,context,query:'no match',source:null},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      globalThis.reply = sent.at(-1)[0].CommandPalette.result.Ok;
+      check(runs === 0 && reply.actions.length === 2);
+      check(JSON.stringify(reply.actions[0].aliases) === '["reader","document"]');
+      check(reply.actions[1].aliases.length === 0);
+      bridge('palette',{type:'execute',scope:{...scope,revision:2},context,handle:reply.actions[0].handle,values:null},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(runs === 1);
+      const view = sent.at(-1)[0].CommandPalette.result.Ok.view;
+      check(view.source === null && view.actions[0].aliases[0] === 'nested');
+      bridge('palette',{type:'disconnect'},2);
+      bridge('palette',{type:'execute',scope:{...scope,revision:3},context,handle:reply.actions[0].handle,values:null},2);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(sent.at(-1)[0].CommandPalette.result.Err.includes('no longer available'));
+      check(runs === 1);
+      unregister(); unregister(); bridge('load',{},1);
+    "#);
+    capture_commands(&mut runtime);
+    run(&mut runtime, r#"
+      check(sent.filter(([c]) => c.CommandPalette?.type === 'unregister').length === 1);
+      check(sent.at(-1)[0].CommandPalette.registration !== registration.registration);
+      unregister();
+    "#);
+}
+
+#[test]
+fn palette_sdk_static_action_validation_uses_discovery_errors_and_utf8_bound() {
+    let mut runtime = sdk();
+    run(&mut runtime, r#"
+      bind({load(){}}); bridge('load',{},1);
+      globalThis.validateActions = actions => {
+        bind({load() {
+          globalThis.remove = yinz.commandPalette.registerProvider({id:'test',title:'Test',actions});
+        }}); bridge('load',{},1);
+      };
+      globalThis.context = {clientId:1,paneId:{Terminal:1},tabId:1,currentProject:null};
+      globalThis.action = {id:'pdf',label:'PDF',run(){}};
+    "#);
+    for (actions, valid) in [
+        ("[]", true),
+        ("Array.from({length:100},(_,i)=>({...action,id:String(i)}))", true),
+        ("[action,action]", false),
+        ("[{...action,run:null}]", false),
+        ("[{...action,aliases:'reader'}]", false),
+        ("[{...action,aliases:null}]", false),
+        ("[{...action,aliases:[1]}]", false),
+        ("[{...action,aliases:['']}]", false),
+        ("[{...action,aliases:['   ']}]", false),
+        ("[{...action,aliases:['\\n']}]", false),
+        ("[{...action,aliases:['\\u001b']}]", false),
+        ("[{...action,aliases:['読'.repeat(90000)]}]", false),
+    ] {
+        run(&mut runtime, &format!("validateActions({actions});"));
+        capture_commands(&mut runtime);
+        run(&mut runtime, r#"
+          bridge('palette',{type:'discover',scope:{
+            registration:sent.at(-1)[0].CommandPalette.registration,opening:1,view:0,revision:1
+          },context,query:'',source:null},1);
+        "#);
+        capture_commands(&mut runtime);
+        run(&mut runtime, &format!("check(Object.hasOwn(sent.at(-1)[0].CommandPalette.result, '{}')); remove();", if valid { "Ok" } else { "Err" }));
+    }
+    for extra_bytes in [0, 1] {
+        run(&mut runtime, "globalThis.bounded = {...action,aliases:['読']}; validateActions([bounded]);");
+        capture_commands(&mut runtime);
+        run(&mut runtime, &format!(r#"
+          {{
+          const registration = sent.at(-1)[0].CommandPalette.registration;
+          const handle = String(Number(registration) + 1);
+          const display = {{type:'actions',actions:[{{id:'pdf',label:'PDF',aliases:['読'],description:'',handle}}]}};
+          // JSON is ASCII except for one three-byte character (one UTF-16 code unit).
+          bounded.aliases[0] += 'x'.repeat(256 * 1024 - JSON.stringify(display).length - 2 + {extra_bytes});
+          bridge('palette',{{type:'discover',scope:{{registration,opening:1,view:0,revision:1}},
+            context,query:'',source:null}},1);
+          }}
+        "#));
+        capture_commands(&mut runtime);
+        run(&mut runtime, &format!("check(Object.hasOwn(sent.at(-1)[0].CommandPalette.result, '{}')); remove();",
+            if extra_bytes == 0 { "Ok" } else { "Err" }));
+    }
+
 }

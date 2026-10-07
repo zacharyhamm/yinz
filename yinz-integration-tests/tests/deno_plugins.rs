@@ -1601,3 +1601,108 @@ export default definePlugin({{
         );
     }
 }
+
+#[test]
+fn deno_palette_static_aliases_nested_reregistration_and_shared_reload() {
+    use yinz_integration_tests::keys;
+    const TOGGLE: &[u8] = b"\x1b[112;7u";
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("static-palette.js");
+    let source = r#"
+const version = 'original';
+let state = 'starting', unregister;
+function register() {
+  unregister = yinz.commandPalette.registerProvider({id:'pdf',title:'PDF tools',actions:[
+    {id:'open',label:'Open PDF… ' + version,aliases:['reader','document'],async run(context) {
+      await Promise.resolve();
+      if (yinz.getPluginIds().client_id !== context.clientId) throw Error('wrong client');
+      return {type:'actions',title:'PDF options',actions:[
+        {id:'reset',label:'Register again',aliases:['reset'],run(execution) {
+          execution.close(); unregister(); unregister(); register();
+          state = version + ' registered again'; yinz.requestRender();
+        }}
+      ]};
+    }}
+  ]});
+}
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ReadApplicationState']);
+    register(); state = version + ' ready'; yinz.requestRender();
+  },
+  render() { return state; }
+};
+"#;
+    fs::write(&plugin, source).unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config("load_plugins clear-defaults=true {}\npane_frames false")
+        .with_layout(LayoutInfo::Stringified(format!(
+            "layout {{ pane; pane focus=true {{ plugin location=\"file:{}\" {{ shared true; }}; }}; }}",
+            plugin.display()
+        )))
+        .start();
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"terminal ready\r\n");
+    yinz.wait_until("static provider permission", |grid| {
+        grid.contains("Allow? (y/n)")
+    });
+    yinz.send_stdin(b"y");
+    yinz.wait_until("static provider ready", |grid| {
+        grid.contains("original ready")
+    });
+    yinz.send_stdin(TOGGLE);
+    for query in ["pdf", "reader", "document"] {
+        yinz.send_stdin(&keys::ctrl('u'));
+        yinz.send_stdin(query.as_bytes());
+        yinz.wait_until("static label and aliases match", |grid| {
+            grid.contains(query) && grid.contains("› Open PDF… original")
+        });
+    }
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("static nested view", |grid| grid.contains("PDF options"));
+    yinz.send_stdin(b"reset");
+    yinz.wait_until("nested alias matches", |grid| {
+        grid.contains("› Register again")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("provider registered again", |grid| {
+        grid.contains("original registered again") && !grid.contains("PDF options")
+    });
+    let other = yinz.attach_client(TERMINAL_SIZE);
+    other.wait_until("second client ready", |grid| {
+        grid.contains("terminal ready")
+    });
+    yinz.send_stdin(TOGGLE);
+    yinz.send_stdin(b"reader");
+    other.send_stdin(TOGGLE);
+    other.send_stdin(b"document");
+    yinz.wait_until("first client static results", |grid| {
+        grid.contains("› Open PDF… original")
+    });
+    other.wait_until("second client static results", |grid| {
+        grid.contains("› Open PDF… original")
+    });
+    yinz.send_stdin(&keys::ENTER);
+    yinz.wait_until("first client nested", |grid| grid.contains("PDF options"));
+    fs::write(&plugin, source.replace("'original'", "'replacement'")).unwrap();
+    assert_eq!(
+        yinz.run_cli_action(CliAction::StartOrReloadPlugin {
+            url: format!("file:{}", plugin.display()),
+            configuration: None
+        }),
+        0
+    );
+    yinz.wait_until("reload restores first client to root", |grid| {
+        grid.contains("Open PDF… replacement")
+            && grid.contains("removed or reloaded")
+            && !grid.contains("PDF options")
+    });
+    other.wait_until("reload refreshes second client", |grid| {
+        grid.contains("Open PDF… replacement") && !grid.contains("Open PDF… original")
+    });
+    other.send_stdin(&keys::ENTER);
+    other.wait_until("replacement executes for second client", |grid| {
+        grid.contains("PDF options")
+    });
+    yinz.quit();
+}

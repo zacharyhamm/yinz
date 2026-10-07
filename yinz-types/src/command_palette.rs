@@ -32,6 +32,8 @@ pub struct Action {
     pub label: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub handle: String,
 }
 
@@ -97,6 +99,8 @@ pub enum Command {
         id: String,
         title: String,
         registration: String,
+        #[serde(default, rename = "staticActions")]
+        static_actions: bool,
     },
     Unregister {
         registration: String,
@@ -166,6 +170,9 @@ pub fn validate_actions(actions: &[Action]) -> Result<(), String> {
         label(&action.label)?;
         label(&action.handle)?;
         plain_text(&action.description)?;
+        for alias in &action.aliases {
+            label(alias)?;
+        }
         if !ids.insert(&action.id) {
             return Err("Palette action IDs must be unique".into());
         }
