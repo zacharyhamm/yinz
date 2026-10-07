@@ -34,7 +34,10 @@ fn installed_unit_assertions_imports_timers_and_unstubbed_operations() {
       import z from 'yinz:plugin';
       let text = 'waiting';
       export default {
-        load(config: Record<string,string>) { z.after(10, () => {text = config.answer; return true;}); },
+        async load(config: Record<string,string>) {
+          z.after(10, () => {text = config.answer; return true;});
+          await z.sleep(10); text += ' slept'; z.requestRender();
+        },
         update(event: unknown) { if (event === 'InputReceived') z.command('Notify', ['unexpected',null,null]); },
         render() {return text;}
       };
@@ -42,6 +45,7 @@ fn installed_unit_assertions_imports_timers_and_unstubbed_operations() {
     let path = root.path().join("plugin.test.ts");
     std::fs::write(&path, r#"
       import {test, assert, assertEquals, assertThrows, assertRejects, loadPlugin} from 'yinz:testing';
+      import z from 'yinz:plugin';
       import {double} from './math.ts';
       test('async assertions and controlled SDK timers', async () => {
         assertEquals(double(3), 6);
@@ -50,9 +54,12 @@ fn installed_unit_assertions_imports_timers_and_unstubbed_operations() {
         assertThrows(() => assertEquals(new Uint8Array([1]),new Uint8Array([2])));
         const cyclic: {self?: unknown} = {}; cyclic.self = cyclic; assertEquals(cyclic,cyclic);
         const p = await loadPlugin('./plugin.ts', {configuration:{answer:'done'}});
+        assertEquals(Date.now(), 0); assertEquals(z.instanceId, 'test');
+        await assertRejects(() => z.sleep(1), 'host commands are unavailable');
         assert((await p.render()).includes('waiting'));
         await p.advance(9); assert((await p.render()).includes('waiting'));
-        await p.advance(1); assert((await p.render()).includes('done'));
+        await p.advance(1); assert((await p.render()).includes('done slept'));
+        assertEquals(Date.now(), 10);
         await assertRejects(() => p.event('InputReceived'),'unstubbed host operation Notify');
       });
     "#).unwrap();
@@ -456,4 +463,239 @@ fn instance_cancellation_stops_a_running_worker_and_reaps_its_session() {
     );
     assert!(!session_root.exists());
     RUNS.lock().unwrap().remove(&key);
+}
+
+#[test]
+fn installed_palette_bridge_drives_callbacks_and_lifecycle() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("palette.ts"), r#"
+import z, {definePlugin} from 'yinz:plugin';
+let runs = 0, unregister = () => {};
+export default definePlugin({
+  async load() {
+    await z.waitForPermissions(['ReadApplicationState']);
+    unregister = z.commandPalette.registerProvider({id:'example',title:'Example',actions:[{
+      id:'open',label:'Open',description:'Description',aliases:['read'],
+      async run(context) { await z.sleep(10); runs++; z.requestRender(); return {type:'text',title:'Result',text:context.clientId + ':' + runs}; },
+    }]});
+    z.commandPalette.registerProvider({id:'dynamic',title:'Dynamic',async provideActions(context) {
+      if(context.query === 'fail') throw Error('callback failure');
+      await z.sleep(10);
+      return [{id:'dynamic',label:context.query + ':' + context.clientId,run(){}}];
+    }});
+  },
+  pipe(message) {if(message.name === 'unregister') unregister();},
+  render(){return String(runs);},
+});
+"#).unwrap();
+    let path = root.path().join("palette.test.ts");
+    let example = include_str!("testing.d.ts")
+        .split(" * @example\n")
+        .nth(1)
+        .unwrap()
+        .split(" */")
+        .next()
+        .unwrap()
+        .lines()
+        .map(|line| line.strip_prefix(" * ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!(r#"
+import {{test,assert,assertEquals,assertRejects,loadPlugin}} from 'yinz:testing';
+import type {{PaletteTestMessage}} from 'yinz:testing';
+// @ts-expect-error lifecycle variants must not accept arbitrary fields
+const malformed: PaletteTestMessage = {{type:'disconnect',scope:{{}}}};
+// @ts-expect-error execute requires values and a handle
+const incomplete: PaletteTestMessage = {{type:'execute',scope:{{registration:'1',opening:1,view:0,revision:1}}}};
+test('documented discovery and execution', async()=>{{ {example} }});
+"#) + r#"
+test('palette lifecycle and async client context', async()=>{
+  const p = await loadPlugin('./palette.ts',{replies:{RequestPluginPermissions:null,CommandPalette:null}});
+  await p.event({PermissionRequestResult:'Granted'});
+  const registrations = p.paletteCommands.filter(c=>c.type==='register');
+  assertEquals(registrations.map(c=>c.staticActions),[true,false]);
+  const context = {clientId:7,paneId:{Terminal:3},tabId:2,currentProject:'project'};
+  let revision=0;
+  const scope = (registration=registrations[0].registration) => ({registration,opening:1,view:0,revision:++revision});
+  const discover = async()=>{
+    await p.palette({type:'discover',scope:scope(),context,query:'open',source:null},7);
+    const reply=p.paletteCommands.at(-1);
+    assert(reply?.type==='reply' && 'Ok' in reply.result && reply.result.Ok.type==='actions');
+    const action=reply.result.Ok.actions[0];
+    assertEquals([action.id,action.label,action.description,action.aliases],['open','Open','Description',['read']]);
+    return action.handle;
+  };
+  const execute = (handle:string)=>p.palette({type:'execute',scope:scope(),context,handle,values:null},7);
+  const stale = async(handle:string)=>{
+    await execute(handle);
+    const reply=p.paletteCommands.at(-1);
+    assert(reply?.type==='reply' && 'Err' in reply.result && reply.result.Err.includes('no longer available'));
+  };
+  let handle=await discover(); assertEquals(await p.render(),'0');
+  let count=p.paletteCommands.length;
+  await execute(handle); assertEquals(p.paletteCommands.length,count);
+  await p.advance(10);
+  const completed=p.paletteCommands.at(-1);
+  assert(completed?.type==='reply');
+  assertEquals(completed.result,{Ok:{type:'view',view:{type:'text',title:'Result',text:'7:1'}}});
+  assertEquals(await p.render(),'1');
+  await p.palette({type:'release',handles:[handle]},7); await stale(handle);
+  for(const message of [{type:'dismiss',opening:1},{type:'disconnect'}] as const){
+    handle=await discover(); await p.palette(message,7); await stale(handle);
+  }
+  const dynamic=registrations[1].registration;
+  const pending=scope(dynamic);
+  count=p.paletteCommands.length;
+  await p.palette({type:'discover',scope:pending,context,query:'cancelled',source:null},7);
+  await p.palette({type:'cancel',scope:pending},7);
+  await p.advance(10); assertEquals(p.paletteCommands.length,count);
+  await p.palette({type:'discover',scope:scope(dynamic),context,query:'query',source:null},7);
+  await p.advance(10);
+  const reply=p.paletteCommands.at(-1);
+  assert(reply?.type==='reply' && 'Ok' in reply.result && reply.result.Ok.type==='actions');
+  assertEquals(reply.result.Ok.actions[0].label,'query:7');
+  await p.palette({type:'execute',scope:scope(dynamic),context,handle:reply.result.Ok.actions[0].handle,values:null},7);
+  const asyncHandle=p.paletteCommands.at(-1); assert(asyncHandle?.type==='reply');
+  assertEquals(asyncHandle.result,{Ok:{type:'close'}});
+  await p.palette({type:'discover',scope:scope(dynamic),context,query:'fail',source:null},7);
+  const failed=p.paletteCommands.at(-1); assert(failed?.type==='reply');
+  assertEquals(failed.result,{Err:'callback failure'});
+  for(const id of [-1,65536,1.5,NaN]) await assertRejects(()=>p.palette({type:'disconnect'},id),'valid client ID');
+  await assertRejects(()=>p.palette({type:'discover',scope:scope(),context,query:'',source:null},1),'must match');
+  handle=await discover(); await p.pipe({name:'unregister'}); await stale(handle);
+  assert(p.paletteCommands.some(c=>c.type==='unregister'));
+  const old=reply.result.Ok.actions[0].handle;
+  await p.event('BeforeClose');
+  await p.palette({type:'execute',scope:scope(dynamic),context,handle:old,values:null},7);
+  const closed=p.paletteCommands.at(-1); assert(closed?.type==='reply' && 'Err' in closed.result);
+  p.stub('CommandPalette',()=>{throw Error('bridge stub failure');});
+  await assertRejects(()=>p.palette({type:'discover',scope:scope(),context,query:'',source:null},7),'bridge stub failure');
+});
+test('palette operations still require explicit stubs',async()=>{
+  const p=await loadPlugin('./palette.ts',{replies:{RequestPluginPermissions:null}});
+  await assertRejects(()=>p.event({PermissionRequestResult:'Granted'}),'unstubbed host operation CommandPalette');
+});
+"#).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
+fn palette_test_types_accept_serialized_protocol() {
+    use yinz_types::command_palette::{
+        Action, Command, Context, Field, Message, Reply, Scope, View,
+    };
+    let scope = Scope {
+        registration: "provider".into(),
+        opening: 1,
+        view: 2,
+        revision: 3,
+    };
+    let context = Context {
+        client_id: 7,
+        pane_id: yinz_types::data::PaneId::Terminal(yinz_types::internal_ids::TerminalId::new(8)),
+        tab_id: 9,
+        current_project: None,
+    };
+    let messages = [
+        Message::Discover {
+            scope: scope.clone(),
+            context: context.clone(),
+            query: "query".into(),
+            source: None,
+        },
+        Message::Execute {
+            scope: scope.clone(),
+            context,
+            handle: "handle".into(),
+            values: None,
+        },
+        Message::Cancel {
+            scope: scope.clone(),
+        },
+        Message::Release {
+            handles: vec!["handle".into()],
+        },
+        Message::Dismiss { opening: 1 },
+        Message::Disconnect,
+    ];
+    let actions = vec![Action {
+        id: "open".into(),
+        label: "Open".into(),
+        description: String::new(),
+        aliases: vec![],
+        handle: "handle".into(),
+    }];
+    let mut commands = vec![
+        Command::Register {
+            id: "provider".into(),
+            title: "Provider".into(),
+            registration: "provider".into(),
+            static_actions: true,
+        },
+        Command::Unregister {
+            registration: "provider".into(),
+        },
+        Command::Close {
+            scope: scope.clone(),
+        },
+        Command::Reply {
+            scope: scope.clone(),
+            result: Err("failure".into()),
+        },
+    ];
+    for reply in [
+        Reply::Actions {
+            actions: actions.clone(),
+        },
+        Reply::Close,
+        Reply::View {
+            view: View::Actions {
+                title: "Actions".into(),
+                actions,
+                source: Some("source".into()),
+            },
+        },
+        Reply::View {
+            view: View::Text {
+                title: "Text".into(),
+                text: "Body".into(),
+            },
+        },
+        Reply::View {
+            view: View::Form {
+                title: "Form".into(),
+                submit_label: "Submit".into(),
+                handle: "submit".into(),
+                fields: vec![
+                    Field::Text {
+                        id: "text".into(),
+                        label: "Text".into(),
+                        initial_value: String::new(),
+                    },
+                    Field::Choice {
+                        id: "choice".into(),
+                        label: "Choice".into(),
+                        options: vec!["one".into()],
+                        initial_value: None,
+                    },
+                ],
+            },
+        },
+    ] {
+        commands.push(Command::Reply {
+            scope: scope.clone(),
+            result: Ok(reply),
+        });
+    }
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("protocol.test.ts");
+    std::fs::write(&path, format!(r#"
+import {{test,assertEquals,type PaletteTestMessage,type PaletteTestCommand}} from 'yinz:testing';
+const messages: PaletteTestMessage[] = {};
+const commands: PaletteTestCommand[] = {};
+test('Rust protocol matches test declarations',()=>{{assertEquals(messages.length,6);assertEquals(commands.length,9);}});
+"#, serde_json::to_string(&messages).unwrap(), serde_json::to_string(&commands).unwrap())).unwrap();
+    let report = run(&path, &Default::default(), None, &AtomicBool::new(false)).unwrap();
+    assert!(report.passed(), "{report:#?}");
 }

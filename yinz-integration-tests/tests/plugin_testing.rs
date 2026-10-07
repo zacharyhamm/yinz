@@ -49,7 +49,7 @@ fn installed_integration_failure_and_timeout_reap_the_owned_session() {
 #[test]
 fn installed_controller_routes_input_enforces_permissions_and_isolates_storage() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("echo.ts"), r#"
+    std::fs::write(root.path().join("echo 日本 #?%23%2523.ts"), r#"
 import z, {definePlugin} from 'yinz:plugin';
 let text='ready';
 export default definePlugin({
@@ -57,13 +57,14 @@ export default definePlugin({
     await z.waitForPermissions(['ReadCliPipes','PluginData']);
     z.subscribe(['Key']);
     z.data.define('fixture', {value:{kind:'Text',required:true}}, {version:1});
+    z.data.apply([z.data.put('fixture',{value:import.meta.url},{uid:'url'})]);
     try { z.command('RunCommand', [['/usr/bin/true'],{},'',{},64,null]); throw Error('permission bypass'); }
     catch (error) { if (!String(error).includes('permission')) throw error; z.log('permission denied as expected'); }
     z.requestRender();
   },
   update(event) {if (typeof event === 'object' && 'Key' in event && typeof event.Key.bare_key === 'object') {text += event.Key.bare_key.Char; return true;}},
   pipe(message) { if (typeof message.source === 'object' && 'Cli' in message.source) {
-    z.command('CliPipeOutput',[message.source.Cli, JSON.stringify({echo:message.payload})]);
+    z.command('CliPipeOutput',[message.source.Cli, JSON.stringify({echo:message.payload,url:import.meta.url})]);
     z.command('UnblockCliPipeInput',message.source.Cli);
   }},
   render(rows,cols) {return text + ' size=' + rows + 'x' + cols;}
@@ -71,23 +72,30 @@ export default definePlugin({
 "#).unwrap();
     let path = root.path().join("echo.integration.test.ts");
     std::fs::write(&path, r#"
-import {test,session,assert,assertEquals} from 'yinz:testing';
+import {test,session,assert,assertEquals,assertThrows,assertRejects} from 'yinz:testing';
+const target=import.meta.resolve('./echo%20%E6%97%A5%E6%9C%AC%20%23%3F%2523%252523.ts');
 for (const name of ['first isolated case','second isolated case']) test(name, {grants:['ReadCliPipes','PluginData']}, async () => {
+  assertThrows(()=>session.fixture({}, {forbidden:'exit 0'}),'RunCommands');
   session.start();
+  await assertRejects(()=>session.waitFor('bounded frozen clock',()=>false,20),'timed out');
+  assertEquals(Date.now(),0);
   await session.waitForText('yinz-test>');
   assertEquals(session.catalog(), []);
   session.text("printf 'terminal-%s' 'input' "); session.key('Enter');
   await session.waitForText('terminal-input');
-  session.loadPlugin('./echo.ts'); await session.waitForText('ready size=');
+  session.loadPlugin(target); await session.waitForText('ready size=');
   session.text('xy'); await session.waitForText('readyxy');
   const before=session.screen.match(/size=\d+x\d+/)?.[0];
   session.resize(35,100); await session.waitFor('resize reaches plugin',()=>{
     const after=session.screen.match(/size=\d+x\d+/)?.[0]; return !!after && after !== before;
   });
-  assertEquals(JSON.parse(session.pipe('echo','payload',{plugin:'./echo.ts'})),{echo:'payload'});
+  assertEquals(JSON.parse(session.pipe('echo','payload',{plugin:target})),{echo:'payload',url:target});
+  const data=session.data(target,'fixture');
+  assertEquals(data.rows.length,1);
+  assertEquals(data.rows[0][data.columns.indexOf('value')],{Text:target});
   await session.waitFor('permission denial logged',()=>session.logs.includes('permission denied as expected'));
   assert(session.catalog().some(entity=>entity.def.name==='fixture'));
-  session.reload('./echo.ts'); await session.waitForText('ready size=');
+  session.reload(target); await session.waitForText('ready size=');
   assert(!session.screen.includes('readyxy'));
 });
 "#).unwrap();
@@ -270,6 +278,52 @@ test('headless RPC uses authenticated callers and persists its result',{grants:[
   await assertRejects(()=>session.rpc('yinz:swamp-bridge','swamp',{method:'lookup',work:'test',key:'test'}),'Only builtin workflow views');
 });
 "#).unwrap();
+    let report =
+        yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
+            .unwrap();
+    assert!(report.passed(), "{report:#?}");
+}
+
+#[test]
+fn installed_palette_uses_real_keyboard_discovery_and_execution() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("palette.ts"), r#"
+import z, {definePlugin} from 'yinz:plugin';
+export default definePlugin({async load(){
+  await z.waitForPermissions(['ReadApplicationState']);
+  z.commandPalette.registerProvider({id:'static-fixture',title:'Static fixture',actions:[{
+    id:'static',label:'Unique static fixture action',aliases:['static-keyword'],run(){z.log('STATIC_EXECUTED');},
+  }]});
+  z.commandPalette.registerProvider({id:'function-fixture',title:'Function fixture',provideActions(request){
+    return request.query.includes('dynamic-keyword') ? [{
+      id:'dynamic',label:'Unique dynamic fixture action',run(){z.log('DYNAMIC_EXECUTED');},
+    }] : [];
+  }});
+  z.log('PALETTE_REGISTERED');
+}});
+"#).unwrap();
+    let path = root.path().join("palette.integration.test.ts");
+    std::fs::write(
+        &path,
+        r#"
+import {test,session,assert} from 'yinz:testing';
+test('real palette input',{grants:['ReadApplicationState']},async()=>{
+  session.start({backgroundPlugins:['./palette.ts']});
+  await session.waitFor('palette registration',()=>session.logs.includes('PALETTE_REGISTERED'));
+  for(const [query,label,marker] of [
+    ['static-keyword','Unique static fixture action','STATIC_EXECUTED'],
+    ['dynamic-keyword','Unique dynamic fixture action','DYNAMIC_EXECUTED'],
+  ]) {
+    session.key('Ctrl Alt p'); session.text(query);
+    await session.waitForText(label);
+    assert(!session.logs.includes(marker));
+    session.key('Enter');
+    await session.waitFor('palette action executed',()=>session.logs.includes(marker));
+  }
+});
+"#,
+    )
+    .unwrap();
     let report =
         yinz_server::plugin_testing::run(&path, &Default::default(), None, &AtomicBool::new(false))
             .unwrap();

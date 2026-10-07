@@ -19,6 +19,10 @@ use yinz_types::{
     pane_size::Size,
 };
 
+#[cfg(test)]
+#[path = "unit/session.rs"]
+mod tests;
+
 pub(super) fn environment(command: &mut Command, root: &Path) {
     // A whitelist also removes active-session identity, hooks, database URLs, and test overrides.
     let path = std::env::join_paths(std::iter::once(root.join("fixtures")).chain(
@@ -256,16 +260,16 @@ impl Controller {
     }
     fn location(&self, path: &str, loader: &PluginModuleLoader) -> Result<String> {
         if let Some(name) = path.strip_prefix("yinz:") {
-            if yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(&name) {
+            if yinz_runtime::consts::BUILTIN_DENO_PLUGIN_NAMES.contains(&name)
+                || yinz_config::consts::BUILTIN_PLUGIN_NAMES.contains(&name)
+            {
                 return Ok(path.to_owned());
             }
-            bail!("integration test requires a shipped TypeScript builtin: {path}");
+            bail!("integration test requires a shipped builtin: {path}");
         }
         let url = loader.resolve_local(path, loader.entrypoint().as_str(), false)?;
-        Ok(format!(
-            "file:{}",
-            loader.local_path(&url, false)?.display()
-        ))
+        loader.local_path(&url, false)?;
+        Ok(url.to_string())
     }
     fn grant(&self, location: &str) -> Result<()> {
         let pid =
@@ -756,7 +760,11 @@ impl Controller {
                 }
                 let location =
                     self.location(arg["plugin"].as_str().context("data plugin")?, loader)?;
-                let location = url::Url::parse(&location).context("canonical data plugin URL")?;
+                let location =
+                    yinz_runtime::plugin_location::parse_plugin_location(&location, None)
+                        .map_err(|error| anyhow!(error))?;
+                // Match production's existing private namespace serialization.
+                let location = url::Url::from(&location);
                 let namespace =
                     yinz_storage::plugin_data_store::private_namespace(location.as_ref());
                 let request = yinz_types::plugin_data::FetchRequest::entity(

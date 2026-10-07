@@ -117,6 +117,11 @@
         await settle();
       },
       async pipe(message) { bridge("pipe", {source: {Plugin: 2}, args: {}, payload: null, is_private: true, ...message}, 1); await settle(); },
+      async palette(message, clientId) {
+        if (!Number.isInteger(clientId) || clientId < 0 || clientId > 0xffff) throw new TypeError("palette needs a valid client ID");
+        if (message.context && message.context.clientId !== clientId) throw new TypeError("palette context clientId must match client ID");
+        bridge("palette", message, clientId); await settle();
+      },
       async advance(ms) {
         if (!Number.isFinite(ms) || ms < 0) throw new TypeError("advance needs nonnegative milliseconds");
         now += ms; bridge("update", {Timer: ms / 1000}, 1); await settle();
@@ -126,6 +131,7 @@
         const text = bridge("render", [rows, columns], 1); return call("render", {text, rows, columns});
       },
       get commands() { return call("commands"); },
+      get paletteCommands() { return call("commands").filter(command => command && Object.hasOwn(command, "CommandPalette")).map(command => command.CommandPalette); },
       get logs() { return call("logs"); },
       get renders() { return call("renders"); },
     };
