@@ -543,3 +543,122 @@ fn embedded_modules_resolve_relative_imports_without_filesystem_fallback() {
     let maps = loader.checked_sources().unwrap();
     assert!(maps.contains_key(&Path::new(EMBEDDED_ROOT).join("workflow-view.ts")));
 }
+
+async fn import_meta_exports(loader: PluginModuleLoader) -> HashMap<String, String> {
+    use deno_core::{v8, JsRuntime, RuntimeOptions};
+    use std::rc::Rc;
+    let loader = Rc::new(loader);
+    let mut runtime = JsRuntime::try_new(RuntimeOptions {
+        module_loader: Some(loader.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    let module = runtime
+        .load_main_es_module(loader.entrypoint())
+        .await
+        .unwrap();
+    let evaluated = runtime.mod_evaluate(module);
+    runtime.run_event_loop(Default::default()).await.unwrap();
+    evaluated.await.unwrap();
+    let namespace = runtime.get_module_namespace(module).unwrap();
+    deno_core::scope!(scope, runtime);
+    let namespace = v8::Local::new(scope, namespace);
+    deno_core::serde_v8::from_v8(scope, namespace.into()).unwrap()
+}
+
+#[tokio::test]
+async fn import_meta_runtime_urls_round_trip_and_enforce_confinement() {
+    use yinz_runtime::plugin_location::parse_plugin_location;
+    use yinz_types::input::layout::RunPluginLocation;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("space λ%#?,");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(root.join("nested")).unwrap();
+    let sibling = root.join("shared λ%#?,.ts");
+    std::fs::write(&sibling, "throw new Error('resolution must not evaluate');").unwrap();
+    std::fs::write(dir.path().join("outside.ts"), "export {};").unwrap();
+    std::fs::write(root.join("asset.json"), "{}").unwrap();
+    std::os::unix::fs::symlink(&sibling, root.join("alias.ts")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("outside.ts"), root.join("escape.ts")).unwrap();
+    for repository in [false, true] {
+        let (entry, prefix) = if repository {
+            (root.join("nested/main λ%#?,.ts"), "../")
+        } else {
+            (root.join("main λ%#?,.ts"), "./")
+        };
+        let rejected = serde_json::to_string(&[
+            format!("{prefix}missing.ts"),
+            format!("{prefix}../outside.ts"),
+            format!("{prefix}escape.ts"),
+            format!("{prefix}asset.json"),
+            format!("{prefix}alias.ts?query"),
+            format!("{prefix}alias.ts#fragment"),
+            "node:fs".into(),
+            "npm:package".into(),
+            "https://example.com/main.ts".into(),
+            file_specifier(&sibling).unwrap().to_string(),
+        ])
+        .unwrap();
+        let source = format!(
+            r#"
+export const url: string = import.meta.url;
+export const sibling: string = import.meta.resolve("{prefix}shared%20%CE%BB%25%23%3F%2C.ts");
+export const alias: string = import.meta.resolve("{prefix}alias.ts");
+for (const specifier of {rejected}) {{
+  let rejected = false;
+  try {{ import.meta.resolve(specifier); }}
+  catch (error) {{
+    if (!(error instanceof TypeError)) throw error;
+    rejected = true;
+  }}
+  if (!rejected) throw new Error(`accepted ${{specifier}}`);
+}}
+"#
+        );
+        std::fs::write(&entry, &source).unwrap();
+        let exports = import_meta_exports(
+            PluginModuleLoader::new_with_root(
+                &entry,
+                &source,
+                repository.then_some(root.as_path()),
+            )
+            .unwrap(),
+        )
+        .await;
+        for (key, path) in [("url", &entry), ("sibling", &sibling), ("alias", &sibling)] {
+            let canonical = path.canonicalize().unwrap();
+            assert_eq!(exports[key], file_specifier(&canonical).unwrap().as_str());
+            assert_eq!(
+                parse_plugin_location(&exports[key], None).unwrap(),
+                RunPluginLocation::File(canonical)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn import_meta_embedded_urls_have_no_filesystem_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("missing.ts");
+    std::fs::write(&local, "export {};").unwrap();
+    let file_url = serde_json::to_string(file_specifier(&local).unwrap().as_str()).unwrap();
+    let source = format!(
+        r#"
+export const url: string = import.meta.url;
+export const sibling: string = import.meta.resolve("./workflow-view.ts");
+for (const specifier of ["./missing.ts", {file_url}]) {{
+  let rejected = false;
+  try {{ import.meta.resolve(specifier); }}
+  catch (error) {{
+    if (!(error instanceof TypeError)) throw error;
+    rejected = true;
+  }}
+  if (!rejected) throw new Error(`accepted ${{specifier}}`);
+}}
+"#
+    );
+    let exports =
+        import_meta_exports(PluginModuleLoader::embedded("meta-test", &source).unwrap()).await;
+    assert_eq!(exports["url"], "yinz-builtin:///meta-test.ts");
+    assert_eq!(exports["sibling"], "yinz-builtin:///workflow-view.ts");
+}
