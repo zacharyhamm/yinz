@@ -634,24 +634,9 @@ pub(crate) fn kill_session(target_session: &Option<String>) {
     let outcome = kill_outcome(
         session_status(&SessionName::new(name.clone())),
         || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            runtime.block_on(async {
-                tokio::time::timeout(
-                    Duration::from_secs(10),
-                    yinz_ipc::ipc::async_kill_session_with_completion(
-                        &yinz_runtime::consts::YINZ_SOCK_DIR.join(name),
-                    ),
-                )
-                .await
-                .map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "waiting for shutdown completion",
-                    )
-                })?
-            })
+            yinz_ipc::ipc::kill_session_with_completion(
+                &yinz_runtime::consts::YINZ_SOCK_DIR.join(name),
+            )
         },
         || {
             yinz_process::pty_host::cli::terminate_orphans_of_session(name)

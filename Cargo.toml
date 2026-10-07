@@ -307,3 +307,7 @@ path = "src/tests/notes_todos.rs"
 [[test]]
 name = "portable_cli"
 path = "src/unit/portable_cli.rs"
+
+[[test]]
+name = "session_recreation"
+path = "src/unit/session_recreation.rs"

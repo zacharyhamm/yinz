@@ -357,16 +357,36 @@ pub fn session_left(name: &SessionName, within: Duration) -> Result<bool, io::Er
 }
 
 pub fn delete_session(name: &SessionName, force: bool) -> io::Result<()> {
+    let folder = session_info_folder_for_session(name);
     if force {
-        use yinz_ipc::consts::ipc_connect;
-        let path = &*YINZ_SOCK_DIR.join(name);
-        let _ = ipc_connect(path).ok().map(|stream| {
-            IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                .send_client_msg(ClientToServerMsg::KillSession)
-                .ok();
-        });
+        delete_session_after_shutdown(&folder, session_status(name), || {
+            yinz_ipc::ipc::kill_session_with_completion(&YINZ_SOCK_DIR.join(name))
+        })
+    } else {
+        fs::remove_dir_all(folder)
     }
-    std::fs::remove_dir_all(session_info_folder_for_session(name))
+}
+
+fn delete_session_after_shutdown(
+    folder: &Path,
+    status: Result<SessionProbe, io::ErrorKind>,
+    shutdown: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    match status? {
+        SessionProbe::Absent => {},
+        SessionProbe::Alive | SessionProbe::Unresponsive => {
+            shutdown().map_err(|error| {
+                io::Error::other(format!("session shutdown was not confirmed: {error}"))
+            })?;
+        },
+        SessionProbe::Denied => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cannot confirm session shutdown: probing is not permitted",
+            ));
+        },
+    }
+    fs::remove_dir_all(folder)
 }
 
 #[derive(Debug, Clone)]

@@ -721,6 +721,22 @@ pub async fn async_send_kill_and_await(path: &std::path::Path) -> io::Result<()>
     Ok(())
 }
 
+/// Wait up to ten seconds for confirmed server teardown.
+#[cfg(unix)]
+pub fn kill_session_with_completion(path: &std::path::Path) -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            async_kill_session_with_completion(path),
+        )
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "waiting for shutdown completion"))?
+    })
+}
+
 /// Unlike the legacy kill, only a post-teardown reply confirms completion.
 #[cfg(unix)]
 pub async fn async_kill_session_with_completion(path: &std::path::Path) -> io::Result<()> {

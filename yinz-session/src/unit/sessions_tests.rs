@@ -52,3 +52,88 @@ fn control_agents_are_discovered_only_for_sessions_with_local_sockets() {
     std::fs::remove_file(socket_path).unwrap();
     assert!(read_live_session_states(&"current".into(), sockets.path(), cache.path()).is_empty());
 }
+
+#[test]
+fn force_delete_waits_for_shutdown_before_removing_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("session");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("layout"), "floating-plugin-marker").unwrap();
+    let (started, received) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let target = folder.clone();
+    let deletion = std::thread::spawn(move || {
+        delete_session_after_shutdown(&target, Ok(SessionProbe::Alive), || {
+            started.send(()).unwrap();
+            released.recv().unwrap();
+            fs::write(target.join("layout"), "final checkpoint")?;
+            Ok(())
+        })
+    });
+    received.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        fs::read_to_string(folder.join("layout")).unwrap(),
+        "floating-plugin-marker"
+    );
+    assert!(!deletion.is_finished());
+    release.send(()).unwrap();
+    deletion.join().unwrap().unwrap();
+    assert!(!folder.exists());
+}
+
+#[test]
+fn force_delete_preserves_checkpoint_on_shutdown_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let folder = root.path().join("session");
+    fs::create_dir(&folder).unwrap();
+    let layout = folder.join("layout");
+    fs::write(&layout, "floating-plugin-marker").unwrap();
+    for status in [Ok(SessionProbe::Alive), Ok(SessionProbe::Unresponsive)] {
+        for kind in [
+            io::ErrorKind::Other,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::NotFound,
+        ] {
+            assert!(delete_session_after_shutdown(&folder, status, || Err(kind.into())).is_err());
+            assert_eq!(
+                fs::read_to_string(&layout).unwrap(),
+                "floating-plugin-marker"
+            );
+        }
+    }
+    for status in [
+        Ok(SessionProbe::Denied),
+        Err(io::ErrorKind::PermissionDenied),
+    ] {
+        assert_eq!(
+            delete_session_after_shutdown(&folder, status, || panic!(
+                "denied probe attempted shutdown"
+            ))
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            fs::read_to_string(&layout).unwrap(),
+            "floating-plugin-marker"
+        );
+    }
+    delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || {
+        panic!("absent server needs no shutdown")
+    })
+    .unwrap();
+    assert!(!folder.exists());
+    assert_eq!(
+        delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || unreachable!())
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    fs::write(&folder, "not a directory").unwrap();
+    assert!(
+        delete_session_after_shutdown(&folder, Ok(SessionProbe::Absent), || unreachable!())
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(folder).unwrap(), "not a directory");
+}
