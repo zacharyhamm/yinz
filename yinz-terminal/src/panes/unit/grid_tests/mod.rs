@@ -59,6 +59,29 @@ fn create_grid_with_content(content: &str) -> Grid {
 }
 
 #[test]
+fn palette_register_changes_invalidate_rows_but_queries_and_invalid_input_do_not() {
+    let mut grid = create_grid_with_content("\x1b[31mindexed");
+    let mut parser = vte::Parser::new();
+    grid.read_changes(0, 0);
+    for (osc, dirty) in [
+        ("4;1;rgb:ff/00/ff", true),
+        ("4;1;?", false),
+        ("4;1;invalid", false),
+        ("4;256;rgb:ff/00/ff", false),
+        ("4;1", false),
+        ("104;invalid", false),
+        ("104;1", true),
+        ("4;1;rgb:ff/00/ff", true),
+        ("104", true),
+    ] {
+        parser.advance(&mut grid, format!("\x1b]{osc}\x07").as_bytes());
+        let chunks = grid.read_changes(0, 0).0;
+        assert_eq!(chunks.len(), if dirty { grid.height } else { 0 }, "{osc}");
+        assert!(grid.read_changes(0, 0).0.is_empty());
+    }
+}
+
+#[test]
 fn full_dumps_include_output_below_the_viewport_without_moving_it() {
     let lines: Vec<_> = (1..=60).map(|n| n.to_string()).collect();
     let mut grid = create_grid_with_content(&format!("\x1b[31m{}", lines.join("\r\n")));

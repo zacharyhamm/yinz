@@ -275,7 +275,10 @@ impl Screen {
                         .insert(*client_id, painted.clone())
                 }
                 .unwrap_or_default();
-                for rect in overlay_damage(&previous, &painted) {
+                let exposed = overlay_damage(&previous, &painted);
+                // No pane supplies replacement chunks for empty floating-only tab areas.
+                self.invalidate_command_palette_backing(*client_id, &exposed);
+                for rect in exposed {
                     if !damage.contains(&rect) {
                         damage.push(rect);
                     }

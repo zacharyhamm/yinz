@@ -5041,6 +5041,7 @@ impl Perform for Grid {
                             self.changed_colors = Some([None; 256]);
                         }
                         self.changed_colors.as_mut().unwrap()[i as usize] = Some(c);
+                        self.output_buffer.update_all_lines();
                     } else if chunk.get(1).as_ref().and_then(|c| c.first()) == Some(&b'?') {
                         if let Some(index) = index {
                             // Forward palette-register queries to the
@@ -5215,6 +5216,7 @@ impl Perform for Grid {
                 // Reset all color indexes when no parameters are given.
                 if params.len() == 1 {
                     self.changed_colors = None;
+                    self.output_buffer.update_all_lines();
                     return;
                 }
 
@@ -5222,8 +5224,9 @@ impl Perform for Grid {
                 for param in &params[1..] {
                     if let Some(index) = parse_number(param) {
                         if let Some(changed_colors) = &mut self.changed_colors {
-                            changed_colors[index as usize] = None
+                            changed_colors[index as usize] = None;
                         }
+                        self.output_buffer.update_all_lines();
                     }
                 }
 
