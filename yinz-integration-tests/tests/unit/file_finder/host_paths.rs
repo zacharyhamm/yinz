@@ -60,18 +60,18 @@ fn real_finder_and_editor_use_the_tmp_project() {
     let path = root.path().join("finder.integration.test.ts");
     std::fs::write(&path, r#"
 import {test, session, assert} from 'yinz:testing';
-test('finder host paths through real PTYs', {grants:['RunCommands']}, async () => {
-  const home = session.fixture({'project/sub/book, one.pdf':'finder-host-path-sentinel'}, {
+for (const launch of ['keyboard','typed']) test('finder host paths through real PTYs: ' + launch, {grants:['RunCommands']}, async () => {
+  const home = session.fixture({'project/sub/book, #?%23%2523.pdf':'finder-host-path-sentinel'}, {
     fzf: `set -eu
 expected=$(cd "$HOME/project" && pwd -P)
 [ "$(pwd -P)" = "$expected" ] || exit 1
 input=$(cat)
-[ "$input" = 'sub/book, one.pdf' ] || exit 2
-printf '%s\\n' "$HOME/project/sub/book, one.pdf"
+[ "$input" = 'sub/book, #?%23%2523.pdf' ] || exit 2
+printf '%s\\n' "$HOME/project/sub/book, #?%23%2523.pdf"
 `,
     vi: `set -eu
 [ "$#" -eq 1 ] || exit 3
-[ "$1" = "$HOME/project/sub/book, one.pdf" ] || exit 4
+[ "$1" = "$HOME/project/sub/book, #?%23%2523.pdf" ] || exit 4
 [ "$(pwd -P)" = "$(cd "$HOME/project/sub" && pwd -P)" ] || exit 5
 printf 'EDITOR_CWD=%s\\nEDITOR_ARG=%s\\n' "$(pwd -P)" "$1"
 cat "$1"
@@ -84,10 +84,13 @@ read release
   session.text(`cd "$HOME/project" && printf 'PROJECT_%s\\n' READY`);
   session.key('Enter');
   await session.waitForText('PROJECT_READY');
-  session.key('Alt e');
+  if (launch === 'keyboard') session.key('Alt e');
+  else session.loadPlugin('yinz:file-finder', {configuration:{
+    file_command: "printf '%s\\n' 'sub/book, #?%23%2523.pdf'", open_pdf: 'vi {}',
+  }});
   await session.waitForText('EDITOR_READY');
   assert(session.screen.includes('EDITOR_CWD=' + home + '/project/sub'));
-  assert(/EDITOR_ARG=\/tmp\/ypt-[^\s]+\/home\/project\/sub\/book, one.pdf/.test(session.screen));
+  assert(session.screen.includes('EDITOR_ARG=' + home + '/project/sub/book, #?%23%2523.pdf'));
   assert(session.screen.includes('finder-host-path-sentinel'));
   session.key('Enter');
   await session.waitFor('finder and editor cleaned up', () => session.panes.filter(pane => !pane.is_plugin).length === 1 && !session.panes.some(pane => pane.plugin_url === 'yinz:file-finder') && !session.screen.includes('EDITOR_READY'));
