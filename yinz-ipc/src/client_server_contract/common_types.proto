@@ -758,6 +758,7 @@ message CliPipeAction {
   optional bool in_place = 10;
   optional string cwd = 11;
   optional string pane_title = 12;
+  bool focus_plugin = 13;
 }
 
 message KeybindPipeAction {

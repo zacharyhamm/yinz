@@ -636,6 +636,8 @@ pub enum Action {
     /// Show a self-dismissing notification in the configured screen corner
     Notify(String),
     CliPipe {
+        #[serde(default)]
+        focus_plugin: bool,
         pipe_id: String,
         name: Option<String>,
         payload: Option<String>,

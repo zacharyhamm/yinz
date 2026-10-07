@@ -1058,6 +1058,7 @@ pub fn the_agent_exit_hook_opens_again_after_the_first_one_is_closed() {
     );
     // A lookup of the same plugin while the first hook is still up, between the two firings.
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "cache-warmer".to_owned(),
         name: "ping".to_owned(),

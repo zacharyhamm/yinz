@@ -671,6 +671,7 @@ context_menu {
     // Pipe completion waits for this background instance to finish loading before the
     // right-click starts the production menu fallback deadline.
     let (code, output) = yinz.run_cli_action_reporting(CliAction::Pipe {
+        focus_plugin: false,
         name: Some("ready".into()),
         payload: Some(String::new()),
         args: None,

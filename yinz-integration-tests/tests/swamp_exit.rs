@@ -96,6 +96,7 @@ export default definePlugin({
 fn advance(yinz: &TestSession, stage: &str) {
     assert_eq!(
         yinz.run_cli_action(CliAction::Pipe {
+            focus_plugin: false,
             name: Some("fixture".into()),
             payload: Some(stage.into()),
             args: None,
@@ -530,6 +531,7 @@ fn fixture_plugin(yinz: &TestSession) -> Option<String> {
 
 fn fixture_reply(yinz: &TestSession, payload: &str) -> String {
     let (code, reply) = yinz.run_cli_action_reporting(CliAction::Pipe {
+        focus_plugin: false,
         name: Some("fixture".into()),
         payload: Some(payload.into()),
         args: None,

@@ -226,6 +226,7 @@ pub enum PluginInstruction {
     },
     LogLayoutToHd(SessionLayoutMetadata),
     CliPipe {
+        focus_plugin: bool,
         pipe_id: String,
         name: String,
         payload: Option<String>,

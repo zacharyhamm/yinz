@@ -1404,6 +1404,11 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
 "#
     ))]
     Pipe {
+        /// Focus a newly auto-launched plugin pane, revealing floating panes when applicable.
+        /// Does not focus an existing or already-loading destination.
+        #[clap(long, requires("plugin"))]
+        #[serde(default)]
+        focus_plugin: bool,
         /// The name of the pipe
         #[clap(short, long, value_parser, display_order(1))]
         name: Option<String>,
@@ -1414,7 +1419,8 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
         /// Comma-separated key=value arguments for the pipe
         args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
-        /// will be sent to all plugins, if specified and is not running, the plugin will be launched
+        /// will be sent to running plugins. If specified and not running, the plugin will be
+        /// launched floating by default, without changing focus or revealing a hidden floating layer.
         #[clap(short, long, value_parser, display_order(3))]
         plugin: Option<String>,
         /// The plugin configuration (note: the same plugin with different configuration is
@@ -2230,6 +2236,11 @@ yinz action pipe --name my_pipe_name -- my_arbitrary_data
 tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/to/my-plugin.wasm | wc -l
 "#))]
     Pipe {
+        /// Focus a newly auto-launched plugin pane, revealing floating panes when applicable.
+        /// Does not focus an existing or already-loading destination.
+        #[clap(long, requires("plugin"))]
+        #[serde(default)]
+        focus_plugin: bool,
         /// The name of the pipe
         #[clap(short, long, value_parser, display_order(1))]
         name: Option<String>,
@@ -2240,7 +2251,8 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         /// Comma-separated key=value arguments for the pipe
         args: Option<PluginUserConfiguration>,
         /// The plugin url (eg. file:/tmp/my-plugin.wasm) to direct this pipe to, if not specified,
-        /// will be sent to all plugins, if specified and is not running, the plugin will be launched
+        /// will be sent to running plugins. If specified and not running, the plugin will be
+        /// launched floating by default, without changing focus or revealing a hidden floating layer.
         #[clap(short, long, value_parser, display_order(3))]
         plugin: Option<String>,
         /// The plugin configuration (note: the same plugin with different configuration is

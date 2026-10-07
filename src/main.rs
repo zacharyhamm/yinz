@@ -433,6 +433,7 @@ fn main() {
             std::process::exit(0);
         }
         if let Some(Command::Sessions(Sessions::Pipe {
+            focus_plugin,
             name,
             payload,
             args,
@@ -441,6 +442,7 @@ fn main() {
         })) = opts.command
         {
             let command_cli_action = CliAction::Pipe {
+                focus_plugin,
                 name,
                 payload,
                 args,

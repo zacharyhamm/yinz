@@ -31,6 +31,7 @@ fn a_broadcast_pipe_with_no_plugins_completes() {
 
 fn cli_pipe(plugin: Option<&str>, payload: Option<&str>) -> CliAction {
     CliAction::Pipe {
+        focus_plugin: false,
         name: Some("test-pipe".into()),
         payload: payload.map(str::to_owned),
         args: None,
@@ -55,8 +56,14 @@ fn pipe_recipient_session() -> (yinz_integration_tests::TestSession, String) {
         &path,
         r#"
 import z from 'yinz:plugin';
+let payload = '', keys = 0;
 export default {
-  async load() { await z.waitForPermissions(['ReadCliPipes', 'ChangeApplicationState']); },
+  async load() {
+    z.subscribe(['Key']);
+    await z.waitForPermissions(['ReadCliPipes', 'ChangeApplicationState']);
+  },
+  update(event) { if (event.Key) { keys++; return true; } },
+  render() { return `PIPE PAYLOAD: ${payload} KEYS: ${keys}`; },
   pipe(message) {
     const pipe = message.source.Cli;
     if (message.payload?.trim() === 'close') {
@@ -69,7 +76,9 @@ export default {
       const output = message.payload === 'identity' ? String(z.getPluginIds().plugin_id)
         : message.payload == null ? 'eof\n' : 'input\n';
       z.command('CliPipeOutput', [pipe, output]);
+      if (message.payload != null && message.payload !== 'identity') payload = message.payload;
     }
+    return true;
   },
 };
 "#,
@@ -124,10 +133,11 @@ fn eof_does_not_replace_a_self_closing_pipe_recipient() {
             } else {
                 (None, "close\n")
             };
-            let (status, output) = yinz.run_cli_action_reporting_with_stdin(
-                cli_pipe(Some(&destination), payload),
-                Some(stdin),
-            );
+            let mut action = cli_pipe(Some(&destination), payload);
+            if let CliAction::Pipe { focus_plugin, .. } = &mut action {
+                *focus_plugin = true;
+            }
+            let (status, output) = yinz.run_cli_action_reporting_with_stdin(action, Some(stdin));
             assert_eq!(
                 (status, output.as_str()),
                 (0, "response\n"),
@@ -751,4 +761,130 @@ fn normalized_lifecycle_stream_is_opt_in_and_ready_before_live_updates() {
         .iter()
         .any(|event| event == "agent_lifecycle"));
     yinz.quit();
+}
+
+fn pipe_panes(yinz: &yinz_integration_tests::TestSession) -> Vec<yinz_types::data::PaneListEntry> {
+    let (status, json) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(status, 0, "{json}");
+    // Provider services are suppressed panes even when load_plugins is cleared.
+    serde_json::from_str::<Vec<yinz_types::data::PaneListEntry>>(&json)
+        .unwrap()
+        .into_iter()
+        .filter(|pane| !pane.pane_info.is_suppressed)
+        .collect()
+}
+
+#[test]
+fn pipe_focus_only_reveals_and_selects_new_panes() {
+    for focus in [false, true] {
+        let (mut yinz, url) = pipe_recipient_session();
+        let tab_id = Some(pipe_panes(&yinz)[0].tab_id);
+        let send = |destination: &str, payload: &str, focus: bool, force: bool| {
+            let mut action = cli_pipe(Some(destination), Some(payload));
+            if let CliAction::Pipe {
+                focus_plugin,
+                force_launch_plugin,
+                ..
+            } = &mut action
+            {
+                *focus_plugin = focus;
+                *force_launch_plugin = force;
+            }
+            assert_eq!(yinz.run_cli_action_reporting(action).0, 0);
+        };
+        let visible = || {
+            let (status, output) =
+                yinz.run_cli_action_reporting(CliAction::AreFloatingPanesVisible { tab_id });
+            assert!(
+                matches!(output.trim(), "true" | "false"),
+                "{status}: {output}"
+            );
+            status == 0
+        };
+        assert!(!visible());
+        send("recipient", "cold", focus, false);
+        yinz.wait_until("cold pipe pane exists with requested focus", |_| {
+            let panes = pipe_panes(&yinz);
+            panes.len() == 2
+                && panes
+                    .iter()
+                    .any(|p| p.pane_info.is_plugin() && p.pane_info.is_focused == focus)
+        });
+        assert_eq!(visible(), focus);
+        let panes = pipe_panes(&yinz);
+        let pane = &panes
+            .iter()
+            .find(|p| p.pane_info.is_plugin())
+            .unwrap()
+            .pane_info;
+        let id = pane.id.to_string();
+        assert!(pane.is_floating && !pane.is_suppressed);
+        if !focus {
+            assert!(panes
+                .iter()
+                .any(|p| !p.pane_info.is_plugin() && p.pane_info.is_focused));
+            assert!(!yinz.snapshot().contains("PIPE PAYLOAD: cold"));
+            assert_eq!(
+                yinz.run_cli_action(CliAction::ShowFloatingPanes { tab_id }),
+                0
+            );
+        }
+        yinz.wait_until("cold pipe payload visible", |g| {
+            g.contains("PIPE PAYLOAD: cold KEYS: 0")
+        });
+        // The pipe client has exited; the UI still owns the recipient and can type into it.
+        yinz.send_stdin(b"x");
+        yinz.wait_until("pipe recipient accepts UI input", |g| g.contains("KEYS: 1"));
+        for (destination, payload) in [
+            (url.as_str(), "warm-url"),
+            ("recipient", "warm-alias"),
+            (id.as_str(), "warm-id"),
+        ] {
+            assert_eq!(
+                yinz.run_cli_action(CliAction::HideFloatingPanes { tab_id }),
+                0
+            );
+            send(destination, payload, true, false);
+            assert!(!visible());
+            let panes = pipe_panes(&yinz);
+            assert_eq!(panes.len(), 2);
+            assert!(panes
+                .iter()
+                .any(|p| !p.pane_info.is_plugin() && p.pane_info.is_focused));
+            assert_eq!(
+                yinz.run_cli_action(CliAction::ShowFloatingPanes { tab_id }),
+                0
+            );
+            yinz.wait_until("warm pipe updated the same pane", |g| {
+                g.contains(&format!("PIPE PAYLOAD: {payload} KEYS: 1"))
+            });
+        }
+        // A visible floating layer is preserved and its focused pane is not displaced by default.
+        send("recipient", "unfocused-new", false, true);
+        yinz.wait_until("new pipe pane preserves existing floating focus", |_| {
+            let panes = pipe_panes(&yinz);
+            panes.len() == 3
+                && panes
+                    .iter()
+                    .any(|p| p.pane_info.id.to_string() == id && p.pane_info.is_focused)
+        });
+        assert!(visible());
+        send("recipient", "forced-focus", true, true);
+        yinz.wait_until("forced new pipe pane is focused", |g| {
+            g.contains("PIPE PAYLOAD: forced-focus KEYS: 0")
+        });
+        let panes = pipe_panes(&yinz);
+        assert_eq!(panes.len(), 4);
+        assert!(panes.iter().any(|p| p.pane_info.is_plugin()
+            && p.pane_info.id.to_string() != id
+            && p.pane_info.is_focused));
+        yinz.quit();
+    }
 }

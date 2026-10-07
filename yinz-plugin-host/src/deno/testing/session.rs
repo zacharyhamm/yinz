@@ -840,6 +840,7 @@ impl Controller {
             .context("bound pipe reply")?;
         sender.send_client_msg(ClientMsg::Action {
             action: Action::CliPipe {
+                focus_plugin: false,
                 pipe_id: "test-pipe".into(),
                 name: Some(arg["name"].as_str().context("pipe name")?.into()),
                 payload: arg

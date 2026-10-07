@@ -4283,3 +4283,106 @@ fn queued_deno_reply_survives_map_removal_and_cannot_reach_replacement() {
             .any(|(instruction, _)| matches!(instruction, PluginInstruction::PluginFailed { .. })));
     }
 }
+
+#[test]
+fn pipe_launch_focus_preserves_ui_ownership_and_headless_services() {
+    for (focus, headless) in [(false, false), (true, false), (true, true)] {
+        let mut test = TestBridge::new();
+        let ui = ClientId::new(1);
+        let cli = ClientId::new(2);
+        test.bridge.add_client(ui).unwrap();
+        let path = test._dirs[0].path().join("pipe-focus.ts");
+        std::fs::write(&path, "export default { render() { return 'ready'; } };").unwrap();
+        let run = RunPluginOrAlias::RunPlugin(RunPlugin {
+            location: if headless {
+                RunPluginLocation::Yinz(PluginTag::new("swamp-bridge"))
+            } else {
+                RunPluginLocation::File(path)
+            },
+            ..Default::default()
+        });
+        let recipients = test
+            .bridge
+            .get_or_load_plugins(
+                run.clone(),
+                Size::default(),
+                None,
+                false,
+                true,
+                false,
+                None,
+                None,
+                Some(cli),
+                None,
+                focus,
+                true,
+            )
+            .unwrap();
+        let (id, owner) = recipients[0];
+        assert_eq!(owner, Some(ui));
+        let added: Vec<_> = test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .filter_map(|(instruction, _)| {
+                if let ScreenInstruction::AddPlugin(
+                    floating,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    plugin,
+                    _,
+                    _,
+                    suppressed,
+                    _,
+                    focused,
+                    client,
+                    _,
+                    _,
+                ) = instruction
+                {
+                    Some((floating, plugin, suppressed, focused, client))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            added,
+            vec![(
+                if headless { None } else { Some(true) },
+                id,
+                headless,
+                if headless { None } else { Some(focus) },
+                Some(ui)
+            )]
+        );
+        // The loading entry is retained until the plugin thread handles completion.
+        assert_eq!(
+            test.bridge
+                .get_or_load_plugins(
+                    run,
+                    Size::default(),
+                    None,
+                    false,
+                    true,
+                    false,
+                    None,
+                    None,
+                    Some(cli),
+                    None,
+                    true,
+                    true,
+                )
+                .unwrap()[0]
+                .0,
+            id
+        );
+        assert!(!test
+            .receiver::<ScreenInstruction>()
+            .try_iter()
+            .any(|(i, _)| matches!(i, ScreenInstruction::AddPlugin(..))));
+        test.settle(id);
+    }
+}

@@ -32,6 +32,7 @@ load_plugins clear-defaults=true {
 
 fn mutate_store(yinz: &TestSession, op: &str, args: serde_json::Value) {
     let (code, output) = yinz.run_cli_action_reporting(CliAction::Pipe {
+        focus_plugin: false,
         name: Some("store_mutate".into()),
         payload: Some(
             serde_json::json!({"op": op, "args": args, "structured_reply": true}).to_string(),
@@ -451,6 +452,7 @@ fn tab_projects_follow_cwd_changes_and_pane_closure_without_agent() {
     // Refresh explicitly instead of waiting for the minute-long Git polling interval.
     assert_eq!(
         yinz.run_cli_action(CliAction::Pipe {
+            focus_plugin: false,
             name: Some("agent_refresh".into()),
             payload: None,
             args: None,
