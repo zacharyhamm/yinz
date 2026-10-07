@@ -3048,27 +3048,28 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::RequestPluginPermissions(plugin_id, plugin_permission) => {
-                    let all_tabs = screen.get_tabs_mut();
-                    let found = all_tabs.values_mut().any(|tab| {
-                        if tab.has_plugin(plugin_id) {
-                            tab.request_plugin_permissions(
-                                plugin_id,
-                                Some(plugin_permission.clone()),
+                    match screen.tab_containing_pane_mut(PaneId::Plugin(plugin_id)) {
+                        Some(tab) if tab.is_pending() => {
+                            // Applying the initial layout resets floating visibility and focus.
+                            pending.waiting_for_tab.push(
+                                ScreenInstruction::RequestPluginPermissions(
+                                    plugin_id,
+                                    plugin_permission,
+                                ),
                             );
-                            true
-                        } else {
-                            false
-                        }
-                    });
-
-                    if !found {
-                        log::error!("PluginId '{}' not found - caching request", plugin_id);
-                        pending.waiting_for_client.push(
-                            ScreenInstruction::RequestPluginPermissions(
+                        },
+                        Some(tab) => {
+                            tab.request_plugin_permissions(plugin_id, Some(plugin_permission));
+                            screen.render()?;
+                        },
+                        None => pending
+                            .waiting_for_pane
+                            .entry(PaneId::Plugin(plugin_id))
+                            .or_default()
+                            .push(ScreenInstruction::RequestPluginPermissions(
                                 plugin_id,
                                 plugin_permission,
-                            ),
-                        );
+                            )),
                     }
                 },
                 ScreenInstruction::WarpPane {
