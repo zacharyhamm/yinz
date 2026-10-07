@@ -230,7 +230,19 @@ export interface Yinz {
 export const yinz: Yinz;
 export const definePlugin: Yinz["definePlugin"];
 export default yinz;
-declare global { const yinz: Yinz; const console: PluginConsole; }
+declare global {
+  const yinz: Yinz;
+  const console: PluginConsole;
+  interface ImportMeta {
+    /** Current module URL: canonical, escaped file: URL, or private yinz-builtin: URL for embedded modules. */
+    url: string;
+    /** Synchronously resolves an existing module without evaluating it. Throws TypeError on failure.
+     * Uses import extension and confinement rules, not general asset-path resolution.
+     * The checker checks types only; it does not validate the target or execute this call.
+     */
+    resolve(specifier: string): string;
+  }
+}
 
 // ---- section: sdk_commands
 /** Integers outside the JS safe range use BigInt. Rust validates destination ranges. */

@@ -687,3 +687,23 @@ fn formatting_accepts_filesystem_names_and_refuses_symlinks() {
         "previous"
     );
 }
+
+#[test]
+fn import_meta_passes_strict_authoring_without_resolving_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = r#"export const url: string = import.meta.url;
+export const sibling: string = import.meta.resolve("./missing.ts");
+"#;
+    for mode in [Semantic, Prepare] {
+        let checked = report(dir.path(), source, mode);
+        assert!(
+            checked.diagnostics.is_empty(),
+            "{mode:?}: {:?}",
+            checked.diagnostics
+        );
+        if mode == Prepare {
+            assert_eq!(checked.formatted_source.as_deref(), Some(source));
+        }
+    }
+    assert!(!dir.path().join("missing.ts").exists());
+}

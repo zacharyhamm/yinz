@@ -1206,3 +1206,31 @@ fn sdk_checks_unload_and_define_plugin_defaults() {
       const wrong: Plugin = {async unload() {return 'wrong';}};
     "#).unwrap();
 }
+
+#[test]
+fn import_meta_types_are_global_and_keep_the_es2022_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.ts");
+    for prefix in ["", "import 'yinz:plugin';"] {
+        check_semantic_source(&path, &format!(
+            "{prefix} export const url: string = import.meta.url; export const sibling: string = import.meta.resolve('./missing.ts');"
+        )).unwrap();
+    }
+    for (source, diagnostic) in [
+        ("import.meta.resolve(1);", "TS2345"),
+        ("import.meta.resolve('./main.ts', './');", "TS2554"),
+        ("const url: number = import.meta.url;", "TS2322"),
+        (
+            "const url: number = import.meta.resolve('./main.ts');",
+            "TS2322",
+        ),
+        ("new URL(import.meta.url);", "TS2304"),
+        ("document.title;", "TS2584"),
+    ] {
+        let error = format!(
+            "{:#}",
+            check_semantic_source(&path, &format!("export {{}}; {source}")).unwrap_err()
+        );
+        assert!(error.contains(diagnostic), "{source}: {error}");
+    }
+}
