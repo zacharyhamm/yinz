@@ -3,7 +3,8 @@
 //! One keypress puts fzf in a floating pane rooted at the git toplevel of wherever the
 //! user currently is. Picking a file replaces fzf *in that same pane* with an editor or
 //! a viewer chosen by file type, and quitting that takes the pane with it. The overlay
-//! appears, does one job, and leaves nothing behind.
+//! appears, does one job, and leaves nothing behind. Plugin openers instead hand the
+//! path to a visible reader and retire the finder; the reader owns its own lifetime.
 //!
 //! The plugin itself is never visible: it hides on load and acts purely as the state
 //! machine driving the pane it opened.
@@ -236,7 +237,21 @@ impl State {
 
         // `close_replaced_pane: true` retires the held fzf pane for good; the new pane
         // inherits its floating slot and geometry.
-        let opened = match opener_for(&self.config, &selection) {
+        let opener = match opener_for(&self.config, &selection) {
+            Ok(opener) => opener,
+            Err(error) => {
+                self.opening_failed(finder_pane_id, &error);
+                return;
+            },
+        };
+        let opened = match opener {
+            Opener::Plugin {
+                destination,
+                message,
+            } => {
+                self.open_reader(finder_pane_id, &selection, &destination, &message);
+                return;
+            },
             Opener::YinzEditor => {
                 let mut file =
                     FileToOpen::new(project::host_path(Path::new(HOST_MOUNT), &selection));
@@ -275,6 +290,66 @@ impl State {
                 self.finish();
             },
         }
+    }
+
+    fn opening_failed(&mut self, finder: TerminalId, error: &str) {
+        let error = format!("file-finder: {error}");
+        eprintln!("{error}");
+        notify(&error);
+        self.stage = Stage::Idle;
+        close_pane_with_id(PaneId::Terminal(finder));
+        self.finish();
+    }
+
+    fn open_reader(
+        &mut self,
+        finder: TerminalId,
+        selection: &Path,
+        destination: &str,
+        message: &str,
+    ) {
+        let ids = match get_plugin_ids_for_url(destination) {
+            Ok(ids) => ids,
+            Err(error) => {
+                self.opening_failed(finder, &format!("reader lookup failed: {error}"));
+                return;
+            },
+        };
+        self.stage = Stage::Idle;
+        // Retire the overlay before focusing the reader: overlay cleanup restores focus.
+        close_pane_with_id(PaneId::Terminal(finder));
+        // ponytail: lookup/open is not atomic; host singleton support is needed if
+        // concurrent independent finders must never create duplicate readers.
+        let reader = match ids.into_iter().min() {
+            Some(id) => id,
+            None => {
+                let configuration = BTreeMap::from([(
+                    "caller_cwd".into(),
+                    selection
+                        .parent()
+                        .unwrap_or(Path::new("/"))
+                        .to_string_lossy()
+                        .into_owned(),
+                )]);
+                match open_plugin_pane_floating(destination, configuration, None, BTreeMap::new()) {
+                    Some(PaneId::Plugin(id)) => id,
+                    _ => {
+                        let error = format!("file-finder: failed to open reader {destination}");
+                        eprintln!("{error}");
+                        notify(&error);
+                        self.finish();
+                        return;
+                    },
+                }
+            },
+        };
+        pipe_message_to_plugin(
+            MessageToPlugin::new(message)
+                .with_destination_plugin_id(reader)
+                .with_payload(selection.to_string_lossy()),
+        );
+        focus_pane_with_id(PaneId::Plugin(reader), true, false);
+        self.finish();
     }
 
     /// Send focus back to the pane being driven if it has landed on this plugin.
@@ -408,6 +483,25 @@ fn focused_cwd() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_resolution_uses_the_latest_configuration_event() {
+        let mut state = State {
+            config: BTreeMap::from([("openers_json".into(), r#"{"pdf":null}"#.into())]),
+            ..Default::default()
+        };
+        state.update(Event::PluginConfigurationChanged(BTreeMap::from([(
+            "openers_json".into(),
+            r#"{"pdf":{"argv":["new-viewer"]}}"#.into(),
+        )])));
+        assert_eq!(
+            opener_for(&state.config, Path::new("/tmp/latest.pdf")).unwrap(),
+            Opener::Command {
+                path: "new-viewer".into(),
+                args: vec!["/tmp/latest.pdf".into()]
+            }
+        );
+    }
 
     #[test]
     fn stage_reports_the_pane_it_is_driving() {
