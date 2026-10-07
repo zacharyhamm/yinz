@@ -204,6 +204,7 @@ fn a_typescript_harness_spawns_an_agent_waits_on_it_prompts_it_and_sees_it_exit(
     let (exit_code, reported) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugin_dir.join("harness.ts").display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(exit_code, 0, "{reported}");
     let deadline = std::time::Instant::now() + default_timeout();

@@ -20,6 +20,7 @@ fn cli_pipe_moves_arguments_and_configuration_without_cloning() {
             args: Some(args),
             plugin: None,
             plugin_configuration: Some(configuration),
+            configuration_json: None,
             force_launch_plugin: false,
             skip_plugin_cache: false,
             floating_plugin: None,
@@ -162,6 +163,7 @@ fn cli_pipe_focus_is_opt_in_and_requires_a_destination() {
                     args,
                     plugin,
                     plugin_configuration,
+                    configuration_json,
                 }) => CliAction::Pipe {
                     focus_plugin,
                     name,
@@ -169,6 +171,7 @@ fn cli_pipe_focus_is_opt_in_and_requires_a_destination() {
                     args,
                     plugin,
                     plugin_configuration,
+                    configuration_json,
                     force_launch_plugin: false,
                     skip_plugin_cache: false,
                     floating_plugin: None,

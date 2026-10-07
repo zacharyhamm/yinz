@@ -858,6 +858,10 @@ pub enum Agent {
     },
 }
 
+fn parse_configuration_json(value: &str) -> Result<PluginUserConfiguration, serde_json::Error> {
+    serde_json::from_str(value)
+}
+
 #[cfg(test)]
 #[path = "unit/agent_cli_tests.rs"]
 mod agent_cli_tests;
@@ -1262,6 +1266,12 @@ pub enum Sessions {
         /// Plugin configuration
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
 
         /// Open the new pane in floating mode
         #[clap(short, long)]
@@ -1427,6 +1437,12 @@ tail -f /tmp/my-live-logfile | yinz pipe --name logs --plugin file:/path/to/my-p
         /// considered a different plugin for the purposes of determining the pipe destination)
         #[clap(short('c'), long, value_parser, display_order(4))]
         plugin_configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "plugin_configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
     },
 }
 
@@ -1751,6 +1767,12 @@ pub enum CliAction {
         firecracker_worktree: Option<PathBuf>,
         #[clap(long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
         #[clap(long, value_parser)]
         skip_plugin_cache: bool,
         /// The x coordinates if the pane is floating as a bare integer (eg. 1) or percent (eg. 10%)
@@ -2137,6 +2159,12 @@ pub enum CliAction {
         url: String,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
     },
     /// Returns: Plugin pane ID (format: plugin_<id>) when creating or focusing plugin
     LaunchOrFocusPlugin {
@@ -2152,6 +2180,12 @@ pub enum CliAction {
         url: String,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
         #[clap(short, long, value_parser)]
         skip_plugin_cache: bool,
         /// Target a specific tab by ID
@@ -2170,6 +2204,12 @@ pub enum CliAction {
         url: Url,
         #[clap(short, long, value_parser)]
         configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
         #[clap(short, long, value_parser)]
         skip_plugin_cache: bool,
         #[clap(
@@ -2259,6 +2299,12 @@ tail -f /tmp/my-live-logfile | yinz action pipe --name logs --plugin file:/path/
         /// considered a different plugin for the purposes of determining the pipe destination)
         #[clap(short('c'), long, value_parser, display_order(4))]
         plugin_configuration: Option<PluginUserConfiguration>,
+        /// Plugin configuration as a JSON object of strings. Mutually exclusive with
+        /// legacy configuration. Percent sequences are literal; only JSON escapes are decoded.
+        /// If repeated, the last JSON object wins.
+        #[clap(long, value_name = "JSON", value_parser = parse_configuration_json, conflicts_with = "plugin_configuration")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configuration_json: Option<PluginUserConfiguration>,
         /// Launch a new plugin even if one is already running
         #[clap(short('l'), long, display_order(5))]
         force_launch_plugin: bool,

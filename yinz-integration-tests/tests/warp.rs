@@ -423,6 +423,7 @@ fn split_off_a_remote_pane(yinz: &TestSession, says: &str) -> FakePtyHandle {
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,

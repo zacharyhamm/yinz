@@ -78,6 +78,7 @@ fn a_relatively_named_script_plugin_is_launched_from_the_user_plugin_dir() {
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,

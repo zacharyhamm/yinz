@@ -297,6 +297,7 @@ fn main() {
                 close_on_exit,
                 start_suspended,
                 configuration: None,
+                configuration_json: None,
                 skip_plugin_cache,
                 x,
                 y,
@@ -325,6 +326,7 @@ fn main() {
             in_place,
             close_replaced_pane,
             configuration,
+            configuration_json,
             skip_plugin_cache,
             x,
             y,
@@ -359,6 +361,7 @@ fn main() {
                 close_on_exit: false,
                 start_suspended: false,
                 configuration,
+                configuration_json,
                 skip_plugin_cache,
                 x,
                 y,
@@ -439,6 +442,7 @@ fn main() {
             args,
             plugin,
             plugin_configuration,
+            configuration_json,
         })) = opts.command
         {
             let command_cli_action = CliAction::Pipe {
@@ -448,6 +452,7 @@ fn main() {
                 args,
                 plugin,
                 plugin_configuration,
+                configuration_json,
 
                 force_launch_plugin: false,
                 skip_plugin_cache: false,

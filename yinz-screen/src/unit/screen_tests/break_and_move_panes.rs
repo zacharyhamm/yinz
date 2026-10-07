@@ -1260,6 +1260,7 @@ pub fn send_cli_new_pane_in_place_with_close_replaced_pane() {
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,
@@ -1368,6 +1369,7 @@ pub fn send_cli_launch_or_focus_plugin_in_place_with_close_replaced_pane() {
         move_to_focused_tab: false,
         url: "file:/path/to/fake/plugin".to_owned(),
         configuration: Default::default(),
+        configuration_json: None,
         skip_plugin_cache: false,
         tab_id: None,
     };

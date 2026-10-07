@@ -435,6 +435,7 @@ pub fn actions_from_cli(
             close_on_exit,
             start_suspended,
             configuration,
+            configuration_json,
             skip_plugin_cache,
             x,
             y,
@@ -454,6 +455,7 @@ pub fn actions_from_cli(
             modal,
             tab_id,
         } => {
+            let configuration = select_configuration(configuration, configuration_json)?;
             // The same rules a layout's `firecracker_*` properties are held to,
             // checked here for the same reason: a CLI error names the flag, a
             // spawn error is a banner in a pane that already exists.
@@ -1241,7 +1243,12 @@ pub fn actions_from_cli(
             }])
         },
         CliAction::QueryTabNames => Ok(vec![Action::QueryTabNames]),
-        CliAction::StartOrReloadPlugin { url, configuration } => {
+        CliAction::StartOrReloadPlugin {
+            url,
+            configuration,
+            configuration_json,
+        } => {
+            let configuration = select_configuration(configuration, configuration_json)?;
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 &url,
@@ -1260,9 +1267,11 @@ pub fn actions_from_cli(
             close_replaced_pane,
             move_to_focused_tab,
             configuration,
+            configuration_json,
             skip_plugin_cache,
             tab_id,
         } => {
+            let configuration = select_configuration(configuration, configuration_json)?;
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 url.as_str(),
@@ -1286,10 +1295,12 @@ pub fn actions_from_cli(
             in_place,
             close_replaced_pane,
             configuration,
+            configuration_json,
             skip_plugin_cache,
             no_focus,
             tab_id,
         } => {
+            let configuration = select_configuration(configuration, configuration_json)?;
             let current_dir = get_current_dir();
             let run_plugin_or_alias = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
                 url.as_str(),
@@ -1345,6 +1356,7 @@ pub fn actions_from_cli(
             args,
             plugin,
             plugin_configuration,
+            configuration_json,
             force_launch_plugin,
             skip_plugin_cache,
             floating_plugin,
@@ -1352,6 +1364,8 @@ pub fn actions_from_cli(
             plugin_cwd,
             plugin_title,
         } => {
+            let plugin_configuration =
+                select_configuration(plugin_configuration, configuration_json)?;
             let current_dir = get_current_dir();
             let cwd = plugin_cwd
                 .map(|cwd| current_dir.join(cwd))
@@ -1803,6 +1817,19 @@ fn suggest_key_fix(key_str: &str) -> String {
 
     "  Hint: Use format like \"Ctrl a\", \"Alt Shift F1\", or \"Enter\"".to_string()
 }
+
+fn select_configuration(
+    legacy: Option<PluginUserConfiguration>,
+    json: Option<PluginUserConfiguration>,
+) -> Result<Option<PluginUserConfiguration>, String> {
+    match (legacy, json) {
+        (Some(_), Some(_)) => {
+            Err("legacy configuration and --configuration-json are mutually exclusive".into())
+        },
+        (legacy, json) => Ok(legacy.or(json)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2760,6 +2787,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -2999,6 +3027,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3050,6 +3079,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3101,6 +3131,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3159,6 +3190,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3203,6 +3235,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3254,6 +3287,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3672,6 +3706,7 @@ mod tests {
                 close_on_exit: false,
                 start_suspended: false,
                 configuration: None,
+                configuration_json: None,
                 skip_plugin_cache: false,
                 x: None,
                 y: None,
@@ -3742,6 +3777,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3863,6 +3899,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,
@@ -3914,6 +3951,7 @@ mod tests {
             close_on_exit: false,
             start_suspended: false,
             configuration: None,
+            configuration_json: None,
             skip_plugin_cache: false,
             x: None,
             y: None,

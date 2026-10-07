@@ -479,6 +479,7 @@ layout {
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugins.join("acceptance.ts").display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until(
@@ -631,6 +632,7 @@ export default {{
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugin.display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(code, 0, "{output}");
     let result = yinz.wait_until("replacement stream reaches completion", |screen| {
@@ -740,6 +742,7 @@ export default {
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugin.display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until("authoring permission prompt", |grid| {
@@ -783,6 +786,7 @@ context_menu {
         args: None,
         plugin: Some("yinz:context-menu".into()),
         plugin_configuration: None,
+        configuration_json: None,
         force_launch_plugin: false,
         skip_plugin_cache: false,
         floating_plugin: None,
@@ -902,6 +906,7 @@ export default {{async load(){{
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugin.display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until("replacement loaded", |screen| {
@@ -945,6 +950,7 @@ fn deno_pane_exit_observes_a_held_cli_pane() {
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,
@@ -981,6 +987,7 @@ export default {{async load(){{
     let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
         url: format!("file:{}", plugin.display()),
         configuration: None,
+        configuration_json: None,
     });
     assert_eq!(code, 0, "{output}");
     yinz.wait_until("observer permission prompt", |screen| {
@@ -1491,7 +1498,8 @@ export default {
     assert_eq!(
         yinz.run_cli_action(CliAction::StartOrReloadPlugin {
             url: format!("file:{}", plugin.display()),
-            configuration: None
+            configuration: None,
+            configuration_json: None,
         }),
         0
     );
@@ -1565,6 +1573,7 @@ export default definePlugin({{
         let reload = || CliAction::StartOrReloadPlugin {
             url: format!("file:{}", plugin.display()),
             configuration: None,
+            configuration_json: None,
         };
         let (code, output) = yinz.run_cli_action_reporting(reload());
         assert_eq!(code, 0, "{output}");
@@ -1688,7 +1697,8 @@ export default {
     assert_eq!(
         yinz.run_cli_action(CliAction::StartOrReloadPlugin {
             url: format!("file:{}", plugin.display()),
-            configuration: None
+            configuration: None,
+            configuration_json: None,
         }),
         0
     );
