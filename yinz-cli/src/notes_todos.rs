@@ -220,6 +220,7 @@ impl NotesTodos {
 
 pub fn pipe_action(name: &str, request: Value) -> Action {
     Action::CliPipe {
+        focus_plugin: false,
         pipe_id: uuid::Uuid::new_v4().to_string(),
         name: Some(name.into()),
         payload: Some(request.to_string()),

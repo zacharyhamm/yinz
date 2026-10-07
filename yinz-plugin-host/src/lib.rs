@@ -1027,6 +1027,7 @@ pub fn plugin_thread_main(
                 );
             },
             PluginInstruction::CliPipe {
+                focus_plugin,
                 pipe_id,
                 name,
                 payload,
@@ -1096,7 +1097,7 @@ pub fn plugin_thread_main(
                             &mut wasm_bridge,
                             &plugin_aliases,
                             floating_pane_coordinates,
-                            None,
+                            Some(focus_plugin),
                             !is_eof,
                         )
                         .err()

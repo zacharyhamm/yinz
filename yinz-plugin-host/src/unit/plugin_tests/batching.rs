@@ -192,6 +192,7 @@ impl Harness {
 
     fn cli_pipe(&self, name: &str) {
         let _ = self.to_plugin.send(PluginInstruction::CliPipe {
+            focus_plugin: false,
             is_eof: false,
             pipe_id: PIPE.to_owned(),
             name: name.to_owned(),

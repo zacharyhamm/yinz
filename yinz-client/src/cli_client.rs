@@ -31,6 +31,7 @@ pub fn start_cli_client(
     for action in actions {
         match action {
             Action::CliPipe {
+                focus_plugin,
                 pipe_id,
                 name,
                 payload,
@@ -46,6 +47,7 @@ pub fn start_cli_client(
             } => {
                 if let Some(exit_status) = pipe_client(
                     &mut os_input,
+                    focus_plugin,
                     pipe_id,
                     name,
                     payload,
@@ -79,6 +81,7 @@ pub fn start_cli_client(
 #[allow(clippy::too_many_arguments)]
 fn pipe_client(
     os_input: &mut Box<dyn CliClientOs>,
+    focus_plugin: bool,
     pipe_id: String,
     mut name: Option<String>,
     mut payload: Option<String>,
@@ -112,6 +115,7 @@ fn pipe_client(
     let create_msg = |payload: Option<String>| -> ClientToServerMsg {
         ClientToServerMsg::Action {
             action: Action::CliPipe {
+                focus_plugin,
                 pipe_id: pipe_id.clone(),
                 name: name.clone(),
                 payload,

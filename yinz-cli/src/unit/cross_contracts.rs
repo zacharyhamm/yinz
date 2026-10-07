@@ -14,6 +14,7 @@ fn cli_pipe_moves_arguments_and_configuration_without_cloning() {
     let configuration_pointer = configuration.inner()["theme"].as_ptr();
     let actions = crate::actions::actions_from_cli(
         crate::args::CliAction::Pipe {
+            focus_plugin: false,
             name: None,
             payload: None,
             args: Some(args),
@@ -128,4 +129,98 @@ layout {
             )
             .unwrap_or_else(|e| panic!("{metadata}: {e:?}"));
     }
+}
+
+#[test]
+fn cli_pipe_focus_is_opt_in_and_requires_a_destination() {
+    // The derived debug CLI parser exceeds libtest's stack (see args.rs tests).
+    std::thread::Builder::new().stack_size(32 * 1024 * 1024).spawn(|| {
+    use crate::args::{CliAction, CliArgs, Command, Sessions};
+    use clap::Parser;
+    use yinz_types::input::actions::Action;
+
+    for prefix in [vec!["yinz", "pipe"], vec!["yinz", "action", "pipe"]] {
+        for focus in [false, true] {
+            let mut argv = prefix.clone();
+            argv.extend(["--plugin", "recipient"]);
+            if focus {
+                argv.push("--focus-plugin");
+            }
+            let command = CliArgs::try_parse_from(argv).unwrap().command.unwrap();
+            if let Command::Sessions(session) = &command {
+                let mut old_session = serde_json::to_value(session).unwrap();
+                old_session["Pipe"].as_object_mut().unwrap().remove("focus_plugin");
+                assert!(matches!(serde_json::from_value::<Sessions>(old_session).unwrap(),
+                    Sessions::Pipe { focus_plugin: false, .. }));
+            }
+            let action = match command {
+                Command::Action(action) => *action,
+                Command::Sessions(Sessions::Pipe {
+                    focus_plugin,
+                    name,
+                    payload,
+                    args,
+                    plugin,
+                    plugin_configuration,
+                }) => CliAction::Pipe {
+                    focus_plugin,
+                    name,
+                    payload,
+                    args,
+                    plugin,
+                    plugin_configuration,
+                    force_launch_plugin: false,
+                    skip_plugin_cache: false,
+                    floating_plugin: None,
+                    in_place_plugin: None,
+                    plugin_cwd: None,
+                    plugin_title: None,
+                },
+                other => panic!("unexpected command: {other:?}"),
+            };
+            let mut old_cli = serde_json::to_value(&action).unwrap();
+            old_cli["Pipe"]
+                .as_object_mut()
+                .unwrap()
+                .remove("focus_plugin");
+            assert!(matches!(
+                serde_json::from_value::<CliAction>(old_cli).unwrap(),
+                CliAction::Pipe {
+                    focus_plugin: false,
+                    ..
+                }
+            ));
+            let actions =
+                crate::actions::actions_from_cli(action, Box::new(std::path::PathBuf::new), None)
+                    .unwrap();
+            assert!(
+                matches!(actions[0], Action::CliPipe { focus_plugin, .. } if focus_plugin == focus)
+            );
+            let mut old_action = serde_json::to_value(&actions[0]).unwrap();
+            old_action["CliPipe"]
+                .as_object_mut()
+                .unwrap()
+                .remove("focus_plugin");
+            assert!(matches!(
+                serde_json::from_value::<Action>(old_action).unwrap(),
+                Action::CliPipe {
+                    focus_plugin: false,
+                    ..
+                }
+            ));
+        }
+        let mut invalid = prefix.clone();
+        invalid.push("--focus-plugin");
+        assert!(CliArgs::try_parse_from(invalid).is_err());
+        let mut help = prefix;
+        help.push("--help");
+        let help = CliArgs::try_parse_from(help).unwrap_err().to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            help.contains("Does not focus an existing or already-loading destination"),
+            "{help}"
+        );
+        assert!(help.contains("hidden floating layer"), "{help}");
+    }
+    }).unwrap().join().unwrap();
 }

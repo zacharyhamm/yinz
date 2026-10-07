@@ -1159,6 +1159,7 @@ pub fn action_of_kind(tc: &hegel::TestCase, kind: ActionKind) -> Action {
         },
         ActionKind::Notify => Action::Notify(strings(tc)),
         ActionKind::CliPipe => Action::CliPipe {
+            focus_plugin: false,
             pipe_id: strings(tc),
             name: optional_strings(tc),
             payload: optional_strings(tc),

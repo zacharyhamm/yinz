@@ -3706,6 +3706,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CliPipe {
+            focus_plugin: false,
             pipe_id: "pipe_id_name".to_owned(),
             name: None,
             payload: None,
@@ -3725,6 +3726,7 @@ fn test_client_messages() {
     });
     test_client_roundtrip!(ClientToServerMsg::Action {
         action: Action::CliPipe {
+            focus_plugin: true,
             pipe_id: "pipe_id_name".to_owned(),
             name: Some("pipe_name".to_owned()),
             payload: Some("pipe_payload".to_owned()),
@@ -5529,4 +5531,26 @@ fn legacy_warp_messages_default_to_no_paste_or_input_authority() {
     let pane = AdoptPaneAction::decode(&b""[..]).unwrap();
     assert!(!pane.bracketed_paste);
     assert!(pane.agent_input.is_none());
+}
+
+#[test]
+fn cli_pipe_proto_without_focus_field_defaults_to_false() {
+    use crate::client_server_contract::client_server_contract::{
+        action::ActionType, Action as ProtoAction, CliPipeAction,
+    };
+    // Old sender: only tag 1 (pipe_id), no tag 13.
+    let old = CliPipeAction::decode(&b"\x0a\x04pipe"[..]).unwrap();
+    assert!(!old.focus_plugin);
+    let action: Action = ProtoAction {
+        action_type: Some(ActionType::CliPipe(old)),
+    }
+    .try_into()
+    .unwrap();
+    assert!(matches!(
+        action,
+        Action::CliPipe {
+            focus_plugin: false,
+            ..
+        }
+    ));
 }

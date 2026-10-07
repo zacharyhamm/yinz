@@ -309,6 +309,7 @@ pub fn unblock_input_plugin_command() {
     let server_thread = log_until_disconnect(&server_log, server_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "message_name".to_owned(),
@@ -395,6 +396,7 @@ pub fn block_input_plugin_command() {
     let server_thread = log_until_disconnect(&server_log, server_receiver);
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "message_name_block".to_owned(),
@@ -502,6 +504,7 @@ pub fn pipe_output_plugin_command() {
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "pipe_output".to_owned(),
@@ -589,6 +592,7 @@ pub fn pipe_message_to_plugin_plugin_command() {
     ));
     wait_for_permissions(&received_screen_instructions);
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "pipe_message_to_plugin".to_owned(),
@@ -1228,6 +1232,7 @@ pub fn cli_pipe_is_released_when_plugin_panics_while_handling_it() {
     );
 
     let _ = plugin_thread_sender.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "panic_while_handling_pipe".to_owned(),

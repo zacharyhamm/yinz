@@ -696,7 +696,7 @@ export interface ActionPayloads {
   FocusPluginPaneWithId: {pane_id: number; should_float_if_hidden: boolean; should_be_in_place_if_hidden: boolean};
   RenameTerminalPane: {pane_id: number; name: Bytes}; RenamePluginPane: {pane_id: number; name: Bytes}; RenameTab: {tab_index: number; name: Bytes};
   GoToTabById: ActionTab; CloseTabById: ActionTab; RenameTabById: ActionTab & {name: string}; RenameSession: {name: string};
-  Reconfigure: {config: string; write_to_disk: boolean}; Notify: string; CliPipe: ActionPipe & {pipe_id: string}; KeybindPipe: ActionPipe & {plugin_id: number | null};
+  Reconfigure: {config: string; write_to_disk: boolean}; Notify: string; CliPipe: ActionPipe & {pipe_id: string; focus_plugin?: boolean}; KeybindPipe: ActionPipe & {plugin_id: number | null};
   ListPanes: {show_tab: boolean; show_command: boolean; show_state: boolean; show_geometry: boolean; show_all: boolean; output_json: boolean};
   ListTabs: {show_state: boolean; show_dimensions: boolean; show_panes: boolean; show_layout: boolean; show_all: boolean; output_json: boolean};
   CurrentTabInfo: {output_json: boolean}; StackPanes: {pane_ids: PaneId[]}; ChangeFloatingPaneCoordinates: ActionPane & {coordinates: FloatingPaneCoordinates};

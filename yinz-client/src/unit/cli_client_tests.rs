@@ -7,6 +7,7 @@ use yinz_types::input::actions::Action;
 
 fn pipe_action(payload: Option<String>) -> Action {
     Action::CliPipe {
+        focus_plugin: false,
         pipe_id: "pipe".into(),
         name: None,
         payload,
@@ -253,5 +254,54 @@ fn lifecycle_stream_shares_json_output_and_cleans_up_on_broken_stdout_or_eof() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn pipe_focus_survives_explicit_payload_stdin_and_eof() {
+    for focus in [false, true] {
+        let os = FakeClientOsApi::default().with_stdin(b"chunk\n".to_vec());
+        for _ in 0..3 {
+            os.queue_from_server(ServerToClientMsg::UnblockCliPipeInput {
+                pipe_name: "pipe".into(),
+            });
+        }
+        let mut action = pipe_action(Some("explicit".into()));
+        let Action::CliPipe { focus_plugin, .. } = &mut action else {
+            unreachable!()
+        };
+        *focus_plugin = focus;
+        assert_eq!(
+            start_cli_client(Box::new(os.clone()), &"test".into(), vec![action], None),
+            0
+        );
+        let forwarded: Vec<_> = os
+            .sent_messages()
+            .into_iter()
+            .filter_map(|message| {
+                if let ClientToServerMsg::Action {
+                    action:
+                        Action::CliPipe {
+                            payload,
+                            focus_plugin,
+                            ..
+                        },
+                    ..
+                } = message
+                {
+                    Some((payload, focus_plugin))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            forwarded,
+            vec![
+                (Some("explicit".into()), focus),
+                (Some("chunk\n".into()), focus),
+                (None, focus)
+            ]
+        );
     }
 }

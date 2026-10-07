@@ -1339,6 +1339,7 @@ pub fn actions_from_cli(
         CliAction::NotesTodos(command) => Ok(vec![command.action(&mut std::io::stdin())?]),
         CliAction::Notify { text } => Ok(vec![Action::Notify(text)]),
         CliAction::Pipe {
+            focus_plugin,
             name,
             payload,
             args,
@@ -1358,6 +1359,7 @@ pub fn actions_from_cli(
             let skip_cache = skip_plugin_cache;
             let pipe_id = Uuid::new_v4().to_string();
             Ok(vec![Action::CliPipe {
+                focus_plugin,
                 pipe_id,
                 name,
                 payload,

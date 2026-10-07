@@ -2502,6 +2502,7 @@ impl TryFrom<yinz_types::input::actions::Action>
                 ActionType::Notify(NotifyAction { text })
             },
             yinz_types::input::actions::Action::CliPipe {
+                focus_plugin,
                 pipe_id,
                 name,
                 payload,
@@ -2515,6 +2516,7 @@ impl TryFrom<yinz_types::input::actions::Action>
                 cwd,
                 pane_title,
             } => ActionType::CliPipe(CliPipeAction {
+                focus_plugin,
                 pipe_id,
                 name,
                 payload,
@@ -3588,6 +3590,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Action>
             )),
             ActionType::CliPipe(cli_pipe_action) => {
                 Ok(yinz_types::input::actions::Action::CliPipe {
+                    focus_plugin: cli_pipe_action.focus_plugin,
                     pipe_id: cli_pipe_action.pipe_id,
                     name: cli_pipe_action.name,
                     payload: cli_pipe_action.payload,

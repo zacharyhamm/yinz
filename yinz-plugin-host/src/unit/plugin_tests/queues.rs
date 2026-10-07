@@ -691,6 +691,7 @@ pub fn a_wasm_plugin_can_enqueue_and_be_a_job() {
     // The fixture renders every event it receives, so a render mentioning a queue event is the
     // assertion. Ask it to queue *itself*.
     let _ = harness.to_plugin.send(PluginInstruction::CliPipe {
+        focus_plugin: false,
         is_eof: false,
         pipe_id: "input_pipe_id".to_owned(),
         name: "enqueue_queue_job".to_owned(),
@@ -736,6 +737,7 @@ export default {pipe(event) { message = 'received ' + event.payload; }, render()
     harness
         .to_plugin
         .send(PluginInstruction::CliPipe {
+            focus_plugin: false,
             is_eof: false,
             pipe_id: "detached-first-pipe".into(),
             name: "hello".into(),
@@ -807,6 +809,7 @@ fn a_cli_pipe_loads_the_swamp_bridge_headless() {
     harness
         .to_plugin
         .send(PluginInstruction::CliPipe {
+            focus_plugin: false,
             is_eof: false,
             pipe_id: "bridge-first-pipe".into(),
             name: "swamp".into(),

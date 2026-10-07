@@ -1837,6 +1837,7 @@ pub fn route_action(
                 .with_context(err_context)?;
         },
         Action::CliPipe {
+            focus_plugin,
             pipe_id,
             mut name,
             payload,
@@ -1874,6 +1875,7 @@ pub fn route_action(
                 let pane_id_to_replace = if should_open_in_place { pane_id } else { None };
                 senders
                     .send_to_plugin(PluginInstruction::CliPipe {
+                        focus_plugin,
                         pipe_id,
                         name,
                         payload,
@@ -2969,7 +2971,7 @@ mod tests {
             should_silently_fail: true,
             ..Default::default()
         };
-        for _ in 0..2 {
+        for focus_plugin in [false, true] {
             let mut seen = HashSet::new();
             for (pipe_id, payload, expected_eof) in [
                 ("empty", None, false),
@@ -2980,6 +2982,7 @@ mod tests {
             ] {
                 route_action(
                     Action::CliPipe {
+                        focus_plugin,
                         pipe_id: pipe_id.into(),
                         name: Some("test".into()),
                         payload,
@@ -3005,11 +3008,19 @@ mod tests {
                     true, // is_client_input
                 )
                 .unwrap();
-                let (PluginInstruction::CliPipe { is_eof, .. }, _) = plugins.try_recv().unwrap()
+                let (
+                    PluginInstruction::CliPipe {
+                        is_eof,
+                        focus_plugin: forwarded_focus,
+                        ..
+                    },
+                    _,
+                ) = plugins.try_recv().unwrap()
                 else {
                     panic!("expected a CLI pipe instruction");
                 };
                 assert_eq!(is_eof, expected_eof);
+                assert_eq!(forwarded_focus, focus_plugin);
             }
             assert_eq!(server.try_iter().count(), 2, "associate each pipe once");
         }
