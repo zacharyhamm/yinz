@@ -32,13 +32,14 @@ fn tty_writers_preserve_buffered_stdout_order() {
                 "--nocapture",
             ])
             .env(CHILD, scenario)
-            .stdout(std::process::Stdio::from(pty.slave))
+            .stdout(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
             .output()
             .unwrap();
         let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
         fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
         let mut bytes = Vec::new();
-        // Linux ends a PTY read with EIO, BSD with EOF; inspect the preceding bytes.
+        // Keep the parent slave open during this nonblocking drain: macOS otherwise
+        // discards unread output when the child closes the last slave.
         let _ = std::fs::File::from(pty.master).read_to_end(&mut bytes);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
@@ -56,10 +57,10 @@ fn tty_writers_preserve_buffered_stdout_order() {
 }
 
 #[test]
-fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
+fn quitting_interrupts_a_backpressured_blocking_stdout() {
     use crate::terminal_escapes::{self, ClientTeardown};
     use nix::fcntl::{fcntl, FcntlArg, OFlag};
-    use nix::sys::termios::{tcflow, tcgetattr, FlowArg, LocalFlags};
+    use nix::sys::termios::{tcflush, tcgetattr, FlushArg, LocalFlags};
     use std::sync::mpsc;
     const CHILD: &str = "YINZ_TEST_BLOCKING_STDOUT_STALL";
     if let Some(scenario) = std::env::var_os(CHILD) {
@@ -69,30 +70,27 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
         let original = tcgetattr(io::stdin()).unwrap();
         let mut client = get_client_os_input().unwrap();
         client.set_raw_mode();
-        // The kernel's Ctrl-S effect, with an initially blocking stdout.
-        tcflow(&stdout, FlowArg::TCOOFF).unwrap();
         let (entered, ready) = mpsc::channel();
         let (finished, result) = mpsc::channel();
         let writer = thread::spawn(move || {
             let mut stdout = get_client_os_input().unwrap().get_stdout_writer();
             entered.send(()).unwrap();
-            let written = stdout
-                .write_all(b"paused output\n")
-                .and_then(|()| stdout.flush());
+            // The parent does not drain: fill every kernel queue rather than relying
+            // on TCOOFF surviving stdout's private tty reopen (it does not on macOS).
+            let written = loop {
+                if let Err(error) = stdout.write_all(&[b'x'; 4096]) {
+                    break Err::<(), _>(error);
+                }
+            };
             finished.send(written).unwrap();
         });
         ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
         terminal_escapes::abandon_stalled_output();
         let written = result.recv_timeout(time::Duration::from_secs(10));
         if written.is_err() {
-            tcflow(&stdout, FlowArg::TCOON).unwrap();
+            tcflush(&stdout, FlushArg::TCOFLUSH).unwrap();
         }
         writer.join().unwrap();
-        assert_eq!(
-            written.unwrap().unwrap_err().kind(),
-            io::ErrorKind::TimedOut
-        );
-
         // Restoration must finish and restore input even if output never resumes.
         let (entered, ready) = mpsc::channel();
         let (finished, result) = mpsc::channel();
@@ -106,12 +104,16 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
             finished.send(()).unwrap();
         });
         ready.recv_timeout(time::Duration::from_secs(10)).unwrap();
-        // Timing is the behavior under test: output stays paused until restoration finishes.
+        // Timing is the behavior under test: the parent leaves output full during restoration.
         let completed = result.recv_timeout(time::Duration::from_secs(10));
         let paused = tcgetattr(io::stdin()).unwrap();
-        // Resume before assertions so a regression cannot strand the harness's output.
-        tcflow(&stdout, FlowArg::TCOON).unwrap();
+        // Make room for the harness output before assertions, including on failure.
+        tcflush(&stdout, FlushArg::TCOFLUSH).unwrap();
         restorer.join().unwrap();
+        assert_eq!(
+            written.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
         completed.expect("restoration must give up on stalled output");
         assert!(paused.local_flags.contains(LocalFlags::ICANON));
         let restored = tcgetattr(io::stdin()).unwrap();
@@ -138,18 +140,18 @@ fn quitting_interrupts_a_flow_controlled_blocking_stdout() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "os_input_output::tests::quitting_interrupts_a_flow_controlled_blocking_stdout",
+                "os_input_output::tests::quitting_interrupts_a_backpressured_blocking_stdout",
                 "--nocapture",
             ])
             .env(CHILD, scenario)
             .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
-            .stdout(std::process::Stdio::from(pty.slave))
+            .stdout(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
             .output()
             .unwrap();
         let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
         fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
         let mut bytes = Vec::new();
-        // Linux ends a PTY read with EIO, BSD with EOF; inspect all preceding output.
+        // The parent slave keeps unread output alive until this nonblocking drain.
         let _ = std::fs::File::from(pty.master).read_to_end(&mut bytes);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
@@ -193,7 +195,8 @@ fn stdout_tty_cache_survives_startup_frames_and_teardown() {
                 unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &exhausted) },
                 0
             );
-            assert!(nix::unistd::ttyname(&stdout).is_ok());
+            // ttyname itself may need a spare descriptor on macOS. Either failure
+            // to locate or to reopen the tty must be cached as the same fallback.
             assert_eq!(
                 std::fs::OpenOptions::new()
                     .write(true)
@@ -252,14 +255,14 @@ fn stdout_tty_cache_survives_startup_frames_and_teardown() {
             ])
             .env(CHILD, scenario)
             .stdin(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
-            .stdout(std::process::Stdio::from(pty.slave))
+            .stdout(std::process::Stdio::from(pty.slave.try_clone().unwrap()))
             .output()
             .unwrap();
         let flags = OFlag::from_bits_truncate(fcntl(&pty.master, FcntlArg::F_GETFL).unwrap());
         fcntl(&pty.master, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).unwrap();
         let mut master = std::fs::File::from(pty.master);
         let mut bytes = Vec::new();
-        // Linux ends a PTY read with EIO, BSD with EOF; all preceding bytes matter here.
+        // The parent slave keeps unread output alive until this nonblocking drain.
         let _ = master.read_to_end(&mut bytes);
         let text = String::from_utf8_lossy(&bytes);
         assert!(

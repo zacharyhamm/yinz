@@ -406,7 +406,18 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
         "renamed"
     );
     let listed = success(session.run(&["action", "project-list"], None));
-    assert_eq!(listed["projects"][0]["name"], "renamed");
+    let renamed = listed["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["name"] == "renamed")
+        .expect("renamed project is listed");
+    assert_eq!(
+        Path::new(renamed["root"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        session.0.path().canonicalize().unwrap()
+    );
     assert!(!listed["live"].is_null());
     let catalog = success(session.run(&["data", "catalog"], None));
     assert!(catalog
@@ -502,9 +513,14 @@ fn background_operations_data_revisions_and_waits_work_without_chat() {
 fn checked_plugin_edits_and_installed_tests_work_without_chat() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("yinz")).unwrap();
+    let plugin_command = || {
+        let mut cmd = command(dir.path());
+        cmd.arg("--config-dir").arg(dir.path().join("yinz"));
+        cmd
+    };
     let source = dir.path().join("source.ts");
     std::fs::write(&source, "import { definePlugin } from 'yinz:plugin'; export default definePlugin({render() { return 'FIRST'; }});").unwrap();
-    let out = command(dir.path())
+    let out = plugin_command()
         .args(["plugins", "write", "fixture.ts", "--file"])
         .arg(&source)
         .output()
@@ -517,7 +533,7 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
     let installed = std::path::PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
     let edits = dir.path().join("edits.json");
     let edit = || {
-        command(dir.path())
+        plugin_command()
             .args(["plugins", "edit", "fixture.ts", "--file"])
             .arg(&edits)
             .output()
@@ -533,7 +549,7 @@ fn checked_plugin_edits_and_installed_tests_work_without_chat() {
     assert_eq!(std::fs::read_to_string(&installed).unwrap(), saved);
     std::fs::write(installed.with_file_name("fixture.test.ts"), "import { test, loadPlugin, assertEquals } from 'yinz:testing'; test('renders edited source', async () => { const p = await loadPlugin('./fixture.ts'); assertEquals(await p.render(), 'SECOND'); });").unwrap();
     let report = success(
-        command(dir.path())
+        plugin_command()
             .args(["plugins", "test", "fixture.ts", "--json"])
             .output()
             .unwrap(),

@@ -1367,6 +1367,14 @@ export default {
     other.wait_until("second client results", |grid| {
         grid.contains("original:beta") && !grid.contains("original:alpha")
     });
+    // A native pane title/path can also fuzzy-match alpha. Select our provider's action.
+    let mut selection = yinz.snapshot();
+    while !selection.contains("› original:alpha") {
+        yinz.send_stdin(&keys::ctrl('n'));
+        selection = yinz.wait_until("palette selection moves to the plugin action", |grid| {
+            grid.text != selection.text
+        });
+    }
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("first private view", |grid| grid.contains("Private alpha"));
     other.wait_until("second remains at root", |grid| {

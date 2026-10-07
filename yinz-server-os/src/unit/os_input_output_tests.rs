@@ -65,6 +65,21 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
         }
         return;
     }
+    let drain = |mut reader: Box<dyn AsyncReader>| {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let mut buffer = [0u8; 4096];
+                    while matches!(
+                        tokio::time::timeout(AMPLE_TIMEOUT, reader.read(&mut buffer)).await,
+                        Ok(Ok(count)) if count > 0
+                    ) {}
+                });
+        })
+    };
     let server = make_server();
     server.set_pty_host_enabled(false);
     let current_exe = env::current_exe().unwrap();
@@ -91,27 +106,31 @@ fn local_codex_wrappers_use_current_binary_and_keep_portable_reruns() {
         // Before replacement the test executable rejects the wrapper's arguments;
         // after replacement the stub must succeed, including on a held pane's rerun.
         let (tx, rx) = std::sync::mpsc::channel();
-        let (terminal_id, _reader, _) = server
+        let (terminal_id, reader, _) = server
             .spawn_terminal(
                 TerminalAction::RunCommand(requested.clone()),
                 Box::new(move |_, status, command| tx.send((status, command)).unwrap()),
                 None,
             )
             .unwrap();
+        let draining = drain(reader);
         let (status, held) = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        draining.join().unwrap();
         if replaced {
             assert_eq!(status, Some(0));
         }
         assert_eq!(held, requested);
         let (tx, rx) = std::sync::mpsc::channel();
-        let (_reader, _) = server
+        let (reader, _) = server
             .re_run_command_in_terminal(
                 terminal_id,
                 held,
                 Box::new(move |_, status, command| tx.send((status, command)).unwrap()),
             )
             .unwrap();
+        let draining = drain(reader);
         let (status, held) = rx.recv_timeout(AMPLE_TIMEOUT).unwrap();
+        draining.join().unwrap();
         if replaced {
             assert_eq!(status, Some(0));
         }

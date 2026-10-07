@@ -228,7 +228,16 @@ fn slot_count() -> usize {
     (cpus / 4).max(1)
 }
 
-pub fn acquire_concurrency_slot() -> ConcurrencySlot {
+pub fn acquire_concurrency_slot() -> Option<ConcurrencySlot> {
+    // Nextest admits tests before starting their deadlines. A second, unfair gate here
+    // can starve tests that start several sessions while their test timeout keeps running.
+    // Keep explicit harness limits and the fallback for bare cargo test.
+    if std::env::var_os("NEXTEST").is_some()
+        && std::env::var_os("YINZ_TEST_CONCURRENCY").is_none()
+        && std::env::var_os("YINZ_TEST_SERIAL").is_none()
+    {
+        return None;
+    }
     let slots = slot_count();
     let slot_dir = std::env::var_os("YINZ_TEST_CACHE_ROOT")
         .map(PathBuf::from)
@@ -244,9 +253,9 @@ pub fn acquire_concurrency_slot() -> ConcurrencySlot {
                 .open(slot_dir.join(format!("slot-{}", slot_index)))
                 .unwrap();
             if slot_file.try_lock().is_ok() {
-                return ConcurrencySlot {
+                return Some(ConcurrencySlot {
                     _slot_file: slot_file,
-                };
+                });
             }
         }
         std::thread::sleep(Duration::from_millis(10));

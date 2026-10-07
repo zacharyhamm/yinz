@@ -73,13 +73,15 @@ exec "$git" "$@"
 `;
 const firecrackerFixture = `#!/bin/sh
 set -eu
+# Match the provider: VM worktree identities use physical local paths.
+worktree=$(cd "$HOME/topic" && pwd -P)
 if [ "$1" = firecracker ] && [ "$2" = list ]; then
-  printf '{"vms":[{"session":"work","name":"review","state":"running","vm_id":"/vm/review.socket","worktree":"%s/topic","metrics":{"generation":"42:100"}}],"recoveries":[]}' "$HOME"
+  printf '{"vms":[{"session":"work","name":"review","state":"running","vm_id":"/vm/review.socket","worktree":"%s","metrics":{"generation":"42:100"}}],"recoveries":[]}' "$worktree"
 elif [ "$1" = firecracker ] && [ "$2" = close ] && [ "$3" = review ] && [ "$4" = --session ] && [ "$5" = work ] && [ "$6" = --expected-identity ]; then
   printf '%s' "$7" | grep -q '"generation":"42:100"'
-  [ "$8" = --expected-worktree ] && [ "$9" = "$HOME/topic" ]
-  [ "$10" = --expected-head ] && [ -n "$11" ]
-  [ "$12" = --expected-branch ] && [ "$13" = topic ]
+  [ "$8" = --expected-worktree ] && [ "$9" = "$worktree" ]
+  [ "\${10}" = --expected-head ] && [ -n "\${11}" ]
+  [ "\${12}" = --expected-branch ] && [ "\${13}" = topic ]
   if [ -e "$HOME/other-lease" ]; then
     echo 'Worktree is still leased by other' >&2
     exit 1
@@ -340,6 +342,8 @@ test(
         position: { line: row, column },
       });
     }
+    await session.waitForText("Hide details");
+    session.resize(50, 100);
     await session.waitForText("fixture-launch");
     session.resize(30, 100);
     session.key("Home");

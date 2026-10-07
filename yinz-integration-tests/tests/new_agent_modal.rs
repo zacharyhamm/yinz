@@ -10,7 +10,7 @@
 //! given exactly the rows it asked for - scrolled the whole frame up by one. Every widget
 //! then answered to a click one row *below* itself, and the title scrolled off the top.
 
-use yinz_integration_tests::{keys, LayoutInfo, Size, TestRunner, TERMINAL_SIZE};
+use yinz_integration_tests::{keys, LayoutInfo, Size, TestRunner, TestSession, TERMINAL_SIZE};
 
 /// The modal as the shipped config opens it, minus every background plugin: a floating
 /// plugin pane that sizes itself to the dialog, with the mouse on.
@@ -147,6 +147,16 @@ load_plugins clear-defaults=true { "agent-service"; }
     yinz.quit();
 }
 
+fn open_modal(yinz: &TestSession) {
+    let shell = yinz.expect_pty_spawn();
+    // PTY creation precedes ApplyLayout; wait for the pane before sending its shortcut.
+    shell.output(b"MODAL SOURCE READY\r\n");
+    yinz.wait_until("source pane is on screen", |grid| {
+        grid.contains("MODAL SOURCE READY")
+    });
+    yinz.send_stdin(&keys::ctrl('b'));
+}
+
 /// SGR mouse reports, 1-based, as `floating_pane_overlay.rs` sends them.
 fn sgr_press(column: usize, line: usize) -> Vec<u8> {
     format!("\u{1b}[<0;{column};{line}M").into_bytes()
@@ -183,9 +193,7 @@ fn opening_a_dropdown_leaves_the_rest_of_the_form_where_it_was() {
         .with_config(NEW_AGENT_CONFIG)
         .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
         .start();
-    let _shell = yinz.expect_pty_spawn();
-
-    yinz.send_stdin(&keys::ctrl('b'));
+    open_modal(&yinz);
     let snapshot = yinz.wait_until("the new agent modal is up", |snapshot| {
         snapshot.contains("Create and switch branch")
             && snapshot.contains("[x]")
@@ -230,9 +238,7 @@ fn a_click_on_a_form_widget_acts_on_the_widget_under_the_pointer() {
         .with_config(NEW_AGENT_CONFIG)
         .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
         .start();
-    let _shell = yinz.expect_pty_spawn();
-
-    yinz.send_stdin(&keys::ctrl('b'));
+    open_modal(&yinz);
     let snapshot = yinz.wait_until("the new agent modal is up", |snapshot| {
         snapshot.contains("Create and switch branch")
             && snapshot.contains("[x]")
@@ -274,9 +280,7 @@ fn the_new_agent_modal_can_be_dragged_by_its_frame() {
         .with_config(NEW_AGENT_OVERLAY_CONFIG)
         .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
         .start();
-    let _shell = yinz.expect_pty_spawn();
-
-    yinz.send_stdin(&keys::ctrl('b'));
+    open_modal(&yinz);
     let snapshot = yinz.wait_until("the new agent modal is up", |snapshot| {
         snapshot.contains("Use worktree") && snapshot.contains("[x]")
     });
@@ -325,9 +329,7 @@ fn switching_back_to_local_after_typing_a_vm_image_starts_a_local_agent() {
     .with_config(NEW_AGENT_CONFIG)
     .with_layout(LayoutInfo::Stringified(SHELL_ONLY.to_owned()))
     .start();
-    let _shell = yinz.expect_pty_spawn();
-
-    yinz.send_stdin(&keys::ctrl('b'));
+    open_modal(&yinz);
     let snapshot = yinz.wait_until("the new agent modal is up", |snapshot| {
         snapshot.contains("Firecracker image")
             && snapshot.contains("[x]")
