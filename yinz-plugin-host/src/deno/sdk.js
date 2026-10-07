@@ -1386,7 +1386,10 @@
       const id = paletteString(action.id, "Action ID");
       if (ids.has(id)) throw new TypeError("Palette action IDs must be unique");
       ids.add(id);
+      const aliases = action.aliases === undefined ? [] : action.aliases;
+      if (!Array.isArray(aliases)) throw new TypeError("Action aliases must be an array");
       return {id, label: paletteString(action.label, "Action label"),
+        aliases: aliases.map(alias => paletteString(alias, "Action alias")),
         description: paletteString(action.description ?? "", "Action description", false, true),
         handle: paletteHandle(action.run, task)};
     });
@@ -1433,13 +1436,18 @@
   const commandPalette = Object.freeze({registerProvider(provider) {
     if (worker !== null) throw new Error("Background workers cannot register palette providers");
     const id = paletteString(provider.id, "Provider ID"), title = paletteString(provider.title, "Provider title");
-    if (typeof provider.provideActions !== "function") throw new TypeError("provideActions must be a function");
+    const staticActions = "actions" in provider;
+    if (staticActions === ("provideActions" in provider)) throw new TypeError("Provide either actions or provideActions");
+    const actions = provider.actions;
+    if (staticActions ? !Array.isArray(actions) || actions.length > 100 : typeof provider.provideActions !== "function") {
+      throw new TypeError("actions must be an array of at most 100 actions; provideActions must be a function");
+    }
     if (paletteProviders.has(id)) throw new Error(`Palette provider ${id} is already registered`);
     const registration = String(++nextPaletteHandle);
     const release = retainEvent("BeforeClose");
-    try { paletteCommand(paletteBound({type: "register", id, title, registration})); }
+    try { paletteCommand(paletteBound({type: "register", id, title, registration, staticActions})); }
     catch (error) { release(); throw error; }
-    paletteProviders.set(id, {registration, callback: provider.provideActions});
+    paletteProviders.set(id, {registration, callback: staticActions ? () => actions : provider.provideActions});
     const origin = client;
     return () => {
       if (paletteProviders.get(id)?.registration !== registration) return;

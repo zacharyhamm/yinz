@@ -426,6 +426,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                         id,
                         title,
                         registration,
+                        ..
                     } => {
                         for value in [id, title, registration] {
                             yinz_types::command_palette::label(value).map_err(|e| anyhow!(e))?;

@@ -1038,6 +1038,8 @@ export interface PaletteAction {
   id: string;
   label: string;
   description?: string;
+  /** Alternative nonempty search text. Labels and aliases are matched independently. */
+  aliases?: string[];
   /** Return an actions, form, or text view to push it; other successful returns close. Malformed views and thrown errors show an inline retryable error. */
   run(context: PaletteExecution): PaletteView | void | Promise<PaletteView | void>;
 }
@@ -1056,7 +1058,10 @@ export interface CommandPalette {
    * Register after awaiting ReadApplicationState permission in load(). Deno only; workers
    * cannot register. IDs are unique within the instance. Returns an idempotent unregister.
    * Providers run independently on opening and after a 150 ms search debounce, with a
-   * 10 second discovery deadline. Results keep their order without extra fuzzy filtering.
+   * 10 second discovery deadline. Function sources receive the exact query and keep their
+   * result order without extra fuzzy filtering. Static actions use native label/alias matching
+   * and rank alongside builtin commands on nonempty root queries; empty queries keep declaration
+   * order within provider sections. Unregister and re-register to change a static list.
    * Static nested lists use fuzzy matching; function sources receive their own query.
    * Replies allow 100 actions, 16 fields, and 256 KiB of display data. Labels must be
    * nonempty; text cannot contain terminal controls. Choices default to the first option,
@@ -1068,5 +1073,8 @@ export interface CommandPalette {
    * release a webRequest wait. Execution has no deadline; close() restores input at once.
    */
   /** Ordinary instances serve only their owning client; shared=true serves all session clients. */
-  registerProvider(provider: { id: string; title: string; provideActions: PaletteActionSource }): () => void;
+  registerProvider(provider: { id: string; title: string } & (
+    | { actions: PaletteAction[]; provideActions?: never }
+    | { provideActions: PaletteActionSource; actions?: never }
+  )): () => void;
 }

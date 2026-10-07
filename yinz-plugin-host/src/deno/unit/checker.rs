@@ -1234,3 +1234,26 @@ fn import_meta_types_are_global_and_keep_the_es2022_boundary() {
         assert!(error.contains(diagnostic), "{source}: {error}");
     }
 }
+
+#[test]
+fn palette_provider_types_require_exactly_one_source() {
+    let dir = tempfile::tempdir().unwrap();
+    check_semantic_source(&dir.path().join("palette.ts"), r#"
+      import yinz, {type PaletteAction, type PaletteView} from 'yinz:plugin';
+      const action: PaletteAction = {id:'pdf',label:'Open PDF…',aliases:['reader','document'],run(){}};
+      yinz.commandPalette.registerProvider({id:'static',title:'Static',actions:[action]});
+      yinz.commandPalette.registerProvider({id:'dynamic',title:'Dynamic',provideActions: async request => [action]});
+      const nested: PaletteView[] = [
+        {type:'actions',title:'Static',actions:[action]},
+        {type:'actions',title:'Dynamic',actions:request => [action]}
+      ];
+      // @ts-expect-error exactly one source
+      yinz.commandPalette.registerProvider({id:'both',title:'Both',actions:[],provideActions:()=>[]});
+      // @ts-expect-error source required
+      yinz.commandPalette.registerProvider({id:'neither',title:'Neither'});
+      // @ts-expect-error aliases must be strings
+      const bad: PaletteAction = {...action,aliases:[1]};
+      // @ts-expect-error aliases must be an array
+      const badArray: PaletteAction = {...action,aliases:'reader'};
+    "#).unwrap();
+}

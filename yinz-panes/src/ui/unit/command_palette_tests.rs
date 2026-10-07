@@ -1167,3 +1167,203 @@ fn agent_info_refresh_and_mouse_selection_respect_regions() {
         );
     }
 }
+
+#[test]
+fn static_palette_aliases_use_native_matching_at_root_and_nested() {
+    for nested in [false, true] {
+        let mut palette = CommandPalette::default();
+        if nested {
+            palette.push_view(1, "Nested".into());
+        }
+        let mut pdf = entry("pdf", "Open PDF…", EntryKind::Plugin);
+        pdf.aliases = vec![
+            "reader".into(),
+            "document".into(),
+            "portable document".into(),
+        ];
+        pdf.description = "descriptiononly".into();
+        palette.set_sections(vec![PluginSection {
+            title: "provideronly".into(),
+            entries: vec![pdf],
+            semantic: false,
+            status: None,
+        }]);
+        for query in [
+            "pdf",
+            "reader",
+            "document",
+            "PDF",
+            "READER",
+            "DOCUMENT",
+            "opdf",
+            "portable document",
+        ] {
+            palette.set_query(query.into());
+            assert_eq!(ids(&palette), ["pdf"], "{query}");
+        }
+        for query in [
+            "unrelated",
+            "descriptiononly",
+            "provideronly",
+            "reader document",
+        ] {
+            palette.set_query(query.into());
+            assert!(ids(&palette).is_empty(), "{query}");
+            assert!(palette.result_rows(10).is_empty());
+        }
+    }
+}
+
+#[test]
+fn static_palette_scores_interleave_with_native_and_preserve_ties_and_geometry() {
+    for aliases in [false, true] {
+        let mut palette = CommandPalette::default();
+        palette.set_entries(vec![
+            entry("native-low", "n--------p", EntryKind::Command),
+            entry("native-high", "np", EntryKind::Command),
+        ]);
+        let static_entry = |id, label| {
+            let mut value = entry(id, label, EntryKind::Plugin);
+            if aliases {
+                value.aliases.push(label.into());
+                value.label = "Other".into();
+            }
+            value
+        };
+        palette.set_sections(vec![
+            PluginSection {
+                title: "A".into(),
+                semantic: false,
+                status: None,
+                entries: vec![
+                    static_entry("a-low", "n--------p"),
+                    static_entry("a-high", "np"),
+                ],
+            },
+            PluginSection {
+                title: "B".into(),
+                semantic: false,
+                status: Some("Loading…".into()),
+                entries: vec![
+                    static_entry("b-high", "np"),
+                    static_entry("b-low", "n--------p"),
+                ],
+            },
+            PluginSection {
+                title: "Dynamic".into(),
+                semantic: true,
+                status: None,
+                entries: vec![
+                    entry("dynamic-z", "zzz", EntryKind::Plugin),
+                    entry("dynamic-a", "aaa", EntryKind::Plugin),
+                ],
+            },
+        ]);
+        for query in ["", "   "] {
+            palette.set_query(query.into());
+            assert_eq!(
+                ids(&palette),
+                [
+                    "native-low",
+                    "native-high",
+                    "a-low",
+                    "a-high",
+                    "b-high",
+                    "b-low",
+                    "dynamic-z",
+                    "dynamic-a"
+                ]
+            );
+        }
+        palette.set_query("np".into());
+        assert_eq!(
+            ids(&palette),
+            [
+                "native-high",
+                "a-high",
+                "b-high",
+                "native-low",
+                "a-low",
+                "b-low",
+                "dynamic-z",
+                "dynamic-a"
+            ]
+        );
+        let rows = palette.result_rows(30);
+        let indices: Vec<_> = rows
+            .iter()
+            .filter_map(|r| {
+                if let ResultRow::Entry(i) = r {
+                    Some(*i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(indices, (0..palette.matches.len()).collect::<Vec<_>>());
+        assert!(rows
+            .iter()
+            .any(|r| matches!(r, ResultRow::Status(1, status) if status == "Loading…")));
+        for height in [8, 12, 24] {
+            for selected in 0..palette.matches.len() {
+                palette.selected = selected;
+                palette.selected_status = None;
+                let layout = palette.layout(Viewport {
+                    cols: 80,
+                    rows: height,
+                    ..Default::default()
+                });
+                assert!(layout
+                    .result_rows
+                    .iter()
+                    .any(|r| matches!(r, ResultRow::Entry(i) if *i == selected)));
+                let mut heading = None;
+                for (row, result) in layout.result_rows.iter().enumerate() {
+                    match result {
+                        ResultRow::Heading(title) => heading = Some(title.as_str()),
+                        ResultRow::Entry(index) => {
+                            if let Some(section) = palette.entry_sections[palette.matches[*index]] {
+                                if layout.result_rows.len() > 1 {
+                                    assert_eq!(
+                                        heading,
+                                        Some(palette.sections[section].title.as_str())
+                                    );
+                                }
+                            }
+                            palette.click(
+                                &layout,
+                                Position::new(
+                                    (layout.options_y + row) as i32,
+                                    layout.rect.x as u16 + 2,
+                                ),
+                            );
+                            assert_eq!(
+                                palette.handle_key(KeyWithModifier::new(BareKey::Enter)),
+                                Outcome::Activate(
+                                    palette.entries[palette.matches[*index]].id.clone()
+                                )
+                            );
+                        },
+                        _ => (),
+                    }
+                }
+                palette.selected = selected;
+                palette.selected_status = None;
+                key(&mut palette, BareKey::Down);
+            }
+        }
+        palette.select_id("a-high");
+        let mut sections = palette.sections.clone();
+        sections[2]
+            .entries
+            .push(entry("dynamic-new", "New result", EntryKind::Plugin));
+        palette.set_sections(sections);
+        assert_eq!(palette.selected_entry().unwrap().id, "a-high");
+        palette.set_query("no-match".into());
+        assert_eq!(ids(&palette), ["dynamic-z", "dynamic-a", "dynamic-new"]);
+        assert!(!palette
+            .result_rows(20)
+            .iter()
+            .any(|r| matches!(r, ResultRow::Heading(t) if t == "A")));
+    }
+}

@@ -22,6 +22,7 @@ type ProviderKey = (Owner, String);
 pub(crate) struct Provider {
     id: String,
     title: String,
+    static_actions: bool,
     unavailable: Arc<AtomicBool>,
 }
 
@@ -79,7 +80,7 @@ fn entries(provider: &ProviderKey, actions: &[wire::Action]) -> Vec<Entry> {
             label: action.label.clone(),
             description: action.description.clone(),
             shortcut: String::new(),
-            aliases: vec![],
+            aliases: action.aliases.clone(),
             kind: EntryKind::Plugin,
         })
         .collect()
@@ -190,7 +191,7 @@ impl CommandPaletteState {
                     PluginSection {
                         title: provider.title.clone(),
                         entries: entries(key, &results.actions),
-                        semantic: true,
+                        semantic: !provider.static_actions,
                         status: results.status.clone(),
                     },
                 ))
@@ -631,6 +632,7 @@ impl Screen {
                         id,
                         title,
                         registration,
+                        static_actions,
                     } => {
                         if self.palette_providers.providers.iter().any(
                             |((existing, _), provider)| *existing == owner && provider.id == id,
@@ -643,6 +645,7 @@ impl Screen {
                             Provider {
                                 id,
                                 title,
+                                static_actions,
                                 unavailable,
                             },
                         );

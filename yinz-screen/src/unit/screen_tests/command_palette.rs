@@ -1733,6 +1733,16 @@ fn global_opacity_reloads_open_palettes_and_applies_when_reopened() {
 
 #[test]
 fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
+    for static_actions in [false, true] {
+        plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_source(
+            static_actions,
+        );
+    }
+}
+
+fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening_with_source(
+    static_actions: bool,
+) {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -1760,6 +1770,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
         command,
     };
     screen.plugin_palette_instruction(command(Command::Register {
+        static_actions,
         id: "remote".into(),
         title: "Remote".into(),
         registration: "1".into(),
@@ -1805,6 +1816,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
             scope,
             result: Ok(Reply::Actions {
                 actions: vec![Action {
+                    aliases: vec!["remote-queryxpaste".into()],
                     id: "action".into(),
                     label: label.into(),
                     description: String::new(),
@@ -1854,6 +1866,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
     )));
     assert!(
         screen.plugin_palette_instruction(command(Command::Register {
+            static_actions,
             id: "unrelated".into(),
             title: "Unrelated".into(),
             registration: "3".into(),
@@ -1883,6 +1896,7 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
     assert!(native_actions.try_recv().is_err());
     // Loading an unrelated provider must not cancel an action already running.
     screen.plugin_palette_instruction(command(Command::Register {
+        static_actions,
         id: "other".into(),
         title: "Other".into(),
         registration: "2".into(),
@@ -1924,6 +1938,16 @@ fn plugin_palette_rejects_obsolete_work_and_scopes_close_to_its_opening() {
 
 #[test]
 fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently() {
+    for static_actions in [false, true] {
+        plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_with_source(
+            static_actions,
+        );
+    }
+}
+
+fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently_with_source(
+    static_actions: bool,
+) {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -1951,6 +1975,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently() 
                 client_id: None,
             },
             Command::Register {
+                static_actions,
                 id: "same-id".into(),
                 title: title.into(),
                 registration: "1".into(),
@@ -1997,6 +2022,7 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently() 
                     scope,
                     result: Ok(Reply::Actions {
                         actions: vec![Action {
+                            aliases: vec!["zz-no-native".into()],
                             id: "same-action-id".into(),
                             label: format!("Result {id}"),
                             description: String::new(),
@@ -2045,6 +2071,16 @@ fn plugin_palette_sections_sort_by_title_then_owner_and_timeout_independently() 
 
 #[test]
 fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering() {
+    for static_actions in [false, true] {
+        plugin_palette_availability_and_client_scope_control_discovery_and_rendering_with_source(
+            static_actions,
+        );
+    }
+}
+
+fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering_with_source(
+    static_actions: bool,
+) {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -2072,6 +2108,7 @@ fn plugin_palette_availability_and_client_scope_control_discovery_and_rendering(
                 client: CLIENT,
                 unavailable: unavailable.clone(),
                 command: Command::Register {
+                    static_actions,
                     id: "provider".into(),
                     title: "Provider".into(),
                     registration: "1".into(),
@@ -2164,6 +2201,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
             scope,
             result: Ok(Reply::Actions {
                 actions: vec![PaletteAction {
+                    aliases: vec![],
                     id: "stable".into(),
                     label: label.into(),
                     description: String::new(),
@@ -2173,6 +2211,7 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
         })
     };
     screen.plugin_palette_instruction(command(Command::Register {
+        static_actions: false,
         id: "provider".into(),
         title: "Provider".into(),
         registration: "1".into(),
@@ -2222,6 +2261,16 @@ fn plugin_palette_filter_submission_refreshes_results_and_releases_old_handles()
 
 #[test]
 fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root() {
+    for static_actions in [false, true] {
+        plugin_palette_replacements_release_handles_and_nested_removal_restores_root_with_source(
+            static_actions,
+        );
+    }
+}
+
+fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root_with_source(
+    static_actions: bool,
+) {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -2247,6 +2296,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root(
         command,
     };
     let action = |handle: &str| PaletteAction {
+        aliases: vec!["zz-no-nativeretry".into()],
         id: "stable".into(),
         label: "Retained action".into(),
         description: String::new(),
@@ -2269,6 +2319,7 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root(
             .unwrap()
     };
     screen.plugin_palette_instruction(command(Command::Register {
+        static_actions,
         id: "provider".into(),
         title: "Provider".into(),
         registration: "1".into(),
@@ -2395,6 +2446,12 @@ fn plugin_palette_replacements_release_handles_and_nested_removal_restores_root(
 
 #[test]
 fn root_palette_escape_cancels_discovery_and_debounce() {
+    for static_actions in [false, true] {
+        root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions);
+    }
+}
+
+fn root_palette_escape_cancels_discovery_and_debounce_with_source(static_actions: bool) {
     for debounce in [false, true] {
         use std::sync::{
             atomic::{AtomicBool, Ordering},
@@ -2422,6 +2479,7 @@ fn root_palette_escape_cancels_discovery_and_debounce() {
             command,
         };
         screen.plugin_palette_instruction(command(Command::Register {
+            static_actions,
             id: "remote".into(),
             title: "Remote".into(),
             registration: "1".into(),
@@ -2472,6 +2530,7 @@ fn root_palette_escape_cancels_discovery_and_debounce() {
             scope,
             result: Ok(Reply::Actions {
                 actions: vec![Action {
+                    aliases: vec![],
                     id: "late".into(),
                     label: "Late".into(),
                     description: String::new(),
@@ -3806,6 +3865,7 @@ fn native_note_palette_rejects_stale_search_and_restores_query_and_selection() {
         client: CLIENT,
         unavailable: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         command: yinz_types::command_palette::Command::Register {
+            static_actions: false,
             id: "provider".into(),
             title: "Provider".into(),
             registration: "1".into(),

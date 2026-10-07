@@ -359,6 +359,12 @@ impl CommandPalette {
         self.selected_status = None;
     }
 
+    fn scored_section(&self, section: usize) -> bool {
+        self.is_root()
+            && !self.input.get_text().trim().is_empty()
+            && !self.sections[section].semantic
+    }
+
     fn rematch(&mut self) {
         let agent_query = yinz_bus::command_palette::query::AgentQuery::parse(
             self.input.get_text(),
@@ -438,6 +444,7 @@ impl CommandPalette {
         matches.sort_by_key(|(index, score)| {
             let section = self.entry_sections[*index];
             let group = match self.entries[*index].kind {
+                EntryKind::Plugin if section.is_some_and(|i| self.scored_section(i)) => 0,
                 EntryKind::Plugin => 3 + section.unwrap_or(0),
                 EntryKind::Session => 1,
                 EntryKind::ExitedSession => 2,
@@ -765,13 +772,16 @@ impl CommandPalette {
             return vec![];
         }
         let mut rows = Vec::new();
-        let mut previous = None;
+        let mut previous = (None, None);
         for (index, entry_index) in self.matches.iter().enumerate() {
             let entry = &self.entries[*entry_index];
-            if entry.kind == EntryKind::Plugin {
+            let section = self.entry_sections[*entry_index];
+            if entry.kind == EntryKind::Plugin && !section.is_some_and(|i| self.scored_section(i)) {
                 continue;
             }
-            let label = if self.picker == Some(EntryKind::Session) {
+            let label = if let Some(section) = section {
+                Some(self.sections[section].title.as_str())
+            } else if self.picker == Some(EntryKind::Session) {
                 match entry.kind {
                     EntryKind::Session => Some("Live sessions"),
                     EntryKind::ExitedSession => Some("Exited sessions"),
@@ -782,24 +792,33 @@ impl CommandPalette {
             } else {
                 None
             };
-            if label != previous && capacity >= 2 {
+            if (section, label) != previous && capacity >= 2 {
                 if let Some(label) = label {
                     rows.push(ResultRow::Heading(label.into()));
                 }
             }
             rows.push(ResultRow::Entry(index));
-            previous = label;
+            previous = (section, label);
         }
         if self.picker.is_none() {
             for (section_index, section) in self.sections.iter().enumerate() {
+                let entries: Vec<_> = self
+                    .matches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| {
+                        !self.scored_section(section_index)
+                            && self.entry_sections[**entry] == Some(section_index)
+                    })
+                    .map(|(index, _)| ResultRow::Entry(index))
+                    .collect();
+                if entries.is_empty() && section.status.is_none() {
+                    continue;
+                }
                 if capacity >= 2 {
                     rows.push(ResultRow::Heading(section.title.clone()));
                 }
-                for (index, entry) in self.matches.iter().enumerate() {
-                    if self.entry_sections[*entry] == Some(section_index) {
-                        rows.push(ResultRow::Entry(index));
-                    }
-                }
+                rows.extend(entries);
                 if let Some(status) = &section.status {
                     rows.push(ResultRow::Status(section_index, status.clone()));
                 }
