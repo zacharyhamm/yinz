@@ -95,7 +95,7 @@ fn leaf(path: &Path) -> Option<String> {
 ///
 /// `host` is a parameter rather than the constant `/host` so the tests can point the walk
 /// at a temporary tree.
-fn host_path(host: &Path, path: &Path) -> PathBuf {
+pub(super) fn host_path(host: &Path, path: &Path) -> PathBuf {
     host.join(path.strip_prefix("/").unwrap_or(path))
 }
 
