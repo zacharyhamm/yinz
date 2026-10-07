@@ -8,6 +8,112 @@ use yinz_cli::args::CliAction;
 use yinz_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 #[test]
+fn background_palette_permission_lifecycle() {
+    const TOGGLE: &[u8] = b"\x1b[112;7u";
+    for shared in [false, true] {
+        for approve in [false, true] {
+            // A fresh URL per session keeps this fixture independent of saved grants.
+            let directory = tempfile::tempdir().unwrap();
+            let plugin = directory.path().join("background.ts");
+            fs::write(&plugin, r#"
+let state = 'WAITING';
+export default {
+  async load() {
+    try {
+      await yinz.waitForPermissions(['ReadApplicationState']);
+      yinz.commandPalette.registerProvider({id:'background',title:'Background',provideActions() {
+        return [{id:'unique',label:'zzbgpermissionaction granted',run:()=>({type:'text',title:'Done',text:'Approved'})}];
+      }});
+      state = 'BACKGROUND GRANTED';
+    } catch (_) {
+      state = 'BACKGROUND DENIED';
+    }
+    yinz.requestRender();
+  },
+  render() { return state; }
+};
+"#).unwrap();
+            let configuration = if shared { "shared true;" } else { "" };
+            let mut yinz = TestRunner::new(TERMINAL_SIZE)
+                .with_config_dir(directory.path().to_owned())
+                .with_config(&format!(
+                    "load_plugins clear-defaults=true {{ \"file:{}\" {{ {configuration} }}; }}",
+                    plugin.display(),
+                ))
+                .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+                .start();
+            // No input or terminal output precedes this assertion.
+            yinz.wait_until("background startup permission prompt", |grid| {
+                grid.contains("Allow? (y/n)")
+            });
+            let terminal = yinz.expect_pty_spawn();
+            let other = yinz.attach_client(TERMINAL_SIZE);
+            other.wait_until("client attaching during permission sees prompt", |grid| {
+                grid.contains("Allow? (y/n)")
+            });
+            yinz.send_stdin(TOGGLE);
+            yinz.send_stdin(b"zzbgpermissionaction");
+            yinz.wait_until("no palette registration before approval", |grid| {
+                grid.contains("No matches")
+            });
+            yinz.send_stdin(TOGGLE);
+            yinz.wait_until("palette closes over permission prompt", |grid| {
+                grid.contains("Allow? (y/n)") && !grid.contains("No matches")
+            });
+            if approve {
+                other.send_stdin(b"y");
+            } else {
+                yinz.send_stdin(b"n");
+            }
+            terminal.output(b"TERMINAL AVAILABLE\r\n");
+            yinz.wait_until("answer restores terminal", |grid| {
+                grid.contains("TERMINAL AVAILABLE") && !grid.contains("Allow? (y/n)")
+            });
+            other.wait_until("answer clears peer prompt", |grid| {
+                grid.contains("TERMINAL AVAILABLE") && !grid.contains("Allow? (y/n)")
+            });
+            let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+                tab: false,
+                command: false,
+                state: true,
+                geometry: false,
+                all: true,
+                json: true,
+            });
+            assert_eq!(code, 0, "{output}");
+            let panes: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+            let background = panes.iter().find(|pane| pane["is_plugin"] == true).unwrap();
+            assert_eq!(background["is_suppressed"], true, "{output}");
+            // Reveal only after checking restoration, to observe async load settlement on
+            // both grant and rejection without giving the fixture another permission.
+            assert_eq!(
+                yinz.run_cli_action(CliAction::FocusPaneId {
+                    pane_id: format!("plugin_{}", background["id"].as_u64().unwrap()),
+                }),
+                0
+            );
+            let marker = if approve {
+                "BACKGROUND GRANTED"
+            } else {
+                "BACKGROUND DENIED"
+            };
+            yinz.wait_until("permission promise settles", |grid| grid.contains(marker));
+            yinz.send_stdin(TOGGLE);
+            yinz.send_stdin(b"zzbgpermissionaction");
+            yinz.wait_until("palette reflects permission answer", |grid| {
+                if approve {
+                    grid.contains("zzbgpermissionaction granted")
+                } else {
+                    grid.contains("No matches")
+                }
+            });
+            other.quit();
+            yinz.quit();
+        }
+    }
+}
+
+#[test]
 fn optional_providers_do_not_block_startup_and_can_register_later() {
     let directory = tempfile::tempdir().unwrap();
     let missing = directory.path().join("missing.ts");

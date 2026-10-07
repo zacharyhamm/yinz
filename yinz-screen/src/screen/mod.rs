@@ -5501,6 +5501,9 @@ fn replay_pending_plugin_events(
             event => event,
         };
         match event {
+            event @ ScreenInstruction::RequestPluginPermissions(..) => {
+                screen.bus.senders.send_to_screen(event)?;
+            },
             ScreenInstruction::AgentReport(report, accepted_at) => {
                 thread_main::apply_queued_agent_report(screen, &report, accepted_at)?;
             },
