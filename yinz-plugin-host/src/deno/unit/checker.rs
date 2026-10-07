@@ -410,6 +410,7 @@ fn shipped_builtins_typecheck_offline() {
             Limits::new("builtin checker".into()),
             false,
             true,
+            false,
         )
         .unwrap();
     }
@@ -448,7 +449,7 @@ fn embedded_module_graphs_keep_types_and_reject_unregistered_dependencies() {
         ("import 'file:///tmp/other.ts';", false),
     ] {
         let loader = PluginModuleLoader::embedded("graph-test", source).unwrap();
-        let result = check_loader(Path::new("graph-test.ts"), loader, Limits::new("embedded checker".into()), false, true);
+        let result = check_loader(Path::new("graph-test.ts"), loader, Limits::new("embedded checker".into()), false, true, false);
         assert_eq!(result.is_ok(), valid, "{source}: {:?}", result.err());
     }
 }

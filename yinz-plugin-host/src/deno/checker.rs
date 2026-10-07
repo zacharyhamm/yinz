@@ -41,6 +41,7 @@ pub fn check_semantic_source(path: &Path, source: &str) -> Result<()> {
 }
 
 struct CompilerFiles {
+    test_declarations: bool,
     loader: PluginModuleLoader,
     aliases: RefCell<Vec<(PathBuf, PathBuf)>>,
     imports: RefCell<HashMap<PathBuf, Vec<Import>>>,
@@ -66,14 +67,17 @@ pub(super) fn authoring_graph(
     source: &str,
     strict: bool,
     root: Option<&Path>,
+    test_declarations: bool,
 ) -> Result<Graph> {
-    check_inner(
+    let mut loader = PluginModuleLoader::for_check_with_root(path, true, root)?;
+    loader.set_entry_source(source)?;
+    check_loader(
         path,
-        Some(source),
+        loader,
         Limits::new(format!("{} (authoring)", path.display())),
         strict,
         strict,
-        root,
+        test_declarations,
     )
 }
 
@@ -108,7 +112,7 @@ fn op_yinz_check_resolve(
             return Ok("/$yinz/sdk.d.ts".to_owned());
         }
         let files = state.borrow::<CompilerFiles>();
-        if name == "yinz:testing" && files.loader.testing() {
+        if name == "yinz:testing" && files.test_declarations {
             return Ok("/$yinz/testing.d.ts".to_owned());
         }
         let referrer = compiler_specifier(Path::new(referrer))?;
@@ -171,6 +175,7 @@ pub(super) fn check_with_limits(
     check_inner(path, source, limits, false, true, None).map(|_| ())
 }
 
+#[cfg(test)]
 fn check_inner(
     path: &Path,
     source: Option<&str>,
@@ -183,7 +188,7 @@ fn check_inner(
     if let Some(source) = source {
         loader.set_entry_source(source)?;
     }
-    check_loader(path, loader, limits, strict, diagnostics)
+    check_loader(path, loader, limits, strict, diagnostics, false)
 }
 
 pub(super) fn check_tests(path: &Path, root: &Path) -> Result<()> {
@@ -192,6 +197,7 @@ pub(super) fn check_tests(path: &Path, root: &Path) -> Result<()> {
         PluginModuleLoader::for_tests(path, root)?,
         Limits::new("test checker".into()),
         false,
+        true,
         true,
     )
     .map(|_| ())
@@ -203,13 +209,15 @@ fn check_loader(
     limits: std::sync::Arc<Limits>,
     strict: bool,
     diagnostics: bool,
+    test_declarations: bool,
 ) -> Result<Graph> {
+    let test_declarations = test_declarations || loader.testing();
     let entry = loader.module_path(loader.entrypoint(), true)?;
     let entry = entry.to_str().context("compiler path is not UTF-8")?;
     let input = serde_json::json!({
         "entry": entry,
         "sdk": include_str!("sdk.d.ts"),
-        "testing": loader.testing().then_some(include_str!("testing/testing.d.ts")),
+        "testing": test_declarations.then_some(include_str!("testing/testing.d.ts")),
         "strictOptions": if strict { serde_json::from_str::<serde_json::Value>(include_str!("authoring/tsconfig.json"))?["compilerOptions"].clone() } else { serde_json::json!({}) },
         "diagnostics": diagnostics,
     });
@@ -222,6 +230,7 @@ fn check_loader(
         })
         .context("create isolated TypeScript checker")?;
     runtime.op_state().borrow_mut().put(CompilerFiles {
+        test_declarations,
         loader,
         aliases: RefCell::default(),
         imports: RefCell::default(),

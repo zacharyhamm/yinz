@@ -1495,6 +1495,13 @@ pub fn plugin_thread_main(
                 // Store timestamp in WasmBridge (as Unix epoch for internal use)
                 *wasm_bridge.last_session_save_time.lock().unwrap() = Some(timestamp_millis);
             },
+            PluginInstruction::GetPluginIdsForUrl {
+                url,
+                response_channel,
+            } => {
+                // The matcher reads cached metadata, never a guest runtime lock.
+                let _ = response_channel.send(wasm_bridge.get_plugin_ids_for_url(&url));
+            },
             PluginInstruction::GetLastSessionSaveTime { response_channel } => {
                 let timestamp = *wasm_bridge.last_session_save_time.lock().unwrap();
                 let _ = response_channel.send(timestamp);

@@ -648,6 +648,7 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                 start_suppressed,
             ),
             PluginCommand::SetQuitNotice { notice, guard } => set_quit_notice(env, notice, guard),
+            PluginCommand::GetPluginIdsForUrl(url) => get_plugin_ids_for_url(env, url)?,
             PluginCommand::ReloadPluginByUrl(url) => reload_plugin_by_url(env, url)?,
             PluginCommand::ReadPluginLog { name, lines } => read_plugin_log(env, name, lines),
             PluginCommand::GetLayoutDir => get_layout_dir(env),
@@ -1371,6 +1372,13 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             // for compatibility with guests that unwrap decoding it.
             if crate::response::decode_response(kind, &[]).is_some() {
                 let response = match kind {
+                    CommandType::GetPluginIdsForUrl => {
+                        yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
+                            plugin_ids: vec![],
+                            error: Some("Permission denied: ReadApplicationState".to_owned()),
+                        }
+                        .encode_to_vec()
+                    },
                     CommandType::KillSessionsAndReply => ProtobufKillSessionsResponse {
                         error: Some("Permission denied: ChangeApplicationState".to_owned()),
                     }
@@ -5734,6 +5742,35 @@ fn start_or_reload_plugin(env: &PluginEnv, url: &str) -> Result<()> {
     Ok(())
 }
 
+fn get_plugin_ids_for_url(env: &mut PluginEnv, url: String) -> Result<()> {
+    let (response_channel, response) = crossbeam::channel::bounded(1);
+    let result = env
+        .senders
+        .send_to_plugin(PluginInstruction::GetPluginIdsForUrl {
+            url,
+            response_channel,
+        })
+        .context("send plugin identity query")
+        .and_then(|()| {
+            response
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .context("receive plugin identity query")
+        })
+        .map_err(|error| format!("{error:#}"))
+        .and_then(|result| result);
+    let response = match result {
+        Ok(ids) => yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
+            plugin_ids: ids.into_iter().map(|id| id.get()).collect(),
+            error: None,
+        },
+        Err(error) => yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse {
+            plugin_ids: vec![],
+            error: Some(error),
+        },
+    };
+    wasi_write_object(env, &response.encode_to_vec()).context("write plugin identity response")
+}
+
 fn reload_plugin_by_url(env: &PluginEnv, url: String) -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let run_plugin_or_alias =
@@ -9367,7 +9404,9 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         },
         // Another plugin's configuration is session state, and is read the same way the
         // session list and the pane manifest are.
-        CommandType::GetPluginAliasConfiguration => PermissionType::ReadApplicationState,
+        CommandType::GetPluginAliasConfiguration | CommandType::GetPluginIdsForUrl => {
+            PermissionType::ReadApplicationState
+        },
         CommandType::OpenCommandPaneInNewTab => PermissionType::RunCommands,
         CommandType::OpenEditorPaneInNewTab => PermissionType::OpenFiles,
         // Enqueueing is launching another plugin, just later.
@@ -9397,6 +9436,32 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
 mod permission_tests {
     use super::*;
     use yinz_types::input::layout::RunPluginOrAlias;
+
+    #[test]
+    fn plugin_url_query_denial_is_an_error_not_an_empty_match() {
+        let mut env = crate::test_env::test_env();
+        env.response_sink = ResponseSink::Capture(None);
+        let command = PluginCommand::GetPluginIdsForUrl("file:/plugin.ts".into());
+        assert_eq!(
+            command_permission(CommandType::GetPluginIdsForUrl),
+            Some(PermissionType::ReadApplicationState)
+        );
+        run_plugin_command(&mut env, command).unwrap();
+        let bytes: Vec<u8> = serde_json::from_str(&env.response_sink.take().unwrap()).unwrap();
+        let reply = yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse::decode(
+            bytes.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(
+            reply.error.as_deref(),
+            Some("Permission denied: ReadApplicationState")
+        );
+        assert!(
+            crate::response::decode_response(CommandType::GetPluginIdsForUrl, &bytes)
+                .unwrap()
+                .is_err()
+        );
+    }
 
     #[test]
     fn a_missing_plugin_root_under_a_symlink_does_not_block_data_writes() {

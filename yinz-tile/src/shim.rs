@@ -13,13 +13,13 @@ use yinz_types::data::*;
 pub use yinz_types::geometry::PercentOrFixed;
 use yinz_types::geometry::{Direction, FloatingPaneCoordinates, Resize, ResizeStrategy};
 use yinz_types::input::actions::Action;
-use yinz_types::internal_ids::ProcessId;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
 use yinz_types::internal_ids::{ContextMenuRequestId, DataWatchId, QueueJobId};
+use yinz_types::internal_ids::{PluginId, ProcessId};
 use yinz_types::units::{FractionalSeconds, SignedUnixMillis};
 use {
     yinz_plugin_api::generated_api::api::plugin_command::hide_floating_panes_response,
@@ -3196,6 +3196,16 @@ pub fn set_pane_borderless(pane_id: PaneId, borderless: bool) {
 /// that is not running is left alone. Needs `AuthorPlugins`.
 pub fn reload_plugin_by_url(url: &str) {
     send(PluginCommand::ReloadPluginByUrl(url.to_owned()));
+}
+
+/// Find running instances using the host's canonical source matching. Requires ReadApplicationState.
+pub fn get_plugin_ids_for_url(url: &str) -> Result<Vec<PluginId>, String> {
+    let response: yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse =
+        call(PluginCommand::GetPluginIdsForUrl(url.to_owned()))?;
+    match response.error {
+        Some(error) => Err(error),
+        None => Ok(response.plugin_ids.into_iter().map(PluginId::new).collect()),
+    }
 }
 
 /// Read metadata supplied by loaded TypeScript agent plugins. Requires RunCommands.

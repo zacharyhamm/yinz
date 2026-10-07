@@ -479,6 +479,7 @@ pub enum PluginContext {
     LayoutListUpdate,
     RequestStateUpdateForPlugin,
     UpdateSessionSaveTime,
+    GetPluginIdsForUrl,
     GetLastSessionSaveTime,
     DetectPluginConfigChanges,
     HighlightClicked,

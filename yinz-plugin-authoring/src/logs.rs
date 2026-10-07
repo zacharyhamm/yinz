@@ -85,6 +85,23 @@ pub enum LogTarget {
     Legacy(PathBuf),
 }
 
+/// Resolve explicit filesystem targets without canonicalizing or requiring a source file.
+/// Bare names remain the caller's managed-plugin lookup.
+pub fn resolve_explicit_plugin_path(target: &str, cwd: &Path) -> Result<Option<PathBuf>> {
+    if target.starts_with("file:") {
+        let location =
+            yinz_runtime::plugin_location::parse_plugin_location(target, Some(cwd.to_owned()))
+                .context("resolve plugin URL")?;
+        if let RunPluginLocation::File(path) = location {
+            return Ok(Some(path));
+        }
+    }
+    if Path::new(target).is_absolute() || target.starts_with("./") || target.starts_with("../") {
+        return Ok(Some(cwd.join(target)));
+    }
+    Ok(None)
+}
+
 pub fn resolve_log_target(
     name: &str,
     dir: Option<&Path>,
@@ -110,16 +127,8 @@ pub fn resolve_log_target(
             RunPluginLocation::Yinz(tag) => LogTarget::Builtin(tag.to_string()),
         });
     }
-    if name.starts_with("file:") {
-        let location =
-            yinz_runtime::plugin_location::parse_plugin_location(name, Some(cwd.to_owned()))
-                .context("resolve plugin log URL")?;
-        if let RunPluginLocation::File(path) = location {
-            return Ok(LogTarget::File(source_path(&path, cwd)));
-        }
-    }
-    if Path::new(name).is_absolute() || name.starts_with("./") || name.starts_with("../") {
-        return Ok(LogTarget::File(source_path(Path::new(name), cwd)));
+    if let Some(path) = resolve_explicit_plugin_path(name, cwd)? {
+        return Ok(LogTarget::File(source_path(&path, cwd)));
     }
     let dir = dir.ok_or_else(|| {
         anyhow!("no plugin folder is configured; set `user_plugin_dir` in the Yinz config")

@@ -302,11 +302,7 @@ impl State {
             },
             "plugin_reload" => {
                 let url = text("url")?;
-                let running: Vec<_> = session
-                    .plugins
-                    .iter()
-                    .filter_map(|(id, plugin)| (plugin.location == url).then_some(*id))
-                    .collect();
+                let running = get_plugin_ids_for_url(url)?;
                 if running.is_empty() {
                     load_new_plugin(url, BTreeMap::new(), true, true);
                 } else {

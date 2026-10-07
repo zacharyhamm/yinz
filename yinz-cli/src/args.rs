@@ -227,7 +227,8 @@ pub enum Plugins {
         #[clap(long)]
         no_check: bool,
     },
-    /// Check strict JS/TS types and lint for a plugin in the folder, or --file.
+    /// Check strict JS/TS types and lint by managed name, alias, absolute path, ./path, ../path,
+    /// file: URL, or --file.
     Check {
         name: Option<String>,
         #[clap(short, long, value_parser, conflicts_with = "name")]
@@ -244,7 +245,7 @@ pub enum Plugins {
         check: bool,
     },
     /// Load or reload a plugin in the running session, opening it in a pane if it is not
-    /// running.
+    /// running. Accepts a managed name, alias, absolute path, ./path, ../path or file: URL.
     Reload {
         name: String,
         #[clap(long)]

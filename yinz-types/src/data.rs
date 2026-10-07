@@ -3179,6 +3179,8 @@ pub enum PluginCommand {
     /// comes closest but is keyed on running plugins, so it cannot speak for an alias
     /// whose plugin has never been launched.
     GetPluginAliasConfiguration(String), // alias name
+    /// Running plugin IDs matching a URL or alias through canonical source identity.
+    GetPluginIdsForUrl(String),
     OpenCommandPaneInNewTab(CommandToRun, Context),
     OpenPluginPaneInNewTab {
         plugin_url: String,

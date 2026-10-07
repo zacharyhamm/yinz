@@ -944,3 +944,290 @@ fn bundle_installation_preserves_unrelated_files_and_preflights_conflicts() {
     assert!(install(&["--force"]).status.success());
     assert_eq!(std::fs::read_to_string(extra).unwrap(), "mine");
 }
+
+#[test]
+fn plugin_check_targets_have_text_json_parity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("space name.ts");
+    std::fs::write(
+        root.join("config.kdl"),
+        format!(
+            "plugins {{ selected location=\"file:{}\"; }}\n",
+            path.display()
+        ),
+    )
+    .unwrap();
+    let targets = [
+        path.display().to_string(),
+        "./space name.ts".into(),
+        format!(
+            "../{}/space name.ts",
+            root.file_name().unwrap().to_str().unwrap()
+        ),
+        format!("file:{}", path.display()),
+        format!("file://{}", path.display()),
+        format!("file://{}", path.display()).replace(' ', "%20"),
+        "file:./space name.ts".into(),
+        "selected".into(),
+    ];
+    for source in ["export const value = 1;", "export const value: string = 1;"] {
+        std::fs::write(&path, source).unwrap();
+        for target in &targets {
+            for json in [false, true] {
+                let mut cmd = command(&root);
+                cmd.args(["--config", "config.kdl", "plugins", "check", target]);
+                if json {
+                    cmd.arg("--json");
+                }
+                let out = cmd.output().unwrap();
+                let valid = !source.contains(": string");
+                assert_eq!(
+                    out.status.success(),
+                    valid,
+                    "{target}: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                if json {
+                    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+                    assert_eq!(report["diagnostics"].as_array().unwrap().is_empty(), valid);
+                } else if valid {
+                    assert!(String::from_utf8_lossy(&out.stdout).contains("checks successfully"));
+                }
+            }
+        }
+    }
+    std::fs::write(&path, "import yinz, {type PermissionType} from 'yinz:plugin'; export function ask(permissions: readonly PermissionType[]): void { yinz.requestPermission([...permissions]); }").unwrap();
+    for json in [false, true] {
+        let mut cmd = command(&root);
+        cmd.args(["--config", "config.kdl", "plugins", "check", "selected"]);
+        if json {
+            cmd.arg("--json");
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if json {
+            let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert!(!report["warnings"].as_array().unwrap().is_empty());
+            assert!(out.stderr.is_empty());
+        } else {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("computed permission"));
+            assert!(!String::from_utf8_lossy(&out.stdout).contains("computed permission"));
+        }
+    }
+    std::fs::remove_file(path).unwrap();
+    for target in &targets {
+        for json in [false, true] {
+            let mut cmd = command(&root);
+            cmd.args(["--config", "config.kdl", "plugins", "check", target]);
+            if json {
+                cmd.arg("--json");
+            }
+            let out = cmd.output().unwrap();
+            assert!(!out.status.success());
+            assert!(out.stdout.is_empty());
+            assert!(!out.stderr.is_empty());
+        }
+    }
+}
+
+#[test]
+fn plugin_cli_targets_preserve_legacy_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let managed = root.join("managed");
+    std::fs::create_dir_all(managed.join("folder")).unwrap();
+    std::fs::create_dir(root.join("folder")).unwrap();
+    for name in [
+        "foo.ts",
+        "folder/foo.ts",
+        "selected.ts",
+        "builtin.ts",
+        "wasm.ts",
+    ] {
+        std::fs::write(managed.join(name), "export const valid = 1;").unwrap();
+        std::fs::write(root.join(name), "export const invalid: string = 1;").unwrap();
+    }
+    std::fs::write(managed.join("fallback.ts"), "export const valid = 1;").unwrap();
+    std::fs::write(root.join("config.kdl"), format!("user_plugin_dir \"{}\"\nplugins {{ fallback location=\"file:fallback.ts\"; selected location=\"file:{}\"; builtin location=\"yinz:tab-bar\"; wasm location=\"file:missing.wasm\"; }}\n", managed.display(), root.join("selected.ts").display())).unwrap();
+    for name in ["foo", "foo.ts", "folder/foo", "fallback"] {
+        let report = success(
+            command(root)
+                .args(["--config", "config.kdl", "plugins", "check", name, "--json"])
+                .output()
+                .unwrap(),
+        );
+        assert!(report["diagnostics"].as_array().unwrap().is_empty());
+    }
+    let out = command(root)
+        .args([
+            "--config",
+            "config.kdl",
+            "plugins",
+            "check",
+            "selected",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!report["diagnostics"].as_array().unwrap().is_empty());
+    for alias in ["builtin", "wasm"] {
+        failure(
+            command(root)
+                .args(["--config", "config.kdl", "plugins", "check", alias])
+                .output()
+                .unwrap(),
+            "unsupported",
+        );
+    }
+    success(
+        command(root)
+            .args([
+                "--config",
+                "config.kdl",
+                "plugins",
+                "check",
+                "./managed/selected.ts",
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+    );
+}
+
+#[test]
+fn plugin_reload_explicit_targets_preserve_instance() {
+    let session = Session::with_setup(|dir| {
+        let path = dir.join("space #?%23 name.ts");
+        std::fs::write(&path, "import {definePlugin} from 'yinz:plugin'; export default definePlugin({render() { return 'VERSION_0'; }});").unwrap();
+        std::fs::write(dir.join("config.kdl"), format!("load_plugins clear-defaults=true {{}}\ndetachable_panes false\nplugins {{ selected location=\"{}\" {{ greeting \"CONFIGURED\"; }}; }}\n", url::Url::from_file_path(&path).unwrap())).unwrap();
+        std::fs::write(
+            dir.join("layout.kdl"),
+            "layout { pane { plugin location=\"selected\"; }; pane command=\"/bin/sh\"; }\n",
+        )
+        .unwrap();
+    });
+    let path = session.0.path().join("space #?%23 name.ts");
+    let pane = session.plugin_pane("selected");
+    session.rendered(&pane, "VERSION_0");
+    let targets = [
+        "selected".into(),
+        path.display().to_string(),
+        "./space #?%23 name.ts".into(),
+        format!(
+            "../{}/space #?%23 name.ts",
+            session.0.path().file_name().unwrap().to_str().unwrap()
+        ),
+        format!("file:{}", url::Url::from_file_path(&path).unwrap().path()),
+        url::Url::from_file_path(&path).unwrap().to_string(),
+        "file:./space #?%23 name.ts".into(),
+    ];
+    for (index, target) in targets.iter().enumerate() {
+        let content = format!("VERSION_{}", index + 1);
+        std::fs::write(&path, format!("import {{definePlugin}} from 'yinz:plugin'; let greeting = ''; export default definePlugin({{ load(config) {{ greeting = config['greeting'] ?? ''; }}, render() {{ return '{content} ' + greeting; }} }});")).unwrap();
+        session.plugin_cli(&["plugins", "reload", target]);
+        session.rendered(&pane, &format!("{content} CONFIGURED"));
+        assert_eq!(session.plugin_pane("selected"), pane);
+    }
+}
+
+#[test]
+fn plugin_reload_headless_reserved_paths_preserve_instance() {
+    fn write_source(path: &Path, version: usize) {
+        std::fs::write(path, format!("import {{definePlugin}} from 'yinz:plugin'; export default definePlugin({{ load(config) {{ console.log('RELOAD_STATE ' + JSON.stringify({{ version: {version}, id: yinz.getPluginIds().plugin_id, greeting: config['greeting'] ?? '' }})); }} }});")).unwrap();
+    }
+    fn loaded(session: &Session, target: &str, version: usize) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let log = session.plugin_cli(&["plugins", "log", target, "--lines", "100"]);
+            for line in log.lines() {
+                if let Some((_, state)) = line.split_once("RELOAD_STATE ") {
+                    let state: Value = serde_json::from_str(state).unwrap();
+                    if state["version"] == version {
+                        return state;
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "plugin version {version} did not load: {log}"
+            );
+        }
+    }
+    let session = Session::with_setup(|dir| {
+        std::fs::create_dir(dir.join("plugins")).unwrap();
+        std::os::unix::fs::symlink(dir.join("plugins"), dir.join("linked")).unwrap();
+        let path = dir.join("linked/space #?%23 name.ts");
+        write_source(&path, 0);
+        let config = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
+        std::fs::write(
+            dir.join("config.kdl"),
+            config
+                .replace(
+                    "plugins {",
+                    &format!(
+                        "plugins {{ selected location=\"{}\" {{ greeting \"CONFIGURED\"; }};",
+                        url::Url::from_file_path(&path).unwrap()
+                    ),
+                )
+                .replace(
+                    "load_plugins clear-defaults=true {",
+                    "load_plugins clear-defaults=true { selected;",
+                ),
+        )
+        .unwrap();
+    });
+    let path = session.0.path().join("linked/space #?%23 name.ts");
+    let canonical = path.canonicalize().unwrap();
+    let initial = loaded(&session, "selected", 0);
+    let initial_panes = success(session.run(&["action", "list-panes", "--json"], None));
+    assert_eq!(initial["greeting"], "CONFIGURED");
+    let targets = [
+        path.display().to_string(),
+        canonical.display().to_string(),
+        "./linked/space #?%23 name.ts".into(),
+        format!("file:{}", url::Url::from_file_path(&path).unwrap().path()),
+        url::Url::from_file_path(&canonical).unwrap().to_string(),
+        "selected".into(),
+    ];
+    for (index, target) in targets.iter().enumerate() {
+        write_source(&path, index + 1);
+        let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
+        assert_eq!(reply["reloaded"], json!([initial["id"]]), "{reply}");
+        assert_eq!(reply["dispatched"], true);
+        let state = loaded(&session, "selected", index + 1);
+        assert_eq!(state["id"], initial["id"]);
+        assert_eq!(state["greeting"], "CONFIGURED");
+    }
+    // An unmatched target still loads one headless instance, then reloads that instance.
+    let missing = session.0.path().join("new.ts");
+    write_source(&missing, 100);
+    let target = missing.to_str().unwrap();
+    let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
+    assert_eq!(reply["reloaded"], json!([]));
+    let original = loaded(&session, target, 100);
+    write_source(&missing, 101);
+    let reply = success(session.run(&["plugins", "reload", target, "--headless"], None));
+    assert_eq!(reply["reloaded"], json!([original["id"]]));
+    assert_eq!(loaded(&session, target, 101)["id"], original["id"]);
+    let panes = success(session.run(&["action", "list-panes", "--json"], None));
+    assert_eq!(
+        panes.as_array().unwrap().len(),
+        initial_panes.as_array().unwrap().len() + 1
+    );
+    assert!(
+        panes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|pane| pane["is_plugin"] == true)
+            .all(|pane| pane["is_suppressed"] == true),
+        "headless reload opened a visible pane: {panes}"
+    );
+}

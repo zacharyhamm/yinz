@@ -707,3 +707,99 @@ export const sibling: string = import.meta.resolve("./missing.ts");
     }
     assert!(!dir.path().join("missing.ts").exists());
 }
+
+#[test]
+fn strict_authoring_accepts_test_declarations() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = r#"import {test, assertEquals, session} from 'yinz:testing';
+test('unit', () => { assertEquals(1, 1); });
+test('integration', () => { session.start(); session.resize(80, 24); });
+throw new Error('source must never execute');
+"#;
+    for name in ["main.test.ts", "main.integration.test.ts"] {
+        let path = dir.path().join(name);
+        for mode in [Semantic, Prepare, Format] {
+            let checked = crate::plugin_authoring::check_source(&path, source, mode);
+            assert!(
+                checked.diagnostics.is_empty(),
+                "{name} {mode:?}: {checked:?}"
+            );
+            assert_eq!(checked.formatted_source.is_some(), mode != Semantic);
+            assert!(!path.exists());
+        }
+    }
+}
+
+#[test]
+fn strict_test_checks_keep_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.test.ts");
+    for (source, expected) in [
+        ("export const value: string = 1;", "not assignable"),
+        ("export const value: any = 1;", "no-explicit-any"),
+        ("export const values: string[] = []; export const value: string = values[0];", "undefined"),
+        ("import {assertRejects} from 'yinz:testing'; assertRejects(() => Promise.reject(new Error('no')));", "no-floating-promises"),
+        ("// @ts-ignore\nexport const value: string = 1;", "suppression"),
+    ] {
+        let checked = crate::plugin_authoring::check_source(&path, source, Semantic);
+        let diagnostic = checked.diagnostics.join("\n");
+        assert!(diagnostic.contains(expected), "{source}: {diagnostic}");
+        assert!(!diagnostic.contains("authoring-tmp"), "{diagnostic}");
+    }
+    std::fs::write(dir.path().join("dep.ts"), "export const value = 1;").unwrap();
+    let source = "export const emoji = '😀'; import './dep.ts'; import {assertEquals} from 'yinz:testing'; assertEquals(1, 1); export const λ = JSON.parse('1');";
+    let checked = crate::plugin_authoring::check_source(&path, source, Semantic);
+    let diagnostic = checked.diagnostics.join("\n");
+    let column = source.split('λ').next().unwrap().len() + 1;
+    assert!(
+        diagnostic.contains(&format!("main.test.ts:1:{column}:")),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("authoring-tmp"), "{diagnostic}");
+}
+
+#[test]
+fn test_declarations_do_not_escape_authoring_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "import {assertEquals} from 'yinz:testing'; assertEquals(1, 1);";
+    for name in ["main.ts", "main.test.js", "main.test.mts"] {
+        let checked =
+            crate::plugin_authoring::check_source(&dir.path().join(name), source, Semantic);
+        assert!(!checked.diagnostics.is_empty(), "{name}");
+    }
+    std::fs::write(dir.path().join("dep.test.ts"), source).unwrap();
+    assert!(checker::check_plugin(&dir.path().join("dep.test.ts")).is_err());
+    assert!(!report(dir.path(), "import './dep.test.ts';", Semantic)
+        .diagnostics
+        .is_empty());
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("outside.ts"), "export const value = 1;").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("outside.ts"),
+        dir.path().join("escape.ts"),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("inside.ts"), "export const value = 1;").unwrap();
+    for import in [
+        "../outside.ts".to_owned(),
+        "./escape.ts".to_owned(),
+        "npm:bad".to_owned(),
+        "https://example.com/a.ts".to_owned(),
+        format!("file:{}", dir.path().join("inside.ts").display()),
+    ] {
+        let source = format!("import {import:?};");
+        let checked = crate::plugin_authoring::check_source(
+            &dir.path().join("main.test.ts"),
+            &source,
+            Semantic,
+        );
+        assert!(!checked.diagnostics.is_empty(), "{import}");
+    }
+    assert!(crate::plugin_authoring::check_source(
+        &dir.path().join("main.test.ts"),
+        source,
+        Syntax
+    )
+    .diagnostics
+    .is_empty());
+}

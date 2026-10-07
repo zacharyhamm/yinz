@@ -308,6 +308,10 @@ pub enum PluginInstruction {
     LayoutListUpdate(Vec<LayoutInfo>, Vec<LayoutWithError>),
     RequestStateUpdateForPlugin(PluginId),
     UpdateSessionSaveTime(u64), // u64 = milliseconds since UNIX epoch
+    GetPluginIdsForUrl {
+        url: String,
+        response_channel: crossbeam::channel::Sender<Result<Vec<PluginId>, String>>,
+    },
     GetLastSessionSaveTime {
         response_channel: crossbeam::channel::Sender<Option<u64>>,
     },

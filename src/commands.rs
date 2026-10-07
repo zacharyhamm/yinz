@@ -1818,8 +1818,35 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             let path = match (name, file) {
                 (_, Some(file)) => file,
                 (Some(name), None) => {
-                    yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                        .map_err(|e| anyhow::anyhow!(e))?
+                    if let Some(plugin) = config
+                        .as_ref()
+                        .and_then(|config| config.plugins.aliases.get(&name))
+                    {
+                        if !matches!(
+                            plugin.location,
+                            yinz_types::input::layout::RunPluginLocation::File(_)
+                        ) {
+                            anyhow::bail!(
+                                "source checking is unsupported for builtin alias {name:?}"
+                            );
+                        }
+                        let plugin = yinz_config::plugins::PluginConfig::from_run_plugin(plugin)
+                            .context("resolve plugin alias configuration")?;
+                        if plugin.runtime() != yinz_config::plugins::PluginRuntime::Deno {
+                            anyhow::bail!("source checking is unsupported for Wasm alias {name:?}");
+                        }
+                        plugin.resolve_source(plugin_dir().ok().as_deref())?.0
+                    } else if let Some(path) =
+                        yinz_server::plugin_authoring::resolve_explicit_plugin_path(
+                            &name,
+                            &std::env::current_dir().context("resolve plugin working directory")?,
+                        )?
+                    {
+                        path
+                    } else {
+                        yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+                            .map_err(|e| anyhow::anyhow!(e))?
+                    }
                 },
                 (None, None) => anyhow::bail!("give a plugin name, or --file"),
             };
@@ -1861,12 +1888,20 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
             {
                 name
             } else {
-                let path = yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                let path = match yinz_server::plugin_authoring::resolve_explicit_plugin_path(
+                    &name,
+                    &std::env::current_dir().context("resolve plugin working directory")?,
+                )? {
+                    Some(path) => path.canonicalize().context("resolve plugin reload path")?,
+                    None => yinz_plugin_api::authoring::resolve_plugin_file(&plugin_dir()?, &name)
+                        .map_err(|e| anyhow::anyhow!(e))?,
+                };
                 if !path.is_file() {
                     anyhow::bail!("{} is not there; write it first", path.display());
                 }
-                format!("file:{}", path.display())
+                url::Url::from_file_path(&path)
+                    .map_err(|()| anyhow::anyhow!("encode plugin reload path {}", path.display()))?
+                    .to_string()
             };
             if headless {
                 let (session, caller) = resolve_session_for_command(
