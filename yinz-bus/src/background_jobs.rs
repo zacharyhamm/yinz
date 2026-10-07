@@ -573,12 +573,12 @@ pub fn background_jobs_main(
         });
     }
 
-    if !disable_session_metadata {
+    let checkpoint_task = if !disable_session_metadata {
         let session_checkpoint = bus.senders.session_checkpoint.clone();
         let current_session_name = current_session_name.clone();
         let current_session_info = current_session_info.clone();
         let current_session_layout = current_session_layout.clone();
-        runtime.spawn(async move {
+        Some(runtime.spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
                 SESSION_METADATA_WRITE_INTERVAL_MS,
             ));
@@ -593,11 +593,16 @@ pub fn background_jobs_main(
                 let layout = current_session_layout.lock().unwrap().clone();
                 session_checkpoint.write(name, info, &layout).non_fatal();
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
-    loop {
-        let (event, mut err_ctx) = bus.recv().with_context(err_context)?;
+    let result = loop {
+        let (event, mut err_ctx) = match bus.recv().with_context(err_context) {
+            Ok(event) => event,
+            Err(error) => break Err(error),
+        };
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::BackgroundJob((&event).into()));
         let job = event.clone();
         match event {
@@ -1254,10 +1259,17 @@ pub fn background_jobs_main(
                     nested_guest_ping.store(false, Ordering::SeqCst);
                 }
 
-                return Ok(());
+                break Ok(());
             },
         }
+    };
+    if let Some(task) = checkpoint_task {
+        task.abort();
+        // Cancellation takes effect at an await point. Join so an in-flight synchronous
+        // checkpoint cannot publish after the server confirms shutdown.
+        let _ = runtime.block_on(task);
     }
+    result
 }
 
 /// The client every plugin web request goes through. Shared with the tests so the redirect
@@ -1697,6 +1709,8 @@ fn job_already_running(
 pub struct SessionCheckpointWriter {
     cache_dir: PathBuf,
     name: Mutex<Option<SessionName>>,
+    #[cfg(test)]
+    before_write: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for SessionCheckpointWriter {
@@ -1704,6 +1718,8 @@ impl Default for SessionCheckpointWriter {
         Self {
             cache_dir: YINZ_SESSION_INFO_CACHE_DIR.clone(),
             name: Mutex::new(None),
+            #[cfg(test)]
+            before_write: None,
         }
     }
 }
@@ -1715,6 +1731,10 @@ impl SessionCheckpointWriter {
         mut session_info: SessionInfo,
         layout: &(String, BTreeMap<String, String>),
     ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(before_write) = &self.before_write {
+            before_write();
+        }
         let mut name = self
             .name
             .lock()
@@ -1861,6 +1881,8 @@ mod tests {
         let writer = Arc::new(SessionCheckpointWriter {
             cache_dir: root.path().to_owned(),
             name: Mutex::new(None),
+            #[cfg(test)]
+            before_write: None,
         });
         let old = SessionName::new("old");
         let renamed = SessionName::new("renamed");
@@ -1914,6 +1936,8 @@ mod tests {
         let writer = SessionCheckpointWriter {
             cache_dir: root.path().to_owned(),
             name: Mutex::new(None),
+            #[cfg(test)]
+            before_write: None,
         };
         let old = SessionName::new("old");
         let renamed = SessionName::new("renamed");
@@ -3505,3 +3529,7 @@ mod web_request_stream_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "unit/checkpoint_shutdown_tests.rs"]
+mod checkpoint_shutdown_tests;

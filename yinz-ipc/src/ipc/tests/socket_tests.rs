@@ -1067,7 +1067,7 @@ fn a_backlog_that_frees_up_is_waited_out_rather_than_failed() {
 #[cfg(unix)]
 #[test]
 fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
-    use crate::ipc::{async_kill_session_with_completion, ExitReason};
+    use crate::ipc::{kill_session_with_completion, ExitReason};
     for reply in [
         Some(ServerToClientMsg::KillSessionComplete { error: None }),
         Some(ServerToClientMsg::KillSessionComplete {
@@ -1103,13 +1103,7 @@ fn acknowledged_kill_waits_for_completion_and_rejects_eof_and_cleanup_errors() {
                 sender.send_server_msg(reply).unwrap();
             }
         });
-        let client = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async_kill_session_with_completion(&name))
-        });
+        let client = std::thread::spawn(move || kill_session_with_completion(&name));
         received_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();

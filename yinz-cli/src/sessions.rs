@@ -352,7 +352,8 @@ pub fn delete_session(name: &str, force: bool) {
             eprintln!("Session: {:?} not found.", name);
             process::exit(2);
         } else {
-            log::error!("Failed to remove session {:?}: {:?}", name, e);
+            eprintln!("Failed to remove session {:?}: {}", name, e);
+            process::exit(1);
         }
     } else {
         println!("Session: {:?} successfully deleted.", name);
