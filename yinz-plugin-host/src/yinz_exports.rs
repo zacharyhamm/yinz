@@ -3596,13 +3596,20 @@ fn apply_project_worktree_dir(
             ))
         },
     };
-    let projects = project_data::projects::from_rows(&rows);
+    let mut projects = project_data::projects::from_rows(&rows);
+    // Match filesystem identities before lexical containment, including /var aliases on macOS.
+    for project in projects.values_mut() {
+        if let Ok(root) = std::fs::canonicalize(&project.root) {
+            project.root = root.to_string_lossy().into_owned();
+        }
+    }
+    let source = source.canonicalize().unwrap_or_else(|_| source.to_owned());
     let location = project_data::location::Location::local(source.to_string_lossy());
     let project = match project_data::projects::for_cwd(&projects, &location) {
         Some(project) => Some(project),
         None if projects.is_empty() => None,
         None => {
-            let checkouts = worktrees(source)?;
+            let checkouts = worktrees(&source)?;
             let (primary, linked) = checkouts
                 .split_first()
                 .ok_or_else(|| "git could not find the primary worktree".to_owned())?;
@@ -10182,6 +10189,8 @@ mod permission_tests {
             )
             .unwrap();
         }
+        let alias = external.path().join("linked-alias");
+        std::os::unix::fs::symlink(&linked, &alias).unwrap();
         let mut registry = projects::Registry::new();
         // Each stage adds a competing registration. Direct matches win, then the
         // primary root; otherwise linked roots must identify exactly one project.
@@ -10193,6 +10202,7 @@ mod permission_tests {
                 vec![
                     (repo.path(), "saved"),
                     (linked.as_path(), "saved"),
+                    (alias.as_path(), "saved"),
                     (sibling.as_path(), "saved"),
                     (unrelated.path(), ".worktrees"),
                 ],
@@ -10204,6 +10214,7 @@ mod permission_tests {
                 vec![
                     (repo.path(), ".worktrees"),
                     (linked.as_path(), "saved"),
+                    (alias.as_path(), "saved"),
                     (sibling.as_path(), "sibling-saved"),
                 ],
             ),
@@ -10214,6 +10225,7 @@ mod permission_tests {
                 vec![
                     (repo.path(), "primary-saved"),
                     (linked.as_path(), "saved"),
+                    (alias.as_path(), "saved"),
                     (sibling.as_path(), "sibling-saved"),
                 ],
             ),

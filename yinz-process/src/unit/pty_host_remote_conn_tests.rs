@@ -240,7 +240,7 @@ fn a_lost_transport_refuses_further_writes_rather_than_pretending() {
 fn the_first_failed_socket_write_is_reported_to_input_and_control_callers() {
     for input in [true, false] {
         let (conn, peer) = conn_pair();
-        peer.shutdown(std::net::Shutdown::Read).unwrap();
+        drop(peer);
         let result = if input {
             conn.write_input(b"must not be acknowledged").map(|_| ())
         } else {

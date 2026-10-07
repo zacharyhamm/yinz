@@ -144,9 +144,8 @@ fn palette_projects_worktrees_creation_and_exact_external_detached_reuse() {
         panic!()
     };
     assert!(title.contains("project"));
-    assert!(choices
-        .iter()
-        .any(|c| c.label == "Detached HEAD" && c.description == checkout.to_string_lossy()));
+    assert!(choices.iter().any(|c| c.label == "Detached HEAD"
+        && c.description == checkout.canonicalize().unwrap().to_string_lossy()));
     assert!(choices.iter().any(|c| c.label == "Change project…"));
     let selected = choices
         .into_iter()
@@ -301,7 +300,7 @@ fn palette_current_directory_vm_defaults_and_fresh_duplicate_targets() {
     let (reply, commands) = run(&vm, &data);
     assert!(!commands.is_empty(), "{reply:?}");
     assert!(
-        matches!(&commands[0].target, PaneTarget::Firecracker { image: Some(image), worktree: Some(path), .. } if image == "rust-dev" && path == repo.path())
+        matches!(&commands[0].target, PaneTarget::Firecracker { image: Some(image), worktree: Some(path), .. } if image == "rust-dev" && path == &repo.path().canonicalize().unwrap())
     );
     for target in [
         PaneTarget::Local,

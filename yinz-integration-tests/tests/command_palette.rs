@@ -1075,7 +1075,12 @@ fn project_note_editor_flow(size: yinz_integration_tests::Size) {
         yinz.send_stdin(&keys::ENTER);
         yinz.wait_until("recovery path can be read in full", |grid| {
             grid.contains("Note editor details")
-                && grid.contains("note.md")
+                && grid
+                    .text
+                    .lines()
+                    .map(|line| line.trim().trim_matches('│').trim())
+                    .collect::<String>()
+                    .contains(path.to_str().unwrap())
                 && !grid.contains("> needle")
         });
         yinz.send_stdin(&keys::ESC);

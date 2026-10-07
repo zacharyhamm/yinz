@@ -386,6 +386,8 @@ fn standalone_codex_hooks_reject_reference_less_panes() {
                 command.env_remove(key);
             }
             command
+                .arg("--config-dir")
+                .arg(self.0.path())
                 .env(CHILD_ENV, self.0.path())
                 .env("SHELL", "/bin/sh")
                 .stdin(Stdio::null())

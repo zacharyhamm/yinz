@@ -91,7 +91,7 @@ impl TestRunner {
         let concurrency_slot = if self.skip_concurrency_slot {
             None
         } else {
-            Some(test_env::acquire_concurrency_slot())
+            test_env::acquire_concurrency_slot()
         };
 
         let fake_server_os_api = FakeServerOsApi::default();

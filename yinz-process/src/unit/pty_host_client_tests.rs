@@ -1736,7 +1736,13 @@ fn relabel_peer(path: &Path, replies: Vec<HostToServerMsg>) -> JoinHandle<Vec<Se
         for reply in replies {
             loop {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+                if let Err(error) = stream.set_read_timeout(Some(TEST_TIMEOUT)) {
+                    // macOS rejects a timeout on an already-closed discovery probe.
+                    assert_eq!(error.raw_os_error(), Some(nix::libc::EINVAL));
+                    stream.set_nonblocking(true).unwrap();
+                    assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                    continue;
+                }
                 let Some(request) = read_msg::<ServerToHostMsg, _>(&mut stream).unwrap() else {
                     // Discovery probes connectivity before it sends Query.
                     continue;

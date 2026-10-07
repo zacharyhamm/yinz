@@ -20,7 +20,8 @@
 
 use yinz_cli::args::CliAction;
 use yinz_integration_tests::{
-    keys, FakePtyHandle, LayoutInfo, TestRunner, TestSession, WarpFailure, PROMPT, TERMINAL_SIZE,
+    keys, FakePtyHandle, GridSnapshot, LayoutInfo, TestRunner, TestSession, WarpFailure, PROMPT,
+    TERMINAL_SIZE,
 };
 
 /// Keep each session to its shell pane: the default background plugins would
@@ -270,8 +271,8 @@ fn assert_waiting_agent(
 /// makes the column the only place the *shape* of the list can be read back from.
 /// The open member is the one its row is marked with a caret. Local numeric IDs
 /// and padding are excluded: both can change at the destination.
-fn stack_list_entries(yinz: &TestSession) -> Vec<String> {
-    yinz.snapshot()
+fn stack_list_entries(snapshot: &GridSnapshot) -> Vec<String> {
+    snapshot
         .lines()
         .into_iter()
         .filter(|line| {
@@ -907,7 +908,7 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
     // arrived as a *list* - an entry per member, in the order they were stacked,
     // with the one that was open still the open one.
     type_and_confirm(&receiver, third, b"tab-selected-after");
-    let entries = stack_list_entries(&receiver);
+    let entries = stack_list_entries(&receiver.snapshot());
     assert_eq!(
         entries.len(),
         3,
@@ -1035,7 +1036,7 @@ fn a_visible_stack_warps_to_the_floating_layer_with_selectable_members() {
     receiver.wait_until("select hidden floating member", |grid| {
         grid.contains("SECOND_FLOATING_MEMBER")
     });
-    assert_eq!(stack_list_entries(&receiver).len(), 3);
+    assert_eq!(stack_list_entries(&receiver.snapshot()).len(), 3);
     type_and_confirm(&receiver, second, b"hidden-after");
     second.exit(Some(0));
     receiver.wait_until("closing selected member promotes a survivor", |grid| {
@@ -1075,7 +1076,7 @@ fn a_stack_with_a_hidden_editor_restores_after_id_remapping_and_source_shutdown(
         grid.contains("COMBINED_FIRST")
     });
     type_and_confirm(&sender, &first, b"first-selected-before");
-    let entries = stack_list_entries(&sender);
+    let entries = stack_list_entries(&sender.snapshot());
     assert_eq!(entries, vec!["> Pane #1", "EDITING SCROLLBACK"]);
 
     let (code, reported) = sender.run_cli_action_reporting(CliAction::WarpTab {
@@ -1099,7 +1100,7 @@ fn a_stack_with_a_hidden_editor_restores_after_id_remapping_and_source_shutdown(
     receiver.wait_until("selected member arrives", |grid| {
         grid.contains("COMBINED_FIRST")
     });
-    assert_eq!(stack_list_entries(&receiver), entries);
+    assert_eq!(stack_list_entries(&receiver.snapshot()), entries);
     type_and_confirm(&receiver, arrived_first, b"first-selected-after");
     sender.quit();
     receiver.send_stdin(&keys::alt('j'));
@@ -1389,14 +1390,20 @@ fn palette_pulls_a_visible_stack_with_its_hidden_editor_subject() {
     let editor = sender.expect_pty_spawn();
     sender.wait_until("editor ready", |grid| grid.contains("EDITING SCROLLBACK"));
     type_and_confirm(&sender, &editor, b"stack-editor-before");
-    let entries = stack_list_entries(&sender);
+    let entries = stack_list_entries(&sender.snapshot());
     palette_pull(&receiver, &sender, "Warp pane", "EDITING SCROLLBACK");
     let adopted: Vec<_> = (0..3).map(|_| receiver.expect_adopted_pty()).collect();
     let first = adopted_with_marker(&adopted, b"stack-first-before");
     let subject = adopted_with_marker(&adopted, b"stack-subject-before");
     let editor = adopted_with_marker(&adopted, b"stack-editor-before");
-    receiver.wait_until("editor arrives", |grid| grid.contains("EDITING SCROLLBACK"));
-    let arrived_entries = stack_list_entries(&receiver);
+    let arrived = receiver.wait_until("editor and its stack list arrive", |grid| {
+        let rendered = stack_list_entries(grid);
+        rendered.len() == entries.len()
+            && rendered
+                .last()
+                .is_some_and(|entry| entry == "> EDITING SCROLLBACK")
+    });
+    let arrived_entries = stack_list_entries(&arrived);
     assert_eq!(arrived_entries.len(), entries.len());
     assert_eq!(arrived_entries.last().unwrap(), "> EDITING SCROLLBACK");
     type_and_confirm(&receiver, editor, b"stack-editor-after");

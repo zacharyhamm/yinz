@@ -745,7 +745,7 @@ fn registry_and_a_session_named_codex_coexist() {
                 .unwrap(),
             sockets.canonicalize().unwrap()
         );
-        if std::env::var_os("XDG_RUNTIME_DIR").is_some() {
+        if cfg!(target_os = "linux") && std::env::var_os("XDG_RUNTIME_DIR").is_some() {
             assert_ne!(&*yinz_runtime::consts::YINZ_SOCK_DIR, &sockets);
         }
         return;
