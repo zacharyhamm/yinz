@@ -29,6 +29,7 @@ fn replace_pane_in_place_with_held_command(
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,

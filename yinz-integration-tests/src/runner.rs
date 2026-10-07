@@ -178,6 +178,7 @@ fn new_pane_cli_action(
         firecracker_image: None,
         firecracker_worktree: None,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: None,
         y: None,

@@ -37,6 +37,7 @@ fn cli_pipe(plugin: Option<&str>, payload: Option<&str>) -> CliAction {
         args: None,
         plugin: plugin.map(str::to_owned),
         plugin_configuration: None,
+        configuration_json: None,
         force_launch_plugin: false,
         skip_plugin_cache: false,
         floating_plugin: None,

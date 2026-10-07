@@ -194,6 +194,7 @@ export default {{
             yinz.run_cli_action_reporting(yinz_cli::args::CliAction::StartOrReloadPlugin {
                 url: format!("file:{}", plugin.display()),
                 configuration: None,
+                configuration_json: None,
             });
         assert_eq!(code, 0, "{output}");
         yinz.wait_until_raw_output("another image plugin works in the same session", |bytes| {

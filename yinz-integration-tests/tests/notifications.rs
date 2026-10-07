@@ -225,6 +225,7 @@ fn notification_paints_over_a_floating_pane() {
         close_on_exit: false,
         start_suspended: false,
         configuration: None,
+        configuration_json: None,
         skip_plugin_cache: false,
         x: Some("0".to_owned()),
         y: Some("0".to_owned()),

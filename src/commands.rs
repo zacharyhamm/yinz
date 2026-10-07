@@ -1887,6 +1887,7 @@ pub(crate) fn plugins(command: yinz_cli::args::Plugins, opts: &CliArgs) -> anyho
                 yinz_cli::args::CliAction::StartOrReloadPlugin {
                     url,
                     configuration: None,
+                    configuration_json: None,
                 },
                 opts.session.clone(),
                 config,
