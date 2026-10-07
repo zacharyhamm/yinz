@@ -281,6 +281,7 @@ UpdateMultipane = 293;
 ReplaceMultipaneChild = 294;
 SetProjectContext = 299;
 ResolveNotification = 300;
+GetPluginIdsForUrl = 301;
 }
 message PluginCommand {
 reserved 213;
@@ -288,6 +289,7 @@ reserved "check_lua_plugin_payload";
 reserved 108, 109, 110, 164, 165, 167, 173, 187;
 CommandName name = 1;
 oneof payload {
+string get_plugin_ids_for_url_payload = 243;
 ResolveNotificationPayload resolve_notification_payload = 242;
 string pane_tabs_payload = 236;
 string agent_control_payload = 237;
@@ -1573,6 +1575,10 @@ optional PaneId pane_id = 1;
 message GetSessionEnvironmentVariablesPayload {}
 message GetSessionEnvironmentVariablesResponse {
 repeated EnvVariable env_vars = 1;
+}
+message GetPluginIdsForUrlResponse {
+repeated uint32 plugin_ids = 1;
+optional string error = 2;
 }
 message GetPluginAliasConfigurationPayload {
 string alias = 1;

@@ -202,6 +202,14 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
                 value(vars)
             })
         },
+        CommandType::GetPluginIdsForUrl => decode(bytes).and_then(
+            |response: yinz_plugin_api::plugin_command::ProtobufGetPluginIdsForUrlResponse| {
+                match response.error {
+                    Some(error) => Err(anyhow!(error)),
+                    None => value(response.plugin_ids),
+                }
+            },
+        ),
         CommandType::GetPluginAliasConfiguration => {
             decode(bytes).and_then(|r: ProtobufGetPluginAliasConfigurationResponse| {
                 let configuration: std::collections::BTreeMap<String, String> =

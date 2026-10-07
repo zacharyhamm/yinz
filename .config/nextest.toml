@@ -37,3 +37,8 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [[profile.unit.overrides]]
 filter = 'test(=plugin_data_store::postgres::deadline_tests::blocked_bootstrap_and_query_discard_connections_and_reconnect)'
 threads-required = "num-cpus"
+
+# Text/JSON parity checks every target spelling through separate strict compiler workers.
+[[profile.unit.overrides]]
+filter = 'binary(portable_cli) & test(=plugin_check_targets_have_text_json_parity)'
+slow-timeout = { period = "60s", terminate-after = 3 }

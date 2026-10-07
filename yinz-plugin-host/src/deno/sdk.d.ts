@@ -258,7 +258,7 @@ export interface CommandArgs {
   AgentControl: {id: string; request: string};
   SwampRequest: {directory: string; id: string; operation: string; payload: string};
   Subscribe: EventType[]; Unsubscribe: EventType[]; SetSelectable: boolean;
-  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetYinzVersion: undefined;
+  ShowCursor: [Integer, Integer] | null; GetPluginIds: undefined; GetPluginIdsForUrl: string; GetYinzVersion: undefined;
   OpenFile: [FileToOpen, StringMap]; OpenFileFloating: [FileToOpen, FloatingPaneCoordinates | null, StringMap];
   OpenTerminal: FileToOpen; OpenTerminalFloating: [FileToOpen, FloatingPaneCoordinates | null];
   OpenCommandPane: [CommandToRun, StringMap]; OpenCommandPaneFloating: [CommandToRun, FloatingPaneCoordinates | null, StringMap];
@@ -385,7 +385,7 @@ export type CommandObject = {[K in CommandName]: {[P in K]: CommandArgs[K] exten
 export type OpaqueReplyCommand = never;
 export interface CommandReplies {
   CheckPlugin: PluginCheckReport;
-  GetPluginIds: PluginIds; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
+  GetPluginIds: PluginIds; GetPluginIdsForUrl: number[]; GetYinzVersion: string; GetUserPluginDir: string | null; GetLayoutDir: string | null;
   GetLocalUtcOffset: number; GetSessionEnvironmentVariables: StringMap; GetPluginAliasConfiguration: StringMap;
   GetFocusedPaneInfo: {tab_id: number; pane_id: PaneId}; GetPaneInfo: PaneInfo | null; GetTabInfo: TabInfo | null;
   GetPaneCwd: string | null; GetPanePid: number | null; GetPaneRunningCommand: string[] | null; GetPaneGitProbe: PaneGitProbe | null;

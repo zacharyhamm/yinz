@@ -4386,3 +4386,40 @@ fn pipe_launch_focus_preserves_ui_ownership_and_headless_services() {
         test.settle(id);
     }
 }
+
+#[test]
+fn plugin_url_query_uses_metadata_while_guest_is_locked() {
+    let mut test = TestBridge::new();
+    let context = test.context(1, 1, "export default {}");
+    let location = context.plugin_config.location.clone();
+    test.load(context).unwrap();
+    let id = PluginId::new(1);
+    let plugin = test
+        .bridge
+        .plugin_map
+        .lock()
+        .unwrap()
+        .get_running_plugin(id, None)
+        .unwrap();
+    let _guest = plugin.lock().unwrap();
+    assert_eq!(
+        test.bridge
+            .get_plugin_ids_for_url(&location.display())
+            .unwrap(),
+        vec![id]
+    );
+    assert!(test
+        .bridge
+        .get_plugin_ids_for_url("file:/missing-plugin.ts")
+        .unwrap()
+        .is_empty());
+    assert!(test
+        .bridge
+        .get_plugin_ids_for_url("unknown-alias")
+        .unwrap_err()
+        .contains("known alias"));
+    assert!(test
+        .bridge
+        .get_plugin_ids_for_url("file:/unsupported.lua")
+        .is_err());
+}

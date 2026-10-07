@@ -19,6 +19,7 @@ workspace = true
 [dependencies]
 signal-hook = { workspace = true }
 uuid = { workspace = true }
+url = { workspace = true }
 yinz-cli = { workspace = true }
 yinz-config = { workspace = true }
 yinz-plugin-api = { workspace = true }

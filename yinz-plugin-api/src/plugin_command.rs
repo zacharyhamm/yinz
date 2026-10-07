@@ -1,5 +1,6 @@
 use super::generated_api::api::plugin_command as generated;
 pub use super::generated_api::api::plugin_command::AgentProvidersResponse as ProtobufAgentProvidersResponse;
+pub use super::generated_api::api::plugin_command::GetPluginIdsForUrlResponse as ProtobufGetPluginIdsForUrlResponse;
 pub use super::generated_api::api::plugin_command::MultipaneResponse as ProtobufMultipaneResponse;
 pub use super::generated_api::api::plugin_command::PaneTabsResponse as ProtobufPaneTabsResponse;
 pub use super::generated_api::api::{
@@ -2956,6 +2957,12 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 },
                 _ => Err("Mismatched payload for ParseLayout"),
             },
+            Some(CommandName::GetPluginIdsForUrl) => match protobuf_plugin_command.payload {
+                Some(Payload::GetPluginIdsForUrlPayload(url)) => {
+                    Ok(PluginCommand::GetPluginIdsForUrl(url))
+                },
+                _ => Err("Mismatched payload for GetPluginIdsForUrl"),
+            },
             Some(CommandName::ReloadPluginByUrl) => match protobuf_plugin_command.payload {
                 Some(Payload::ReloadPluginByUrlPayload(url)) => {
                     Ok(PluginCommand::ReloadPluginByUrl(url))
@@ -5428,6 +5435,10 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 payload: Some(Payload::ParseLayoutPayload(ParseLayoutPayload {
                     layout_string,
                 })),
+            }),
+            PluginCommand::GetPluginIdsForUrl(url) => Ok(ProtobufPluginCommand {
+                name: CommandName::GetPluginIdsForUrl as i32,
+                payload: Some(Payload::GetPluginIdsForUrlPayload(url)),
             }),
             PluginCommand::ReloadPluginByUrl(url) => Ok(ProtobufPluginCommand {
                 name: CommandName::ReloadPluginByUrl as i32,
@@ -8269,6 +8280,7 @@ mod tests {
                 | PluginCommand::GetPaneInfo(_)
                 | PluginCommand::GetTabInfo(_)
                 | PluginCommand::GetSessionEnvironmentVariables
+                | PluginCommand::GetPluginIdsForUrl(_)
                 | PluginCommand::GetPluginAliasConfiguration(_)
                 | PluginCommand::OpenCommandPaneInNewTab(..)
                 | PluginCommand::OpenPluginPaneInNewTab { .. }

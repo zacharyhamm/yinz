@@ -19,7 +19,11 @@ pub(super) fn run(
     let deadline = Instant::now() + Duration::from_secs(30);
     // This compiler host resolves every import using the runtime loader's confinement checks.
     // It does not evaluate source, discover configs, or resolve packages.
-    let graph = checker::authoring_graph(path, source, false, repository_root)?;
+    let test_declarations = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".test.ts"));
+    let graph = checker::authoring_graph(path, source, false, repository_root, test_declarations)?;
     let tools = tools_dir()?;
     let scratch = OwnedDir::new(&yinz_runtime::consts::YINZ_CACHE_DIR.join("authoring-tmp"))?;
     let root = scratch.path();
@@ -76,7 +80,13 @@ pub(super) fn run(
         .keys()
         .map(|p| stage_path(p))
         .collect::<Result<_>>()?;
-    files.push(root.join("sdk/sdk.d.ts"));
+    let mut declarations = vec![root.join("sdk/sdk.d.ts")];
+    if test_declarations {
+        let testing = root.join("sdk/testing.d.ts");
+        std::fs::write(&testing, include_str!("testing/testing.d.ts"))?;
+        declarations.push(testing);
+    }
+    files.extend(declarations.iter().cloned());
     let mut config: serde_json::Value =
         serde_json::from_str(include_str!("authoring/tsconfig.json"))?;
     // tsgolint embeds its compiler libraries. Loading TS 5.9 libs as ordinary source
@@ -86,6 +96,10 @@ pub(super) fn run(
         "yinz:plugin": ["./sdk/sdk.d.ts"],
         "yinz:workflow-view": ["./sdk/builtins/workflow-view.ts"]
     });
+    if test_declarations {
+        config["compilerOptions"]["paths"]["yinz:testing"] =
+            serde_json::json!(["./sdk/testing.d.ts"]);
+    }
     config["files"] = serde_json::to_value(files)?;
     std::fs::write(root.join("tsconfig.json"), serde_json::to_vec(&config)?)?;
     let entry = stage_path(&graph.entry)?;
@@ -145,6 +159,7 @@ pub(super) fn run(
             formatted.as_deref().unwrap_or(source),
             true,
             Some(&source_root),
+            test_declarations,
         )
         .map_err(|error| {
             let mut message = format!("{error:#}");
@@ -182,7 +197,9 @@ pub(super) fn run(
             for import in checked.imports.get(path).into_iter().flatten().rev() {
                 // The SDK is a virtual runtime module backed by declarations through paths.
                 // A literal .d.ts value import is illegal in TypeScript.
-                if import.target == Path::new("/$yinz/sdk.d.ts") {
+                if import.target == Path::new("/$yinz/sdk.d.ts")
+                    || (test_declarations && import.target == Path::new("/$yinz/testing.d.ts"))
+                {
                     continue;
                 }
                 let target = native_paths
@@ -232,7 +249,7 @@ pub(super) fn run(
         config["files"] = serde_json::to_value(
             native_files
                 .iter()
-                .chain(std::iter::once(&root.join("sdk/sdk.d.ts")))
+                .chain(declarations.iter())
                 .collect::<Vec<_>>(),
         )?;
         std::fs::write(root.join("tsconfig.json"), serde_json::to_vec(&config)?)?;

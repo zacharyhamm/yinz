@@ -1668,6 +1668,7 @@ pub(crate) fn plugin_command_of_kind(tc: &hegel::TestCase, kind: CommandType) ->
             notice: optional_strings(tc),
             guard: booleans(tc),
         },
+        CommandType::GetPluginIdsForUrl => PluginCommand::GetPluginIdsForUrl(strings(tc)),
         CommandType::ReloadPluginByUrl => PluginCommand::ReloadPluginByUrl(strings(tc)),
         CommandType::ReadPluginLog => PluginCommand::ReadPluginLog {
             name: strings(tc),

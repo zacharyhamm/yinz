@@ -3332,6 +3332,31 @@ impl WasmBridge {
             .map(|plugin_ids| !plugin_ids.is_empty())
             .unwrap_or(false)
     }
+    pub(crate) fn get_plugin_ids_for_url(&self, url: &str) -> Result<Vec<PluginId>, String> {
+        let aliases = self.plugin_aliases.lock().map_err(|e| e.to_string())?;
+        let plugin = yinz_runtime::plugin_location::run_plugin_or_alias_from_url(
+            url,
+            &None,
+            Some(&aliases),
+            None,
+        )?
+        .get_run_plugin()
+        .ok_or_else(|| format!("{url} is not a plugin or a known alias"))?;
+        drop(aliases);
+        match self.all_plugin_ids_for_plugin_location(&plugin.location, &plugin.configuration) {
+            Ok(ids) => Ok(ids),
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<YinzError>(),
+                    Some(YinzError::PluginDoesNotExist)
+                ) =>
+            {
+                Ok(vec![])
+            },
+            Err(error) => Err(format!("{error:#}")),
+        }
+    }
+
     fn all_plugin_ids_for_plugin_location(
         &self,
         plugin_location: &RunPluginLocation,

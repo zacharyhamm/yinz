@@ -245,3 +245,37 @@ fn file_aliases_select_the_loaders_fallback_and_preferred_sources() {
         ));
     }
 }
+
+#[test]
+fn plugin_cli_explicit_targets_match_log_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let path = cwd.join("space name.ts");
+    for target in [
+        path.display().to_string(),
+        "./space name.ts".into(),
+        format!(
+            "../{}/space name.ts",
+            cwd.file_name().unwrap().to_str().unwrap()
+        ),
+        format!("file:{}", path.display()),
+        format!("file://{}", path.display()),
+        format!("file://{}", path.display()).replace(' ', "%20"),
+        "file:./space name.ts".into(),
+    ] {
+        let resolved = resolve_explicit_plugin_path(&target, &cwd)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_path(&resolved, &cwd), path, "{target}");
+        assert!(
+            matches!(resolve_log_target(&target, None, &cwd, &PluginAliases::default(), &cwd).unwrap(), LogTarget::File(found) if found == path)
+        );
+    }
+    for name in ["foo", "foo.ts", "folder/foo", " space.ts "] {
+        assert_eq!(resolve_explicit_plugin_path(name, &cwd).unwrap(), None);
+    }
+    assert_eq!(
+        resolve_explicit_plugin_path("./ missing.ts ", &cwd).unwrap(),
+        Some(cwd.join(" missing.ts "))
+    );
+}
