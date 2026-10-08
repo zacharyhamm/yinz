@@ -855,6 +855,8 @@ pub struct PaneInfo {
     pub multipane: ::core::option::Option<MultipaneInfo>,
     #[prost(string, optional, tag="37")]
     pub pane_tabs_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag="38")]
+    pub display_title: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -632,6 +632,7 @@ message PaneInfo {
     optional string restart_error = 35;
     optional MultipaneInfo multipane = 36;
     optional string pane_tabs_json = 37;
+    optional string display_title = 38;
 }
 
 message AgentInfo {

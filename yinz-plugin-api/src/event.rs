@@ -2392,6 +2392,7 @@ impl TryFrom<ProtobufPaneInfo> for PaneInfo {
             is_suppressed: protobuf_pane_info.is_suppressed,
             is_stack_list_member: protobuf_pane_info.is_stack_list_member,
             title: protobuf_pane_info.title,
+            display_title: protobuf_pane_info.display_title,
             exited: protobuf_pane_info.exited,
             exit_status: protobuf_pane_info.exit_status,
             is_held: protobuf_pane_info.is_held,
@@ -2474,6 +2475,7 @@ impl TryFrom<PaneInfo> for ProtobufPaneInfo {
             is_suppressed: pane_info.is_suppressed,
             is_stack_list_member: pane_info.is_stack_list_member,
             title: pane_info.title,
+            display_title: pane_info.display_title,
             exited: pane_info.exited,
             exit_status: pane_info.exit_status,
             is_held: pane_info.is_held,
@@ -3305,6 +3307,8 @@ fn serialize_pane_update_event() {
         TabPosition::new(0),
         vec![PaneInfo {
             id: yinz_types::pane_id::PaneId::from_legacy(42, false),
+            title: "shell".into(),
+            display_title: Some("host project:worktree: shell".into()),
             ..Default::default()
         }],
     );
@@ -3524,6 +3528,7 @@ fn serialize_session_update_event_with_non_default_values() {
             is_suppressed: false,
             is_stack_list_member: false,
             title: "pane 1".to_owned(),
+            display_title: None,
             exited: false,
             exit_status: None,
             restart_error: Some("Cannot restart agent: unsupported print option".into()),
@@ -3558,6 +3563,7 @@ fn serialize_session_update_event_with_non_default_values() {
             is_suppressed: false,
             is_stack_list_member: false,
             title: "pane 1".to_owned(),
+            display_title: None,
             exited: false,
             exit_status: None,
             restart_error: None,

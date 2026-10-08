@@ -525,6 +525,7 @@ export interface PaneInfo {
   pane_tabs?: PaneTabsInfo | null;
   multipane?: MultipaneInfo | null;
   id: number; is_plugin: boolean; is_focused: boolean; is_fullscreen: boolean; is_floating: boolean; is_suppressed: boolean; is_stack_list_member: boolean;
+  display_title?: string | null;
   title: string; exited: boolean; exit_status: number | null; is_held: boolean; restart_error: string | null;
   pane_x: Integer; pane_content_x: Integer; pane_y: Integer; pane_content_y: Integer;
   pane_rows: Integer; pane_content_rows: Integer; pane_columns: Integer; pane_content_columns: Integer;

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use yinz_bus::screen::ScreenInstruction;
 use yinz_bus::ServerInstruction;
 use yinz_runtime::errors::prelude::*;
-use yinz_types::data::{InputMode, KeybindsVec, NewPanePlacement, PaneId};
+use yinz_types::data::{InputMode, KeybindsVec, NewPanePlacement, PaneId, PaneInfo};
 use yinz_types::geometry::Direction;
 use yinz_types::input::actions::Action;
 use yinz_types::input::command::{RunCommandAction, TerminalAction};
@@ -64,6 +64,17 @@ struct CachedShortcut {
     original: Option<Action>,
     target: Option<Action>,
     hint: String,
+}
+
+fn pane_label(pane: &PaneInfo) -> String {
+    let id = match pane.id {
+        PaneId::Terminal(id) => id.to_string(),
+        PaneId::Plugin(_) => pane.id.to_string(),
+    };
+    format!(
+        "[{id}] {}",
+        pane.display_title.as_deref().unwrap_or(&pane.title)
+    )
 }
 
 impl Screen {
@@ -740,7 +751,7 @@ impl Screen {
                     entries.push((
                         Entry {
                             id: format!("set-control-agent:{}", pane.id),
-                            label: format!("{} ({})", pane.title, pane.id),
+                            label: pane_label(&pane),
                             shortcut: String::new(),
                             description: tab_label.clone(),
                             aliases: vec![
@@ -756,7 +767,7 @@ impl Screen {
                 entries.push((
                     Entry {
                         id: format!("pane:{}", pane.id),
-                        label: format!("({}) {}", pane.id, pane.title),
+                        label: pane_label(&pane),
                         shortcut: String::new(),
                         description: tab_label.clone(),
                         aliases: vec![
@@ -776,15 +787,20 @@ impl Screen {
             (
                 Entry {
                     id: agent.id(),
-                    label: agent.pane.title.clone(),
+                    label: pane_label(&agent.pane),
                     description: agent.description(),
                     shortcut: String::new(),
-                    aliases: vec![agent
-                        .metadata
-                        .values()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" ")],
+                    aliases: vec![
+                        agent.pane.title.clone(),
+                        agent.pane.id.to_string(),
+                        agent.pane.id.legacy_parts().0.to_string(),
+                        agent
+                            .metadata
+                            .values()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ],
                     kind: EntryKind::Agent,
                 },
                 Builtin::Inspect(agent),
@@ -962,6 +978,12 @@ impl Screen {
     fn warp_palette_entries(&self, source: Option<&SessionName>) -> Vec<(Entry, Builtin)> {
         let mut entries = Vec::new();
         let mut add = |id, label, description, kind, action| {
+            let aliases = match &action {
+                Builtin::Warp(_, WarpTarget::Pane(id)) => {
+                    vec![id.to_string(), id.legacy_parts().0.to_string()]
+                },
+                _ => vec![],
+            };
             entries.push((
                 Entry {
                     id,
@@ -969,7 +991,7 @@ impl Screen {
                     description,
                     kind,
                     shortcut: String::new(),
-                    aliases: vec![],
+                    aliases,
                 },
                 action,
             ));
@@ -1014,7 +1036,7 @@ impl Screen {
                 {
                     add(
                         format!("warp-pane:pane:{}:{}", session.name, pane.id),
-                        format!("{} ({}) · {}", pane.title, pane.id, tab.name),
+                        format!("{} · {}", pane_label(pane), tab.name),
                         session.name.to_string(),
                         EntryKind::WarpPane,
                         Builtin::Warp(session.name.clone(), WarpTarget::Pane(pane.id)),
@@ -1153,7 +1175,7 @@ impl Screen {
             entries.push((
                 Entry {
                     id: format!("control-agent:{session}:{}", pane.id),
-                    label: format!("{} ({})", pane.title, pane.id),
+                    label: pane_label(pane),
                     description: format!("{session} · {tab}"),
                     aliases: vec![
                         pane.title.clone(),
@@ -1517,7 +1539,7 @@ impl Screen {
                 false,
             ),
             FormKind::ClosePane => (
-                format!("Close {} ({})?", pane.title, pane.id),
+                format!("Close {}?", pane_label(&pane)),
                 vec![],
                 "Close pane",
                 true,

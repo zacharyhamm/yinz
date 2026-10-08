@@ -682,7 +682,13 @@ fn palette_searches_pane_ids_and_keeps_them_visible_before_long_titles() {
                 }
                 let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
                 assert!(
-                    frame.contains(&format!("› ({pane}) 界")),
+                    frame.contains(&format!(
+                        "› [{}] 界",
+                        match pane {
+                            PaneId::Terminal(id) => id.to_string(),
+                            PaneId::Plugin(_) => pane.to_string(),
+                        }
+                    )),
                     "{query}: {frame}"
                 );
                 palette_key(&mut screen, BareKey::Enter);
@@ -3055,6 +3061,7 @@ fn control_agent_picker_qualifies_peer_ids_filters_panes_and_targets_other_sessi
     for panes in peer.panes.panes.values_mut() {
         for pane in panes {
             pane.title = "remote-controller".into();
+            pane.display_title = Some("host project:branch: remote-controller".into());
         }
     }
     screen.peer_sessions_cache.insert(name.clone(), peer);
@@ -3089,9 +3096,13 @@ fn control_agent_picker_qualifies_peer_ids_filters_panes_and_targets_other_sessi
         screen.close_command_palette(CLIENT);
         screen.peer_sessions_cache.insert(name.clone(), original);
     }
+    let renders = screen_wired_to_server(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
     palette_search(&mut screen, "Focus control agent");
     palette_key(&mut screen, BareKey::Enter);
-    screen.command_palette_handles_input(&None, b"remote-controller", false, CLIENT);
+    screen.command_palette_handles_input(&None, b"project:branch", false, CLIENT);
+    let frame = render_frame_into(&mut screen, &renders, CLIENT, &mut grid);
+    assert!(frame.contains("[1] host project:branch:"), "{frame}");
     palette_key(&mut screen, BareKey::Enter);
     assert!(
         matches!(enqueued_palette_action(&receiver), Action::SwitchSession { name: target, pane_id: Some(id), .. } if target == name && id == pane)
@@ -3161,6 +3172,7 @@ fn warp_palette_filters_peers_and_panes_and_revalidates_stale_selections() {
         let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
         let pane = peer.panes.panes.values_mut().flatten().next().unwrap();
         pane.title = "Candidate".into();
+        pane.display_title = None;
         pane.is_suppressed = suppressed;
         pane.is_selectable = selectable;
         pane.is_held = held;
@@ -3572,9 +3584,14 @@ fn agent_info_keeps_missing_history_readable_and_rejects_replaced_identity() {
         .set_pane_agent(pane, Some(agent.clone()));
     let receiver = screen_wired_to_server(&mut screen);
     let mut grid = grid_for_render_snapshot(SIZE);
+    screen.with_pane(pane, |pane| {
+        pane.update_name("shell");
+        pane.set_title_prefix(Some("project:branch".into()));
+    });
     palette_search(&mut screen, "state:waiting directory:\"café space\"");
     let result = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
     assert!(result.contains("codex"), "{result}");
+    assert!(result.contains("[1] project:branch: shell"), "{result}");
     let enter = Some(KeyWithModifier::new(BareKey::Enter));
     screen.command_palette_handles_input(&enter, b"\r", false, CLIENT);
     let info = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
@@ -4444,6 +4461,107 @@ fn note_editor_placement_keeps_its_tab_and_only_focuses_its_requester() {
             } else {
                 Some(editor)
             }
+        );
+    }
+}
+
+#[test]
+fn palette_display_title_refreshes_and_rename_keeps_raw_title() {
+    let mut screen = screen();
+    let pane = PaneId::Terminal(TerminalId::new(1));
+    screen.with_pane(pane, |pane| {
+        pane.set_title_prefix(Some("project:branch".into()));
+        pane.update_name("shell");
+    });
+    let receiver = screen_wired_to_server(&mut screen);
+    let actions = palette_actions_receiver(&mut screen);
+    let mut grid = grid_for_render_snapshot(SIZE);
+    palette_search(&mut screen, "Focus pane");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("› [1] project:branch: shell"), "{frame}");
+    screen.with_pane(pane, |pane| {
+        pane.set_title_prefix(Some("project:next".into()))
+    });
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("› [1] project:next: shell"), "{frame}");
+    assert!(!frame.contains("project:branch"), "{frame}");
+    screen.command_palette_handles_input(&None, b"project:next", false, CLIENT);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        enqueued_palette_action(&actions),
+        Action::FocusPaneByPaneId { pane_id: pane }
+    );
+
+    palette_search(&mut screen, "Rename pane");
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    palette_key(&mut screen, BareKey::Enter);
+    assert_eq!(
+        enqueued_palette_action(&actions),
+        Action::RenamePaneByPaneId {
+            pane_id: Some(pane),
+            name: b"shell".to_vec()
+        }
+    );
+
+    palette_search(&mut screen, "Close pane");
+    palette_key(&mut screen, BareKey::Enter);
+    let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+    assert!(frame.contains("Close [1] project:next: shell?"), "{frame}");
+}
+
+#[test]
+fn warp_palette_uses_peer_display_titles_and_falls_back_for_old_metadata() {
+    for display_title in [None, Some("host project:branch: shell".to_owned())] {
+        let mut screen = screen();
+        let source = warp_peer(&mut screen, "warp-peer");
+        let peer = screen.peer_sessions_cache.get_mut(&source).unwrap();
+        for pane in peer.panes.panes.values_mut().flatten() {
+            pane.title = "shell".into();
+            pane.display_title = display_title.clone();
+        }
+        let receiver = screen_wired_to_server(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        palette_search(&mut screen, "Warp pane");
+        palette_key(&mut screen, BareKey::Enter);
+        palette_key(&mut screen, BareKey::Enter);
+        screen.command_palette_handles_input(&None, b"terminal_1", false, CLIENT);
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        let title = display_title.as_deref().unwrap_or("shell");
+        assert!(frame.contains(&format!("› [1] {title}")), "{frame}");
+    }
+}
+
+#[test]
+fn palette_distinguishes_terminal_and_plugin_with_the_same_id() {
+    let terminal = PaneId::Terminal(TerminalId::new(42));
+    let plugin = PaneId::Plugin(PluginId::new(42));
+    for target in [terminal, plugin] {
+        let mut screen = create_non_mirrored_screen(SIZE);
+        let (sender, _plugin_receiver) = channels::unbounded();
+        screen.bus.senders.to_plugin = Some(SenderWithContext::new(sender));
+        new_tab(&mut screen, 1, TabId::new(0));
+        for id in [terminal, plugin] {
+            screen
+                .get_active_tab_mut(CLIENT)
+                .unwrap()
+                .new_floating_pane(id, Some("shell".into()), None, false, false, None, None)
+                .unwrap();
+        }
+        let receiver = screen_wired_to_server(&mut screen);
+        let actions = palette_actions_receiver(&mut screen);
+        let mut grid = grid_for_render_snapshot(SIZE);
+        palette_search(&mut screen, "42");
+        let frame = render_frame_into(&mut screen, &receiver, CLIENT, &mut grid);
+        assert!(frame.contains("[42] shell"), "{frame}");
+        assert!(frame.contains("[plugin_42] shell"), "{frame}");
+        screen.close_command_palette(CLIENT);
+        palette_search(&mut screen, &target.to_string());
+        palette_key(&mut screen, BareKey::Enter);
+        assert_eq!(
+            enqueued_palette_action(&actions),
+            Action::FocusPaneByPaneId { pane_id: target }
         );
     }
 }

@@ -1296,8 +1296,11 @@ pub struct PaneInfo {
     /// Membership reported by the owning tab, including hidden list entries.
     #[serde(default)]
     pub is_stack_list_member: bool,
-    /// The full title of the pane as it appears in the UI (if there is room for it)
+    /// The raw title, used for renaming and saved layouts.
     pub title: String,
+    /// The full display title, without the pane ID or transient frame indicators.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_title: Option<String>,
     /// Whether a pane exited or not, note that most panes close themselves before setting this
     /// flag, so this is only relevant to command panes
     pub exited: bool,

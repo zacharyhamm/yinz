@@ -61,6 +61,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             is_suppressed: false,
             is_stack_list_member: true,
             title: "pane 1".to_owned(),
+            display_title: None,
             exited: false,
             exit_status: None,
             restart_error: None,
@@ -95,6 +96,7 @@ fn serialize_and_deserialize_session_info_with_data() {
             is_suppressed: false,
             is_stack_list_member: false,
             title: "pane 1".to_owned(),
+            display_title: None,
             exited: false,
             exit_status: None,
             restart_error: None,
@@ -295,5 +297,27 @@ fn control_agents_metadata_is_optional_and_checks_terminal_ids() {
     assert!(decode(&old).unwrap().control_agents.is_empty());
     for invalid in ["-1", "4294967296", "\"terminal_1\""] {
         assert!(decode(&format!("{old}\ncontrol_agents {invalid}\n")).is_err());
+    }
+}
+
+#[test]
+fn pane_display_title_round_trips_and_old_metadata_keeps_raw_title() {
+    for display_title in [None, Some("host project:worktree: 界 shell".to_owned())] {
+        let pane = PaneInfo {
+            title: "shell".into(),
+            display_title,
+            ..Default::default()
+        };
+        let encoded = pane_info::encode_to_kdl(&pane).unwrap();
+        assert_eq!(pane_info::decode_from_kdl(&encoded).unwrap().1, pane);
+        let json = serde_json::to_value(&pane).unwrap();
+        assert_eq!(
+            serde_json::from_value::<PaneInfo>(json.clone()).unwrap(),
+            pane
+        );
+        if pane.display_title.is_none() {
+            assert!(!encoded.to_string().contains("display_title"));
+            assert!(json.get("display_title").is_none());
+        }
     }
 }
