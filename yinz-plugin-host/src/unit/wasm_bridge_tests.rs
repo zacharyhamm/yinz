@@ -4983,7 +4983,7 @@ fn background_identity_resolves_repointed_symlink_after_last_stop() {
 #[test]
 fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
     use yinz_types::cli::PluginOperation as Op;
-    for fail_first in [false, true] {
+    for (parsed, fail_first) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut test = TestBridge::new();
         let first = test._dirs[0].path().join("a.ts");
         let second = test._dirs[0].path().join("b.ts");
@@ -4992,10 +4992,15 @@ fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
         }
         let link = test._dirs[0].path().join("link.ts");
         std::os::unix::fs::symlink(&first, &link).unwrap();
-        let run = RunPlugin {
+        let mut run = RunPlugin {
             location: RunPluginLocation::File(link.clone()),
             ..Default::default()
         };
+        let declaration = run.clone();
+        let url = Url::from_file_path(&link).unwrap();
+        if parsed {
+            run = yinz_runtime::plugin_location::run_plugin_from_url(url.as_str()).unwrap();
+        }
         let client = ClientId::new(1);
         let id = test
             .bridge
@@ -5017,6 +5022,20 @@ fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
         test.finish_reload(sibling_id);
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&second, &link).unwrap();
+        if parsed {
+            run = yinz_runtime::plugin_location::run_plugin_from_url(url.as_str()).unwrap();
+            assert_eq!(run.location, replacement);
+            let next_id = test.bridge.next_plugin_id;
+            for operation in [Op::Inspect, Op::Start] {
+                let response = test
+                    .bridge
+                    .plugin_request(lifecycle_request(operation, &run), client)
+                    .unwrap();
+                assert_eq!(response.plugins.len(), 1);
+                assert_eq!(response.plugins[0].id, id);
+            }
+            assert_eq!(test.bridge.next_plugin_id, next_id);
+        }
 
         if fail_first {
             std::fs::write(
@@ -5024,7 +5043,13 @@ fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
                 "export default { load() { throw Error('retry'); } };",
             )
             .unwrap();
-            test.bridge.reload_plugin_with_id(id).unwrap();
+            if parsed {
+                test.bridge
+                    .plugin_request(lifecycle_request(Op::Reload, &run), client)
+                    .unwrap();
+            } else {
+                test.bridge.reload_plugin_with_id(id).unwrap();
+            }
             test.finish_reload(id);
             assert!(test
                 .bridge
@@ -5033,12 +5058,20 @@ fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
                 .unwrap()
                 .get_running_plugin(id, None)
                 .is_none());
-            assert_eq!(test.bridge.normalize_plugin(run.clone()).location, original);
+            assert_eq!(
+                test.bridge.normalize_plugin(declaration.clone()).location,
+                original
+            );
             std::fs::write(&second, "export default {};").unwrap();
         }
 
-        // Exercise the ID entry point, then repeated lifecycle reloads by declaration.
-        test.bridge.reload_plugin_with_id(id).unwrap();
+        if parsed {
+            test.bridge
+                .plugin_request(lifecycle_request(Op::Reload, &run), client)
+                .unwrap();
+        } else {
+            test.bridge.reload_plugin_with_id(id).unwrap();
+        }
         test.finish_reload(id);
         for _ in 0..2 {
             assert_eq!(
@@ -5212,9 +5245,9 @@ fn background_permissions_coalesce_an_identity_and_retire_only_removed_instances
 }
 
 #[test]
-fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload() {
+fn background_storage_preserves_initial_owner_on_reload() {
     use yinz_types::plugin_data::{AttrDef, EntityDef, FetchRequest, Mutation};
-    for relative in [false, true] {
+    for case in ["absolute", "relative", "url", "url-retry"] {
         let mut test = TestBridge::new();
         let cwd = std::env::current_dir().unwrap();
         let dir = tempfile::tempdir_in(&cwd).unwrap();
@@ -5238,14 +5271,22 @@ fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload
         "#).unwrap();
         let link = dir.path().join("legacy.ts");
         std::os::unix::fs::symlink(&source, &link).unwrap();
-        let run = RunPlugin {
-            location: RunPluginLocation::File(if relative {
+        let mut run = RunPlugin {
+            location: RunPluginLocation::File(if case == "relative" {
                 link.strip_prefix(&cwd).unwrap().to_path_buf()
             } else {
-                link
+                link.clone()
             }),
             ..Default::default()
         };
+        let parsed = case.starts_with("url");
+        if parsed {
+            run = yinz_runtime::plugin_location::run_plugin_from_url(
+                Url::from_file_path(&link).unwrap().as_str(),
+            )
+            .unwrap();
+        }
+        let mut reloaded_source = source.clone();
         let owner = Url::from(&run.location).to_string();
         let namespace = yinz_storage::plugin_data_store::private_namespace(&owner);
         let store = test.bridge.data_access.plugin_data();
@@ -5284,7 +5325,7 @@ fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload
                 if expected == "size seed!" {
                     run.location.clone()
                 } else {
-                    RunPluginLocation::File(source.canonicalize().unwrap())
+                    RunPluginLocation::File(reloaded_source.canonicalize().unwrap())
                 }
             );
             assert_eq!(
@@ -5293,7 +5334,9 @@ fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload
             );
             assert_eq!(
                 test.bridge
-                    .get_plugin_ids_for_url(&RunPluginLocation::File(source.clone()).display())
+                    .get_plugin_ids_for_url(
+                        &RunPluginLocation::File(reloaded_source.clone()).display()
+                    )
                     .unwrap(),
                 vec![id]
             );
@@ -5319,6 +5362,29 @@ fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload
             test.settle(id);
             assert!(frames(&mut test, id).iter().any(|frame| frame == expected));
             if expected == "size seed!" {
+                if parsed {
+                    reloaded_source = dir.path().join("replacement.ts");
+                    std::fs::copy(&source, &reloaded_source).unwrap();
+                    std::fs::remove_file(&link).unwrap();
+                    std::os::unix::fs::symlink(&reloaded_source, &link).unwrap();
+                    if case == "url-retry" {
+                        std::fs::write(
+                            &reloaded_source,
+                            "export default { load() { throw Error('retry'); } };",
+                        )
+                        .unwrap();
+                        test.bridge.reload_plugin_with_id(id).unwrap();
+                        test.finish_reload(id);
+                        assert!(test
+                            .bridge
+                            .plugin_map
+                            .lock()
+                            .unwrap()
+                            .get_running_plugin(id, None)
+                            .is_none());
+                        std::fs::copy(&source, &reloaded_source).unwrap();
+                    }
+                }
                 test.bridge.reload_plugin_with_id(id).unwrap();
             }
         }

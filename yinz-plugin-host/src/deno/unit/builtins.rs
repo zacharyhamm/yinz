@@ -12,6 +12,7 @@ use yinz_types::{
 
 fn load_builtin(name: &str, source: &str, mut env: PluginEnv) -> Result<DenoPlugin> {
     env.plugin_config.location = RunPluginLocation::Yinz(PluginTag::new(name));
+    env.data_owner = url::Url::from(&env.plugin_config.location);
     DenoPlugin::new(
         source,
         Path::new("/nonexistent/builtin.ts"),
