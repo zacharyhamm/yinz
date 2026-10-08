@@ -56,8 +56,13 @@ All plugin permission requests use a host-owned modal above the current tab.
 The modal does not reveal the plugin pane or change the underlying focus, geometry, or input mode.
 It closes an open command palette or context menu. Other clients remain usable.
 
-Deny is selected initially. Press Enter to deny, or select Allow with Tab or an arrow key and press Enter.
-Clicking a control also answers the request. Escape denies. Pasted text cannot approve a request.
+Deny is selected initially. Up selects Deny, and Down selects Allow, stopping at either end.
+Tab and Shift+Tab cycle between the choices. Left and Right do not change the selection.
+Selecting a choice scrolls it into view. Enter activates the selected choice only when it is visible.
+The Enter hint appears only beside the selected choice. Escape always denies, even when Allow is selected.
+Clicking a control also answers the request. Pasted text cannot approve a request.
+
+Use PageUp, PageDown, Home, End, or the mouse wheel to scroll the dialog.
 
 The host prefers the interactive client focused on the initiating CLI pane, then the acting client, then the last active interactive client.
 Startup requests wait for an interactive client. If that client disconnects, the host reassigns the prompt. Watchers cannot answer.
