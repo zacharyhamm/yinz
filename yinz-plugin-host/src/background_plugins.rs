@@ -90,7 +90,19 @@ impl WasmBridge {
     }
 
     fn matches_location(&self, id: PluginId, run: &RunPlugin, target: &RunPlugin) -> bool {
+        let declaration = |run: &RunPlugin| match &run.location {
+            RunPluginLocation::File(path) => Some(
+                self.yinz_cwd.join(
+                    run.declared_path
+                        .as_ref()
+                        .filter(|path| !path.as_os_str().is_empty())
+                        .unwrap_or(path),
+                ),
+            ),
+            _ => None,
+        };
         run.location == target.location
+            || declaration(run).is_some_and(|path| Some(path) == declaration(target))
             || self.loaded_plugin_identity(id, run.clone()).location
                 == self.normalize_plugin(target.clone()).location
     }

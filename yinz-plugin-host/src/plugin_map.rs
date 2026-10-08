@@ -60,6 +60,7 @@ pub struct PluginMap {
 #[derive(Clone)]
 pub(crate) struct PluginMetadata {
     pub config: PluginConfig,
+    pub data_owner: url::Url,
     pub resolved_source_path: Option<PathBuf>,
     pub cache_dir: PathBuf,
     pub cwd: PathBuf,
@@ -73,6 +74,7 @@ impl PluginMetadata {
         let env = plugin.env();
         Self {
             config: env.plugin_config.clone(),
+            data_owner: env.data_owner.clone(),
             resolved_source_path: env.resolved_source_path.clone(),
             cache_dir: env.plugin_own_cache_dir.clone(),
             cwd: env.plugin_cwd.clone(),
@@ -724,6 +726,8 @@ pub struct PluginEnv {
     /// Named Deno workers share the owning instance's permissions and lifetime.
     pub(crate) deno_workers: Option<Arc<crate::deno::background_worker::Workers>>,
     pub plugin_config: PluginConfig,
+    /// Original storage identity, unaffected by source changes on reload.
+    pub data_owner: url::Url,
     pub permissions: Arc<Mutex<Option<HashSet<PermissionType>>>>,
     /// Whether this plugin has asked for permissions at all, set by `request_permission`.
     ///
@@ -1405,6 +1409,7 @@ mod tests {
                     PluginId::new(id),
                     super::PluginMetadata {
                         config: config.clone(),
+                        data_owner: url::Url::from(&config.location),
                         resolved_source_path: Some(resolved.clone()),
                         cache_dir: "/cache".into(),
                         cwd: "/cwd".into(),

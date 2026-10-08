@@ -38,7 +38,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::oneshot;
-use url::Url;
 use wasmi::{Caller, Linker};
 use yinz_bus::background_jobs::BackgroundJob;
 use yinz_bus::global_async_runtime::get_tokio_runtime;
@@ -6130,18 +6129,6 @@ fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResp
 // yinz thread is involved, and nothing is delivered as an event — except the watch notifications,
 // which are queued through the plugin thread rather than dispatched here (see `notify_watchers`).
 
-fn plugin_data_owner(env: &PluginEnv) -> Url {
-    use yinz_types::input::layout::RunPluginLocation;
-
-    // Reload canonicalizes location; storage remains owned by the original declaration.
-    match &env.plugin_config.location {
-        RunPluginLocation::File(_) => {
-            Url::from(&RunPluginLocation::File(env.plugin_config.path.clone()))
-        },
-        location => Url::from(location),
-    }
-}
-
 /// Work out which namespace a command means, and whether this plugin may use it.
 ///
 /// `None` is the plugin's own private namespace, which it cannot name and therefore cannot mistake
@@ -6152,7 +6139,7 @@ fn plugin_data_owner(env: &PluginEnv) -> Url {
 fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<String, DataError> {
     let Some(namespace) = namespace else {
         return Ok(plugin_data_store::private_namespace(
-            plugin_data_owner(env).as_ref(),
+            env.data_owner.as_ref(),
         ));
     };
     validate_namespace(Some(&namespace))?;
@@ -6191,7 +6178,7 @@ fn data_define_entity(
     def: EntityDef,
     allow_destructive: bool,
 ) {
-    let plugin_url = plugin_data_owner(env).to_string();
+    let plugin_url = env.data_owner.to_string();
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
         env.data_access.plugin_data().define_entity(
             &namespace,

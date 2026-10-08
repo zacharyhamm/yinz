@@ -112,6 +112,7 @@ pub struct LoadingContext {
     pub temporary_data_dir: Arc<OwnedDir>,
     pub plugin_own_cache_dir: PathBuf,
     pub plugin_config: PluginConfig,
+    pub data_owner: Url,
     pub tab_index: Option<TabId>,
     pub path_to_default_shell: PathBuf,
     pub session_env_vars: std::collections::BTreeMap<String, String>,
@@ -275,15 +276,20 @@ impl LoadingContext {
             .cloned()
             .unwrap_or_else(|| wasm_bridge.default_keybinds.clone());
         let plugin_cwd = cwd.unwrap_or_else(|| wasm_bridge.yinz_cwd.clone());
+        let data_owner;
         {
             let mut plugin_map = wasm_bridge.plugin_map.lock().unwrap();
-            let resolved_source_path = plugin_map
-                .reload_metadata(plugin_id)
-                .and_then(|metadata| metadata.resolved_source_path);
+            let previous = plugin_map.reload_metadata(plugin_id);
+            data_owner = previous
+                .as_ref()
+                .map(|metadata| metadata.data_owner.clone())
+                .unwrap_or_else(|| Url::from(&plugin_config.location));
+            let resolved_source_path = previous.and_then(|metadata| metadata.resolved_source_path);
             plugin_map.remember_plugin(
                 plugin_id,
                 super::plugin_map::PluginMetadata {
                     config: plugin_config.clone(),
+                    data_owner: data_owner.clone(),
                     resolved_source_path,
                     cache_dir: plugin_own_cache_dir.clone(),
                     cwd: plugin_cwd.clone(),
@@ -312,6 +318,7 @@ impl LoadingContext {
             temporary_data_dir,
             plugin_own_cache_dir,
             plugin_config,
+            data_owner,
             tab_index,
             yinz_data_dir: wasm_bridge.yinz_data_dir.clone(),
             data_access: wasm_bridge.data_access.clone(),

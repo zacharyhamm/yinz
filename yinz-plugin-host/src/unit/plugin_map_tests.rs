@@ -24,6 +24,7 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
             id,
             PluginMetadata {
                 config: config.clone(),
+                data_owner: url::Url::from(&config.location),
                 cache_dir: "/cache".into(),
                 resolved_source_path: Some(resolved.clone()),
                 cwd: cwd.clone(),
