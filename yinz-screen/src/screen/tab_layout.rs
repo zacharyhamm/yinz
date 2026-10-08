@@ -358,7 +358,9 @@ impl Screen {
                 false
             };
             self.recover_pending_tab(tab_id).non_fatal();
-            if let Some((_, _, _, Some(response))) = self.pending_group_placements.remove(&tab_id) {
+            if let Some((_, _, _, Some(response), _)) =
+                self.pending_group_placements.remove(&tab_id)
+            {
                 // Receipt is successful when the recovery tab owns the transferred supervisors;
                 // the source must not roll those terminals back after a rejected layout.
                 let _ = response.send(if retained {

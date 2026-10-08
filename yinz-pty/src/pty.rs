@@ -871,6 +871,8 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                 placement,
                 client_id,
                 response_channel,
+                hold,
+                placed,
             } => {
                 if let Some(group) = payload.group.take() {
                     let result = group
@@ -886,6 +888,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                     client_id,
                                     placement: Some(placement),
                                     response_channel: Some(response_channel.clone()),
+                                    hold,
                                 })
                                 .context("failed to place adopted pane group")
                         });
@@ -894,16 +897,20 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                     }
                     continue;
                 }
-                // Matched rather than mapped so the payload — which carries the
-                // pane's whole scrollback — moves into the Screen instruction
-                // instead of being cloned.
-                let result = match pty.adopt_terminal(&payload) {
-                    Ok(adopted) => pty
-                        .bus
+                // Answered as soon as the supervisor is attached: this session owns
+                // it from then on, so the caller must not roll back. Screen checks
+                // placement in `AdoptedPaneFinished`, answers `placed` and releases
+                // `hold`. The payload, which carries the pane's whole scrollback,
+                // moves into the Screen instruction rather than being cloned.
+                let held = payload.held.is_some();
+                let result = pty.adopt_terminal(&payload).and_then(|adopted| {
+                    let terminal_id = adopted.terminal_id;
+                    pty.bus
                         .senders
                         .send_to_screen(ScreenInstruction::AdoptedPaneReady {
-                            response_channel: response_channel.clone(),
-                            terminal_id: adopted.terminal_id,
+                            hold,
+                            placed,
+                            terminal_id,
                             payload,
                             placement,
                             client_id,
@@ -911,12 +918,13 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                             buffered: adopted.buffered,
                             child_exit_status: adopted.child_exit_status,
                         })
-                        .context("failed to place adopted pane"),
-                    Err(e) => Err(e),
-                };
-                if let Err(error) = result {
-                    let _ = response_channel.send(Err(error));
-                }
+                        .context("failed to place adopted pane")
+                        .inspect_err(|_| {
+                            // Nothing will place it, so let the caller roll back.
+                            pty.give_back_adopted(terminal_id, held);
+                        })
+                });
+                let _ = response_channel.send(result);
             },
             PtyInstruction::ReleaseTerminalsForWarp {
                 held,
@@ -943,6 +951,31 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
             } => {
                 strand_pane_after_warp(&pty, terminal_id, &why, recovery);
             },
+            PtyInstruction::GiveBackAdoptedTerminal {
+                terminal_id,
+                held,
+                recovery,
+                placed,
+            } => {
+                // A live pane that already closed on its own has nothing to give back.
+                if held || pty.task_handles.contains_key(&terminal_id) {
+                    let error = if recovery.is_empty() {
+                        anyhow!("the adopted pane could not be placed, so it was closed")
+                    } else {
+                        anyhow!(
+                            "the adopted pane could not be placed and was given back. \
+                             Recover it with `{recovery}`"
+                        )
+                    };
+                    log::error!("adopted pane {terminal_id}: {error}");
+                    pty.give_back_adopted(terminal_id, held);
+                    // Told only now, so an adopter that rolls back finds the
+                    // supervisor already released.
+                    if let Some(placed) = placed {
+                        let _ = placed.send(Err(error));
+                    }
+                }
+            },
             PtyInstruction::AdoptTab {
                 payload,
                 client_id,
@@ -956,6 +989,7 @@ pub fn pty_thread_main(mut pty: Pty, layout: Box<Layout>) -> Result<()> {
                                 .send_to_screen(ScreenInstruction::AdoptedTabReady {
                                     placement: None,
                                     response_channel: None,
+                                    hold: None,
                                     payload,
                                     adopted: Box::new(adopted),
                                     client_id,
@@ -3363,21 +3397,7 @@ impl Pty {
                 .zip(&payload.tiled_panes)
                 .chain(floating.iter().zip(&payload.floating_panes))
             {
-                if pane.held.is_some() {
-                    self.close_pane(PaneId::Terminal(adopted.terminal_id))
-                        .non_fatal();
-                    continue;
-                }
-                if let Err(e) = self.release_terminal_for_warp(
-                    adopted.terminal_id,
-                    Instant::now() + GIVE_BACK_BUDGET,
-                ) {
-                    // Nothing left to try. Say which supervisors are now stranded
-                    // so they can be recovered by hand.
-                    log::error!(
-                        "could not give back an adopted pane after a failed tab warp: {e:#}"
-                    );
-                }
+                self.give_back_adopted(adopted.terminal_id, pane.held.is_some());
             }
             return Err(e)
                 .with_context(|| {
@@ -3393,6 +3413,23 @@ impl Pty {
         }
 
         Ok(AdoptedTabPanes { tiled, floating })
+    }
+
+    /// Undo an adoption that cannot be completed. A held terminal has no
+    /// supervisor and is closed; otherwise the supervisor is released so it can
+    /// be adopted again.
+    pub(crate) fn give_back_adopted(&mut self, terminal_id: TerminalId, held: bool) {
+        if held {
+            self.close_pane(PaneId::Terminal(terminal_id)).non_fatal();
+            return;
+        }
+        if let Err(e) =
+            self.release_terminal_for_warp(terminal_id, Instant::now() + GIVE_BACK_BUDGET)
+        {
+            // Nothing left to try. The caller logs which supervisor this was so it
+            // can be recovered by hand.
+            log::error!("could not give back adopted pane {terminal_id}: {e:#}");
+        }
     }
 
     pub(crate) fn set_active_pane(&mut self, pane_id: Option<PaneId>, client_id: ClientId) {

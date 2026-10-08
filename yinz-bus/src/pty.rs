@@ -333,7 +333,27 @@ pub enum PtyInstruction {
         payload: Box<WarpedPane>,
         placement: WarpPlacement,
         client_id: ClientId,
+        /// Answered once the supervisor is attached: from then on this session
+        /// owns it, and a caller must not roll back.
         response_channel: crossbeam::channel::Sender<Result<()>>,
+        /// Kept until the pane is placed, when this adoption is a rollback.
+        hold: Option<crate::warp::PaneWarpHold>,
+        /// Answered after `response_channel`, once Screen knows whether the pane
+        /// was placed. An error means the terminal was given back. Dropped
+        /// unanswered by a group adoption, whose `response_channel` already
+        /// waits for placement.
+        placed: crossbeam::channel::Sender<Result<()>>,
+    },
+    /// Detach an adopted terminal that Screen could not give a pane, so its
+    /// supervisor can be adopted again by hand. A held terminal has no
+    /// supervisor and is closed.
+    GiveBackAdoptedTerminal {
+        terminal_id: TerminalId,
+        held: bool,
+        /// From `warp::recovery_command`; empty for a held terminal.
+        recovery: String,
+        /// The adopter's `placed` channel, told once the terminal is given back.
+        placed: Option<crossbeam::channel::Sender<Result<()>>>,
     },
     /// Give up every supervisor in a tab at once.
     ///

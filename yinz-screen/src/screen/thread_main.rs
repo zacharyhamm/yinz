@@ -3070,7 +3070,6 @@ pub fn screen_thread_main(
                     response_channel,
                     deadline,
                 } => {
-                    screen.in_flight_pane_warps += 1;
                     screen.warp_pane(
                         supports_companions,
                         supports_held,
@@ -3083,10 +3082,13 @@ pub fn screen_thread_main(
                     )?;
                 },
                 ScreenInstruction::PaneWarpFinished => {
-                    screen.in_flight_pane_warps -= 1;
+                    match screen.in_flight_pane_warps.checked_sub(1) {
+                        Some(remaining) => screen.in_flight_pane_warps = remaining,
+                        None => log::warn!("a pane warp finished that was never started"),
+                    }
                 },
-                ScreenInstruction::AdoptedPaneFinished(response_channel) => {
-                    let _ = response_channel.send(Ok(()));
+                ScreenInstruction::AdoptedPaneFinished(finish) => {
+                    screen.finish_adopted_pane(finish);
                 },
                 ScreenInstruction::PaneReleasedForWarp {
                     terminal_id,
@@ -3108,7 +3110,8 @@ pub fn screen_thread_main(
                     }
                 },
                 ScreenInstruction::AdoptedPaneReady {
-                    response_channel,
+                    hold,
+                    placed,
                     terminal_id,
                     payload,
                     placement,
@@ -3117,7 +3120,17 @@ pub fn screen_thread_main(
                     buffered,
                     child_exit_status,
                 } => {
-                    let result = screen
+                    let mut finish = Some(yinz_bus::warp::AdoptedPaneFinish {
+                        terminal_id,
+                        recovery: crate::warp::recovery_command(&payload),
+                        held: payload.held.is_some(),
+                        hold,
+                        placed,
+                    });
+                    // The pty thread has already told the caller this session owns
+                    // the terminal, so a placement failure is handled here and
+                    // reported through `placed`.
+                    screen
                         .place_adopted_pane(
                             terminal_id,
                             *payload,
@@ -3126,18 +3139,12 @@ pub fn screen_thread_main(
                             cmd,
                             buffered,
                             child_exit_status,
+                            &mut finish,
                         )
-                        .and_then(|_| {
-                            screen
-                                .bus
-                                .senders
-                                .send_to_screen(ScreenInstruction::AdoptedPaneFinished(
-                                    response_channel.clone(),
-                                ))
-                                .context("failed to acknowledge adopted pane")
-                        });
-                    if let Err(error) = result {
-                        let _ = response_channel.send(Err(error));
+                        .non_fatal();
+                    // Failed before its pane was asked for, so there is none.
+                    if let Some(finish) = finish {
+                        screen.finish_adopted_pane(finish);
                     }
                     screen.log_and_report_session_state().non_fatal();
                     screen.render()?;
@@ -3169,6 +3176,7 @@ pub fn screen_thread_main(
                 },
                 ScreenInstruction::AdoptedTabReady {
                     response_channel,
+                    hold,
                     placement,
                     payload,
                     adopted,
@@ -3180,6 +3188,7 @@ pub fn screen_thread_main(
                         client_id,
                         placement,
                         response_channel.clone(),
+                        hold,
                     );
                     if let Err(error) = result {
                         if let Some(response_channel) = response_channel {

@@ -74,8 +74,7 @@ use {
     yinz_types::data::LayoutWithError, yinz_types::data::NotificationInfo,
     yinz_types::data::OverlayPlacement, yinz_types::data::PaneInfo, yinz_types::data::PluginTag,
     yinz_types::data::RemotePaneHandoff, yinz_types::data::SessionInfo, yinz_types::data::TabInfo,
-    yinz_types::data::WarpedPane, yinz_types::data::WarpedTab,
-    yinz_types::data::AGENT_PANE_CONTEXT,
+    yinz_types::data::WarpedTab, yinz_types::data::AGENT_PANE_CONTEXT,
 };
 use {yinz_types::input::command::RunCommand, yinz_types::input::command::TerminalAction};
 use {
@@ -547,6 +546,15 @@ pub(super) enum ThemePolicy {
 /// could not be produced.
 type WarpReplySender<T> = crossbeam::channel::Sender<Result<Box<T>, String>>;
 
+/// A parked pane warp's caller, and what is needed to take the pane back if that
+/// caller is gone by the time it is released.
+pub(crate) struct ParkedPaneWarp {
+    pub(crate) response_channel: yinz_bus::warp::PaneWarpReply,
+    pub(crate) hold: yinz_bus::warp::PaneWarpHold,
+    pub(crate) placement: yinz_types::data::WarpPlacement,
+    pub(crate) client_id: ClientId,
+}
+
 /// Where a warped-in group of panes goes once its tab exists: the placement asked for, the tab
 /// it is relative to, the client that asked, and the channel told when the placement is done.
 type PendingGroupPlacement = (
@@ -554,6 +562,7 @@ type PendingGroupPlacement = (
     Option<TabId>,
     ClientId,
     Option<crossbeam::channel::Sender<Result<()>>>,
+    Option<yinz_bus::warp::PaneWarpHold>,
 );
 
 /// Each Deno isolate has its own registration; Wasm subscribers have no generation.
@@ -728,8 +737,9 @@ pub(crate) struct Screen {
     /// what closes it: by the time a send could report that nobody is
     /// listening, the pane is already gone and its process unwatched. Comparing
     /// against this before starting is the only chance to notice in time.
-    pending_warps: HashMap<TerminalId, (WarpReplySender<WarpedPane>, std::time::Instant)>,
-    /// Keep the last tab and its clients until adoption or rollback finishes.
+    pending_warps: HashMap<TerminalId, (ParkedPaneWarp, std::time::Instant)>,
+    /// Live `PaneWarpHold`s. While any exists, an emptied session keeps its last
+    /// tab and clients, because the pane may still come back.
     in_flight_pane_warps: usize,
     /// The same idea as `pending_warps`, keyed by tab id rather than terminal id
     /// because a tab's release is answered once for the whole tab — and carrying
@@ -742,14 +752,7 @@ pub(crate) struct Screen {
     /// still have the tab closed under a caller that had gone by the time the
     /// serialization finished, which is exactly what the reserve exists to rule
     /// out.
-    pending_pane_groups: HashMap<
-        TabId,
-        (
-            WarpReplySender<WarpedPane>,
-            PreparedTabWarp,
-            std::time::Instant,
-        ),
-    >,
+    pending_pane_groups: HashMap<TabId, (ParkedPaneWarp, PreparedTabWarp, std::time::Instant)>,
     pending_group_placements: HashMap<TabId, PendingGroupPlacement>,
     pending_warp_relationships: HashMap<TabId, yinz_types::data::WarpRelationships>,
     pending_tab_warps: HashMap<

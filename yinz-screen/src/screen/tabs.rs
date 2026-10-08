@@ -1105,6 +1105,14 @@ impl Screen {
             }
         }
         self.deferred_tab_closes.remove(&tab_id);
+        // An adopted group whose tab closes before its layout applied is never
+        // placed. Dropping the entry releases its warp hold.
+        if let Some((_, _, _, Some(response), _)) = self.pending_group_placements.remove(&tab_id) {
+            let _ = response.send(Err(anyhow!(
+                "the tab for the adopted panes closed before they were placed"
+            )));
+        }
+        self.pending_warp_relationships.remove(&tab_id);
         // Overlays keep their placement through the existing overlay relocation path.
         if preserve_guards {
             for (&plugin_id, notice) in &self.quit_notices {

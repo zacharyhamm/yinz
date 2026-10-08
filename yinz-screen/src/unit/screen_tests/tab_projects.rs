@@ -355,6 +355,7 @@ fn adopt_tab(screen: &mut Screen, name: &str, user_named: bool) -> TabId {
             crate::ClientId::new(1),
             None,
             None,
+            None,
         )
         .expect("TEST");
     tab_id

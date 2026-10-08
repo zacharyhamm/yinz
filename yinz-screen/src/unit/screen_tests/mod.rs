@@ -1729,6 +1729,7 @@ fn adopted_pane_new_pane(
             cmd,
             vec![],
             None,
+            &mut None,
         )
         .expect("TEST");
     screen_receiver

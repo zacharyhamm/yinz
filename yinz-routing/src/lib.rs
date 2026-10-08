@@ -1303,7 +1303,7 @@ pub fn route_action(
             placement,
         } => {
             drop(completion_tx);
-            match yinz_bus::warp::warp_pane_to_session(
+            let (result, hold) = yinz_bus::warp::warp_pane_to_session(
                 &senders,
                 client_id,
                 pane_id,
@@ -1311,12 +1311,16 @@ pub fn route_action(
                 &to_session,
                 placement,
                 yinz_bus::warp::WARP_TIMEOUT,
-            ) {
+            );
+            match result {
                 Ok(message) => {
                     send_output_to_client(cli_client_id, os_input.as_deref(), vec![message])
                 },
                 Err(message) => send_error_to_client(cli_client_id, os_input.as_deref(), &message),
             }
+            // Only now may a source this warp emptied shut down: a session that
+            // pulled the pane reads its goodbye as a failure.
+            drop(hold);
         },
         Action::AdoptPane { payload, placement } => {
             drop(completion_tx);
@@ -1325,6 +1329,7 @@ pub fn route_action(
                 client_id,
                 payload,
                 placement,
+                None,
                 yinz_bus::warp::WARP_TIMEOUT,
             ) {
                 Ok(message) => {
