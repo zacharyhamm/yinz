@@ -158,9 +158,9 @@ keybinds {{ normal {{ bind "Ctrl o" {{
             "{original_pane}"
         );
         yinz.wait_until("reload permission prompt", |grid| {
-            grid.contains("Allow? (y/n)")
+            grid.contains("Plugin permissions")
         });
-        yinz.send_stdin(b"y");
+        yinz.send_stdin(b"\t\r");
         yinz.wait_until("original plugin ready", |grid| {
             grid.contains("symlink version one ready")
         });

@@ -4790,7 +4790,14 @@ fn background_identity_survives_url_spelling_and_deleted_symlinks() {
     assert!(test.bridge.pending_plugin_reloads.is_empty());
     assert_eq!(
         test.bridge.run_plugin_of_plugin_id(first).unwrap().location,
-        run.location
+        RunPluginLocation::File(source.canonicalize().unwrap())
+    );
+    assert_eq!(
+        test.bridge
+            .run_plugin_of_plugin_id(first)
+            .unwrap()
+            .declared_path,
+        Some(link.clone())
     );
     std::fs::remove_file(&link).unwrap();
     std::fs::remove_file(&source).unwrap();
@@ -4912,6 +4919,112 @@ fn background_identity_resolves_repointed_symlink_after_last_stop() {
     assert_eq!(stopped.plugins[0].id, status.id);
     assert_eq!(stopped.plugins[0].location, url);
     assert_eq!(stopped.plugins[0].state, PluginState::Stopped);
+}
+
+#[test]
+fn background_identity_refreshes_retargeted_symlink_after_successful_reload() {
+    use yinz_types::cli::PluginOperation as Op;
+    for fail_first in [false, true] {
+        let mut test = TestBridge::new();
+        let first = test._dirs[0].path().join("a.ts");
+        let second = test._dirs[0].path().join("b.ts");
+        for source in [&first, &second] {
+            std::fs::write(source, "export default {};").unwrap();
+        }
+        let link = test._dirs[0].path().join("link.ts");
+        std::os::unix::fs::symlink(&first, &link).unwrap();
+        let run = RunPlugin {
+            location: RunPluginLocation::File(link.clone()),
+            ..Default::default()
+        };
+        let client = ClientId::new(1);
+        let id = test
+            .bridge
+            .plugin_request(lifecycle_request(Op::Start, &run), client)
+            .unwrap()
+            .plugins[0]
+            .id;
+        test.finish_reload(id);
+        let original = RunPluginLocation::File(first.canonicalize().unwrap());
+        let replacement = RunPluginLocation::File(second.canonicalize().unwrap());
+        let mut sibling = RunPlugin {
+            location: original.clone(),
+            ..Default::default()
+        };
+        sibling.configuration.insert("setting", "sibling");
+        let mut start = lifecycle_request(Op::Start, &sibling);
+        start.configuration = Some(sibling.configuration.clone().into_inner());
+        let sibling_id = test.bridge.plugin_request(start, client).unwrap().plugins[0].id;
+        test.finish_reload(sibling_id);
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&second, &link).unwrap();
+
+        if fail_first {
+            std::fs::write(
+                &second,
+                "export default { load() { throw Error('retry'); } };",
+            )
+            .unwrap();
+            test.bridge.reload_plugin_with_id(id).unwrap();
+            test.finish_reload(id);
+            assert!(test
+                .bridge
+                .plugin_map
+                .lock()
+                .unwrap()
+                .get_running_plugin(id, None)
+                .is_none());
+            assert_eq!(test.bridge.normalize_plugin(run.clone()).location, original);
+            std::fs::write(&second, "export default {};").unwrap();
+        }
+
+        // Exercise the ID entry point, then repeated lifecycle reloads by declaration.
+        test.bridge.reload_plugin_with_id(id).unwrap();
+        test.finish_reload(id);
+        for _ in 0..2 {
+            assert_eq!(
+                test.bridge.normalize_plugin(run.clone()).location,
+                replacement
+            );
+            assert_eq!(
+                test.bridge.normalize_plugin(sibling.clone()).location,
+                original
+            );
+            assert_eq!(
+                test.bridge
+                    .loaded_plugin_identity(sibling_id, sibling.clone())
+                    .location,
+                original
+            );
+            let loaded = test.bridge.run_plugin_of_plugin_id(id).unwrap();
+            assert_eq!(loaded.location, replacement);
+            assert_eq!(loaded.declared_path, Some(link.clone()));
+            let next_id = test.bridge.next_plugin_id;
+            for operation in [Op::Inspect, Op::Start, Op::Reload] {
+                let response = test
+                    .bridge
+                    .plugin_request(lifecycle_request(operation, &run), client)
+                    .unwrap();
+                assert_eq!(response.plugins.len(), 1);
+                assert_eq!(response.plugins[0].id, id);
+            }
+            assert_eq!(test.bridge.next_plugin_id, next_id);
+            test.finish_reload(id);
+        }
+        let stopped = test
+            .bridge
+            .plugin_request(lifecycle_request(Op::Stop, &run), client)
+            .unwrap();
+        assert_eq!(stopped.plugins[0].id, id);
+        assert!(test.bridge.run_plugin_of_plugin_id(id).is_none());
+        assert_eq!(
+            test.bridge
+                .loaded_plugin_identity(sibling_id, sibling)
+                .location,
+            original
+        );
+        test.bridge.unload_plugin(sibling_id).unwrap();
+    }
 }
 
 #[test]
@@ -5106,9 +5219,18 @@ fn background_storage_keeps_configured_symlink_and_relative_namespaces_on_reload
         let (shutdown, _) = tokio::sync::mpsc::channel(1);
         for expected in ["size seed!", "size seed!!"] {
             test.finish_reload(id);
+            let loaded = test.bridge.run_plugin_of_plugin_id(id).unwrap();
             assert_eq!(
-                test.bridge.run_plugin_of_plugin_id(id).unwrap().location,
-                run.location
+                loaded.location,
+                if expected == "size seed!" {
+                    run.location.clone()
+                } else {
+                    RunPluginLocation::File(source.canonicalize().unwrap())
+                }
+            );
+            assert_eq!(
+                loaded.declared_path,
+                PluginConfig::from_run_plugin(&run).map(|config| config.path)
             );
             assert_eq!(
                 test.bridge

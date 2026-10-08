@@ -6130,6 +6130,18 @@ fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResp
 // yinz thread is involved, and nothing is delivered as an event — except the watch notifications,
 // which are queued through the plugin thread rather than dispatched here (see `notify_watchers`).
 
+fn plugin_data_owner(env: &PluginEnv) -> Url {
+    use yinz_types::input::layout::RunPluginLocation;
+
+    // Reload canonicalizes location; storage remains owned by the original declaration.
+    match &env.plugin_config.location {
+        RunPluginLocation::File(_) => {
+            Url::from(&RunPluginLocation::File(env.plugin_config.path.clone()))
+        },
+        location => Url::from(location),
+    }
+}
+
 /// Work out which namespace a command means, and whether this plugin may use it.
 ///
 /// `None` is the plugin's own private namespace, which it cannot name and therefore cannot mistake
@@ -6138,9 +6150,10 @@ fn write_orphaned_pane_list(env: &mut PluginEnv, response: ListOrphanedPanesResp
 /// The shared check lives here rather than in `check_command_permission` because that sees only the
 /// command, not its arguments — the same reason event permissions are checked separately.
 fn resolve_data_namespace(env: &PluginEnv, namespace: Option<String>) -> Result<String, DataError> {
-    let plugin_url = Url::from(&env.plugin_config.location).to_string();
     let Some(namespace) = namespace else {
-        return Ok(plugin_data_store::private_namespace(&plugin_url));
+        return Ok(plugin_data_store::private_namespace(
+            plugin_data_owner(env).as_ref(),
+        ));
     };
     validate_namespace(Some(&namespace))?;
     if !may_reach_shared_namespaces(env) {
@@ -6178,7 +6191,7 @@ fn data_define_entity(
     def: EntityDef,
     allow_destructive: bool,
 ) {
-    let plugin_url = Url::from(&env.plugin_config.location).to_string();
+    let plugin_url = plugin_data_owner(env).to_string();
     let response = match resolve_data_namespace(env, namespace).and_then(|namespace| {
         env.data_access.plugin_data().define_entity(
             &namespace,
@@ -6284,7 +6297,7 @@ fn catalog_entities(
         let namespace = resolve_data_namespace(env, namespace)?;
         return env.data_access.plugin_data().catalog(Some(&namespace));
     }
-    let own = plugin_data_store::private_namespace(Url::from(&env.plugin_config.location).as_ref());
+    let own = resolve_data_namespace(env, None)?;
     let shared_visible = may_reach_shared_namespaces(env);
     Ok(env
         .data_access
