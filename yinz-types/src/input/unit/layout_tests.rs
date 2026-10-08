@@ -56,10 +56,105 @@ fn stack_fits_exactly_when_its_expanded_pane_gets_the_minimum_height() {
                 layout
                     .position_panes_in_space(&space(rows - 1), None, false, false)
                     .err(),
-                Some("Not enough room for stacked panes in this layout"),
+                Some(LayoutError::InsufficientStackSpace),
                 "{members} members, expanded {expanded:?}, {} rows",
                 rows - 1
             );
         }
     }
+}
+
+#[test]
+fn flexible_panes_enforce_both_minimum_dimensions_after_splitting() {
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        let area = |extent| {
+            PaneGeom::from(&match direction {
+                SplitDirection::Horizontal => Size {
+                    rows: extent,
+                    cols: MIN_TERMINAL_WIDTH,
+                },
+                SplitDirection::Vertical => Size {
+                    rows: MIN_TERMINAL_HEIGHT,
+                    cols: extent,
+                },
+            })
+        };
+        let minimum = match direction {
+            SplitDirection::Horizontal => MIN_TERMINAL_HEIGHT,
+            SplitDirection::Vertical => MIN_TERMINAL_WIDTH,
+        };
+        let mut layout = TiledPaneLayout {
+            children_split_direction: direction,
+            children: vec![TiledPaneLayout::default(); 2],
+            ..Default::default()
+        };
+        assert!(layout
+            .position_panes_in_space(&area(2 * minimum), None, false, false)
+            .is_ok());
+        assert_eq!(
+            layout
+                .position_panes_in_space(&area(2 * minimum - 1), None, false, false)
+                .unwrap_err(),
+            LayoutError::InsufficientSplitSpace,
+        );
+
+        // Budgeting alone cannot catch a small percentage; validate the rounded leaves too.
+        layout.children[0].split_size = Some(SplitSize::Percent(10));
+        assert_eq!(
+            layout
+                .position_panes_in_space(&area(4 * minimum), None, false, false)
+                .unwrap_err(),
+            LayoutError::UndersizedPane,
+        );
+        assert!(layout
+            .position_panes_in_space(&area(4 * minimum), None, true, false)
+            .is_ok());
+
+        // An explicitly fixed bar can be smaller than the flexible minimum.
+        layout.children[0].split_size = Some(SplitSize::Fixed(1));
+        assert!(layout
+            .position_panes_in_space(&area(minimum + 1), None, false, false)
+            .is_ok());
+        layout.children[0].split_size = Some(SplitSize::Fixed(0));
+        assert_eq!(
+            layout
+                .position_panes_in_space(&area(minimum + 1), None, false, false)
+                .unwrap_err(),
+            LayoutError::UndersizedPane,
+        );
+
+        layout.children[0] = TiledPaneLayout {
+            children_split_direction: direction,
+            children: vec![TiledPaneLayout::default(); 2],
+            ..Default::default()
+        };
+        assert_eq!(
+            layout
+                .position_panes_in_space(&area(3 * minimum), None, false, false)
+                .unwrap_err(),
+            LayoutError::InsufficientSplitSpace,
+        );
+        assert!(layout
+            .position_panes_in_space(&area(4 * minimum), None, false, false)
+            .is_ok());
+    }
+    for size in [Size { rows: 4, cols: 80 }, Size { rows: 24, cols: 4 }] {
+        assert_eq!(
+            TiledPaneLayout::default()
+                .position_panes_in_space(&PaneGeom::from(&size), None, false, false)
+                .unwrap_err(),
+            LayoutError::UndersizedPane,
+        );
+    }
+    assert_eq!(
+        stack_of(2, None)
+            .position_panes_in_space(
+                &PaneGeom::from(&Size { rows: 6, cols: 4 }),
+                None,
+                false,
+                false
+            )
+            .unwrap_err(),
+        LayoutError::UndersizedPane,
+    );
 }

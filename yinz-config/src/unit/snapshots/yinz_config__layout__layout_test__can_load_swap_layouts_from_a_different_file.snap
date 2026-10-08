@@ -1,6 +1,5 @@
 ---
 source: yinz-config/src/./unit/layout_test.rs
-assertion_line: 2587
 expression: "normalize_layout_debug(format!(\"{:#?}\", layout))"
 ---
 Layout {
@@ -88,6 +87,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),
@@ -216,6 +216,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),
@@ -283,6 +284,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),
@@ -492,6 +494,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),
@@ -559,6 +562,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),
@@ -869,6 +873,7 @@ Layout {
                                             ),
                                             initial_cwd: None,
                                             relative_path: None,
+                                            declared_path: None,
                                         },
                                     ),
                                 ),

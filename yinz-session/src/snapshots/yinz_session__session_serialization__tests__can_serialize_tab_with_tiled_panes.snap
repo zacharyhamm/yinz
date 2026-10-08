@@ -1,6 +1,6 @@
 ---
 source: yinz-session/src/session_serialization.rs
-assertion_line: 1799
+assertion_line: 2016
 expression: kdl.0
 ---
 layout {
@@ -16,10 +16,10 @@ layout {
             start_suspended true
         }
         pane size=10 {
-            plugin location="file:/tmp/\"my/cool cwd/plugin.wasm"
+            plugin location="file:///tmp/%22my/cool%20cwd/plugin.wasm"
         }
         pane size=10 {
-            plugin location="file:/tmp/\"my/cool cwd/plugin.wasm" {
+            plugin location="file:///tmp/%22my/cool%20cwd/plugin.wasm" {
                 "key 1\"\\" "val 1\"\\"
                 "key 2\"\\" "val 2\"\\"
             }
@@ -28,4 +28,3 @@ layout {
         pane name="my cool \\ \"pane_title\"" focus=true contents_file="initial_contents_1" size=10
     }
 }
-

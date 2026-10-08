@@ -1379,6 +1379,194 @@ export default {
 
 #[test]
 #[serial(plugin_tests)]
+#[cfg(unix)]
+fn repository_file_url_reload_follows_retargeted_symlink() {
+    let harness = Harness::new("ts", "export default {};", PermissionStatus::Granted);
+    let first = harness.directory.path().join("v1");
+    let second = harness.directory.path().join("v2");
+    for (path, version) in [(&first, "one"), (&second, "two")] {
+        std::fs::create_dir(path).unwrap();
+        std::fs::write(
+            path.join("main.ts"),
+            format!("export default {{ render() {{ return 'repository {version}'; }} }};"),
+        )
+        .unwrap();
+    }
+    let current = harness.directory.path().join("current # %20?");
+    std::os::unix::fs::symlink(&first, &current).unwrap();
+    let url = url::Url::from_file_path(&current).unwrap();
+    let config = yinz_config::config::Config::from_kdl(
+        &format!("plugins {{ current repo=\"{url}\"; }}"),
+        None,
+    )
+    .unwrap();
+    let serialized = yinz_config::kdl::plugin_aliases::to_kdl(&config.plugins, false);
+    let restored = yinz_config::kdl::plugin_aliases::from_kdl(&serialized).unwrap();
+    let plugin = &restored.aliases["current"];
+    let RunPluginLocation::Git(repository) = &plugin.location else {
+        panic!("repository plugin")
+    };
+    assert_eq!(PathBuf::from(&repository.repo), current);
+    load(&harness.sender, RunPluginOrAlias::RunPlugin(plugin.clone()));
+    harness.rendered("repository one");
+    std::fs::remove_file(&current).unwrap();
+    std::os::unix::fs::symlink(&second, &current).unwrap();
+    std::fs::remove_dir_all(first).unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginWithId(PLUGIN))
+        .unwrap();
+    harness.rendered("repository two");
+    let log = harness.finish();
+    assert_eq!(
+        log.iter()
+            .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+            .count(),
+        1
+    );
+    assert!(log.iter().any(|i| matches!(i, ScreenInstruction::PluginBytes(assets)
+        if assets.iter().any(|asset| asset.plugin_id == PLUGIN && frame_of(&asset.bytes).contains("repository two")))));
+}
+
+#[test]
+#[serial(plugin_tests)]
+#[cfg(unix)]
+fn deno_reload_follows_retargeted_symlinks_by_id_and_url() {
+    for by_id in [true, false] {
+        let harness = Harness::new(
+            "ts",
+            "export default { render() { return 'version one'; } };",
+            PermissionStatus::Granted,
+        );
+        let first = harness.directory.path().join("v1.ts");
+        std::fs::rename(&harness.path, &first).unwrap();
+        let current = harness.directory.path().join("current.ts");
+        std::os::unix::fs::symlink(&first, &current).unwrap();
+        let url = url::Url::from_file_path(&current).unwrap().to_string();
+        let parse = || {
+            RunPluginOrAlias::RunPlugin(
+                yinz_runtime::plugin_location::run_plugin_from_url(&url).unwrap(),
+            )
+        };
+        load(&harness.sender, parse());
+        harness.rendered("version one");
+
+        let second = harness.directory.path().join("v2.ts");
+        std::fs::write(
+            &second,
+            "export default { render() { return 'version two'; } };",
+        )
+        .unwrap();
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&second, &current).unwrap();
+        harness
+            .sender
+            .send(if by_id {
+                PluginInstruction::ReloadPluginWithId(PLUGIN)
+            } else {
+                PluginInstruction::ReloadPluginByUrl(parse())
+            })
+            .unwrap();
+        harness.rendered("version two");
+        harness.log.wait_until("replacement identity published", default_timeout(), |log| {
+            log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLocation(id, RunPluginLocation::File(path))
+                if *id == PLUGIN && path == &second.canonicalize().unwrap())).then_some(())
+        });
+        // Updating the canonical identity must not discard the declared symlink for later reloads.
+        std::fs::write(
+            &harness.path,
+            "export default { render() { return 'version three'; } };",
+        )
+        .unwrap();
+        std::fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&harness.path, &current).unwrap();
+        harness
+            .sender
+            .send(PluginInstruction::ReloadPluginWithId(PLUGIN))
+            .unwrap();
+        harness.rendered("version three");
+        // A reload naming the old canonical target must now start a separate plugin.
+        harness
+            .sender
+            .send(PluginInstruction::Reload(
+                Some(false),
+                None,
+                RunPluginOrAlias::RunPlugin(
+                    yinz_runtime::plugin_location::run_plugin_from_url(
+                        url::Url::from_file_path(&first).unwrap().as_ref(),
+                    )
+                    .unwrap(),
+                ),
+                TabId::new(1),
+                SIZE,
+                None,
+            ))
+            .unwrap();
+        harness
+            .log
+            .wait_until("old target gets a new pane", default_timeout(), |log| {
+                (log.iter()
+                    .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+                    .count()
+                    == 2)
+                    .then_some(())
+            });
+        let log = harness.finish();
+        assert_eq!(
+            log.iter()
+                .filter(|i| matches!(i, ScreenInstruction::AddPlugin(..)))
+                .count(),
+            2,
+            "only the old target launch creates a second pane"
+        );
+        assert!(log.iter().any(|i| matches!(i, ScreenInstruction::PluginBytes(assets)
+            if assets.iter().any(|asset| asset.plugin_id == PLUGIN && frame_of(&asset.bytes).contains("version two")))),
+            "reload must retain the original plugin ID");
+    }
+}
+
+#[test]
+#[serial(plugin_tests)]
+#[cfg(unix)]
+fn deno_failed_symlink_reload_does_not_publish_a_replacement_identity() {
+    let harness = Harness::new(
+        "ts",
+        "export default { render() { return 'original ready'; } };",
+        PermissionStatus::Granted,
+    );
+    let current = harness.directory.path().join("current.ts");
+    std::os::unix::fs::symlink(&harness.path, &current).unwrap();
+    let url = url::Url::from_file_path(&current).unwrap().to_string();
+    load(
+        &harness.sender,
+        RunPluginOrAlias::RunPlugin(
+            yinz_runtime::plugin_location::run_plugin_from_url(&url).unwrap(),
+        ),
+    );
+    harness.rendered("original ready");
+    let replacement = harness.directory.path().join("broken.ts");
+    std::fs::write(
+        &replacement,
+        "export default { load() { throw Error('replacement failed'); } };",
+    )
+    .unwrap();
+    std::fs::remove_file(&current).unwrap();
+    std::os::unix::fs::symlink(&replacement, &current).unwrap();
+    harness
+        .sender
+        .send(PluginInstruction::ReloadPluginWithId(PLUGIN))
+        .unwrap();
+    harness.log.wait_until("replacement load failed", default_timeout(), |log| {
+        log.iter().any(|i| matches!(i, ScreenInstruction::UpdatePluginLoadingStage(id, stage) if *id == PLUGIN && stage.is_error())).then_some(())
+    });
+    assert!(!harness
+        .finish()
+        .iter()
+        .any(|i| matches!(i, ScreenInstruction::UpdatePluginLocation(..))));
+}
+
+#[test]
+#[serial(plugin_tests)]
 fn deno_reload_rereads_imports_and_cancels_the_old_event_await() {
     let harness = Harness::new(
         "ts",

@@ -4917,6 +4917,15 @@ impl Screen {
         }
         false
     }
+    fn update_plugin_location(&mut self, plugin_id: PluginId, location: RunPluginLocation) {
+        for tab in self.tabs.values_mut() {
+            if let Some(pane) = tab.get_pane_with_id_mut(PaneId::Plugin(plugin_id)) {
+                pane.update_plugin_location(location);
+                break;
+            }
+        }
+    }
+
     fn update_plugin_loading_stage(
         &mut self,
         pid: PluginId,

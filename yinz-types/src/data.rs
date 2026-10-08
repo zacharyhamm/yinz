@@ -2161,7 +2161,7 @@ pub enum HttpVerb {
 pub enum PipeSource {
     Cli(String), // String is the pipe_id of the CLI pipe (used for blocking/unblocking)
     Plugin(crate::internal_ids::PluginId), // the sending plugin
-    Keybind,     // TODO: consider including the actual keybind here?
+    Keybind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

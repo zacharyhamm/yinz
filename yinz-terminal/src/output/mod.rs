@@ -140,7 +140,7 @@ fn write_changed_styles(
 }
 
 fn serialize_chunks_with_newlines(
-    character_chunks: Vec<CharacterChunk>,
+    character_chunks: Vec<(CharacterChunk, bool)>,
     link_handler: Option<&mut Rc<RefCell<LinkHandler>>>,
     styled_underlines: bool,
     osc8_hyperlinks: bool,
@@ -150,7 +150,8 @@ fn serialize_chunks_with_newlines(
 
     let mut vte_output = String::new();
     let link_handler = link_handler.map(|l_h| l_h.borrow());
-    for character_chunk in character_chunks {
+    let mut character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
+    for (character_chunk, is_canonical) in character_chunks {
         // Skip chunks that are completely outside the size bounds
         if let Some(size) = max_size {
             if character_chunk.y >= size.rows {
@@ -164,8 +165,9 @@ fn serialize_chunks_with_newlines(
         let chunk_changed_colors = character_chunk.changed_colors();
         let pane_default_fg = character_chunk.pane_default_fg;
         let pane_default_bg = character_chunk.pane_default_bg;
-        let mut character_styles = DEFAULT_STYLES.enable_styled_underlines(styled_underlines);
-        vte_output.push_str("\n\r");
+        if is_canonical || vte_output.is_empty() {
+            vte_output.push_str("\n\r");
+        }
         let mut chunk_width = character_chunk.x;
         for t_character in character_chunk.terminal_characters.iter() {
             // Stop rendering if the next character would exceed max_size.cols
@@ -196,6 +198,11 @@ fn serialize_chunks_with_newlines(
             .with_context(err_context)?;
             chunk_width += t_character.width();
             vte_output.push(t_character.character);
+            if t_character.is_implicit_blank() {
+                // Printing handles wrapping at the replay width; the marker only restores
+                // provenance, leaving the cursor and styles untouched.
+                vte_output.push_str("\x1b]777;yinz;implicit-blank\x1b\\");
+            }
         }
     }
     Ok(vte_output)
@@ -2193,7 +2200,10 @@ impl OutputBuffer {
 
             let x = 0;
             let y = line_index;
-            chunks.push(CharacterChunk::new(terminal_characters, x, y));
+            chunks.push((
+                CharacterChunk::new(terminal_characters, x, y),
+                line.is_canonical,
+            ));
         }
         serialize_chunks_with_newlines(
             chunks,

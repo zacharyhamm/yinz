@@ -461,7 +461,7 @@ pub fn cannot_split_panes_vertically_when_active_pane_is_too_small() {
 
 #[test]
 pub fn cannot_split_panes_horizontally_when_active_pane_is_too_small() {
-    let size = Size { cols: 121, rows: 4 };
+    let size = Size { cols: 121, rows: 5 };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.horizontal_split(
@@ -482,7 +482,7 @@ pub fn cannot_split_panes_horizontally_when_active_pane_is_too_small() {
 
 #[test]
 pub fn cannot_split_largest_pane_when_there_is_no_room() {
-    let size = Size { cols: 8, rows: 4 };
+    let size = Size { cols: 8, rows: 5 };
     let stacked_resize = true;
     let mut tab = create_new_tab(size, stacked_resize);
     tab.new_pane(

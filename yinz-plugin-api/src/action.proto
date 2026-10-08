@@ -71,6 +71,8 @@ message RunPlugin {
   // The path as written, when the plugin was named by a relative `file:` URL. `location` is
   // absolute by then, so this is what lets the user's plugin folder be searched for it.
   optional string relative_path = 5;
+  // Loading path before canonicalization, retained for symlink reloads.
+  optional string declared_path = 6;
 }
 
 message PluginAlias {

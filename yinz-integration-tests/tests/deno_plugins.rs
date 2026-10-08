@@ -8,6 +8,240 @@ use yinz_cli::args::CliAction;
 use yinz_integration_tests::{LayoutInfo, TestRunner, TERMINAL_SIZE};
 
 #[test]
+fn launch_or_focus_retains_the_pane_after_symlink_reload_by_id_and_url() {
+    for (by_id, floating, alias) in [(true, false, false), (false, true, true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("v1.ts");
+        let second = directory.path().join("v2.ts");
+        let current = directory.path().join("current.ts");
+        fs::write(
+            &first,
+            r#"
+let ready = false;
+export default {
+  async load() {
+    await yinz.waitForPermissions(['ChangeApplicationState']);
+    yinz.subscribe(['Key']);
+    ready = true;
+    yinz.requestRender();
+  },
+  update(event) {
+    if (event.Key) yinz.command('ReloadPlugin', yinz.command('GetPluginIds').plugin_id);
+    return false;
+  },
+  render() { return ready ? 'symlink version one ready' : 'waiting'; }
+};
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &second,
+            r#"
+let state = 'symlink version two ready';
+export default {
+  load() { yinz.subscribe(['Key']); },
+  update(event) {
+    if (event.Key) { state = 'stored binding focused replacement'; return true; }
+    return false;
+  },
+  render() { return state; }
+};
+"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&first, &current).unwrap();
+        let url = format!("file:{}", current.display());
+        let binding_url = if alias { "current" } else { &url };
+        let mut yinz = TestRunner::new(TERMINAL_SIZE)
+            .with_config_dir(directory.path().to_owned())
+            .with_config(&format!(
+                r#"
+load_plugins clear-defaults=true {{}}
+plugins {{ current location="{url}"; }}
+keybinds {{ normal {{ bind "Ctrl o" {{
+    LaunchOrFocusPlugin "{binding_url}" {{ floating {floating}; }}
+}}; }}; }}
+"#
+            ))
+            .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+            .start();
+        let terminal = yinz.expect_pty_spawn();
+        terminal.output(b"TERMINAL READY\r\n");
+        yinz.wait_until("terminal ready", |grid| grid.contains("TERMINAL READY"));
+        let launch = |url: String| CliAction::LaunchOrFocusPlugin {
+            floating,
+            in_place: false,
+            close_replaced_pane: false,
+            move_to_focused_tab: false,
+            url,
+            configuration: None,
+            configuration_json: None,
+            skip_plugin_cache: false,
+            tab_id: None,
+        };
+        let (code, original_pane) = yinz.run_cli_action_reporting(launch(url.clone()));
+        assert_eq!(code, 0, "{original_pane}");
+        assert!(
+            original_pane.trim().starts_with("plugin_"),
+            "{original_pane}"
+        );
+        yinz.wait_until("reload permission prompt", |grid| {
+            grid.contains("Allow? (y/n)")
+        });
+        yinz.send_stdin(b"y");
+        yinz.wait_until("original plugin ready", |grid| {
+            grid.contains("symlink version one ready")
+        });
+        fs::remove_file(&current).unwrap();
+        std::os::unix::fs::symlink(&second, &current).unwrap();
+        if by_id {
+            yinz.send_stdin(b"r");
+        } else {
+            let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+                url: url.clone(),
+                configuration: None,
+                configuration_json: None,
+            });
+            assert_eq!(code, 0, "{output}");
+        }
+        yinz.wait_until("replacement plugin ready", |grid| {
+            grid.contains("symlink version two ready")
+        });
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::FocusPaneId {
+            pane_id: format!("terminal_{}", terminal.terminal_id()),
+        });
+        assert_eq!(code, 0, "{output}");
+        // This action was parsed while current.ts still pointed at version one.
+        yinz.send_stdin(b"\x0fv");
+        yinz.wait_until("stored binding focuses the replacement", |grid| {
+            grid.contains("stored binding focused replacement")
+        });
+        let (code, focused_pane) = yinz.run_cli_action_reporting(launch(url.clone()));
+        assert_eq!(code, 0, "{focused_pane}");
+        assert_eq!(focused_pane.trim(), original_pane.trim());
+        let second_url = format!("file:{}", second.display());
+        let (code, focused_pane) = yinz.run_cli_action_reporting(launch(second_url.clone()));
+        assert_eq!(code, 0, "{focused_pane}");
+        assert_eq!(focused_pane.trim(), original_pane.trim());
+        // The host's URL reload lookup must agree with the screen's focus lookup.
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+            url: second_url,
+            configuration: None,
+            configuration_json: None,
+        });
+        assert_eq!(code, 0, "{output}");
+        let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+            tab: false,
+            command: false,
+            state: true,
+            geometry: false,
+            all: true,
+            json: true,
+        });
+        assert_eq!(code, 0, "{output}");
+        let panes: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+        let plugins: Vec<_> = panes
+            .iter()
+            .filter(|pane| {
+                pane["plugin_url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("file:"))
+            })
+            .collect();
+        assert_eq!(plugins.len(), 1, "{output}");
+        assert_eq!(plugins[0]["is_focused"], true, "{output}");
+        let (code, old_target_pane) =
+            yinz.run_cli_action_reporting(launch(format!("file:{}", first.display())));
+        assert_eq!(code, 0, "{old_target_pane}");
+        assert_ne!(old_target_pane.trim(), original_pane.trim());
+        yinz.quit();
+    }
+}
+
+#[test]
+fn launch_or_focus_retains_plugin_directory_fallback_after_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = directory.path().join("probe.ts");
+    fs::write(
+        &plugin,
+        "export default {render() {return 'fallback version one';}};",
+    )
+    .unwrap();
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config_dir(directory.path().to_owned())
+        .with_config(&format!(
+            "load_plugins clear-defaults=true {{}}\nuser_plugin_dir \"{}\"",
+            directory.path().display()
+        ))
+        .with_layout(LayoutInfo::Stringified("layout { pane; }".into()))
+        .start();
+    assert!(!std::env::current_dir().unwrap().join("probe.ts").exists());
+    let terminal = yinz.expect_pty_spawn();
+    terminal.output(b"TERMINAL READY\r\n");
+    yinz.wait_until("terminal ready", |grid| grid.contains("TERMINAL READY"));
+    let launch = || CliAction::LaunchOrFocusPlugin {
+        floating: false,
+        in_place: false,
+        close_replaced_pane: false,
+        move_to_focused_tab: false,
+        url: "file:probe.ts".into(),
+        configuration: None,
+        configuration_json: None,
+        skip_plugin_cache: false,
+        tab_id: None,
+    };
+    let (code, original_pane) = yinz.run_cli_action_reporting(launch());
+    assert_eq!(code, 0, "{original_pane}");
+    assert!(
+        original_pane.trim().starts_with("plugin_"),
+        "{original_pane}"
+    );
+    yinz.wait_until("fallback plugin loaded", |grid| {
+        grid.contains("fallback version one")
+    });
+    fs::write(
+        &plugin,
+        "export default {render() {return 'fallback version two';}};",
+    )
+    .unwrap();
+    let (code, output) = yinz.run_cli_action_reporting(CliAction::StartOrReloadPlugin {
+        url: "file:probe.ts".into(),
+        configuration: None,
+        configuration_json: None,
+    });
+    assert_eq!(code, 0, "{output}");
+    yinz.wait_until("fallback plugin reloaded", |grid| {
+        grid.contains("fallback version two")
+    });
+    let (code, focused_pane) = yinz.run_cli_action_reporting(launch());
+    assert_eq!(code, 0, "{focused_pane}");
+    assert_eq!(focused_pane.trim(), original_pane.trim());
+    let (code, output) = yinz.run_cli_action_reporting(CliAction::ListPanes {
+        tab: false,
+        command: false,
+        state: true,
+        geometry: false,
+        all: true,
+        json: true,
+    });
+    assert_eq!(code, 0, "{output}");
+    let panes: Vec<serde_json::Value> = serde_json::from_str(&output).unwrap();
+    assert_eq!(
+        panes
+            .iter()
+            .filter(|pane| {
+                pane["plugin_url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("file:"))
+            })
+            .count(),
+        1,
+        "{output}"
+    );
+    yinz.quit();
+}
+
+#[test]
 fn background_palette_permission_lifecycle() {
     const TOGGLE: &[u8] = b"\x1b[112;7u";
     for shared in [false, true] {

@@ -1134,8 +1134,8 @@ fn preserve_background_color_on_resize() {
         "Should have characters with background color before resize"
     );
 
-    // Also check that plain trailing spaces are properly trimmed (regression test)
-    let content2 = "\r\n\rplain text with spaces    ";
+    // Printed spaces survive, while the uncolored erase padding is trimmed.
+    let content2 = "\r\n\rplain text with spaces    \x1b[K";
     parse(content2, &mut grid);
 
     // Resize the grid
@@ -1154,8 +1154,7 @@ fn preserve_background_color_on_resize() {
         "Background colored characters should be preserved after resize"
     );
 
-    // Verify that the second line doesn't have excessive trailing spaces
-    // (it should be trimmed since they're plain spaces without background color)
+    // Only the four explicitly printed trailing spaces remain after reflow.
     let second_row = &grid.viewport[1];
     let trailing_spaces = second_row
         .columns
@@ -1163,10 +1162,9 @@ fn preserve_background_color_on_resize() {
         .rev()
         .take_while(|c| c.character == EMPTY_TERMINAL_CHARACTER.character)
         .count();
-    // All trailing plain spaces should be completely removed
     assert_eq!(
-        trailing_spaces, 0,
-        "Plain trailing spaces should be completely trimmed, but found {} trailing spaces",
+        trailing_spaces, 4,
+        "Only printed trailing spaces should remain, but found {} trailing spaces",
         trailing_spaces
     );
 }

@@ -281,7 +281,7 @@ pub fn extract_plugin_and_config(
     match &layout_run {
         Some(Run::Plugin(run_plugin_or_alias)) => match run_plugin_or_alias {
             RunPluginOrAlias::RunPlugin(run_plugin) => (
-                Some(run_plugin.location.display()),
+                Some(run_plugin.location_for_serialization()),
                 Some(run_plugin.configuration.clone()),
             ),
             RunPluginOrAlias::Alias(plugin_alias) => {
@@ -291,7 +291,7 @@ pub fn extract_plugin_and_config(
                 let name = plugin_alias
                     .run_plugin
                     .as_ref()
-                    .map(|run_plugin| run_plugin.location.display().to_string())
+                    .map(|run_plugin| run_plugin.location_for_serialization())
                     .unwrap_or_else(|| plugin_alias.name.clone());
                 let configuration = plugin_alias
                     .run_plugin
@@ -3073,14 +3073,14 @@ mod tests {
     }
 
     #[test]
-    fn an_approximation_puts_the_panes_back_where_they_were() {
+    fn an_approximation_preserves_positions_or_rejects_undersized_panes() {
         // The approximation is only reached for arrangements no layout describes,
         // but it should not be a *different* arrangement when handed one that a
         // layout does describe - a cut nothing straddles is a real split. Checked
         // against the arrangements these tests already have: each pane must come
         // back nearer its own rectangle than any other pane's, which is the
         // strongest thing that can be asked of something allowed to round.
-        for panegeoms in PANEGEOMS_JSON {
+        for (index, panegeoms) in PANEGEOMS_JSON.iter().enumerate() {
             // each pane named after its index, so the leaves can be paired with
             // the panes they came from rather than with wherever they turn up
             let arrangement: Vec<PaneLayoutManifest> = panegeoms
@@ -3111,9 +3111,17 @@ mod tests {
                     .max()
                     .unwrap(),
             );
-            let positioned = approximated
-                .position_panes_in_space(&space, None, false, false)
-                .unwrap();
+            let positioned = approximated.position_panes_in_space(&space, None, false, false);
+            if index == 3 {
+                // This approximation nests 44% inside a 70% row split, leaving only three
+                // rows for its last flexible pane. It must be rejected at the minimum check.
+                assert_eq!(
+                    positioned.unwrap_err(),
+                    yinz_types::input::layout::LayoutError::UndersizedPane
+                );
+                continue;
+            }
+            let positioned = positioned.unwrap();
             let landed: Vec<(usize, PaneGeom)> = positioned
                 .into_iter()
                 .map(|(layout, geom)| match layout.run {

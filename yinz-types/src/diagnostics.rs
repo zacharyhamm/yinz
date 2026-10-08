@@ -210,6 +210,7 @@ pub enum ScreenContext {
     StartOrReloadPluginPane,
     NewFloatingPluginPane,
     AddPlugin,
+    UpdatePluginLocation,
     UpdatePluginLoadingStage,
     StartPluginLoadingAnimation,
     StopPluginLoadingAnimation,

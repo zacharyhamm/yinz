@@ -3,7 +3,7 @@ use super::{command::RunCommand, plugins::PluginAliases};
 use crate::data::{OverlayPlacement, PluginTag};
 use crate::geometry::{PercentOrFixed, SplitDirection, SplitSize};
 use crate::internal_ids::TabPosition;
-use crate::pane_size::{Dimension, PaneGeom, MIN_TERMINAL_HEIGHT};
+use crate::pane_size::{Dimension, PaneGeom, MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -30,6 +30,12 @@ impl RunPluginOrAlias {
         match self {
             RunPluginOrAlias::RunPlugin(run_plugin) => run_plugin.location.display(),
             RunPluginOrAlias::Alias(plugin_alias) => plugin_alias.name.clone(),
+        }
+    }
+    pub fn location_for_serialization(&self) -> String {
+        match self {
+            RunPluginOrAlias::RunPlugin(plugin) => plugin.location_for_serialization(),
+            RunPluginOrAlias::Alias(alias) => alias.name.clone(),
         }
     }
     pub fn populate_run_plugin_if_needed(&mut self, plugin_aliases: &PluginAliases) {
@@ -147,6 +153,10 @@ impl RunPluginOrAlias {
     }
 
     pub fn is_equivalent_to_run(&self, run: &Option<Run>) -> bool {
+        let equivalent = |requested: &RunPlugin, running: &RunPlugin| {
+            requested.configuration == running.configuration
+                && requested.location == running.location
+        };
         match (self, run) {
             (
                 RunPluginOrAlias::Alias(self_alias),
@@ -164,11 +174,14 @@ impl RunPluginOrAlias {
             (
                 RunPluginOrAlias::Alias(self_alias),
                 Some(Run::Plugin(RunPluginOrAlias::RunPlugin(other_run_plugin))),
-            ) => self_alias.run_plugin.as_ref() == Some(other_run_plugin),
+            ) => self_alias
+                .run_plugin
+                .as_ref()
+                .is_some_and(|plugin| equivalent(plugin, other_run_plugin)),
             (
                 RunPluginOrAlias::RunPlugin(self_run_plugin),
                 Some(Run::Plugin(RunPluginOrAlias::RunPlugin(other_run_plugin))),
-            ) => self_run_plugin == other_run_plugin,
+            ) => equivalent(self_run_plugin, other_run_plugin),
             _ => false,
         }
     }
@@ -435,6 +448,10 @@ pub struct RunPlugin {
     /// `$cwd/keys.ts` is the same plugin however it was named.
     #[serde(default)]
     pub relative_path: Option<PathBuf>,
+    /// Loading path before canonicalization, so reload follows a retargeted symlink.
+    /// Canonical `location` alone determines file identity.
+    #[serde(default)]
+    pub declared_path: Option<PathBuf>,
 }
 
 /// Consume the legacy panel selector only for the builtin that used to own those views.
@@ -455,6 +472,22 @@ pub fn normalize_agent_panel(
 }
 
 impl RunPlugin {
+    /// Keep plugin-directory fallback when the cwd-resolved file is confirmed missing.
+    pub fn location_for_serialization(&self) -> String {
+        if let RunPluginLocation::File(path) = &self.location {
+            let path = self.declared_path.as_ref().unwrap_or(path);
+            if let Some(relative_path) = &self.relative_path {
+                if matches!(path.try_exists(), Ok(false)) {
+                    return format!("file:{}", relative_path.display());
+                }
+            }
+            return Url::from_file_path(path)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| format!("file:{}", path.display()));
+        }
+        self.location.display()
+    }
+
     pub fn normalize_agent_panel(&mut self) {
         if let Some(location) =
             normalize_agent_panel(&self.location.display(), &mut self.configuration.0)
@@ -574,8 +607,6 @@ impl PluginAlias {
 #[allow(clippy::derived_hash_with_manual_eq)]
 impl PartialEq for RunPlugin {
     fn eq(&self, other: &Self) -> bool {
-        // TODO: normalize paths here if the location is a file so that relative/absolute paths
-        // will work properly
         (&self.location, &self.configuration) == (&other.location, &other.configuration)
     }
 }
@@ -596,7 +627,7 @@ impl Ord for RunPlugin {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // NOTE: Keep this in sync with what the `PartialEq` and `Hash` impls do:
         // ordering has to agree with equality, so it compares the same fields
-        // and deliberately ignores `initial_cwd`, `relative_path` and `_allow_exec_host_cmd`.
+        // and deliberately ignores loading paths, `initial_cwd` and `_allow_exec_host_cmd`.
         (&self.location, &self.configuration).cmp(&(&other.location, &other.configuration))
     }
 }
@@ -972,7 +1003,7 @@ impl TiledPaneLayout {
         max_panes: Option<usize>,
         ignore_percent_split_sizes: bool,
         focus_layout_if_not_focused: bool,
-    ) -> Result<Vec<(TiledPaneLayout, PaneGeom)>, &'static str> {
+    ) -> Result<Vec<(TiledPaneLayout, PaneGeom)>, LayoutError> {
         let layouts = match max_panes {
             Some(max_panes) => {
                 let mut layout_to_split = self.clone();
@@ -1021,8 +1052,11 @@ impl TiledPaneLayout {
             },
         };
         for (_pane_layout, pane_geom) in layouts.iter() {
-            if !pane_geom.is_at_least_minimum_size() {
-                return Err("No room on screen for this layout!");
+            if !pane_geom.is_at_least_minimum_size()
+                || (pane_geom.rows.is_percent() && pane_geom.rows.as_usize() < MIN_TERMINAL_HEIGHT)
+                || (pane_geom.cols.is_percent() && pane_geom.cols.as_usize() < MIN_TERMINAL_WIDTH)
+            {
+                return Err(LayoutError::UndersizedPane);
             }
         }
         Ok(layouts)
@@ -1386,13 +1420,23 @@ impl Layout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LayoutError {
+    #[error("Not enough room for panes")]
+    InsufficientSplitSpace,
+    #[error("Not enough room for stacked panes in this layout")]
+    InsufficientStackSpace,
+    #[error("No room on screen for this layout!")]
+    UndersizedPane,
+}
+
 fn split_space(
     space_to_split: &PaneGeom,
     layout: &TiledPaneLayout,
     total_space_to_split: &PaneGeom,
     ignore_percent_split_sizes: bool,
     next_stack_id: &mut usize,
-) -> Result<Vec<(TiledPaneLayout, PaneGeom)>, &'static str> {
+) -> Result<Vec<(TiledPaneLayout, PaneGeom)>, LayoutError> {
     let sizes: Vec<Option<SplitSize>> = if layout.children_are_stacked {
         let index_of_expanded_pane = layout.children.iter().position(|p| p.is_expanded_in_stack);
         let mut sizes: Vec<Option<SplitSize>> = layout
@@ -1409,7 +1453,7 @@ fn split_space(
         // MIN_TERMINAL_HEIGHT rows: n members need n - 1 + MIN_TERMINAL_HEIGHT rows.
         let rows = space_to_split.rows.as_usize();
         if sizes.len() > rows.saturating_sub(MIN_TERMINAL_HEIGHT - 1) {
-            return Err("Not enough room for stacked panes in this layout");
+            return Err(LayoutError::InsufficientStackSpace);
         }
         sizes
     } else if ignore_percent_split_sizes {
@@ -1446,12 +1490,16 @@ fn split_space(
         ),
     };
 
+    let minimum = match layout.children_split_direction {
+        SplitDirection::Horizontal => MIN_TERMINAL_HEIGHT,
+        SplitDirection::Vertical => MIN_TERMINAL_WIDTH,
+    };
     let min_size_for_panes = sizes.iter().fold(0, |acc, size| match size {
-        Some(SplitSize::Percent(_)) | None => acc + 1, // TODO: minimum height/width as relevant here
+        Some(SplitSize::Percent(_)) | None => acc + minimum,
         Some(SplitSize::Fixed(fixed)) => acc + fixed,
     });
     if min_size_for_panes > split_dimension_space.as_usize() {
-        return Err("Not enough room for panes"); // TODO: use error infra
+        return Err(LayoutError::InsufficientSplitSpace);
     }
 
     let flex_parts = sizes.iter().filter(|s| s.is_none()).count();

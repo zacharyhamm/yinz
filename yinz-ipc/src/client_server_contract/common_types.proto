@@ -1292,6 +1292,8 @@ message RunPlugin {
   // already absolute by the time it gets here, so this is the only thing that can tell the
   // server to look in the user's plugin folder for `yinz plugin -- file:keys.ts`.
   optional string relative_path = 5;
+  // Loading path before canonicalization, retained for symlink reloads.
+  optional string declared_path = 6;
 }
 
 message PluginAlias {

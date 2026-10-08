@@ -287,7 +287,7 @@ impl Screen {
                                     false,
                                     false,
                                 )
-                                .map_err(|error| anyhow!(error))?;
+                                .context("failed to position panes in layout")?;
                             for (pane, (_, geom)) in slots.iter().zip(positions) {
                                 if let Some(stack) = stacks
                                     .iter()

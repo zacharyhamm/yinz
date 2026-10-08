@@ -510,6 +510,7 @@ pub enum ScreenInstruction {
         // the plugin's own `overlay`/`modal` configuration
         Option<OverlayPlacement>,
     ),
+    UpdatePluginLocation(PluginId, yinz_types::input::layout::RunPluginLocation),
     UpdatePluginLoadingStage(PluginId, LoadingIndication), // u32 - plugin_id
     StartPluginLoadingIndication(PluginId, LoadingIndication), // u32 - plugin_id
     /// Start and stop taking loading-indicator frames from the shared animation clock for this

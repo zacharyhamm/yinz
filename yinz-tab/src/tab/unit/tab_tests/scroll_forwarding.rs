@@ -309,7 +309,7 @@ fn accept_extracted_pane_hands_the_pane_back_when_the_tab_is_full() {
         .unwrap();
 
     // a tab too small to hold anything more than what it already has
-    let mut destination = create_new_tab(Size { cols: 10, rows: 3 }, true);
+    let mut destination = create_new_tab(Size { cols: 10, rows: 5 }, true);
     while destination.tiled_panes.has_room_for_new_pane() {
         let next = PaneId::Terminal(crate::TerminalId::new(
             destination.get_all_pane_ids().len() as u32 + 100,

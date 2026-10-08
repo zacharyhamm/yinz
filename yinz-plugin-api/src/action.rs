@@ -1939,7 +1939,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::LaunchOrFocusPlugin as i32,
                 optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
                     LaunchOrFocusPluginPayload {
-                        plugin_url: run_plugin_or_alias.location_string(),
+                        plugin_url: run_plugin_or_alias.location_for_serialization(),
                         should_float,
                         move_to_focused_tab,
                         should_open_in_place,
@@ -1960,7 +1960,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::LaunchPlugin as i32,
                 optional_payload: Some(OptionalPayload::LaunchOrFocusPluginPayload(
                     LaunchOrFocusPluginPayload {
-                        plugin_url: run_plugin_or_alias.location_string(),
+                        plugin_url: run_plugin_or_alias.location_for_serialization(),
                         should_float,
                         move_to_focused_tab: false,
                         should_open_in_place,
@@ -2045,7 +2045,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::NewTiledPluginPane as i32,
                 optional_payload: Some(OptionalPayload::NewTiledPluginPanePayload(
                     NewPluginPanePayload {
-                        plugin_url: run_plugin.location_string(),
+                        plugin_url: run_plugin.location_for_serialization(),
                         pane_name,
                         skip_plugin_cache,
                     },
@@ -2062,7 +2062,7 @@ impl TryFrom<Action> for ProtobufAction {
                 name: ProtobufActionName::NewFloatingPluginPane as i32,
                 optional_payload: Some(OptionalPayload::NewFloatingPluginPanePayload(
                     NewPluginPanePayload {
-                        plugin_url: run_plugin.location_string(),
+                        plugin_url: run_plugin.location_for_serialization(),
                         pane_name,
                         skip_plugin_cache,
                     },
@@ -2071,7 +2071,7 @@ impl TryFrom<Action> for ProtobufAction {
             Action::StartOrReloadPlugin { plugin: run_plugin } => Ok(ProtobufAction {
                 name: ProtobufActionName::StartOrReloadPlugin as i32,
                 optional_payload: Some(OptionalPayload::StartOrReloadPluginPayload(
-                    run_plugin.location_string(),
+                    run_plugin.location_for_serialization(),
                 )),
             }),
             Action::CloseTerminalPane {
@@ -3212,6 +3212,7 @@ impl TryFrom<ProtobufRunPlugin> for RunPlugin {
             .ok_or("RunPlugin must have configuration")?
             .try_into()?;
         let initial_cwd = protobuf.initial_cwd.map(PathBuf::from);
+        let declared_path = protobuf.declared_path.map(PathBuf::from);
         let relative_path = protobuf.relative_path.map(PathBuf::from);
         Ok(RunPlugin {
             _allow_exec_host_cmd: protobuf.allow_exec_host_cmd,
@@ -3219,6 +3220,7 @@ impl TryFrom<ProtobufRunPlugin> for RunPlugin {
             configuration,
             initial_cwd,
             relative_path,
+            declared_path,
         })
     }
 }
@@ -3232,6 +3234,7 @@ impl TryFrom<RunPlugin> for ProtobufRunPlugin {
             configuration: Some(internal.configuration.try_into()?),
             initial_cwd: internal.initial_cwd.map(|p| p.display().to_string()),
             relative_path: internal.relative_path.map(|p| p.display().to_string()),
+            declared_path: internal.declared_path.map(|p| p.display().to_string()),
         })
     }
 }
@@ -3854,11 +3857,30 @@ pub(crate) mod tests {
         let original = RunPlugin {
             location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
             relative_path: Some(PathBuf::from("keys.ts")),
+            declared_path: Some(PathBuf::from("/somewhere/current.ts")),
             ..Default::default()
         };
         let protobuf: ProtobufRunPlugin = original.clone().try_into().expect("encode");
         let decoded: RunPlugin = protobuf.try_into().expect("decode");
         assert_eq!(decoded.relative_path, original.relative_path);
+        assert_eq!(decoded.declared_path, original.declared_path);
+    }
+
+    #[test]
+    fn plugin_url_actions_preserve_declared_paths_and_reserved_characters() {
+        let path = PathBuf::from("/somewhere/current # %20?.ts");
+        let action = Action::StartOrReloadPlugin {
+            plugin: RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::File(PathBuf::from("/somewhere/v1.ts")),
+                declared_path: Some(path.clone()),
+                ..Default::default()
+            }),
+        };
+        let protobuf: ProtobufAction = action.try_into().unwrap();
+        let Action::StartOrReloadPlugin { plugin } = Action::try_from(protobuf).unwrap() else {
+            panic!("expected reload action");
+        };
+        assert_eq!(plugin.get_run_plugin().unwrap().declared_path, Some(path));
     }
 
     #[test]
@@ -4008,11 +4030,24 @@ pub(crate) mod tests {
             }
         }
 
+        // URL decoding resolves file identities against the receiving process cwd.
+        fn plugin_by_url(mut plugin: RunPluginOrAlias) -> RunPluginOrAlias {
+            if let RunPluginOrAlias::RunPlugin(RunPlugin {
+                location: RunPluginLocation::File(path),
+                ..
+            }) = &mut plugin
+            {
+                *path = std::env::current_dir().unwrap().join(&*path);
+                *path = path.canonicalize().unwrap_or_else(|_| path.clone());
+            }
+            plugin
+        }
+
         /// A plugin named only by `string plugin_url` (`NewPluginPanePayload`,
         /// `start_or_reload_plugin_payload`) comes back through `yinz_plugin_location::run_plugin_or_alias_from_url`
         /// with no configuration at all.
         fn plugin_by_url_alone(plugin: RunPluginOrAlias) -> RunPluginOrAlias {
-            match plugin {
+            match plugin_by_url(plugin) {
                 RunPluginOrAlias::RunPlugin(run_plugin) => RunPluginOrAlias::RunPlugin(RunPlugin {
                     configuration: PluginUserConfiguration::default(),
                     ..run_plugin
@@ -4286,7 +4321,7 @@ pub(crate) mod tests {
                     skip_cache,
                     ..
                 } => Action::LaunchOrFocusPlugin {
-                    plugin,
+                    plugin: plugin_by_url(plugin),
                     should_float,
                     move_to_focused_tab,
                     should_open_in_place,
@@ -4301,7 +4336,7 @@ pub(crate) mod tests {
                     skip_cache,
                     ..
                 } => Action::LaunchPlugin {
-                    plugin,
+                    plugin: plugin_by_url(plugin),
                     should_float,
                     should_open_in_place,
                     close_replaced_pane: false,

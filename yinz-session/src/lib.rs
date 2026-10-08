@@ -25,3 +25,7 @@ pub mod firecracker;
 #[cfg(test)]
 #[path = "unit/git_plugins.rs"]
 mod git_plugins;
+
+#[cfg(test)]
+#[path = "unit/file_plugins.rs"]
+mod file_plugins;

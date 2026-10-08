@@ -148,12 +148,14 @@ fn a_relative_plugin_path_survives_the_client_server_contract() {
     let original = RunPlugin {
         location: RunPluginLocation::File(PathBuf::from("/somewhere/keys.ts")),
         relative_path: Some(PathBuf::from("keys.ts")),
+        declared_path: Some(PathBuf::from("/somewhere/current.ts")),
         ..Default::default()
     };
     let protobuf: ProtoRunPlugin = original.clone().into();
     let decoded: RunPlugin = protobuf.try_into().expect("decode");
 
     assert_eq!(decoded.relative_path, original.relative_path);
+    assert_eq!(decoded.declared_path, original.declared_path);
 }
 
 #[test]

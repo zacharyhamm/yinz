@@ -581,34 +581,28 @@ pub fn actions_from_cli(
                     tab_id,
                 }])
             } else if let Some(plugin) = plugin {
-                let plugin =
-                    match yinz_runtime::plugin_location::parse_plugin_location_with_relative(
-                        &plugin,
-                        cwd.clone(),
-                    ) {
-                        Ok((location, relative_path)) => {
-                            let user_configuration = configuration.unwrap_or_default();
-                            RunPluginOrAlias::RunPlugin(RunPlugin {
-                                _allow_exec_host_cmd: false,
-                                location,
-                                configuration: user_configuration,
-                                initial_cwd: cwd.clone(),
-                                // `yinz plugin -- file:keys.ts`: without this the plugin is
-                                // only ever looked for at `$cwd/keys.ts`, never in the user's
-                                // own plugin folder.
-                                relative_path,
-                            })
-                        },
-                        Err(_) => {
-                            let mut plugin_alias = PluginAlias::new(
-                                &plugin,
-                                &configuration.map(PluginUserConfiguration::into_inner),
-                                alias_cwd,
-                            );
-                            plugin_alias.set_caller_cwd_if_not_set(Some(current_dir));
-                            RunPluginOrAlias::Alias(plugin_alias)
-                        },
-                    };
+                let plugin = match yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(
+                    &plugin,
+                    cwd.clone(),
+                ) {
+                    Ok(run_plugin) => {
+                        let user_configuration = configuration.unwrap_or_default();
+                        RunPluginOrAlias::RunPlugin(RunPlugin {
+                            configuration: user_configuration,
+                            initial_cwd: cwd.clone(),
+                            ..run_plugin
+                        })
+                    },
+                    Err(_) => {
+                        let mut plugin_alias = PluginAlias::new(
+                            &plugin,
+                            &configuration.map(PluginUserConfiguration::into_inner),
+                            alias_cwd,
+                        );
+                        plugin_alias.set_caller_cwd_if_not_set(Some(current_dir));
+                        RunPluginOrAlias::Alias(plugin_alias)
+                    },
+                };
                 if floating {
                     Ok(vec![Action::NewFloatingPluginPane {
                         plugin,
@@ -894,25 +888,20 @@ pub fn actions_from_cli(
 
             // Parse initial_panes from initial_command or initial_plugin
             let initial_panes = if let Some(plugin_url) = initial_plugin {
-                let plugin =
-                    match yinz_runtime::plugin_location::parse_plugin_location_with_relative(
-                        &plugin_url,
-                        cwd.clone(),
-                    ) {
-                        Ok((location, relative_path)) => RunPluginOrAlias::RunPlugin(RunPlugin {
-                            _allow_exec_host_cmd: false,
-                            location,
-                            configuration: Default::default(),
-                            initial_cwd: cwd.clone(),
-                            relative_path,
-                        }),
-                        Err(_) => {
-                            let mut plugin_alias =
-                                PluginAlias::new(&plugin_url, &None, cwd.clone());
-                            plugin_alias.set_caller_cwd_if_not_set(Some(current_dir.clone()));
-                            RunPluginOrAlias::Alias(plugin_alias)
-                        },
-                    };
+                let plugin = match yinz_runtime::plugin_location::run_plugin_from_url_with_cwd(
+                    &plugin_url,
+                    cwd.clone(),
+                ) {
+                    Ok(run_plugin) => RunPluginOrAlias::RunPlugin(RunPlugin {
+                        initial_cwd: cwd.clone(),
+                        ..run_plugin
+                    }),
+                    Err(_) => {
+                        let mut plugin_alias = PluginAlias::new(&plugin_url, &None, cwd.clone());
+                        plugin_alias.set_caller_cwd_if_not_set(Some(current_dir.clone()));
+                        RunPluginOrAlias::Alias(plugin_alias)
+                    },
+                };
                 Some(vec![CommandOrPlugin::Plugin(plugin)])
             } else if !initial_command.is_empty() {
                 let mut command: Vec<String> = initial_command.clone();

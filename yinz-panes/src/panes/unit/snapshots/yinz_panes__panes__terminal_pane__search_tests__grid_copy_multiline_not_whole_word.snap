@@ -2,12 +2,12 @@
 source: yinz-panes/src/panes/./unit/search_in_pane_tests.rs
 expression: "format!(\"{:?}\", terminal_pane.grid)"
 ---
-00 (W):  v0.1
-01 (W): 4.0 v
-02 (W): ia 🦀
-03 (W):  v1.5
-04 (W): 3.0-b
-05 (W): eta.3
+00 (W): 4.0 v
+01 (W): ia 🦀
+02 (W):  v1.5
+03 (W): 3.0-b
+04 (W): eta.3
+05 (W):  
 06 (C): ❯ a##
 07 (W): ##aaa
 08 (W): aaaaa

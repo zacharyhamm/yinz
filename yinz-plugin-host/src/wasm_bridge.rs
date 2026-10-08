@@ -251,11 +251,19 @@ impl LoadingContext {
             .child()
             .context("failed to create plugin /data")?;
         let plugin_own_data_dir = temporary_data_dir.path().to_path_buf();
-        let plugin_own_cache_dir = YINZ_CACHE_DIR
-            .join(make_plugin_url_path_safe(
-                Url::from(&plugin_config.location).to_string(),
-            ))
-            .join("plugin_cache");
+        // Canonical file identity can change on reload; /cache belongs to the existing plugin.
+        let plugin_own_cache_dir = wasm_bridge
+            .plugin_map
+            .lock()
+            .unwrap()
+            .cache_dir_of_plugin_id(plugin_id)
+            .unwrap_or_else(|| {
+                YINZ_CACHE_DIR
+                    .join(make_plugin_url_path_safe(
+                        Url::from(&plugin_config.location).to_string(),
+                    ))
+                    .join("plugin_cache")
+            });
         let default_mode = wasm_bridge
             .base_modes
             .get(&client_id)
@@ -279,6 +287,7 @@ impl LoadingContext {
                 super::plugin_map::PluginMetadata {
                     config: plugin_config.clone(),
                     resolved_source_path,
+                    cache_dir: plugin_own_cache_dir.clone(),
                     cwd: plugin_cwd.clone(),
                     tab_index,
                     size: (size.rows, size.cols),
@@ -1452,6 +1461,15 @@ impl WasmBridge {
                 .start_plugin()
                 {
                     Ok(_) => {
+                        if let Some(location) = plugin_map.update_reloaded_file_location(plugin_id)
+                        {
+                            senders
+                                .send_to_screen(ScreenInstruction::UpdatePluginLocation(
+                                    plugin_id, location,
+                                ))
+                                .context("update reloaded plugin pane identity")
+                                .non_fatal();
+                        }
                         let plugin_list = plugin_map.list_plugins();
                         handle_plugin_successful_loading(&senders, plugin_id, plugin_list);
                     },

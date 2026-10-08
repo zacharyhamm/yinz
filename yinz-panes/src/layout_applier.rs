@@ -541,7 +541,7 @@ impl<'a> LayoutApplier<'a> {
             let layout = arrangement_layout(layout.clone(), &size, order.len(), None)?;
             let mut positions = layout
                 .position_panes_in_space(&PaneGeom::from(&size), Some(order.len()), false, false)
-                .map_err(|error| anyhow!(error))?;
+                .context("failed to position panes in layout")?;
             for (index, (_, geom)) in positions.iter_mut().enumerate() {
                 geom.x += viewport.x;
                 geom.y += viewport.y;
@@ -852,7 +852,7 @@ impl<'a> LayoutApplier<'a> {
                     focus_layout_if_not_focused,
                 )
             })
-            .map_err(|e| anyhow!(e))?;
+            .context("failed to position panes in layout")?;
         for (logical_position, (_layout, position_and_size)) in
             positions_in_layout.iter_mut().enumerate()
         {
@@ -2000,7 +2000,7 @@ pub fn arrangement_layout(
     while layout.pane_count() < count {
         let positions = layout
             .position_panes_in_space(&PaneGeom::from(size), None, false, false)
-            .map_err(|error| anyhow!(error))?;
+            .context("failed to position panes in layout")?;
         let split = crate::panes::room_in_geometries(
             positions.iter().enumerate().map(|(index, (_, geom))| {
                 (
@@ -2032,7 +2032,7 @@ pub fn arrangement_layout(
     }
     let positions = layout
         .position_panes_in_space(&PaneGeom::from(size), Some(count), false, false)
-        .map_err(|error| anyhow!(error))?;
+        .context("failed to position panes in layout")?;
     if positions.iter().any(|(_, geom)| {
         geom.cols.as_usize() < crate::pane::MIN_TERMINAL_WIDTH
             || ((!geom.is_stacked() || !geom.rows.is_fixed())

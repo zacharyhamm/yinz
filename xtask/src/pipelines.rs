@@ -5,6 +5,7 @@ use crate::flags;
 use crate::{build, format, test};
 use anyhow::Context;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use xshell::{cmd, Shell};
 
 /// Perform a default build.
@@ -450,10 +451,19 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
     if let Some(data_dir) = data_dir {
         cmd = cmd.args(["--data-dir", &format!("{}", data_dir.display())]);
     }
-    cmd.args(&flags.args)
-        .run()
-        .map_err(anyhow::Error::new)
-        .with_context(|| err_context(&flags))
+    run_interactive(cmd.args(&flags.args)).with_context(|| err_context(&flags))
+}
+
+fn run_interactive(cmd: xshell::Cmd<'_>) -> anyhow::Result<()> {
+    let description = cmd.to_string();
+    let status = Command::from(cmd)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to spawn {description}"))?;
+    anyhow::ensure!(status.success(), "{description} failed with {status}");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -538,3 +548,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "unit/interactive.rs"]
+mod interactive_tests;

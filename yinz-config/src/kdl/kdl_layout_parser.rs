@@ -692,7 +692,7 @@ impl<'a> KdlLayoutParser<'a> {
             };
             tabs.push(yinz_types::pane_tabs::PaneTabDescriptor {
                 label,
-                location: plugin.location_string(),
+                location: plugin.location_for_serialization(),
                 configuration,
                 initial_cwd: plugin.get_initial_cwd(),
             });

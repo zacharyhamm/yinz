@@ -121,7 +121,7 @@ impl PluginConfig {
             RunPluginLocation::File(path) => Some(PluginConfig {
                 repository_root: None,
                 installed_commit: None,
-                path: path.clone(),
+                path: run_plugin.declared_path.as_ref().unwrap_or(path).clone(),
                 _allow_exec_host_cmd: run_plugin._allow_exec_host_cmd,
                 location: run_plugin.location.clone(),
                 initial_userspace_configuration: run_plugin.configuration.clone(),

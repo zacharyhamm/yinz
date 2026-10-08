@@ -858,7 +858,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
         } => {
             let mut node = KdlNode::new("LaunchOrFocusPlugin");
             let mut children = KdlDocument::new();
-            node.push(run_plugin_or_alias.location_string());
+            node.push(run_plugin_or_alias.location_for_serialization());
             push_plugin_flag(&mut children, "floating", *should_float);
             push_plugin_flag(&mut children, "move_to_focused_tab", *move_to_focused_tab);
             push_plugin_flag(&mut children, "in_place", *should_open_in_place);
@@ -918,7 +918,7 @@ fn spell(value: &Action) -> Result<KdlNode, NotWritable> {
             }
             let mut node = KdlNode::new("LaunchPlugin");
             let mut children = KdlDocument::new();
-            node.push(run_plugin_or_alias.location_string());
+            node.push(run_plugin_or_alias.location_for_serialization());
             push_plugin_flag(&mut children, "floating", *should_float);
             push_plugin_flag(&mut children, "in_place", *should_open_in_place);
             push_plugin_flag(&mut children, "close_replaced_pane", *close_replaced_pane);
@@ -1176,98 +1176,63 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
     let action_arguments: Vec<&KdlEntry> = kdl_argument_values!(kdl_action);
     let action_children: Vec<&KdlDocument> = kdl_children!(kdl_action);
     match action_name {
-        "Quit" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "FocusNextPane" => {
+        // Expand the argument parser once; repeated expansions exhaust debug-build stacks.
+        "Quit"
+        | "FocusNextPane"
+        | "FocusPreviousPane"
+        | "FocusPaneTabs"
+        | "PreviousPaneTab"
+        | "NextPaneTab"
+        | "FocusLastPane"
+        | "FocusHostSession"
+        | "FocusGuestSession"
+        | "ToggleHostFullscreen"
+        | "SwitchFocus"
+        | "ScrollUp"
+        | "SwapTextSelectionEnds"
+        | "ActivateNotification"
+        | "ToggleNotificationDetail"
+        | "ScrollDown"
+        | "ScrollToBottom"
+        | "ScrollToTop"
+        | "ScrollToPreviousPrompt"
+        | "ScrollToNextPrompt"
+        | "SelectCommandAtScrollPosition"
+        | "CopyLastCommandOutput"
+        | "PageScrollUp"
+        | "PageScrollDown"
+        | "HalfPageScrollUp"
+        | "HalfPageScrollDown"
+        | "ToggleFocusFullscreen"
+        | "ToggleFocusNoUiFullscreen"
+        | "TogglePaneFrames"
+        | "ToggleCommandPalette"
+        | "ToggleActiveSyncTab"
+        | "TogglePaneEmbedOrFloating"
+        | "ToggleFloatingPanes"
+        | "CloseFocus"
+        | "UndoRenamePane"
+        | "NoOp"
+        | "GoToNextTab"
+        | "GoToPreviousTab"
+        | "CloseTab"
+        | "ToggleTab"
+        | "UndoRenameTab"
+        | "ToggleMouseMode"
+        | "Detach"
+        | "SetDarkTheme"
+        | "SetLightTheme"
+        | "ToggleTheme"
+        | "Copy"
+        | "Clear"
+        | "Confirm"
+        | "Deny" => {
             parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
-        "FocusPreviousPane" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "FocusPaneTabs" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "PreviousPaneTab" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "NextPaneTab" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "FocusLastPane" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "FocusHostSession" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "FocusGuestSession" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleHostFullscreen" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "SwitchFocus" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
         "EditScrollback" => {
             let ansi =
                 crate::kdl_get_bool_property_or_child_value!(kdl_action, "ansi").unwrap_or(false);
             Ok(Action::EditScrollback { ansi })
-        },
-        "ScrollUp" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "SwapTextSelectionEnds" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ActivateNotification" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleNotificationDetail" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ScrollDown" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "ScrollToBottom" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ScrollToTop" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ScrollToPreviousPrompt" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ScrollToNextPrompt" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "SelectCommandAtScrollPosition" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "CopyLastCommandOutput" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "PageScrollUp" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "PageScrollDown" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "HalfPageScrollUp" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "HalfPageScrollDown" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleFocusFullscreen" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleFocusNoUiFullscreen" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "TogglePaneFrames" | "ToggleCommandPalette" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleActiveSyncTab" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "TogglePaneEmbedOrFloating" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleFloatingPanes" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
         "ShowFloatingPanes" => {
             let tab_id = action_arguments
@@ -1298,33 +1263,6 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                     )
                 })?;
             Ok(Action::HideFloatingPanes { tab_id })
-        },
-        "CloseFocus" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "UndoRenamePane" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "NoOp" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "GoToNextTab" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "GoToPreviousTab" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "CloseTab" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "ToggleTab" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "UndoRenameTab" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleMouseMode" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "Detach" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "SetDarkTheme" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "SetLightTheme" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
-        },
-        "ToggleTheme" => {
-            parse_kdl_action_arguments!(action_name, action_arguments, kdl_action)
         },
         "SwitchSession" => {
             let name = kdl_get_string_property_or_child_value!(kdl_action, "name")
@@ -1384,10 +1322,6 @@ pub fn from_kdl((kdl_action, config_options): (&KdlNode, &Options)) -> Result<Ac
                 cwd,
             })
         },
-        "Copy" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "Clear" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "Confirm" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
-        "Deny" => parse_kdl_action_arguments!(action_name, action_arguments, kdl_action),
         "Write" => parse_kdl_action_u8_arguments!(action_name, action_arguments, kdl_action),
         "WriteChars" => {
             parse_kdl_action_char_or_string_arguments!(action_name, action_arguments, kdl_action)

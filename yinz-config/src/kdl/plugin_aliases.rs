@@ -90,7 +90,7 @@ pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigErr
                     alias_definition
                 ));
             }
-            let location = if let Some(repo) = repo {
+            let run_plugin = if let Some(repo) = repo {
                 let mut plugin = GitPlugin {
                     repo,
                     entrypoint: entrypoint.unwrap_or_else(|| "main.ts".into()).into(),
@@ -103,9 +103,12 @@ pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigErr
                     &mut plugin,
                     std::path::Path::new(""),
                 )?;
-                RunPluginLocation::Git(plugin)
+                RunPlugin {
+                    location: RunPluginLocation::Git(plugin),
+                    ..Default::default()
+                }
             } else if let Some(location) = location {
-                yinz_runtime::plugin_location::parse_plugin_location(&location, None)?
+                yinz_runtime::plugin_location::run_plugin_from_url(&location)?
             } else {
                 return Err(PluginsConfigError::InvalidRepository(format!(
                     "alias {alias_name} requires location or repo"
@@ -117,10 +120,9 @@ pub fn from_kdl(kdl_plugin_aliases: &KdlNode) -> Result<PluginAliases, ConfigErr
             aliases.insert(
                 alias_name.to_owned(),
                 RunPlugin {
-                    location,
                     configuration,
                     initial_cwd,
-                    ..Default::default()
+                    ..run_plugin
                 },
             );
         }
@@ -133,7 +135,6 @@ pub fn to_kdl(value: &PluginAliases, add_comments: bool) -> KdlNode {
     for (alias_name, plugin_alias) in value.aliases.iter() {
         let mut plugin_alias_node = KdlNode::new(alias_name.clone());
         let mut plugin_alias_children = KdlDocument::new();
-        let location_string = plugin_alias.location.display();
 
         if let yinz_types::input::layout::RunPluginLocation::Git(plugin) = &plugin_alias.location {
             plugin_alias_node.insert("repo", plugin.repo.clone());
@@ -146,7 +147,7 @@ pub fn to_kdl(value: &PluginAliases, add_comments: bool) -> KdlNode {
                 plugin_alias_node.insert(key, value);
             }
         } else {
-            plugin_alias_node.insert("location", location_string);
+            plugin_alias_node.insert("location", plugin_alias.location_for_serialization());
         }
         let cwd = plugin_alias.initial_cwd.as_ref();
         let mut has_children = false;

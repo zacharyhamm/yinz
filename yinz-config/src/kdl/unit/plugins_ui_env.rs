@@ -1,6 +1,103 @@
 use super::*;
 
 #[test]
+fn file_plugin_paths_survive_config_serialization() {
+    use crate::plugins::PluginConfig;
+    use yinz_types::input::hooks::HookPoint;
+
+    let directory = tempfile::tempdir().unwrap();
+    let name = format!(
+        "{} # %20?.ts",
+        directory.path().file_name().unwrap().to_str().unwrap()
+    );
+    assert!(!std::env::current_dir().unwrap().join(&name).exists());
+    let source = "export default {};";
+    std::fs::write(directory.path().join(&name), source).unwrap();
+    let mut urls = vec![(format!("file:{name}"), directory.path().join(&name), true)];
+    for name in ["hash#.ts", "percent%20.ts", "query?.ts", "space name.ts"] {
+        let path = directory.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        urls.push((
+            url::Url::from_file_path(&path).unwrap().to_string(),
+            path,
+            false,
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let path = directory.path().join("current # %20?.ts");
+        std::os::unix::fs::symlink(directory.path().join(&name), &path).unwrap();
+        urls.push((
+            url::Url::from_file_path(&path).unwrap().to_string(),
+            path,
+            false,
+        ));
+    }
+    for (url, expected_path, fallback) in urls {
+        let text = format!(
+            r#"
+        plugins {{ panel location="{url}"; }}
+        load_plugins clear-defaults=true {{ "{url}"; }}
+        hooks {{ agent_exit "{url}"; }}
+        keybinds {{ normal {{ bind "Ctrl o" {{
+            LaunchPlugin "{url}"
+            LaunchOrFocusPlugin "{url}"
+        }}; }}; }}
+    "#
+        );
+        let config = Config::from_kdl(&text, None).unwrap();
+        let restored = Config::from_kdl(&config.to_string(false).unwrap(), None).unwrap();
+        for config in [config, restored] {
+            let mut plugins = vec![config.plugins.aliases["panel"].clone()];
+            plugins.extend(
+                config
+                    .background_plugins
+                    .iter()
+                    .filter_map(|p| p.get_run_plugin()),
+            );
+            plugins.push(
+                config
+                    .hooks
+                    .get(HookPoint::AgentExit)
+                    .unwrap()
+                    .get_run_plugin()
+                    .unwrap(),
+            );
+            let key = KeyWithModifier::new(BareKey::Char('o')).with_ctrl_modifier();
+            for action in config
+                .keybinds
+                .get_actions_for_key_in_mode(&InputMode::Normal, &key)
+                .unwrap()
+            {
+                let (Action::LaunchPlugin { plugin, .. }
+                | Action::LaunchOrFocusPlugin { plugin, .. }) = action
+                else {
+                    panic!("plugin action")
+                };
+                plugins.push(plugin.get_run_plugin().unwrap());
+            }
+            assert_eq!(plugins.len(), 5);
+            for plugin in plugins {
+                assert_eq!(
+                    plugin.relative_path.as_deref(),
+                    fallback.then(|| std::path::Path::new(&name))
+                );
+                if !fallback {
+                    assert_eq!(plugin.declared_path.as_ref(), Some(&expected_path));
+                }
+                assert_eq!(
+                    PluginConfig::from_run_plugin(&plugin)
+                        .unwrap()
+                        .resolve_source(Some(directory.path()))
+                        .unwrap(),
+                    (expected_path.clone(), source.to_owned())
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn plugins_to_string() {
     let fake_config = r##"
         plugins {
