@@ -11,17 +11,25 @@ impl WasmBridge {
         if let RunPluginLocation::File(path) = &run.location {
             let resolved =
                 PluginConfig::from_run_plugin(&run).and_then(|config| match config.runtime() {
-                    yinz_config::plugins::PluginRuntime::Deno => config
-                        .resolve_source(self.user_plugin_dir.as_deref())
-                        .ok()
-                        .map(|(path, _)| path),
+                    // Identity lookup must not read source bytes on the plugin thread.
+                    yinz_config::plugins::PluginRuntime::Deno => {
+                        match std::fs::metadata(&config.path) {
+                            Ok(metadata) => metadata.is_file().then_some(config.path),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                self.user_plugin_dir.as_ref().and_then(|dir| {
+                                    let path = dir.join(
+                                        config.relative_path.as_ref().unwrap_or(&config.path),
+                                    );
+                                    path.is_file().then_some(path)
+                                })
+                            },
+                            Err(_) => None,
+                        }
+                    },
                     yinz_config::plugins::PluginRuntime::Wasm => config
-                        .resolve_wasm_source(
-                            &self.yinz_data_dir,
-                            self.builtin_plugins_dir.as_deref(),
-                        )
-                        .ok()
-                        .map(|(path, _)| path),
+                        .wasm_lookup_paths(&self.yinz_data_dir, self.builtin_plugins_dir.as_deref())
+                        .into_iter()
+                        .find(|path| path.is_file()),
                 });
             run.location = RunPluginLocation::File(yinz_runtime::common_path::source_path(
                 resolved.as_deref().unwrap_or(path),
