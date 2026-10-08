@@ -175,7 +175,6 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
             to_pty_writer: Some(SenderWithContext::new(to_pty_writer)),
             to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
             to_server: Some(to_server.clone()),
-            session_recorder: None,
             session_checkpoint: Default::default(),
             should_silently_fail: true,
         },
@@ -193,7 +192,6 @@ fn paused_session() -> (SessionMetaData, PausedThreads) {
         plugin_thread: None,
         pty_writer_thread: None,
         background_jobs_thread: None,
-        session_recorder_thread: None,
         config_file_path: None,
         config_dir: None,
     };

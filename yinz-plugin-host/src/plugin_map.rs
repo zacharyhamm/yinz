@@ -697,7 +697,7 @@ pub struct PluginEnv {
     pub plugin_own_data_dir: PathBuf,
     /// Production environments own /data; standalone interpreter tests supply their own fixtures.
     pub temporary_data_dir: Option<Arc<yinz_runtime::owned_dir::OwnedDir>>,
-    /// The process-wide provider shared by recording and plugin data.
+    /// The process-wide provider for plugin data.
     pub data_access: Arc<DataAccess>,
     pub deno_watch_generations: DenoWatchGenerations,
     /// The work queues, shared with the plugin thread. A plugin enqueues and reads status

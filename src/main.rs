@@ -129,7 +129,7 @@ fn main() {
         }
     }
 
-    // Talks only to supervisor sockets, so like `recordings` it runs without any
+    // Talks only to supervisor sockets, so it runs without any
     // client or server — the whole point is that it works when the session is
     // already gone.
     // `adopt` is the exception: unlike list/kill it has to reach a running
@@ -199,19 +199,6 @@ fn main() {
     if let Some(Command::Plugins(plugins)) = opts.command.clone() {
         if let Err(e) = commands::plugins(plugins, &opts) {
             eprintln!("Error: {e:#}");
-            std::process::exit(1);
-        }
-        std::process::exit(0);
-    }
-
-    // Handle offline recordings command before client/server startup
-    if let Some(Command::Recordings(rec)) = opts.command.clone() {
-        let data_dir = opts
-            .data_dir
-            .clone()
-            .unwrap_or_else(yinz_runtime::home::get_default_data_dir);
-        if let Err(e) = commands::recordings(rec, data_dir) {
-            eprintln!("Error: {}", e);
             std::process::exit(1);
         }
         std::process::exit(0);

@@ -6,7 +6,6 @@
 use super::*;
 use yinz_types::internal_ids::PluginId;
 use yinz_types::internal_ids::TabId;
-use yinz_types::internal_ids::TabPosition;
 
 /// `CwdChanged` announces a move once. The manifest says where every pane is
 /// every time, which is what puts right a plugin that was not listening yet.
@@ -118,51 +117,6 @@ fn a_plugin_pane_has_no_cwd() {
             .all(|pane| pane.cwd.is_none()),
         "no plugin pane was given a folder"
     );
-}
-
-#[test]
-fn recorder_pane_metadata() {
-    use {yinz_types::data::PaneInfo, yinz_types::data::PaneManifest, yinz_types::data::TabInfo};
-    // Create one tab with one terminal pane and one plugin pane
-    let mut pane_manifest = PaneManifest::default();
-    let terminal_pane = PaneInfo {
-        id: yinz_types::pane_id::PaneId::from_legacy(5, false),
-        title: "my terminal".to_string(),
-        pane_content_rows: yinz_types::position::RowCount::new(24),
-        pane_content_columns: yinz_types::position::ColumnCount::new(80),
-        ..Default::default()
-    };
-    let plugin_pane = PaneInfo {
-        id: yinz_types::pane_id::PaneId::from_legacy(6, true),
-        title: "plugin".to_string(),
-        pane_content_rows: yinz_types::position::RowCount::new(24),
-        pane_content_columns: yinz_types::position::ColumnCount::new(80),
-        ..Default::default()
-    };
-    pane_manifest.panes.insert(
-        TabPosition::new(0),
-        vec![terminal_pane.clone(), plugin_pane],
-    );
-    let tab_info = TabInfo {
-        position: TabPosition::new(0),
-        name: "my tab".to_string(),
-        ..Default::default()
-    };
-    let metadata = crate::screen::Screen::convert_pane_metadata(
-        &pane_manifest,
-        std::slice::from_ref(&tab_info),
-    );
-    assert_eq!(metadata.len(), 1, "should filter plugin panes");
-    assert_eq!(
-        metadata[0].terminal_id,
-        yinz_types::internal_ids::TerminalId::new(5)
-    );
-    assert_eq!(metadata[0].tab_id, TabId::new(0));
-    assert_eq!(metadata[0].tab_position, TabPosition::new(0));
-    assert_eq!(metadata[0].tab_name, "my tab");
-    assert_eq!(metadata[0].title, "my terminal");
-    assert_eq!(metadata[0].cols, 80);
-    assert_eq!(metadata[0].rows, 24);
 }
 
 #[test]

@@ -18,7 +18,7 @@
 //! Every server thread owns one instruction enum and sends the others' through
 //! [`thread_bus::ThreadSenders`]. This crate holds those enums, the payload types they carry, the
 //! bus itself, and the code that only ever talks over it: warps, background jobs,
-//! the session recorder and the OS boundary's contract ([`os_input_output::ServerOsApi`], which
+//! the OS boundary's contract ([`os_input_output::ServerOsApi`], which
 //! `yinz-server-os` implements). Nothing here names a tab, a pane, a screen, or the plugin
 //! runtime.
 
@@ -43,7 +43,6 @@ pub mod route;
 pub mod screen;
 pub mod server_instruction;
 pub mod session_layout_metadata;
-pub mod session_recorder;
 pub mod thread_bus;
 pub mod warp;
 

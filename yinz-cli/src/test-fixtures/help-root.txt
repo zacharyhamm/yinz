@@ -28,7 +28,6 @@ Commands:
   events               Stream the session's state events as JSON lines: what plugins see as
                        PaneUpdate, TabUpdate, CommandPaneExited, CwdChanged and the rest. One object
                        per line, `{"event": <type>, "payload": <the event>}`, until the session ends
-  recordings           Read local terminal pane recordings
   plugins              Write, check, reload and read logs of JS/TS plugins
   hooks                Install, inspect or remove coding-agent hooks
   firecracker          Manage session-scoped Firecracker VMs

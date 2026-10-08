@@ -6328,7 +6328,6 @@ dependencies = [
  "console 0.15.0",
  "curl-sys",
  "dialoguer",
- "humantime",
  "insta",
  "interprocess",
  "log",
@@ -6383,7 +6382,6 @@ dependencies = [
  "libc",
  "log",
  "once_cell",
- "rusqlite",
  "serde_json",
  "strum 0.28.0",
  "strum_macros 0.28.0",
@@ -6397,7 +6395,6 @@ dependencies = [
  "yinz-process",
  "yinz-runtime",
  "yinz-session",
- "yinz-storage",
  "yinz-test-support",
  "yinz-types",
 ]
@@ -6814,7 +6811,6 @@ dependencies = [
  "yinz-ipc",
  "yinz-runtime",
  "yinz-session",
- "yinz-storage",
  "yinz-test-support",
  "yinz-types",
 ]
@@ -6888,7 +6884,6 @@ dependencies = [
  "yinz-routing",
  "yinz-runtime",
  "yinz-session",
- "yinz-storage",
  "yinz-tab",
  "yinz-terminal",
  "yinz-test-support",
@@ -6977,7 +6972,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
- "flate2",
  "hegeltest",
  "log",
  "native-tls",
@@ -6993,7 +6987,6 @@ dependencies = [
  "tokio-stream",
  "url",
  "uuid",
- "vte 0.15.0",
  "yinz-types",
 ]
 

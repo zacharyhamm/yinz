@@ -80,23 +80,6 @@ fn command_targets_preserve_legacy_input_and_canonical_output() {
 }
 
 #[test]
-fn recording_models_preserve_signed_values_and_wire_fields() {
-    use crate::recording::{RecordingSummary, SearchHit};
-    for value in [i64::MIN, -1, 0, i64::MAX] {
-        let summary = format!(
-            r#"{{"id":{value},"session_name":"s","tab_name":"t","terminal_id":4294967295,"pane_title":"p","started_at_us":{value},"duration_us":{value},"is_running":false,"capture_input":true,"error":null}}"#
-        );
-        let decoded: RecordingSummary = serde_json::from_str(&summary).unwrap();
-        assert_eq!(serde_json::to_string(&decoded).unwrap(), summary);
-        let hit = format!(
-            r#"{{"recording_id":{value},"session_name":"s","tab_name":"t","pane_title":"p","elapsed_us":{value},"started_at_us":{value},"text":"match"}}"#
-        );
-        let decoded: SearchHit = serde_json::from_str(&hit).unwrap();
-        assert_eq!(serde_json::to_string(&decoded).unwrap(), hit);
-    }
-}
-
-#[test]
 fn geometry_reports_rejected_operations_without_changing_dimensions() {
     let mut fixed = Dimension::fixed(80);
     assert!(fixed.reduce_by(10.0, 10).is_err());
@@ -135,37 +118,6 @@ fn geometry_reports_rejected_operations_without_changing_dimensions() {
             assert_eq!(result.is_ok(), value <= 100);
         }
     }
-}
-
-#[test]
-fn recording_units_preserve_scalars_and_recording_map_keys() {
-    use crate::internal_ids::RecordingId;
-    use crate::units::{ElapsedMicros, UnixMicros};
-    use std::collections::BTreeMap;
-    for value in [i64::MIN, -1, 0, i64::MAX] {
-        let id = RecordingId::new(value);
-        assert_eq!(id.get(), value);
-        assert_eq!(value.to_string().parse::<RecordingId>().unwrap(), id);
-        let json = format!(r#"{{"{value}":"recording"}}"#);
-        let map = BTreeMap::from([(id, "recording".to_owned())]);
-        assert_eq!(serde_json::to_string(&map).unwrap(), json);
-        assert_eq!(
-            serde_json::from_str::<BTreeMap<RecordingId, String>>(&json).unwrap(),
-            map
-        );
-        let timestamp = UnixMicros::new(value);
-        let elapsed = ElapsedMicros::new(value);
-        assert_eq!(timestamp.get(), value);
-        assert_eq!(elapsed.get(), value);
-        assert_eq!(
-            serde_json::to_string(&timestamp).unwrap(),
-            value.to_string()
-        );
-        assert_eq!(serde_json::to_string(&elapsed).unwrap(), value.to_string());
-    }
-    assert!("9223372036854775808".parse::<RecordingId>().is_err());
-    assert!(serde_json::from_str::<ElapsedMicros>("-9223372036854775809").is_err());
-    assert!(serde_json::from_str::<UnixMicros>("9223372036854775808").is_err());
 }
 
 #[test]

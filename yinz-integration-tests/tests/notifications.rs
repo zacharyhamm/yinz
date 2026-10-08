@@ -374,6 +374,50 @@ fn notification_browser_keeps_dismissed_session_history() {
     yinz.quit();
 }
 
+#[test]
+fn session_manager_tabs_cycle_through_notifications_and_refresh_on_entry() {
+    let mut yinz = TestRunner::new(TERMINAL_SIZE)
+        .with_config(
+            r#"
+notification_timeout 1
+plugins {
+    session-manager location="yinz:session-manager" {
+        multi_screen true
+    }
+}
+"#,
+        )
+        .start();
+    claim_first_terminal_and_wait_for_prompt(&yinz);
+    yinz.send_stdin(&keys::ctrl('o'));
+    yinz.send_stdin(&keys::key('w'));
+    yinz.wait_until("attach screen opens", |snapshot| {
+        snapshot.contains("Search:") && snapshot.contains("<Ctrl r>")
+    });
+
+    for message in ["first visit", "second visit"] {
+        notify(&yinz, message);
+        yinz.wait_until("toast dismisses", |snapshot| !snapshot.contains(message));
+        yinz.send_stdin(&keys::key('\t'));
+        yinz.wait_until("resurrect screen opens", |snapshot| {
+            snapshot.contains("<ENTER>/<DEL>/<Ctrl d>")
+        });
+        yinz.send_stdin(&keys::key('\t'));
+        yinz.wait_until("notifications refresh on entry", |snapshot| {
+            snapshot.contains("Received") && snapshot.contains(message)
+        });
+        yinz.send_stdin(&keys::key('\t'));
+        yinz.wait_until("new screen follows notifications", |snapshot| {
+            snapshot.contains("New session name:")
+        });
+        yinz.send_stdin(&keys::key('\t'));
+        yinz.wait_until("attach screen follows new", |snapshot| {
+            snapshot.contains("Search:") && snapshot.contains("<Ctrl r>")
+        });
+    }
+    yinz.quit();
+}
+
 /// Notifications mode lists the session's notifications where the toasts render, and keeps them
 /// actionable after the toasts have timed out.
 #[test]

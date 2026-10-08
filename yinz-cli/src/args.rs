@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use url::Url;
 use yinz_types::geometry::{Direction, Resize};
 use yinz_types::input::options::Options;
-use yinz_types::internal_ids::RecordingId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use {
@@ -136,44 +135,6 @@ impl CliArgs {
         }
         None
     }
-}
-
-#[derive(Debug, Subcommand, Clone, Serialize, Deserialize)]
-pub enum Recordings {
-    /// List recorded terminal panes.
-    List {
-        /// Print a JSON array instead of a table.
-        #[clap(long)]
-        json: bool,
-    },
-    /// Export one terminal pane as asciicast v3.
-    Export {
-        /// Recording ID from `yinz recordings list`.
-        recording_id: RecordingId,
-        /// Write the cast to this file. The default is stdout.
-        #[clap(short, long)]
-        output: Option<PathBuf>,
-    },
-    /// Search recorded terminal output.
-    Search {
-        /// FTS5 query. Falls back to a literal phrase if it isn't valid FTS5 syntax.
-        query: String,
-        /// Maximum number of matching lines to return.
-        #[clap(short, long, default_value = "50")]
-        limit: usize,
-        /// Print a JSON array instead of a table.
-        #[clap(long)]
-        json: bool,
-    },
-    /// Compress recorded events and shrink the database file.
-    ///
-    /// Finished sessions are compressed whole; running ones keep their last ten minutes as they
-    /// are. Running sessions compress their own recordings as they go, but only a deleted row's
-    /// space is reused; the file never gets smaller on its own. This rewrites it, which needs
-    /// free disk space about the size of the result and the file to itself while it runs:
-    /// a session recording meanwhile waits, and after a few seconds drops events and marks its
-    /// recording incomplete. Run it when no session is recording.
-    Compact,
 }
 
 /// Authoring JS/TS plugins in the user's plugin folder from a shell.
@@ -474,10 +435,6 @@ pub enum Command {
     /// `{"event": <type>, "payload": <the event>}`, until the session ends.
     #[clap(override_usage("yinz [--session <OTHER SESSION NAME>] events [--type <EVENT>]..."))]
     Events(EventsCli),
-
-    /// Read local terminal pane recordings.
-    #[clap(subcommand)]
-    Recordings(Recordings),
 
     /// Write, check, reload and read logs of JS/TS plugins.
     #[clap(subcommand)]

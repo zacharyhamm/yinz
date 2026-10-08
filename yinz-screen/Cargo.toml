@@ -19,7 +19,6 @@ yinz-host-protocol = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-session = { workspace = true }
-yinz-storage = { workspace = true }
 yinz-types = { workspace = true }
 # For `ellipsize`, shared with the tab bars so the two ends of a lent pane title agree on how a
 # title is cut. The crate is leaf-level (ansi_term and unicode-width only), so this is acyclic.

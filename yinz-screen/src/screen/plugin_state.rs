@@ -3,7 +3,6 @@ use yinz_runtime::errors::prelude::*;
 use yinz_tile_utils::ellipsize;
 use yinz_types::internal_ids::SessionName;
 use yinz_types::internal_ids::TabId;
-use yinz_types::internal_ids::TabPosition;
 use yinz_types::pane_id::PaneId;
 
 use super::{Screen, ScreenInstruction};
@@ -381,36 +380,6 @@ impl Screen {
             false
         }
     }
-    pub(crate) fn convert_pane_metadata(
-        pane_manifest: &PaneManifest,
-        tab_infos: &[TabInfo],
-    ) -> Vec<yinz_storage::session_recording::PaneMetadata> {
-        use yinz_storage::session_recording::PaneMetadata;
-        let mut result = Vec::new();
-        // Build a map from tab position to TabInfo for quick lookup
-        let tab_by_position: std::collections::HashMap<TabPosition, &TabInfo> =
-            tab_infos.iter().map(|t| (t.position, t)).collect();
-        for (tab_position_key, pane_infos) in &pane_manifest.panes {
-            if let Some(tab_info) = tab_by_position.get(tab_position_key) {
-                for pane in pane_infos {
-                    let PaneId::Terminal(terminal_id) = pane.id else {
-                        continue;
-                    };
-                    result.push(PaneMetadata {
-                        terminal_id,
-                        tab_id: tab_info.tab_id,
-                        tab_position: tab_info.position,
-                        tab_name: tab_info.name.clone(),
-                        title: pane.title.clone(),
-                        cols: (pane.pane_content_columns).get(),
-                        rows: (pane.pane_content_rows).get(),
-                    });
-                }
-            }
-        }
-        result
-    }
-
     /// The pane half of `log_and_report_session_state`, without rebuilding tab state.
     ///
     /// Used when a pane change leaves the derived tab names unchanged.
@@ -434,14 +403,6 @@ impl Screen {
         // generate own session info
         let pane_manifest = self.generate_and_report_pane_state()?;
         let tab_infos = self.generate_and_report_tab_state()?;
-        // send pane metadata to session recorder if enabled
-        {
-            let metadata = Self::convert_pane_metadata(&pane_manifest, &tab_infos);
-            if let Some(recorder) = &self.bus.senders.session_recorder {
-                recorder.pane_metadata(metadata);
-            }
-        }
-
         // Lazy-load layouts on first call if cache is empty
         // After that, cache is updated by watcher via UpdateAvailableLayouts instruction
         if self.cached_layouts.is_empty() {

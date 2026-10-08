@@ -99,8 +99,7 @@ pub use super::generated_api::api::{
         KeyToRebind, KeyToUnbind, KillSessionsPayload,
         KillSessionsResponse as ProtobufKillSessionsResponse,
         ListNotificationsResponse as ProtobufListNotificationsResponse,
-        ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse,
-        ListRecordingsResponse as ProtobufListRecordingsResponse, LoadNewPluginPayload,
+        ListOrphanedPanesResponse as ProtobufListOrphanedPanesResponse, LoadNewPluginPayload,
         MessageToPluginPayload, MovePaneWithPaneIdInDirectionPayload, MovePaneWithPaneIdPayload,
         MovePayload, NewBranchGitCheckout, NewPluginArgs as ProtobufNewPluginArgs, NewTabPayload,
         NewTabResponse as ProtobufNewTabResponse, NewTabUnfocusedPayload,
@@ -158,8 +157,8 @@ pub use super::generated_api::api::{
         PluginCommand as ProtobufPluginCommand, PluginMessagePayload, ProjectConfigWritePayload,
         QueueStatusPayload, QueueStatusResponse as ProtobufQueueStatusResponse,
         ReadPluginLogPayload, ReadPluginLogResponse as ProtobufReadPluginLogResponse,
-        RebindKeysPayload, ReconfigurePayload, RecordingSummary as ProtobufRecordingSummary,
-        RegexHighlight as ProtobufRegexHighlight, ReloadPluginPayload, RenameLayoutPayload,
+        RebindKeysPayload, ReconfigurePayload, RegexHighlight as ProtobufRegexHighlight,
+        ReloadPluginPayload, RenameLayoutPayload,
         RenameLayoutResponse as ProtobufRenameLayoutResponse, RenameTabWithIdPayload,
         ReplacePaneWithExistingPanePayload, RequestPluginPermissionPayload,
         RerunCommandPanePayload, ResizePaneIdWithDirectionPayload, ResizePayload,
@@ -168,8 +167,6 @@ pub use super::generated_api::api::{
         SaveLayoutPayload, SaveLayoutResponse as ProtobufSaveLayoutResponse, SaveSessionPayload,
         SaveSessionResponse as ProtobufSaveSessionResponse, ScrollDownInPaneIdPayload,
         ScrollToBottomInPaneIdPayload, ScrollToTopInPaneIdPayload, ScrollUpInPaneIdPayload,
-        SearchHit as ProtobufSearchHit, SearchRecordingsPayload as ProtobufSearchRecordingsPayload,
-        SearchRecordingsResponse as ProtobufSearchRecordingsResponse,
         SessionListSnapshot as ProtobufSessionListSnapshot, SetContextMenuPayload,
         SetFloatingPanePinnedPayload, SetPaneAgentPayload, SetPaneAgentRunPayload,
         SetPaneBorderlessPayload, SetPaneColorPayload,
@@ -200,8 +197,6 @@ use yinz_types::internal_ids::SupervisorId;
 use yinz_types::internal_ids::TabId;
 use yinz_types::internal_ids::TabNumber;
 use yinz_types::internal_ids::TabPosition;
-use yinz_types::internal_ids::{RecordingId, TerminalId};
-use yinz_types::units::{ElapsedMicros, UnixMicros};
 
 use {
     crate::plugin_data::watch_mode_from_i32, crate::plugin_data::ProtobufMutation,
@@ -239,9 +234,8 @@ use {
     yinz_types::data::OverlayPlacement, yinz_types::data::PaneGitProbe, yinz_types::data::PaneId,
     yinz_types::data::PermissionType, yinz_types::data::PluginCommand,
     yinz_types::data::QueueSnapshot, yinz_types::data::QueueStatusResponse,
-    yinz_types::data::RecordingSummary, yinz_types::data::RegexHighlight,
-    yinz_types::data::RenameLayoutResponse, yinz_types::data::SaveLayoutResponse,
-    yinz_types::data::SearchHit, yinz_types::data::SessionInfo,
+    yinz_types::data::RegexHighlight, yinz_types::data::RenameLayoutResponse,
+    yinz_types::data::SaveLayoutResponse, yinz_types::data::SessionInfo,
     yinz_types::data::SessionListSnapshot, yinz_types::data::SpawnAgentResponse,
     yinz_types::data::WarpPaneResponse, yinz_types::data::WarpPlacement,
 };
@@ -1331,12 +1325,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                 }
                 Ok(PluginCommand::FocusHostSession)
             },
-            Some(CommandName::ListRecordings) => {
-                if protobuf_plugin_command.payload.is_some() {
-                    return Err("ListRecordings should not have a payload");
-                }
-                Ok(PluginCommand::ListRecordings)
-            },
             Some(CommandName::ResolveNotification) => match protobuf_plugin_command.payload {
                 Some(Payload::ResolveNotificationPayload(p)) => {
                     Ok(PluginCommand::ResolveNotification {
@@ -1352,15 +1340,6 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     return Err("ListNotifications should not have a payload");
                 }
                 Ok(PluginCommand::ListNotifications)
-            },
-            Some(CommandName::SearchRecordings) => match protobuf_plugin_command.payload {
-                Some(Payload::SearchRecordingsPayload(payload)) => {
-                    Ok(PluginCommand::SearchRecordings {
-                        query: payload.query,
-                        limit: payload.limit as usize,
-                    })
-                },
-                _ => Err("Malformed payload for SearchRecordings"),
             },
             Some(CommandName::TogglePaneFrames) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -4027,10 +4006,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                 name: CommandName::FocusHostSession as i32,
                 payload: None,
             }),
-            PluginCommand::ListRecordings => Ok(ProtobufPluginCommand {
-                name: CommandName::ListRecordings as i32,
-                payload: None,
-            }),
             PluginCommand::ResolveNotification { id, decision } => Ok(ProtobufPluginCommand {
                 name: CommandName::ResolveNotification as i32,
                 payload: Some(Payload::ResolveNotificationPayload(
@@ -4044,15 +4019,6 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::ListNotifications => Ok(ProtobufPluginCommand {
                 name: CommandName::ListNotifications as i32,
                 payload: None,
-            }),
-            PluginCommand::SearchRecordings { query, limit } => Ok(ProtobufPluginCommand {
-                name: CommandName::SearchRecordings as i32,
-                payload: Some(Payload::SearchRecordingsPayload(
-                    ProtobufSearchRecordingsPayload {
-                        query,
-                        limit: limit as u32,
-                    },
-                )),
             }),
             PluginCommand::TogglePaneFrames => Ok(ProtobufPluginCommand {
                 name: CommandName::TogglePaneFrames as i32,
@@ -7280,23 +7246,6 @@ impl From<OpenPluginPaneFloatingResponse> for ProtobufOpenPluginPaneFloatingResp
     }
 }
 
-impl From<ProtobufRecordingSummary> for RecordingSummary {
-    fn from(protobuf: ProtobufRecordingSummary) -> Self {
-        RecordingSummary {
-            id: RecordingId::new(protobuf.id),
-            session_name: protobuf.session_name.into(),
-            tab_name: protobuf.tab_name,
-            terminal_id: TerminalId::new(protobuf.terminal_id),
-            pane_title: protobuf.pane_title,
-            started_at_us: UnixMicros::new(protobuf.started_at_us),
-            duration_us: ElapsedMicros::new(protobuf.duration_us),
-            is_running: protobuf.is_running,
-            capture_input: protobuf.capture_input,
-            error: protobuf.error,
-        }
-    }
-}
-
 impl From<ProtobufNotificationInfo> for NotificationInfo {
     fn from(notification: ProtobufNotificationInfo) -> Self {
         NotificationInfo {
@@ -7322,51 +7271,6 @@ impl From<NotificationInfo> for ProtobufNotificationInfo {
                 .as_ref()
                 .and_then(|outcome| serde_json::to_string(outcome).ok()),
             received_at_unix_ms: (notification.received_at_unix_ms).get(),
-        }
-    }
-}
-
-impl From<RecordingSummary> for ProtobufRecordingSummary {
-    fn from(summary: RecordingSummary) -> Self {
-        ProtobufRecordingSummary {
-            id: summary.id.get(),
-            session_name: summary.session_name.to_string(),
-            tab_name: summary.tab_name,
-            terminal_id: summary.terminal_id.get(),
-            pane_title: summary.pane_title,
-            started_at_us: summary.started_at_us.get(),
-            duration_us: summary.duration_us.get(),
-            is_running: summary.is_running,
-            capture_input: summary.capture_input,
-            error: summary.error,
-        }
-    }
-}
-
-impl From<ProtobufSearchHit> for SearchHit {
-    fn from(protobuf: ProtobufSearchHit) -> Self {
-        SearchHit {
-            recording_id: RecordingId::new(protobuf.recording_id),
-            session_name: protobuf.session_name.into(),
-            tab_name: protobuf.tab_name,
-            pane_title: protobuf.pane_title,
-            elapsed_us: ElapsedMicros::new(protobuf.elapsed_us),
-            started_at_us: UnixMicros::new(protobuf.started_at_us),
-            text: protobuf.text,
-        }
-    }
-}
-
-impl From<SearchHit> for ProtobufSearchHit {
-    fn from(hit: SearchHit) -> Self {
-        ProtobufSearchHit {
-            recording_id: hit.recording_id.get(),
-            session_name: hit.session_name.to_string(),
-            tab_name: hit.tab_name,
-            pane_title: hit.pane_title,
-            elapsed_us: hit.elapsed_us.get(),
-            started_at_us: hit.started_at_us.get(),
-            text: hit.text,
         }
     }
 }
@@ -7769,60 +7673,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn recording_commands_protobuf_round_trip() {
-        let original = PluginCommand::SearchRecordings {
-            query: "needle".to_owned(),
-            limit: 7,
-        };
-        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
-        let decoded: PluginCommand = protobuf.try_into().expect("decode");
-        match decoded {
-            PluginCommand::SearchRecordings { query, limit } => {
-                assert_eq!(query, "needle");
-                assert_eq!(limit, 7);
-            },
-            other => panic!("expected SearchRecordings, got {:?}", other),
-        }
-
-        let protobuf: ProtobufPluginCommand =
-            PluginCommand::ListRecordings.try_into().expect("encode");
-        let decoded: PluginCommand = protobuf.try_into().expect("decode");
-        assert!(matches!(decoded, PluginCommand::ListRecordings));
-    }
-
-    #[test]
-    fn recording_results_protobuf_round_trip() {
-        let summary = RecordingSummary {
-            id: RecordingId::new(3),
-            session_name: "session".to_owned().into(),
-            tab_name: "tab".to_owned(),
-            terminal_id: TerminalId::new(5),
-            pane_title: "title".to_owned(),
-            started_at_us: UnixMicros::new(1_000),
-            duration_us: ElapsedMicros::new(2_000),
-            is_running: true,
-            capture_input: false,
-            error: Some("boom".to_owned()),
-        };
-        let protobuf: ProtobufRecordingSummary = summary.clone().into();
-        assert_eq!(prost::Message::encode_to_vec(&protobuf), b"\x08\x03\x12\x07session\x1a\x03tab\x20\x05\x2a\x05title\x30\xe8\x07\x38\xd0\x0f\x40\x01\x52\x04boom");
-        assert_eq!(RecordingSummary::from(protobuf), summary);
-
-        let hit = SearchHit {
-            recording_id: RecordingId::new(3),
-            session_name: "session".to_owned().into(),
-            tab_name: "tab".to_owned(),
-            pane_title: "title".to_owned(),
-            elapsed_us: ElapsedMicros::new(42),
-            started_at_us: UnixMicros::new(1_000),
-            text: "needle in a haystack".to_owned(),
-        };
-        let protobuf: ProtobufSearchHit = hit.clone().into();
-        assert_eq!(prost::Message::encode_to_vec(&protobuf), b"\x08\x03\x12\x07session\x1a\x03tab\x22\x05title\x28\x2a\x30\xe8\x07\x3a\x14needle in a haystack");
-        assert_eq!(SearchHit::from(protobuf), hit);
     }
 
     #[test]
@@ -8299,10 +8149,8 @@ mod tests {
                 | PluginCommand::DeleteDeadSessionAndReply(_)
                 | PluginCommand::DeleteAllDeadSessionsAndReply
                 | PluginCommand::FocusHostSession
-                | PluginCommand::ListRecordings
                 | PluginCommand::ResolveNotification { .. }
                 | PluginCommand::ListNotifications
-                | PluginCommand::SearchRecordings { .. }
                 | PluginCommand::WarpPaneToSession { .. }
                 | PluginCommand::WarpPaneFromSession { .. }
                 | PluginCommand::WarpTabToSession { .. }

@@ -76,3 +76,19 @@ fn searching_an_entity_with_nothing_searchable_says_so() {
         .unwrap_err();
     assert_err!(err, DataError::InvalidQuery(_));
 }
+
+#[test]
+fn search_handles_punctuation_quotes_and_nuls() {
+    let (store, _dir) = defined();
+    put(&store, "yinz", "fixing a rebase conflict", 1);
+    for query in ["rebase:conflict", "rebase \"conflict", "reb\0ase conflict"] {
+        let request = FetchRequest::entity("agent").search(query);
+        let rows = store.fetch(NS, &request).unwrap();
+        assert_eq!(
+            texts(&rows, "summary"),
+            vec!["fixing a rebase conflict"],
+            "{query:?}"
+        );
+        assert_eq!(store.count(NS, &request).unwrap(), 1, "{query:?}");
+    }
+}

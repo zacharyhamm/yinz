@@ -1969,8 +1969,8 @@ impl TerminalPane {
     }
     /// Resizes the grid to the pane's content area, and only the grid. The pty gets its size
     /// separately: the pane's container or the tab sends `resize_pty!` through the pty writer,
-    /// where the screen thread's `ResizeCache` collapses a burst of resizes into one per pane, the
-    /// session recorder records it, and `ServerOsApi` delivers it over the pane's transport.
+    /// where the screen thread's `ResizeCache` collapses a burst of resizes into one per pane, and
+    /// `ServerOsApi` delivers it over the pane's transport.
     /// Resizing the pty from here would signal the child at every intermediate size.
     fn reflow_lines(&mut self) {
         let rows = self.get_content_rows();

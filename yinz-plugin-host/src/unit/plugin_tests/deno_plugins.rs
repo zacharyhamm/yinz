@@ -495,13 +495,8 @@ fn deno_data_helpers_preserve_values_rollback_conflicts_watch_disposal_and_reloa
 #[test]
 #[ignore = "requires cargo x postgres-test --build and YINZ_PLUGIN_DATA_TEST_URL"]
 fn deno_data_helpers_on_postgres() {
-    let directory = tempdir().unwrap();
     let url = std::env::var("YINZ_PLUGIN_DATA_TEST_URL").expect("Postgres test URL");
-    data_helpers_persistence(Some(DataAccess::postgres(
-        &url,
-        "deno_sdk_tests",
-        directory.path(),
-    )));
+    data_helpers_persistence(Some(DataAccess::postgres(&url, "deno_sdk_tests")));
 }
 
 fn data_helpers_persistence(data_access: Option<DataAccess>) {

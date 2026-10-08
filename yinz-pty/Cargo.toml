@@ -20,7 +20,6 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 yinz-ipc = { workspace = true }
-yinz-storage = { workspace = true }
 yinz-test-support = { path = "../yinz-test-support" }
 async-trait = { version = "0.1.50", default-features = false }
 crossbeam = { version = "0.8", default-features = false, features = ["crossbeam-channel", "std"] }

@@ -551,16 +551,9 @@ background_opacity "85%"
 //
 // session_serialization false
 
-// Record terminal pane output in the local recording database.
-// session_recording false
-
-// Record raw terminal input. This can include passwords and other secrets.
-// This option has an effect only when session_recording is true.
-// session_recording_input false
-
 // Where plugin data is stored. Unset (default): a SQLite file in the data dir.
 // A postgres:// URL stores plugin data in that database instead, so that every
-// machine using it sees the same rows; session recordings stay local either way.
+// machine using it sees the same rows.
 // The URL may carry a password, so keep this file private.
 // sslmode: disable uses plaintext, prefer (default) permits plaintext if the server
 // declines TLS, and require refuses plaintext. TLS always verifies trust and hostname.

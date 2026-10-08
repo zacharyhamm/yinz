@@ -1,6 +1,5 @@
 mod new_session_info;
 mod notifications;
-mod recordings;
 mod resurrectable_sessions;
 mod session_list;
 mod single_screen;
@@ -25,7 +24,6 @@ use ui::{
     SessionUiInfo,
 };
 
-use recordings::Recordings;
 use resurrectable_sessions::ResurrectableSessions;
 use session_list::SessionList;
 
@@ -35,7 +33,6 @@ enum ActiveScreen {
     #[default]
     AttachToSession,
     ResurrectSession,
-    Recordings,
     Notifications,
     SingleScreen,
 }
@@ -46,7 +43,6 @@ pub(crate) struct State {
     max_session_name_bytes: Option<usize>,
     pub(crate) sessions: SessionList,
     pub(crate) resurrectable_sessions: ResurrectableSessions,
-    pub(crate) recordings: Recordings,
     pub(crate) notifications: Notifications,
     /// The screen to go back to when leaving an auxiliary browser.
     previous_screen: Option<ActiveScreen>,
@@ -262,9 +258,6 @@ impl YinzPlugin for State {
             ActiveScreen::ResurrectSession => {
                 self.resurrectable_sessions.render(height, width, x, y);
             },
-            ActiveScreen::Recordings => {
-                self.recordings.render(height, width, x, y);
-            },
             ActiveScreen::Notifications => {
                 self.notifications.render(height, width, x, y);
             },
@@ -466,7 +459,6 @@ impl State {
             ActiveScreen::NewSession => self.handle_new_session_key(key),
             ActiveScreen::AttachToSession => self.handle_attach_to_session(key),
             ActiveScreen::ResurrectSession => self.handle_resurrect_session_key(key),
-            ActiveScreen::Recordings => self.handle_recordings_key(key),
             ActiveScreen::Notifications => self.handle_notifications_key(key),
             ActiveScreen::SingleScreen => self.handle_single_screen_key(key),
         }
@@ -767,61 +759,6 @@ impl State {
         }
         should_render
     }
-    fn enter_recordings_screen(&mut self) {
-        self.previous_screen = Some(self.active_screen);
-        self.active_screen = ActiveScreen::Recordings;
-        self.recordings.refresh();
-    }
-    fn handle_recordings_key(&mut self, key: KeyWithModifier) -> bool {
-        let mut should_render = false;
-        match key.bare_key {
-            BareKey::Down if key.has_no_modifiers() => {
-                self.recordings.move_selection_down();
-                should_render = true;
-            },
-            BareKey::Up if key.has_no_modifiers() => {
-                self.recordings.move_selection_up();
-                should_render = true;
-            },
-            // ponytail: <ENTER> is a no-op until replay lands - the row carries the recording id
-            // that `yinz recordings export` (and replay) take.
-            BareKey::Char(character) if key.has_no_modifiers() && character != '\n' => {
-                self.recordings.handle_character(character);
-                should_render = true;
-            },
-            BareKey::Backspace if key.has_no_modifiers() => {
-                self.recordings.handle_backspace();
-                should_render = true;
-            },
-            BareKey::Tab if key.has_no_modifiers() => {
-                if self.previous_screen.is_some() {
-                    self.leave_recordings_screen();
-                } else {
-                    self.toggle_active_screen();
-                }
-                should_render = true;
-            },
-            BareKey::Char('c') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
-                if !self.recordings.clear_search_term() {
-                    self.leave_recordings_screen();
-                }
-                should_render = true;
-            },
-            BareKey::Esc if key.has_no_modifiers() => {
-                self.leave_recordings_screen();
-                should_render = true;
-            },
-            _ => {},
-        }
-        should_render
-    }
-    fn leave_recordings_screen(&mut self) {
-        match self.previous_screen.take() {
-            Some(previous_screen) => self.active_screen = previous_screen,
-            None if !self.is_welcome_screen => close_self(),
-            None => {},
-        }
-    }
     fn enter_notifications_screen(&mut self) {
         self.previous_screen = Some(self.active_screen);
         self.active_screen = ActiveScreen::Notifications;
@@ -983,10 +920,6 @@ impl State {
                 self.renaming_session_name = Some(String::new());
                 should_render = true;
             },
-            BareKey::Char('l') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
-                self.enter_recordings_screen();
-                should_render = true;
-            },
             BareKey::Char('v') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
                 self.enter_notifications_screen();
                 should_render = true;
@@ -1136,8 +1069,6 @@ impl State {
     }
     fn handle_selection(&mut self) {
         match self.active_screen {
-            // ponytail: nothing to select until replay lands
-            ActiveScreen::Recordings => {},
             ActiveScreen::Notifications => {},
             ActiveScreen::NewSession => {
                 if let Some(error) = self.session_name_error(self.new_session_info.name()) {
@@ -1382,10 +1313,6 @@ impl State {
             ActiveScreen::NewSession => ActiveScreen::AttachToSession,
             ActiveScreen::AttachToSession => ActiveScreen::ResurrectSession,
             ActiveScreen::ResurrectSession => {
-                self.recordings.refresh();
-                ActiveScreen::Recordings
-            },
-            ActiveScreen::Recordings => {
                 self.notifications.refresh();
                 ActiveScreen::Notifications
             },
@@ -1591,13 +1518,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tab_returns_to_single_screen_after_opening_recordings() {
+    fn notifications_escape_returns_to_single_screen() {
         let mut state = State {
-            active_screen: ActiveScreen::Recordings,
+            active_screen: ActiveScreen::Notifications,
             previous_screen: Some(ActiveScreen::SingleScreen),
             ..Default::default()
         };
-        state.handle_recordings_key(KeyWithModifier::new(BareKey::Tab));
+        state.handle_notifications_key(KeyWithModifier::new(BareKey::Esc));
         assert_eq!(state.active_screen, ActiveScreen::SingleScreen);
         assert_eq!(state.previous_screen, None);
     }

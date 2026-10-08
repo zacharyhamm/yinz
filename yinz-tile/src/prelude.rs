@@ -13,10 +13,8 @@ pub use yinz_types::{agent::*, command::*, geometry::*};
 
 pub use yinz_types::internal_ids::{
     ClientId, ContextMenuItemId, ContextMenuRequestId, DataRevision, DataRowId, DataWatchId,
-    NotificationId, PluginId, ProcessId, QueueJobId, RecordingId, TabId, TabNumber, TabPosition,
-    TerminalId,
+    NotificationId, PluginId, ProcessId, QueueJobId, TabId, TabNumber, TabPosition, TerminalId,
 };
-pub use yinz_types::units::{ElapsedMicros, UnixMicros};
 
 pub use yinz_types::internal_ids::{HostId, SessionName};
 

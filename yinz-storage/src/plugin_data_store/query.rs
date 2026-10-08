@@ -1,6 +1,5 @@
 //! Building and running fetches: the `SELECT` half of the store.
 
-use crate::session_recording::fts_phrase;
 use yinz_types::internal_ids::DataRowId;
 use yinz_types::plugin_data::{
     AttrKind, DataError, DataRows, DataValue, FetchRequest, SortDir, MAX_FETCH_BYTES,
@@ -214,7 +213,7 @@ pub(super) fn order_term(column: &str, dir: SortDir) -> String {
 /// Run a search, retrying one the engine rejects as bad syntax as a literal phrase.
 ///
 /// Punctuation and unbalanced quotes are FTS5 syntax errors, and are also exactly what gets pasted
-/// in from a log line — the same reason [`crate::session_recording`] does this. On a second failure
+/// in from a log line. On a second failure
 /// the *first* error is returned, since that is the one describing what the plugin actually asked.
 /// An engine whose search syntax accepts anything gets the first result back untouched.
 pub(super) fn with_search_fallback<T>(
@@ -324,4 +323,9 @@ pub(super) fn run_fetch(
         truncated,
         next_cursor,
     })
+}
+
+fn fts_phrase(query: &str) -> String {
+    let without_nul = query.replace('\0', "");
+    format!("\"{}\"", without_nul.replace('"', "\"\""))
 }

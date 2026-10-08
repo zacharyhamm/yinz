@@ -80,7 +80,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufKillSessionsResponse,
     yinz_plugin_api::plugin_command::ProtobufListNotificationsResponse,
     yinz_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
-    yinz_plugin_api::plugin_command::ProtobufListRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabUnfocusedResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabsResponse,
@@ -118,7 +117,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveSessionResponse,
-    yinz_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
     yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
     yinz_plugin_api::plugin_command::ProtobufWarpPaneResponse,
@@ -2354,19 +2352,6 @@ pub fn parse_layout(layout_string: &str) -> Result<LayoutMetadata, LayoutParsing
     }
 }
 
-/// List all session recordings (newest session first), if session recording is enabled.
-///
-/// Requires the `ReadPaneContents` permission.
-pub fn list_recordings() -> Vec<RecordingSummary> {
-    let plugin_command = PluginCommand::ListRecordings;
-    let protobuf_response = or_default(call::<ProtobufListRecordingsResponse>(plugin_command));
-    protobuf_response
-        .recordings
-        .into_iter()
-        .map(|r| r.into())
-        .collect()
-}
-
 /// List every toast received by the current live session, oldest first.
 ///
 /// Requires the `ReadApplicationState` permission.
@@ -2384,25 +2369,6 @@ pub fn list_notifications() -> Result<Vec<NotificationInfo>, String> {
         Some(error) => Err(error),
         None => Ok(response.notifications.into_iter().map(Into::into).collect()),
     }
-}
-
-/// Full-text search the recorded terminal output of all session recordings, returning at most
-/// `limit` hits.
-///
-/// Requires the `ReadPaneContents` permission. Note this brings the search index up to date
-/// first, so the first call after a lot of recording activity can take a while.
-pub fn search_recordings(query: &str, limit: usize) -> Vec<SearchHit> {
-    let plugin_command = PluginCommand::SearchRecordings {
-        query: query.to_owned(),
-        limit,
-    };
-
-    let protobuf_response = or_default(call::<ProtobufSearchRecordingsResponse>(plugin_command));
-    protobuf_response
-        .hits
-        .into_iter()
-        .map(|h| h.into())
-        .collect()
 }
 
 /// Get a list of clients, their focused pane and running command or focused plugin back as an

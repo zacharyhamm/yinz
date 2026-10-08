@@ -1,25 +1,12 @@
 //! Process-wide access to host-owned persistent data.
-//!
-//! Callers depend on these synchronous interfaces. SQLite is the default concrete backend for
-//! both plugin data and recordings; plugin data can be pointed at Postgres instead with
-//! `plugin_data_url`, in which case recordings stay in SQLite — which is [`DataAccess::postgres`],
-//! and the reason [`DataAccess::from_backends`] takes two backends rather than one.
 
-use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use yinz_types::internal_ids::{RecordingId, TerminalId};
-use yinz_types::units::{ElapsedMicros, UnixMicros};
 
 use anyhow::Result;
 
 use crate::plugin_data_store::{
     PluginDataStore, PostgresPluginDataBackend, SqlitePluginDataBackend,
-};
-use crate::session_recording::{
-    CompactionReport, PaneMetadata, RecordedEvent, RecordingSummary, SearchHit,
-    SqliteRecordingBackend, StoreCompaction,
 };
 use yinz_types::plugin_data::{
     ApplyReport, DataEntityInfo, DataError, DataRows, DataSchemaInfo, EntityDef, FetchRequest,
@@ -41,65 +28,13 @@ pub trait PluginDataBackend: Send + Sync {
     fn apply(&self, namespace: &str, mutations: &[Mutation]) -> Result<ApplyReport, DataError>;
 }
 
-/// One active recording session.
-pub trait RecordingSession: Send {
-    /// Commit the entire batch or return an error without retaining any of its events.
-    fn record_events(&mut self, events: &[RecordedEvent]) -> Result<()>;
-    fn update_panes(&mut self, panes: &[PaneMetadata], elapsed_us: ElapsedMicros) -> Result<()>;
-    fn finish_pane(&mut self, terminal_id: TerminalId, elapsed_us: ElapsedMicros) -> Result<()>;
-    fn finish_session(
-        &mut self,
-        ended_at_us: UnixMicros,
-        ended_elapsed_us: ElapsedMicros,
-    ) -> Result<()>;
-    fn mark_incomplete(&mut self, message: &str) -> Result<()>;
-    /// A compactor over this recording's store, with a connection of its own so that it can run
-    /// on another thread than the one recording. Backends without segments have none.
-    fn compactor(&self) -> Result<Option<Box<dyn RecordingCompactor>>> {
-        Ok(None)
-    }
-}
-
-/// Packs a store's cold events into compressed segments, apart from the thread recording.
-pub trait RecordingCompactor: Send {
-    /// Moves about `budget_bytes` of event data at most, the recording's own first. `elapsed` is
-    /// the recording's clock now, the one its events are stamped with. Once `stop` is set it
-    /// returns what it has moved so far, after one segment at most. A failure loses nothing:
-    /// what was not committed stays as it was, to be tried again.
-    fn compact(
-        &mut self,
-        elapsed: ElapsedMicros,
-        budget_bytes: u64,
-        stop: &AtomicBool,
-    ) -> Result<CompactionReport>;
-}
-
-/// Persistence operations for recordings outside an active session.
-pub trait RecordingBackend: Send + Sync {
-    fn start_recording(
-        &self,
-        session_name: &str,
-        capture_input: bool,
-        started_at_us: UnixMicros,
-    ) -> Result<Box<dyn RecordingSession>>;
-    fn list(&self) -> Result<Vec<RecordingSummary>>;
-    fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
-    fn export(&self, recording_id: RecordingId, output: &mut dyn Write) -> Result<()>;
-    /// Compacts every cold event in the store and gives the space it frees back to the file
-    /// system, for `yinz recordings compact`.
-    fn compact_all(&self) -> Result<StoreCompaction> {
-        anyhow::bail!("this recording store cannot be compacted")
-    }
-}
-
 /// The Postgres schema the plugin data store uses when `plugin_data_schema` is unset.
 pub const DEFAULT_PLUGIN_DATA_SCHEMA: &str = "yinz_plugin_data";
 
-/// The data backends shared by one server process.
+/// The data backend shared by one server process.
 #[derive(Clone)]
 pub struct DataAccess {
     plugin_data: Arc<PluginDataStore>,
-    recordings: Arc<dyn RecordingBackend>,
 }
 
 impl std::fmt::Debug for DataAccess {
@@ -109,21 +44,15 @@ impl std::fmt::Debug for DataAccess {
 }
 
 impl DataAccess {
-    /// The default provider. Construction is lazy and does not create either database.
+    /// The default provider. Construction is lazy and does not create the database.
     pub fn sqlite(data_dir: &Path) -> Self {
-        Self::from_backends(
-            Arc::new(SqlitePluginDataBackend::new(data_dir)),
-            Arc::new(SqliteRecordingBackend::new(data_dir)),
-        )
+        Self::from_backend(Arc::new(SqlitePluginDataBackend::new(data_dir)))
     }
 
-    /// Plugin data in Postgres, recordings in the SQLite file under `data_dir`. Lazy: nothing
+    /// Plugin data in Postgres. Lazy: nothing
     /// connects here, and a URL that does not parse is reported on first use.
-    pub fn postgres(url: &str, schema: &str, data_dir: &Path) -> Self {
-        Self::from_backends(
-            Arc::new(PostgresPluginDataBackend::new(url, schema)),
-            Arc::new(SqliteRecordingBackend::new(data_dir)),
-        )
+    pub fn postgres(url: &str, schema: &str) -> Self {
+        Self::from_backend(Arc::new(PostgresPluginDataBackend::new(url, schema)))
     }
 
     /// The provider `Options::plugin_data_url` asks for: SQLite in the data dir when it is unset,
@@ -139,32 +68,23 @@ impl DataAccess {
             Some(url) => {
                 let schema = schema.unwrap_or(DEFAULT_PLUGIN_DATA_SCHEMA);
                 log::info!(
-                    "plugin data store: Postgres at {} schema `{}`; recordings stay in {:?}",
+                    "plugin data store: Postgres at {} schema `{}`",
                     crate::plugin_data_store::redact_url(url),
-                    schema,
-                    data_dir
+                    schema
                 );
-                Self::postgres(url, schema, data_dir)
+                Self::postgres(url, schema)
             },
         }
     }
 
-    /// Inject backends, primarily for hosts and tests that do not want SQLite.
-    pub fn from_backends(
-        plugin_data: Arc<dyn PluginDataBackend>,
-        recordings: Arc<dyn RecordingBackend>,
-    ) -> Self {
+    /// Inject a backend, primarily for hosts and tests that do not want SQLite.
+    pub fn from_backend(plugin_data: Arc<dyn PluginDataBackend>) -> Self {
         Self {
             plugin_data: Arc::new(PluginDataStore::from_backend(plugin_data)),
-            recordings,
         }
     }
 
     pub fn plugin_data(&self) -> &Arc<PluginDataStore> {
         &self.plugin_data
-    }
-
-    pub fn recordings(&self) -> &Arc<dyn RecordingBackend> {
-        &self.recordings
     }
 }

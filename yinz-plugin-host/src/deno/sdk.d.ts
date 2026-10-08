@@ -345,7 +345,7 @@ export interface CommandArgs {
   SetContextMenu: {request_id: Integer; items: ContextMenuItem[]}; ClearPaneHighlights: PaneId;
   OpenPluginPaneFloating: {plugin_url: string; configuration: StringMap; floating_pane_coordinates: FloatingPaneCoordinates | null; context: StringMap};
   GetSessionList: undefined; KillSessionsAndReply: string[]; DeleteDeadSessionAndReply: string; DeleteAllDeadSessionsAndReply: undefined;
-  FocusHostSession: undefined; ListRecordings: undefined; ListNotifications: undefined; ResolveNotification: {id: Integer; decision: NotificationDecision}; SearchRecordings: {query: string; limit: Integer};
+  FocusHostSession: undefined; ListNotifications: undefined; ResolveNotification: {id: Integer; decision: NotificationDecision};
   WarpPaneToSession: {pane_id: PaneId; to_session: string; placement: WarpPlacement};
   WarpPaneFromSession: {pane_id: PaneId; from_session: string; placement: WarpPlacement};
   WarpTabToSession: {tab_id: number; to_session: string}; WarpTabFromSession: {tab_id: number; from_session: string};
@@ -396,7 +396,7 @@ export interface CommandReplies {
   WarpPaneToSession: string; WarpPaneFromSession: string; WarpTabToSession: string; WarpTabFromSession: string; AdoptOrphanedPane: string;
   ListOrphanedPanes: OrphanedPane[]; DataDefineEntity: DataSchemaInfo; DataApply: ApplyReport; DataFetch: DataRows; DataCount: Integer;
   DataWatch: DataWatchHandle; DataUnwatch: boolean; DataCatalog: DataEntityInfo[]; EnqueueQueueJob: Integer; QueueStatus: QueueSnapshot[];
-  ListRecordings: RecordingSummary[]; SearchRecordings: SearchHit[]; ListNotifications: NotificationInfo[];
+  ListNotifications: NotificationInfo[];
   NewTab: number | null; NewTabUnfocused: number | null; NewTabsWithLayout: number[]; NewTabsWithLayoutInfo: number[];
   FocusOrCreateTab: number | null; BreakPanesToNewTab: number | null; BreakPanesToTabWithIndex: number | null; BreakPanesToTabWithId: number | null;
   NewTiledPaneInTab: PaneId | null; OpenFile: PaneId | null; OpenFileFloating: PaneId | null; OpenFileInPlace: PaneId | null;
@@ -564,8 +564,6 @@ export type NotificationDecision = "Pass" | "Suppress" | {Replace: {title?: stri
 export interface NotificationResolution {original: NotificationData; title: string; body: string; delivery: NotificationDelivery; suppressed: boolean; fallback_reason: string | null;}
 export interface NotificationInfo {id: Integer; message: string; received_at_unix_ms: Integer; outcome?: NotificationResolution | null;}
 export interface PaneInNewTab {tab_id: number | null; pane_id: PaneId | null;}
-export interface RecordingSummary {id: Integer; session_name: string; tab_name: string; terminal_id: number; pane_title: string; started_at_us: Integer; duration_us: Integer; is_running: boolean; capture_input: boolean; error: string | null;}
-export interface SearchHit {recording_id: Integer; session_name: string; tab_name: string; pane_title: string; elapsed_us: Integer; started_at_us: Integer; text: string;}
 // ---- section: sdk_types_data
 export type PaletteColor = {Rgb: [number, number, number]} | {EightBit: number};
 export interface StyleDeclaration {base: PaletteColor; background: PaletteColor; emphasis_0: PaletteColor; emphasis_1: PaletteColor; emphasis_2: PaletteColor; emphasis_3: PaletteColor;}

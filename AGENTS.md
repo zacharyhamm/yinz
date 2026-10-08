@@ -155,7 +155,7 @@ escalation on the first attempt.
 | `yinz-pty/` | Pty thread: spawning and supervising pane processes |
 | `yinz-tab/` | `Tab`: pane composition, focus, pane tabs, swap layouts, mouse, pane groups, clipboard |
 | `yinz-panes/` | `Pane` trait, panes, pane managers, frames, layout application |
-| `yinz-bus/` | Thread instructions, senders, OS API contract, background jobs, recorder |
+| `yinz-bus/` | Thread instructions, senders, OS API contract, background jobs |
 | `yinz-server-os/` | OS API backend: ptys, supervisors, remote panes, client writers |
 | `yinz-routing/` | Action dispatch and completion waits |
 | `yinz-plugin-host/` | Wasm/Deno runtime, host functions, events, pipes, jobs |

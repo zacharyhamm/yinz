@@ -24,8 +24,8 @@ yinz action dump-screen --pane-id terminal_3
 
 Use the existing `action new-pane`, `new-tab`, `write-chars`, `close-pane`,
 `close-tab-by-id`, `warp-pane`, `warp-tab`, `dump-layout`, `pty-host`,
-`firecracker`, and `recordings` commands. Read the relevant `--help` for flags.
-Use native file and shell tools to prepare layouts and inspect exported recordings.
+and `firecracker` commands. Read the relevant `--help` for flags.
+Use native file and shell tools to prepare layouts.
 
 Additional explicit-target operations:
 

@@ -143,9 +143,7 @@ fn open_db(db_path: &Path) -> Result<Connection, DataError> {
     }
     let mut conn =
         Connection::open(db_path).with_ctx(|| format!("failed to open {:?}", db_path))?;
-    // The same pragma set as the recording store. WAL and a busy timeout matter more here than
-    // there: this file lives in the data dir rather than a session cache dir, so two yinz
-    // servers running at once share it.
+    // WAL and a busy timeout let concurrent yinz servers share this file in the data dir.
     conn.pragma_update(None, "journal_mode", "WAL")
         .ctx("failed to enable WAL")?;
     conn.pragma_update(None, "busy_timeout", 5000)

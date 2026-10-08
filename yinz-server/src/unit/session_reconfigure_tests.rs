@@ -102,7 +102,6 @@ fn a_config_change_reconfigures_every_thread_with_plugin_default_keybinds() {
             plugin_thread: None,
             pty_writer_thread: None,
             background_jobs_thread: None,
-            session_recorder_thread: None,
             config_file_path: None,
             config_dir: Some(PathBuf::from("/yinz-config")),
         };

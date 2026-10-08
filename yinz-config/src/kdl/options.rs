@@ -184,8 +184,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
     let session_serialization =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_serialization")
             .map(|(v, _)| v);
-    let session_recording =
-        kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording").map(|(v, _)| v);
     let plugin_data_url =
         match kdl_property_first_arg_as_string_or_error!(kdl_options, "plugin_data_url") {
             Some((value, entry)) => {
@@ -233,9 +231,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         },
         None => None,
     };
-    let session_recording_input =
-        kdl_property_first_arg_as_bool_or_error!(kdl_options, "session_recording_input")
-            .map(|(v, _)| v);
     let serialize_pane_viewport =
         kdl_property_first_arg_as_bool_or_error!(kdl_options, "serialize_pane_viewport")
             .map(|(v, _)| v);
@@ -360,8 +355,6 @@ pub fn from_kdl(kdl_options: &KdlDocument) -> Result<Options, ConfigError> {
         attach_to_session,
         auto_layout,
         session_serialization,
-        session_recording,
-        session_recording_input,
         plugin_data_url,
         plugin_data_schema,
         host_id,
@@ -1424,67 +1417,6 @@ fn session_serialization_to_kdl(value: &Options, add_comments: bool) -> Option<K
         None
     }
 }
-fn session_recording_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
-    let comment_text = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}",
-        " ",
-        "// Record terminal pane output in the local recording database.",
-        "// Options:",
-        "//   - true",
-        "//   - false (default)",
-        "// ",
-    );
-
-    let create_node = |node_value: bool| -> KdlNode {
-        let mut node = KdlNode::new("session_recording");
-        node.push(KdlValue::Bool(node_value));
-        node
-    };
-    if let Some(session_recording) = value.session_recording {
-        let mut node = create_node(session_recording);
-        if add_comments {
-            node.set_leading(format!("{}\n", comment_text));
-        }
-        Some(node)
-    } else if add_comments {
-        let mut node = create_node(false);
-        node.set_leading(format!("{}\n// ", comment_text));
-        Some(node)
-    } else {
-        None
-    }
-}
-fn session_recording_input_to_kdl(value: &Options, add_comments: bool) -> Option<KdlNode> {
-    let comment_text = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        " ",
-        "// Record raw terminal input. This can include passwords and other secrets.",
-        "// This option has an effect only when session_recording is true.",
-        "// Options:",
-        "//   - true",
-        "//   - false (default)",
-        "// ",
-    );
-
-    let create_node = |node_value: bool| -> KdlNode {
-        let mut node = KdlNode::new("session_recording_input");
-        node.push(KdlValue::Bool(node_value));
-        node
-    };
-    if let Some(session_recording_input) = value.session_recording_input {
-        let mut node = create_node(session_recording_input);
-        if add_comments {
-            node.set_leading(format!("{}\n", comment_text));
-        }
-        Some(node)
-    } else if add_comments {
-        let mut node = create_node(false);
-        node.set_leading(format!("{}\n// ", comment_text));
-        Some(node)
-    } else {
-        None
-    }
-}
 /// Emitted only when set. The commented-out template lives in `default.kdl`, next to the
 /// other options, and a URL with a password in it is not something to write out unasked.
 fn plugin_data_url_to_kdl(value: &Options) -> Option<KdlNode> {
@@ -2324,12 +2256,6 @@ pub fn to_kdl(value: &Options, add_comments: bool) -> Vec<KdlNode> {
     }
     if let Some(session_serialization) = session_serialization_to_kdl(value, add_comments) {
         nodes.push(session_serialization);
-    }
-    if let Some(session_recording) = session_recording_to_kdl(value, add_comments) {
-        nodes.push(session_recording);
-    }
-    if let Some(session_recording_input) = session_recording_input_to_kdl(value, add_comments) {
-        nodes.push(session_recording_input);
     }
     if let Some(plugin_data_url) = plugin_data_url_to_kdl(value) {
         nodes.push(plugin_data_url);

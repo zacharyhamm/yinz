@@ -21,9 +21,8 @@ fn search_string(tc: &hegel::TestCase) -> String {
     pieces.join(" ")
 }
 
-/// Anything a person can paste has to search rather than error — the same property the
-/// recording store holds, for the same reason: punctuation and unbalanced quotes are FTS5
-/// syntax errors, and are also exactly what comes off a log line.
+/// Anything a person can paste has to search rather than error: punctuation and unbalanced
+/// quotes are FTS5 syntax errors, and are also exactly what comes off a log line.
 #[hegel::test(test_cases = 40)]
 fn any_search_string_searches_rather_than_erroring(tc: hegel::TestCase) {
     let query = tc.draw(search_string());

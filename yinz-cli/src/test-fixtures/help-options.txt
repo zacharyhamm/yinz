@@ -129,16 +129,6 @@ Options:
           
           [possible values: true, false]
 
-      --session-recording <SESSION_RECORDING>
-          Record terminal pane output for this session
-          
-          [possible values: true, false]
-
-      --session-recording-input <SESSION_RECORDING_INPUT>
-          Record terminal pane input. This option requires session recording
-          
-          [possible values: true, false]
-
       --serialize-pane-viewport <SERIALIZE_PANE_VIEWPORT>
           Whether pane viewports are serialized along with the session, default is false
           

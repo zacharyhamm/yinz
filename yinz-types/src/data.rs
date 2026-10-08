@@ -1417,8 +1417,6 @@ impl NotificationInfo {
     }
 }
 
-pub use crate::recording::{RecordingSummary, SearchHit};
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ClientInfo {
     pub client_id: ClientId,
@@ -3220,15 +3218,10 @@ pub enum PluginCommand {
     DeleteDeadSessionAndReply(SessionName), // session name; sends a response back
     DeleteAllDeadSessionsAndReply,          // no payload; sends a response back
     FocusHostSession,
-    ListRecordings,
     ListNotifications,
     ResolveNotification {
         id: NotificationId,
         decision: NotificationDecision,
-    },
-    SearchRecordings {
-        query: String,
-        limit: usize,
     },
     /// Move a pane out of this session and into another one. Sends a response
     /// back, and blocks until the pane has landed or the move has been undone.
