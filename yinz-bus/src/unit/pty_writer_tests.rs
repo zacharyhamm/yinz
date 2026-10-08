@@ -44,6 +44,7 @@ struct MockServerOsApi {
     /// Log of (terminal_id, bytes) for each successful write.
     write_log: WriteLog,
     cached_resizes: CachedResizes,
+    applied_resizes: Arc<Mutex<Vec<(TerminalId, u16, u16)>>>,
 }
 
 impl MockServerOsApi {
@@ -52,6 +53,7 @@ impl MockServerOsApi {
             write_behavior: Arc::new(Mutex::new(HashMap::new())),
             write_log: Arc::new(Mutex::new(Vec::new())),
             cached_resizes: Arc::new(Mutex::new(None)),
+            applied_resizes: Arc::new(Mutex::new(Vec::new())),
         }
     }
     fn set_behavior(&self, terminal_id: TerminalId, behavior: WriteBehavior) {
@@ -82,6 +84,8 @@ impl ServerOsApi for MockServerOsApi {
     ) -> Result<()> {
         if let Some(cached) = self.cached_resizes.lock().unwrap().as_mut() {
             cached.insert(id, (cols, rows));
+        } else {
+            self.applied_resizes.lock().unwrap().push((id, cols, rows));
         }
         Ok(())
     }
@@ -89,14 +93,17 @@ impl ServerOsApi for MockServerOsApi {
         *self.cached_resizes.lock().unwrap() = Some(BTreeMap::new());
     }
     fn apply_cached_resizes(&mut self) -> Vec<(TerminalId, u16, u16)> {
-        self.cached_resizes
+        let resizes: Vec<_> = self
+            .cached_resizes
             .lock()
             .unwrap()
             .take()
             .unwrap_or_default()
             .into_iter()
             .map(|(id, (cols, rows))| (id, cols, rows))
-            .collect()
+            .collect();
+        self.applied_resizes.lock().unwrap().extend(&resizes);
+        resizes
     }
     fn spawn_terminal(
         &self,
@@ -404,300 +411,6 @@ fn write_error_clears_terminal_queue() {
 }
 
 #[test]
-fn pty_writer_records_successful_input() {
-    // Mock with AcceptAtMost(2) to cause two partial writes of "abcd" -> "ab" + "cd"
-    let mock = MockServerOsApi::new();
-    mock.set_behavior(crate::TerminalId::new(1), WriteBehavior::AcceptAtMost(2));
-    let mock_clone = mock.clone();
-
-    // Create recorder channel
-    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
-    let handle = crate::session_recorder::SessionRecorderHandle {
-        sender: rec_sender,
-        started_at: std::time::Instant::now(),
-        capture_input: true,
-        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-
-    let (bus_inner, sender) = make_test_bus(mock_clone);
-    // inject recorder handle into bus
-    let mut bus = bus_inner;
-    bus.senders.session_recorder = Some(handle);
-
-    // Single write of "abcd" should be drained as two input events
-    run_pty_writer(
-        bus,
-        sender,
-        vec![PtyWriteInstruction::Write(
-            b"abcd".to_vec(),
-            crate::TerminalId::new(1),
-            None,
-        )],
-    );
-
-    // Collect recorded input events
-    let mut input_events = Vec::new();
-    while let Ok(instr) = rec_receiver.try_recv() {
-        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
-            for e in ev {
-                if e.kind == yinz_storage::session_recording::EventKind::Input {
-                    input_events.push(e);
-                }
-            }
-        }
-    }
-    assert_eq!(
-        input_events.len(),
-        2,
-        "expected two input events for partial writes"
-    );
-    assert_eq!(input_events[0].data, b"ab");
-    assert_eq!(input_events[1].data, b"cd");
-    let concat: Vec<u8> = input_events.iter().flat_map(|e| e.data.clone()).collect();
-    assert_eq!(concat, b"abcd");
-}
-
-#[test]
-fn pty_writer_records_successful_resize() {
-    let mock = MockServerOsApi::new();
-    // First case: success should produce resize event
-    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
-    let handle = crate::session_recorder::SessionRecorderHandle {
-        sender: rec_sender,
-        started_at: std::time::Instant::now(),
-        capture_input: false,
-        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-    let (bus_inner, sender) = make_test_bus(mock.clone());
-    let mut bus = bus_inner;
-    bus.senders.session_recorder = Some(handle);
-    run_pty_writer(
-        bus,
-        sender,
-        vec![PtyWriteInstruction::ResizePty(
-            crate::TerminalId::new(1),
-            80,
-            24,
-            None,
-            None,
-        )],
-    );
-    let mut resize_events = Vec::new();
-    while let Ok(instr) = rec_receiver.try_recv() {
-        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
-            for e in ev {
-                if e.kind == yinz_storage::session_recording::EventKind::Resize {
-                    resize_events.push(e);
-                }
-            }
-        }
-    }
-    assert_eq!(
-        resize_events.len(),
-        1,
-        "success resize should produce one event"
-    );
-    // verify resize data encodes cols/rows via RecordedEvent::resize logic (format "80x24")
-    assert_eq!(resize_events[0].data, "80x24".to_string().into_bytes());
-    assert_eq!(resize_events[0].terminal_id, TerminalId::new(1));
-
-    let (rec_sender, rec_receiver) = crossbeam::channel::unbounded();
-    let handle = crate::session_recorder::SessionRecorderHandle {
-        sender: rec_sender,
-        started_at: std::time::Instant::now(),
-        capture_input: false,
-        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-    let (mut bus, sender) = make_test_bus(MockServerOsApi::new());
-    bus.senders.session_recorder = Some(handle);
-    run_pty_writer(
-        bus,
-        sender,
-        vec![
-            PtyWriteInstruction::StartCachingResizes,
-            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 80, 24, None, None),
-            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 100, 30, None, None),
-            PtyWriteInstruction::ApplyCachedResizes,
-            PtyWriteInstruction::ResizePty(crate::TerminalId::new(1), 99, 30, None, None),
-            PtyWriteInstruction::ResizePty(
-                crate::TerminalId::new(1),
-                100,
-                30,
-                Some(800),
-                Some(480),
-            ),
-        ],
-    );
-    let resize_events: Vec<_> = rec_receiver
-        .try_iter()
-        .flat_map(|instruction| match instruction {
-            crate::session_recorder::RecorderInstruction::Events(events) => events,
-            _ => Vec::new(),
-        })
-        .filter(|event| event.kind == yinz_storage::session_recording::EventKind::Resize)
-        .collect();
-    assert_eq!(resize_events.len(), 3);
-    assert_eq!(resize_events[0].data, b"100x30");
-    assert_eq!(resize_events[1].data, b"99x30");
-    assert_eq!(resize_events[2].data, b"100x30");
-
-    // Second case: error should produce no resize event
-    // Use a mock that errors on resize by overriding ServerOsApi impl: we need a variant that fails
-    // Since MockServerOsApi always returns Ok for resize, simulate error via a custom mock
-    struct FailingResizeMock {
-        inner: MockServerOsApi,
-    }
-    impl Clone for FailingResizeMock {
-        fn clone(&self) -> Self {
-            Self {
-                inner: self.inner.clone(),
-            }
-        }
-    }
-    impl crate::os_input_output::ServerOsApi for FailingResizeMock {
-        fn set_terminal_size_using_terminal_id(
-            &self,
-            _id: TerminalId,
-            _cols: u16,
-            _rows: u16,
-            _w: Option<u16>,
-            _h: Option<u16>,
-        ) -> anyhow::Result<()> {
-            Err(anyhow::anyhow!("simulated resize error"))
-        }
-        fn spawn_terminal(
-            &self,
-            _a: yinz_types::input::command::TerminalAction,
-            _b: Box<
-                dyn Fn(crate::PaneId, Option<i32>, yinz_types::input::command::RunCommand) + Send,
-            >,
-            _c: Option<std::path::PathBuf>,
-        ) -> Result<(TerminalId, Box<dyn AsyncReader>, Option<ProcessId>)> {
-            unimplemented!()
-        }
-        fn write_to_tty_stdin(&self, _id: TerminalId, _buf: &[u8]) -> anyhow::Result<usize> {
-            Ok(0)
-        }
-        fn tcdrain(&self, _id: TerminalId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn kill(&self, _pid: ProcessId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn force_kill(&self, _pid: ProcessId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn send_sigint(&self, _pid: ProcessId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn send_sigcont(&self, _pid: ProcessId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn box_clone(&self) -> Box<dyn crate::os_input_output::ServerOsApi> {
-            Box::new(self.clone())
-        }
-        fn send_to_client(
-            &self,
-            _id: crate::ClientId,
-            _msg: yinz_ipc::ipc::ServerToClientMsg,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn new_client(
-            &mut self,
-            _id: crate::ClientId,
-            _s: interprocess::local_socket::Stream,
-        ) -> anyhow::Result<yinz_ipc::ipc::IpcReceiverWithContext<yinz_ipc::ipc::ClientToServerMsg>>
-        {
-            unimplemented!()
-        }
-        fn remove_client(&mut self, _id: crate::ClientId) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn load_palette(&self) -> yinz_types::style::Palette {
-            yinz_types::style::Palette::default()
-        }
-        fn get_cwd(&self, _pid: ProcessId) -> Option<std::path::PathBuf> {
-            None
-        }
-        fn write_to_file(&mut self, _buf: String, _file: Option<String>) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn re_run_command_in_terminal(
-            &self,
-            _id: TerminalId,
-            _c: yinz_types::input::command::RunCommand,
-            _q: Box<
-                dyn Fn(crate::PaneId, Option<i32>, yinz_types::input::command::RunCommand) + Send,
-            >,
-        ) -> anyhow::Result<(
-            Box<dyn crate::os_input_output::AsyncReader>,
-            Option<ProcessId>,
-        )> {
-            unimplemented!()
-        }
-        fn clear_terminal_id(&self, _id: TerminalId) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-    let failing_mock = FailingResizeMock {
-        inner: MockServerOsApi::new(),
-    };
-    let (rec_sender2, rec_receiver2) = crossbeam::channel::unbounded();
-    let handle2 = crate::session_recorder::SessionRecorderHandle {
-        sender: rec_sender2,
-        started_at: std::time::Instant::now(),
-        capture_input: false,
-        enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        dropped: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-    let (sender2, receiver2) = yinz_runtime::channels::unbounded();
-    let sender2_ctx = yinz_runtime::channels::SenderWithContext::new(sender2);
-    let bus2 = crate::thread_bus::Bus::new(
-        vec![receiver2],
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(Box::new(failing_mock)),
-    );
-    let mut bus2 = bus2;
-    bus2.senders.session_recorder = Some(handle2);
-    // send resize then exit
-    sender2_ctx
-        .send(PtyWriteInstruction::ResizePty(
-            crate::TerminalId::new(2),
-            100,
-            30,
-            None,
-            None,
-        ))
-        .unwrap();
-    sender2_ctx.send(PtyWriteInstruction::Exit).unwrap();
-    crate::pty_writer::pty_writer_main(bus2).unwrap();
-    let mut resize_events2 = Vec::new();
-    while let Ok(instr) = rec_receiver2.try_recv() {
-        if let crate::session_recorder::RecorderInstruction::Events(ev) = instr {
-            for e in ev {
-                if e.kind == yinz_storage::session_recording::EventKind::Resize {
-                    resize_events2.push(e);
-                }
-            }
-        }
-    }
-    assert_eq!(
-        resize_events2.len(),
-        0,
-        "failed resize should produce no event"
-    );
-}
-
-#[test]
 fn paste_barrier_reports_partial_write_failure_overflow_and_shutdown() {
     for (behavior, size, succeeds) in [
         (WriteBehavior::AcceptAtMost(2), 8, true),
@@ -760,4 +473,27 @@ fn overflowing_a_new_paste_after_an_older_barrier_fails_both_barriers() {
         .error_message
         .unwrap()
         .contains("overflow"));
+}
+
+#[test]
+fn pty_writer_applies_direct_and_cached_resizes() {
+    let mock = MockServerOsApi::new();
+    let applied = mock.applied_resizes.clone();
+    let terminal = TerminalId::new(1);
+    let (bus, sender) = make_test_bus(mock);
+    run_pty_writer(
+        bus,
+        sender,
+        vec![
+            PtyWriteInstruction::ResizePty(terminal, 80, 24, None, None),
+            PtyWriteInstruction::StartCachingResizes,
+            PtyWriteInstruction::ResizePty(terminal, 90, 25, None, None),
+            PtyWriteInstruction::ResizePty(terminal, 100, 30, None, None),
+            PtyWriteInstruction::ApplyCachedResizes,
+        ],
+    );
+    assert_eq!(
+        *applied.lock().unwrap(),
+        vec![(terminal, 80, 24), (terminal, 100, 30)]
+    );
 }

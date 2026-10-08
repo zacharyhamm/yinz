@@ -725,11 +725,7 @@ impl UnixPtyBackend {
 
     /// Tell the pane's pty its new size, whichever transport holds it.
     ///
-    /// A failure on any transport is returned rather than logged here: the session
-    /// recorder records a resize only when it went through, and the cached-resize drain
-    /// keys on the result the same way, so a swallowed failure would have recorded a
-    /// size the pane never got. A pane with no pty yet (reserved, or unknown) is a
-    /// failure too.
+    /// Return transport failures, including panes with no pty yet (reserved or unknown).
     pub fn set_terminal_size(
         &self,
         terminal_id: TerminalId,
@@ -1438,8 +1434,7 @@ mod tests {
 
     #[test]
     fn a_resize_for_a_terminal_with_no_pty_is_an_error() {
-        // The recorder and the cached-resize drain record a resize when it returns
-        // `Ok`; a pane that has no pty to receive one must not read as resized.
+        // A pane that has no pty to receive a resize must not read as resized.
         let backend = UnixPtyBackend::with_termios(None).expect("a backend");
         backend
             .terminal_id_to_transport

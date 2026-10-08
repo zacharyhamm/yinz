@@ -81,7 +81,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufKillSessionsResponse,
     yinz_plugin_api::plugin_command::ProtobufListNotificationsResponse,
     yinz_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
-    yinz_plugin_api::plugin_command::ProtobufListRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabsResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTiledPaneInTabResponse,
@@ -111,7 +110,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveSessionResponse,
-    yinz_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
     yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
     yinz_plugin_api::plugin_command::ProtobufWarpPaneResponse,
@@ -130,8 +128,7 @@ use {
     yinz_types::data::ListOrphanedPanesResponse, yinz_types::data::NotificationInfo,
     yinz_types::data::PaneGitProbe, yinz_types::data::PaneId,
     yinz_types::data::PaneScrollbackResponse, yinz_types::data::PluginIds,
-    yinz_types::data::QueueStatusResponse, yinz_types::data::RecordingSummary,
-    yinz_types::data::SearchHit, yinz_types::data::WarpPaneResponse,
+    yinz_types::data::QueueStatusResponse, yinz_types::data::WarpPaneResponse,
 };
 
 /// A decoded host reply. File contents stay binary, including invalid UTF-8.
@@ -502,19 +499,6 @@ pub fn decode_response(command: CommandType, bytes: &[u8]) -> Option<Result<Deco
             let queues = QueueStatusResponse::try_from(r).map_err(|e| anyhow!("{}", e))?;
             value(queues)
         }),
-        CommandType::ListRecordings => {
-            decode(bytes).and_then(|r: ProtobufListRecordingsResponse| {
-                let recordings: Vec<RecordingSummary> =
-                    r.recordings.into_iter().map(Into::into).collect();
-                value(recordings)
-            })
-        },
-        CommandType::SearchRecordings => {
-            decode(bytes).and_then(|r: ProtobufSearchRecordingsResponse| {
-                let hits: Vec<SearchHit> = r.hits.into_iter().map(Into::into).collect();
-                value(hits)
-            })
-        },
         CommandType::ListNotifications => {
             decode(bytes).and_then(|r: ProtobufListNotificationsResponse| match r.error {
                 Some(e) => Err(anyhow!("{}", e)),

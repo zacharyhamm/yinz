@@ -893,19 +893,6 @@ impl YinzPlugin for State {
                             Some("Error: Got empty env vars".to_string());
                     }
                 },
-                BareKey::Char('r')
-                    if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
-                {
-                    let recordings = list_recordings();
-                    let hits = search_recordings("fixture-needle", 10);
-                    self.explicit_string_to_render = Some(format!(
-                        "Recordings: {}, first: {:?}, hits: {}, first hit: {:?}",
-                        recordings.len(),
-                        recordings.first(),
-                        hits.len(),
-                        hits.first(),
-                    ));
-                },
                 BareKey::Char('k')
                     if key.has_only_modifiers(&[KeyModifier::Ctrl, KeyModifier::Shift]) =>
                 {

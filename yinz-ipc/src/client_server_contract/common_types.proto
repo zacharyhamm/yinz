@@ -1499,8 +1499,8 @@ message Options {
   optional NestedSessionHandling nested_session_handling = 53;
   optional bool mouse_scroll_resize = 54;
   optional bool support_kitty_graphics_protocol = 55;
-  optional bool session_recording = 56;
-  optional bool session_recording_input = 57;
+  reserved 56, 57;
+  reserved "session_recording", "session_recording_input";
   optional string notification_position = 59;
   optional uint64 notification_timeout = 60;
   optional bool osc133_command_selection = 61;

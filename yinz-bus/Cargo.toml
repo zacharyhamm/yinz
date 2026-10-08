@@ -12,7 +12,6 @@ workspace = true
 yinz-config = { workspace = true }
 yinz-ipc = { workspace = true }
 yinz-session = { workspace = true }
-yinz-storage = { workspace = true }
 yinz-runtime = { workspace = true }
 yinz-types = { workspace = true }
 yinz-host-protocol = { workspace = true }
@@ -35,7 +34,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 hegeltest = "0.29.3"
-rusqlite = { version = "0.30", default-features = false, features = ["bundled"] }
 tempfile = "3.2.0"
 tokio = { workspace = true, features = ["test-util"] }
 yinz-test-support = { path = "../yinz-test-support" }

@@ -8,8 +8,6 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
-use yinz_types::internal_ids::TabId;
-use yinz_types::internal_ids::TabPosition;
 
 // The crate, not the backend module a glob import of `super::*` would otherwise find.
 use ::postgres::{Config as PgConfig, NoTls};
@@ -186,14 +184,10 @@ fn two_backends_share_one_schema() {
     assert!(!info.created);
 }
 
-/// The reason this backend exists: `DataAccess::from_backends` with two real, different engines.
-/// Plugin data goes to Postgres, the recording to the SQLite file in the data dir, and neither
-/// store touches the other's home.
 #[test]
-fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
+fn postgres_provider_persists_plugin_data() {
     let guard = Guard::fresh();
-    let dir = tempfile::tempdir().unwrap();
-    let access = DataAccess::postgres(&guard.backend_url(), &guard.schema, dir.path());
+    let access = DataAccess::postgres(&guard.backend_url(), &guard.schema);
 
     access
         .plugin_data()
@@ -215,52 +209,13 @@ fn from_backends_pairs_postgres_plugin_data_with_sqlite_recordings() {
         .unwrap();
     assert_eq!(texts(&rows, "summary"), vec!["in postgres"]);
 
-    use yinz_types::{
-        internal_ids::TerminalId,
-        units::{ElapsedMicros, UnixMicros},
-    };
-    let mut session = access
-        .recordings()
-        .start_recording("proof", false, UnixMicros::new(1))
-        .unwrap();
-    // A recording is listed by its panes, so give it one and a byte of output.
-    session
-        .update_panes(
-            &[crate::session_recording::PaneMetadata {
-                terminal_id: TerminalId::new(1),
-                tab_id: TabId::new(0),
-                tab_position: TabPosition::new(0),
-                tab_name: "tab".to_owned(),
-                title: "pane".to_owned(),
-                cols: 80,
-                rows: 24,
-            }],
-            ElapsedMicros::new(1),
-        )
-        .unwrap();
-    session
-        .record_events(&[crate::session_recording::RecordedEvent::output(
-            TerminalId::new(1),
-            ElapsedMicros::new(2),
-            b"x".to_vec(),
-        )])
-        .unwrap();
-    session
-        .finish_pane(TerminalId::new(1), ElapsedMicros::new(3))
-        .unwrap();
-    session
-        .finish_session(UnixMicros::new(4), ElapsedMicros::new(3))
-        .unwrap();
-    drop(session);
-    let recordings = access.recordings().list().unwrap();
-    assert_eq!(recordings.len(), 1, "{:?}", recordings);
-
-    assert!(dir.path().join("session-recordings.db").exists());
-    assert!(
-        !dir.path().join("plugin-data.db").exists(),
-        "plugin data must not have touched the SQLite file"
-    );
     drop(access);
+    let reopened = DataAccess::postgres(&guard.backend_url(), &guard.schema);
+    let rows = reopened
+        .plugin_data()
+        .fetch(NS, &FetchRequest::entity("agent"))
+        .unwrap();
+    assert_eq!(texts(&rows, "summary"), vec!["in postgres"]);
 }
 
 #[test]

@@ -42,7 +42,6 @@ pub(crate) use yinz_bus::pty_writer;
 mod route;
 pub(crate) use yinz_bus::screen;
 pub(crate) use yinz_bus::server_instruction::ServerInstruction;
-pub(crate) use yinz_bus::session_recorder;
 pub(crate) use yinz_bus::thread_bus;
 
 use background_jobs::{background_jobs_main, BackgroundJob};
@@ -382,7 +381,6 @@ pub(crate) struct SessionMetaData {
     plugin_thread: Option<thread::JoinHandle<()>>,
     pty_writer_thread: Option<thread::JoinHandle<()>>,
     background_jobs_thread: Option<thread::JoinHandle<()>>,
-    session_recorder_thread: Option<thread::JoinHandle<()>>,
     config_file_path: Option<PathBuf>,
     /// The session's `--config-dir` / `YINZ_CONFIG_DIR`, kept so that a config reload can
     /// re-derive the folders that hang off it. Without it, reloading a config that does not
@@ -569,12 +567,6 @@ impl Drop for SessionMetaData {
         }
         if let Some(background_jobs_thread) = self.background_jobs_thread.take() {
             let _ = background_jobs_thread.join();
-        }
-        if let Some(recorder) = self.senders.session_recorder.take() {
-            recorder.stop();
-        }
-        if let Some(recorder_thread) = self.session_recorder_thread.take() {
-            let _ = recorder_thread.join();
         }
     }
 }
@@ -2279,45 +2271,6 @@ fn init_session(
         &data_dir,
     ));
 
-    let recording_enabled = config.options.session_recording.unwrap_or(false);
-    let input_enabled = config.options.session_recording_input.unwrap_or(false);
-    if input_enabled && !recording_enabled {
-        log::warn!(
-            "session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
-        );
-        eprintln!(
-            "Warning: session_recording_input is true but session_recording is false; input will not be recorded. Enable session_recording to record input"
-        );
-    }
-    let (session_recorder_handle, session_recorder_thread) = if recording_enabled {
-        let capture_input = recording_enabled && input_enabled;
-        let session_name = envs::get_session_name()
-            .ok()
-            .or_else(|| config.options.session_name.clone())
-            .unwrap_or_else(|| "default".to_string().into());
-        match crate::session_recorder::spawn_session_recorder(
-            data_access.clone(),
-            data_dir.clone(),
-            session_name,
-            capture_input,
-        ) {
-            Some((handle, thread)) => (Some(handle), Some(thread)),
-            None => {
-                log::error!(
-                        "Failed to start session recorder for data_dir {:?}; recording will be disabled",
-                        data_dir
-                    );
-                eprintln!(
-                        "Warning: failed to start session recording for {:?} — check permissions/data_dir is a directory; recording disabled",
-                        data_dir
-                    );
-                (None, None)
-            },
-        }
-    } else {
-        (None, None)
-    };
-
     let serialization_interval = config_options.serialization_interval;
     let disable_session_metadata = config_options.disable_session_metadata.unwrap_or(false);
     let session_checkpoint = Arc::new(background_jobs::SessionCheckpointWriter::default());
@@ -2363,7 +2316,6 @@ fn init_session(
         .name("pty".to_string())
         .spawn({
             let layout = Box::new(layout.clone());
-            let session_recorder_handle = session_recorder_handle.clone();
             let mut bus = Bus::new(
                 vec![pty_receiver],
                 Some(&to_screen_bounded),
@@ -2379,9 +2331,6 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
-            if let Some(handle) = session_recorder_handle {
-                bus.senders.session_recorder = Some(handle);
-            }
             bus.senders.session_checkpoint = session_checkpoint.clone();
             let pty = Pty::new(
                 bus,
@@ -2408,9 +2357,6 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
-            if let Some(handle) = session_recorder_handle.clone() {
-                screen_bus.senders.session_recorder = Some(handle);
-            }
             screen_bus.senders.session_checkpoint = session_checkpoint.clone();
             let max_panes = cli_assets.max_panes;
 
@@ -2468,7 +2414,7 @@ fn init_session(
     let plugin_thread = thread::Builder::new()
         .name("wasm".to_string())
         .spawn({
-            let mut plugin_bus = Bus::new(
+            let plugin_bus = Bus::new(
                 vec![plugin_receiver],
                 Some(&to_screen_bounded),
                 Some(&to_pty),
@@ -2478,9 +2424,6 @@ fn init_session(
                 Some(&to_background_jobs),
                 None,
             );
-            if let Some(handle) = session_recorder_handle.clone() {
-                plugin_bus.senders.session_recorder = Some(handle);
-            }
             let engine = get_engine();
 
             let layout = Box::new(layout.clone());
@@ -2546,7 +2489,7 @@ fn init_session(
     let pty_writer_thread = thread::Builder::new()
         .name("pty_writer".to_string())
         .spawn({
-            let mut pty_writer_bus = Bus::new(
+            let pty_writer_bus = Bus::new(
                 vec![pty_writer_receiver],
                 Some(&to_screen),
                 Some(&to_pty),
@@ -2556,9 +2499,6 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
-            if let Some(handle) = session_recorder_handle.clone() {
-                pty_writer_bus.senders.session_recorder = Some(handle);
-            }
             || pty_writer_main(pty_writer_bus).fatal()
         })
         .unwrap();
@@ -2578,9 +2518,6 @@ fn init_session(
                 Some(&to_background_jobs),
                 Some(os_input.clone()),
             );
-            if let Some(handle) = session_recorder_handle.clone() {
-                background_jobs_bus.senders.session_recorder = Some(handle);
-            }
             background_jobs_bus.senders.session_checkpoint = session_checkpoint.clone();
             move || {
                 background_jobs_main(
@@ -2610,7 +2547,6 @@ fn init_session(
             to_pty_writer: Some(to_pty_writer),
             to_background_jobs: Some(to_background_jobs),
             to_server: Some(to_server),
-            session_recorder: session_recorder_handle.clone(),
             session_checkpoint,
             should_silently_fail: false,
         },
@@ -2622,7 +2558,6 @@ fn init_session(
         plugin_thread: Some(plugin_thread),
         pty_writer_thread: Some(pty_writer_thread),
         background_jobs_thread: Some(background_jobs_thread),
-        session_recorder_thread,
         key_passthrough_clients: HashMap::new(),
         locked_escapes: HashMap::new(),
         command_palette_restore_modes: HashMap::new(),

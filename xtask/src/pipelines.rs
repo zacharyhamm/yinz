@@ -421,7 +421,7 @@ pub fn run(sh: &Shell, flags: flags::Run) -> anyhow::Result<()> {
             .with_context(|| err_context(&flags))?;
         }
         // A scratch data dir under target/, so a debug build of whatever branch this is never
-        // opens the user's real plugin-data.db or session recordings. Its `plugins/` folder
+        // opens the user's real plugin-data.db. Its `plugins/` folder
         // stays empty, so the builtins resolve from the debug target dir.
         let scratch = crate::target_dir().join("dev-data");
         sh.create_dir(&scratch)

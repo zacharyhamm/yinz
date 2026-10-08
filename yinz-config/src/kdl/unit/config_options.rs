@@ -414,35 +414,6 @@ fn osc8_hyperlinks_config_parsing() {
 }
 
 #[test]
-fn session_recording_options_kdl_roundtrip() {
-    let fake_config = r#"
-        session_recording true
-        session_recording_input true
-    "#;
-    let document: KdlDocument = fake_config.parse().unwrap();
-    let options = crate::kdl::options::from_kdl(&document).unwrap();
-    assert_eq!(options.session_recording, Some(true));
-    assert_eq!(options.session_recording_input, Some(true));
-
-    let serialized = crate::kdl::options::to_kdl(&options, false);
-    let mut doc_for_string = KdlDocument::new();
-    let mut serialized_clone = serialized.clone();
-    doc_for_string.nodes_mut().append(&mut serialized_clone);
-    let serialized_str = doc_for_string.to_string();
-    assert!(serialized_str.contains("session_recording"));
-    assert!(serialized_str.contains("session_recording_input"));
-
-    let mut fake_document = KdlDocument::new();
-    let mut serialized_clone2 = serialized.clone();
-    fake_document.nodes_mut().append(&mut serialized_clone2);
-    let reparsed =
-        crate::kdl::options::from_kdl(&fake_document.to_string().parse::<KdlDocument>().unwrap())
-            .unwrap();
-    assert_eq!(reparsed.session_recording, Some(true));
-    assert_eq!(reparsed.session_recording_input, Some(true));
-}
-
-#[test]
 fn plugin_data_options_kdl_roundtrip() {
     let fake_config = r#"
         plugin_data_url "postgres://yinz:secret@127.0.0.1:5432/yinz"
@@ -724,4 +695,16 @@ fn global_background_opacity_parsing_merge_and_serialization() {
             "{literal}"
         );
     }
+}
+
+#[test]
+fn removed_recording_options_follow_unknown_key_behavior() {
+    let document: KdlDocument = "session_recording true\nsession_recording_input true"
+        .parse()
+        .unwrap();
+    let options = crate::kdl::options::from_kdl(&document).unwrap();
+    assert_eq!(
+        options,
+        crate::kdl::options::from_kdl(&KdlDocument::new()).unwrap()
+    );
 }

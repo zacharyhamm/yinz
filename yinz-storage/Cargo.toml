@@ -3,7 +3,7 @@ name = "yinz-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Plugin data and recording storage for Yinz"
+description = "Plugin data storage for Yinz"
 
 [lints]
 workspace = true
@@ -11,7 +11,6 @@ workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 yinz-types = { workspace = true }
 bytes = { version = "1", default-features = false }
-flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 tokio-stream = { version = "0.1" }
 anyhow = { workspace = true }
 log = { workspace = true }
@@ -24,7 +23,6 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
-vte = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

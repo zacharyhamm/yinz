@@ -340,17 +340,8 @@ pub struct Options {
     #[serde(default)]
     pub session_serialization: Option<bool>,
 
-    /// Record terminal pane output for this session.
-    #[serde(default)]
-    pub session_recording: Option<bool>,
-
-    /// Record terminal pane input. This option requires session recording.
-    #[serde(default)]
-    pub session_recording_input: Option<bool>,
-
     /// Where plugin data lives. Unset: the SQLite file in the data dir. A `postgres://` or
     /// `postgresql://` URL: that database, in the schema named by `plugin_data_schema`.
-    /// Session recordings stay in SQLite either way.
     ///
     /// Config-file only, like `detachable_panes`: the store is built once when the session
     /// starts, so a per-invocation flag would be misleading on `yinz attach` — and the URL
@@ -588,10 +579,6 @@ impl Options {
         let session_name = other.session_name.or_else(|| self.session_name.clone());
         let attach_to_session = other.attach_to_session.or(self.attach_to_session);
         let session_serialization = other.session_serialization.or(self.session_serialization);
-        let session_recording = other.session_recording.or(self.session_recording);
-        let session_recording_input = other
-            .session_recording_input
-            .or(self.session_recording_input);
         let plugin_data_url = other
             .plugin_data_url
             .clone()
@@ -689,8 +676,6 @@ impl Options {
             attach_to_session,
             auto_layout,
             session_serialization,
-            session_recording,
-            session_recording_input,
             plugin_data_url,
             plugin_data_schema,
             host_id,

@@ -176,7 +176,6 @@ impl TestBridge {
             to_server: Some(SenderWithContext::new(to_server)),
             to_pty_writer: Some(SenderWithContext::new(to_pty_writer)),
             to_background_jobs: Some(SenderWithContext::new(to_background_jobs)),
-            session_recorder: None,
             session_checkpoint: Default::default(),
             should_silently_fail: false,
         };

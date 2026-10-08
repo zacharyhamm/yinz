@@ -1763,8 +1763,7 @@ impl ServerOsApi for ServerOsInputOutput {
             for (terminal_id, (cols, rows, width_in_pixels, height_in_pixels)) in
                 cached_resizes.iter()
             {
-                // A resize that did not go through is logged and left out of `applied`,
-                // so the recorder does not record a size the pane never got.
+                // Report only the resizes that reached the pane.
                 match self.set_terminal_size_using_terminal_id(
                     *terminal_id,
                     *cols,

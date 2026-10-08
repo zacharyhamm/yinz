@@ -44,7 +44,6 @@ fn session() -> SessionMetaData {
         plugin_thread: None,
         pty_writer_thread: None,
         background_jobs_thread: None,
-        session_recorder_thread: None,
         config_file_path: None,
         config_dir: None,
     }

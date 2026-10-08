@@ -99,7 +99,6 @@ fn shutdown_keeps_workers_available_until_the_screen_finishes() {
         plugin_thread,
         pty_writer_thread,
         background_jobs_thread,
-        session_recorder_thread: None,
         config_file_path: None,
         config_dir: None,
     });

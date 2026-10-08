@@ -2442,10 +2442,6 @@ pub struct Options {
     pub mouse_scroll_resize: ::core::option::Option<bool>,
     #[prost(bool, optional, tag="55")]
     pub support_kitty_graphics_protocol: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="56")]
-    pub session_recording: ::core::option::Option<bool>,
-    #[prost(bool, optional, tag="57")]
-    pub session_recording_input: ::core::option::Option<bool>,
     #[prost(string, optional, tag="59")]
     pub notification_position: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag="60")]

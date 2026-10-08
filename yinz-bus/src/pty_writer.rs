@@ -71,7 +71,6 @@ impl Drop for PendingWrite {
 pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
     let err_context = || "failed to write to pty".to_string();
     let mut pending: HashMap<TerminalId, VecDeque<PendingWrite>> = HashMap::new();
-    let mut caching_resizes = false;
     let mut failed: HashMap<TerminalId, String> = HashMap::new();
 
     loop {
@@ -156,11 +155,6 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                             height_in_pixels,
                         )
                         .with_context(err_context);
-                    if resize_result.is_ok() && !caching_resizes {
-                        if let Some(recorder) = &bus.senders.session_recorder {
-                            recorder.resize(terminal_id, columns, rows);
-                        }
-                    }
                     resize_result.non_fatal();
                 },
                 PtyWriteInstruction::StartCachingResizes => {
@@ -172,16 +166,10 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                     // so we do this to play nice and always only send the last resize instruction to
                     // each pane
                     // the logic for this happens in the main Screen event loop
-                    caching_resizes = true;
                     os_input.cache_resizes();
                 },
                 PtyWriteInstruction::ApplyCachedResizes => {
-                    for (terminal_id, columns, rows) in os_input.apply_cached_resizes() {
-                        if let Some(recorder) = &bus.senders.session_recorder {
-                            recorder.resize(terminal_id, columns, rows);
-                        }
-                    }
-                    caching_resizes = false;
+                    os_input.apply_cached_resizes();
                 },
                 PtyWriteInstruction::Exit => {
                     return Ok(());
@@ -209,13 +197,6 @@ pub fn pty_writer_main(bus: Bus<PtyWriteInstruction>) -> Result<()> {
                 match os_input.write_to_tty_stdin(tid, remaining) {
                     Ok(0) => break, // EAGAIN — move to next terminal
                     Ok(n) => {
-                        // record only the bytes the OS actually accepted
-                        if let Some(recorder) = &bus.senders.session_recorder {
-                            let accepted = &remaining[..n];
-                            if !accepted.is_empty() {
-                                recorder.input(tid, accepted.to_vec());
-                            }
-                        }
                         front.offset = front.offset.saturating_add(n);
                         if front.offset >= front.bytes.len() {
                             front._completion.take();

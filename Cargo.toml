@@ -41,7 +41,6 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
 dialoguer = { workspace = true }
-humantime = { workspace = true }
 interprocess = { workspace = true }
 log = { workspace = true }
 miette = { workspace = true }

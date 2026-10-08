@@ -501,7 +501,7 @@ layout {
 }
 
 #[test]
-fn deno_host_queries_configuration_layouts_recordings_and_cross_session_warp() {
+fn deno_host_queries_configuration_layouts_and_cross_session_warp() {
     // As in the existing warp suite, start the receiver first: both servers share
     // this test process's session-name environment, which must name the sender.
     let receiver = TestRunner::new(TERMINAL_SIZE)
@@ -540,8 +540,6 @@ export default {{
     const updated = yinz.waitForEvent('ModeUpdate', info => info.style.rounded_corners);
     yinz.command('Reconfigure', ['ui {{\n pane_frames {{\n rounded_corners true;\n }}\n}}', false]);
     await updated;
-    assert(Array.isArray(yinz.command('ListRecordings')), 'recording inventory');
-    assert(Array.isArray(yinz.command('SearchRecordings', {{query:'unrecorded unique text', limit:10}})), 'recording search');
     yinz.command('RenameTerminalPane', [0, 'Deno warp payload']);
     const moved = yinz.command('WarpPaneToSession', {{pane_id:{{Terminal:0}}, to_session:{receiver:?}, placement:'FocusedTab'}});
     assert(typeof moved === 'string', 'warp reply');
@@ -552,7 +550,7 @@ export default {{
 }};
 "#, receiver=receiver.session_name())).unwrap();
     let mut sender = TestRunner::new(TERMINAL_SIZE).skip_concurrency_slot()
-        .with_config("load_plugins clear-defaults=true {}\nsession_recording true")
+        .with_config("load_plugins clear-defaults=true {}")
         .with_layout(LayoutInfo::Stringified(format!("layout {{\n tab name=\"surface test\" {{\n pane;\n pane focus=true {{plugin location=\"file:{}\";}}\n }}\n}}", plugin.display())))
         .start();
     let terminal = sender.expect_pty_spawn();

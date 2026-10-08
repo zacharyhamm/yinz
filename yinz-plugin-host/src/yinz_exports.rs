@@ -200,7 +200,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufKillSessionsResponse,
     yinz_plugin_api::plugin_command::ProtobufListNotificationsResponse,
     yinz_plugin_api::plugin_command::ProtobufListOrphanedPanesResponse,
-    yinz_plugin_api::plugin_command::ProtobufListRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabUnfocusedResponse,
     yinz_plugin_api::plugin_command::ProtobufNewTabsResponse,
@@ -237,7 +236,6 @@ use {
     yinz_plugin_api::plugin_command::ProtobufRenameLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveLayoutResponse,
     yinz_plugin_api::plugin_command::ProtobufSaveSessionResponse,
-    yinz_plugin_api::plugin_command::ProtobufSearchRecordingsResponse,
     yinz_plugin_api::plugin_command::ProtobufShowFloatingPanesResponse,
     yinz_plugin_api::plugin_command::ProtobufSpawnAgentResponse,
     yinz_plugin_api::plugin_command::ProtobufWarpPaneResponse,
@@ -658,7 +656,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
             PluginCommand::CurrentSessionLastSavedTime => current_session_last_saved_time(env),
             PluginCommand::GetPaneInfo(pane_id) => get_pane_info(env, pane_id),
             PluginCommand::GetTabInfo(tab_id) => get_tab_info(env, tab_id),
-            PluginCommand::ListRecordings => list_recordings(env),
             PluginCommand::ResolveNotification { id, decision } => {
                 env.senders
                     .send_to_screen(ScreenInstruction::ResolveNotification {
@@ -671,9 +668,6 @@ pub fn run_plugin_command(env: &mut PluginEnv, command: PluginCommand) -> Result
                     .non_fatal();
             },
             PluginCommand::ListNotifications => list_notifications(env),
-            PluginCommand::SearchRecordings { query, limit } => {
-                search_recordings(env, query, limit)
-            },
             PluginCommand::OpenFile(file_to_open, context) => open_file(env, file_to_open, context),
             PluginCommand::OpenFileFloating(file_to_open, floating_pane_coordinates, context) => {
                 open_file_floating(env, file_to_open, floating_pane_coordinates, context)
@@ -6917,17 +6911,6 @@ fn get_tab_info(env: &mut PluginEnv, tab_id: TabId) {
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
 
-fn list_recordings(env: &mut PluginEnv) {
-    let recordings = env.data_access.recordings().list().unwrap_or_else(|e| {
-        log::error!("Failed to list recordings for plugin {}: {}", env.name(), e);
-        Vec::new()
-    });
-    let response = ProtobufListRecordingsResponse {
-        recordings: recordings.into_iter().map(|r| r.into()).collect(),
-    };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
-}
-
 fn list_notifications(env: &mut PluginEnv) {
     let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
     let notifications = if env
@@ -6959,27 +6942,6 @@ fn list_notifications(env: &mut PluginEnv) {
             notifications: vec![],
             error: Some(error),
         },
-    };
-    let _ = wasi_write_object(env, &response.encode_to_vec());
-}
-
-// ponytail: search indexes FTS inline on the plugin thread; move to a worker if large recordings
-// stall plugin calls
-fn search_recordings(env: &mut PluginEnv, query: String, limit: usize) {
-    let hits = env
-        .data_access
-        .recordings()
-        .search(&query, limit)
-        .unwrap_or_else(|e| {
-            log::error!(
-                "Failed to search recordings for plugin {}: {}",
-                env.name(),
-                e
-            );
-            Vec::new()
-        });
-    let response = ProtobufSearchRecordingsResponse {
-        hits: hits.into_iter().map(|h| h.into()).collect(),
     };
     let _ = wasi_write_object(env, &response.encode_to_vec());
 }
@@ -9392,10 +9354,9 @@ fn command_permission(kind: CommandType) -> Option<PermissionType> {
         CommandType::InterceptKeyPresses | CommandType::ClearKeyPressesIntercepts => {
             PermissionType::InterceptInput
         },
-        CommandType::GetPaneScrollback
-        | CommandType::ListRecordings
-        | CommandType::SubscribePaneOutput
-        | CommandType::SearchRecordings => PermissionType::ReadPaneContents,
+        CommandType::GetPaneScrollback | CommandType::SubscribePaneOutput => {
+            PermissionType::ReadPaneContents
+        },
         // The same gate `RunAction` sits behind, and for the same reason: a menu item is a list
         // of actions the server will run as the user, whichever way round it was assembled.
         CommandType::RunAction | CommandType::SetContextMenu => PermissionType::RunActionsAsUser,

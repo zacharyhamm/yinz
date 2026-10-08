@@ -719,7 +719,6 @@ mod tests {
             to_server: Some(to_server),
             to_pty_writer: Some(to_pty_writer),
             to_background_jobs: Some(to_background_jobs),
-            session_recorder: None,
             session_checkpoint: Default::default(),
             should_silently_fail: false,
         };

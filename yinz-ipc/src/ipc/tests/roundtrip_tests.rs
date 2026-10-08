@@ -783,8 +783,6 @@ fn test_client_messages() {
                 attach_to_session: Some(true),
                 auto_layout: Some(true),
                 session_serialization: Some(true),
-                session_recording: Some(true),
-                session_recording_input: Some(true),
                 serialize_pane_viewport: Some(true),
                 scrollback_lines_to_serialize: Some(10000),
                 styled_underlines: Some(true),

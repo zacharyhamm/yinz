@@ -51,25 +51,6 @@ impl TerminalBytes {
 
         let mut err_ctx = get_current_ctx();
         yinz_runtime::errors::add_call(&mut err_ctx, ContextType::AsyncTask);
-        struct PaneClosedGuard {
-            recorder: Option<crate::session_recorder::SessionRecorderHandle>,
-            terminal_id: TerminalId,
-        }
-        impl Drop for PaneClosedGuard {
-            fn drop(&mut self) {
-                if let Some(recorder) = &self.recorder {
-                    recorder.pane_closed(self.terminal_id);
-                }
-            }
-        }
-        // PaneClosedGuard ensures `pane_closed` is sent when `listen()` ends
-        // (normal EOF or error). `RecordingStore::finish_pane` is idempotent
-        // (`UPDATE ... WHERE ended_elapsed_us IS NULL`), so a duplicate close
-        // (if any) is safe and becomes a no-op.
-        let _pane_closed_guard = PaneClosedGuard {
-            recorder: self.senders.session_recorder.clone(),
-            terminal_id: self.terminal_id,
-        };
         let mut buf = [0u8; 65536];
         loop {
             match self.async_reader.read(&mut buf).await {
@@ -84,10 +65,6 @@ impl TerminalBytes {
                     if self.debug {
                         let _ = debug_to_file(bytes, self.terminal_id.get() as i32);
                     }
-                    // record output if enabled, before sending to screen
-                    if let Some(recorder) = &self.senders.session_recorder {
-                        recorder.output(self.terminal_id, bytes.to_vec());
-                    }
                     self.async_send_to_screen(ScreenInstruction::PtyBytes(
                         self.terminal_id,
                         bytes.to_vec(),
@@ -97,9 +74,6 @@ impl TerminalBytes {
                 },
             }
         }
-        // `_pane_closed_guard` drops here at scope end and sends `pane_closed`.
-        // No explicit `drop()` is needed; explicit drop was removed to avoid
-        // redundancy and to keep the guard alive until function exit.
         // Once `Shutdown::begin` has run, `SenderWithContext::send` reports a send to the exited
         // screen as success, so session teardown lands here as `Ok`. An error means the screen
         // went away some other way: worth a log line, but not the session.
@@ -134,7 +108,6 @@ impl TerminalBytes {
 mod tests {
     use super::*;
     use crate::os_input_output::AsyncReader;
-    use crate::session_recorder::{RecorderInstruction, SessionRecorderHandle};
     use async_trait::async_trait;
     use std::io;
     use std::sync::{atomic::AtomicBool, Arc};
@@ -155,50 +128,6 @@ mod tests {
                 Ok(0) // EOF
             }
         }
-    }
-
-    #[tokio::test]
-    async fn records_output_and_pane_closed() -> anyhow::Result<()> {
-        let (sender, receiver) = crossbeam::channel::unbounded();
-        let handle = SessionRecorderHandle::over_channel(sender.clone(), false);
-        // create thread senders with recorder
-        let senders = ThreadSenders {
-            session_recorder: Some(handle),
-            should_silently_fail: true,
-            ..Default::default()
-        };
-        let mut terminal_bytes = TerminalBytes::new(
-            crate::TerminalId::new(1),
-            Box::new(FakeReader {
-                data: Some(b"hello".to_vec()),
-            }),
-            senders,
-            false,
-            Arc::new(AtomicBool::new(false)),
-        );
-        terminal_bytes.listen().await?;
-        // should have received one output event and then pane closed
-        let mut events = Vec::new();
-        let mut closed = None;
-        while let Ok(instr) = receiver.try_recv() {
-            match instr {
-                RecorderInstruction::Events(ev) => events.extend(ev),
-                RecorderInstruction::PaneClosed { terminal_id, .. } => closed = Some(terminal_id),
-                _ => {},
-            }
-        }
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0].terminal_id,
-            yinz_types::internal_ids::TerminalId::new(1)
-        );
-        assert_eq!(events[0].data, b"hello");
-        assert_eq!(
-            events[0].kind,
-            yinz_storage::session_recording::EventKind::Output
-        );
-        assert_eq!(closed, Some(TerminalId::new(1)));
-        Ok(())
     }
 
     /// Senders whose screen receiver is gone, as after the screen thread exits.

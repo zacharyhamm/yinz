@@ -1057,9 +1057,8 @@ pub fn render_screen_toggle(
     background: &PaletteColor,
 ) {
     let key_indication_text = "<TAB>";
-    let Some(
-        [new_session_text, running_sessions_text, exited_sessions_text, recordings_text, notifications_text],
-    ) = screen_toggle_labels(max_cols)
+    let Some([new_session_text, running_sessions_text, exited_sessions_text, notifications_text]) =
+        screen_toggle_labels(max_cols)
     else {
         return;
     };
@@ -1071,11 +1070,9 @@ pub fn render_screen_toggle(
     let second_ribbon_x = first_ribbon_x + first_ribbon_length;
     let third_ribbon_x = second_ribbon_x + second_ribbon_length;
     let fourth_ribbon_x = third_ribbon_x + exited_sessions_text.width() + 4;
-    let fifth_ribbon_x = fourth_ribbon_x + recordings_text.width() + 4;
     let mut new_session_text = Text::new(new_session_text);
     let mut running_sessions_text = Text::new(running_sessions_text);
     let mut exited_sessions_text = Text::new(exited_sessions_text);
-    let mut recordings_text = Text::new(recordings_text);
     let mut notifications_text = Text::new(notifications_text);
     match active_screen {
         ActiveScreen::NewSession => {
@@ -1086,9 +1083,6 @@ pub fn render_screen_toggle(
         },
         ActiveScreen::ResurrectSession => {
             exited_sessions_text = exited_sessions_text.selected();
-        },
-        ActiveScreen::Recordings => {
-            recordings_text = recordings_text.selected();
         },
         ActiveScreen::Notifications => {
             notifications_text = notifications_text.selected();
@@ -1113,26 +1107,24 @@ pub fn render_screen_toggle(
     print_ribbon_with_coordinates(new_session_text, first_ribbon_x, y, None, None);
     print_ribbon_with_coordinates(running_sessions_text, second_ribbon_x, y, None, None);
     print_ribbon_with_coordinates(exited_sessions_text, third_ribbon_x, y, None, None);
-    print_ribbon_with_coordinates(recordings_text, fourth_ribbon_x, y, None, None);
-    print_ribbon_with_coordinates(notifications_text, fifth_ribbon_x, y, None, None);
+    print_ribbon_with_coordinates(notifications_text, fourth_ribbon_x, y, None, None);
 }
 
-fn screen_toggle_labels(max_cols: usize) -> Option<[&'static str; 5]> {
-    const FULL: [&str; 5] = [
+fn screen_toggle_labels(max_cols: usize) -> Option<[&'static str; 4]> {
+    const FULL: [&str; 4] = [
         "New Session",
         "Attach to Session",
         "Resurrect Session",
-        "Recordings",
         "Notifications",
     ];
-    const COMPACT: [&str; 5] = ["New", "Attach", "Resurrect", "Rec", "Notif"];
+    const COMPACT: [&str; 4] = ["New", "Attach", "Resurrect", "Notif"];
 
     [FULL, COMPACT]
         .into_iter()
         .find(|labels| screen_toggle_width(labels) <= max_cols)
 }
 
-fn screen_toggle_width(labels: &[&str; 5]) -> usize {
+fn screen_toggle_width(labels: &[&str; 4]) -> usize {
     "<TAB>".width() + 1 + labels.iter().map(|label| label.width() + 4).sum::<usize>()
 }
 
@@ -1548,25 +1540,6 @@ pub fn render_controls_line(
                 false
             }
         },
-        ActiveScreen::Recordings => {
-            let arrows = colors.shortcuts("<↓↑>");
-            let navigate = colors.bold("Navigate");
-            let search = colors.bold("Search recordings");
-            let back = colors.shortcuts("<ESC>");
-            let back_text = colors.bold("Back");
-
-            if max_cols > 60 {
-                print!(
-                    "\u{1b}[m\u{1b}[{y};{x}HHelp: Type to {search}, {arrows} - {navigate}, {back} - {back_text}"
-                );
-                true
-            } else if max_cols >= 20 {
-                print!("\u{1b}[m\u{1b}[{y};{x}H{arrows}/{back}");
-                false
-            } else {
-                false
-            }
-        },
         ActiveScreen::Notifications => {
             let arrows = colors.shortcuts("<↓↑/PgUp/PgDn>");
             let navigate = colors.bold("Navigate");
@@ -1594,17 +1567,10 @@ pub fn render_controls_line(
             let disconnect_short_text = colors.bold("Disconnect");
             let kill = colors.shortcuts("<Del>");
             let kill_text = colors.bold("Kill/Delete");
-            let recordings = colors.shortcuts("<Ctrl l>");
-            let recordings_text = colors.bold("Recordings");
             let notifications = colors.shortcuts("<Ctrl v>");
             let notifications_text = colors.bold("Notifications");
 
-            if max_cols > 126 {
-                print!(
-                    "\u{1b}[m\u{1b}[{y};{x}HHelp: {rename} - {rename_text}, {disconnect} - {disconnect_full_text}, {kill} - {kill_text}, {recordings} - {recordings_text}, {notifications} - {notifications_text}"
-                );
-                true
-            } else if max_cols > 98 {
+            if max_cols > 98 {
                 print!(
                     "\u{1b}[m\u{1b}[{y};{x}HHelp: {rename} - {rename_text}, {disconnect} - {disconnect_full_text}, {kill} - {kill_text}, {notifications} - {notifications_text}"
                 );
@@ -1923,22 +1889,21 @@ mod tests {
 
     #[test]
     fn screen_toggle_labels_only_render_when_they_fit() {
-        assert_eq!(screen_toggle_labels(51), None);
+        assert_eq!(screen_toggle_labels(44), None);
         assert_eq!(
-            screen_toggle_labels(52),
-            Some(["New", "Attach", "Resurrect", "Rec", "Notif"])
+            screen_toggle_labels(45),
+            Some(["New", "Attach", "Resurrect", "Notif"])
         );
         assert_eq!(
-            screen_toggle_labels(93),
-            Some(["New", "Attach", "Resurrect", "Rec", "Notif"])
+            screen_toggle_labels(79),
+            Some(["New", "Attach", "Resurrect", "Notif"])
         );
         assert_eq!(
-            screen_toggle_labels(94),
+            screen_toggle_labels(80),
             Some([
                 "New Session",
                 "Attach to Session",
                 "Resurrect Session",
-                "Recordings",
                 "Notifications",
             ])
         );
