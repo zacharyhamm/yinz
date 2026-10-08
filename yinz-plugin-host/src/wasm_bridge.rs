@@ -2643,6 +2643,7 @@ impl WasmBridge {
             // Keeping it marked as loading would admit pipes after that instance fails.
             if let Some(run_plugin) = self.run_plugin_of_loading_plugin_id(plugin_id) {
                 applied_plugin_paths.insert(run_plugin.clone());
+                self.refresh_loaded_plugin_location(plugin_id);
             }
             self.loading_plugins
                 .retain(|(p_id, _run_plugin)| p_id != &plugin_id);

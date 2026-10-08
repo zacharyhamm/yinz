@@ -37,6 +37,25 @@ impl WasmBridge {
             .insert(run.location.clone(), normalized.location);
     }
 
+    pub(super) fn refresh_loaded_plugin_location(&mut self, id: PluginId) {
+        let map = self.plugin_map.lock().unwrap();
+        // Failed loads retain metadata, but must not move the declaration's mapping.
+        if map.get_running_plugin(id, None).is_none() {
+            return;
+        }
+        if let Some(metadata) = map.reload_metadata(id) {
+            if let (RunPluginLocation::File(_), Some(source)) =
+                (&metadata.config.location, metadata.resolved_source_path)
+            {
+                // Refresh only this declaration, not every alias of its previous source.
+                self.resolved_plugin_locations.insert(
+                    RunPluginLocation::File(metadata.config.path),
+                    RunPluginLocation::File(source),
+                );
+            }
+        }
+    }
+
     fn identities(&self) -> BTreeMap<PluginId, RunPlugin> {
         let mut plugins = self.plugin_map.lock().unwrap().list_plugins();
         plugins.extend(self.loading_plugins.iter().cloned());
