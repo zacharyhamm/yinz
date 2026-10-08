@@ -2695,6 +2695,10 @@ pub fn screen_thread_main(
                         screen.log_and_report_session_state()?;
                     }
                 },
+                ScreenInstruction::UpdatePluginLocation(pid, location) => {
+                    screen.update_plugin_location(pid, location);
+                    screen.log_and_report_session_state()?;
+                },
                 ScreenInstruction::UpdatePluginLoadingStage(pid, loading_indication) => {
                     let found_plugin =
                         screen.update_plugin_loading_stage(pid, loading_indication.clone());

@@ -562,6 +562,7 @@ pub(crate) fn run_plugins(tc: &hegel::TestCase) -> RunPlugin {
         configuration: plugin_user_configurations(tc),
         initial_cwd: optional_paths(tc),
         relative_path: None,
+        declared_path: None,
     }
 }
 

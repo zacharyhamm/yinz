@@ -24,6 +24,7 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
             id,
             PluginMetadata {
                 config: config.clone(),
+                cache_dir: "/cache".into(),
                 resolved_source_path: Some(resolved.clone()),
                 cwd: cwd.clone(),
                 tab_index: None,
@@ -31,6 +32,13 @@ fn reload_matches_symlinked_plugin_directory_and_missing_paths() {
                 owner_client_id: ClientId::new(1),
             },
         );
+        assert_eq!(
+            map.update_reloaded_file_location(id),
+            Some(run.location.clone())
+        );
+        let reloaded = map.reload_metadata(id).unwrap();
+        assert_eq!(reloaded.config.path, config.path);
+        assert_eq!(reloaded.resolved_source_path.as_ref(), Some(resolved));
         for location in [
             run.location.clone(),
             RunPluginLocation::File(canonical.clone()),

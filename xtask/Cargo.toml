@@ -13,10 +13,4 @@ prost-build = { version = "0.12.6", default-features = false }
 sha2 = { workspace = true }
 which = "8"
 xflags = { version = "0.3.2", default-features = false }
-# TODO: Unpin when Cmd::run inherits stdin again; 0.2.7 still closes it, breaking cargo x run.
-# https://github.com/matklad/xshell/issues/63
-xshell = { version = "= 0.2.2", default-features = false }
-
-[lints.rust]
-# Only required because we need to fix `xshell` to `=0.2.2`
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
+xshell = { version = "0.2.7", default-features = false }

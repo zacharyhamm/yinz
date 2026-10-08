@@ -29,6 +29,8 @@ fn repository_aliases_validate_and_round_trip_without_leaking_properties() {
         "repo=\"https://example.com/p.git\" location=\"file:main.ts\"",
         "repo=\"https://example.com/p.git\" branch=\"main\" tag=\"v1\"",
         "repo=\"./local\" branch=\"main\"",
+        "repo=\"file:tools\" branch=\"main\"",
+        "repo=\"file:tools\" entrypoint=\"../escape.ts\"",
         "repo=\"https://example.com/p.git\" entrypoint=\"../escape.ts\"",
         "repo=\"https://example.com/p.git\" entrypoint=\"plugin.wasm\"",
         "repo=\"ext::bad\"",
@@ -48,19 +50,38 @@ fn repository_aliases_validate_and_round_trip_without_leaking_properties() {
 #[test]
 fn local_repositories_and_drop_ins_use_the_active_config_directory() {
     let directory = tempfile::tempdir().unwrap();
+    assert_ne!(
+        directory.path().canonicalize().unwrap(),
+        std::env::current_dir().unwrap().canonicalize().unwrap()
+    );
+    let parsed = Config::from_kdl("plugins { tools repo=\"file:tools\"; }", None).unwrap();
+    let RunPluginLocation::Git(source) = &parsed.plugins.aliases["tools"].location else {
+        panic!("Git alias")
+    };
+    assert_eq!(source.repo, "tools");
+    let resolved = parsed
+        .resolve_plugin_repositories(None, Some(directory.path()))
+        .unwrap();
+    let RunPluginLocation::Git(source) = &resolved.plugins.aliases["tools"].location else {
+        panic!("Git alias")
+    };
+    assert_eq!(
+        std::path::Path::new(&source.repo),
+        directory.path().join("tools")
+    );
     std::fs::create_dir(directory.path().join("config.d")).unwrap();
     std::fs::write(
         directory.path().join("config.kdl"),
-        "plugins { base repo=\"base\"; }",
+        "plugins { base repo=\"file:base\"; plain repo=\"plain\"; }",
     )
     .unwrap();
     std::fs::write(
         directory.path().join("config.d/tools.kdl"),
-        "plugins { tools repo=\"tools\"; }",
+        "plugins { tools repo=\"file:tools\"; }",
     )
     .unwrap();
     let config = Config::load(None, Some(directory.path()), false).unwrap();
-    for alias in ["base", "tools"] {
+    for alias in ["base", "plain", "tools"] {
         let RunPluginLocation::Git(source) = &config.plugins.aliases[alias].location else {
             panic!("Git alias")
         };
@@ -71,7 +92,7 @@ fn local_repositories_and_drop_ins_use_the_active_config_directory() {
     }
     std::fs::write(
         directory.path().join("config.d/tools.kdl"),
-        "plugins { tools repo=\"next\"; }",
+        "plugins { tools repo=\"file:next\"; }",
     )
     .unwrap();
     let reloaded = Config::load(None, Some(directory.path()), false).unwrap();
@@ -99,10 +120,10 @@ fn server_assets_resolve_config_and_layout_repository_aliases() {
     let layout_path = files.path().join("layout.kdl");
     std::fs::write(
         &config_path,
-        "plugins { base repo=\"base\"; panel repo=\"old\"; }",
+        "plugins { base repo=\"file:base\"; panel repo=\"old\"; }",
     )
     .unwrap();
-    let layout = "plugins { panel repo=\"tools\"; }\nlayout { pane; }";
+    let layout = "plugins { panel repo=\"file:tools\"; }\nlayout { pane; }";
     std::fs::write(&layout_path, layout).unwrap();
     for layout in [
         LayoutInfo::Stringified(layout.into()),

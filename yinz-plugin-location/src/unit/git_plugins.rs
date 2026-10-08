@@ -52,6 +52,8 @@ fn repository_paths_expand_and_saved_layouts_preserve_the_descriptor() {
         entrypoint: "main.ts".into(),
         revision: None,
     };
+    resolve_repository_path(&mut plugin, std::path::Path::new("")).unwrap();
+    assert_eq!(plugin.repo, "tools");
     resolve_repository_path(&mut plugin, std::path::Path::new("/config")).unwrap();
     assert_eq!(plugin.repo, "/config/tools");
     let mut home = plugin.clone();

@@ -1636,3 +1636,5 @@ fn translucency_repaints_completed_rows_during_synchronized_output() {
         .starts_with("FINISHED"));
     assert!(!grid.output_buffer.should_update_all_lines);
 }
+
+mod copy_whitespace;

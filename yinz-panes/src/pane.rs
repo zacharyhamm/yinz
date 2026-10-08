@@ -24,7 +24,7 @@ use yinz_types::data::{
 };
 use yinz_types::geometry::Direction;
 use yinz_types::input::command::RunCommand;
-use yinz_types::input::layout::Run;
+use yinz_types::input::layout::{Run, RunPluginLocation};
 use yinz_types::internal_ids::SessionName;
 use yinz_types::keys::KeyWithModifier;
 use yinz_types::mouse::MouseEvent;
@@ -654,6 +654,7 @@ pub trait Pane {
         None
     }
     fn invoked_with(&self) -> &Option<Run>;
+    fn update_plugin_location(&mut self, _location: RunPluginLocation) {}
     fn set_notification_end(&mut self, _notification_end: Option<NotificationEnd>) {}
     fn set_title(&mut self, title: String);
     fn update_loading_indication(&mut self, _loading_indication: LoadingIndication) {} // only relevant for plugins

@@ -72,6 +72,9 @@ pub struct RunPlugin {
     /// absolute by then, so this is what lets the user's plugin folder be searched for it.
     #[prost(string, optional, tag="5")]
     pub relative_path: ::core::option::Option<::prost::alloc::string::String>,
+    /// Loading path before canonicalization, retained for symlink reloads.
+    #[prost(string, optional, tag="6")]
+    pub declared_path: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

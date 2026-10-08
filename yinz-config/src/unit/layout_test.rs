@@ -2931,7 +2931,9 @@ fn run_plugin_location_parsing() {
                     TiledPaneLayout {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             _allow_exec_host_cmd: false,
-                            location: RunPluginLocation::File(PathBuf::from("plugin.wasm")),
+                            location: RunPluginLocation::File(
+                                std::env::current_dir().unwrap().join("plugin.wasm"),
+                            ),
                             configuration: Default::default(),
                             ..Default::default()
                         }))),
@@ -2940,9 +2942,11 @@ fn run_plugin_location_parsing() {
                     TiledPaneLayout {
                         run: Some(Run::Plugin(RunPluginOrAlias::RunPlugin(RunPlugin {
                             _allow_exec_host_cmd: false,
-                            location: RunPluginLocation::File(PathBuf::from(
-                                "relative/with space/plugin.wasm",
-                            )),
+                            location: RunPluginLocation::File(
+                                std::env::current_dir()
+                                    .unwrap()
+                                    .join("relative/with space/plugin.wasm"),
+                            ),
                             configuration: Default::default(),
                             ..Default::default()
                         }))),
@@ -3718,6 +3722,56 @@ fn floating_pane_tabs_keep_their_child_cwds() {
         panic!("selected plugin")
     };
     assert_eq!(plugin.get_initial_cwd(), tabs.tabs[1].initial_cwd);
+}
+
+#[test]
+#[cfg(unix)]
+fn lazy_pane_tabs_preserve_plugin_directory_fallback_and_symlink_declarations() {
+    let cwd = tempfile::tempdir().unwrap();
+    let plugins = tempfile::tempdir().unwrap();
+    let source = "export default {};";
+    let path = plugins.path().join("inactive.ts");
+    std::fs::write(&path, source).unwrap();
+    let link = cwd.path().join("current # %.ts");
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    for location in [
+        "file:inactive.ts".to_owned(),
+        url::Url::from_file_path(&link).unwrap().to_string(),
+    ] {
+        for floating in [false, true] {
+            let pane = format!(
+                r#"pane tabbed=true {{
+                pane name="Active" {{ plugin location="yinz:strider"; }}
+                pane name="Inactive" {{ plugin location="{location}"; }}
+            }}"#
+            );
+            let pane = if floating {
+                format!("floating_panes {{ {pane}; }}")
+            } else {
+                pane
+            };
+            let raw = format!("layout cwd=\"{}\" {{ {pane}; }}", cwd.path().display());
+            let layout = crate::kdl::layout::from_kdl(&raw, None, None, None).unwrap();
+            let (tiled, floats) = layout.template.unwrap();
+            let tabs = if floating {
+                floats[0].pane_tabs.as_ref().unwrap()
+            } else {
+                tiled.children[0].pane_tabs.as_ref().unwrap()
+            };
+            assert_eq!(tabs.active, 0);
+            let descriptor = &tabs.tabs[1];
+            assert_eq!(descriptor.location, location);
+            let plugin =
+                yinz_runtime::plugin_location::run_plugin_from_url(&descriptor.location).unwrap();
+            let config = crate::plugins::PluginConfig::from_run_plugin(&plugin).unwrap();
+            let (resolved, actual) = config.resolve_source(Some(plugins.path())).unwrap();
+            assert_eq!(
+                resolved.canonicalize().unwrap(),
+                path.canonicalize().unwrap()
+            );
+            assert_eq!(actual, source);
+        }
+    }
 }
 
 #[test]

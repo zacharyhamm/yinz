@@ -163,3 +163,77 @@ fn disconnect_discards_plugin_output_waiting_for_a_pane_before_client_id_reuse()
     pending.remove_client_plugin_output(other);
     assert!(pending.waiting_for_pane.is_empty());
 }
+
+#[test]
+fn reloaded_plugin_location_updates_existing_panes_and_preserves_alias_configuration() {
+    for placement in [
+        NewPanePlacement::default(),
+        NewPanePlacement::Floating(None),
+        NewPanePlacement::Overlay(OverlayPlacement::default()),
+    ] {
+        for suppressed in [false, true] {
+            for alias in [false, true] {
+                let mut screen = create_non_mirrored_screen(Size { cols: 80, rows: 24 });
+                let (plugin_sender, _plugin_receiver) = channels::unbounded();
+                screen.bus.senders.to_plugin = Some(SenderWithContext::new(plugin_sender));
+                new_tab(&mut screen, 1, TabId::new(0));
+                let mut original = RunPlugin {
+                    location: RunPluginLocation::File("/plugins/v1.ts".into()),
+                    declared_path: Some("/plugins/current.ts".into()),
+                    initial_cwd: Some("/work".into()),
+                    ..Default::default()
+                };
+                original.configuration.insert("greeting", "configured");
+                let run = if alias {
+                    RunPluginOrAlias::Alias(PluginAlias {
+                        name: "current".into(),
+                        configuration: Some(original.configuration.clone()),
+                        initial_cwd: Some("/alias-cwd".into()),
+                        run_plugin: Some(original.clone()),
+                    })
+                } else {
+                    RunPluginOrAlias::RunPlugin(original.clone())
+                };
+                let plugin_id = PluginId::new(2);
+                let pane_id = PaneId::Plugin(plugin_id);
+                let tab = screen.get_active_tab_mut(ClientId::new(1)).unwrap();
+                tab.new_pane(
+                    pane_id,
+                    None,
+                    Some(Run::Plugin(run.clone())),
+                    false,
+                    true,
+                    placement.clone(),
+                    Some(ClientId::new(1)),
+                    None,
+                )
+                .unwrap();
+                if suppressed {
+                    tab.suppress_pane(pane_id, None);
+                }
+                let location = RunPluginLocation::File("/plugins/v2.ts".into());
+                screen.update_plugin_location(plugin_id, location.clone());
+                let tab = screen.get_active_tab(ClientId::new(1)).unwrap();
+                let stored = tab.get_pane_with_id(pane_id).unwrap().invoked_with();
+                let mut expected = run;
+                match &mut expected {
+                    RunPluginOrAlias::RunPlugin(plugin) => plugin.location = location.clone(),
+                    RunPluginOrAlias::Alias(alias) => {
+                        alias.run_plugin.as_mut().unwrap().location = location.clone()
+                    },
+                }
+                assert_eq!(stored, &Some(Run::Plugin(expected.clone())));
+                let Some(Run::Plugin(stored_plugin)) = stored else {
+                    panic!("missing stored plugin");
+                };
+                assert_eq!(stored_plugin.get_run_plugin(), expected.get_run_plugin());
+                assert_eq!(stored_plugin.get_initial_cwd(), expected.get_initial_cwd());
+                assert_eq!(tab.find_plugin(&expected), Some(pane_id));
+                if !alias {
+                    // Sharing a declared symlink is no substitute for matching canonical identity.
+                    assert!(!RunPluginOrAlias::RunPlugin(original).is_equivalent_to_run(stored));
+                }
+            }
+        }
+    }
+}

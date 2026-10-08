@@ -15,6 +15,9 @@ Some(
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: Some(
+                    "/path/to/my/plugin.wasm",
+                ),
             },
         ),
         None,

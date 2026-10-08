@@ -804,13 +804,18 @@ fn ui_plugin() -> Run {
 /// A 100x40 screen whose ui strips span all 100 columns while the four
 /// terminals between them have only the 80 to their right.
 fn a_tab_whose_ui_strips_reach_past_its_panes() -> Vec<PaneLayoutManifest> {
+    let strip = |y| {
+        let mut pane = manifest(0, y, 100, 1, ui_plugin());
+        pane.geom.rows = yinz_types::pane_size::Dimension::fixed(1);
+        pane
+    };
     vec![
-        manifest(0, 0, 100, 1, ui_plugin()),
+        strip(0),
         manifest(20, 1, 40, 19, shell()),
         manifest(60, 1, 40, 19, shell()),
         manifest(20, 20, 40, 19, shell()),
         manifest(60, 20, 40, 19, shell()),
-        manifest(0, 39, 100, 1, ui_plugin()),
+        strip(39),
     ]
 }
 

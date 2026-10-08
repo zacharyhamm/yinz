@@ -1115,7 +1115,7 @@ impl Grid {
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
         sixel_image_store: Rc<RefCell<SixelImageStore>>,
         kitty_image_store: Rc<RefCell<KittyImageStore>>,
-        style: Style, // TODO: consolidate this with terminal_emulator_colors
+        style: Style,
         debug: bool,
         arrow_fonts: bool,
         styled_underlines: bool,
@@ -1853,13 +1853,11 @@ impl Grid {
                 }
             }
 
-            // trim lines after the last empty space that has no following character, because
-            // terminals don't trim empty lines
+            // Remove unprinted padding before reflow, preserving explicitly printed spaces.
             for line in &mut viewport_canonical_lines {
                 let mut trim_at = None;
                 for (index, character) in line.columns.iter().enumerate() {
-                    let is_trimmable_space = character.character
-                        == EMPTY_TERMINAL_CHARACTER.character
+                    let is_trimmable_space = character.is_implicit_blank()
                         && matches!(character.styles.background, Some(AnsiCode::Reset) | None)
                         && matches!(line.bg_color, Some(AnsiCode::Reset) | None);
 
@@ -3760,14 +3758,13 @@ impl Grid {
     /// resolves; and a non-canonical row is joined onto the previous one, so a wrapped logical
     /// line comes back as the single line it is on screen.
     pub fn text_for_selection(&self, selection: &Selection) -> Option<String> {
-        let mut lines: Vec<String> = vec![];
+        // Track the last explicit character's byte offset in each logical line.
+        let mut lines: Vec<(String, usize)> = vec![];
 
         let sorted_selection = selection.sorted();
         let (start, end) = (sorted_selection.start, sorted_selection.end);
 
         for l in sorted_selection.line_indices() {
-            let mut line_selection = String::new();
-
             // on the first line of the selection, use the selection start column
             // otherwise, start at the beginning of the line
             let start_column = if l == start.line.get() {
@@ -3810,30 +3807,31 @@ impl Grid {
                 continue;
             };
 
+            if row.is_canonical || lines.is_empty() {
+                lines.push((String::new(), 0));
+            }
+            let (line, explicit_end) = lines.last_mut()?;
             let mut terminal_col = 0;
             for terminal_character in &row.columns {
                 if (start_column..end_column).contains(&terminal_col) {
-                    line_selection.push(terminal_character.character);
+                    line.push(terminal_character.character);
+                    if !terminal_character.is_implicit_blank() {
+                        *explicit_end = line.len();
+                    }
                 }
 
                 terminal_col += terminal_character.width();
             }
-
-            if row.is_canonical {
-                lines.push(line_selection);
-            } else {
-                // rejoin wrapped lines if possible
-                match lines.last_mut() {
-                    Some(previous_line) => previous_line.push_str(&line_selection),
-                    None => lines.push(line_selection),
-                }
-            }
         }
 
-        // TODO: distinguish whitespace that was output explicitly vs implicitly (e.g add_newline)
-        // for example: echo "     " vs empty lines
-        // for now trim after building the selection to handle whitespace in wrapped lines
-        let lines: Vec<_> = lines.iter().map(|l| l.trim_end()).collect();
+        // Trim padding only after joining wrapped rows, preserving interior gaps.
+        let lines: Vec<_> = lines
+            .into_iter()
+            .map(|(mut line, end)| {
+                line.truncate(end);
+                line
+            })
+            .collect();
 
         if lines.is_empty() {
             None
@@ -5330,6 +5328,20 @@ impl Perform for Grid {
                     if !body.is_empty() && !is_conemu_subcommand {
                         self.pending_desktop_notifications
                             .push(PendingNotification::Osc9 { body });
+                    }
+                }
+            },
+
+            b"777"
+                if !bell_terminated
+                    && params == [b"777".as_slice(), b"yinz", b"implicit-blank"] =>
+            {
+                if let Some(x) = self.cursor.x.checked_sub(1) {
+                    if let Some(row) = self.viewport.get_mut(self.cursor.y) {
+                        let index = row.absolute_character_index(x);
+                        if let Some(character) = row.columns.get_mut(index) {
+                            character.mark_implicit_blank();
+                        }
                     }
                 }
             },

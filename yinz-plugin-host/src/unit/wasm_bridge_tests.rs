@@ -2767,7 +2767,7 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
     context.plugin_config.initial_userspace_configuration = PluginUserConfiguration::new(
         BTreeMap::from([("setting".to_owned(), "preserved".to_owned())]),
     );
-    let config = context.plugin_config.clone();
+    let mut config = context.plugin_config.clone();
     let cache = YINZ_CACHE_DIR
         .join(Url::from(&config.location).to_string())
         .join("plugin_cache");
@@ -2865,7 +2865,22 @@ fn assert_reload_recovers(wasm: bool, by_url: bool) {
             std::fs::read_to_string(cache.join("saved")).unwrap(),
             "persistent state"
         );
+        config.location = RunPluginLocation::File(
+            config
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| config.path.clone()),
+        );
+        assert_eq!(
+            running.env().resolved_source_path,
+            Some(source.canonicalize().unwrap())
+        );
         assert_eq!(running.env().plugin_config, config);
+        assert_eq!(map.plugin_config_of_plugin_id(id), Some(config.clone()));
+        assert_eq!(
+            map.run_plugin_of_plugin_id(id).unwrap().location,
+            config.location
+        );
         assert_eq!((running.rows, running.columns), (13, 37));
         assert_eq!(running.env().plugin_cwd, cwd);
         assert_eq!(running.env().tab_index, Some(TabId::new(4)));

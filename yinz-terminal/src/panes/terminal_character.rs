@@ -16,6 +16,7 @@ use crate::panes::alacritty_functions::parse_sgr_color;
 pub const EMPTY_TERMINAL_CHARACTER: TerminalCharacter = TerminalCharacter {
     character: ' ',
     width: 1,
+    is_explicit: false,
     styles: RcCharacterStyles::Reset,
 };
 
@@ -932,6 +933,7 @@ pub struct TerminalCharacter {
     pub character: char,
     pub styles: RcCharacterStyles,
     width: u8,
+    is_explicit: bool,
 }
 
 // This size has significant memory and CPU implications for long lines,
@@ -951,6 +953,7 @@ impl TerminalCharacter {
             character,
             styles,
             width: character.width().unwrap_or(0) as u8,
+            is_explicit: true,
         }
     }
 
@@ -965,11 +968,22 @@ impl TerminalCharacter {
             character,
             styles,
             width: 1,
+            is_explicit: true,
         }
     }
 
     pub fn width(&self) -> usize {
         self.width as usize
+    }
+
+    pub(crate) fn mark_implicit_blank(&mut self) {
+        if self.character == ' ' {
+            self.is_explicit = false;
+        }
+    }
+
+    pub(crate) fn is_implicit_blank(&self) -> bool {
+        !self.is_explicit && self.character == ' '
     }
 }
 

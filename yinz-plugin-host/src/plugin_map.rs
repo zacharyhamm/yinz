@@ -61,6 +61,7 @@ pub struct PluginMap {
 pub(crate) struct PluginMetadata {
     pub config: PluginConfig,
     pub resolved_source_path: Option<PathBuf>,
+    pub cache_dir: PathBuf,
     pub cwd: PathBuf,
     pub tab_index: Option<TabId>,
     pub size: (usize, usize),
@@ -73,6 +74,7 @@ impl PluginMetadata {
         Self {
             config: env.plugin_config.clone(),
             resolved_source_path: env.resolved_source_path.clone(),
+            cache_dir: env.plugin_own_cache_dir.clone(),
             cwd: env.plugin_cwd.clone(),
             tab_index: env.tab_index,
             // The newest size asked, not the last drawn: a resize still owed a render when the
@@ -89,6 +91,8 @@ impl PluginMetadata {
             configuration: self.config.initial_userspace_configuration.clone(),
             initial_cwd: self.config.initial_cwd.clone(),
             relative_path: self.config.relative_path.clone(),
+            declared_path: matches!(self.config.location, RunPluginLocation::File(_))
+                .then(|| self.config.path.clone()),
         }
     }
 }
@@ -368,15 +372,15 @@ impl PluginMap {
                 let running_plugin_location = &plugin_config.location;
                 let running_plugin_configuration = &plugin_config.initial_userspace_configuration;
                 let location_matches = running_plugin_location == plugin_location
-                    // A plugin declared `file:keys.ts` keeps `<cwd>/keys.ts` as its identity -
-                    // that is what a dumped layout has to say - but its source was read from the
-                    // user's plugin folder. A reload naming that file in full is the same plugin,
-                    // and must reload it rather than be told it does not exist and started again
-                    // in a second pane.
-                    || match (plugin_location, metadata.resolved_source_path.as_ref()) {
-                        (RunPluginLocation::File(requested), Some(resolved)) => {
-                            requested.canonicalize().unwrap_or_else(|_| requested.clone())
-                                == resolved.canonicalize().unwrap_or_else(|_| resolved.clone())
+                    // Match plugin-directory fallback and the declared path's current target,
+                    // which can change when a symlink is retargeted after loading.
+                    || match plugin_location {
+                        RunPluginLocation::File(requested) => {
+                            let requested = requested.canonicalize().unwrap_or_else(|_| requested.clone());
+                            let declared = matches!(running_plugin_location, RunPluginLocation::File(_))
+                                .then_some(&plugin_config.path);
+                            metadata.resolved_source_path.iter().chain(declared)
+                                .any(|path| requested == path.canonicalize().unwrap_or_else(|_| path.clone()))
                         },
                         _ => false,
                     };
@@ -585,6 +589,35 @@ impl PluginMap {
             .get(&plugin_id)
             .map(PluginMetadata::run_plugin)
     }
+    /// Refresh the declared file identity after a successful reload.
+    pub(crate) fn update_reloaded_file_location(
+        &mut self,
+        plugin_id: PluginId,
+    ) -> Option<RunPluginLocation> {
+        let metadata = self.plugin_metadata.get_mut(&plugin_id)?;
+        if !matches!(metadata.config.location, RunPluginLocation::File(_)) {
+            return None;
+        }
+        // A relative declaration may load from user_plugin_dir while its declared path is
+        // absent. Keep that identity so the next relative launch still finds this pane.
+        let path = &metadata.config.path;
+        let location =
+            RunPluginLocation::File(path.canonicalize().unwrap_or_else(|_| path.clone()));
+        metadata.config.location = location.clone();
+        for ((id, _), (plugin, _, _)) in &self.plugin_assets {
+            if *id == plugin_id {
+                plugin.lock().unwrap().env_mut().plugin_config.location = location.clone();
+            }
+        }
+        Some(location)
+    }
+
+    pub(crate) fn cache_dir_of_plugin_id(&self, plugin_id: PluginId) -> Option<PathBuf> {
+        self.plugin_metadata
+            .get(&plugin_id)
+            .map(|metadata| metadata.cache_dir.clone())
+    }
+
     pub fn plugin_config_of_plugin_id(&self, plugin_id: PluginId) -> Option<PluginConfig> {
         self.plugin_metadata
             .get(&plugin_id)
@@ -1354,6 +1387,7 @@ mod tests {
                     super::PluginMetadata {
                         config: config.clone(),
                         resolved_source_path: Some(resolved.clone()),
+                        cache_dir: "/cache".into(),
                         cwd: "/cwd".into(),
                         tab_index: None,
                         size: (0, 0),
@@ -1374,6 +1408,12 @@ mod tests {
                     .unwrap()
                     .location,
                 run.location
+            );
+            assert_eq!(
+                map.run_plugin_of_plugin_id(PluginId::new(id))
+                    .unwrap()
+                    .declared_path,
+                run.declared_path
             );
             assert_eq!(
                 map.plugin_config_of_plugin_id(PluginId::new(id)),

@@ -33,8 +33,11 @@ use yinz_types::pane_size::{Offset, SizeInPixels};
 use yinz_types::position::Position;
 use yinz_types::style::{Palette, Style, Styling};
 use {
-    yinz_types::data::Event, yinz_types::data::InputMode, yinz_types::data::Mouse,
-    yinz_types::data::PaletteColor, yinz_types::input::layout::Run,
+    yinz_types::data::Event,
+    yinz_types::data::InputMode,
+    yinz_types::data::Mouse,
+    yinz_types::data::PaletteColor,
+    yinz_types::input::layout::{Run, RunPluginLocation, RunPluginOrAlias},
 };
 use {
     yinz_types::data::PermissionStatus, yinz_types::data::PermissionType,
@@ -1144,6 +1147,16 @@ impl Pane for PluginPane {
             .as_ref()
             .filter(|override_| override_.applies_to(client_id))
             .map_or(1.0, |override_| override_.strength(Instant::now()))
+    }
+    fn update_plugin_location(&mut self, location: RunPluginLocation) {
+        let plugin = match &mut self.invoked_with {
+            Some(Run::Plugin(RunPluginOrAlias::RunPlugin(plugin))) => Some(plugin),
+            Some(Run::Plugin(RunPluginOrAlias::Alias(alias))) => alias.run_plugin.as_mut(),
+            _ => None,
+        };
+        if let Some(plugin) = plugin {
+            plugin.location = location;
+        }
     }
     fn invoked_with(&self) -> &Option<Run> {
         &self.invoked_with

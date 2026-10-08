@@ -1,6 +1,5 @@
 ---
 source: yinz-panes/src/panes/./unit/search_in_pane_tests.rs
-assertion_line: 292
 expression: "format!(\"{:?}\", terminal_pane.grid)"
 ---
 00 (C): Dignissim enim sit amet venenatis urna cursus.
@@ -20,6 +19,6 @@ expression: "format!(\"{:?}\", terminal_pane.grid)"
 14 (W): esque habitant morbi tristique senectus et netus. Nunc id cursus metus aliquam eleifend. Urna nec tincidunt praesent semper feugiat nibh sed pulvinar.
 15 (W):  Donec ultrices tincidunt arcu non sodales neque sodales ut etiam. Suspendisse sed nisi lacus sed viverra tellus in hac habitasse. Nunc scelerisque vi
 16 (W): verra mauris in aliquam sem fringilla.
-17 (C): ⏎
-18 (C): yinzer on  mouse-support [?] is 📦 v0.14.0 via 🦀 v1.53.0-beta.3
+17 (C): ⏎                                                                                                                        
+18 (C): yinzer on  mouse-support [?] is 📦 v0.14.0 via 🦀 v1.53.0-beta.3 
 19 (C): ❯

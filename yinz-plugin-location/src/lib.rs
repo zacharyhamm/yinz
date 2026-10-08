@@ -14,16 +14,13 @@ pub fn run_plugin_or_alias_from_url(
     cwd: Option<PathBuf>,
 ) -> Result<RunPluginOrAlias, String> {
     let mut plugin =
-        match crate::parse_plugin_location_with_relative(url, cwd) {
-            Ok((location, relative_path)) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
-                _allow_exec_host_cmd: false,
-                location,
+        match run_plugin_from_url_with_cwd(url, cwd) {
+            Ok(plugin) => Ok(RunPluginOrAlias::RunPlugin(RunPlugin {
                 configuration: configuration
                     .as_ref()
                     .map(|c| PluginUserConfiguration::new(c.clone()))
                     .unwrap_or_default(),
-                relative_path,
-                ..Default::default()
+                ..plugin
             })),
             Err(PluginsConfigError::InvalidUrlScheme(_))
             | Err(PluginsConfigError::InvalidUrl(..)) => Ok(RunPluginOrAlias::Alias(
@@ -35,11 +32,7 @@ pub fn run_plugin_or_alias_from_url(
     Ok(plugin)
 }
 pub fn run_plugin_from_url(url: &str) -> Result<RunPlugin, PluginsConfigError> {
-    let location = crate::parse_plugin_location(url, None)?;
-    Ok(RunPlugin {
-        location,
-        ..Default::default()
-    })
+    run_plugin_from_url_with_cwd(url, None)
 }
 pub fn parse_plugin_location(
     location: &str,
@@ -51,6 +44,14 @@ pub fn parse_plugin_location_with_relative(
     location: &str,
     cwd: Option<PathBuf>,
 ) -> Result<(RunPluginLocation, Option<PathBuf>), PluginsConfigError> {
+    run_plugin_from_url_with_cwd(location, cwd)
+        .map(|plugin| (plugin.location, plugin.relative_path))
+}
+
+pub fn run_plugin_from_url_with_cwd(
+    location: &str,
+    cwd: Option<PathBuf>,
+) -> Result<RunPlugin, PluginsConfigError> {
     let url = Url::parse(location);
     let path = url.as_ref().map(|url| url.path()).unwrap_or(location);
     let decoded_path = percent_encoding::percent_decode_str(path)
@@ -68,17 +69,19 @@ pub fn parse_plugin_location_with_relative(
     }
     let url = url?;
     match url.scheme() {
-        "git" => Ok((
-            RunPluginLocation::Git(
+        "git" => Ok(RunPlugin {
+            location: RunPluginLocation::Git(
                 yinz_types::input::git_plugin::GitPlugin::from_descriptor(location)
                     .map_err(|e| PluginsConfigError::InvalidRepository(e.into()))?,
             ),
-            None,
-        )),
-        "yinz" => Ok((RunPluginLocation::Yinz(PluginTag::new(decoded_path)), None)),
+            ..Default::default()
+        }),
+        "yinz" => Ok(RunPlugin {
+            location: RunPluginLocation::Yinz(PluginTag::new(decoded_path)),
+            ..Default::default()
+        }),
         "file" => {
-            // Set by the one branch that joins a cwd, so it is exactly "what the user wrote,
-            // before it was made absolute".
+            // Preserve the relative spelling for the user-plugin-directory fallback.
             let mut relative = None;
             let path = if location.starts_with("file:/") {
                 // Path is absolute, its safe to use URL path.
@@ -95,12 +98,28 @@ pub fn parse_plugin_location_with_relative(
                 // Unwrap is safe here since location is a valid URL
                 let stripped = location.strip_prefix("file:").unwrap();
                 relative = Some(expand_plugin_path(PathBuf::from(stripped)));
-                match cwd {
-                    Some(cwd) => cwd.join(stripped),
-                    None => PathBuf::from(stripped),
-                }
+                PathBuf::from(stripped)
             };
-            Ok((RunPluginLocation::File(expand_plugin_path(path)), relative))
+            let path = expand_plugin_path(path);
+            let path = cwd.map_or_else(|| path.clone(), |cwd| cwd.join(&path));
+            // Wasm plugins parse locations too, without access to the host filesystem.
+            #[cfg(not(target_arch = "wasm32"))]
+            let path = if path.is_relative() {
+                std::env::current_dir()
+                    .map_err(|_| PluginsConfigError::InvalidPluginLocation(path.clone()))?
+                    .join(path)
+            } else {
+                path
+            };
+            let declared_path = Some(path.clone());
+            #[cfg(not(target_arch = "wasm32"))]
+            let path = path.canonicalize().unwrap_or(path);
+            Ok(RunPlugin {
+                location: RunPluginLocation::File(path),
+                relative_path: relative,
+                declared_path,
+                ..Default::default()
+            })
         },
         // Plugins are never downloaded. Refuse remote urls here, everywhere a plugin url is
         // read (config, layouts, hooks, the CLI and a plugin loading another), rather than
@@ -109,6 +128,21 @@ pub fn parse_plugin_location_with_relative(
         _ => Err(PluginsConfigError::InvalidUrlScheme(url)),
     }
 }
+/// Refresh an incoming launch request without changing identities of running instances.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn refresh_file_identity(request: &mut RunPluginOrAlias) {
+    let plugin = match request {
+        RunPluginOrAlias::RunPlugin(plugin) => Some(plugin),
+        RunPluginOrAlias::Alias(alias) => alias.run_plugin.as_mut(),
+    };
+    if let Some(plugin) = plugin {
+        if let RunPluginLocation::File(location) = &mut plugin.location {
+            let declared = plugin.declared_path.as_ref().unwrap_or(location);
+            *location = declared.canonicalize().unwrap_or_else(|_| declared.clone());
+        }
+    }
+}
+
 fn expand_plugin_path(path: PathBuf) -> PathBuf {
     match shellexpand::full(&path.to_string_lossy()) {
         Ok(expanded) => PathBuf::from(expanded.as_ref()),
@@ -191,9 +225,14 @@ pub fn resolve_repository_path(
                 "file URLs must refer to the local machine".into(),
             ));
         }
-        let (location, _) =
-            parse_plugin_location_with_relative(&plugin.repo, Some(base.to_owned()))?;
-        if let RunPluginLocation::File(path) = location {
+        let parsed = run_plugin_from_url_with_cwd(&plugin.repo, Some(base.to_owned()))?;
+        if let Some(path) = parsed.declared_path {
+            // Parsing validates before the active config directory is known.
+            let path = if base.as_os_str().is_empty() {
+                parsed.relative_path.unwrap_or(path)
+            } else {
+                path
+            };
             plugin.repo = path.to_string_lossy().into_owned();
         }
     } else if plugin.is_local() {
@@ -208,3 +247,7 @@ pub fn resolve_repository_path(
 #[cfg(test)]
 #[path = "unit/git_plugins.rs"]
 mod git_plugins;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "unit/file_identity.rs"]
+mod file_identity;

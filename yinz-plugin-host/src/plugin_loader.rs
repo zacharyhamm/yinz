@@ -247,6 +247,7 @@ impl<'a> PluginLoader<'a> {
             super::plugin_map::PluginMetadata {
                 config: self.plugin_config.clone(),
                 resolved_source_path,
+                cache_dir: self.plugin_own_cache_dir.clone(),
                 cwd: self.plugin_cwd.clone(),
                 tab_index: self.tab_index,
                 size: (self.size.rows, self.size.cols),

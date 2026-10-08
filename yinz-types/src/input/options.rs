@@ -528,7 +528,6 @@ impl Options {
     }
     /// Merges two [`Options`] structs, a `Some` in `other`
     /// will supersede a `Some` in `self`
-    // TODO: Maybe a good candidate for a macro?
     pub fn merge(&self, other: Options) -> Options {
         let agent_double_escape = other.agent_double_escape.or(self.agent_double_escape);
         let mouse_mode = other.mouse_mode.or(self.mouse_mode);

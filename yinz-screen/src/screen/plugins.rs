@@ -73,7 +73,7 @@ impl Screen {
     /// when one is named and otherwise opening beside the client's active pane.
     pub(super) fn launch_plugin(
         &mut self,
-        run_plugin: RunPluginOrAlias,
+        mut run_plugin: RunPluginOrAlias,
         should_float: bool,
         should_open_in_place: bool,
         close_replaced_pane: bool,
@@ -86,6 +86,7 @@ impl Screen {
         no_focus: bool,
         overlay_placement: Option<OverlayPlacement>,
     ) -> Result<()> {
+        yinz_runtime::plugin_location::refresh_file_identity(&mut run_plugin);
         let (tab_index, client_id) = if pane_id_to_replace.is_some() {
             match self.tab_for_plugin_launch(explicit_tab_id) {
                 Some(tab_index) => (tab_index, client_id),
@@ -123,7 +124,7 @@ impl Screen {
     /// resolve a cwd for it and load it. Replacing a pane in place skips the focus attempt.
     pub(super) fn launch_or_focus_plugin(
         &mut self,
-        run_plugin: RunPluginOrAlias,
+        mut run_plugin: RunPluginOrAlias,
         should_float: bool,
         move_to_focused_tab: bool,
         should_open_in_place: bool,
@@ -134,6 +135,7 @@ impl Screen {
         mut completion_tx: Option<NotificationEnd>,
         explicit_tab_id: Option<TabId>,
     ) -> Result<()> {
+        yinz_runtime::plugin_location::refresh_file_identity(&mut run_plugin);
         match pane_id_to_replace {
             Some(pane_id_to_replace) if should_open_in_place => {
                 if let Some(tab_index) = self.tab_for_plugin_launch(explicit_tab_id) {

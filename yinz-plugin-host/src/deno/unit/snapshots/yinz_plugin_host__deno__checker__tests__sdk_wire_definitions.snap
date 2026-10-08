@@ -1,6 +1,5 @@
 ---
 source: yinz-plugin-host/src/deno/unit/checker.rs
-assertion_line: 1029
 expression: wire
 ---
 commands
@@ -2663,6 +2662,7 @@ RunPluginLocationData location = 2;
 PluginUserConfiguration configuration = 3;
 optional string initial_cwd = 4;
 optional string relative_path = 5;
+optional string declared_path = 6;
 }
 message PluginAlias {
 string name = 1;

@@ -173,6 +173,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "agent-policy": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -186,6 +187,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "agent-service": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -201,6 +203,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "agents": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -216,6 +219,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "compact-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -229,6 +233,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "configuration": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -242,6 +247,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "context-menu": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -255,6 +261,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "duplicate-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -270,6 +277,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "file-finder": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -283,6 +291,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "filepicker": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -298,6 +307,7 @@ Config {
                     "/",
                 ),
                 relative_path: None,
+                declared_path: None,
             },
             "fork-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -313,6 +323,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "new-agent": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -326,6 +337,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "plugin-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -339,6 +351,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "project-store": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -354,6 +367,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "session-manager": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -367,6 +381,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "status-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -380,6 +395,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "strider": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -393,6 +409,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "swamp-issues": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -406,6 +423,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "tab-bar": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -419,6 +437,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "todos": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -432,6 +451,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "vms": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -445,6 +465,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
             "welcome-screen": RunPlugin {
                 _allow_exec_host_cmd: false,
@@ -460,6 +481,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
         },
     },
@@ -484,6 +506,7 @@ Config {
                 ),
                 initial_cwd: None,
                 relative_path: None,
+                declared_path: None,
             },
         ),
         Alias(
@@ -527,6 +550,7 @@ Config {
                     ),
                     initial_cwd: None,
                     relative_path: None,
+                    declared_path: None,
                 },
             ),
             ContextMenu: RunPlugin(
@@ -542,6 +566,7 @@ Config {
                     ),
                     initial_cwd: None,
                     relative_path: None,
+                    declared_path: None,
                 },
             ),
         },

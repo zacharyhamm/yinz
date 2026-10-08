@@ -1231,7 +1231,8 @@ pub fn load_plugins_to_kdl(
     }
     let mut load_plugins_children = KdlDocument::new();
     for run_plugin_or_alias in background_plugins.iter() {
-        let mut background_plugin_node = KdlNode::new(run_plugin_or_alias.location_string());
+        let mut background_plugin_node =
+            KdlNode::new(run_plugin_or_alias.location_for_serialization());
         if let Some(children) = plugin_settings_to_kdl(run_plugin_or_alias) {
             background_plugin_node.set_children(children);
         }
@@ -1404,7 +1405,7 @@ pub fn hooks_to_kdl(hooks: &Hooks) -> KdlNode {
         let mut node = KdlNode::new(point.as_str());
         match hooks.get(*point) {
             Some(plugin) => {
-                node.push(KdlValue::String(plugin.location_string()));
+                node.push(KdlValue::String(plugin.location_for_serialization()));
                 if let Some(children) = plugin_settings_to_kdl(plugin) {
                     node.set_children(children);
                 }
