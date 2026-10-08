@@ -4759,6 +4759,65 @@ fn background_permission_answers_cannot_grant_replacements_or_stopped_instances(
 }
 
 #[test]
+fn background_identity_does_not_read_source_pipes() {
+    let test = TestBridge::new();
+    for name in ["source.ts", "source"] {
+        let path = test._dirs[0].path().join(name);
+        // Opening a FIFO without a writer would block identity lookup indefinitely.
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap();
+        let expected = if name == "source" {
+            let wasm = path.with_extension("wasm");
+            std::fs::write(&wasm, b"wasm").unwrap();
+            wasm
+        } else {
+            path.clone()
+        };
+        let run = RunPlugin {
+            location: RunPluginLocation::File(path),
+            ..Default::default()
+        };
+        assert_eq!(
+            test.bridge.normalize_plugin(run).location,
+            RunPluginLocation::File(expected.canonicalize().unwrap())
+        );
+    }
+}
+
+#[test]
+fn background_identity_resolves_script_paths_without_validating_source() {
+    let mut test = TestBridge::new();
+    let cwd = test._dirs[0].path().join("cwd");
+    let plugins = test._dirs[0].path().join("plugins");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&plugins).unwrap();
+    test.bridge.user_plugin_dir = Some(plugins.clone());
+    let path = cwd.join("source.ts");
+    let fallback = plugins.join("source.ts");
+    std::fs::write(&fallback, [0xff]).unwrap();
+    let run = RunPlugin {
+        location: RunPluginLocation::File(path.clone()),
+        relative_path: Some("source.ts".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        test.bridge.normalize_plugin(run.clone()).location,
+        RunPluginLocation::File(fallback.canonicalize().unwrap())
+    );
+    // A present declaration wins even when its contents cannot be loaded.
+    std::fs::write(&path, [0xff]).unwrap();
+    assert_eq!(
+        test.bridge.normalize_plugin(run.clone()).location,
+        RunPluginLocation::File(path.canonicalize().unwrap())
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert_eq!(
+        test.bridge.normalize_plugin(run).location,
+        RunPluginLocation::File(path.canonicalize().unwrap())
+    );
+}
+
+#[test]
 fn background_identity_survives_url_spelling_and_deleted_symlinks() {
     use yinz_types::cli::PluginOperation as Op;
     let mut test = TestBridge::new();
