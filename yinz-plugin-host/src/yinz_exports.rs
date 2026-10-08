@@ -5984,7 +5984,7 @@ fn warp_pane_to_session(
     to_session: SessionName,
     placement: WarpPlacement,
 ) {
-    let result = yinz_bus::warp::warp_pane_to_session(
+    let (result, hold) = yinz_bus::warp::warp_pane_to_session(
         &env.senders,
         env.client_id,
         // Always explicit, never "whichever pane is focused": a plugin is acting
@@ -5997,6 +5997,8 @@ fn warp_pane_to_session(
         yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
     );
     write_warp_response(env, result);
+    // As in the CLI path: the session stays open until the answer is written.
+    drop(hold);
 }
 
 fn warp_pane_from_session(
@@ -6049,6 +6051,7 @@ fn adopt_orphaned_pane(env: &mut PluginEnv, host_id: SupervisorId, placement: Wa
                 env.client_id,
                 Box::new(payload),
                 placement,
+                None,
                 yinz_bus::warp::PLUGIN_WARP_TIMEOUT,
             )
         });

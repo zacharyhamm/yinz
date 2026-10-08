@@ -96,7 +96,7 @@ fn an_input_unblock_before_the_warp_reply_is_ignored() {
 fn warping_to_the_current_session_is_refused_before_anything_is_asked_of_screen() {
     let harness = harness();
 
-    let result = warp_pane_to_session(
+    let (result, hold) = warp_pane_to_session(
         &harness.senders,
         crate::ClientId::new(1),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
@@ -105,6 +105,7 @@ fn warping_to_the_current_session_is_refused_before_anything_is_asked_of_screen(
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
+    assert!(hold.is_none(), "nothing was released");
 
     assert_eq!(
         result,
@@ -122,7 +123,7 @@ fn an_unreachable_target_releases_nothing() {
     // name that does not resolve costs an error and not a homeless pane.
     let harness = harness();
 
-    let result = warp_pane_to_session(
+    let (result, hold) = warp_pane_to_session(
         &harness.senders,
         crate::ClientId::new(1),
         Some(PaneId::Terminal(crate::TerminalId::new(3))),
@@ -131,6 +132,7 @@ fn an_unreachable_target_releases_nothing() {
         WarpPlacement::NewTab,
         TEST_TIMEOUT,
     );
+    assert!(hold.is_none(), "nothing was released");
 
     let error = result.expect_err("a session that is not running cannot be warped to");
     assert!(
@@ -216,6 +218,7 @@ fn adopting_times_out_rather_than_waiting_on_a_pty_thread_that_never_answers() {
             agent: None,
         }),
         WarpPlacement::NewTab,
+        None,
         TEST_TIMEOUT,
     );
 
@@ -265,6 +268,7 @@ fn a_pty_side_refusal_to_adopt_comes_back_verbatim() {
             agent: None,
         }),
         WarpPlacement::NewTab,
+        None,
         Duration::from_secs(5),
     );
     responder.join().expect("the responder should not panic");
@@ -489,99 +493,263 @@ fn warp_pull_budget_covers_probe_release_adoption_and_rollback() {
     assert_eq!(WARP_PULL_TIMEOUT, WARP_TIMEOUT * 4 + Duration::from_secs(1));
 }
 
-#[test]
-fn pane_warp_guard_finishes_after_preparation_and_rollback_failures() {
-    for failure in ["preparation", "rollback"] {
-        let harness = harness();
-        let session = SessionName::new(format!("warp-guard-{}-{failure}", std::process::id()));
+/// Binds a fake session socket in the real socket directory, where
+/// `connect_to_session` looks, and removes it on drop.
+struct FakeSession {
+    name: SessionName,
+    path: PathBuf,
+    listener: Option<interprocess::local_socket::Listener>,
+}
+
+impl FakeSession {
+    fn bind(tag: &str) -> Self {
+        let name = SessionName::new(format!("warp-test-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
-        let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&session);
+        let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
         let listener = ListenerOptions::new()
             .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
             .create_sync()
             .unwrap();
-        let destination = std::thread::spawn(move || {
-            let mut probe: IpcSenderWithContext<ServerToClientMsg> =
-                IpcSenderWithContext::new(listener.accept().unwrap());
-            let mut request: IpcReceiverWithContext<ClientToServerMsg> =
-                probe.get_receiver().unwrap();
-            assert!(matches!(
-                request.recv_client_msg().msg(),
-                Some((ClientToServerMsg::ConnStatus, _))
-            ));
-            probe
-                .send_server_msg(ServerToClientMsg::Connected {
-                    warp_companions: true,
-                    warp_held_terminals: true,
-                })
-                .unwrap();
-            let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
-                IpcReceiverWithContext::new(listener.accept().unwrap());
-            let _ = adoption.recv_client_msg();
-        });
-        let senders = harness.senders.clone();
-        let caller = std::thread::spawn(move || {
-            warp_pane_to_session(
-                &senders,
-                crate::ClientId::new(1),
-                None,
-                &SessionName::new("source"),
-                &session,
-                WarpPlacement::FocusedTab,
-                Duration::from_secs(5),
-            )
-        });
-        let (
-            ScreenInstruction::WarpPane {
-                response_channel, ..
-            },
-            _,
-        ) = harness.screen.recv_timeout(Duration::from_secs(5)).unwrap()
-        else {
-            panic!("expected warp")
-        };
-        assert!(harness.screen.try_recv().is_err());
-        if failure == "preparation" {
-            response_channel
-                .send(Err("preparation refused".into()))
-                .unwrap();
-        } else {
-            response_channel.send(Ok(Box::default())).unwrap();
-            let (
-                PtyInstruction::AdoptTerminal {
-                    response_channel, ..
-                },
-                _,
-            ) = harness.pty.recv_timeout(Duration::from_secs(5)).unwrap()
-            else {
-                panic!("expected rollback")
-            };
-            assert!(
-                harness.screen.try_recv().is_err(),
-                "guard must cover rollback"
-            );
-            response_channel
-                .send(Err(anyhow!("rollback refused")))
-                .unwrap();
+        Self {
+            name,
+            path,
+            listener: Some(listener),
         }
-        assert!(matches!(
-            harness
-                .screen
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .0,
-            ScreenInstruction::PaneWarpFinished
-        ));
-        let error = caller.join().unwrap().unwrap_err();
-        assert!(
-            error.contains(if failure == "preparation" {
-                "preparation refused"
-            } else {
-                "rollback refused"
-            }),
-            "{error}"
-        );
-        assert!(harness.screen.try_recv().is_err());
-        destination.join().unwrap();
     }
+}
+
+impl Drop for FakeSession {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Answers the capability probe, then reads the handoff and closes it unanswered.
+fn refuse_handoff(listener: interprocess::local_socket::Listener) {
+    let mut probe: IpcSenderWithContext<ServerToClientMsg> =
+        IpcSenderWithContext::new(listener.accept().unwrap());
+    let mut request: IpcReceiverWithContext<ClientToServerMsg> = probe.get_receiver().unwrap();
+    assert!(matches!(
+        request.recv_client_msg().msg(),
+        Some((ClientToServerMsg::ConnStatus, _))
+    ));
+    probe
+        .send_server_msg(ServerToClientMsg::Connected {
+            warp_companions: true,
+            warp_held_terminals: true,
+        })
+        .unwrap();
+    let mut adoption: IpcReceiverWithContext<ClientToServerMsg> =
+        IpcReceiverWithContext::new(listener.accept().unwrap());
+    let _ = adoption.recv_client_msg();
+}
+
+fn start_pane_warp(
+    harness: &Harness,
+    to_session: &SessionName,
+) -> std::thread::JoinHandle<(std::result::Result<String, String>, Option<PaneWarpHold>)> {
+    let senders = harness.senders.clone();
+    let to_session = to_session.clone();
+    std::thread::spawn(move || {
+        warp_pane_to_session(
+            &senders,
+            crate::ClientId::new(1),
+            None,
+            &SessionName::new("source"),
+            &to_session,
+            WarpPlacement::FocusedTab,
+            Duration::from_secs(5),
+        )
+    })
+}
+
+fn screen_warp_reply(harness: &Harness) -> PaneWarpReply {
+    let (
+        ScreenInstruction::WarpPane {
+            response_channel, ..
+        },
+        _,
+    ) = harness.screen.recv_timeout(Duration::from_secs(5)).unwrap()
+    else {
+        panic!("expected warp")
+    };
+    response_channel
+}
+
+#[test]
+fn a_refused_pane_warp_never_holds_the_session() {
+    let harness = harness();
+    let mut session = FakeSession::bind("refused");
+    let destination = std::thread::spawn({
+        let listener = session.listener.take().unwrap();
+        move || refuse_handoff(listener)
+    });
+    let caller = start_pane_warp(&harness, &session.name);
+    assert!(screen_warp_reply(&harness)
+        .answer(Err("preparation refused".into()))
+        .is_none());
+    let (result, hold) = caller.join().unwrap();
+    let error = result.unwrap_err();
+    assert!(error.contains("preparation refused"), "{error}");
+    assert!(hold.is_none());
+    assert!(harness.screen.try_recv().is_err());
+    destination.join().unwrap();
+}
+
+#[test]
+fn a_rollback_keeps_the_warp_hold_until_the_adoption_is_done_with_it() {
+    let harness = harness();
+    let mut session = FakeSession::bind("rollback");
+    let destination = std::thread::spawn({
+        let listener = session.listener.take().unwrap();
+        move || refuse_handoff(listener)
+    });
+    let caller = start_pane_warp(&harness, &session.name);
+    assert!(screen_warp_reply(&harness)
+        .answer(Ok((
+            Box::default(),
+            PaneWarpHold::new(harness.senders.clone()),
+        )))
+        .is_none());
+    let (instruction, _) = harness.pty.recv_timeout(Duration::from_secs(5)).unwrap();
+    let PtyInstruction::AdoptTerminal {
+        ref response_channel,
+        ref hold,
+        ..
+    } = instruction
+    else {
+        panic!("expected rollback")
+    };
+    assert!(hold.is_some(), "the rollback must carry the hold");
+    response_channel
+        .send(Err(anyhow!("rollback refused")))
+        .unwrap();
+    let (result, reply_hold) = caller.join().unwrap();
+    let error = result.unwrap_err();
+    assert!(error.contains("rollback refused"), "{error}");
+    assert!(
+        reply_hold.is_some(),
+        "the caller keeps the session open until it has answered"
+    );
+    drop(reply_hold);
+    assert!(
+        harness.screen.try_recv().is_err(),
+        "the caller giving up must not finish the warp"
+    );
+    drop(instruction);
+    assert!(matches!(
+        harness
+            .screen
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .0,
+        ScreenInstruction::PaneWarpFinished
+    ));
+    destination.join().unwrap();
+}
+
+#[test]
+fn a_source_that_ends_without_answering_a_pane_pull_is_a_failure() {
+    let mut session = FakeSession::bind("pull-last");
+    let listener = session.listener.take().unwrap();
+    let source = std::thread::spawn(move || {
+        let mut reply: IpcSenderWithContext<ServerToClientMsg> =
+            IpcSenderWithContext::new(listener.accept().unwrap());
+        let mut request: IpcReceiverWithContext<ClientToServerMsg> = reply.get_receiver().unwrap();
+        assert!(matches!(
+            request.recv_client_msg().msg(),
+            Some((ClientToServerMsg::Action { .. }, _))
+        ));
+        reply
+            .send_server_msg(ServerToClientMsg::Exit {
+                exit_reason: yinz_ipc::ipc::ExitReason::Normal,
+            })
+            .unwrap();
+    });
+    let result = warp_pane_from_session(
+        &SessionName::new("here"),
+        &session.name,
+        PaneId::Terminal(crate::TerminalId::new(1)),
+        WarpPlacement::FocusedTab,
+        Duration::from_secs(5),
+    );
+    source.join().unwrap();
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("ended before confirming the pane arrived"),
+        "{error}"
+    );
+}
+
+fn adopt_in_thread(
+    harness: &Harness,
+) -> std::thread::JoinHandle<std::result::Result<String, String>> {
+    let senders = harness.senders.clone();
+    std::thread::spawn(move || {
+        adopt_pane_here(
+            &senders,
+            crate::ClientId::new(1),
+            Box::default(),
+            WarpPlacement::NewTab,
+            None,
+            Duration::from_secs(5),
+        )
+    })
+}
+
+fn attached_adoption(harness: &Harness) -> crossbeam::channel::Sender<Result<()>> {
+    let (instruction, _) = harness.pty.recv_timeout(Duration::from_secs(5)).unwrap();
+    let PtyInstruction::AdoptTerminal {
+        response_channel,
+        placed,
+        ..
+    } = instruction
+    else {
+        panic!("expected adoption")
+    };
+    response_channel.send(Ok(())).unwrap();
+    placed
+}
+
+#[test]
+fn an_adoption_that_was_given_back_is_reported_with_its_recovery() {
+    let harness = harness();
+    let adopter = adopt_in_thread(&harness);
+    attached_adoption(&harness)
+        .send(Err(anyhow!(
+            "given back. Recover it with `yinz pty-host adopt abc`"
+        )))
+        .unwrap();
+    let error = adopter.join().unwrap().unwrap_err();
+    assert!(error.contains("yinz pty-host adopt abc"), "{error}");
+}
+
+#[test]
+fn an_attached_adoption_with_no_placement_answer_is_owned_here() {
+    let harness = harness();
+    let adopter = adopt_in_thread(&harness);
+    drop(attached_adoption(&harness));
+    assert_eq!(adopter.join().unwrap(), Ok("Adopted pane".to_owned()));
+}
+
+#[test]
+fn a_pane_warp_answer_racing_a_timeout_is_received_or_handed_back() {
+    let harness = harness();
+    let released =
+        || -> ReleasedPaneWarp { (Box::default(), PaneWarpHold::new(harness.senders.clone())) };
+
+    // Answered before the waiter gave up, but not read in time.
+    let (reply, waiter) = pane_warp_reply();
+    assert!(reply.answer(Ok(released())).is_none());
+    assert!(matches!(waiter.recv_timeout(Duration::ZERO), Ok(Ok(_))));
+
+    // Answered after it gave up.
+    let (reply, waiter) = pane_warp_reply();
+    assert!(waiter.recv_timeout(Duration::ZERO).is_err());
+    assert!(reply.answer(Ok(released())).is_some());
+
+    // Answered after it was dropped.
+    let (reply, waiter) = pane_warp_reply();
+    drop(waiter);
+    assert!(reply.answer(Ok(released())).is_some());
 }

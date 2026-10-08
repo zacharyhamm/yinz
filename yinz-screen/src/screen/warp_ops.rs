@@ -166,9 +166,7 @@ impl Screen {
         // caller that has stopped waiting, so the tab stays where it
         // is and its panes are held and told why — visible, and
         // recoverable — below.
-        if let Some((response_channel, prepared, deadline)) =
-            self.pending_pane_groups.remove(&tab_index)
-        {
+        if let Some((parked, prepared, deadline)) = self.pending_pane_groups.remove(&tab_index) {
             if Instant::now() < deadline {
                 let result = self
                     .take_released_tab_for_warp(tab_index, released, prepared)
@@ -179,14 +177,7 @@ impl Screen {
                             ..Default::default()
                         })
                     });
-                if let Err(crossbeam::channel::SendError(Ok(payload))) =
-                    response_channel.send(result)
-                {
-                    log::error!(
-                        "unclaimed pane group: {}",
-                        crate::warp::recovery_command(&payload)
-                    );
-                }
+                self.answer_parked_pane_warp(parked, result);
             } else {
                 for (terminal_id, released) in released {
                     if let Ok(released) = released {
@@ -350,20 +341,9 @@ impl Screen {
             Some((_, deadline)) if Instant::now() >= deadline => None,
             other => other,
         };
-        if let Some((response_channel, _)) = still_waiting {
+        if let Some((parked, _)) = still_waiting {
             let result = self.take_released_pane_for_warp(terminal_id, released);
-            if let Err(crossbeam::channel::SendError(Ok(payload))) = response_channel.send(result) {
-                // The caller timed out between asking and being
-                // answered. The pane is out of this session by now and
-                // its process is running unwatched, so the recovery
-                // line has to go somewhere: this log is the only place
-                // left that it can.
-                log::error!(
-                    "pane {terminal_id} was released for a warp nobody was waiting on; \
-                 it is still running and can be recovered with `{}`",
-                    crate::warp::recovery_command(&payload)
-                );
-            }
+            self.answer_parked_pane_warp(parked, result);
         } else {
             // Nobody is waiting, which means the supervisor has been
             // released with no one to hand it to. The pane is still
@@ -393,6 +373,63 @@ impl Screen {
         self.finish_held_warp([terminal_id]);
     }
 
+    /// Hand a released pane to the caller that parked the warp, along with its hold.
+    ///
+    /// The caller can time out between asking and being answered. The pane is out of
+    /// its tab by then, so it is taken back here rather than left running unwatched,
+    /// and the hold goes with it so the session stays open until it is placed.
+    fn answer_parked_pane_warp(
+        &mut self,
+        parked: super::ParkedPaneWarp,
+        result: Result<Box<WarpedPane>, String>,
+    ) {
+        let super::ParkedPaneWarp {
+            response_channel,
+            hold,
+            placement,
+            client_id,
+        } = parked;
+        let Some((payload, hold)) = response_channel.answer(result.map(|payload| (payload, hold)))
+        else {
+            return;
+        };
+        log::error!(
+            "a pane was released for a warp nobody was waiting on; taking it back. If that \
+             fails, recover it with `{}`",
+            crate::warp::recovery_command(&payload)
+        );
+        let (response_channel, _) = crossbeam::channel::unbounded();
+        let (placed, _) = crossbeam::channel::unbounded();
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::AdoptTerminal {
+                payload,
+                placement,
+                client_id,
+                response_channel,
+                hold: Some(hold),
+                placed,
+            })
+            .context("failed to take back an unclaimed pane")
+            .non_fatal();
+    }
+
+    /// Park a pane warp's caller, holding the session open until the warp resolves.
+    fn park_pane_warp(
+        &mut self,
+        response_channel: yinz_bus::warp::PaneWarpReply,
+        placement: WarpPlacement,
+        client_id: ClientId,
+    ) -> super::ParkedPaneWarp {
+        self.in_flight_pane_warps += 1;
+        super::ParkedPaneWarp {
+            response_channel,
+            hold: yinz_bus::warp::PaneWarpHold::new(self.bus.senders.clone()),
+            placement,
+            client_id,
+        }
+    }
+
     /// Starts a pane warp: refuses it outright if it cannot proceed, otherwise asks the pty
     /// thread to release the pane (or, for a companion group, every pane in it) and parks the
     /// caller's channel until `PaneReleasedForWarp` / `TabReleasedForWarp` answers it.
@@ -404,7 +441,7 @@ impl Screen {
         to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
-        response_channel: crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+        response_channel: yinz_bus::warp::PaneWarpReply,
         deadline: Instant,
     ) -> Result<()> {
         // Every check that can fail happens before the pty thread is asked
@@ -413,7 +450,7 @@ impl Screen {
         match self.prepare_pane_group(pane_id, client_id) {
             Ok(Some((tab_index, terminal_ids, prepared))) => {
                 if !supports_companions {
-                    let _ = response_channel.send(Err(
+                    let _ = response_channel.answer(Err(
                         "destination does not support companion pane transfers".into(),
                     ));
                     return Ok(());
@@ -422,7 +459,7 @@ impl Screen {
                     || self.pending_tab_warps.contains_key(&tab_index)
                 {
                     let _ = response_channel
-                        .send(Err("this tab already has a warp in progress".into()));
+                        .answer(Err("this tab already has a warp in progress".into()));
                     return Ok(());
                 }
                 let deadline = deadline
@@ -431,12 +468,13 @@ impl Screen {
                 let held = match self.prepare_held_warp(&terminal_ids, supports_held) {
                     Ok(held) => held,
                     Err(reason) => {
-                        let _ = response_channel.send(Err(reason));
+                        let _ = response_channel.answer(Err(reason));
                         return Ok(());
                     },
                 };
+                let parked = self.park_pane_warp(response_channel, placement, client_id);
                 self.pending_pane_groups
-                    .insert(tab_index, (response_channel, prepared, deadline));
+                    .insert(tab_index, (parked, prepared, deadline));
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalsForWarp {
@@ -448,7 +486,7 @@ impl Screen {
                 return Ok(());
             },
             Err(e) => {
-                let _ = response_channel.send(Err(e));
+                let _ = response_channel.answer(Err(e));
                 return Ok(());
             },
             Ok(None) => {},
@@ -470,12 +508,12 @@ impl Screen {
                 let held = match self.prepare_held_warp(&[terminal_id], supports_held) {
                     Ok(held) => held,
                     Err(reason) => {
-                        let _ = response_channel.send(Err(reason));
+                        let _ = response_channel.answer(Err(reason));
                         return Ok(());
                     },
                 };
-                self.pending_warps
-                    .insert(terminal_id, (response_channel, deadline));
+                let parked = self.park_pane_warp(response_channel, placement, client_id);
+                self.pending_warps.insert(terminal_id, (parked, deadline));
                 self.bus
                     .senders
                     .send_to_pty(PtyInstruction::ReleaseTerminalForWarp {
@@ -488,7 +526,7 @@ impl Screen {
                     })?;
             },
             Err(e) => {
-                let _ = response_channel.send(Err(e));
+                let _ = response_channel.answer(Err(e));
             },
         }
         Ok(())
@@ -514,7 +552,8 @@ impl Screen {
         relationships: &yinz_types::data::WarpRelationships,
     ) -> Result<()> {
         use crate::tab::{AcceptedPane, ExtractedPanePlacement, SuppressedPane};
-        let Some((placement, target, client_id, response_channel)) =
+        // `_hold` keeps a rollback's source session open until the group is placed.
+        let Some((placement, target, client_id, response_channel, _hold)) =
             self.pending_group_placements.remove(&tab_id)
         else {
             return Ok(());
@@ -1253,6 +1292,7 @@ impl Screen {
         cmd: RunCommand,
         buffered: Vec<u8>,
         child_exit_status: Option<Option<i32>>,
+        finish: &mut Option<yinz_bus::warp::AdoptedPaneFinish>,
     ) -> Result<()> {
         let err_context = || format!("failed to place adopted pane {terminal_id}");
         let request_redraw = payload.held.is_none() && child_exit_status.is_none();
@@ -1318,6 +1358,14 @@ impl Screen {
                 false,
             ))
             .with_context(err_context)?;
+        // Checked straight after `NewPane`, before the replayed exit queued below
+        // can close the pane legitimately and make it look unplaced.
+        if let Some(finish) = finish.take() {
+            self.bus
+                .senders
+                .send_to_screen(ScreenInstruction::AdoptedPaneFinished(finish))
+                .with_context(err_context)?;
+        }
 
         if let Some(client_id) = focus_client {
             self.bus
@@ -1391,6 +1439,38 @@ impl Screen {
                 .non_fatal();
         }
         Ok(())
+    }
+
+    /// Runs straight after the `NewPane` that `place_adopted_pane` queued. An
+    /// adopted terminal that did not get a pane is given back so it can be
+    /// adopted again. The warp hold is released only after this check.
+    pub(super) fn finish_adopted_pane(&mut self, finish: yinz_bus::warp::AdoptedPaneFinish) {
+        let yinz_bus::warp::AdoptedPaneFinish {
+            terminal_id,
+            recovery,
+            held,
+            hold: _hold,
+            placed,
+        } = finish;
+        let pane_id = PaneId::Terminal(terminal_id);
+        if self
+            .tabs
+            .values()
+            .any(|tab| tab.get_pane_with_id(pane_id).is_some())
+        {
+            let _ = placed.send(Ok(()));
+            return;
+        }
+        self.bus
+            .senders
+            .send_to_pty(PtyInstruction::GiveBackAdoptedTerminal {
+                terminal_id,
+                held,
+                recovery,
+                placed: Some(placed),
+            })
+            .context("failed to give back an unplaced adopted pane")
+            .non_fatal();
     }
 
     /// A tab of its own for an adopted pane, following `break_pane`'s dance. Also what a
@@ -1483,6 +1563,7 @@ impl Screen {
         client_id: ClientId,
         placement: Option<WarpPlacement>,
         response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
+        hold: Option<yinz_bus::warp::PaneWarpHold>,
     ) -> Result<()> {
         let target = self.tab_a_client_is_looking_at(client_id);
         let err_context = || "failed to place an adopted tab".to_string();
@@ -1544,8 +1625,10 @@ impl Screen {
             .with_context(err_context)?;
 
         if let Some(placement) = placement {
-            self.pending_group_placements
-                .insert(tab_index, (placement, target, client_id, response_channel));
+            self.pending_group_placements.insert(
+                tab_index,
+                (placement, target, client_id, response_channel, hold),
+            );
         }
 
         Ok(())

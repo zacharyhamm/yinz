@@ -574,14 +574,15 @@ pub enum ScreenInstruction {
         to_session: SessionName,
         placement: WarpPlacement,
         client_id: ClientId,
-        response_channel: crossbeam::channel::Sender<Result<Box<WarpedPane>, String>>,
+        response_channel: crate::warp::PaneWarpReply,
         /// When the caller stops waiting. See [`WarpTab`](Self::WarpTab).
         deadline: Instant,
     },
-    /// A pane transfer has completed, including any rollback attempt.
+    /// The last [`PaneWarpHold`](crate::warp::PaneWarpHold) for a pane warp dropped.
     PaneWarpFinished,
-    /// Acknowledged only after queued pane creation and restoration have run.
-    AdoptedPaneFinished(crossbeam::channel::Sender<Result<()>>),
+    /// Queued behind the instructions that place an adopted pane. Checks that the
+    /// pane exists, and releases the warp hold only after placement has run.
+    AdoptedPaneFinished(crate::warp::AdoptedPaneFinish),
     /// The pty thread has let a pane's supervisor go. Serializing the pane *here*
     /// rather than when the warp was requested is what makes the screen that
     /// travels match the one the user was looking at: by now the reader task is
@@ -599,7 +600,9 @@ pub enum ScreenInstruction {
     /// The pty thread has taken a supervisor over and this session now owns
     /// `terminal_id`. All that is left is to give it a pane and paint it.
     AdoptedPaneReady {
-        response_channel: crossbeam::channel::Sender<Result<()>>,
+        hold: Option<crate::warp::PaneWarpHold>,
+        /// The adopter's `placed` channel. See [`PtyInstruction::AdoptTerminal`].
+        placed: crossbeam::channel::Sender<Result<()>>,
         terminal_id: TerminalId,
         payload: Box<WarpedPane>,
         placement: WarpPlacement,
@@ -636,6 +639,7 @@ pub enum ScreenInstruction {
     /// owns their terminal ids. All that is left is to build the tab around them.
     AdoptedTabReady {
         response_channel: Option<crossbeam::channel::Sender<Result<()>>>,
+        hold: Option<crate::warp::PaneWarpHold>,
         placement: Option<yinz_types::data::WarpPlacement>,
         payload: Box<WarpedTab>,
         adopted: Box<AdoptedTabPanes>,

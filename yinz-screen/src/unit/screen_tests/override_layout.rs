@@ -727,6 +727,7 @@ fn failed_new_layout_reports_error_preserves_focus_and_keeps_adopted_terminals()
                 None,
                 client_id,
                 Some(receipt_tx),
+                None,
             ),
         );
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();

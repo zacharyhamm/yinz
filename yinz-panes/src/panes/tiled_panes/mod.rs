@@ -363,12 +363,21 @@ impl TiledPanes {
         let should_relayout = false;
         self.add_pane(pane_id, pane, should_relayout, client_id)
     }
+    /// Only unselectable panes that do not touch the viewport remain, such as the UI
+    /// panes a warp leaves behind when it takes a tab's last content pane.
+    fn has_no_content_in_viewport(&self) -> bool {
+        let viewport = *self.viewport.borrow();
+        self.panes.values().all(|pane| {
+            let geom = pane.current_geom();
+            let overlaps = geom.x < viewport.x + viewport.cols
+                && viewport.x < geom.x + geom.cols.as_usize()
+                && geom.y < viewport.y + viewport.rows
+                && viewport.y < geom.y + geom.rows.as_usize();
+            !pane.selectable() && !overlaps
+        })
+    }
     pub fn has_room_for_new_pane(&mut self) -> bool {
-        if self
-            .panes
-            .values()
-            .all(|pane| !is_inside_viewport(&self.viewport.borrow(), pane))
-        {
+        if self.has_no_content_in_viewport() {
             return true;
         }
         let cursor_height_width_ratio = self.cursor_height_width_ratio();
@@ -468,11 +477,7 @@ impl TiledPanes {
             self.panes.insert(pane_id, pane);
             return None;
         }
-        if self
-            .panes
-            .values()
-            .all(|pane| !is_inside_viewport(&self.viewport.borrow(), pane))
-        {
+        if self.has_no_content_in_viewport() {
             // The last content pane can leave UI panes behind during a warp.
             let viewport = *self.viewport.borrow();
             let mut geom = PaneGeom::from(&Size {

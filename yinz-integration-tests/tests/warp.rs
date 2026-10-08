@@ -927,9 +927,26 @@ fn a_tab_holding_a_stacked_pane_list_warps_whole() {
 
 #[test]
 fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships() {
+    let ((sender, _sender_shell), (receiver, _receiver_shell)) = sender_and_receiver();
+    let subject = split_off_a_pane(&sender, "ROLLBACK_SUBJECT");
+    roll_back_a_pane_with_two_editors(&sender, &receiver, &subject);
+}
+
+#[test]
+fn warp_adoption_failure_returns_the_sessions_only_pane_and_its_editors() {
     let ((sender, subject), (receiver, _receiver_shell)) = sender_and_receiver();
     focus_and_confirm(&sender, &keys::alt('h'), &subject);
-    type_and_confirm(&sender, &subject, b"rollback-subject-before");
+    roll_back_a_pane_with_two_editors(&sender, &receiver, &subject);
+}
+
+/// Open two scrollback editors on the focused `subject`, fail its warp, and check
+/// that all three come back with the editors still covering it in order.
+fn roll_back_a_pane_with_two_editors(
+    sender: &TestSession,
+    receiver: &TestSession,
+    subject: &FakePtyHandle,
+) {
+    type_and_confirm(sender, subject, b"rollback-subject-before");
     for index in 0..2 {
         sender.send_stdin(&keys::ctrl('s'));
         sender.send_stdin(&keys::key('e'));
@@ -937,10 +954,10 @@ fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships()
         let marker = format!("EDITOR_READY_{index}");
         editor.output(format!("{marker}\r\n").as_bytes());
         sender.wait_until("editor to open", |grid| grid.contains(&marker));
-        type_and_confirm(&sender, &editor, marker.as_bytes());
+        type_and_confirm(sender, &editor, marker.as_bytes());
     }
     subject.fail_warp(WarpFailure::UnadoptableOnce);
-    let (exit_code, reported) = warp_focused_pane_to(&sender, &receiver, false);
+    let (exit_code, reported) = warp_focused_pane_to(sender, receiver, false);
     assert_ne!(exit_code, 0);
     assert!(reported.contains("back in this session"), "{reported}");
     let adopted: Vec<_> = (0..3).map(|_| sender.expect_adopted_pty()).collect();
@@ -960,7 +977,7 @@ fn warp_adoption_failure_returns_all_editor_companions_and_their_relationships()
     sender.wait_until("second cover to close", |grid| {
         grid.contains("SUBJECT_RESTORED")
     });
-    type_and_confirm(&sender, restored_subject, b"rollback-restored-input");
+    type_and_confirm(sender, restored_subject, b"rollback-restored-input");
     assert!(!restored_subject.is_exited());
 }
 
@@ -1725,9 +1742,17 @@ fn warp_disconnected_destination_restores_the_only_held_pane() {
         ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg,
     };
 
+    struct RemoveOnDrop(std::path::PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     let name = format!("warp-disconnect-{}", std::process::id());
     std::fs::create_dir_all(&*yinz_runtime::consts::YINZ_SOCK_DIR).unwrap();
     let path = yinz_runtime::consts::YINZ_SOCK_DIR.join(&name);
+    let _socket = RemoveOnDrop(path.clone());
     let listener = ListenerOptions::new()
         .name(path.as_path().to_fs_name::<GenericFilePath>().unwrap())
         .create_sync()
