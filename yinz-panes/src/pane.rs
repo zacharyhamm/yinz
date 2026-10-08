@@ -943,6 +943,7 @@ pub fn pane_info_for_pane(
             .map(Into::into),
         is_selectable: pane.selectable(),
         title: pane.current_title(),
+        display_title: Some(pane.display_title()),
         exited: pane.exited(),
         exit_status: pane.exit_status(),
         is_held: pane.is_held(),

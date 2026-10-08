@@ -439,7 +439,8 @@ fn command_palette_creates_renames_navigates_and_confirms_closing() {
     });
     palette_query(&yinz, "Close pane…");
     yinz.wait_until("pane confirmation identifies target", |snapshot| {
-        snapshot.contains("Close palette-child") && snapshot.contains("Cancel")
+        snapshot.contains(&format!("Close [{}] palette-child", child.terminal_id()))
+            && snapshot.contains("Cancel")
     });
     yinz.send_stdin(b"\x1b[B\r");
     yinz.wait_until("child closed", |snapshot| {
@@ -647,8 +648,9 @@ fn command_palette_registers_control_agents_by_search_and_focused_pane() {
     }
     palette_query(&yinz, "Set control agent");
     let controller_id = PaneId::Terminal(controller.terminal_id()).to_string();
+    let controller_label = format!("[{}]", controller.terminal_id());
     yinz.wait_until("registration picker ready", |snapshot| {
-        snapshot.contains("Set control agent") && snapshot.contains(&controller_id)
+        snapshot.contains("Set control agent") && snapshot.contains(&controller_label)
     });
     yinz.send_stdin(controller_id.as_bytes());
     yinz.wait_until("controller selected", |snapshot| {
@@ -663,11 +665,11 @@ fn command_palette_registers_control_agents_by_search_and_focused_pane() {
         snapshot.contains("originalprompt$") && !snapshot.contains("Esc Close")
     });
     palette_query(&yinz, "Focus control agent");
-    let original_id = PaneId::Terminal(original.terminal_id()).to_string();
+    let original_label = format!("[{}]", original.terminal_id());
     yinz.wait_until("both agents are registered", |snapshot| {
         snapshot.contains("Focus control agent")
-            && snapshot.contains(&original_id)
-            && snapshot.contains(&controller_id)
+            && snapshot.contains(&original_label)
+            && snapshot.contains(&controller_label)
     });
     yinz.quit();
 }
@@ -741,7 +743,8 @@ fn command_palette_focuses_a_registered_control_agent_across_tabs_and_removes_it
     yinz.send_stdin(b"Focus control agent");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("control-agent picker opened", |snapshot| {
-        snapshot.contains("Focus control agent") && snapshot.contains(&pane.to_string())
+        snapshot.contains("Focus control agent")
+            && snapshot.contains(&format!("[{}]", controller.terminal_id()))
     });
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("controller tab focused", |snapshot| {
@@ -760,7 +763,8 @@ fn command_palette_focuses_a_registered_control_agent_across_tabs_and_removes_it
     yinz.send_stdin(b"Focus control agent");
     yinz.send_stdin(&keys::ENTER);
     yinz.wait_until("control-agent picker reopened", |snapshot| {
-        snapshot.contains(&pane.to_string()) && snapshot.contains("Focus control agent")
+        snapshot.contains(&format!("[{}]", controller.terminal_id()))
+            && snapshot.contains("Focus control agent")
     });
     assert_eq!(
         yinz.run_cli_action(CliAction::AgentReport {

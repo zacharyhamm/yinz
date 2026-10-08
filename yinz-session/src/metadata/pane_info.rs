@@ -124,6 +124,7 @@ pub fn decode_from_kdl(
             .and_then(|entry| entry.value().as_bool())
             .unwrap_or(false),
         title,
+        display_title: optional_string_node!("display_title"),
         exited,
         exit_status,
         is_held,
@@ -181,6 +182,9 @@ pub fn encode_to_kdl(value: &PaneInfo) -> anyhow::Result<KdlDocument> {
         bool_node!("is_stack_list_member", true);
     }
     string_node!("title", value.title.to_string());
+    if let Some(display_title) = &value.display_title {
+        string_node!("display_title", display_title.to_string());
+    }
     bool_node!("exited", value.exited);
     if let Some(exit_status) = value.exit_status {
         int_node!("exit_status", exit_status);
